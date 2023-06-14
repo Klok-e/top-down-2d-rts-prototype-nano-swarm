@@ -7,16 +7,14 @@ pub struct Selected {}
 
 pub fn unit_select_system(
     mut commands: Commands,
+    windows: Query<&Window>,
     mouse_button_input: Res<Input<MouseButton>>,
     mut query_all: Query<(Entity, &mut Transform), With<Nanobot>>,
     mut query_selected: Query<Entity, With<Selected>>,
-    mut cursor: EventReader<CursorMoved>,
     camera_query: Query<(&GlobalTransform, &Camera)>,
 ) {
     // Get the cursor position in window coordinates
-    let cursor_pos = if let Some(cursor_pos) = cursor.iter().last() {
-        cursor_pos.position
-    } else {
+    let Some(cursor_pos) = windows.single().cursor_position() else {
         return;
     };
 
