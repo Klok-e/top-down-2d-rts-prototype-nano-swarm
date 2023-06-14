@@ -4,17 +4,20 @@ mod nanobot;
 mod unit_select;
 
 use bevy::prelude::*;
+use bevy_prototype_debug_lines::DebugLinesPlugin;
 use fly_camera::{camera_2d_movement_system, FlyCamera2d};
 use game_settings::GameSettings;
-use nanobot::{move_velocity_system, Nanobot};
+use nanobot::{bot_debug_circle_system, move_velocity_system, Nanobot};
 use unit_select::unit_select_system;
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugin(DebugLinesPlugin::default())
         .add_startup_system(setup_things_startup)
         .add_system(camera_2d_movement_system)
         .add_system(move_velocity_system)
+        .add_system(bot_debug_circle_system)
         .add_system(unit_select_system)
         .run();
 }

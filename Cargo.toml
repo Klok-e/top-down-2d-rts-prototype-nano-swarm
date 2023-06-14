@@ -11,6 +11,7 @@ thiserror = "1.0"
 anyhow = "1.0.70"
 serde = { version = "1.0.160", features = ["derive"] }
 rand = { version = "0.8.5" }
+bevy_prototype_debug_lines = "0.10"
 
 [profile.dev.package."*"]
 opt-level = 3
