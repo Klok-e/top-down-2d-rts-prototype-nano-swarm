@@ -1,21 +1,27 @@
 # Top-Down 2D RTS Prototype: Nano Swarm
 
-## Description
+## Introduction
 
-Nano Swarm is a prototype of a real-time strategy (RTS) game where players command massive swarms of nanobots in epic scale battles. The game leverages the Entity-Component-System (ECS) architecture for efficient performance, even with hundreds of thousands of individual units.
+Nano Swarm is a real-time strategy game prototype developed in a top-down 2D environment. The game utilizes the Entity-Component-System (ECS) architecture to effectively manage hundreds of thousands of nanobots, each represented as individual units.
 
 ## Core Gameplay
 
-1. **Dynamic Grouping**: Players manage groups of nanobots that can be easily split, merged, or reassigned for flexible strategic decision-making.
+The core gameplay of Nano Swarm is based on a set of key mechanics:
 
-2. **Role-Based Behavior**: Groups of nanobots have specific roles (gatherers, builders, fighters, etc.) that dictate their behavior and the commands they respond to.
+1. **Dynamic Grouping**: Players can create and manage groups of nanobots dynamically, providing flexibility in response to changing battlefield conditions. A group can be interacted with by selecting any individual bot from the group.
 
-3. **Activity Zones**: Players assign specific activity zones to nanobot groups. These zones guide the group's behavior and interactions.
+2. **Role-Based Behavior**: Each nanobot group can be assigned specific roles such as gatherers, builders, or fighters. The assigned role determines the behavior of the group and the commands they respond to.
 
-4. **Task Interactions**: When two activity zones overlap, nanobots perform combined tasks, leading to interesting strategic considerations.
+3. **Activity Zones**: Players assign specific zones of activity to each nanobot group. These zones guide the behavior of nanobots based on their role.
 
-5. **Automated Resource Management**: Gatherer groups automatically collect and transport resources between their designated zones, reducing micromanagement.
+4. **Task Interactions**: Overlapping zones of different groups enable bots to perform combined tasks, adding a layer of strategic depth. For example, a gatherer group's zone overlapping with a building zone results in efficient resource transportation.
 
-6. **Adaptive Combat System**: Fighter groups can be directed to specific areas where they spread out and engage enemies, simplifying large-scale combat operations.
+5. **Automated Resource Management**: Gatherer groups autonomously manage resources within their assigned zones, reducing the need for constant player input for resource management.
 
-7. **Persistent Evolution**: The game state continually changes, requiring players to adapt their strategies effectively to succeed.
+6. **Adaptive Combat System**: Players can direct fighter groups to specific zones where they spread out and engage enemy bots, simplifying control in large-scale battles.
+
+7. **Persistent Evolution**: The game state continually changes due to various factors, such as enemy activity, resource availability, or the need for base expansion. This requires players to adapt their strategies continually to succeed.
+
+## Objective
+
+The primary objective of the game is to manage resources effectively, build a resilient base, command nanobot groups strategically, and overcome opponent forces to gain control over the map.
