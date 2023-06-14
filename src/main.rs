@@ -1,8 +1,7 @@
 mod creature;
 mod fly_camera;
 
-use bevy::{core::Zeroable, prelude::*};
-use bevy_rapier2d::prelude::*;
+use bevy::prelude::*;
 use creature::{move_creature_system, Creature};
 use fly_camera::{camera_2d_movement_system, FlyCamera2d};
 use rand::Rng;
@@ -10,12 +9,6 @@ use rand::Rng;
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .insert_resource(RapierConfiguration {
-            gravity: Vec2::zeroed(),
-            ..default()
-        })
-        .add_plugin(RapierPhysicsPlugin::<NoUserData>::default())
-        .add_plugin(RapierDebugRenderPlugin::default())
         .add_startup_system(setup_things_startup)
         .add_system(camera_2d_movement_system)
         .add_system(spawn_food_system)
@@ -25,7 +18,7 @@ fn main() {
 
 fn setup_things_startup(mut commands: Commands, images: Res<AssetServer>) {
     commands
-        .spawn_bundle(Camera2dBundle::default())
+        .spawn(Camera2dBundle::default())
         .insert(FlyCamera2d::default());
 
     commands.insert_resource(GameSettings {
@@ -35,17 +28,10 @@ fn setup_things_startup(mut commands: Commands, images: Res<AssetServer>) {
         food_timeout: 2.,
     });
 
-    commands
-        .spawn()
-        .insert(RigidBody::Dynamic)
-        .insert(Collider::ball(12.))
-        .insert(Restitution::coefficient(0.7))
-        .insert(Velocity::default())
-        .insert(Creature {})
-        .insert_bundle(SpriteBundle {
-            texture: images.load("food_sprite.png"),
-            ..default()
-        });
+    commands.spawn((Creature {},)).insert(SpriteBundle {
+        texture: images.load("food_sprite.png"),
+        ..default()
+    });
 }
 
 fn spawn_food_system(
@@ -62,22 +48,18 @@ fn spawn_food_system(
         let x = rng.gen_range(-settings.width..settings.width);
         let y = rng.gen_range(-settings.height..settings.height);
         commands
-            .spawn()
-            .insert(Food {
-                spawned: Timer::from_seconds(settings.food_timeout, false),
+            .spawn(Food {
+                spawned: Timer::from_seconds(settings.food_timeout, TimerMode::Once),
             })
-            .insert_bundle(SpriteBundle {
+            .insert(SpriteBundle {
                 texture: images.load("food_sprite.png"),
                 transform: Transform::from_translation(Vec3::new(x, y, 0.)),
                 ..default()
-            })
-            .insert(RigidBody::Dynamic)
-            .insert(Collider::ball(12.))
-            .insert(Restitution::coefficient(0.7));
+            });
     }
 
     for (ent, mut food) in foods.iter_mut() {
-        let food: &mut Food = &mut *food;
+        let food: &mut Food = &mut food;
         let ent: Entity = ent;
 
         food.spawned.tick(time.delta());
@@ -93,6 +75,7 @@ pub struct Food {
     pub spawned: Timer,
 }
 
+#[derive(Debug, Resource)]
 pub struct GameSettings {
     pub width: f32,
     pub height: f32,
