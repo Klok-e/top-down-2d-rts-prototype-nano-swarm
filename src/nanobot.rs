@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use crate::game_settings::GameSettings;
 use bevy_prototype_debug_lines::DebugShapes;
 
-pub const BOT_RADIUS: f32 = 50.;
+pub const BOT_RADIUS: f32 = 16.;
 pub const STOP_THRESHOLD: f32 = 0.01;
 
 #[derive(Debug, Component)]
