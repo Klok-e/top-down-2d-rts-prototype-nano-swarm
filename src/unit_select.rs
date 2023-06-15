@@ -13,6 +13,12 @@ pub enum SelectedGroupsChanged {
     Deselected(Entity),
 }
 
+#[derive(Debug, Component)]
+pub enum NanobotGroupAction {
+    Merge,
+    Split,
+}
+
 const MOVE_PERTURBATION_SIZE: f32 = 10.;
 const BIAS_RATE: f32 = 0.5;
 
