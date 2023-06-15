@@ -5,7 +5,7 @@ use crate::game_settings::GameSettings;
 use bevy_prototype_debug_lines::DebugShapes;
 
 pub const BOT_RADIUS: f32 = 16.;
-pub const STOP_THRESHOLD: f32 = 0.01;
+pub const STOP_THRESHOLD: f32 = 2.;
 pub const BOT_SEPARATION_FORCE: f32 = 1.5;
 
 #[derive(Debug, Component, Default)]
@@ -30,13 +30,26 @@ pub struct Velocity {
     pub value: Vec2,
 }
 
+#[derive(Debug, Component)]
+pub struct ProgressChecker {
+    pub last_position: Vec2,
+    pub last_update_time: f64,
+}
+
 pub fn move_velocity_system(
+    time: Res<Time>,
     mut commands: Commands,
-    mut bots: Query<(Entity, &MoveDestination, &Transform, &mut Velocity), With<Nanobot>>,
+    mut bots: Query<(
+        Entity,
+        &MoveDestination,
+        &Transform,
+        &mut Velocity,
+        Option<&mut ProgressChecker>,
+    )>,
     game_settings: Res<GameSettings>,
 ) {
     let speed = game_settings.bot_speed;
-    for (entity, bot_destination, transform, mut velocity) in bots.iter_mut() {
+    for (entity, bot_destination, transform, mut velocity, progress_checker) in bots.iter_mut() {
         let dest: Vec3 = [bot_destination.xy.x, bot_destination.xy.y, 0.].into();
         let translation = transform.translation;
         let direction = dest - translation;
@@ -46,8 +59,37 @@ pub fn move_velocity_system(
         if distance > STOP_THRESHOLD {
             let new_velocity = direction.normalize() * speed.min(distance);
             velocity.value += new_velocity.truncate();
+
+            // If the bot is not already moving, add a ProgressChecker
+            if progress_checker.is_none() {
+                commands.entity(entity).insert(ProgressChecker {
+                    last_position: translation.truncate(),
+                    last_update_time: time.elapsed_seconds_f64(),
+                });
+            }
         } else {
             commands.entity(entity).remove::<MoveDestination>();
+            commands.entity(entity).remove::<ProgressChecker>();
+        }
+
+        // Check if the bot has not made any significant progress for a long time
+        if let Some(mut checker) = progress_checker {
+            let current_time = time.elapsed_seconds_f64();
+            const MAX_TIME_WITHOUT_PROGRESS: f64 = 2.0; // Maximum time without significant progress
+            const MIN_PROGRESS: f32 = 1.0; // Minimum progress to reset the timer
+
+            let progress = (checker.last_position - translation.truncate()).length();
+            if progress < MIN_PROGRESS
+                && current_time - checker.last_update_time > MAX_TIME_WITHOUT_PROGRESS
+            {
+                // The bot has not made significant progress for a long time, remove the destination
+                commands.entity(entity).remove::<MoveDestination>();
+                commands.entity(entity).remove::<ProgressChecker>();
+            } else if progress >= MIN_PROGRESS {
+                // The bot has made significant progress, update the checker
+                checker.last_position = translation.truncate();
+                checker.last_update_time = current_time;
+            }
         }
     }
 }

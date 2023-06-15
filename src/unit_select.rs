@@ -7,6 +7,7 @@ use crate::nanobot::{MoveDestination, Nanobot, BOT_RADIUS};
 pub struct Selected {}
 
 const MOVE_PERTURBATION_SIZE: f32 = 10.;
+const BIAS_RATE: f32 = 0.3;
 
 pub fn unit_select_system(
     mut commands: Commands,
@@ -67,13 +68,20 @@ pub fn unit_select_system(
                 let (_, nanobot_transform) = nanobots.get(nanobot).expect("Invalid child");
                 let relative_pos = nanobot_transform.translation.truncate() - center_of_mass;
 
+                let direction_to_center =
+                    (center_of_mass - nanobot_transform.translation.truncate()).normalize();
+
                 let angle: f32 = rng.gen_range(0.0..2.0 * std::f32::consts::PI);
                 let perturbation = Vec2::new(angle.cos(), angle.sin());
+
+                // Create a weighted sum of the random perturbation and the direction to the center
+                let biased_perturbation =
+                    perturbation * (1.0 - BIAS_RATE) + direction_to_center * BIAS_RATE;
 
                 commands.entity(nanobot).insert(MoveDestination {
                     xy: cursor_pos_world.truncate()
                         + relative_pos
-                        + perturbation * MOVE_PERTURBATION_SIZE,
+                        + biased_perturbation * MOVE_PERTURBATION_SIZE,
                 });
             }
         }
