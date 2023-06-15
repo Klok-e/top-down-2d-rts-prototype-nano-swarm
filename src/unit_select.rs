@@ -9,8 +9,8 @@ pub fn unit_select_system(
     mut commands: Commands,
     windows: Query<&Window>,
     mouse_button_input: Res<Input<MouseButton>>,
-    mut query_all: Query<(Entity, &mut Transform), With<Nanobot>>,
-    mut query_selected: Query<Entity, With<Selected>>,
+    mut nanobots: Query<(&Parent, &mut Transform), With<Nanobot>>,
+    mut selected_groups: Query<(Entity, &Children), With<Selected>>,
     camera_query: Query<(&GlobalTransform, &Camera)>,
 ) {
     // Get the cursor position in window coordinates
@@ -20,7 +20,6 @@ pub fn unit_select_system(
 
     // Convert the cursor position to world coordinates using viewport_to_world_2d
     let (camera_transform, camera) = camera_query.single();
-
     let cursor_pos_world =
         if let Some(pos) = camera.viewport_to_world_2d(camera_transform, cursor_pos) {
             pos.extend(0.0)
@@ -30,15 +29,16 @@ pub fn unit_select_system(
 
     // Handle left mouse button clicks
     if mouse_button_input.just_pressed(MouseButton::Left) {
-        // Deselect the currently selected unit
-        for entity in query_selected.iter() {
+        // Deselect all groups
+        for (entity, _) in selected_groups.iter() {
             commands.entity(entity).remove::<Selected>();
         }
 
         // Select the unit under the cursor
-        for (entity, transform) in query_all.iter_mut() {
+        for (parent, transform) in nanobots.iter_mut() {
             if (transform.translation - cursor_pos_world).length() < BOT_RADIUS {
-                commands.entity(entity).insert(Selected {});
+                // Add selected tag to parent group of this nanobot
+                commands.entity(parent.get()).insert(Selected {});
                 break;
             }
         }
@@ -47,10 +47,12 @@ pub fn unit_select_system(
     // Handle right mouse button clicks
     if mouse_button_input.just_pressed(MouseButton::Right) {
         // Set the MoveDestination of the selected unit
-        for entity in query_selected.iter_mut() {
-            commands.entity(entity).insert(MoveDestination {
-                xy: cursor_pos_world.truncate(),
-            });
+        for (_, children) in selected_groups.iter_mut() {
+            for &nanobot in children {
+                commands.entity(nanobot).insert(MoveDestination {
+                    xy: cursor_pos_world.truncate(),
+                });
+            }
         }
     }
 }

@@ -1,0 +1,6 @@
+(
+    width: 1000.,
+    height: 1000.,
+    bot_speed: 5.,
+    debug_draw_circles: false,
+)

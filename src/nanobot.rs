@@ -89,9 +89,14 @@ pub fn velocity_system(mut query: Query<(&mut Velocity, &mut Transform)>) {
 }
 
 pub fn bot_debug_circle_system(
+    game_settings: Res<GameSettings>,
     bots: Query<&Transform, With<Nanobot>>,
     mut shapes: ResMut<DebugShapes>,
 ) {
+    if !game_settings.debug_draw_circles {
+        return;
+    }
+
     for transform in bots.iter() {
         let translation = transform.translation;
         shapes.circle().position(translation).radius(BOT_RADIUS);
