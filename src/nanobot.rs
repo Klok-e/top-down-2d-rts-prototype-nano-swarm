@@ -6,7 +6,7 @@ use bevy_prototype_debug_lines::DebugShapes;
 
 pub const BOT_RADIUS: f32 = 16.;
 pub const STOP_THRESHOLD: f32 = 0.01;
-pub const BOT_SEPARATION_FORCE: f32 = 1.;
+pub const BOT_SEPARATION_FORCE: f32 = 1.5;
 
 #[derive(Debug, Component, Default)]
 pub struct NanobotGroup {}
