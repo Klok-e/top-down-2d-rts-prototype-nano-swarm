@@ -7,6 +7,13 @@ use bevy::{
     prelude::*,
 };
 
+use crate::{nanobot::NanobotGroup, unit_select::SelectedGroupsChanged};
+
+#[derive(Debug, Resource)]
+struct FontsResource {
+    general_text_style: TextStyle,
+}
+
 fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
     let button_style = Style {
         margin: UiRect::all(Val::Px(5.0)),
@@ -21,6 +28,10 @@ fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
         font_size: 18.0,
         color: Color::WHITE,
     };
+
+    commands.insert_resource(FontsResource {
+        general_text_style: text_style.clone(),
+    });
 
     commands
         .spawn(NodeBundle {
@@ -51,52 +62,7 @@ fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
             ));
 
             // List with hidden overflow
-            parent
-                .spawn(NodeBundle {
-                    style: Style {
-                        flex_direction: FlexDirection::Column,
-                        align_self: AlignSelf::Stretch,
-                        size: Size::height(Val::Percent(50.0)),
-                        overflow: Overflow::Hidden,
-                        ..default()
-                    },
-                    background_color: Color::rgb(0.10, 0.10, 0.10).into(),
-                    ..default()
-                })
-                .insert(Interaction::default())
-                .with_children(|parent| {
-                    // Moving panel
-                    parent
-                        .spawn((
-                            NodeBundle {
-                                style: Style {
-                                    flex_direction: FlexDirection::Column,
-                                    max_size: Size::UNDEFINED,
-                                    align_items: AlignItems::Center,
-                                    ..default()
-                                },
-                                ..default()
-                            },
-                            ScrollingList::default(),
-                            AccessibilityNode(NodeBuilder::new(Role::List)),
-                        ))
-                        .with_children(|parent| {
-                            // List items
-                            for i in 0..30 {
-                                parent.spawn((
-                                    TextBundle::from_section(
-                                        format!("Item {i}"),
-                                        TextStyle {
-                                            font_size: 20.,
-                                            ..text_style.clone()
-                                        },
-                                    ),
-                                    Label,
-                                    AccessibilityNode(NodeBuilder::new(Role::ListItem)),
-                                ));
-                            }
-                        });
-                });
+            spawn_scrollable_list(parent, &text_style);
 
             parent
                 .spawn(ButtonBundle {
@@ -138,6 +104,39 @@ fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
         });
 }
 
+fn spawn_scrollable_list(parent: &mut ChildBuilder<'_, '_, '_>, _text_style: &TextStyle) {
+    parent
+        .spawn(NodeBundle {
+            style: Style {
+                flex_direction: FlexDirection::Column,
+                align_self: AlignSelf::Stretch,
+                size: Size::height(Val::Percent(50.0)),
+                overflow: Overflow::Hidden,
+                ..default()
+            },
+            background_color: Color::rgb(0.10, 0.10, 0.10).into(),
+            ..default()
+        })
+        .insert(Interaction::default())
+        .with_children(|parent| {
+            // Moving panel
+            parent.spawn((
+                NodeBundle {
+                    style: Style {
+                        flex_direction: FlexDirection::Column,
+                        max_size: Size::UNDEFINED,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    ..default()
+                },
+                ScrollingList::default(),
+                AccessibilityNode(NodeBuilder::new(Role::List)),
+                SelectedGroupsList,
+            ));
+        });
+}
+
 #[derive(Debug, Component)]
 struct MergeButton;
 #[derive(Debug, Component)]
@@ -170,6 +169,12 @@ fn button_system(
 struct ScrollingList {
     position: f32,
 }
+
+#[derive(Debug, Component)]
+struct SelectedGroupsList;
+
+#[derive(Debug, Component)]
+struct SelectedGroupReference(Entity);
 
 fn mouse_scroll(
     mut mouse_wheel_events: EventReader<MouseWheel>,
@@ -211,6 +216,57 @@ impl Plugin for NanoswarmUiSetupPlugin {
     fn build(&self, app: &mut App) {
         app.add_startup_system(setup_ui_system)
             .add_system(mouse_scroll)
-            .add_system(button_system);
+            .add_system(button_system)
+            .add_system(update_selected_nanobot_groups_system);
+    }
+}
+
+fn update_selected_nanobot_groups_system(
+    mut commands: Commands,
+    fonts: Res<FontsResource>,
+    mut ev_select_changed: EventReader<SelectedGroupsChanged>,
+    selected_groups_lists: Query<(Entity, Option<&Children>), With<SelectedGroupsList>>,
+    selected_groups_list_children: Query<&SelectedGroupReference>,
+    groups: Query<&NanobotGroup>,
+) {
+    for ev in ev_select_changed.iter() {
+        for (ent, children) in &selected_groups_lists {
+            match ev {
+                SelectedGroupsChanged::Selected(selected_ent) => {
+                    let display = groups
+                        .get(*selected_ent)
+                        .expect("Event must have a valid entity");
+                    commands.entity(ent).with_children(|parent| {
+                        parent.spawn((
+                            TextBundle::from_section(
+                                format!("Group {}", display.display_identifier),
+                                TextStyle {
+                                    font_size: 20.,
+                                    ..fonts.general_text_style.clone()
+                                },
+                            ),
+                            Label,
+                            AccessibilityNode(NodeBuilder::new(Role::ListItem)),
+                            SelectedGroupReference(*selected_ent),
+                        ));
+                    });
+                }
+                SelectedGroupsChanged::Deselected(deselected_ent) => {
+                    let child = children
+                        .expect("Can't deselect something when nothing is selected")
+                        .iter()
+                        .find(|x| {
+                            selected_groups_list_children
+                                .get(**x)
+                                .expect("Children must be valid")
+                                .0
+                                == *deselected_ent
+                        })
+                        .expect("Can't deselect not selected entity");
+                    commands.entity(ent).remove_children(&[*child]);
+                    commands.entity(*child).despawn();
+                }
+            }
+        }
     }
 }
