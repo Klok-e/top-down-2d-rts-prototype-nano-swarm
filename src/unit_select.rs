@@ -29,7 +29,7 @@ pub fn unit_select_system(
         };
 
     // Handle left mouse button clicks
-    if mouse_button_input.just_released(MouseButton::Left) {
+    if mouse_button_input.just_pressed(MouseButton::Left) {
         // Deselect the currently selected unit
         for entity in query_selected.iter() {
             commands.entity(entity).remove::<Selected>();
@@ -45,7 +45,7 @@ pub fn unit_select_system(
     }
 
     // Handle right mouse button clicks
-    if mouse_button_input.just_released(MouseButton::Right) {
+    if mouse_button_input.just_pressed(MouseButton::Right) {
         // Set the MoveDestination of the selected unit
         for entity in query_selected.iter_mut() {
             commands.entity(entity).insert(MoveDestination {
