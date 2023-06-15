@@ -9,7 +9,10 @@ use bevy_prototype_debug_lines::DebugLinesPlugin;
 use fly_camera::{camera_2d_movement_system, FlyCamera2d};
 use game_settings::GameSettings;
 use highlight_unit::highlight_selected_system;
-use nanobot::{bot_debug_circle_system, move_velocity_system, Nanobot};
+use nanobot::{
+    bot_debug_circle_system, move_velocity_system, separation_system, velocity_system,
+    NanobotBundle, NanobotGroup,
+};
 use unit_select::unit_select_system;
 
 fn main() {
@@ -22,6 +25,8 @@ fn main() {
         .add_system(bot_debug_circle_system)
         .add_system(unit_select_system)
         .add_system(highlight_selected_system)
+        .add_system(separation_system)
+        .add_system(velocity_system)
         .run();
 }
 
@@ -35,9 +40,30 @@ fn setup_things_startup(mut commands: Commands, images: Res<AssetServer>) {
         height: 1000.,
         bot_speed: 5.,
     });
-
-    commands.spawn((Nanobot {},)).insert(SpriteBundle {
-        texture: images.load("circle.png"),
-        ..default()
-    });
+    commands
+        .spawn((
+            NanobotGroup {},
+            SpatialBundle {
+                ..Default::default()
+            },
+        ))
+        .with_children(|p| {
+            let texture = images.load("circle.png");
+            p.spawn((NanobotBundle::default(),)).insert(SpriteBundle {
+                texture: texture.clone(),
+                ..default()
+            });
+            p.spawn((NanobotBundle::default(),)).insert(SpriteBundle {
+                texture: texture.clone(),
+                ..default()
+            });
+            p.spawn((NanobotBundle::default(),)).insert(SpriteBundle {
+                texture: texture.clone(),
+                ..default()
+            });
+            p.spawn((NanobotBundle::default(),)).insert(SpriteBundle {
+                texture,
+                ..default()
+            });
+        });
 }
