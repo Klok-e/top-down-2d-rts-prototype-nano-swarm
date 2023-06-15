@@ -7,7 +7,10 @@ use bevy::{
     prelude::*,
 };
 
-use crate::{nanobot::NanobotGroup, unit_select::SelectedGroupsChanged};
+use crate::{
+    nanobot::NanobotGroup,
+    unit_select::{NanobotGroupAction, SelectedGroupsChanged},
+};
 
 #[derive(Debug, Resource)]
 struct FontsResource {
@@ -149,17 +152,16 @@ fn button_system(
     interaction_query: InteractionQuery,
     merge_query: Query<&MergeButton>,
     split_query: Query<&SplitButton>,
+    mut ev_nanobot_group_action: EventWriter<NanobotGroupAction>,
 ) {
     for (entity, interaction) in interaction_query.iter() {
         if let Interaction::Clicked = *interaction {
             // Handle button click
             if merge_query.get_component::<MergeButton>(entity).is_ok() {
-                println!("Merge button clicked");
-                // Your merge logic here...
+                ev_nanobot_group_action.send(NanobotGroupAction::Merge)
             }
             if split_query.get_component::<SplitButton>(entity).is_ok() {
-                println!("Split button clicked");
-                // Your split logic here...
+                ev_nanobot_group_action.send(NanobotGroupAction::Split)
             }
         }
     }

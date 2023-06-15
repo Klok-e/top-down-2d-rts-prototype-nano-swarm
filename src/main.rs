@@ -1,5 +1,6 @@
 mod fly_camera;
 mod game_settings;
+mod groups_merge_split;
 mod highlight_unit;
 mod nanobot;
 mod ui_setup;
@@ -10,19 +11,21 @@ use bevy::{math::vec3, prelude::*};
 use bevy_prototype_debug_lines::DebugLinesPlugin;
 use fly_camera::{camera_2d_movement_system, FlyCamera2d};
 use game_settings::GameSettings;
+use groups_merge_split::group_action_system;
 use highlight_unit::highlight_selected_system;
 use nanobot::{
     bot_debug_circle_system, move_velocity_system, separation_system, velocity_system,
     NanobotBundle, NanobotGroup,
 };
 use ui_setup::NanoswarmUiSetupPlugin;
-use unit_select::{unit_select_system, SelectedGroupsChanged};
+use unit_select::{unit_select_system, NanobotGroupAction, SelectedGroupsChanged};
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugin(DebugLinesPlugin::default())
         .add_event::<SelectedGroupsChanged>()
+        .add_event::<NanobotGroupAction>()
         .add_startup_system(setup_things_startup.pipe(error_handler))
         .add_system(camera_2d_movement_system)
         .add_system(move_velocity_system)
@@ -31,6 +34,7 @@ fn main() {
         .add_system(highlight_selected_system)
         .add_system(separation_system)
         .add_system(velocity_system)
+        .add_system(group_action_system)
         .add_plugin(NanoswarmUiSetupPlugin)
         .run();
 }
