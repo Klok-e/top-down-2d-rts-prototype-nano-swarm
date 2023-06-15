@@ -37,27 +37,30 @@ fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
     });
 
     commands
-        .spawn(NodeBundle {
-            style: Style {
-                size: Size::new(Val::Auto, Val::Px(300.0)),
-                padding: UiRect {
-                    left: Val::Px(10.),
-                    right: Val::Px(10.),
-                    top: Val::Px(10.),
-                    bottom: Val::Px(10.),
-                },
-                position_type: PositionType::Absolute,
-                position: UiRect {
-                    left: Val::Px(10.0),
-                    bottom: Val::Px(10.0),
+        .spawn((
+            NodeBundle {
+                style: Style {
+                    size: Size::new(Val::Auto, Val::Px(300.0)),
+                    padding: UiRect {
+                        left: Val::Px(10.),
+                        right: Val::Px(10.),
+                        top: Val::Px(10.),
+                        bottom: Val::Px(10.),
+                    },
+                    position_type: PositionType::Absolute,
+                    position: UiRect {
+                        left: Val::Px(10.0),
+                        bottom: Val::Px(10.0),
+                        ..Default::default()
+                    },
+                    flex_direction: FlexDirection::Column,
                     ..Default::default()
                 },
-                flex_direction: FlexDirection::Column,
+                background_color: Color::rgb(0.65, 0.65, 0.65).into(),
                 ..Default::default()
             },
-            background_color: Color::rgb(0.65, 0.65, 0.65).into(),
-            ..Default::default()
-        })
+            Interaction::default(),
+        ))
         .with_children(|parent| {
             parent.spawn(TextBundle::from_section(
                 "Selected nanobot groups",
@@ -216,10 +219,13 @@ pub struct NanoswarmUiSetupPlugin;
 
 impl Plugin for NanoswarmUiSetupPlugin {
     fn build(&self, app: &mut App) {
+        app.insert_resource(UiHandling::default());
+
         app.add_startup_system(setup_ui_system)
             .add_system(mouse_scroll)
             .add_system(button_system)
-            .add_system(update_selected_nanobot_groups_system);
+            .add_system(update_selected_nanobot_groups_system)
+            .add_system(check_ui_interaction);
     }
 }
 
@@ -271,4 +277,24 @@ fn update_selected_nanobot_groups_system(
             }
         }
     }
+}
+
+#[derive(Resource, Default)]
+pub struct UiHandling {
+    pub is_pointer_over_ui: bool,
+}
+#[derive(Component)]
+pub struct NoPointerCapture;
+
+#[allow(clippy::type_complexity)]
+fn check_ui_interaction(
+    mut ui_handling: ResMut<UiHandling>,
+    interaction_query: Query<
+        &Interaction,
+        (With<Node>, Changed<Interaction>, Without<NoPointerCapture>),
+    >,
+) {
+    ui_handling.is_pointer_over_ui = interaction_query
+        .iter()
+        .any(|i| matches!(i, Interaction::Clicked | Interaction::Hovered));
 }
