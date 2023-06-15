@@ -7,7 +7,7 @@ use crate::nanobot::{MoveDestination, Nanobot, BOT_RADIUS};
 pub struct Selected {}
 
 const MOVE_PERTURBATION_SIZE: f32 = 10.;
-const BIAS_RATE: f32 = 0.3;
+const BIAS_RATE: f32 = 0.5;
 
 pub fn unit_select_system(
     mut commands: Commands,
