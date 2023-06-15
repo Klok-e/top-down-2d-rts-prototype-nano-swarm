@@ -1,7 +1,10 @@
 use bevy::{input::Input, prelude::*};
 use rand::Rng;
 
-use crate::nanobot::{MoveDestination, Nanobot, BOT_RADIUS};
+use crate::{
+    nanobot::{MoveDestination, Nanobot, BOT_RADIUS},
+    ui_setup::UiHandling,
+};
 
 #[derive(Debug, Component)]
 pub struct Selected {}
@@ -32,7 +35,12 @@ pub fn unit_select_system(
     mut selected_groups: Query<(Entity, &Children), With<Selected>>,
     camera_query: Query<(&GlobalTransform, &Camera)>,
     mut ev_select_changed: EventWriter<SelectedGroupsChanged>,
+    ui_handling: Res<UiHandling>,
 ) {
+    if ui_handling.is_pointer_over_ui {
+        return;
+    }
+
     // Get the cursor position in window coordinates
     let Some(cursor_pos) = windows.single().cursor_position() else {
         return;
