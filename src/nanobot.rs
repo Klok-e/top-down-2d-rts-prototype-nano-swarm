@@ -9,7 +9,9 @@ pub const STOP_THRESHOLD: f32 = 2.;
 pub const BOT_SEPARATION_FORCE: f32 = 1.5;
 
 #[derive(Debug, Component, Default)]
-pub struct NanobotGroup {}
+pub struct NanobotGroup {
+    pub display_identifier: i16,
+}
 
 #[derive(Debug, Bundle, Default)]
 pub struct NanobotBundle {

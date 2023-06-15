@@ -16,12 +16,13 @@ use nanobot::{
     NanobotBundle, NanobotGroup,
 };
 use ui_setup::NanoswarmUiSetupPlugin;
-use unit_select::unit_select_system;
+use unit_select::{unit_select_system, SelectedGroupsChanged};
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugin(DebugLinesPlugin::default())
+        .add_event::<SelectedGroupsChanged>()
         .add_startup_system(setup_things_startup.pipe(error_handler))
         .add_system(camera_2d_movement_system)
         .add_system(move_velocity_system)
@@ -42,7 +43,9 @@ fn setup_things_startup(mut commands: Commands, images: Res<AssetServer>) -> Res
     commands.insert_resource(GameSettings::from_file_ron("config/game_settings.ron")?);
     commands
         .spawn((
-            NanobotGroup {},
+            NanobotGroup {
+                display_identifier: 1,
+            },
             SpatialBundle {
                 ..Default::default()
             },
@@ -69,7 +72,9 @@ fn setup_things_startup(mut commands: Commands, images: Res<AssetServer>) -> Res
 
     commands
         .spawn((
-            NanobotGroup {},
+            NanobotGroup {
+                display_identifier: 2,
+            },
             SpatialBundle {
                 ..Default::default()
             },

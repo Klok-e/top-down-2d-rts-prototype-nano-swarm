@@ -6,16 +6,26 @@ use crate::nanobot::{MoveDestination, Nanobot, BOT_RADIUS};
 #[derive(Debug, Component)]
 pub struct Selected {}
 
+/// Event for communicating with UI
+#[derive(Debug)]
+pub enum SelectedGroupsChanged {
+    Selected(Entity),
+    Deselected(Entity),
+}
+
 const MOVE_PERTURBATION_SIZE: f32 = 10.;
 const BIAS_RATE: f32 = 0.5;
 
+#[allow(clippy::too_many_arguments)]
 pub fn unit_select_system(
     mut commands: Commands,
     windows: Query<&Window>,
     mouse_button_input: Res<Input<MouseButton>>,
+    keyboard_input: Res<Input<KeyCode>>,
     mut nanobots: Query<(&Parent, &mut Transform), With<Nanobot>>,
     mut selected_groups: Query<(Entity, &Children), With<Selected>>,
     camera_query: Query<(&GlobalTransform, &Camera)>,
+    mut ev_select_changed: EventWriter<SelectedGroupsChanged>,
 ) {
     // Get the cursor position in window coordinates
     let Some(cursor_pos) = windows.single().cursor_position() else {
@@ -33,9 +43,15 @@ pub fn unit_select_system(
 
     // Handle left mouse button clicks
     if mouse_button_input.just_pressed(MouseButton::Left) {
-        // Deselect all groups
-        for (entity, _) in selected_groups.iter() {
-            commands.entity(entity).remove::<Selected>();
+        if !keyboard_input.pressed(KeyCode::LControl) && !keyboard_input.pressed(KeyCode::RControl)
+        {
+            // Deselect all groups
+            for (entity, _) in selected_groups.iter() {
+                commands.entity(entity).remove::<Selected>();
+
+                // notify other systems
+                ev_select_changed.send(SelectedGroupsChanged::Deselected(entity))
+            }
         }
 
         // Select the unit under the cursor
@@ -43,6 +59,9 @@ pub fn unit_select_system(
             if (transform.translation - cursor_pos_world).length() < BOT_RADIUS {
                 // Add selected tag to parent group of this nanobot
                 commands.entity(parent.get()).insert(Selected {});
+
+                // notify other systems
+                ev_select_changed.send(SelectedGroupsChanged::Selected(parent.get()));
                 break;
             }
         }
