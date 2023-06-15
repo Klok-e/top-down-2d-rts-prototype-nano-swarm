@@ -15,7 +15,7 @@ use nanobot::{
     bot_debug_circle_system, move_velocity_system, separation_system, velocity_system,
     NanobotBundle, NanobotGroup,
 };
-use ui_setup::{NanoswarmUiSetupPlugin};
+use ui_setup::NanoswarmUiSetupPlugin;
 use unit_select::unit_select_system;
 
 fn main() {
@@ -30,7 +30,7 @@ fn main() {
         .add_system(highlight_selected_system)
         .add_system(separation_system)
         .add_system(velocity_system)
-        .add_plugin(NanoswarmUiSetupPlugin::default())
+        .add_plugin(NanoswarmUiSetupPlugin)
         .run();
 }
 
