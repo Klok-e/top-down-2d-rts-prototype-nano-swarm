@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use bevy::prelude::*;
 
 use crate::{
@@ -101,20 +99,14 @@ fn merge(
         return;
     }
 
-    let mut groups_to_merge = HashSet::new();
+    let mut groups_to_merge = Vec::new();
     let mut new_group_children = Vec::new();
 
     for (entity, _, children) in selected_groups.iter() {
-        groups_to_merge.insert(entity);
+        groups_to_merge.push(entity);
         for &nanobot in *children {
             new_group_children.push(nanobot);
         }
-
-        // delete group
-        commands.entity(*entity).despawn();
-
-        // notify other systems
-        ev_selected_groups_changed.send(SelectedGroupsChanged::Deselected(*entity))
     }
 
     // Create new merged group
@@ -128,5 +120,13 @@ fn merge(
     new_ent.push_children(&new_group_children);
 
     // notify other systems
-    ev_selected_groups_changed.send(SelectedGroupsChanged::Selected(new_ent.id()))
+    ev_selected_groups_changed.send(SelectedGroupsChanged::Selected(new_ent.id()));
+
+    for group_merged in groups_to_merge {
+        // delete group
+        commands.entity(*group_merged).despawn();
+
+        // notify other systems
+        ev_selected_groups_changed.send(SelectedGroupsChanged::Deselected(*group_merged))
+    }
 }
