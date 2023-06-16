@@ -1,56 +1,45 @@
 mod fly_camera;
 mod game_settings;
-mod groups_merge_split;
 mod highlight_unit;
 mod nanobot;
 mod ui;
-mod unit_select;
 
 use anyhow::Result;
 use bevy::{math::vec3, prelude::*};
 use bevy_prototype_debug_lines::DebugLinesPlugin;
 use fly_camera::{camera_2d_movement_system, FlyCamera2d};
 use game_settings::GameSettings;
-use groups_merge_split::group_action_system;
 use highlight_unit::highlight_selected_system;
-use nanobot::{
-    bot_debug_circle_system, move_velocity_system, separation_system, velocity_system,
-    NanobotBundle, NanobotGroup,
-};
-use ui::{NanobotGroupAction, NanoswarmUiSetupPlugin, SelectedGroupsChanged};
-use unit_select::unit_select_system;
+use nanobot::{GroupIdCounterResource, NanobotBundle, NanobotGroup, NanobotPlugin};
+use ui::NanoswarmUiSetupPlugin;
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugin(DebugLinesPlugin::default())
-        .add_event::<SelectedGroupsChanged>()
-        .add_event::<NanobotGroupAction>()
+        .add_plugin(NanoswarmUiSetupPlugin)
+        .add_plugin(NanobotPlugin::default())
         .add_startup_system(setup_things_startup.pipe(error_handler))
         .add_system(camera_2d_movement_system)
-        .add_system(move_velocity_system)
-        .add_system(bot_debug_circle_system)
-        .add_system(unit_select_system)
         .add_system(highlight_selected_system)
-        .add_system(separation_system)
-        .add_system(velocity_system)
-        .add_system(group_action_system)
-        .add_plugin(NanoswarmUiSetupPlugin)
         .run();
 }
 
-fn setup_things_startup(mut commands: Commands, images: Res<AssetServer>) -> Result<()> {
+fn setup_things_startup(
+    mut commands: Commands,
+    images: Res<AssetServer>,
+    mut group_counter: ResMut<GroupIdCounterResource>,
+) -> Result<()> {
     commands
         .spawn(Camera2dBundle::default())
         .insert(FlyCamera2d::default());
 
     commands.insert_resource(GameSettings::from_file_ron("config/game_settings.ron")?);
 
-    commands.insert_resource(GroupIdCounterResource { count: 2 });
     commands
         .spawn((
             NanobotGroup {
-                display_identifier: 1,
+                display_identifier: group_counter.next_id(),
             },
             SpatialBundle {
                 ..Default::default()
@@ -79,7 +68,7 @@ fn setup_things_startup(mut commands: Commands, images: Res<AssetServer>) -> Res
     commands
         .spawn((
             NanobotGroup {
-                display_identifier: 2,
+                display_identifier: group_counter.next_id(),
             },
             SpatialBundle {
                 ..Default::default()
@@ -114,17 +103,5 @@ fn setup_things_startup(mut commands: Commands, images: Res<AssetServer>) -> Res
 fn error_handler(In(result): In<Result<()>>) {
     if let Err(err) = result {
         println!("encountered an error {:?}", err);
-    }
-}
-
-#[derive(Debug, Resource)]
-pub struct GroupIdCounterResource {
-    pub count: i16,
-}
-
-impl GroupIdCounterResource {
-    pub fn next_id(&mut self) -> i16 {
-        self.count += 1;
-        self.count
     }
 }

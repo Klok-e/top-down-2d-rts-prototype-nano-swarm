@@ -3,9 +3,9 @@ use bevy::prelude::*;
 use crate::{
     nanobot::{Nanobot, NanobotGroup},
     ui::{NanobotGroupAction, SelectedGroupsChanged},
-    unit_select::Selected,
-    GroupIdCounterResource,
 };
+
+use super::{GroupIdCounterResource, Selected};
 
 // System that handles split and merge actions
 pub fn group_action_system(
