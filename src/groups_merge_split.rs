@@ -2,7 +2,8 @@ use bevy::prelude::*;
 
 use crate::{
     nanobot::{Nanobot, NanobotGroup},
-    unit_select::{NanobotGroupAction, Selected, SelectedGroupsChanged},
+    ui::{NanobotGroupAction, SelectedGroupsChanged},
+    unit_select::Selected,
     GroupIdCounterResource,
 };
 

@@ -3,7 +3,7 @@ mod game_settings;
 mod groups_merge_split;
 mod highlight_unit;
 mod nanobot;
-mod ui_setup;
+mod ui;
 mod unit_select;
 
 use anyhow::Result;
@@ -17,8 +17,8 @@ use nanobot::{
     bot_debug_circle_system, move_velocity_system, separation_system, velocity_system,
     NanobotBundle, NanobotGroup,
 };
-use ui_setup::NanoswarmUiSetupPlugin;
-use unit_select::{unit_select_system, NanobotGroupAction, SelectedGroupsChanged};
+use ui::{NanobotGroupAction, NanoswarmUiSetupPlugin, SelectedGroupsChanged};
+use unit_select::unit_select_system;
 
 fn main() {
     App::new()
