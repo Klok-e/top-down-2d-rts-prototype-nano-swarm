@@ -101,8 +101,12 @@ pub fn unit_select_system(
                 let (_, nanobot_transform) = nanobots.get(nanobot).expect("Invalid child");
                 let relative_pos = nanobot_transform.translation.truncate() - center_of_mass;
 
-                let direction_to_center =
-                    (center_of_mass - nanobot_transform.translation.truncate()).normalize();
+                const EPSILON: f32 = 1e-3;
+                let direction_to_center = if relative_pos.length() < EPSILON {
+                    Vec2::ZERO
+                } else {
+                    (center_of_mass - nanobot_transform.translation.truncate()).normalize()
+                };
 
                 let angle: f32 = rng.gen_range(0.0..2.0 * std::f32::consts::PI);
                 let perturbation = Vec2::new(angle.cos(), angle.sin());
