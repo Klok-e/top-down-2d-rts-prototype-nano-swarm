@@ -45,6 +45,8 @@ fn setup_things_startup(mut commands: Commands, images: Res<AssetServer>) -> Res
         .insert(FlyCamera2d::default());
 
     commands.insert_resource(GameSettings::from_file_ron("config/game_settings.ron")?);
+
+    commands.insert_resource(GroupIdCounterResource { count: 2 });
     commands
         .spawn((
             NanobotGroup {
@@ -112,5 +114,17 @@ fn setup_things_startup(mut commands: Commands, images: Res<AssetServer>) -> Res
 fn error_handler(In(result): In<Result<()>>) {
     if let Err(err) = result {
         println!("encountered an error {:?}", err);
+    }
+}
+
+#[derive(Debug, Resource)]
+pub struct GroupIdCounterResource {
+    pub count: i16,
+}
+
+impl GroupIdCounterResource {
+    pub fn next_id(&mut self) -> i16 {
+        self.count += 1;
+        self.count
     }
 }
