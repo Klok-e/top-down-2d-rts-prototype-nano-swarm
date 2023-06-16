@@ -220,7 +220,9 @@ impl Plugin for NanoswarmUiSetupPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(UiHandling::default());
 
-        app.add_startup_system(setup_ui_system)
+        app.add_event::<SelectedGroupsChanged>()
+            .add_event::<NanobotGroupAction>()
+            .add_startup_system(setup_ui_system)
             .add_system(mouse_scroll)
             .add_system(button_system)
             .add_system(update_selected_nanobot_groups_system)

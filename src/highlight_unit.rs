@@ -3,10 +3,7 @@ use bevy::{
     sprite::Sprite,
 };
 
-use crate::{
-    nanobot::{Nanobot, NanobotGroup},
-    unit_select::Selected,
-};
+use crate::nanobot::{Nanobot, NanobotGroup, Selected};
 
 pub fn highlight_selected_system(
     mut nanobot_sprites: Query<&mut Sprite, With<Nanobot>>,
