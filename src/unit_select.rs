@@ -3,24 +3,11 @@ use rand::Rng;
 
 use crate::{
     nanobot::{MoveDestination, Nanobot, BOT_RADIUS},
-    ui_setup::UiHandling,
+    ui::{SelectedGroupsChanged, UiHandling},
 };
 
 #[derive(Debug, Component)]
 pub struct Selected {}
-
-/// Event for communicating with UI
-#[derive(Debug)]
-pub enum SelectedGroupsChanged {
-    Selected(Entity),
-    Deselected(Entity),
-}
-
-#[derive(Debug, Component)]
-pub enum NanobotGroupAction {
-    Merge,
-    Split,
-}
 
 const MOVE_PERTURBATION_SIZE: f32 = 10.;
 const BIAS_RATE: f32 = 0.5;

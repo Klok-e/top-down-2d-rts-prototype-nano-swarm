@@ -7,10 +7,9 @@ use bevy::{
     prelude::*,
 };
 
-use crate::{
-    nanobot::NanobotGroup,
-    unit_select::{NanobotGroupAction, SelectedGroupsChanged},
-};
+use crate::nanobot::NanobotGroup;
+
+use super::{NanobotGroupAction, SelectedGroupsChanged};
 
 #[derive(Debug, Resource)]
 struct FontsResource {
