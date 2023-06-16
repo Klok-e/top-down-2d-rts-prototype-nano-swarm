@@ -1,22 +1,13 @@
-use bevy::{
-    a11y::{
-        accesskit::{NodeBuilder, Role},
-        AccessibilityNode,
-    },
-    input::mouse::{MouseScrollUnit, MouseWheel},
-    prelude::*,
-};
+use bevy::prelude::*;
 
-use crate::nanobot::NanobotGroup;
-
-use super::{NanobotGroupAction, SelectedGroupsChanged};
+use super::{selected_groups_list::spawn_scrollable_list, NanobotGroupAction};
 
 #[derive(Debug, Resource)]
-struct FontsResource {
-    general_text_style: TextStyle,
+pub struct FontsResource {
+    pub general_text_style: TextStyle,
 }
 
-fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
+pub fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
     let button_style = Style {
         margin: UiRect::all(Val::Px(5.0)),
         size: Size::new(Val::Px(100.0), Val::Px(30.0)),
@@ -109,48 +100,15 @@ fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
         });
 }
 
-fn spawn_scrollable_list(parent: &mut ChildBuilder<'_, '_, '_>, _text_style: &TextStyle) {
-    parent
-        .spawn(NodeBundle {
-            style: Style {
-                flex_direction: FlexDirection::Column,
-                align_self: AlignSelf::Stretch,
-                size: Size::height(Val::Percent(50.0)),
-                overflow: Overflow::Hidden,
-                ..default()
-            },
-            background_color: Color::rgb(0.10, 0.10, 0.10).into(),
-            ..default()
-        })
-        .insert(Interaction::default())
-        .with_children(|parent| {
-            // Moving panel
-            parent.spawn((
-                NodeBundle {
-                    style: Style {
-                        flex_direction: FlexDirection::Column,
-                        max_size: Size::UNDEFINED,
-                        align_items: AlignItems::Center,
-                        ..default()
-                    },
-                    ..default()
-                },
-                ScrollingList::default(),
-                AccessibilityNode(NodeBuilder::new(Role::List)),
-                SelectedGroupsList,
-            ));
-        });
-}
-
 #[derive(Debug, Component)]
-struct MergeButton;
+pub struct MergeButton;
 #[derive(Debug, Component)]
-struct SplitButton;
+pub struct SplitButton;
 
 type InteractionQuery<'a, 'b, 'c> =
     Query<'a, 'b, (Entity, &'c Interaction), (Changed<Interaction>, With<Button>)>;
 
-fn button_system(
+pub fn button_system(
     interaction_query: InteractionQuery,
     merge_query: Query<&MergeButton>,
     split_query: Query<&SplitButton>,
@@ -167,135 +125,4 @@ fn button_system(
             }
         }
     }
-}
-
-#[derive(Component, Default)]
-struct ScrollingList {
-    position: f32,
-}
-
-#[derive(Debug, Component)]
-struct SelectedGroupsList;
-
-#[derive(Debug, Component)]
-struct SelectedGroupReference(Entity);
-
-fn mouse_scroll(
-    mut mouse_wheel_events: EventReader<MouseWheel>,
-    mut query_list: Query<(&mut ScrollingList, &mut Style, &Parent, &Node)>,
-    interaction_nodes: Query<&Interaction>,
-    query_node: Query<&Node>,
-) {
-    for mouse_wheel_event in mouse_wheel_events.iter() {
-        for (mut scrolling_list, mut style, parent, list_node) in &mut query_list {
-            if *interaction_nodes
-                .get(parent.get())
-                .expect("All scroll lists must have interactable parents")
-                != Interaction::Hovered
-            {
-                continue;
-            }
-
-            let items_height = list_node.size().y;
-            let container_height = query_node.get(parent.get()).unwrap().size().y;
-
-            let max_scroll = (items_height - container_height).max(0.);
-
-            let dy = match mouse_wheel_event.unit {
-                MouseScrollUnit::Line => mouse_wheel_event.y * 20.,
-                MouseScrollUnit::Pixel => mouse_wheel_event.y,
-            };
-
-            scrolling_list.position += dy;
-            scrolling_list.position = scrolling_list.position.clamp(-max_scroll, 0.);
-            style.position.top = Val::Px(scrolling_list.position);
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct NanoswarmUiSetupPlugin;
-
-impl Plugin for NanoswarmUiSetupPlugin {
-    fn build(&self, app: &mut App) {
-        app.insert_resource(UiHandling::default());
-
-        app.add_event::<SelectedGroupsChanged>()
-            .add_event::<NanobotGroupAction>()
-            .add_startup_system(setup_ui_system)
-            .add_system(mouse_scroll)
-            .add_system(button_system)
-            .add_system(update_selected_nanobot_groups_system)
-            .add_system(check_ui_interaction);
-    }
-}
-
-fn update_selected_nanobot_groups_system(
-    mut commands: Commands,
-    fonts: Res<FontsResource>,
-    mut ev_select_changed: EventReader<SelectedGroupsChanged>,
-    selected_groups_lists: Query<(Entity, Option<&Children>), With<SelectedGroupsList>>,
-    selected_groups_list_children: Query<&SelectedGroupReference>,
-    groups: Query<&NanobotGroup>,
-) {
-    for ev in ev_select_changed.iter() {
-        for (ent, children) in &selected_groups_lists {
-            match ev {
-                SelectedGroupsChanged::Selected(selected_ent) => {
-                    let display = groups
-                        .get(*selected_ent)
-                        .expect("Event must have a valid entity");
-                    commands.entity(ent).with_children(|parent| {
-                        parent.spawn((
-                            TextBundle::from_section(
-                                format!("Group {}", display.display_identifier),
-                                TextStyle {
-                                    font_size: 20.,
-                                    ..fonts.general_text_style.clone()
-                                },
-                            ),
-                            Label,
-                            AccessibilityNode(NodeBuilder::new(Role::ListItem)),
-                            SelectedGroupReference(*selected_ent),
-                        ));
-                    });
-                }
-                SelectedGroupsChanged::Deselected(deselected_ent) => {
-                    let child = children
-                        .expect("Can't deselect something when nothing is selected")
-                        .iter()
-                        .find(|x| {
-                            selected_groups_list_children
-                                .get(**x)
-                                .expect("Children must be valid")
-                                .0
-                                == *deselected_ent
-                        })
-                        .expect("Can't deselect not selected entity");
-                    commands.entity(ent).remove_children(&[*child]);
-                    commands.entity(*child).despawn();
-                }
-            }
-        }
-    }
-}
-
-#[derive(Resource, Default)]
-pub struct UiHandling {
-    pub is_pointer_over_ui: bool,
-}
-#[derive(Component)]
-pub struct NoPointerCapture;
-
-#[allow(clippy::type_complexity)]
-fn check_ui_interaction(
-    mut ui_handling: ResMut<UiHandling>,
-    interaction_query: Query<
-        &Interaction,
-        (With<Node>, Changed<Interaction>, Without<NoPointerCapture>),
-    >,
-) {
-    ui_handling.is_pointer_over_ui = interaction_query
-        .iter()
-        .any(|i| matches!(i, Interaction::Clicked | Interaction::Hovered));
 }
