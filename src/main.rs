@@ -1,21 +1,22 @@
 mod fly_camera;
 mod game_settings;
 mod highlight_unit;
+mod materials;
 mod nanobot;
 mod ui;
+mod zones;
 
 use anyhow::Result;
 use bevy::{
     math::vec3,
     prelude::*,
-    reflect::TypeUuid,
-    render::render_resource::{AsBindGroup, ShaderRef},
-    sprite::{Material2d, Material2dPlugin, MaterialMesh2dBundle},
+    sprite::{Material2dPlugin, MaterialMesh2dBundle},
 };
 use bevy_prototype_debug_lines::DebugLinesPlugin;
 use fly_camera::{Camera2dFlyPlugin, CameraZoom2d, FlyCamera2d};
 use game_settings::GameSettings;
 use highlight_unit::highlight_selected_system;
+use materials::BackgroundMaterial;
 use nanobot::{GroupIdCounterResource, NanobotBundle, NanobotGroup, NanobotPlugin};
 use ui::NanoswarmUiSetupPlugin;
 
@@ -110,41 +111,18 @@ fn spawn_nanobots_for_testing(
         ))
         .with_children(|p| {
             let texture = images.load("circle.png");
-            p.spawn((NanobotBundle::default(),)).insert(SpriteBundle {
-                texture: texture.clone(),
-                transform: Transform::from_translation(vec3(100., 0., 1.)),
-                ..default()
-            });
-            p.spawn((NanobotBundle::default(),)).insert(SpriteBundle {
-                texture: texture.clone(),
-                transform: Transform::from_translation(vec3(100., 0., 1.)),
-                ..default()
-            });
-            p.spawn((NanobotBundle::default(),)).insert(SpriteBundle {
-                texture: texture.clone(),
-                transform: Transform::from_translation(vec3(100., 0., 1.)),
-                ..default()
-            });
-            p.spawn((NanobotBundle::default(),)).insert(SpriteBundle {
-                texture,
-                transform: Transform::from_translation(vec3(100., 0., 1.)),
-                ..default()
-            });
+            for _ in 0..1000 {
+                p.spawn((NanobotBundle::default(),)).insert(SpriteBundle {
+                    texture: texture.clone(),
+                    transform: Transform::from_translation(vec3(100., 0., 1.)),
+                    ..default()
+                });
+            }
         });
 }
 
 fn error_handler(In(result): In<Result<()>>) {
     if let Err(err) = result {
         println!("encountered an error {:?}", err);
-    }
-}
-
-#[derive(AsBindGroup, TypeUuid, Debug, Clone)]
-#[uuid = "606560b9-c6c2-442f-987b-b781237cf9d5"]
-pub struct BackgroundMaterial {}
-
-impl Material2d for BackgroundMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "shaders/background_shader.wgsl".into()
     }
 }
