@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use super::{selected_groups_list::spawn_scrollable_list, NanobotGroupAction};
+use super::{fps_count::FpsText, selected_groups_list::spawn_scrollable_list, NanobotGroupAction};
 
 #[derive(Debug, Resource)]
 pub struct FontsResource {
@@ -98,6 +98,24 @@ pub fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
                 })
                 .insert(SplitButton);
         });
+
+    commands.spawn((
+        TextBundle::from_sections([
+            TextSection::new("FPS: ", text_style.clone()),
+            TextSection::from_style(text_style),
+        ])
+        .with_text_alignment(TextAlignment::Left)
+        .with_style(Style {
+            position_type: PositionType::Absolute,
+            position: UiRect {
+                top: Val::Px(5.0),
+                left: Val::Px(5.0),
+                ..default()
+            },
+            ..default()
+        }),
+        FpsText,
+    ));
 }
 
 #[derive(Debug, Component)]
