@@ -2875,6 +2875,7 @@ dependencies = [
  "anyhow",
  "bevy",
  "bevy_prototype_debug_lines",
+ "log",
  "rand",
  "ron",
  "serde",

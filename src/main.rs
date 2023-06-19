@@ -8,8 +8,9 @@ mod zones;
 
 use anyhow::Result;
 use bevy::{
-    math::vec3,
+    math::{ivec2, vec3},
     prelude::*,
+    render::render_resource::{Extent3d, TextureDimension, TextureFormat},
     sprite::{Material2dPlugin, MaterialMesh2dBundle},
 };
 use bevy_prototype_debug_lines::DebugLinesPlugin;
@@ -19,6 +20,7 @@ use highlight_unit::highlight_selected_system;
 use materials::BackgroundMaterial;
 use nanobot::{GroupIdCounterResource, NanobotBundle, NanobotGroup, NanobotPlugin};
 use ui::NanoswarmUiSetupPlugin;
+use zones::{ZoneComponent, ZoneMaterial, ZoneMaterialHandleComponent, ZonesPlugin};
 
 fn main() {
     App::new()
@@ -28,18 +30,37 @@ fn main() {
         .add_plugin(NanobotPlugin::default())
         .add_plugin(Material2dPlugin::<BackgroundMaterial>::default())
         .add_plugin(Camera2dFlyPlugin)
+        .add_plugin(ZonesPlugin::default())
         .add_startup_system(setup_things_startup.pipe(error_handler))
         .add_system(highlight_selected_system)
         .run();
 }
 
+const MAP_WIDTH: u32 = 10;
+const MAP_HEIGHT: u32 = 10;
+const ZONE_BLOCK_SIZE: f32 = 256.;
+
 fn setup_things_startup(
     mut commands: Commands,
-    images: Res<AssetServer>,
-    mut mats: ResMut<Assets<BackgroundMaterial>>,
+    asset_server: Res<AssetServer>,
+    mut bg_mats: ResMut<Assets<BackgroundMaterial>>,
+    mut zone_mats: ResMut<Assets<ZoneMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut imgs: ResMut<Assets<Image>>,
     group_counter: ResMut<GroupIdCounterResource>,
 ) -> Result<()> {
+    let handle = zone_mats.add(ZoneMaterial {
+        texture: imgs.add(Image::new_fill(
+            Extent3d {
+                width: MAP_WIDTH,
+                height: MAP_HEIGHT,
+                ..default()
+            },
+            TextureDimension::D2,
+            &[0, 0, 0, 0],
+            TextureFormat::Bgra8UnormSrgb,
+        )),
+    });
     commands
         .spawn(Camera2dBundle::default())
         .insert(FlyCamera2d::default())
@@ -47,16 +68,40 @@ fn setup_things_startup(
             zoom_speed: 10.,
             zoom_min_max: (1., 100.),
             zoom: 1.,
+        })
+        .insert(ZoneMaterialHandleComponent {
+            handle: handle.clone(),
         });
 
     commands.insert_resource(GameSettings::from_file_ron("config/game_settings.ron")?);
 
-    spawn_nanobots_for_testing(&mut commands, group_counter, images);
+    spawn_nanobots_for_testing(&mut commands, group_counter, asset_server);
 
+    // background
     commands.spawn(MaterialMesh2dBundle {
         mesh: meshes.add(Mesh::from(shape::Quad::default())).into(),
-        material: mats.add(BackgroundMaterial {}),
-        transform: Transform::default().with_scale(Vec2::splat(128000.).extend(-100.)),
+        material: bg_mats.add(BackgroundMaterial {}),
+        transform: Transform::default().with_scale(
+            Vec2::new(
+                MAP_WIDTH as f32 * ZONE_BLOCK_SIZE,
+                MAP_HEIGHT as f32 * ZONE_BLOCK_SIZE,
+            )
+            .extend(-101.),
+        ),
+        ..default()
+    });
+
+    // zones
+    commands.spawn(MaterialMesh2dBundle {
+        mesh: meshes.add(Mesh::from(shape::Quad::default())).into(),
+        material: handle,
+        transform: Transform::default().with_scale(
+            Vec2::new(
+                MAP_WIDTH as f32 * ZONE_BLOCK_SIZE,
+                MAP_HEIGHT as f32 * ZONE_BLOCK_SIZE,
+            )
+            .extend(-100.),
+        ),
         ..default()
     });
     Ok(())
@@ -65,7 +110,7 @@ fn setup_things_startup(
 fn spawn_nanobots_for_testing(
     commands: &mut Commands<'_, '_>,
     mut group_counter: ResMut<'_, GroupIdCounterResource>,
-    images: Res<'_, AssetServer>,
+    asset_server: Res<'_, AssetServer>,
 ) {
     commands
         .spawn((
@@ -75,9 +120,20 @@ fn spawn_nanobots_for_testing(
             SpatialBundle {
                 ..Default::default()
             },
+            ZoneComponent {
+                zone_points: vec![
+                    ivec2(0, 0),
+                    ivec2(1, 0),
+                    ivec2(2, 0),
+                    ivec2(0, 1),
+                    ivec2(-1, 0),
+                ]
+                .into_iter()
+                .collect(),
+            },
         ))
         .with_children(|p| {
-            let texture = images.load("circle.png");
+            let texture = asset_server.load("circle.png");
             p.spawn((NanobotBundle::default(),)).insert(SpriteBundle {
                 texture: texture.clone(),
                 transform: Transform::from_translation(vec3(0., 0., 1.)),
@@ -110,7 +166,7 @@ fn spawn_nanobots_for_testing(
             },
         ))
         .with_children(|p| {
-            let texture = images.load("circle.png");
+            let texture = asset_server.load("circle.png");
             for _ in 0..1000 {
                 p.spawn((NanobotBundle::default(),)).insert(SpriteBundle {
                     texture: texture.clone(),
