@@ -94,22 +94,12 @@ pub fn zone_brush_system(
         };
 
     if mouse_button_input.pressed(MouseButton::Left) {
-        let value = vec2(
-            (cursor_pos_world.x / ZONE_BLOCK_SIZE).floor(),
-            (cursor_pos_world.y / ZONE_BLOCK_SIZE).floor(),
-        )
-        .as_ivec2();
-        if value.x < -(MAP_WIDTH as i32 / 2)
-            || value.x >= (MAP_WIDTH as i32 / 2)
-            || value.y < -(MAP_HEIGHT as i32 / 2)
-            || value.y >= (MAP_HEIGHT as i32 / 2)
-        {
-            dbg!(value);
-        } else {
-            dbg!("in bounds", value);
-            for mut zone in &mut zones {
-                zone.zone_points.insert(value);
-            }
+        for mut zone in &mut zones {
+            zone.zone_points.insert(dbg!(vec2(
+                cursor_pos_world.x / ZONE_BLOCK_SIZE,
+                cursor_pos_world.y / ZONE_BLOCK_SIZE,
+            )
+            .as_ivec2()));
         }
     }
 }
