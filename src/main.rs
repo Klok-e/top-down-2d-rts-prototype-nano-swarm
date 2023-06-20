@@ -8,7 +8,7 @@ mod zones;
 
 use anyhow::Result;
 use bevy::{
-    math::{ivec2, vec3},
+    math::vec3,
     prelude::*,
     render::{
         render_resource::{Extent3d, TextureDimension, TextureFormat},
@@ -127,15 +127,7 @@ fn spawn_nanobots_for_testing(
                 ..Default::default()
             },
             ZoneComponent {
-                zone_points: vec![
-                    ivec2(0, 0),
-                    ivec2(1, 0),
-                    ivec2(2, 0),
-                    ivec2(0, 1),
-                    ivec2(-1, 0),
-                ]
-                .into_iter()
-                .collect(),
+                zone_points: default(),
             },
         ))
         .with_children(|p| {

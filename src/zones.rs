@@ -19,6 +19,7 @@ pub struct ZonesPlugin {}
 impl Plugin for ZonesPlugin {
     fn build(&self, app: &mut bevy::prelude::App) {
         app.add_plugin(Material2dPlugin::<ZoneMaterial>::default())
+            .add_event::<ZoneChangedEvent>()
             .add_system(zone_texture_update_system)
             .add_system(zone_brush_system);
     }
