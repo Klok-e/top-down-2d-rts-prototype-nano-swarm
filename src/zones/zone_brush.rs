@@ -50,7 +50,7 @@ pub fn zone_texture_update_system(
             for point in zone.zone_points.iter() {
                 // add offset
                 let mut point = *point + ivec2(MAP_WIDTH as i32, MAP_HEIGHT as i32) / 2;
-                point.y = MAP_HEIGHT as i32 - point.y;
+                point.y = MAP_HEIGHT as i32 - point.y - 1;
                 if point.x < 0
                     || point.x >= MAP_WIDTH as i32
                     || point.y < 0
@@ -94,12 +94,20 @@ pub fn zone_brush_system(
         };
 
     if mouse_button_input.pressed(MouseButton::Left) {
-        for mut zone in &mut zones {
-            zone.zone_points.insert(dbg!(vec2(
-                cursor_pos_world.x / ZONE_BLOCK_SIZE,
-                cursor_pos_world.y / ZONE_BLOCK_SIZE,
-            )
-            .as_ivec2()));
+        let value = vec2(
+            (cursor_pos_world.x / ZONE_BLOCK_SIZE).floor(),
+            (cursor_pos_world.y / ZONE_BLOCK_SIZE).floor(),
+        )
+        .as_ivec2();
+        if value.x < -(MAP_WIDTH as i32 / 2)
+            || value.x >= (MAP_WIDTH as i32 / 2)
+            || value.y < -(MAP_HEIGHT as i32 / 2)
+            || value.y >= (MAP_HEIGHT as i32 / 2)
+        {
+        } else {
+            for mut zone in &mut zones {
+                zone.zone_points.insert(value);
+            }
         }
     }
 }
