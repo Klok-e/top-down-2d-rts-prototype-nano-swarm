@@ -39,9 +39,9 @@ fn main() {
         .run();
 }
 
-const MAP_WIDTH: u32 = 10;
-const MAP_HEIGHT: u32 = 10;
-const ZONE_BLOCK_SIZE: f32 = 256.;
+const MAP_WIDTH: u32 = 1000;
+const MAP_HEIGHT: u32 = 1000;
+const ZONE_BLOCK_SIZE: f32 = 512.;
 
 fn setup_things_startup(
     mut commands: Commands,
