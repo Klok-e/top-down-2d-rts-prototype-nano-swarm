@@ -10,7 +10,10 @@ use anyhow::Result;
 use bevy::{
     math::{ivec2, vec3},
     prelude::*,
-    render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+    render::{
+        render_resource::{Extent3d, TextureDimension, TextureFormat},
+        texture::ImageSampler,
+    },
     sprite::{Material2dPlugin, MaterialMesh2dBundle},
 };
 use bevy_prototype_debug_lines::DebugLinesPlugin;
@@ -50,16 +53,19 @@ fn setup_things_startup(
     group_counter: ResMut<GroupIdCounterResource>,
 ) -> Result<()> {
     let handle = zone_mats.add(ZoneMaterial {
-        texture: imgs.add(Image::new_fill(
-            Extent3d {
-                width: MAP_WIDTH,
-                height: MAP_HEIGHT,
-                ..default()
-            },
-            TextureDimension::D2,
-            &[0, 0, 0, 0],
-            TextureFormat::Bgra8UnormSrgb,
-        )),
+        texture: imgs.add(Image {
+            sampler_descriptor: ImageSampler::nearest(),
+            ..Image::new_fill(
+                Extent3d {
+                    width: MAP_WIDTH,
+                    height: MAP_HEIGHT,
+                    ..default()
+                },
+                TextureDimension::D2,
+                &[0, 0, 0, 0],
+                TextureFormat::Bgra8UnormSrgb,
+            )
+        }),
     });
     commands
         .spawn(Camera2dBundle::default())
