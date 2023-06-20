@@ -173,7 +173,7 @@ fn spawn_nanobots_for_testing(
         ))
         .with_children(|p| {
             let texture = asset_server.load("circle.png");
-            for _ in 0..1000 {
+            for _ in 0..100 {
                 p.spawn((NanobotBundle::default(),)).insert(SpriteBundle {
                     texture: texture.clone(),
                     transform: Transform::from_translation(vec3(100., 0., 1.)),
