@@ -10,7 +10,10 @@ use bevy::{
     window::Window,
 };
 
-use crate::{ui::UiHandling, MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE};
+use crate::{
+    ui::{zone_button::MouseActionMode, UiHandling},
+    MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
+};
 
 use super::ZoneComponent;
 
@@ -94,8 +97,15 @@ pub fn zone_brush_system(
     camera_query: Query<(&GlobalTransform, &Camera)>,
     mut zones: Query<&mut ZoneComponent>,
     mut ev_zone_changed: EventWriter<ZoneChangedEvent>,
+    mouse_mode: Res<MouseActionMode>,
 ) {
+    // don't do anything if cursor over ui
     if ui_handling.is_pointer_over_ui {
+        return;
+    }
+
+    // mouse mode must be appropriate for this system
+    if *mouse_mode != MouseActionMode::ZoneDraw {
         return;
     }
 

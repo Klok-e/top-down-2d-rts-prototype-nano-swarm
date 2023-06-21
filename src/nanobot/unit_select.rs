@@ -3,7 +3,7 @@ use rand::Rng;
 
 use crate::{
     nanobot::{MoveDestination, Nanobot, BOT_RADIUS},
-    ui::{SelectedGroupsChanged, UiHandling},
+    ui::{zone_button::MouseActionMode, SelectedGroupsChanged, UiHandling},
 };
 
 #[derive(Debug, Component)]
@@ -23,8 +23,15 @@ pub fn unit_select_system(
     camera_query: Query<(&GlobalTransform, &Camera)>,
     mut ev_select_changed: EventWriter<SelectedGroupsChanged>,
     ui_handling: Res<UiHandling>,
+    mouse_mode: Res<MouseActionMode>,
 ) {
+    // don't do anything if cursor over ui
     if ui_handling.is_pointer_over_ui {
+        return;
+    }
+
+    // mouse mode must be appropriate for this system
+    if *mouse_mode != MouseActionMode::GroupSelectMove {
         return;
     }
 

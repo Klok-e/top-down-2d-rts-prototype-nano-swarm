@@ -7,7 +7,7 @@ use bevy::{
 
 use super::consts::{HOVERED_BUTTON, NORMAL_BUTTON, PRESSED_BUTTON};
 
-#[derive(Debug, Default, Resource)]
+#[derive(Debug, Default, Resource, PartialEq, Eq)]
 pub enum MouseActionMode {
     #[default]
     GroupSelectMove,

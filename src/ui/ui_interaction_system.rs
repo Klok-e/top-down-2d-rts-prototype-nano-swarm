@@ -1,9 +1,9 @@
 use bevy::{
     prelude::{Changed, Component, Query, ResMut, Resource, With, Without},
-    ui::{Interaction, Node},
+    ui::{Node, RelativeCursorPosition},
 };
 
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Debug)]
 pub struct UiHandling {
     pub is_pointer_over_ui: bool,
 }
@@ -14,11 +14,16 @@ pub struct NoPointerCapture;
 pub fn check_ui_interaction(
     mut ui_handling: ResMut<UiHandling>,
     interaction_query: Query<
-        &Interaction,
-        (With<Node>, Changed<Interaction>, Without<NoPointerCapture>),
+        &RelativeCursorPosition,
+        (
+            With<Node>,
+            Changed<RelativeCursorPosition>,
+            Without<NoPointerCapture>,
+        ),
     >,
 ) {
-    ui_handling.is_pointer_over_ui = interaction_query
-        .iter()
-        .any(|i| matches!(i, Interaction::Clicked | Interaction::Hovered));
+    let any = interaction_query.iter().any(|x| x.mouse_over());
+    if ui_handling.is_pointer_over_ui != any {
+        ui_handling.is_pointer_over_ui = any;
+    }
 }
