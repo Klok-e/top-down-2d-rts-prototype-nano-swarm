@@ -1,6 +1,9 @@
 use bevy::prelude::*;
 
-use super::{fps_count::FpsText, selected_groups_list::spawn_scrollable_list, NanobotGroupAction};
+use super::{
+    button_bg_interaction::ButtonBgInteractiveComponent, consts::NORMAL_BUTTON, fps_count::FpsText,
+    selected_groups_list::spawn_scrollable_list, zone_button::ZoneButton, NanobotGroupAction,
+};
 
 #[derive(Debug, Resource)]
 pub struct FontsResource {
@@ -63,12 +66,7 @@ pub fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
             parent
                 .spawn(ButtonBundle {
                     style: button_style.clone(),
-                    background_color: BackgroundColor::from(Color::Rgba {
-                        red: 0.,
-                        green: 0.,
-                        blue: 0.,
-                        alpha: 1.,
-                    }),
+                    background_color: NORMAL_BUTTON.into(),
                     ..Default::default()
                 })
                 .with_children(|parent| {
@@ -77,17 +75,13 @@ pub fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
                         ..Default::default()
                     });
                 })
-                .insert(MergeButton);
+                .insert(MergeButton)
+                .insert(ButtonBgInteractiveComponent);
 
             parent
                 .spawn(ButtonBundle {
                     style: button_style.clone(),
-                    background_color: BackgroundColor::from(Color::Rgba {
-                        red: 0.,
-                        green: 0.,
-                        blue: 0.,
-                        alpha: 1.,
-                    }),
+                    background_color: NORMAL_BUTTON.into(),
                     ..Default::default()
                 })
                 .with_children(|parent| {
@@ -96,7 +90,22 @@ pub fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
                         ..Default::default()
                     });
                 })
-                .insert(SplitButton);
+                .insert(SplitButton)
+                .insert(ButtonBgInteractiveComponent);
+
+            parent
+                .spawn(ButtonBundle {
+                    style: button_style.clone(),
+                    background_color: NORMAL_BUTTON.into(),
+                    ..Default::default()
+                })
+                .with_children(|parent| {
+                    parent.spawn(TextBundle {
+                        text: Text::from_section("Zone", text_style.clone()),
+                        ..Default::default()
+                    });
+                })
+                .insert(ZoneButton);
         });
 
     commands.spawn((
@@ -123,11 +132,9 @@ pub struct MergeButton;
 #[derive(Debug, Component)]
 pub struct SplitButton;
 
-type InteractionQuery<'a, 'b, 'c> =
-    Query<'a, 'b, (Entity, &'c Interaction), (Changed<Interaction>, With<Button>)>;
-
+#[allow(clippy::type_complexity)]
 pub fn button_system(
-    interaction_query: InteractionQuery,
+    interaction_query: Query<(Entity, &Interaction), (Changed<Interaction>, With<Button>)>,
     merge_query: Query<&MergeButton>,
     split_query: Query<&SplitButton>,
     mut ev_nanobot_group_action: EventWriter<NanobotGroupAction>,
