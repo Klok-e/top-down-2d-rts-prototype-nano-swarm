@@ -1,14 +1,15 @@
 use bevy::{
     math::{ivec2, vec2},
     prelude::{
-        Assets, Camera, Component, EventReader, EventWriter, GlobalTransform, Handle, IVec2, Image,
-        Input, MouseButton, Query, Res, ResMut,
+        Assets, Camera, Component, EventReader, EventWriter, GlobalTransform, Handle, IVec2, Input,
+        MouseButton, Query, Res, ResMut,
     },
     reflect::TypeUuid,
-    render::render_resource::AsBindGroup,
+    render::render_resource::{AsBindGroup, ShaderType},
     sprite::Material2d,
     window::Window,
 };
+use bitflags::{Flag, Flags};
 
 use crate::{
     ui::{zone_button::MouseActionMode, UiHandling},
@@ -20,9 +21,73 @@ use super::ZoneComponent;
 #[derive(AsBindGroup, TypeUuid, Debug, Clone)]
 #[uuid = "4dd16810-1f6c-4cc3-9e12-6f363e0211c7"]
 pub struct ZoneMaterial {
-    #[texture(0)]
-    #[sampler(1)]
-    pub texture: Handle<Image>,
+    #[storage(2, read_only)]
+    pub zone_map: Vec<ZoneMapPointData>,
+    #[uniform(3)]
+    pub width: u32,
+    #[uniform(4)]
+    pub height: u32,
+}
+
+impl ZoneMaterial {
+    pub fn new(width: u32, height: u32) -> ZoneMaterial {
+        ZoneMaterial {
+            zone_map: vec![ZoneMapPointData { zones: 0 }; (width * height) as usize],
+            width,
+            height,
+        }
+    }
+
+    pub fn _at_zone(&self, x: u32, y: u32) -> Option<&ZoneMapPointData> {
+        if x >= self.width || y >= self.height {
+            None
+        } else {
+            Some(&self.zone_map[(y * self.width + x) as usize])
+        }
+    }
+
+    pub fn at_zone_mut(&mut self, x: u32, y: u32) -> Option<&mut ZoneMapPointData> {
+        if x >= self.width || y >= self.height {
+            None
+        } else {
+            Some(&mut self.zone_map[(y * self.width + x) as usize])
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ShaderType)]
+pub struct ZoneMapPointData {
+    zones: u32,
+}
+
+impl ZoneMapPointData {
+    pub const ZONE1: ZoneMapPointData = ZoneMapPointData { zones: 1 << 0 };
+    pub const ZONE2: ZoneMapPointData = ZoneMapPointData { zones: 1 << 1 };
+    pub const ZONE3: ZoneMapPointData = ZoneMapPointData { zones: 1 << 2 };
+    pub const ZONE4: ZoneMapPointData = ZoneMapPointData { zones: 1 << 3 };
+    pub const ZONE5: ZoneMapPointData = ZoneMapPointData { zones: 1 << 4 };
+    pub const ZONE6: ZoneMapPointData = ZoneMapPointData { zones: 1 << 5 };
+}
+
+impl Flags for ZoneMapPointData {
+    const FLAGS: &'static [bitflags::Flag<Self>] = &[
+        Flag::new("zone1", Self::ZONE1),
+        Flag::new("zone2", Self::ZONE2),
+        Flag::new("zone3", Self::ZONE3),
+        Flag::new("zone4", Self::ZONE4),
+        Flag::new("zone5", Self::ZONE5),
+        Flag::new("zone6", Self::ZONE6),
+    ];
+
+    type Bits = u32;
+
+    fn bits(&self) -> Self::Bits {
+        self.zones
+    }
+
+    fn from_bits_retain(bits: Self::Bits) -> Self {
+        Self { zones: bits }
+    }
 }
 
 impl Material2d for ZoneMaterial {
@@ -50,17 +115,14 @@ pub enum ZoneChangedKind {
 
 pub fn zone_texture_update_system(
     mut zone_mats: ResMut<Assets<ZoneMaterial>>,
-    mut images: ResMut<Assets<Image>>,
     zone_handle: Query<&ZoneMaterialHandleComponent>,
     mut ev_zone_changed: EventReader<ZoneChangedEvent>,
 ) {
     for handle in &zone_handle {
-        let bytes_per_pixel = 4;
         for ev in ev_zone_changed.iter() {
             let mat = zone_mats
                 .get_mut(&handle.handle)
                 .expect("Handle must be valid");
-            let image = images.get_mut(&mat.texture).expect("Handle must be valid");
 
             let point = ev.point;
 
@@ -76,14 +138,18 @@ pub fn zone_texture_update_system(
                 continue;
             }
 
-            let idx = ((point.y * image.size().x as i32 + point.x) * bytes_per_pixel) as usize;
-
             match ev.kind {
                 ZoneChangedKind::PointAdded => {
-                    image.data[idx..idx + 4].copy_from_slice(&[0, 0, 255, 128])
+                    let zone_data = mat
+                        .at_zone_mut(point.x as u32, point.y as u32)
+                        .expect("Bounds check already happened");
+                    *zone_data = zone_data.union(ZoneMapPointData::ZONE1);
                 }
                 ZoneChangedKind::PointRemoved => {
-                    image.data[idx..idx + 4].copy_from_slice(&[0, 0, 0, 0])
+                    let zone_data = mat
+                        .at_zone_mut(point.x as u32, point.y as u32)
+                        .expect("Bounds check already happened");
+                    *zone_data = zone_data.intersection(ZoneMapPointData::ZONE1.complement());
                 }
             }
         }
