@@ -1,4 +1,4 @@
-use bevy::prelude::*;
+use bevy::{prelude::*, ui::RelativeCursorPosition};
 
 use super::{
     button_bg_interaction::ButtonBgInteractiveComponent, consts::NORMAL_BUTTON, fps_count::FpsText,
@@ -53,6 +53,7 @@ pub fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
                 ..Default::default()
             },
             Interaction::default(),
+            RelativeCursorPosition::default(),
         ))
         .with_children(|parent| {
             parent.spawn(TextBundle::from_section(
@@ -75,8 +76,7 @@ pub fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
                         ..Default::default()
                     });
                 })
-                .insert(MergeButton)
-                .insert(ButtonBgInteractiveComponent);
+                .insert((MergeButton, ButtonBgInteractiveComponent));
 
             parent
                 .spawn(ButtonBundle {
@@ -90,8 +90,7 @@ pub fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
                         ..Default::default()
                     });
                 })
-                .insert(SplitButton)
-                .insert(ButtonBgInteractiveComponent);
+                .insert((SplitButton, ButtonBgInteractiveComponent));
 
             parent
                 .spawn(ButtonBundle {
@@ -105,7 +104,7 @@ pub fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
                         ..Default::default()
                     });
                 })
-                .insert(ZoneButton);
+                .insert((ZoneButton,));
         });
 
     commands.spawn((

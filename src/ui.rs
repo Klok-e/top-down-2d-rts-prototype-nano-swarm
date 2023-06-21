@@ -6,7 +6,7 @@ mod selected_groups_system;
 mod ui_events;
 mod ui_interaction_system;
 mod ui_setup;
-mod zone_button;
+pub mod zone_button;
 
 pub use selected_groups_list::*;
 pub use selected_groups_system::*;
@@ -36,12 +36,12 @@ impl Plugin for NanoswarmUiSetupPlugin {
             .add_event::<NanobotGroupAction>()
             .add_plugin(FrameTimeDiagnosticsPlugin)
             .add_startup_system(setup_ui_system)
+            .add_system(check_ui_interaction)
+            .add_system(zone_button_system)
             .add_system(mouse_scroll)
             .add_system(button_system)
             .add_system(update_selected_nanobot_groups_system)
-            .add_system(check_ui_interaction)
             .add_system(fps_ui_system)
-            .add_system(button_background_system)
-            .add_system(zone_button_system);
+            .add_system(button_background_system);
     }
 }
