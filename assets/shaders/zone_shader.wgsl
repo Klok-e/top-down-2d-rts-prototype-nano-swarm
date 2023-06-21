@@ -16,7 +16,7 @@ fn fragment(
 
     // TODO: check performance implications of this constant array
     // Define colors for each zone
-    var zone_colors= array(
+    var zone_colors = array(
         vec4<f32>(1.0, 0.0, 0.0, 0.8),  // Zone 0: Red
         vec4<f32>(0.0, 1.0, 0.0, 0.8),  // Zone 1: Green
         vec4<f32>(0.0, 0.0, 1.0, 0.8),  // Zone 2: Blue
