@@ -10,10 +10,6 @@ use anyhow::Result;
 use bevy::{
     math::vec3,
     prelude::*,
-    render::{
-        render_resource::{Extent3d, TextureDimension, TextureFormat},
-        texture::ImageSampler,
-    },
     sprite::{Material2dPlugin, MaterialMesh2dBundle},
 };
 use bevy_prototype_debug_lines::DebugLinesPlugin;
@@ -49,24 +45,9 @@ fn setup_things_startup(
     mut bg_mats: ResMut<Assets<BackgroundMaterial>>,
     mut zone_mats: ResMut<Assets<ZoneMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut imgs: ResMut<Assets<Image>>,
     group_counter: ResMut<GroupIdCounterResource>,
 ) -> Result<()> {
-    let handle = zone_mats.add(ZoneMaterial {
-        texture: imgs.add(Image {
-            sampler_descriptor: ImageSampler::nearest(),
-            ..Image::new_fill(
-                Extent3d {
-                    width: MAP_WIDTH,
-                    height: MAP_HEIGHT,
-                    ..default()
-                },
-                TextureDimension::D2,
-                &[0, 0, 0, 0],
-                TextureFormat::Bgra8UnormSrgb,
-            )
-        }),
-    });
+    let handle = zone_mats.add(ZoneMaterial::new(MAP_WIDTH, MAP_HEIGHT));
     commands
         .spawn(Camera2dBundle::default())
         .insert(FlyCamera2d::default())
