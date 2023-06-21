@@ -11,6 +11,7 @@ use bevy::{
 #[derive(Debug, Component)]
 pub struct ZoneComponent {
     pub zone_points: HashSet<IVec2>,
+    pub zone_color: ZoneMapPointColorData,
 }
 
 #[derive(Debug, Default)]
