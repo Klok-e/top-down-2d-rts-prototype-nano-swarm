@@ -192,7 +192,7 @@ pub fn handle_zone_event_system(
                 if zone_data.is_zone_active(ev.zone_color)
                     && zone_data.get_zone_id(ev.zone_color) != ev.zone_id
                 {
-                    log::warn!("Tried to add a point to a zone, but this point was already in another zone")
+                    log::info!("Tried to add a point to a zone, but this point was already in another zone")
                 } else {
                     let mat = zone_mats
                         .get_mut(&handle.handle)

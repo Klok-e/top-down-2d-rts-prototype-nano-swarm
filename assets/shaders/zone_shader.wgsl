@@ -23,7 +23,7 @@ fn fragment(
     // Define colors for each zone
     var zone_colors = array(
         vec4<f32>(1.0, 0.0, 0.0, 0.6),  // Zone 0: Red
-        vec4<f32>(0.0, 1.0, 0.0, 0.6),  // Zone 1: Green
+        vec4<f32>(1.0, 0.0, 1.0, 0.6),  // Zone 1: Magenta
         vec4<f32>(0.0, 0.0, 1.0, 0.6),  // Zone 2: Blue
         vec4<f32>(1.0, 1.0, 0.0, 0.6),  // Zone 3: Yellow
     );
