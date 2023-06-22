@@ -17,7 +17,9 @@ use fly_camera::{Camera2dFlyPlugin, CameraZoom2d, FlyCamera2d};
 use game_settings::GameSettings;
 use highlight_unit::highlight_selected_system;
 use materials::BackgroundMaterial;
-use nanobot::{GroupIdCounterResource, NanobotBundle, NanobotGroup, NanobotPlugin};
+use nanobot::{
+    GroupIdCounterResource, NanobotBundle, NanobotGroup, NanobotGroupBundle, NanobotPlugin,
+};
 use ui::NanoswarmUiSetupPlugin;
 use zones::{ZoneComponent, ZoneMaterial, ZoneMaterialHandleComponent, ZonePointData, ZonesPlugin};
 
@@ -100,18 +102,16 @@ fn spawn_nanobots_for_testing(
     asset_server: Res<'_, AssetServer>,
 ) {
     commands
-        .spawn((
-            NanobotGroup {
+        .spawn((NanobotGroupBundle {
+            group: NanobotGroup {
                 id: group_counter.next_id(),
             },
-            SpatialBundle {
-                ..Default::default()
-            },
-            ZoneComponent {
+            zone: ZoneComponent {
                 zone_points: default(),
-                zone_color: ZonePointData::ZONE3,
+                zone_color: ZonePointData::ZONE2,
             },
-        ))
+            ..default()
+        },))
         .with_children(|p| {
             let texture = asset_server.load("circle.png");
             p.spawn((NanobotBundle::default(),)).insert(SpriteBundle {
@@ -137,18 +137,16 @@ fn spawn_nanobots_for_testing(
         });
 
     commands
-        .spawn((
-            NanobotGroup {
+        .spawn(NanobotGroupBundle {
+            group: NanobotGroup {
                 id: group_counter.next_id(),
             },
-            SpatialBundle {
-                ..Default::default()
-            },
-            ZoneComponent {
+            zone: ZoneComponent {
                 zone_points: default(),
                 zone_color: ZonePointData::ZONE1,
             },
-        ))
+            ..default()
+        })
         .with_children(|p| {
             let texture = asset_server.load("circle.png");
             for _ in 0..100 {

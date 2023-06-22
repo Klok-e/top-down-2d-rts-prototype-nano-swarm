@@ -75,6 +75,10 @@ impl ZonePointData {
 
     pub const ZONE_ID_MASK: u32 = (1 << 14) - 1;
 
+    pub fn id_to_zone(id: u32) -> u32 {
+        1 << (id % 4)
+    }
+
     pub fn new() -> Self {
         ZonePointData { zones: 0, bits: 0 }
     }
@@ -141,12 +145,12 @@ pub struct ZoneMaterialHandleComponent {
 
 #[derive(Debug)]
 pub struct ZoneChangedEvent {
-    point: IVec2,
+    pub point: IVec2,
     /// only 4 first bits are used
-    zone_color: u32,
+    pub zone_color: u32,
     /// only the first 14 bits are used
-    zone_id: u32,
-    kind: ZoneChangedKind,
+    pub zone_id: u32,
+    pub kind: ZoneChangedKind,
 }
 
 #[derive(Debug)]
@@ -163,9 +167,7 @@ pub fn handle_zone_event_system(
 ) {
     for ev in ev_zone_changed.iter() {
         let handle = zone_handle.single();
-        let mat = zone_mats
-            .get_mut(&handle.handle)
-            .expect("Handle must be valid");
+        let mat = zone_mats.get(&handle.handle).expect("Handle must be valid");
 
         let point = ev.point;
 
@@ -192,6 +194,9 @@ pub fn handle_zone_event_system(
                 {
                     log::warn!("Tried to add a point to a zone, but this point was already in another zone")
                 } else {
+                    let mat = zone_mats
+                        .get_mut(&handle.handle)
+                        .expect("Handle must be valid");
                     let zone_data = mat
                         .at_zone_mut(idx.x as u32, idx.y as u32)
                         .expect("Bounds check already happened");
@@ -202,6 +207,9 @@ pub fn handle_zone_event_system(
                 }
             }
             ZoneChangedKind::PointRemoved => {
+                let mat = zone_mats
+                    .get_mut(&handle.handle)
+                    .expect("Handle must be valid");
                 let zone_data = mat
                     .at_zone_mut(idx.x as u32, idx.y as u32)
                     .expect("Bounds check already happened");
@@ -299,7 +307,9 @@ pub fn selected_zone_highlight_system(
                 mat.highlight_zone_id = group.id as u32;
             }
             SelectedGroupsChanged::Deselected(ent) => {
-                let (group,) = zones.get(*ent).expect("All references must be valid");
+                let Some((group,)) = zones.get(*ent).ok() else {
+                    continue;
+                };
                 if mat.highlight_zone_id == group.id as u32 {
                     mat.highlight_zone_id = 0;
                 }
