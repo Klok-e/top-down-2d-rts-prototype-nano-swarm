@@ -12,7 +12,7 @@ use bevy::{
 
 use crate::{
     nanobot::{NanobotGroup, Selected},
-    ui::{zone_button::MouseActionMode, UiHandling},
+    ui::{zone_button::MouseActionMode, SelectedGroupsChanged, UiHandling},
     MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
 };
 
@@ -161,55 +161,54 @@ pub fn handle_zone_event_system(
     mut ev_zone_changed: EventReader<ZoneChangedEvent>,
     mut zones: Query<(&mut ZoneComponent,), (With<Selected>, With<NanobotGroup>)>,
 ) {
-    for handle in &zone_handle {
-        for ev in ev_zone_changed.iter() {
-            let mat = zone_mats
-                .get_mut(&handle.handle)
-                .expect("Handle must be valid");
+    for ev in ev_zone_changed.iter() {
+        let handle = zone_handle.single();
+        let mat = zone_mats
+            .get_mut(&handle.handle)
+            .expect("Handle must be valid");
 
-            let point = ev.point;
+        let point = ev.point;
 
-            // add offset
-            let mut idx = point + ivec2(MAP_WIDTH as i32, MAP_HEIGHT as i32) / 2;
-            idx.y = MAP_HEIGHT as i32 - idx.y - 1;
-            if idx.x < 0 || idx.x >= MAP_WIDTH as i32 || idx.y < 0 || idx.y >= MAP_HEIGHT as i32 {
-                log::warn!("point {point} out of range");
-                continue;
-            }
+        // add offset
+        let mut idx = point + ivec2(MAP_WIDTH as i32, MAP_HEIGHT as i32) / 2;
+        idx.y = MAP_HEIGHT as i32 - idx.y - 1;
+        if idx.x < 0 || idx.x >= MAP_WIDTH as i32 || idx.y < 0 || idx.y >= MAP_HEIGHT as i32 {
+            log::warn!("point {point} out of range");
+            continue;
+        }
 
-            let (mut zone,) = zones
-                .iter_mut()
-                .next()
-                .expect("It's impossible for there to be no selected groups at this point");
+        let (mut zone,) = zones
+            .iter_mut()
+            .next()
+            .expect("It's impossible for there to be no selected groups at this point");
 
-            match ev.kind {
-                ZoneChangedKind::PointAdded => {
-                    let zone_data = mat
-                        .at_zone(idx.x as u32, idx.y as u32)
-                        .expect("Bounds check already happened");
-                    if zone_data.is_zone_active(ev.zone_color)
-                        && zone_data.get_zone_id(ev.zone_color) != ev.zone_id
-                    {
-                        log::warn!("Tried to add a point to a zone, but this point was already in another zone")
-                    } else {
-                        let zone_data = mat
-                            .at_zone_mut(idx.x as u32, idx.y as u32)
-                            .expect("Bounds check already happened");
-                        zone_data.set_zone(ev.zone_color, true);
-                        zone_data.set_zone_id(ev.zone_color, ev.zone_id);
-
-                        zone.zone_points.insert(point);
-                    }
-                }
-                ZoneChangedKind::PointRemoved => {
+        match ev.kind {
+            ZoneChangedKind::PointAdded => {
+                let zone_data = mat
+                    .at_zone(idx.x as u32, idx.y as u32)
+                    .expect("Bounds check already happened");
+                if zone_data.is_zone_active(ev.zone_color)
+                    && zone_data.get_zone_id(ev.zone_color) != ev.zone_id
+                {
+                    log::warn!("Tried to add a point to a zone, but this point was already in another zone")
+                } else {
                     let zone_data = mat
                         .at_zone_mut(idx.x as u32, idx.y as u32)
                         .expect("Bounds check already happened");
-                    zone_data.set_zone(ev.zone_color, false);
+                    zone_data.set_zone(ev.zone_color, true);
                     zone_data.set_zone_id(ev.zone_color, ev.zone_id);
 
-                    zone.zone_points.remove(&point);
+                    zone.zone_points.insert(point);
                 }
+            }
+            ZoneChangedKind::PointRemoved => {
+                let zone_data = mat
+                    .at_zone_mut(idx.x as u32, idx.y as u32)
+                    .expect("Bounds check already happened");
+                zone_data.set_zone(ev.zone_color, false);
+                zone_data.set_zone_id(ev.zone_color, ev.zone_id);
+
+                zone.zone_points.remove(&point);
             }
         }
     }
@@ -279,6 +278,32 @@ pub fn zone_brush_system(
                 zone_id: group.id as u32,
                 kind: ZoneChangedKind::PointRemoved,
             })
+        }
+    }
+}
+
+pub fn selected_zone_highlight_system(
+    zones: Query<(&NanobotGroup,)>,
+    mut zone_mats: ResMut<Assets<ZoneMaterial>>,
+    zone_handle: Query<&ZoneMaterialHandleComponent>,
+    mut ev_zone_select: EventReader<SelectedGroupsChanged>,
+) {
+    for ev in ev_zone_select.iter() {
+        let handle = zone_handle.single();
+        let mat = zone_mats
+            .get_mut(&handle.handle)
+            .expect("Handle must be valid");
+        match ev {
+            SelectedGroupsChanged::Selected(ent) => {
+                let (group,) = zones.get(*ent).expect("All references must be valid");
+                mat.highlight_zone_id = group.id as u32;
+            }
+            SelectedGroupsChanged::Deselected(ent) => {
+                let (group,) = zones.get(*ent).expect("All references must be valid");
+                if mat.highlight_zone_id == group.id as u32 {
+                    mat.highlight_zone_id = 0;
+                }
+            }
         }
     }
 }

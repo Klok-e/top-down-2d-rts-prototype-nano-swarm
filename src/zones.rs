@@ -23,6 +23,7 @@ impl Plugin for ZonesPlugin {
         app.add_plugin(Material2dPlugin::<ZoneMaterial>::default())
             .add_event::<ZoneChangedEvent>()
             .add_system(handle_zone_event_system)
-            .add_system(zone_brush_system);
+            .add_system(zone_brush_system)
+            .add_system(selected_zone_highlight_system);
     }
 }
