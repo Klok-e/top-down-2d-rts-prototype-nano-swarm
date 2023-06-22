@@ -2,7 +2,7 @@ use bevy::prelude::{Component, Vec2};
 
 #[derive(Debug, Component, Default, Clone, Copy)]
 pub struct NanobotGroup {
-    pub display_identifier: i16,
+    pub id: u16,
 }
 
 #[derive(Debug, Component, Default)]

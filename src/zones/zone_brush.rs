@@ -9,10 +9,9 @@ use bevy::{
     sprite::Material2d,
     window::Window,
 };
-use bitflags::{Flag, Flags};
 
 use crate::{
-    nanobot::Selected,
+    nanobot::{NanobotGroup, Selected},
     ui::{zone_button::MouseActionMode, UiHandling},
     MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
 };
@@ -23,23 +22,26 @@ use super::ZoneComponent;
 #[uuid = "4dd16810-1f6c-4cc3-9e12-6f363e0211c7"]
 pub struct ZoneMaterial {
     #[storage(2, read_only)]
-    pub zone_map: Vec<ZoneMapPointColorData>,
+    pub zone_map: Vec<ZonePointData>,
     #[uniform(3)]
     pub width: u32,
     #[uniform(4)]
     pub height: u32,
+    #[uniform(1)]
+    pub highlight_zone_id: u32,
 }
 
 impl ZoneMaterial {
     pub fn new(width: u32, height: u32) -> ZoneMaterial {
         ZoneMaterial {
-            zone_map: vec![ZoneMapPointColorData { zones: 0 }; (width * height) as usize],
+            zone_map: vec![ZonePointData::new(); (width * height) as usize],
             width,
             height,
+            highlight_zone_id: 0,
         }
     }
 
-    pub fn _at_zone(&self, x: u32, y: u32) -> Option<&ZoneMapPointColorData> {
+    pub fn at_zone(&self, x: u32, y: u32) -> Option<&ZonePointData> {
         if x >= self.width || y >= self.height {
             None
         } else {
@@ -47,7 +49,7 @@ impl ZoneMaterial {
         }
     }
 
-    pub fn at_zone_mut(&mut self, x: u32, y: u32) -> Option<&mut ZoneMapPointColorData> {
+    pub fn at_zone_mut(&mut self, x: u32, y: u32) -> Option<&mut ZonePointData> {
         if x >= self.width || y >= self.height {
             None
         } else {
@@ -57,37 +59,72 @@ impl ZoneMaterial {
 }
 
 #[derive(Debug, Clone, Copy, ShaderType)]
-pub struct ZoneMapPointColorData {
+pub struct ZonePointData {
+    /// First 4 bits are zone color indicators, rest are zone id (14 bits for each)
     zones: u32,
+    /// 2 zone id indicators 14 bits each, last 4 bits are unused
+    bits: u32,
 }
 
-impl ZoneMapPointColorData {
-    pub const ZONE1: ZoneMapPointColorData = ZoneMapPointColorData { zones: 1 << 0 };
-    pub const ZONE2: ZoneMapPointColorData = ZoneMapPointColorData { zones: 1 << 1 };
-    pub const ZONE3: ZoneMapPointColorData = ZoneMapPointColorData { zones: 1 << 2 };
-    pub const ZONE4: ZoneMapPointColorData = ZoneMapPointColorData { zones: 1 << 3 };
-    pub const ZONE5: ZoneMapPointColorData = ZoneMapPointColorData { zones: 1 << 4 };
-    pub const ZONE6: ZoneMapPointColorData = ZoneMapPointColorData { zones: 1 << 5 };
-}
+impl ZonePointData {
+    // Definitions
+    pub const ZONE1: u32 = 1 << 0;
+    pub const ZONE2: u32 = 1 << 1;
+    pub const ZONE3: u32 = 1 << 2;
+    pub const ZONE4: u32 = 1 << 3;
 
-impl Flags for ZoneMapPointColorData {
-    const FLAGS: &'static [bitflags::Flag<Self>] = &[
-        Flag::new("zone1", Self::ZONE1),
-        Flag::new("zone2", Self::ZONE2),
-        Flag::new("zone3", Self::ZONE3),
-        Flag::new("zone4", Self::ZONE4),
-        Flag::new("zone5", Self::ZONE5),
-        Flag::new("zone6", Self::ZONE6),
-    ];
+    pub const ZONE_ID_MASK: u32 = (1 << 14) - 1;
 
-    type Bits = u32;
-
-    fn bits(&self) -> Self::Bits {
-        self.zones
+    pub fn new() -> Self {
+        ZonePointData { zones: 0, bits: 0 }
     }
 
-    fn from_bits_retain(bits: Self::Bits) -> Self {
-        Self { zones: bits }
+    // Set a specific zone to active or inactive
+    pub fn set_zone(&mut self, zone: u32, active: bool) {
+        if active {
+            self.zones |= zone;
+        } else {
+            self.zones &= !zone;
+        }
+    }
+
+    // Check if a specific zone is active
+    pub fn is_zone_active(&self, zone: u32) -> bool {
+        (self.zones & zone) != 0
+    }
+
+    pub fn get_zone_id(&self, zone: u32) -> u32 {
+        match zone {
+            Self::ZONE1 => (self.zones >> 4) & Self::ZONE_ID_MASK,
+            Self::ZONE2 => (self.zones >> 18) & Self::ZONE_ID_MASK,
+            Self::ZONE3 => self.bits & Self::ZONE_ID_MASK,
+            Self::ZONE4 => (self.bits >> 14) & Self::ZONE_ID_MASK,
+            _ => panic!("Invalid zone"),
+        }
+    }
+
+    pub fn set_zone_id(&mut self, zone: u32, id: u32) {
+        assert!(id <= Self::ZONE_ID_MASK, "ID too large for 14 bits");
+        let id = id & Self::ZONE_ID_MASK; // ensure id fits in 14 bits
+        match zone {
+            Self::ZONE1 => {
+                self.zones &= !(Self::ZONE_ID_MASK << 4); // clear existing id
+                self.zones |= id << 4; // set new id
+            }
+            Self::ZONE2 => {
+                self.zones &= !(Self::ZONE_ID_MASK << 18); // clear existing id
+                self.zones |= id << 18; // set new id
+            }
+            Self::ZONE3 => {
+                self.bits &= !Self::ZONE_ID_MASK; // clear existing id
+                self.bits |= id; // set new id
+            }
+            Self::ZONE4 => {
+                self.bits &= !(Self::ZONE_ID_MASK << 14); // clear existing id
+                self.bits |= id << 14; // set new id
+            }
+            _ => panic!("Invalid zone"),
+        }
     }
 }
 
@@ -105,7 +142,10 @@ pub struct ZoneMaterialHandleComponent {
 #[derive(Debug)]
 pub struct ZoneChangedEvent {
     point: IVec2,
-    zone_color: ZoneMapPointColorData,
+    /// only 4 first bits are used
+    zone_color: u32,
+    /// only the first 14 bits are used
+    zone_id: u32,
     kind: ZoneChangedKind,
 }
 
@@ -115,10 +155,11 @@ pub enum ZoneChangedKind {
     PointRemoved,
 }
 
-pub fn zone_texture_update_system(
+pub fn handle_zone_event_system(
     mut zone_mats: ResMut<Assets<ZoneMaterial>>,
     zone_handle: Query<&ZoneMaterialHandleComponent>,
     mut ev_zone_changed: EventReader<ZoneChangedEvent>,
+    mut zones: Query<(&mut ZoneComponent,), (With<Selected>, With<NanobotGroup>)>,
 ) {
     for handle in &zone_handle {
         for ev in ev_zone_changed.iter() {
@@ -129,29 +170,45 @@ pub fn zone_texture_update_system(
             let point = ev.point;
 
             // add offset
-            let mut point = point + ivec2(MAP_WIDTH as i32, MAP_HEIGHT as i32) / 2;
-            point.y = MAP_HEIGHT as i32 - point.y - 1;
-            if point.x < 0
-                || point.x >= MAP_WIDTH as i32
-                || point.y < 0
-                || point.y >= MAP_HEIGHT as i32
-            {
+            let mut idx = point + ivec2(MAP_WIDTH as i32, MAP_HEIGHT as i32) / 2;
+            idx.y = MAP_HEIGHT as i32 - idx.y - 1;
+            if idx.x < 0 || idx.x >= MAP_WIDTH as i32 || idx.y < 0 || idx.y >= MAP_HEIGHT as i32 {
                 log::warn!("point {point} out of range");
                 continue;
             }
 
+            let (mut zone,) = zones
+                .iter_mut()
+                .next()
+                .expect("It's impossible for there to be no selected groups at this point");
+
             match ev.kind {
                 ZoneChangedKind::PointAdded => {
                     let zone_data = mat
-                        .at_zone_mut(point.x as u32, point.y as u32)
+                        .at_zone(idx.x as u32, idx.y as u32)
                         .expect("Bounds check already happened");
-                    *zone_data = zone_data.union(ev.zone_color);
+                    if zone_data.is_zone_active(ev.zone_color)
+                        && zone_data.get_zone_id(ev.zone_color) != ev.zone_id
+                    {
+                        log::warn!("Tried to add a point to a zone, but this point was already in another zone")
+                    } else {
+                        let zone_data = mat
+                            .at_zone_mut(idx.x as u32, idx.y as u32)
+                            .expect("Bounds check already happened");
+                        zone_data.set_zone(ev.zone_color, true);
+                        zone_data.set_zone_id(ev.zone_color, ev.zone_id);
+
+                        zone.zone_points.insert(point);
+                    }
                 }
                 ZoneChangedKind::PointRemoved => {
                     let zone_data = mat
-                        .at_zone_mut(point.x as u32, point.y as u32)
+                        .at_zone_mut(idx.x as u32, idx.y as u32)
                         .expect("Bounds check already happened");
-                    *zone_data = zone_data.intersection(ev.zone_color.complement());
+                    zone_data.set_zone(ev.zone_color, false);
+                    zone_data.set_zone_id(ev.zone_color, ev.zone_id);
+
+                    zone.zone_points.remove(&point);
                 }
             }
         }
@@ -163,7 +220,7 @@ pub fn zone_brush_system(
     mouse_button_input: Res<Input<MouseButton>>,
     ui_handling: Res<UiHandling>,
     camera_query: Query<(&GlobalTransform, &Camera)>,
-    mut zones: Query<&mut ZoneComponent, With<Selected>>,
+    zones: Query<(&ZoneComponent, &NanobotGroup), With<Selected>>,
     mut ev_zone_changed: EventWriter<ZoneChangedEvent>,
     mouse_mode: Res<MouseActionMode>,
 ) {
@@ -204,24 +261,22 @@ pub fn zone_brush_system(
         return;
     }
     if mouse_button_input.pressed(MouseButton::Left) {
-        if let Some(mut zone) = zones.iter_mut().next() {
-            zone.zone_points.insert(idx);
-
+        if let Some((zone, group)) = zones.iter().next() {
             // notify
             ev_zone_changed.send(ZoneChangedEvent {
                 point: idx,
                 zone_color: zone.zone_color,
+                zone_id: group.id as u32,
                 kind: ZoneChangedKind::PointAdded,
             })
         }
     } else if mouse_button_input.pressed(MouseButton::Right) {
-        if let Some(mut zone) = zones.iter_mut().next() {
-            zone.zone_points.remove(&idx);
-
+        if let Some((zone, group)) = zones.iter().next() {
             // notify
             ev_zone_changed.send(ZoneChangedEvent {
                 point: idx,
                 zone_color: zone.zone_color,
+                zone_id: group.id as u32,
                 kind: ZoneChangedKind::PointRemoved,
             })
         }

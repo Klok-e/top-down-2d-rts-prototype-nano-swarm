@@ -11,7 +11,8 @@ use bevy::{
 #[derive(Debug, Component)]
 pub struct ZoneComponent {
     pub zone_points: HashSet<IVec2>,
-    pub zone_color: ZoneMapPointColorData,
+    /// only 4 first bits are used
+    pub zone_color: u32,
 }
 
 #[derive(Debug, Default)]
@@ -21,7 +22,7 @@ impl Plugin for ZonesPlugin {
     fn build(&self, app: &mut bevy::prelude::App) {
         app.add_plugin(Material2dPlugin::<ZoneMaterial>::default())
             .add_event::<ZoneChangedEvent>()
-            .add_system(zone_texture_update_system)
+            .add_system(handle_zone_event_system)
             .add_system(zone_brush_system);
     }
 }

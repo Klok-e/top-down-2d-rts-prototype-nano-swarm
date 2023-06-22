@@ -71,7 +71,7 @@ fn split(
 
             let mut new_ent = commands.spawn((
                 NanobotGroup {
-                    display_identifier: group_id_count.next_id(),
+                    id: group_id_count.next_id(),
                 },
                 Selected {},
                 SpatialBundle::default(),
@@ -113,7 +113,7 @@ fn merge(
     // Create new merged group
     let mut new_ent = commands.spawn((
         NanobotGroup {
-            display_identifier: group_id_count.next_id(),
+            id: group_id_count.next_id(),
         },
         Selected {},
         SpatialBundle::default(),

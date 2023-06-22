@@ -40,11 +40,11 @@ impl Plugin for NanobotPlugin {
 
 #[derive(Debug, Resource)]
 pub struct GroupIdCounterResource {
-    pub count: i16,
+    pub count: u16,
 }
 
 impl GroupIdCounterResource {
-    pub fn next_id(&mut self) -> i16 {
+    pub fn next_id(&mut self) -> u16 {
         self.count += 1;
         self.count
     }
