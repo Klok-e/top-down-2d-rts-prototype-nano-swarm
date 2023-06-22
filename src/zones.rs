@@ -8,7 +8,7 @@ use bevy::{
     utils::HashSet,
 };
 
-#[derive(Debug, Component)]
+#[derive(Debug, Component, Default)]
 pub struct ZoneComponent {
     pub zone_points: HashSet<IVec2>,
     /// only 4 first bits are used

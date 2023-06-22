@@ -14,6 +14,8 @@ pub use unit_select::*;
 
 use bevy::prelude::*;
 
+use crate::zones::ZoneComponent;
+
 pub use self::components::{Nanobot, Velocity};
 
 #[derive(Debug, Bundle, Default)]
@@ -48,4 +50,11 @@ impl GroupIdCounterResource {
         self.count += 1;
         self.count
     }
+}
+
+#[derive(Debug, Bundle, Default)]
+pub struct NanobotGroupBundle {
+    pub group: NanobotGroup,
+    pub spatial_bundle: SpatialBundle,
+    pub zone: ZoneComponent,
 }

@@ -33,7 +33,10 @@ fn fragment(
     let idx: u32 = y * width + x;
     let zone_data: ZonePointData = zone_map[idx];
 
-    var final_color = vec4<f32>(0.0, 0.0, 0.0, 0.0);  // start with fully transparent black
+    var color_sum = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    var alpha_sum = 0.0;
+    var count = 0.0;
+    var highlighted = 0.0;
     for(var i = 0u; i < 4u; i = i + 1u) {
         var bit_zone_id: u32;
         if(i < 2u) {
@@ -45,10 +48,23 @@ fn fragment(
             var src_color = zone_colors[i];
             if (bit_zone_id == highlight_zone_id) {
                 src_color.a = 0.8;
+                highlighted += 1.0;
             }
-            final_color = mix(final_color, src_color, src_color.a);
+            color_sum += src_color * src_color.a;
+            alpha_sum += src_color.a;
+            count += 1.0;
         }
     }
 
-    return final_color;
+    // if there were any colors, divide by the total alpha
+    if(count > 0.0) {
+        color_sum /= count;
+        if (highlighted > 0.0){
+            color_sum.a = 0.8;
+        } else {
+            color_sum.a = 0.6;
+        }
+    }
+
+    return color_sum;
 }
