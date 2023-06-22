@@ -19,9 +19,7 @@ use highlight_unit::highlight_selected_system;
 use materials::BackgroundMaterial;
 use nanobot::{GroupIdCounterResource, NanobotBundle, NanobotGroup, NanobotPlugin};
 use ui::NanoswarmUiSetupPlugin;
-use zones::{
-    ZoneComponent, ZoneMapPointColorData, ZoneMaterial, ZoneMaterialHandleComponent, ZonesPlugin,
-};
+use zones::{ZoneComponent, ZoneMaterial, ZoneMaterialHandleComponent, ZonePointData, ZonesPlugin};
 
 fn main() {
     App::new()
@@ -104,14 +102,14 @@ fn spawn_nanobots_for_testing(
     commands
         .spawn((
             NanobotGroup {
-                display_identifier: group_counter.next_id(),
+                id: group_counter.next_id(),
             },
             SpatialBundle {
                 ..Default::default()
             },
             ZoneComponent {
                 zone_points: default(),
-                zone_color: ZoneMapPointColorData::ZONE3,
+                zone_color: ZonePointData::ZONE3,
             },
         ))
         .with_children(|p| {
@@ -141,14 +139,14 @@ fn spawn_nanobots_for_testing(
     commands
         .spawn((
             NanobotGroup {
-                display_identifier: group_counter.next_id(),
+                id: group_counter.next_id(),
             },
             SpatialBundle {
                 ..Default::default()
             },
             ZoneComponent {
                 zone_points: default(),
-                zone_color: ZoneMapPointColorData::ZONE1,
+                zone_color: ZonePointData::ZONE1,
             },
         ))
         .with_children(|p| {

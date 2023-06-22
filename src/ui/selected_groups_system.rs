@@ -35,7 +35,7 @@ pub fn update_selected_nanobot_groups_system(
                     commands.entity(ent).with_children(|parent| {
                         parent.spawn((
                             TextBundle::from_section(
-                                format!("Group {}", display.display_identifier),
+                                format!("Group {}", display.id),
                                 TextStyle {
                                     font_size: 20.,
                                     ..fonts.general_text_style.clone()
