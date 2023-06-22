@@ -22,10 +22,10 @@ fn fragment(
     // TODO: check performance implications of this constant array
     // Define colors for each zone
     var zone_colors = array(
-        vec4<f32>(1.0, 0.0, 0.0, 0.8),  // Zone 0: Red
-        vec4<f32>(0.0, 1.0, 0.0, 0.8),  // Zone 1: Green
-        vec4<f32>(0.0, 0.0, 1.0, 0.8),  // Zone 2: Blue
-        vec4<f32>(1.0, 1.0, 0.0, 0.8),  // Zone 3: Yellow
+        vec4<f32>(1.0, 0.0, 0.0, 0.6),  // Zone 0: Red
+        vec4<f32>(0.0, 1.0, 0.0, 0.6),  // Zone 1: Green
+        vec4<f32>(0.0, 0.0, 1.0, 0.6),  // Zone 2: Blue
+        vec4<f32>(1.0, 1.0, 0.0, 0.6),  // Zone 3: Yellow
     );
 
     let x: u32 = u32(uv.x * f32(width));
@@ -44,8 +44,7 @@ fn fragment(
         if((zone_data.zones & (1u << i)) != 0u) {
             var src_color = zone_colors[i];
             if (bit_zone_id == highlight_zone_id) {
-                src_color.a *= 1.5;
-                src_color.a = min(src_color.a, 1.0);
+                src_color.a = 0.8;
             }
             final_color = mix(final_color, src_color, src_color.a);
         }
