@@ -10,7 +10,7 @@ use crate::{
 };
 
 use super::{
-    components::{MoveDestination, Nanobot, ProgressChecker, Velocity},
+    components::{DirectMovementComponent, Nanobot, ProgressChecker, VelocityComponent},
     consts::STOP_THRESHOLD,
 };
 
@@ -19,9 +19,9 @@ pub fn move_velocity_system(
     mut commands: Commands,
     mut bots: Query<(
         Entity,
-        &MoveDestination,
+        &DirectMovementComponent,
         &Transform,
-        &mut Velocity,
+        &mut VelocityComponent,
         Option<&mut ProgressChecker>,
     )>,
     game_settings: Res<GameSettings>,
@@ -46,7 +46,7 @@ pub fn move_velocity_system(
                 });
             }
         } else {
-            commands.entity(entity).remove::<MoveDestination>();
+            commands.entity(entity).remove::<DirectMovementComponent>();
             commands.entity(entity).remove::<ProgressChecker>();
         }
 
@@ -61,7 +61,7 @@ pub fn move_velocity_system(
                 && current_time - checker.last_update_time > MAX_TIME_WITHOUT_PROGRESS
             {
                 // The bot has not made significant progress for a long time, remove the destination
-                commands.entity(entity).remove::<MoveDestination>();
+                commands.entity(entity).remove::<DirectMovementComponent>();
                 commands.entity(entity).remove::<ProgressChecker>();
             } else if progress >= MIN_PROGRESS {
                 // The bot has made significant progress, update the checker
@@ -72,7 +72,20 @@ pub fn move_velocity_system(
     }
 }
 
-pub fn separation_system(mut query: Query<(&Transform, &mut Velocity), With<Nanobot>>) {
+// let path = bfs(
+//     &tile_pos,
+//     |IVec2 { x, y }| {
+//         [
+//             ivec2(*x + 1, *y),
+//             ivec2(*x - 1, *y),
+//             ivec2(*x, *y + 1),
+//             ivec2(*x, *y - 1),
+//         ]
+//     },
+//     |p| !curr_zone.zone_points.contains(&get_zone_from_block(*p)),
+// );
+
+pub fn separation_system(mut query: Query<(&Transform, &mut VelocityComponent), With<Nanobot>>) {
     let mut combinations = query.iter_combinations_mut();
     let mut rng = rand::thread_rng();
     const EPSILON: f32 = 1e-3;
@@ -101,7 +114,7 @@ pub fn separation_system(mut query: Query<(&Transform, &mut Velocity), With<Nano
     }
 }
 
-pub fn velocity_system(mut query: Query<(&mut Velocity, &mut Transform)>) {
+pub fn velocity_system(mut query: Query<(&mut VelocityComponent, &mut Transform)>) {
     for (mut velocity, mut transform) in query.iter_mut() {
         transform.translation += velocity.value.extend(0.);
         velocity.value = Vec2::ZERO;

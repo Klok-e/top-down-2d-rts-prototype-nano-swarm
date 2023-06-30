@@ -9,12 +9,12 @@ pub struct NanobotGroup {
 pub struct Nanobot {}
 
 #[derive(Debug, Component)]
-pub struct MoveDestination {
+pub struct DirectMovementComponent {
     pub xy: Vec2,
 }
 
 #[derive(Debug, Component, Clone, Copy, Default)]
-pub struct Velocity {
+pub struct VelocityComponent {
     pub value: Vec2,
 }
 

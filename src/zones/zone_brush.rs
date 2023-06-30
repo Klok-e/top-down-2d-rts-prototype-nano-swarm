@@ -2,7 +2,7 @@ use bevy::{
     math::{ivec2, vec2},
     prelude::{
         Assets, Camera, Component, EventReader, EventWriter, GlobalTransform, Handle, IVec2, Input,
-        MouseButton, Query, Res, ResMut, With,
+        MouseButton, Query, Res, ResMut, Vec2, With,
     },
     reflect::TypeUuid,
     render::render_resource::{AsBindGroup, ShaderType},
@@ -255,11 +255,7 @@ pub fn zone_brush_system(
             return;
         };
 
-    let idx = vec2(
-        (cursor_pos_world.x / ZONE_BLOCK_SIZE).floor(),
-        (cursor_pos_world.y / ZONE_BLOCK_SIZE).floor(),
-    )
-    .as_ivec2();
+    let idx = get_zone_pos_from_world(cursor_pos_world);
     if idx.x < -(MAP_WIDTH as i32 / 2)
         || idx.x >= (MAP_WIDTH as i32 / 2)
         || idx.y < -(MAP_HEIGHT as i32 / 2)
@@ -316,4 +312,12 @@ pub fn selected_zone_highlight_system(
             }
         }
     }
+}
+
+pub fn get_zone_pos_from_world(world_pos: Vec2) -> IVec2 {
+    vec2(
+        (world_pos.x / ZONE_BLOCK_SIZE).floor(),
+        (world_pos.y / ZONE_BLOCK_SIZE).floor(),
+    )
+    .as_ivec2()
 }

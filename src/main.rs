@@ -1,3 +1,4 @@
+mod ai;
 mod fly_camera;
 mod game_settings;
 mod highlight_unit;
@@ -6,6 +7,7 @@ mod nanobot;
 mod ui;
 mod zones;
 
+use ai::AiPlugin;
 use anyhow::Result;
 use bevy::{
     math::vec3,
@@ -33,6 +35,7 @@ fn main() {
         // must be before NanobotPlugin because otherwise it receives events with despawned entities
         .add_plugin(ZonesPlugin::default())
         .add_plugin(NanobotPlugin::default())
+        .add_plugin(AiPlugin)
         .add_plugin(Camera2dFlyPlugin)
         .add_startup_system(setup_things_startup.pipe(error_handler))
         .add_system(highlight_selected_system)
