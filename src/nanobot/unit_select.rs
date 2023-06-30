@@ -2,7 +2,7 @@ use bevy::{input::Input, prelude::*};
 use rand::Rng;
 
 use crate::{
-    nanobot::{MoveDestination, Nanobot, BOT_RADIUS},
+    nanobot::{DirectMovementComponent, Nanobot, BOT_RADIUS},
     ui::{zone_button::MouseActionMode, SelectedGroupsChanged, UiHandling},
 };
 
@@ -109,7 +109,7 @@ pub fn unit_select_system(
                 let biased_perturbation =
                     perturbation * (1.0 - BIAS_RATE) + direction_to_center * BIAS_RATE;
 
-                commands.entity(nanobot).insert(MoveDestination {
+                commands.entity(nanobot).insert(DirectMovementComponent {
                     xy: cursor_pos_world.truncate()
                         + relative_pos
                         + biased_perturbation * MOVE_PERTURBATION_SIZE,

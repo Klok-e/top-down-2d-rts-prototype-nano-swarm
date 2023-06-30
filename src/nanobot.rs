@@ -14,14 +14,15 @@ pub use unit_select::*;
 
 use bevy::prelude::*;
 
-use crate::zones::ZoneComponent;
+use crate::{ai::AiStateComponent, zones::ZoneComponent};
 
-pub use self::components::{Nanobot, Velocity};
+pub use self::components::{Nanobot, VelocityComponent};
 
 #[derive(Debug, Bundle, Default)]
 pub struct NanobotBundle {
-    nanobot: Nanobot,
-    velocity: Velocity,
+    pub nanobot: Nanobot,
+    pub velocity: VelocityComponent,
+    pub ai_state: AiStateComponent,
 }
 
 #[derive(Debug, Default)]
