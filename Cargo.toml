@@ -6,13 +6,13 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bevy = { version = "0.10.1", features = ["dynamic_linking"] }
+bevy = { version = "0.11", features = ["dynamic_linking"] }
 thiserror = "1.0"
 anyhow = "1.0.70"
 serde = { version = "1.0.160", features = ["derive"] }
 ron = "0.8.0"
 rand = { version = "0.8.5" }
-bevy_prototype_debug_lines = "0.10"
+bevy_prototype_debug_lines = "0.11"
 log = "0.4.17"
 pathfinding = "4.2.1"
 

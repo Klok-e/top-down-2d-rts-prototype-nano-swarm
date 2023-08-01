@@ -13,7 +13,8 @@ pub struct FontsResource {
 pub fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
     let button_style = Style {
         margin: UiRect::all(Val::Px(5.0)),
-        size: Size::new(Val::Px(100.0), Val::Px(30.0)),
+        width: Val::Px(100.0),
+        height: Val::Px(30.0),
         justify_content: JustifyContent::Center,
         align_items: AlignItems::Center,
         ..Default::default()
@@ -33,7 +34,8 @@ pub fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
         .spawn((
             NodeBundle {
                 style: Style {
-                    size: Size::new(Val::Auto, Val::Px(300.0)),
+                    width: Val::Auto,
+                    height: Val::Px(300.0),
                     padding: UiRect {
                         left: Val::Px(10.),
                         right: Val::Px(10.),
@@ -41,11 +43,8 @@ pub fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
                         bottom: Val::Px(10.),
                     },
                     position_type: PositionType::Absolute,
-                    position: UiRect {
-                        left: Val::Px(10.0),
-                        bottom: Val::Px(10.0),
-                        ..Default::default()
-                    },
+                    left: Val::Px(10.0),
+                    bottom: Val::Px(10.0),
                     flex_direction: FlexDirection::Column,
                     ..Default::default()
                 },
@@ -115,11 +114,8 @@ pub fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
         .with_text_alignment(TextAlignment::Left)
         .with_style(Style {
             position_type: PositionType::Absolute,
-            position: UiRect {
-                top: Val::Px(5.0),
-                left: Val::Px(5.0),
-                ..default()
-            },
+            top: Val::Px(5.0),
+            left: Val::Px(5.0),
             ..default()
         }),
         FpsText,
@@ -139,7 +135,7 @@ pub fn button_system(
     mut ev_nanobot_group_action: EventWriter<NanobotGroupAction>,
 ) {
     for (entity, interaction) in interaction_query.iter() {
-        if let Interaction::Clicked = *interaction {
+        if let Interaction::Pressed = *interaction {
             // Handle button click
             if merge_query.get_component::<MergeButton>(entity).is_ok() {
                 ev_nanobot_group_action.send(NanobotGroupAction::Merge)

@@ -32,12 +32,12 @@ impl Plugin for NanobotPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(GroupIdCounterResource { count: 0 });
 
-        app.add_system(separation_system)
-            .add_system(velocity_system)
-            .add_system(group_action_system)
-            .add_system(move_velocity_system)
-            .add_system(bot_debug_circle_system)
-            .add_system(unit_select_system);
+        app.add_systems(Update, separation_system)
+            .add_systems(Update, velocity_system)
+            .add_systems(Update, group_action_system)
+            .add_systems(Update, move_velocity_system)
+            .add_systems(Update, bot_debug_circle_system)
+            .add_systems(Update, unit_select_system);
     }
 }
 

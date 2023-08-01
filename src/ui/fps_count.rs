@@ -1,5 +1,5 @@
 use bevy::{
-    diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin},
+    diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     prelude::{Component, Query, Res, With},
     text::Text,
 };
@@ -7,7 +7,10 @@ use bevy::{
 #[derive(Component)]
 pub struct FpsText;
 
-pub fn fps_ui_system(mut text: Query<&mut Text, With<FpsText>>, diagnostics: Res<Diagnostics>) {
+pub fn fps_ui_system(
+    mut text: Query<&mut Text, With<FpsText>>,
+    diagnostics: Res<DiagnosticsStore>,
+) {
     let mut text = text.single_mut();
     if let Some(fps) = diagnostics.get(FrameTimeDiagnosticsPlugin::FPS) {
         if let Some(value) = fps.smoothed() {

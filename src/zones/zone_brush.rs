@@ -1,10 +1,10 @@
 use bevy::{
     math::{ivec2, vec2},
     prelude::{
-        Assets, Camera, Component, EventReader, EventWriter, GlobalTransform, Handle, IVec2, Input,
-        MouseButton, Query, Res, ResMut, Vec2, With,
+        Assets, Camera, Component, Event, EventReader, EventWriter, GlobalTransform, Handle, IVec2,
+        Input, MouseButton, Query, Res, ResMut, Vec2, With,
     },
-    reflect::TypeUuid,
+    reflect::{TypePath, TypeUuid},
     render::render_resource::{AsBindGroup, ShaderType},
     sprite::Material2d,
     window::Window,
@@ -18,7 +18,7 @@ use crate::{
 
 use super::ZoneComponent;
 
-#[derive(AsBindGroup, TypeUuid, Debug, Clone)]
+#[derive(AsBindGroup, TypeUuid, TypePath, Debug, Clone)]
 #[uuid = "4dd16810-1f6c-4cc3-9e12-6f363e0211c7"]
 pub struct ZoneMaterial {
     #[storage(2, read_only)]
@@ -143,7 +143,7 @@ pub struct ZoneMaterialHandleComponent {
     pub handle: Handle<ZoneMaterial>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Event)]
 pub struct ZoneChangedEvent {
     pub point: IVec2,
     /// only 4 first bits are used

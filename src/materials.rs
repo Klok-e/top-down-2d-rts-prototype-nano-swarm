@@ -1,10 +1,10 @@
 use bevy::{
-    reflect::TypeUuid,
+    reflect::{TypePath, TypeUuid},
     render::render_resource::{AsBindGroup, ShaderRef},
     sprite::Material2d,
 };
 
-#[derive(AsBindGroup, TypeUuid, Debug, Clone)]
+#[derive(AsBindGroup, TypeUuid, TypePath, Debug, Clone)]
 #[uuid = "606560b9-c6c2-442f-987b-b781237cf9d5"]
 pub struct BackgroundMaterial {}
 

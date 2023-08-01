@@ -16,7 +16,7 @@ pub use ui_setup::*;
 
 use bevy::{
     diagnostic::FrameTimeDiagnosticsPlugin,
-    prelude::{App, Plugin},
+    prelude::{App, Plugin, Startup, Update},
 };
 
 use self::{
@@ -34,14 +34,14 @@ impl Plugin for NanoswarmUiSetupPlugin {
             .insert_resource(MouseActionMode::default())
             .add_event::<SelectedGroupsChanged>()
             .add_event::<NanobotGroupAction>()
-            .add_plugin(FrameTimeDiagnosticsPlugin)
-            .add_startup_system(setup_ui_system)
-            .add_system(check_ui_interaction)
-            .add_system(zone_button_system)
-            .add_system(mouse_scroll)
-            .add_system(button_system)
-            .add_system(update_selected_nanobot_groups_system)
-            .add_system(fps_ui_system)
-            .add_system(button_background_system);
+            .add_plugins(FrameTimeDiagnosticsPlugin)
+            .add_systems(Startup, setup_ui_system)
+            .add_systems(Update, check_ui_interaction)
+            .add_systems(Update, zone_button_system)
+            .add_systems(Update, mouse_scroll)
+            .add_systems(Update, button_system)
+            .add_systems(Update, update_selected_nanobot_groups_system)
+            .add_systems(Update, fps_ui_system)
+            .add_systems(Update, button_background_system);
     }
 }

@@ -1,7 +1,7 @@
 use bevy::{
     math::vec2,
     prelude::{
-        Commands, Component, Entity, IVec2, Parent, Plugin, Query, Transform, Vec2, With, Without,
+        Commands, Component, Entity, IVec2, Parent, Plugin, Query, Transform, Vec2, With, Without, Update,
     },
 };
 
@@ -175,12 +175,12 @@ pub struct AiPlugin;
 
 impl Plugin for AiPlugin {
     fn build(&self, app: &mut bevy::prelude::App) {
-        app.add_system(idle_behaviour_system)
-            .add_system(gather_behaviour_system)
-            .add_system(build_behaviour_system)
-            .add_system(move_action_system)
-            .add_system(gather_action_system)
-            .add_system(build_action_system)
-            .add_system(decision_system);
+        app .add_systems(Update, idle_behaviour_system)
+            .add_systems(Update, gather_behaviour_system)
+            .add_systems(Update, build_behaviour_system)
+            .add_systems(Update, move_action_system)
+            .add_systems(Update, gather_action_system)
+            .add_systems(Update, build_action_system)
+            .add_systems(Update, decision_system);
     }
 }
