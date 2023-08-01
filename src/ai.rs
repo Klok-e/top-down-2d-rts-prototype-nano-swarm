@@ -66,6 +66,11 @@ pub fn idle_behaviour_system(
     let mut rng = rand::thread_rng();
 
     for (ent, mut action_state) in &mut states {
+        action_state.action_requests.push(AiActionRequest {
+            kind: AiActionKind::Idle(Idle),
+            priority: 0,
+        });
+
         let (curr_trans, curr_par) = bot_positions.get(ent).unwrap();
         let (curr_zone,) = zones.get(curr_par.get()).unwrap();
 
@@ -77,7 +82,7 @@ pub fn idle_behaviour_system(
                     destination: get_world_from_zone(*rand_zone_point),
                 }),
                 priority: 1,
-            })
+            });
         }
     }
 }
