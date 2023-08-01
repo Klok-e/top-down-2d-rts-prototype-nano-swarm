@@ -1,3 +1,5 @@
+#import bevy_pbr::mesh_vertex_output MeshVertexOutput
+
 @group(1) @binding(2)
 var<storage> zone_map: array<ZonePointData>;
 @group(1) @binding(3)
@@ -16,7 +18,7 @@ struct ZonePointData {
 
 @fragment
 fn fragment(
-    #import bevy_pbr::mesh_vertex_output
+    in: MeshVertexOutput
 ) -> @location(0) vec4<f32> {
 
     // TODO: check performance implications of this constant array
@@ -28,8 +30,8 @@ fn fragment(
         vec4<f32>(1.0, 1.0, 0.0, 0.6),  // Zone 3: Yellow
     );
 
-    let x: u32 = u32(uv.x * f32(width));
-    let y: u32 = u32(uv.y * f32(height));
+    let x: u32 = u32(in.uv.x * f32(width));
+    let y: u32 = u32(in.uv.y * f32(height));
     let idx: u32 = y * width + x;
     let zone_data: ZonePointData = zone_map[idx];
 

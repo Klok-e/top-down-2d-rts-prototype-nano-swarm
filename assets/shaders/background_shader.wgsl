@@ -1,10 +1,11 @@
+#import bevy_pbr::mesh_vertex_output MeshVertexOutput
 
 @fragment
 fn fragment(
-    #import bevy_pbr::mesh_vertex_output
+    in: MeshVertexOutput
 ) -> @location(0) vec4<f32> {
     let tile_count: f32 = 0.01; // increase to add more tiles
-    let sum: f32 = floor(world_position.x * tile_count) + floor(world_position.y * tile_count);
+    let sum: f32 = floor(in.world_position.x * tile_count) + floor(in.world_position.y * tile_count);
     let tiles: f32 = sum - floor(sum * 0.5) * 2.0; // manual mod 2 operation
 
     // Color based on tiles (dark green when tiles = 0, green when tiles = 1)
