@@ -51,7 +51,8 @@ pub fn unit_select_system(
 
     // Handle left mouse button clicks
     if mouse_button_input.just_pressed(MouseButton::Left) {
-        if !keyboard_input.pressed(KeyCode::LControl) && !keyboard_input.pressed(KeyCode::RControl)
+        if !keyboard_input.pressed(KeyCode::ControlLeft)
+            && !keyboard_input.pressed(KeyCode::ControlRight)
         {
             // Deselect all groups
             for (entity, _) in selected_groups.iter() {

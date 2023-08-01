@@ -1,13 +1,13 @@
-use bevy::prelude::{Component, Entity};
+use bevy::prelude::{Component, Entity, Event};
 
 /// Event for communicating with UI
-#[derive(Debug)]
+#[derive(Debug, Event)]
 pub enum SelectedGroupsChanged {
     Selected(Entity),
     Deselected(Entity),
 }
 
-#[derive(Debug, Component)]
+#[derive(Debug, Component, Event)]
 pub enum NanobotGroupAction {
     Merge,
     Split,

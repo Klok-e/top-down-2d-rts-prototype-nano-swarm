@@ -3,7 +3,7 @@ mod zone_brush;
 pub use zone_brush::*;
 
 use bevy::{
-    prelude::{Component, IVec2, Plugin},
+    prelude::{Component, IVec2, Plugin, Update},
     sprite::Material2dPlugin,
     utils::HashSet,
 };
@@ -20,10 +20,10 @@ pub struct ZonesPlugin {}
 
 impl Plugin for ZonesPlugin {
     fn build(&self, app: &mut bevy::prelude::App) {
-        app.add_plugin(Material2dPlugin::<ZoneMaterial>::default())
+        app.add_plugins(Material2dPlugin::<ZoneMaterial>::default())
             .add_event::<ZoneChangedEvent>()
-            .add_system(handle_zone_event_system)
-            .add_system(zone_brush_system)
-            .add_system(selected_zone_highlight_system);
+            .add_systems(Update, handle_zone_event_system)
+            .add_systems(Update, zone_brush_system)
+            .add_systems(Update, selected_zone_highlight_system);
     }
 }

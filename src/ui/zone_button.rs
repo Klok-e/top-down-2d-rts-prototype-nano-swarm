@@ -27,7 +27,7 @@ pub fn zone_button_system(
 ) {
     for (interaction, mut bg) in interaction_query.iter_mut() {
         match *interaction {
-            Interaction::Clicked => match mouse_mode.as_ref() {
+            Interaction::Pressed => match mouse_mode.as_ref() {
                 MouseActionMode::GroupSelectMove => {
                     *mouse_mode = MouseActionMode::ZoneDraw;
                     *bg = PRESSED_BUTTON.into();

@@ -28,17 +28,17 @@ use zones::{ZoneComponent, ZoneMaterial, ZoneMaterialHandleComponent, ZonePointD
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_plugin(Material2dPlugin::<BackgroundMaterial>::default())
-        .add_plugin(DebugLinesPlugin::default())
+        .add_plugins(Material2dPlugin::<BackgroundMaterial>::default())
+        .add_plugins(DebugLinesPlugin::default())
         // must be before NanobotPlugin because otherwise it receives events with despawned entities
-        .add_plugin(NanoswarmUiSetupPlugin)
+        .add_plugins(NanoswarmUiSetupPlugin)
         // must be before NanobotPlugin because otherwise it receives events with despawned entities
-        .add_plugin(ZonesPlugin::default())
-        .add_plugin(NanobotPlugin::default())
-        .add_plugin(AiPlugin)
-        .add_plugin(Camera2dFlyPlugin)
-        .add_startup_system(setup_things_startup.pipe(error_handler))
-        .add_system(highlight_selected_system)
+        .add_plugins(ZonesPlugin::default())
+        .add_plugins(NanobotPlugin::default())
+        .add_plugins(AiPlugin)
+        .add_plugins(Camera2dFlyPlugin)
+        .add_systems(Startup, setup_things_startup.pipe(error_handler))
+        .add_systems(Update, highlight_selected_system)
         .run();
 }
 

@@ -9,7 +9,7 @@ use bevy::{
         Query,
     },
     text::TextStyle,
-    ui::{AlignItems, AlignSelf, FlexDirection, Interaction, Node, Overflow, Size, Style, Val},
+    ui::{AlignItems, AlignSelf, FlexDirection, Interaction, Node, Overflow, Style, Val},
 };
 
 #[derive(Component, Default)]
@@ -26,8 +26,8 @@ pub fn spawn_scrollable_list(parent: &mut ChildBuilder<'_, '_, '_>, _text_style:
             style: Style {
                 flex_direction: FlexDirection::Column,
                 align_self: AlignSelf::Stretch,
-                size: Size::height(Val::Percent(50.0)),
-                overflow: Overflow::Hidden,
+                height: Val::Percent(50.0),
+                overflow: Overflow::clip(),
                 ..default()
             },
             background_color: Color::rgb(0.10, 0.10, 0.10).into(),
@@ -40,7 +40,8 @@ pub fn spawn_scrollable_list(parent: &mut ChildBuilder<'_, '_, '_>, _text_style:
                 NodeBundle {
                     style: Style {
                         flex_direction: FlexDirection::Column,
-                        max_size: Size::UNDEFINED,
+                        max_width: Val::Auto,
+                        max_height: Val::Auto,
                         align_items: AlignItems::Center,
                         ..default()
                     },
@@ -81,7 +82,7 @@ pub fn mouse_scroll(
 
             scrolling_list.position += dy;
             scrolling_list.position = scrolling_list.position.clamp(-max_scroll, 0.);
-            style.position.top = Val::Px(scrolling_list.position);
+            style.top = Val::Px(scrolling_list.position);
         }
     }
 }
