@@ -1,4 +1,5 @@
 mod ai;
+mod building;
 mod fly_camera;
 mod game_settings;
 mod highlight_unit;
@@ -15,6 +16,7 @@ use bevy::{
     sprite::{Material2dPlugin, MaterialMesh2dBundle},
 };
 use bevy_prototype_debug_lines::DebugLinesPlugin;
+use building::{Minerals, ProcessingFacility};
 use fly_camera::{Camera2dFlyPlugin, CameraZoom2d, FlyCamera2d};
 use game_settings::GameSettings;
 use highlight_unit::highlight_selected_system;
@@ -69,7 +71,31 @@ fn setup_things_startup(
 
     commands.insert_resource(GameSettings::from_file_ron("config/game_settings.ron")?);
 
-    spawn_nanobots_for_testing(&mut commands, group_counter, asset_server);
+    spawn_nanobots_for_testing(&mut commands, group_counter, &asset_server);
+
+    // minerals
+    let minerals_texture = asset_server.load("minerals.png");
+    commands.spawn((
+        Minerals {},
+        SpriteBundle {
+            texture: minerals_texture.clone(),
+            transform: Transform::from_translation(vec3(-800., 0., 1.))
+                .with_scale(vec3(2., 2., 1.)),
+            ..default()
+        },
+    ));
+
+    // processing
+    let processing_texture = asset_server.load("mineral processing.png");
+    commands.spawn((
+        ProcessingFacility {},
+        SpriteBundle {
+            texture: processing_texture.clone(),
+            transform: Transform::from_translation(vec3(-300., 0., 1.))
+                .with_scale(vec3(3., 3., 1.)),
+            ..default()
+        },
+    ));
 
     // background
     commands.spawn(MaterialMesh2dBundle {
@@ -104,7 +130,7 @@ fn setup_things_startup(
 fn spawn_nanobots_for_testing(
     commands: &mut Commands<'_, '_>,
     mut group_counter: ResMut<'_, GroupIdCounterResource>,
-    asset_server: Res<'_, AssetServer>,
+    asset_server: &Res<'_, AssetServer>,
 ) {
     commands
         .spawn((NanobotGroupBundle {
