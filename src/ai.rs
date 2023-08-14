@@ -1,15 +1,14 @@
 use bevy::{
     math::vec2,
     prelude::{
-        Commands, Component, Entity, IVec2, Parent, Plugin, Query, Transform, Vec2, With, Without, Update,
+        Commands, Component, Entity, IVec2, Parent, Plugin, Query, Transform, Update, Vec2, With,
+        Without,
     },
 };
 
-use rand::seq::IteratorRandom;
-
 use crate::{
     nanobot::{DirectMovementComponent, Nanobot},
-    zones::{get_zone_pos_from_world, ZoneComponent},
+    zones::ZoneComponent,
     ZONE_BLOCK_SIZE,
 };
 
@@ -60,30 +59,30 @@ pub struct Build;
 
 pub fn idle_behaviour_system(
     mut states: Query<(Entity, &mut AiStateComponent)>,
-    bot_positions: Query<(&Transform, &Parent), With<Nanobot>>,
-    zones: Query<(&ZoneComponent,)>,
+    _bot_positions: Query<(&Transform, &Parent), With<Nanobot>>,
+    _zones: Query<(&ZoneComponent,)>,
 ) {
-    let mut rng = rand::thread_rng();
+    let _rng = rand::thread_rng();
 
-    for (ent, mut action_state) in &mut states {
+    for (_ent, mut action_state) in &mut states {
         action_state.action_requests.push(AiActionRequest {
             kind: AiActionKind::Idle(Idle),
             priority: 0,
         });
 
-        let (curr_trans, curr_par) = bot_positions.get(ent).unwrap();
-        let (curr_zone,) = zones.get(curr_par.get()).unwrap();
+        // let (curr_trans, curr_par) = bot_positions.get(ent).unwrap();
+        // let (curr_zone,) = zones.get(curr_par.get()).unwrap();
 
-        let zone_pos = get_zone_pos_from_world(curr_trans.translation.truncate());
-        if !curr_zone.zone_points.is_empty() && !curr_zone.zone_points.contains(&zone_pos) {
-            let rand_zone_point = curr_zone.zone_points.iter().choose(&mut rng).unwrap();
-            action_state.action_requests.push(AiActionRequest {
-                kind: AiActionKind::Move(Move {
-                    destination: get_world_from_zone(*rand_zone_point),
-                }),
-                priority: 1,
-            });
-        }
+        // let zone_pos = get_zone_pos_from_world(curr_trans.translation.truncate());
+        // if !curr_zone.zone_points.is_empty() && !curr_zone.zone_points.contains(&zone_pos) {
+        //     let rand_zone_point = curr_zone.zone_points.iter().choose(&mut rng).unwrap();
+        //     action_state.action_requests.push(AiActionRequest {
+        //         kind: AiActionKind::Move(Move {
+        //             destination: get_world_from_zone(*rand_zone_point),
+        //         }),
+        //         priority: 1,
+        //     });
+        // }
     }
 }
 
@@ -175,7 +174,7 @@ pub struct AiPlugin;
 
 impl Plugin for AiPlugin {
     fn build(&self, app: &mut bevy::prelude::App) {
-        app .add_systems(Update, idle_behaviour_system)
+        app.add_systems(Update, idle_behaviour_system)
             .add_systems(Update, gather_behaviour_system)
             .add_systems(Update, build_behaviour_system)
             .add_systems(Update, move_action_system)
