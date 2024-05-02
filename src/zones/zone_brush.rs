@@ -1,8 +1,14 @@
 use bevy::{
-    asset::Asset, math::{ivec2, vec2}, prelude::{
-        Assets, Camera, Component, Event, EventReader, EventWriter, GlobalTransform, Handle, IVec2,
-        ButtonInput, MouseButton, Query, Res, ResMut, Vec2, With,
-    }, reflect::TypePath, render::render_resource::{AsBindGroup, ShaderType}, sprite::Material2d, window::Window
+    asset::Asset,
+    math::{ivec2, vec2},
+    prelude::{
+        Assets, ButtonInput, Camera, Component, Event, EventReader, EventWriter, GlobalTransform,
+        Handle, IVec2, MouseButton, Query, Res, ResMut, Vec2, With,
+    },
+    reflect::TypePath,
+    render::render_resource::{AsBindGroup, ShaderType},
+    sprite::Material2d,
+    window::Window,
 };
 
 use crate::{
