@@ -111,7 +111,7 @@ pub fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
             TextSection::new("FPS: ", text_style.clone()),
             TextSection::from_style(text_style),
         ])
-        .with_text_alignment(TextAlignment::Left)
+        .with_text_justify(JustifyText::Left)
         .with_style(Style {
             position_type: PositionType::Absolute,
             top: Val::Px(5.0),
@@ -138,10 +138,10 @@ pub fn button_system(
         if let Interaction::Pressed = *interaction {
             // Handle button click
             if merge_query.get_component::<MergeButton>(entity).is_ok() {
-                ev_nanobot_group_action.send(NanobotGroupAction::Merge)
+                ev_nanobot_group_action.send(NanobotGroupAction::Merge);
             }
             if split_query.get_component::<SplitButton>(entity).is_ok() {
-                ev_nanobot_group_action.send(NanobotGroupAction::Split)
+                ev_nanobot_group_action.send(NanobotGroupAction::Split);
             }
         }
     }

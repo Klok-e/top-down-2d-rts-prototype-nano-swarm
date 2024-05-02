@@ -22,7 +22,7 @@ pub fn group_action_system(
         return;
     }
 
-    for action in ev_nanobot_group_action.iter() {
+    for action in ev_nanobot_group_action.read() {
         match action {
             NanobotGroupAction::Merge => {
                 merge(
@@ -69,7 +69,7 @@ fn split(
                 zone_color: zone.zone_color,
                 zone_id: group.id as u32,
                 kind: ZoneChangedKind::PointRemoved,
-            })
+            });
         }
 
         let mid_index = children_vec.len() / 2;
@@ -101,7 +101,7 @@ fn split(
                     zone_color: nanobot_group_bundle.zone.zone_color,
                     zone_id: nanobot_group_bundle.group.id as u32,
                     kind: ZoneChangedKind::PointAdded,
-                })
+                });
             }
 
             // spawn entity
@@ -116,7 +116,7 @@ fn split(
         commands.entity(*group_entity).despawn();
 
         // notify other systems
-        ev_selected_groups_changed.send(SelectedGroupsChanged::Deselected(*group_entity))
+        ev_selected_groups_changed.send(SelectedGroupsChanged::Deselected(*group_entity));
     }
 }
 
@@ -170,7 +170,7 @@ fn merge(
             zone_color: nanobot_group_bundle.zone.zone_color,
             zone_id: nanobot_group_bundle.group.id as u32,
             kind: ZoneChangedKind::PointAdded,
-        })
+        });
     }
 
     // spawn entity
@@ -185,6 +185,6 @@ fn merge(
         commands.entity(*group_merged).despawn();
 
         // notify other systems
-        ev_selected_groups_changed.send(SelectedGroupsChanged::Deselected(*group_merged))
+        ev_selected_groups_changed.send(SelectedGroupsChanged::Deselected(*group_merged));
     }
 }

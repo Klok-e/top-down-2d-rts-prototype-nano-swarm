@@ -1,13 +1,8 @@
 use bevy::{
-    math::{ivec2, vec2},
-    prelude::{
+    asset::Asset, math::{ivec2, vec2}, prelude::{
         Assets, Camera, Component, Event, EventReader, EventWriter, GlobalTransform, Handle, IVec2,
-        Input, MouseButton, Query, Res, ResMut, Vec2, With,
-    },
-    reflect::{TypePath, TypeUuid},
-    render::render_resource::{AsBindGroup, ShaderType},
-    sprite::Material2d,
-    window::Window,
+        ButtonInput, MouseButton, Query, Res, ResMut, Vec2, With,
+    }, reflect::TypePath, render::render_resource::{AsBindGroup, ShaderType}, sprite::Material2d, window::Window
 };
 
 use crate::{
@@ -18,8 +13,7 @@ use crate::{
 
 use super::ZoneComponent;
 
-#[derive(AsBindGroup, TypeUuid, TypePath, Debug, Clone)]
-#[uuid = "4dd16810-1f6c-4cc3-9e12-6f363e0211c7"]
+#[derive(AsBindGroup, Asset, TypePath, Debug, Clone)]
 pub struct ZoneMaterial {
     #[storage(2, read_only)]
     pub zone_map: Vec<ZonePointData>,
@@ -165,7 +159,7 @@ pub fn handle_zone_event_system(
     mut ev_zone_changed: EventReader<ZoneChangedEvent>,
     mut zones: Query<(&mut ZoneComponent,), (With<Selected>, With<NanobotGroup>)>,
 ) {
-    for ev in ev_zone_changed.iter() {
+    for ev in ev_zone_changed.read() {
         let handle = zone_handle.single();
         let mat = zone_mats.get(&handle.handle).expect("Handle must be valid");
 
@@ -224,7 +218,7 @@ pub fn handle_zone_event_system(
 
 pub fn zone_brush_system(
     windows: Query<&Window>,
-    mouse_button_input: Res<Input<MouseButton>>,
+    mouse_button_input: Res<ButtonInput<MouseButton>>,
     ui_handling: Res<UiHandling>,
     camera_query: Query<(&GlobalTransform, &Camera)>,
     zones: Query<(&ZoneComponent, &NanobotGroup), With<Selected>>,
@@ -271,7 +265,7 @@ pub fn zone_brush_system(
                 zone_color: zone.zone_color,
                 zone_id: group.id as u32,
                 kind: ZoneChangedKind::PointAdded,
-            })
+            });
         }
     } else if mouse_button_input.pressed(MouseButton::Right) {
         if let Some((zone, group)) = zones.iter().next() {
@@ -281,7 +275,7 @@ pub fn zone_brush_system(
                 zone_color: zone.zone_color,
                 zone_id: group.id as u32,
                 kind: ZoneChangedKind::PointRemoved,
-            })
+            });
         }
     }
 }
@@ -292,7 +286,7 @@ pub fn selected_zone_highlight_system(
     zone_handle: Query<&ZoneMaterialHandleComponent>,
     mut ev_zone_select: EventReader<SelectedGroupsChanged>,
 ) {
-    for ev in ev_zone_select.iter() {
+    for ev in ev_zone_select.read() {
         let handle = zone_handle.single();
         let mat = zone_mats
             .get_mut(&handle.handle)

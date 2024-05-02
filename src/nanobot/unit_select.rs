@@ -1,4 +1,4 @@
-use bevy::{input::Input, prelude::*};
+use bevy::{input::ButtonInput, prelude::*};
 use rand::Rng;
 
 use crate::{
@@ -16,8 +16,8 @@ const BIAS_RATE: f32 = 0.5;
 pub fn unit_select_system(
     mut commands: Commands,
     windows: Query<&Window>,
-    mouse_button_input: Res<Input<MouseButton>>,
-    keyboard_input: Res<Input<KeyCode>>,
+    mouse_button_input: Res<ButtonInput<MouseButton>>,
+    keyboard_input: Res<ButtonInput<KeyCode>>,
     mut nanobots: Query<(&Parent, &mut Transform), With<Nanobot>>,
     mut selected_groups: Query<(Entity, &Children), With<Selected>>,
     camera_query: Query<(&GlobalTransform, &Camera)>,
@@ -59,7 +59,7 @@ pub fn unit_select_system(
                 commands.entity(entity).remove::<Selected>();
 
                 // notify other systems
-                ev_select_changed.send(SelectedGroupsChanged::Deselected(entity))
+                ev_select_changed.send(SelectedGroupsChanged::Deselected(entity));
             }
         }
 
