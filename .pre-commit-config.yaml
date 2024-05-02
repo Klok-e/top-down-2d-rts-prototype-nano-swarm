@@ -4,5 +4,5 @@ repos:
           - id: cargo fmt
             name: cargo fmt
             language: system
-            entry: cargo fmt --
+            entry: cargo fmt --check --
             types: [rust]
