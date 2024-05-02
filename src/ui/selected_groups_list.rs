@@ -20,7 +20,7 @@ pub struct ScrollingList {
 #[derive(Debug, Component)]
 pub struct SelectedGroupsList;
 
-pub fn spawn_scrollable_list(parent: &mut ChildBuilder<'_, '_, '_>, _text_style: &TextStyle) {
+pub fn spawn_scrollable_list(parent: &mut ChildBuilder<'_>, _text_style: &TextStyle) {
     parent
         .spawn(NodeBundle {
             style: Style {
@@ -60,7 +60,7 @@ pub fn mouse_scroll(
     interaction_nodes: Query<&Interaction>,
     query_node: Query<&Node>,
 ) {
-    for mouse_wheel_event in mouse_wheel_events.iter() {
+    for mouse_wheel_event in mouse_wheel_events.read() {
         for (mut scrolling_list, mut style, parent, list_node) in &mut query_list {
             if *interaction_nodes
                 .get(parent.get())

@@ -15,7 +15,6 @@ use bevy::{
     prelude::*,
     sprite::{Material2dPlugin, MaterialMesh2dBundle},
 };
-use bevy_prototype_debug_lines::DebugLinesPlugin;
 use building::{Minerals, ProcessingFacility};
 use fly_camera::{Camera2dFlyPlugin, CameraZoom2d, FlyCamera2d};
 use game_settings::GameSettings;
@@ -31,7 +30,6 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(Material2dPlugin::<BackgroundMaterial>::default())
-        .add_plugins(DebugLinesPlugin::default())
         // must be before NanobotPlugin because otherwise it receives events with despawned entities
         .add_plugins(NanoswarmUiSetupPlugin)
         // must be before NanobotPlugin because otherwise it receives events with despawned entities

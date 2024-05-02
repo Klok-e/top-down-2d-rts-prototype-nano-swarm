@@ -12,7 +12,7 @@ pub fn fps_ui_system(
     diagnostics: Res<DiagnosticsStore>,
 ) {
     let mut text = text.single_mut();
-    if let Some(fps) = diagnostics.get(FrameTimeDiagnosticsPlugin::FPS) {
+    if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS) {
         if let Some(value) = fps.smoothed() {
             // Update the value of the second section
             text.sections[1].value = format!("{value:.2}");

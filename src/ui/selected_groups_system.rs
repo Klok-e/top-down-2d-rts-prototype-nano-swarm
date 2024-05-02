@@ -25,7 +25,7 @@ pub fn update_selected_nanobot_groups_system(
     selected_groups_list_children: Query<&SelectedGroupReference>,
     groups: Query<&NanobotGroup>,
 ) {
-    for ev in ev_select_changed.iter() {
+    for ev in ev_select_changed.read() {
         for (ent, children) in &selected_groups_lists {
             match ev {
                 SelectedGroupsChanged::Selected(selected_ent) => {

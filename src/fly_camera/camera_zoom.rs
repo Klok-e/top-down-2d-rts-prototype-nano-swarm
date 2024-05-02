@@ -20,7 +20,7 @@ pub fn camera_2d_zoom_system(
     mut query: Query<(&mut CameraZoom2d, &mut OrthographicProjection)>,
 ) {
     for (mut zoom, mut ortho) in query.iter_mut() {
-        for event in mouse_wheel_event_reader.iter() {
+        for event in mouse_wheel_event_reader.read() {
             // Update the zoom speed based on the current zoom level
             let dynamic_zoom_speed = zoom.zoom_speed * zoom.zoom;
 
