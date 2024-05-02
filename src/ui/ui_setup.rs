@@ -137,10 +137,10 @@ pub fn button_system(
     for (entity, interaction) in interaction_query.iter() {
         if let Interaction::Pressed = *interaction {
             // Handle button click
-            if merge_query.get_component::<MergeButton>(entity).is_ok() {
+            if merge_query.get(entity).is_ok() {
                 ev_nanobot_group_action.send(NanobotGroupAction::Merge);
             }
-            if split_query.get_component::<SplitButton>(entity).is_ok() {
+            if split_query.get(entity).is_ok() {
                 ev_nanobot_group_action.send(NanobotGroupAction::Split);
             }
         }
