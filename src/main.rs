@@ -97,28 +97,28 @@ fn setup_things_startup(
 
     // background
     commands.spawn(MaterialMesh2dBundle {
-        mesh: meshes.add(Mesh::from(shape::Quad::default())).into(),
+        mesh: meshes.add(Mesh::from(Rectangle::default())).into(),
         material: bg_mats.add(BackgroundMaterial {}),
         transform: Transform::default().with_scale(
             Vec2::new(
                 MAP_WIDTH as f32 * ZONE_BLOCK_SIZE,
                 MAP_HEIGHT as f32 * ZONE_BLOCK_SIZE,
             )
-            .extend(-101.),
+            .extend(-100.),
         ),
         ..default()
     });
 
     // zones
     commands.spawn(MaterialMesh2dBundle {
-        mesh: meshes.add(Mesh::from(shape::Quad::default())).into(),
+        mesh: meshes.add(Mesh::from(Rectangle::default())).into(),
         material: handle,
         transform: Transform::default().with_scale(
             Vec2::new(
                 MAP_WIDTH as f32 * ZONE_BLOCK_SIZE,
                 MAP_HEIGHT as f32 * ZONE_BLOCK_SIZE,
             )
-            .extend(-100.),
+            .extend(-101.),
         ),
         ..default()
     });

@@ -6,7 +6,7 @@ use super::components::Nanobot;
 
 pub fn bot_debug_circle_system(
     game_settings: Res<GameSettings>,
-    bots: Query<&Transform, With<Nanobot>>,
+    _bots: Query<&Transform, With<Nanobot>>,
     // mut shapes: ResMut<DebugShapes>,
 ) {
     if !game_settings.debug_draw_circles {}

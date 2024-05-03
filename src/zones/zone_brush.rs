@@ -204,6 +204,8 @@ pub fn handle_zone_event_system(
                     zone_data.set_zone_id(ev.zone_color, ev.zone_id);
 
                     zone.zone_points.insert(point);
+
+                    log::debug!("Point {point} inserted to zone data");
                 }
             }
             ZoneChangedKind::PointRemoved => {
@@ -217,6 +219,8 @@ pub fn handle_zone_event_system(
                 zone_data.set_zone_id(ev.zone_color, ev.zone_id);
 
                 zone.zone_points.remove(&point);
+
+                log::debug!("Point {point} removed from zone data");
             }
         }
     }

@@ -1,12 +1,12 @@
-#import bevy_pbr::mesh_vertex_output MeshVertexOutput
+#import bevy_pbr::forward_io::VertexOutput
 
-@group(1) @binding(2)
+@group(2) @binding(2)
 var<storage> zone_map: array<ZonePointData>;
-@group(1) @binding(3)
+@group(2) @binding(3)
 var<uniform> width: u32;
-@group(1) @binding(4)
+@group(2) @binding(4)
 var<uniform> height: u32;
-@group(1) @binding(1)
+@group(2) @binding(1)
 var<uniform> highlight_zone_id: u32;
 
 struct ZonePointData {
@@ -18,7 +18,7 @@ struct ZonePointData {
 
 @fragment
 fn fragment(
-    in: MeshVertexOutput
+    in: VertexOutput
 ) -> @location(0) vec4<f32> {
 
     // TODO: check performance implications of this constant array
