@@ -6,7 +6,11 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bevy = { version = "0.13.0", features = ["dynamic_linking"] }
+bevy = { version = "0.13.0", features = [
+    "dynamic_linking",
+    "file_watcher",
+    "wayland",
+] }
 thiserror = "1.0"
 anyhow = "1.0.70"
 serde = { version = "1.0.160", features = ["derive"] }
@@ -22,9 +26,8 @@ opt-level = 3
 opt-level = 1
 
 [profile.release]
-# lto = "thin"
+lto = "thin"
 debug = true
 
 [profile.bench]
-# lto = "thin"
-debug = true
+lto = "thin"

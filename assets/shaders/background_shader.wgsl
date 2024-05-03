@@ -1,8 +1,8 @@
-#import bevy_pbr::mesh_vertex_output MeshVertexOutput
+#import bevy_pbr::forward_io::VertexOutput
 
 @fragment
 fn fragment(
-    in: MeshVertexOutput
+    in: VertexOutput
 ) -> @location(0) vec4<f32> {
     let tile_count: f32 = 0.01; // increase to add more tiles
     let sum: f32 = floor(in.world_position.x * tile_count) + floor(in.world_position.y * tile_count);
