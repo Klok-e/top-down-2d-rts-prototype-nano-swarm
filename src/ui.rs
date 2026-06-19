@@ -32,9 +32,9 @@ impl Plugin for NanoswarmUiSetupPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(UiHandling::default())
             .insert_resource(MouseActionMode::default())
-            .add_event::<SelectedGroupsChanged>()
-            .add_event::<NanobotGroupAction>()
-            .add_plugins(FrameTimeDiagnosticsPlugin)
+            .add_message::<SelectedGroupsChanged>()
+            .add_message::<NanobotGroupAction>()
+            .add_plugins(FrameTimeDiagnosticsPlugin::default())
             .add_systems(Startup, setup_ui_system)
             .add_systems(Update, check_ui_interaction)
             .add_systems(Update, zone_button_system)

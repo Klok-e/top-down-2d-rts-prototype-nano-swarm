@@ -1,7 +1,7 @@
 use bevy::{
     math::vec2,
     prelude::{
-        Commands, Component, Entity, IVec2, Parent, Plugin, Query, Transform, Update, Vec2, With,
+        ChildOf, Commands, Component, Entity, IVec2, Plugin, Query, Transform, Update, Vec2, With,
         Without,
     },
 };
@@ -59,10 +59,10 @@ pub struct Build;
 
 pub fn idle_behaviour_system(
     mut states: Query<(Entity, &mut AiStateComponent)>,
-    _bot_positions: Query<(&Transform, &Parent), With<Nanobot>>,
+    _bot_positions: Query<(&Transform, &ChildOf), With<Nanobot>>,
     _zones: Query<(&ZoneComponent,)>,
 ) {
-    let _rng = rand::thread_rng();
+    let _rng = rand::rng();
 
     for (_ent, mut action_state) in &mut states {
         action_state.action_requests.push(AiActionRequest {

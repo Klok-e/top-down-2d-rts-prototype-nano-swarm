@@ -22,7 +22,7 @@ pub fn check_ui_interaction(
         ),
     >,
 ) {
-    let any = interaction_query.iter().any(|x| x.mouse_over());
+    let any = interaction_query.iter().any(|x| x.cursor_over());
     if ui_handling.is_pointer_over_ui != any {
         ui_handling.is_pointer_over_ui = any;
     }

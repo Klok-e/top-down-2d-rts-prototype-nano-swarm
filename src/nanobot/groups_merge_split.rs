@@ -1,4 +1,5 @@
-use bevy::{prelude::*, utils::HashSet};
+use bevy::prelude::*;
+use std::collections::HashSet;
 
 use crate::{
     nanobot::NanobotGroup,
@@ -11,11 +12,11 @@ use super::{GroupIdCounterResource, NanobotGroupBundle, Selected};
 // System that handles split and merge actions
 pub fn group_action_system(
     mut commands: Commands,
-    mut ev_nanobot_group_action: EventReader<NanobotGroupAction>,
-    mut ev_selected_groups_changed: EventWriter<SelectedGroupsChanged>,
+    mut ev_nanobot_group_action: MessageReader<NanobotGroupAction>,
+    mut ev_selected_groups_changed: MessageWriter<SelectedGroupsChanged>,
     selected_groups: Query<(Entity, &NanobotGroup, &Children, &ZoneComponent), With<Selected>>,
     mut group_id_count: ResMut<GroupIdCounterResource>,
-    mut ev_zone_changed: EventWriter<ZoneChangedEvent>,
+    mut ev_zone_changed: MessageWriter<ZoneChangedEvent>,
 ) {
     let selected_groups: Vec<_> = selected_groups.iter().collect();
     if selected_groups.is_empty() {
@@ -49,13 +50,13 @@ pub fn group_action_system(
 fn split(
     selected_groups: &[(Entity, &NanobotGroup, &Children, &ZoneComponent)],
     commands: &mut Commands<'_, '_>,
-    ev_selected_groups_changed: &mut EventWriter<'_, SelectedGroupsChanged>,
+    ev_selected_groups_changed: &mut MessageWriter<'_, SelectedGroupsChanged>,
     group_id_count: &mut ResMut<GroupIdCounterResource>,
-    ev_zone_changed: &mut EventWriter<ZoneChangedEvent>,
+    ev_zone_changed: &mut MessageWriter<ZoneChangedEvent>,
 ) {
     for (group_entity, group, children, zone) in selected_groups.iter() {
         // Convert children to Vec for indexed access
-        let children_vec: Vec<Entity> = children.iter().cloned().collect();
+        let children_vec: Vec<Entity> = children.iter().collect();
 
         // If the group has only one nanobot, no need to split
         if children_vec.len() < 2 {
@@ -64,7 +65,7 @@ fn split(
 
         // remove all points from zone
         for point in &zone.zone_points {
-            ev_zone_changed.send(ZoneChangedEvent {
+            ev_zone_changed.write(ZoneChangedEvent {
                 point: *point,
                 zone_color: zone.zone_color,
                 zone_id: group.id as u32,
@@ -96,7 +97,7 @@ fn split(
 
             // add all points to new zone
             for point in &zone.zone_points {
-                ev_zone_changed.send(ZoneChangedEvent {
+                ev_zone_changed.write(ZoneChangedEvent {
                     point: *point,
                     zone_color: nanobot_group_bundle.zone.zone_color,
                     zone_id: nanobot_group_bundle.group.id as u32,
@@ -106,26 +107,26 @@ fn split(
 
             // spawn entity
             let mut new_ent = commands.spawn((nanobot_group_bundle, Selected {}));
-            new_ent.push_children(&children_vec[start_index..end_index]);
+            new_ent.add_children(&children_vec[start_index..end_index]);
 
             // notify other systems
-            ev_selected_groups_changed.send(SelectedGroupsChanged::Selected(new_ent.id()));
+            ev_selected_groups_changed.write(SelectedGroupsChanged::Selected(new_ent.id()));
         }
 
         // Remove the old group
         commands.entity(*group_entity).despawn();
 
         // notify other systems
-        ev_selected_groups_changed.send(SelectedGroupsChanged::Deselected(*group_entity));
+        ev_selected_groups_changed.write(SelectedGroupsChanged::Deselected(*group_entity));
     }
 }
 
 fn merge(
     selected_groups: &Vec<(Entity, &NanobotGroup, &Children, &ZoneComponent)>,
     commands: &mut Commands<'_, '_>,
-    ev_selected_groups_changed: &mut EventWriter<'_, SelectedGroupsChanged>,
+    ev_selected_groups_changed: &mut MessageWriter<'_, SelectedGroupsChanged>,
     group_id_count: &mut ResMut<GroupIdCounterResource>,
-    ev_zone_changed: &mut EventWriter<ZoneChangedEvent>,
+    ev_zone_changed: &mut MessageWriter<ZoneChangedEvent>,
 ) {
     if selected_groups.len() < 2 {
         return;
@@ -142,7 +143,7 @@ fn merge(
 
         // remove all points from zone
         for point in &zone.zone_points {
-            ev_zone_changed.send(ZoneChangedEvent {
+            ev_zone_changed.write(ZoneChangedEvent {
                 point: *point,
                 zone_color: zone.zone_color,
                 zone_id: group.id as u32,
@@ -165,7 +166,7 @@ fn merge(
 
     // add all points to new zone
     for point in &nanobot_group_bundle.zone.zone_points {
-        ev_zone_changed.send(ZoneChangedEvent {
+        ev_zone_changed.write(ZoneChangedEvent {
             point: *point,
             zone_color: nanobot_group_bundle.zone.zone_color,
             zone_id: nanobot_group_bundle.group.id as u32,
@@ -175,16 +176,16 @@ fn merge(
 
     // spawn entity
     let mut new_ent = commands.spawn((nanobot_group_bundle, Selected {}));
-    new_ent.push_children(&new_group_children);
+    new_ent.add_children(&new_group_children);
 
     // notify other systems
-    ev_selected_groups_changed.send(SelectedGroupsChanged::Selected(new_ent.id()));
+    ev_selected_groups_changed.write(SelectedGroupsChanged::Selected(new_ent.id()));
 
     for group_merged in groups_to_merge {
         // delete group
         commands.entity(*group_merged).despawn();
 
         // notify other systems
-        ev_selected_groups_changed.send(SelectedGroupsChanged::Deselected(*group_merged));
+        ev_selected_groups_changed.write(SelectedGroupsChanged::Deselected(*group_merged));
     }
 }

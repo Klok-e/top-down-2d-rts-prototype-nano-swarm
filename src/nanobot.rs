@@ -56,6 +56,6 @@ impl GroupIdCounterResource {
 #[derive(Debug, Bundle, Default)]
 pub struct NanobotGroupBundle {
     pub group: NanobotGroup,
-    pub spatial_bundle: SpatialBundle,
+    pub transform: Transform,
     pub zone: ZoneComponent,
 }

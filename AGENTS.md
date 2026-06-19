@@ -7,6 +7,10 @@
 - Run `cargo clippy`.
 - Run `cargo test`.
 
+## Testing
+
+For coding-agent implementation work, follow `docs/agents/testing.md`.
+
 ## Agent skills
 
 ### Issue tracker

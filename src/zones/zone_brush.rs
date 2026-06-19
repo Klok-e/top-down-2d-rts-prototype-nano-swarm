@@ -2,12 +2,16 @@ use bevy::{
     asset::Asset,
     math::{ivec2, vec2},
     prelude::{
-        Assets, ButtonInput, Camera, Component, Event, EventReader, EventWriter, GlobalTransform,
-        Handle, IVec2, MouseButton, Query, Res, ResMut, Vec2, With,
+        Assets, ButtonInput, Camera, Component, GlobalTransform, Handle, IVec2, Message,
+        MessageReader, MessageWriter, MouseButton, Query, Res, ResMut, Vec2, With,
     },
     reflect::TypePath,
-    render::render_resource::{AsBindGroup, ShaderType},
-    sprite::Material2d,
+    render::{
+        render_resource::{AsBindGroup, ShaderType},
+        storage::ShaderStorageBuffer,
+    },
+    shader::ShaderRef,
+    sprite_render::Material2d,
     window::Window,
 };
 
@@ -22,7 +26,8 @@ use super::ZoneComponent;
 #[derive(AsBindGroup, Asset, TypePath, Debug, Clone)]
 pub struct ZoneMaterial {
     #[storage(2, read_only)]
-    pub zone_map: Vec<ZonePointData>,
+    pub zone_map: Handle<ShaderStorageBuffer>,
+    pub zone_data: Vec<ZonePointData>,
     #[uniform(3)]
     pub width: u32,
     #[uniform(4)]
@@ -32,9 +37,11 @@ pub struct ZoneMaterial {
 }
 
 impl ZoneMaterial {
-    pub fn new(width: u32, height: u32) -> ZoneMaterial {
+    pub fn new(width: u32, height: u32, buffers: &mut Assets<ShaderStorageBuffer>) -> ZoneMaterial {
+        let zone_data = vec![ZonePointData::new(); (width * height) as usize];
         ZoneMaterial {
-            zone_map: vec![ZonePointData::new(); (width * height) as usize],
+            zone_map: buffers.add(ShaderStorageBuffer::from(zone_data.clone())),
+            zone_data,
             width,
             height,
             highlight_zone_id: 0,
@@ -45,7 +52,7 @@ impl ZoneMaterial {
         if x >= self.width || y >= self.height {
             None
         } else {
-            Some(&self.zone_map[(y * self.width + x) as usize])
+            Some(&self.zone_data[(y * self.width + x) as usize])
         }
     }
 
@@ -53,7 +60,7 @@ impl ZoneMaterial {
         if x >= self.width || y >= self.height {
             None
         } else {
-            Some(&mut self.zone_map[(y * self.width + x) as usize])
+            Some(&mut self.zone_data[(y * self.width + x) as usize])
         }
     }
 }
@@ -64,6 +71,12 @@ pub struct ZonePointData {
     zones: u32,
     /// 2 zone id indicators 14 bits each, last 4 bits are unused
     bits: u32,
+}
+
+impl Default for ZonePointData {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ZonePointData {
@@ -133,7 +146,7 @@ impl ZonePointData {
 }
 
 impl Material2d for ZoneMaterial {
-    fn fragment_shader() -> bevy::render::render_resource::ShaderRef {
+    fn fragment_shader() -> ShaderRef {
         "shaders/zone_shader.wgsl".into()
     }
 }
@@ -143,7 +156,7 @@ pub struct ZoneMaterialHandleComponent {
     pub handle: Handle<ZoneMaterial>,
 }
 
-#[derive(Debug, Event)]
+#[derive(Debug, Message)]
 pub struct ZoneChangedEvent {
     pub point: IVec2,
     /// only 4 first bits are used
@@ -161,12 +174,15 @@ pub enum ZoneChangedKind {
 
 pub fn handle_zone_event_system(
     mut zone_mats: ResMut<Assets<ZoneMaterial>>,
+    mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
     zone_handle: Query<&ZoneMaterialHandleComponent>,
-    mut ev_zone_changed: EventReader<ZoneChangedEvent>,
+    mut ev_zone_changed: MessageReader<ZoneChangedEvent>,
     mut zones: Query<(&mut ZoneComponent,), (With<Selected>, With<NanobotGroup>)>,
 ) {
     for ev in ev_zone_changed.read() {
-        let handle = zone_handle.single();
+        let Ok(handle) = zone_handle.single() else {
+            return;
+        };
         let mat = zone_mats.get(&handle.handle).expect("Handle must be valid");
 
         let point = ev.point;
@@ -202,6 +218,11 @@ pub fn handle_zone_event_system(
                         .expect("Bounds check already happened");
                     zone_data.set_zone(ev.zone_color, true);
                     zone_data.set_zone_id(ev.zone_color, ev.zone_id);
+                    let zone_map = mat.zone_map.clone();
+                    let zone_data = mat.zone_data.clone();
+                    if let Some(buffer) = buffers.get_mut(&zone_map) {
+                        buffer.set_data(zone_data);
+                    }
 
                     zone.zone_points.insert(point);
 
@@ -217,6 +238,11 @@ pub fn handle_zone_event_system(
                     .expect("Bounds check already happened");
                 zone_data.set_zone(ev.zone_color, false);
                 zone_data.set_zone_id(ev.zone_color, ev.zone_id);
+                let zone_map = mat.zone_map.clone();
+                let zone_data = mat.zone_data.clone();
+                if let Some(buffer) = buffers.get_mut(&zone_map) {
+                    buffer.set_data(zone_data);
+                }
 
                 zone.zone_points.remove(&point);
 
@@ -232,7 +258,7 @@ pub fn zone_brush_system(
     ui_handling: Res<UiHandling>,
     camera_query: Query<(&GlobalTransform, &Camera)>,
     zones: Query<(&ZoneComponent, &NanobotGroup), With<Selected>>,
-    mut ev_zone_changed: EventWriter<ZoneChangedEvent>,
+    mut ev_zone_changed: MessageWriter<ZoneChangedEvent>,
     mouse_mode: Res<MouseActionMode>,
 ) {
     // don't do anything if cursor over ui
@@ -246,14 +272,19 @@ pub fn zone_brush_system(
     }
 
     // Get the cursor position in window coordinates
-    let Some(cursor_pos) = windows.single().cursor_position() else {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor_pos) = window.cursor_position() else {
         return;
     };
 
     // Convert the cursor position to world coordinates using viewport_to_world_2d
-    let (camera_transform, camera) = camera_query.single();
+    let Ok((camera_transform, camera)) = camera_query.single() else {
+        return;
+    };
     let cursor_pos_world =
-        if let Some(pos) = camera.viewport_to_world_2d(camera_transform, cursor_pos) {
+        if let Ok(pos) = camera.viewport_to_world_2d(camera_transform, cursor_pos) {
             pos
         } else {
             return;
@@ -270,7 +301,7 @@ pub fn zone_brush_system(
     if mouse_button_input.pressed(MouseButton::Left) {
         if let Some((zone, group)) = zones.iter().next() {
             // notify
-            ev_zone_changed.send(ZoneChangedEvent {
+            ev_zone_changed.write(ZoneChangedEvent {
                 point: idx,
                 zone_color: zone.zone_color,
                 zone_id: group.id as u32,
@@ -280,7 +311,7 @@ pub fn zone_brush_system(
     } else if mouse_button_input.pressed(MouseButton::Right) {
         if let Some((zone, group)) = zones.iter().next() {
             // notify
-            ev_zone_changed.send(ZoneChangedEvent {
+            ev_zone_changed.write(ZoneChangedEvent {
                 point: idx,
                 zone_color: zone.zone_color,
                 zone_id: group.id as u32,
@@ -294,10 +325,12 @@ pub fn selected_zone_highlight_system(
     zones: Query<(&NanobotGroup,)>,
     mut zone_mats: ResMut<Assets<ZoneMaterial>>,
     zone_handle: Query<&ZoneMaterialHandleComponent>,
-    mut ev_zone_select: EventReader<SelectedGroupsChanged>,
+    mut ev_zone_select: MessageReader<SelectedGroupsChanged>,
 ) {
     for ev in ev_zone_select.read() {
-        let handle = zone_handle.single();
+        let Ok(handle) = zone_handle.single() else {
+            return;
+        };
         let mat = zone_mats
             .get_mut(&handle.handle)
             .expect("Handle must be valid");
@@ -324,4 +357,27 @@ pub fn get_zone_pos_from_world(world_pos: Vec2) -> IVec2 {
         (world_pos.y / ZONE_BLOCK_SIZE).floor(),
     )
     .as_ivec2()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zone_ids_do_not_corrupt_each_other() {
+        let mut point = ZonePointData::new();
+
+        point.set_zone_id(ZonePointData::ZONE1, 17);
+        point.set_zone_id(ZonePointData::ZONE2, 42);
+        point.set_zone_id(ZonePointData::ZONE3, 99);
+        point.set_zone_id(ZonePointData::ZONE4, ZonePointData::ZONE_ID_MASK);
+
+        assert_eq!(point.get_zone_id(ZonePointData::ZONE1), 17);
+        assert_eq!(point.get_zone_id(ZonePointData::ZONE2), 42);
+        assert_eq!(point.get_zone_id(ZonePointData::ZONE3), 99);
+        assert_eq!(
+            point.get_zone_id(ZonePointData::ZONE4),
+            ZonePointData::ZONE_ID_MASK
+        );
+    }
 }

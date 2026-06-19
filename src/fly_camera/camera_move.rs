@@ -1,7 +1,7 @@
 use bevy::{
     input::ButtonInput,
     math::{Vec2, Vec3},
-    prelude::{Component, KeyCode, OrthographicProjection, Query, Res, Time, Transform},
+    prelude::{Component, KeyCode, Projection, Query, Res, Time, Transform},
 };
 
 /// A set of options for initializing a FlyCamera.
@@ -55,11 +55,7 @@ impl Default for FlyCamera2d {
 pub fn camera_2d_movement_system(
     time: Res<Time>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut query: Query<(
-        &mut FlyCamera2d,
-        &mut Transform,
-        Option<&OrthographicProjection>,
-    )>,
+    mut query: Query<(&mut FlyCamera2d, &mut Transform, Option<&Projection>)>,
 ) {
     for (mut options, mut transform, ortho) in query.iter_mut() {
         let (axis_h, axis_v) = if options.enabled {
@@ -84,14 +80,14 @@ pub fn camera_2d_movement_system(
             Vec2::ZERO
         };
 
-        options.velocity += accel * time.delta_seconds();
+        options.velocity += accel * time.delta_secs();
 
         // clamp within max speed
         if options.velocity.length() > options.max_speed {
             options.velocity = options.velocity.normalize() * options.max_speed;
         }
 
-        let delta_friction = friction * time.delta_seconds();
+        let delta_friction = friction * time.delta_secs();
 
         options.velocity =
             if (options.velocity + delta_friction).signum() != options.velocity.signum() {
@@ -100,8 +96,11 @@ pub fn camera_2d_movement_system(
                 options.velocity + delta_friction
             };
 
-        transform.translation += Vec3::new(options.velocity.x, options.velocity.y, 0.0)
-            * ortho.map(|x| x.scale).unwrap_or(1.);
+        let scale = match ortho {
+            Some(Projection::Orthographic(ortho)) => ortho.scale,
+            _ => 1.,
+        };
+        transform.translation += Vec3::new(options.velocity.x, options.velocity.y, 0.0) * scale;
     }
 }
 
