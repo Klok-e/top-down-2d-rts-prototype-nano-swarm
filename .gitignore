@@ -1,2 +1,4 @@
 /target
 /.env
+/.pi/afk/state.json
+/.pi/afk/logs/
