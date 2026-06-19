@@ -1,7 +1,6 @@
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
-    prelude::{Component, Query, Res, With},
-    text::Text,
+    prelude::{Component, Query, Res, Text, With},
 };
 
 #[derive(Component)]
@@ -11,11 +10,12 @@ pub fn fps_ui_system(
     mut text: Query<&mut Text, With<FpsText>>,
     diagnostics: Res<DiagnosticsStore>,
 ) {
-    let mut text = text.single_mut();
+    let Ok(mut text) = text.single_mut() else {
+        return;
+    };
     if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS) {
         if let Some(value) = fps.smoothed() {
-            // Update the value of the second section
-            text.sections[1].value = format!("{value:.2}");
+            *text = Text::new(format!("FPS: {value:.2}"));
         }
     }
 }

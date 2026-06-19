@@ -10,8 +10,8 @@ pub fn highlight_selected_system(
     selected_groups: Query<&Children, (With<NanobotGroup>, With<Selected>)>,
     non_selected_groups: Query<&Children, (With<NanobotGroup>, Without<Selected>)>,
 ) {
-    let selected_col = Color::rgb(1.0, 0.0, 0.0); // Red color for selected units
-    let default_col = Color::rgb(1.0, 1.0, 1.0); // White color for non-selected units
+    let selected_col = Color::srgb(1.0, 0.0, 0.0); // Red color for selected units
+    let default_col = Color::srgb(1.0, 1.0, 1.0); // White color for non-selected units
 
     for children in selected_groups.iter() {
         for child in children.iter() {

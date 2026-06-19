@@ -1,8 +1,6 @@
 use bevy::{
-    asset::Asset,
-    reflect::TypePath,
-    render::render_resource::{AsBindGroup, ShaderRef},
-    sprite::Material2d,
+    asset::Asset, reflect::TypePath, render::render_resource::AsBindGroup, shader::ShaderRef,
+    sprite_render::Material2d,
 };
 
 #[derive(AsBindGroup, TypePath, Asset, Debug, Clone)]

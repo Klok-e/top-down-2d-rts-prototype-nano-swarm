@@ -1,6 +1,6 @@
 use bevy::{
     input::mouse::MouseWheel,
-    prelude::{Component, EventReader, OrthographicProjection, Query, Res},
+    prelude::{Component, MessageReader, Projection, Query, Res},
     time::Time,
 };
 
@@ -16,19 +16,18 @@ pub struct CameraZoom2d {
 
 pub fn camera_2d_zoom_system(
     time: Res<Time>,
-    mut mouse_wheel_event_reader: EventReader<MouseWheel>,
-    mut query: Query<(&mut CameraZoom2d, &mut OrthographicProjection)>,
+    mut mouse_wheel_event_reader: MessageReader<MouseWheel>,
+    mut query: Query<(&mut CameraZoom2d, &mut Projection)>,
 ) {
-    for (mut zoom, mut ortho) in query.iter_mut() {
+    for (mut zoom, mut projection) in query.iter_mut() {
         for event in mouse_wheel_event_reader.read() {
-            // Update the zoom speed based on the current zoom level
             let dynamic_zoom_speed = zoom.zoom_speed * zoom.zoom;
+            zoom.zoom -= event.y * dynamic_zoom_speed * time.delta_secs();
+            zoom.zoom = zoom.zoom.clamp(zoom.zoom_min_max.0, zoom.zoom_min_max.1);
 
-            zoom.zoom -= event.y * dynamic_zoom_speed * time.delta_seconds();
-            zoom.zoom = zoom.zoom.clamp(zoom.zoom_min_max.0, zoom.zoom_min_max.1); // limit the zoom level
-
-            // Update the camera's scale
-            ortho.scale = zoom.zoom;
+            if let Projection::Orthographic(ortho) = &mut *projection {
+                ortho.scale = zoom.zoom;
+            }
         }
     }
 }

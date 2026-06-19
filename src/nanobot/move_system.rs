@@ -2,7 +2,7 @@ use bevy::{
     prelude::{Commands, Entity, Query, Res, Transform, Vec2, Vec3, With},
     time::Time,
 };
-use rand::Rng;
+use rand::RngExt;
 
 use crate::{
     game_settings::GameSettings,
@@ -42,7 +42,7 @@ pub fn move_velocity_system(
             if progress_checker.is_none() {
                 commands.entity(entity).insert(ProgressChecker {
                     last_position: translation.truncate(),
-                    last_update_time: time.elapsed_seconds_f64(),
+                    last_update_time: time.elapsed_secs_f64(),
                 });
             }
         } else {
@@ -52,7 +52,7 @@ pub fn move_velocity_system(
 
         // Check if the bot has not made any significant progress for a long time
         if let Some(mut checker) = progress_checker {
-            let current_time = time.elapsed_seconds_f64();
+            let current_time = time.elapsed_secs_f64();
             const MAX_TIME_WITHOUT_PROGRESS: f64 = 2.0; // Maximum time without significant progress
             const MIN_PROGRESS: f32 = 1.0; // Minimum progress to reset the timer
 
@@ -87,7 +87,7 @@ pub fn move_velocity_system(
 
 pub fn separation_system(mut query: Query<(&Transform, &mut VelocityComponent), With<Nanobot>>) {
     let mut combinations = query.iter_combinations_mut();
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     const EPSILON: f32 = 1e-3;
 
     while let Some([(transform1, mut velocity1), (transform2, mut velocity2)]) =
@@ -101,7 +101,7 @@ pub fn separation_system(mut query: Query<(&Transform, &mut VelocityComponent), 
 
             // If separation vector is nearly zero (with the given threshold), apply a random perturbation
             if separation.length() < EPSILON {
-                let angle: f32 = rng.gen_range(0.0..2.0 * std::f32::consts::PI);
+                let angle: f32 = rng.random_range(0.0..2.0 * std::f32::consts::PI);
                 separation = Vec3::new(angle.cos(), angle.sin(), 0.0);
             }
 

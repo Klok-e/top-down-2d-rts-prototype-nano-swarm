@@ -5,119 +5,114 @@ use super::{
     selected_groups_list::spawn_scrollable_list, zone_button::ZoneButton, NanobotGroupAction,
 };
 
-#[derive(Debug, Resource)]
+#[derive(Debug, Resource, Clone)]
 pub struct FontsResource {
-    pub general_text_style: TextStyle,
+    pub font: Handle<Font>,
+}
+
+fn text_components(
+    text: impl Into<String>,
+    font: Handle<Font>,
+    font_size: f32,
+) -> (Text, TextFont, TextColor) {
+    (
+        Text::new(text),
+        TextFont {
+            font,
+            font_size,
+            ..default()
+        },
+        TextColor(Color::WHITE),
+    )
 }
 
 pub fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
-    let button_style = Style {
+    let button_node = Node {
         margin: UiRect::all(Val::Px(5.0)),
         width: Val::Px(100.0),
         height: Val::Px(30.0),
         justify_content: JustifyContent::Center,
         align_items: AlignItems::Center,
-        ..Default::default()
+        ..default()
     };
 
-    let text_style = TextStyle {
-        font: asset_server.load("fonts/fira_sans/FiraSans-Bold.ttf"),
-        font_size: 18.0,
-        color: Color::WHITE,
-    };
-
-    commands.insert_resource(FontsResource {
-        general_text_style: text_style.clone(),
-    });
+    let font = asset_server.load("fonts/fira_sans/FiraSans-Bold.ttf");
+    commands.insert_resource(FontsResource { font: font.clone() });
 
     commands
         .spawn((
-            NodeBundle {
-                style: Style {
-                    width: Val::Auto,
-                    height: Val::Px(300.0),
-                    padding: UiRect {
-                        left: Val::Px(10.),
-                        right: Val::Px(10.),
-                        top: Val::Px(10.),
-                        bottom: Val::Px(10.),
-                    },
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(10.0),
-                    bottom: Val::Px(10.0),
-                    flex_direction: FlexDirection::Column,
-                    ..Default::default()
+            Node {
+                width: Val::Auto,
+                height: Val::Px(300.0),
+                padding: UiRect {
+                    left: Val::Px(10.),
+                    right: Val::Px(10.),
+                    top: Val::Px(10.),
+                    bottom: Val::Px(10.),
                 },
-                background_color: Color::rgb(0.65, 0.65, 0.65).into(),
-                ..Default::default()
+                position_type: PositionType::Absolute,
+                left: Val::Px(10.0),
+                bottom: Val::Px(10.0),
+                flex_direction: FlexDirection::Column,
+                ..default()
             },
+            BackgroundColor(Color::srgb(0.65, 0.65, 0.65)),
             Interaction::default(),
             RelativeCursorPosition::default(),
         ))
         .with_children(|parent| {
-            parent.spawn(TextBundle::from_section(
+            parent.spawn(text_components(
                 "Selected nanobot groups",
-                text_style.clone(),
+                font.clone(),
+                18.0,
             ));
 
-            // List with hidden overflow
-            spawn_scrollable_list(parent, &text_style);
+            spawn_scrollable_list(parent, font.clone());
 
             parent
-                .spawn(ButtonBundle {
-                    style: button_style.clone(),
-                    background_color: NORMAL_BUTTON.into(),
-                    ..Default::default()
-                })
+                .spawn((
+                    Button,
+                    button_node.clone(),
+                    BackgroundColor(NORMAL_BUTTON),
+                    MergeButton,
+                    ButtonBgInteractiveComponent,
+                ))
                 .with_children(|parent| {
-                    parent.spawn(TextBundle {
-                        text: Text::from_section("Merge", text_style.clone()),
-                        ..Default::default()
-                    });
-                })
-                .insert((MergeButton, ButtonBgInteractiveComponent));
+                    parent.spawn(text_components("Merge", font.clone(), 18.0));
+                });
 
             parent
-                .spawn(ButtonBundle {
-                    style: button_style.clone(),
-                    background_color: NORMAL_BUTTON.into(),
-                    ..Default::default()
-                })
+                .spawn((
+                    Button,
+                    button_node.clone(),
+                    BackgroundColor(NORMAL_BUTTON),
+                    SplitButton,
+                    ButtonBgInteractiveComponent,
+                ))
                 .with_children(|parent| {
-                    parent.spawn(TextBundle {
-                        text: Text::from_section("Split", text_style.clone()),
-                        ..Default::default()
-                    });
-                })
-                .insert((SplitButton, ButtonBgInteractiveComponent));
+                    parent.spawn(text_components("Split", font.clone(), 18.0));
+                });
 
             parent
-                .spawn(ButtonBundle {
-                    style: button_style.clone(),
-                    background_color: NORMAL_BUTTON.into(),
-                    ..Default::default()
-                })
+                .spawn((
+                    Button,
+                    button_node.clone(),
+                    BackgroundColor(NORMAL_BUTTON),
+                    ZoneButton,
+                ))
                 .with_children(|parent| {
-                    parent.spawn(TextBundle {
-                        text: Text::from_section("Zone", text_style.clone()),
-                        ..Default::default()
-                    });
-                })
-                .insert((ZoneButton,));
+                    parent.spawn(text_components("Zone", font.clone(), 18.0));
+                });
         });
 
     commands.spawn((
-        TextBundle::from_sections([
-            TextSection::new("FPS: ", text_style.clone()),
-            TextSection::from_style(text_style),
-        ])
-        .with_text_justify(JustifyText::Left)
-        .with_style(Style {
+        text_components("FPS: --", font, 18.0),
+        Node {
             position_type: PositionType::Absolute,
             top: Val::Px(5.0),
             left: Val::Px(5.0),
             ..default()
-        }),
+        },
         FpsText,
     ));
 }
@@ -132,16 +127,15 @@ pub fn button_system(
     interaction_query: Query<(Entity, &Interaction), (Changed<Interaction>, With<Button>)>,
     merge_query: Query<&MergeButton>,
     split_query: Query<&SplitButton>,
-    mut ev_nanobot_group_action: EventWriter<NanobotGroupAction>,
+    mut ev_nanobot_group_action: MessageWriter<NanobotGroupAction>,
 ) {
     for (entity, interaction) in interaction_query.iter() {
         if let Interaction::Pressed = *interaction {
-            // Handle button click
             if merge_query.get(entity).is_ok() {
-                ev_nanobot_group_action.send(NanobotGroupAction::Merge);
+                ev_nanobot_group_action.write(NanobotGroupAction::Merge);
             }
             if split_query.get(entity).is_ok() {
-                ev_nanobot_group_action.send(NanobotGroupAction::Split);
+                ev_nanobot_group_action.write(NanobotGroupAction::Split);
             }
         }
     }

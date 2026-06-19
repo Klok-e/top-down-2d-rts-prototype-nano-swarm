@@ -40,13 +40,13 @@ pub fn zone_button_system(
             Interaction::Hovered => {
                 *bg = match mouse_mode.as_ref() {
                     MouseActionMode::GroupSelectMove => HOVERED_BUTTON.into(),
-                    MouseActionMode::ZoneDraw => (HOVERED_BUTTON * 0.5).into(),
+                    MouseActionMode::ZoneDraw => scale_color_rgb(HOVERED_BUTTON, 0.5).into(),
                 };
             }
             Interaction::None => {
                 *bg = match mouse_mode.as_ref() {
                     MouseActionMode::GroupSelectMove => NORMAL_BUTTON.into(),
-                    MouseActionMode::ZoneDraw => (NORMAL_BUTTON * 0.5).into(),
+                    MouseActionMode::ZoneDraw => scale_color_rgb(NORMAL_BUTTON, 0.5).into(),
                 };
             }
         }
@@ -54,10 +54,11 @@ pub fn zone_button_system(
 }
 
 fn scale_color_rgb(color: Color, scale: f32) -> Color {
-    Color::rgba(
-        color.r() * scale,
-        color.g() * scale,
-        color.b() * scale,
-        color.a(), // preserve alpha
+    let color = color.to_srgba();
+    Color::srgba(
+        color.red * scale,
+        color.green * scale,
+        color.blue * scale,
+        color.alpha,
     )
 }
