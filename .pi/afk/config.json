@@ -1,0 +1,20 @@
+{
+  "maxCycles": 5,
+  "roles": {
+    "implementer": {
+      "agentType": "general-purpose",
+      "model": "opencode-go/minimax-m3",
+      "description": "AFK implementer"
+    },
+    "quality": {
+      "agentType": "general-purpose",
+      "model": "opencode-go/minimax-m3",
+      "description": "AFK quality pass"
+    },
+    "verifier": {
+      "agentType": "general-purpose",
+      "model": "opencode-go/minimax-m3",
+      "description": "AFK verifier"
+    }
+  }
+}
