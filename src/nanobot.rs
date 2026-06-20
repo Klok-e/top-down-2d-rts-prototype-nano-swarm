@@ -6,6 +6,7 @@ mod debug;
 mod gather;
 mod haul;
 mod move_system;
+mod production;
 
 pub use autonomy::*;
 pub use build::*;
@@ -15,6 +16,7 @@ pub use debug::*;
 pub use gather::*;
 pub use haul::*;
 pub use move_system::*;
+pub use production::*;
 
 use bevy::prelude::*;
 

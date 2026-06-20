@@ -22,7 +22,9 @@ use fly_camera::{Camera2dFlyPlugin, CameraZoom2d, FlyCamera2d};
 use game_settings::GameSettings;
 use intent::IntentGrid;
 use materials::BackgroundMaterial;
-use nanobot::{NanobotBundle, NanobotPlugin, Swarm, SwarmBundle};
+use nanobot::{
+    NanobotBundle, NanobotPlugin, ProductionPlugin, ProductionRatio, Swarm, SwarmBundle,
+};
 use resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
 use ui::NanoswarmUiSetupPlugin;
 use zones::{ZoneMaterial, ZoneMaterialHandleComponent, ZonesPlugin};
@@ -48,6 +50,11 @@ pub fn build_app() -> App {
         // BuildPlugin chains after `move_velocity_system` so the
         // arrive system sees the pruned DirectMovementComponent.
         .add_plugins(nanobot::BuildPlugin)
+        // ProductionPlugin chains after `move_velocity_system`
+        // for the same reason; auto-creation runs last in its
+        // own chain so it sees the post-pick / post-work state
+        // before deciding to spawn a new facility.
+        .add_plugins(ProductionPlugin)
         .add_plugins(AiPlugin)
         .add_plugins(Camera2dFlyPlugin)
         .add_systems(Startup, setup_things_startup.pipe(error_handler));
@@ -86,6 +93,7 @@ fn setup_things_startup(
     commands.insert_resource(GameSettings::from_file_ron("config/game_settings.ron")?);
     commands.insert_resource(IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32));
     commands.init_resource::<ResourceLedger>();
+    commands.init_resource::<ProductionRatio>();
 
     spawn_initial_swarm(&mut commands, &asset_server);
 
