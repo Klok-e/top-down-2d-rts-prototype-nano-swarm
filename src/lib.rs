@@ -2,7 +2,7 @@ pub mod ai;
 pub mod building;
 pub mod fly_camera;
 pub mod game_settings;
-pub mod highlight_unit;
+pub mod intent;
 pub mod materials;
 pub mod nanobot;
 pub mod ui;
@@ -19,13 +19,11 @@ use bevy::{
 use building::{Minerals, ProcessingFacility};
 use fly_camera::{Camera2dFlyPlugin, CameraZoom2d, FlyCamera2d};
 use game_settings::GameSettings;
-use highlight_unit::highlight_selected_system;
+use intent::IntentGrid;
 use materials::BackgroundMaterial;
-use nanobot::{
-    GroupIdCounterResource, NanobotBundle, NanobotGroup, NanobotGroupBundle, NanobotPlugin,
-};
+use nanobot::{NanobotBundle, NanobotPlugin, Swarm, SwarmBundle};
 use ui::NanoswarmUiSetupPlugin;
-use zones::{ZoneComponent, ZoneMaterial, ZoneMaterialHandleComponent, ZonePointData, ZonesPlugin};
+use zones::{ZoneMaterial, ZoneMaterialHandleComponent, ZonesPlugin};
 
 pub fn build_app() -> App {
     let mut app = App::new();
@@ -38,8 +36,7 @@ pub fn build_app() -> App {
         .add_plugins(NanobotPlugin::default())
         .add_plugins(AiPlugin)
         .add_plugins(Camera2dFlyPlugin)
-        .add_systems(Startup, setup_things_startup.pipe(error_handler))
-        .add_systems(Update, highlight_selected_system);
+        .add_systems(Startup, setup_things_startup.pipe(error_handler));
     app
 }
 
@@ -47,9 +44,9 @@ pub fn run() {
     build_app().run();
 }
 
-const MAP_WIDTH: u32 = 1000;
-const MAP_HEIGHT: u32 = 1000;
-const ZONE_BLOCK_SIZE: f32 = 512.;
+pub const MAP_WIDTH: u32 = 1000;
+pub const MAP_HEIGHT: u32 = 1000;
+pub const ZONE_BLOCK_SIZE: f32 = 512.;
 
 fn setup_things_startup(
     mut commands: Commands,
@@ -58,7 +55,6 @@ fn setup_things_startup(
     mut zone_mats: ResMut<Assets<ZoneMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
-    group_counter: ResMut<GroupIdCounterResource>,
 ) -> Result<()> {
     let handle = zone_mats.add(ZoneMaterial::new(MAP_WIDTH, MAP_HEIGHT, &mut buffers));
     commands
@@ -74,8 +70,9 @@ fn setup_things_startup(
         });
 
     commands.insert_resource(GameSettings::from_file_ron("config/game_settings.ron")?);
+    commands.insert_resource(IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32));
 
-    spawn_initial_swarm(&mut commands, group_counter, &asset_server);
+    spawn_initial_swarm(&mut commands, &asset_server);
 
     // minerals
     let minerals_texture = asset_server.load("minerals.png");
@@ -125,59 +122,21 @@ fn setup_things_startup(
     Ok(())
 }
 
-fn spawn_initial_swarm(
-    commands: &mut Commands<'_, '_>,
-    mut group_counter: ResMut<'_, GroupIdCounterResource>,
-    asset_server: &Res<'_, AssetServer>,
-) {
+fn spawn_initial_swarm(commands: &mut Commands<'_, '_>, asset_server: &Res<'_, AssetServer>) {
+    let texture = asset_server.load("circle.png");
     commands
-        .spawn((NanobotGroupBundle {
-            group: NanobotGroup {
-                id: group_counter.next_id(),
-            },
-            zone: ZoneComponent {
-                zone_points: default(),
-                zone_color: ZonePointData::ZONE2,
-            },
-            ..default()
-        },))
-        .with_children(|p| {
-            let texture = asset_server.load("circle.png");
-            p.spawn((
-                NanobotBundle::default(),
-                Sprite::from_image(texture.clone()),
-                Transform::from_translation(vec3(0., 0., 1.)),
-            ));
-            p.spawn((
-                NanobotBundle::default(),
-                Sprite::from_image(texture.clone()),
-                Transform::from_translation(vec3(0., 0., 1.)),
-            ));
-            p.spawn((
-                NanobotBundle::default(),
-                Sprite::from_image(texture.clone()),
-                Transform::from_translation(vec3(0., 0., 1.)),
-            ));
-            p.spawn((
-                NanobotBundle::default(),
-                Sprite::from_image(texture),
-                Transform::from_translation(vec3(0., 0., 1.)),
-            ));
-        });
-
-    commands
-        .spawn(NanobotGroupBundle {
-            group: NanobotGroup {
-                id: group_counter.next_id(),
-            },
-            zone: ZoneComponent {
-                zone_points: default(),
-                zone_color: ZonePointData::ZONE1,
-            },
-            ..default()
+        .spawn(SwarmBundle {
+            swarm: Swarm {},
+            transform: Transform::default(),
         })
         .with_children(|p| {
-            let texture = asset_server.load("circle.png");
+            for _ in 0..4 {
+                p.spawn((
+                    NanobotBundle::default(),
+                    Sprite::from_image(texture.clone()),
+                    Transform::from_translation(vec3(0., 0., 1.)),
+                ));
+            }
             for _ in 0..100 {
                 p.spawn((
                     NanobotBundle::default(),

@@ -2,8 +2,8 @@ use bevy::{
     asset::Asset,
     math::{ivec2, vec2},
     prelude::{
-        Assets, ButtonInput, Camera, Component, GlobalTransform, Handle, IVec2, Message,
-        MessageReader, MessageWriter, MouseButton, Query, Res, ResMut, Vec2, With,
+        Assets, ButtonInput, Camera, GlobalTransform, Handle, IVec2, MouseButton, Query, Res,
+        ResMut, Vec2, Window,
     },
     reflect::TypePath,
     render::{
@@ -12,17 +12,18 @@ use bevy::{
     },
     shader::ShaderRef,
     sprite_render::Material2d,
-    window::Window,
 };
 
 use crate::{
-    nanobot::{NanobotGroup, Selected},
-    ui::{zone_button::MouseActionMode, SelectedGroupsChanged, UiHandling},
-    MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
+    intent::{IntentGrid, IntentKind},
+    ui::UiHandling,
+    ZONE_BLOCK_SIZE,
 };
 
-use super::ZoneComponent;
-
+/// Per-cell data uploaded to the zone shader storage buffer. The shader still
+/// uses a 4-bit colour mask + 14-bit id layout; the id bits are written as
+/// zero because the swarm-owned intent resource no longer tracks per-cell ids
+/// (issues #4/#5 will add layer-specific ids if needed).
 #[derive(AsBindGroup, Asset, TypePath, Debug, Clone)]
 pub struct ZoneMaterial {
     #[storage(2, read_only)]
@@ -45,14 +46,6 @@ impl ZoneMaterial {
             width,
             height,
             highlight_zone_id: 0,
-        }
-    }
-
-    pub fn at_zone(&self, x: u32, y: u32) -> Option<&ZonePointData> {
-        if x >= self.width || y >= self.height {
-            None
-        } else {
-            Some(&self.zone_data[(y * self.width + x) as usize])
         }
     }
 
@@ -96,7 +89,6 @@ impl ZonePointData {
         ZonePointData { zones: 0, bits: 0 }
     }
 
-    // Set a specific zone to active or inactive
     pub fn set_zone(&mut self, zone: u32, active: bool) {
         if active {
             self.zones |= zone;
@@ -105,7 +97,6 @@ impl ZonePointData {
         }
     }
 
-    // Check if a specific zone is active
     pub fn is_zone_active(&self, zone: u32) -> bool {
         (self.zones & zone) != 0
     }
@@ -122,23 +113,23 @@ impl ZonePointData {
 
     pub fn set_zone_id(&mut self, zone: u32, id: u32) {
         assert!(id <= Self::ZONE_ID_MASK, "ID too large for 14 bits");
-        let id = id & Self::ZONE_ID_MASK; // ensure id fits in 14 bits
+        let id = id & Self::ZONE_ID_MASK;
         match zone {
             Self::ZONE1 => {
-                self.zones &= !(Self::ZONE_ID_MASK << 4); // clear existing id
-                self.zones |= id << 4; // set new id
+                self.zones &= !(Self::ZONE_ID_MASK << 4);
+                self.zones |= id << 4;
             }
             Self::ZONE2 => {
-                self.zones &= !(Self::ZONE_ID_MASK << 18); // clear existing id
-                self.zones |= id << 18; // set new id
+                self.zones &= !(Self::ZONE_ID_MASK << 18);
+                self.zones |= id << 18;
             }
             Self::ZONE3 => {
-                self.bits &= !Self::ZONE_ID_MASK; // clear existing id
-                self.bits |= id; // set new id
+                self.bits &= !Self::ZONE_ID_MASK;
+                self.bits |= id;
             }
             Self::ZONE4 => {
-                self.bits &= !(Self::ZONE_ID_MASK << 14); // clear existing id
-                self.bits |= id << 14; // set new id
+                self.bits &= !(Self::ZONE_ID_MASK << 14);
+                self.bits |= id << 14;
             }
             _ => panic!("Invalid zone"),
         }
@@ -151,127 +142,32 @@ impl Material2d for ZoneMaterial {
     }
 }
 
-#[derive(Debug, Component)]
+#[derive(Debug, bevy::prelude::Component)]
 pub struct ZoneMaterialHandleComponent {
     pub handle: Handle<ZoneMaterial>,
 }
 
-#[derive(Debug, Message)]
-pub struct ZoneChangedEvent {
-    pub point: IVec2,
-    /// only 4 first bits are used
-    pub zone_color: u32,
-    /// only the first 14 bits are used
-    pub zone_id: u32,
-    pub kind: ZoneChangedKind,
-}
+/// Default paint kind used by the brush until issue #4 adds layer switching.
+const BRUSH_KIND: IntentKind = IntentKind::Gather;
+/// Default paint strength used by the brush. Tracked in the resource so future
+/// issues (#3) can vary this with repeated painting.
+const BRUSH_STRENGTH: u8 = 1;
 
-#[derive(Debug)]
-pub enum ZoneChangedKind {
-    PointAdded,
-    PointRemoved,
-}
-
-pub fn handle_zone_event_system(
-    mut zone_mats: ResMut<Assets<ZoneMaterial>>,
-    mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
-    zone_handle: Query<&ZoneMaterialHandleComponent>,
-    mut ev_zone_changed: MessageReader<ZoneChangedEvent>,
-    mut zones: Query<(&mut ZoneComponent,), (With<Selected>, With<NanobotGroup>)>,
-) {
-    for ev in ev_zone_changed.read() {
-        let Ok(handle) = zone_handle.single() else {
-            return;
-        };
-        let mat = zone_mats.get(&handle.handle).expect("Handle must be valid");
-
-        let point = ev.point;
-
-        // add offset
-        let mut idx = point + ivec2(MAP_WIDTH as i32, MAP_HEIGHT as i32) / 2;
-        idx.y = MAP_HEIGHT as i32 - idx.y - 1;
-        if idx.x < 0 || idx.x >= MAP_WIDTH as i32 || idx.y < 0 || idx.y >= MAP_HEIGHT as i32 {
-            log::warn!("point {point} out of range");
-            continue;
-        }
-
-        let (mut zone,) = zones
-            .iter_mut()
-            .next()
-            .expect("It's impossible for there to be no selected groups at this point");
-
-        match ev.kind {
-            ZoneChangedKind::PointAdded => {
-                let zone_data = mat
-                    .at_zone(idx.x as u32, idx.y as u32)
-                    .expect("Bounds check already happened");
-                if zone_data.is_zone_active(ev.zone_color)
-                    && zone_data.get_zone_id(ev.zone_color) != ev.zone_id
-                {
-                    log::info!("Tried to add a point to a zone, but this point was already in another zone")
-                } else {
-                    let mat = zone_mats
-                        .get_mut(&handle.handle)
-                        .expect("Handle must be valid");
-                    let zone_data = mat
-                        .at_zone_mut(idx.x as u32, idx.y as u32)
-                        .expect("Bounds check already happened");
-                    zone_data.set_zone(ev.zone_color, true);
-                    zone_data.set_zone_id(ev.zone_color, ev.zone_id);
-                    let zone_map = mat.zone_map.clone();
-                    let zone_data = mat.zone_data.clone();
-                    if let Some(buffer) = buffers.get_mut(&zone_map) {
-                        buffer.set_data(zone_data);
-                    }
-
-                    zone.zone_points.insert(point);
-
-                    log::debug!("Point {point} inserted to zone data");
-                }
-            }
-            ZoneChangedKind::PointRemoved => {
-                let mat = zone_mats
-                    .get_mut(&handle.handle)
-                    .expect("Handle must be valid");
-                let zone_data = mat
-                    .at_zone_mut(idx.x as u32, idx.y as u32)
-                    .expect("Bounds check already happened");
-                zone_data.set_zone(ev.zone_color, false);
-                zone_data.set_zone_id(ev.zone_color, ev.zone_id);
-                let zone_map = mat.zone_map.clone();
-                let zone_data = mat.zone_data.clone();
-                if let Some(buffer) = buffers.get_mut(&zone_map) {
-                    buffer.set_data(zone_data);
-                }
-
-                zone.zone_points.remove(&point);
-
-                log::debug!("Point {point} removed from zone data");
-            }
-        }
-    }
-}
-
+/// Reads mouse input and writes player intent into the [`IntentGrid`]
+/// resource. The simulation owns the grid; the GPU zone material is a
+/// downstream mirror of the resource, updated by
+/// [`mirror_intent_to_zone_material_system`].
 pub fn zone_brush_system(
     windows: Query<&Window>,
     mouse_button_input: Res<ButtonInput<MouseButton>>,
     ui_handling: Res<UiHandling>,
     camera_query: Query<(&GlobalTransform, &Camera)>,
-    zones: Query<(&ZoneComponent, &NanobotGroup), With<Selected>>,
-    mut ev_zone_changed: MessageWriter<ZoneChangedEvent>,
-    mouse_mode: Res<MouseActionMode>,
+    mut intent_grid: ResMut<IntentGrid>,
 ) {
-    // don't do anything if cursor over ui
     if ui_handling.is_pointer_over_ui {
         return;
     }
 
-    // mouse mode must be appropriate for this system
-    if *mouse_mode != MouseActionMode::ZoneDraw {
-        return;
-    }
-
-    // Get the cursor position in window coordinates
     let Ok(window) = windows.single() else {
         return;
     };
@@ -279,7 +175,6 @@ pub fn zone_brush_system(
         return;
     };
 
-    // Convert the cursor position to world coordinates using viewport_to_world_2d
     let Ok((camera_transform, camera)) = camera_query.single() else {
         return;
     };
@@ -291,64 +186,74 @@ pub fn zone_brush_system(
         };
 
     let idx = get_zone_pos_from_world(cursor_pos_world);
-    if idx.x < -(MAP_WIDTH as i32 / 2)
-        || idx.x >= (MAP_WIDTH as i32 / 2)
-        || idx.y < -(MAP_HEIGHT as i32 / 2)
-        || idx.y >= (MAP_HEIGHT as i32 / 2)
-    {
+    let half_w = intent_grid.width() / 2;
+    let half_h = intent_grid.height() / 2;
+    if idx.x < -half_w || idx.x >= half_w || idx.y < -half_h || idx.y >= half_h {
         return;
     }
+
     if mouse_button_input.pressed(MouseButton::Left) {
-        if let Some((zone, group)) = zones.iter().next() {
-            // notify
-            ev_zone_changed.write(ZoneChangedEvent {
-                point: idx,
-                zone_color: zone.zone_color,
-                zone_id: group.id as u32,
-                kind: ZoneChangedKind::PointAdded,
-            });
-        }
+        intent_grid.add(idx, BRUSH_KIND, BRUSH_STRENGTH);
     } else if mouse_button_input.pressed(MouseButton::Right) {
-        if let Some((zone, group)) = zones.iter().next() {
-            // notify
-            ev_zone_changed.write(ZoneChangedEvent {
-                point: idx,
-                zone_color: zone.zone_color,
-                zone_id: group.id as u32,
-                kind: ZoneChangedKind::PointRemoved,
-            });
-        }
+        intent_grid.remove(idx, BRUSH_KIND);
     }
 }
 
-pub fn selected_zone_highlight_system(
-    zones: Query<(&NanobotGroup,)>,
+/// Drains dirty cells from [`IntentGrid`] and mirrors them into the
+/// [`ZoneMaterial`] GPU buffer. Pure data flow: the resource is the source of
+/// truth, the GPU buffer is a read-only render view.
+pub fn mirror_intent_to_zone_material_system(
     mut zone_mats: ResMut<Assets<ZoneMaterial>>,
+    mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
     zone_handle: Query<&ZoneMaterialHandleComponent>,
-    mut ev_zone_select: MessageReader<SelectedGroupsChanged>,
+    mut intent_grid: ResMut<IntentGrid>,
 ) {
-    for ev in ev_zone_select.read() {
-        let Ok(handle) = zone_handle.single() else {
-            return;
+    let Ok(handle) = zone_handle.single() else {
+        return;
+    };
+    let dirty = intent_grid.drain_dirty();
+    if dirty.is_empty() {
+        return;
+    }
+    // Single GPU upload per frame: snapshot the material, mutate, push.
+    let mat = zone_mats
+        .get_mut(&handle.handle)
+        .expect("Zone material handle must be valid");
+
+    for point in dirty {
+        let Some(idx) =
+            zone_buffer_index_from_grid_point(point, intent_grid.width(), intent_grid.height())
+        else {
+            continue;
         };
-        let mat = zone_mats
-            .get_mut(&handle.handle)
-            .expect("Handle must be valid");
-        match ev {
-            SelectedGroupsChanged::Selected(ent) => {
-                let (group,) = zones.get(*ent).expect("All references must be valid");
-                mat.highlight_zone_id = group.id as u32;
-            }
-            SelectedGroupsChanged::Deselected(ent) => {
-                let Some((group,)) = zones.get(*ent).ok() else {
-                    continue;
-                };
-                if mat.highlight_zone_id == group.id as u32 {
-                    mat.highlight_zone_id = 0;
-                }
+
+        let cell = intent_grid
+            .cell(point)
+            .expect("dirty point must be in-bounds");
+
+        if let Some(zone_data) = mat.at_zone_mut(idx.x as u32, idx.y as u32) {
+            for kind in IntentKind::ALL {
+                let zone_color = ZonePointData::id_to_zone(kind.index() as u32);
+                zone_data.set_zone(zone_color, cell.has(kind));
+                // The render mirror no longer tracks group/owner ids; keep id
+                // bits deterministic and clear for every layer.
+                zone_data.set_zone_id(zone_color, 0);
             }
         }
     }
+
+    let zone_map = mat.zone_map.clone();
+    let zone_data = mat.zone_data.clone();
+    if let Some(buffer) = buffers.get_mut(&zone_map) {
+        buffer.set_data(zone_data);
+    }
+}
+
+fn zone_buffer_index_from_grid_point(point: IVec2, width: i32, height: i32) -> Option<IVec2> {
+    let half = ivec2(width / 2, height / 2);
+    let mut idx = point + half;
+    idx.y = height - idx.y - 1;
+    (idx.x >= 0 && idx.x < width && idx.y >= 0 && idx.y < height).then_some(idx)
 }
 
 pub fn get_zone_pos_from_world(world_pos: Vec2) -> IVec2 {
@@ -378,6 +283,24 @@ mod tests {
         assert_eq!(
             point.get_zone_id(ZonePointData::ZONE4),
             ZonePointData::ZONE_ID_MASK
+        );
+    }
+
+    #[test]
+    fn centered_intent_points_map_to_gpu_buffer_indices() {
+        let grid = IntentGrid::new(crate::MAP_WIDTH as i32, crate::MAP_HEIGHT as i32);
+
+        assert_eq!(
+            zone_buffer_index_from_grid_point(IVec2::new(-500, -500), grid.width(), grid.height()),
+            Some(IVec2::new(0, 999))
+        );
+        assert_eq!(
+            zone_buffer_index_from_grid_point(IVec2::new(499, 499), grid.width(), grid.height()),
+            Some(IVec2::new(999, 0))
+        );
+        assert_eq!(
+            zone_buffer_index_from_grid_point(IVec2::new(500, 0), grid.width(), grid.height()),
+            None
         );
     }
 }

@@ -1,10 +1,9 @@
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
-    prelude::{Component, Query, Res, Text, With},
+    prelude::{Query, Res, Text, With},
 };
 
-#[derive(Component)]
-pub struct FpsText;
+use super::ui_setup::FpsText;
 
 pub fn fps_ui_system(
     mut text: Query<&mut Text, With<FpsText>>,

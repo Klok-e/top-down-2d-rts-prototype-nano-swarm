@@ -1,12 +1,12 @@
 use bevy::prelude::{Component, Vec2};
 
-#[derive(Debug, Component, Default, Clone, Copy)]
-pub struct NanobotGroup {
-    pub id: u16,
-}
-
 #[derive(Debug, Component, Default)]
 pub struct Nanobot {}
+
+/// Marker for the swarm that owns a population of nanobots. Replaces the old
+/// per-group entity that owned nanobots and their zones.
+#[derive(Debug, Component, Default)]
+pub struct Swarm {}
 
 #[derive(Debug, Component)]
 pub struct DirectMovementComponent {
