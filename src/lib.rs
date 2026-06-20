@@ -23,8 +23,8 @@ use game_settings::GameSettings;
 use intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP};
 use materials::BackgroundMaterial;
 use nanobot::{
-    spawn_opponent_swarm, NanobotBundle, NanobotPlugin, NanobotType, PrepaintedIntent,
-    ProductionPlugin, ProductionRatio, SeedNanobots, Swarm, SwarmBundle,
+    spawn_opponent_swarm, CollapsePlugin, NanobotBundle, NanobotPlugin, NanobotType,
+    PrepaintedIntent, ProductionPlugin, ProductionRatio, SeedNanobots, Swarm, SwarmBundle,
 };
 use resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
 use ui::NanoswarmUiSetupPlugin;
@@ -60,6 +60,11 @@ pub fn build_app() -> App {
         // own chain so it sees the post-pick / post-work state
         // before deciding to spawn a new facility.
         .add_plugins(ProductionPlugin)
+        // CollapsePlugin must run after the production work
+        // system so the "is this facility currently busy?"
+        // check sees the post-work state, not the pre-work
+        // state of the same tick.
+        .add_plugins(CollapsePlugin)
         // DefendPlugin chains after `move_velocity_system` so
         // the arrive system sees the pruned
         // DirectMovementComponent, the same signal the rest of
