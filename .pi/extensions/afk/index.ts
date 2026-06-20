@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 
 const AFK_DIR = ".pi/afk";
 const STATE_REL = `${AFK_DIR}/state.json`;
@@ -95,7 +96,36 @@ type ActiveRun = {
 	stopRequested: boolean;
 };
 
+type AfkLiveActivity = {
+	spinnerIndex: number;
+	activeTool?: string;
+	lastTool?: string;
+	lastText?: string;
+	turnCount?: number;
+	tokenTotal: number;
+	toolUses: number;
+	updatedAt: string;
+};
+
+type ToolActivity = {
+	type: "start" | "end";
+	toolName: string;
+};
+
+type Theme = {
+	fg(color: string, text: string): string;
+	bold(text: string): string;
+};
+
 let activeRun: ActiveRun | undefined;
+let liveActivity = freshLiveActivity();
+let widgetTimer: ReturnType<typeof setInterval> | undefined;
+let widgetRegistered = false;
+let widgetTui: any;
+let currentWidgetCtx: any;
+let currentWidgetIssue: Issue | undefined;
+let currentWidgetState: AfkState | undefined;
+let currentWidgetConfig: AfkConfig | undefined;
 
 function nowIso() {
 	return new Date().toISOString();
@@ -321,28 +351,149 @@ function nextPhase(phase: Phase): Phase {
 	return "implement";
 }
 
+function freshLiveActivity(): AfkLiveActivity {
+	return {
+		spinnerIndex: 0,
+		tokenTotal: 0,
+		toolUses: 0,
+		updatedAt: nowIso(),
+	};
+}
+
 function oneLine(text: string, max = 160) {
 	const line = text.replace(/\s+/g, " ").trim();
 	return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
+function sanitizeAgentText(text: string) {
+	const withoutReminder = text.split("<system-reminder>")[0] ?? text;
+	return withoutReminder
+		.replace(/<task-notification>[\s\S]*?<\/task-notification>/g, " ")
+		.replace(/<[^>]+>/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function lastTextLine(text: string) {
+	const lines = text
+		.split(/\r?\n/g)
+		.map(sanitizeAgentText)
+		.filter(Boolean);
+	return lines.at(-1) ?? "";
+}
+
+function truncateLine(text: string, width: number) {
+	return truncateToWidth(text, width);
+}
+
+function phaseStatus(state: AfkState) {
+	if (!state.activeAgentId) return "transitioning…";
+	return "Working…";
+}
+
+function toolLabel(toolName: string) {
+	const labels: Record<string, string> = {
+		bash: "running command",
+		read: "reading file",
+		edit: "editing file",
+		write: "writing file",
+		grep: "searching",
+		find: "finding files",
+		ls: "listing files",
+	};
+	return labels[toolName] ?? toolName;
+}
+
+function currentActivity(state: AfkState) {
+	if (!state.activeAgentId) return `starting ${state.phase}…`;
+	if (liveActivity.activeTool) return liveActivity.activeTool;
+	return "thinking…";
+}
+
+function lastOutput(state: AfkState) {
+	return liveActivity.lastText
+		|| state.lastResult?.summary
+		|| state.feedback
+		|| "open /agents for transcript";
+}
+
+function renderAfkPanel(tui: any, theme: Theme): string[] {
+	const issue = currentWidgetIssue;
+	const state = currentWidgetState;
+	const config = currentWidgetConfig;
+	if (!issue || !state || !config) return [];
+
+	const width = Math.max(20, tui?.terminal?.columns ?? 100);
+	const spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][liveActivity.spinnerIndex % 10];
+	const icon = state.activeAgentId ? theme.fg("accent", spinner) : theme.fg("dim", "•");
+	const status = state.activeAgentId ? theme.fg("accent", phaseStatus(state)) : theme.fg("dim", phaseStatus(state));
+	const stats: string[] = [];
+	if (liveActivity.turnCount) stats.push(`↻${liveActivity.turnCount}`);
+	if (liveActivity.toolUses) stats.push(`${liveActivity.toolUses} tools`);
+	if (liveActivity.tokenTotal) stats.push(`${(liveActivity.tokenTotal / 1000).toFixed(1)}k tok`);
+	const statSuffix = stats.length ? ` ${theme.fg("dim", `· ${stats.join(" · ")}`)}` : "";
+	const agent = state.activeAgentId ? `${state.activeAgentId.slice(0, 8)}…` : "none";
+
+	return [
+		`${icon} ${theme.bold(`AFK #${issue.number}`)} ${theme.fg("dim", "·")} ${state.phase} ${state.cycle}/${config.maxCycles} ${theme.fg("dim", "·")} ${status}${statSuffix}`,
+		`${theme.fg("dim", "issue:")} ${issue.title}`,
+		`${theme.fg("dim", "agent:")} ${agent}`,
+		`${theme.fg("dim", "activity:")} ${currentActivity(state)}`,
+		`${theme.fg("dim", "last:")} ${oneLine(lastOutput(state), 220)}`,
+	].map((line) => truncateLine(line, width));
+}
+
+function renderAfkWidgetNow() {
+	if (!currentWidgetCtx) return;
+	if (widgetRegistered) {
+		widgetTui?.requestRender?.();
+		return;
+	}
+	currentWidgetCtx.ui.setWidget("afk", (tui: any, theme: Theme) => {
+		widgetTui = tui;
+		return {
+			render: () => renderAfkPanel(tui, theme),
+			invalidate: () => {
+				widgetRegistered = false;
+				widgetTui = undefined;
+			},
+		};
+	}, { placement: "aboveEditor" });
+	widgetRegistered = true;
+}
+
+function startAfkWidgetTimer() {
+	if (widgetTimer) return;
+	widgetTimer = setInterval(() => {
+		if (currentWidgetState?.activeAgentId) liveActivity.spinnerIndex++;
+		renderAfkWidgetNow();
+	}, 160);
+	widgetTimer.unref?.();
+}
+
 function setAfkWidget(ctx: any, issue: Issue, state: AfkState, config: AfkConfig) {
+	currentWidgetCtx = ctx;
+	currentWidgetIssue = issue;
+	currentWidgetState = { ...state };
+	currentWidgetConfig = config;
 	ctx.ui.setStatus("afk", `#${issue.number} ${state.phase} ${state.cycle}/${config.maxCycles}`);
-	ctx.ui.setWidget("afk", [
-		`AFK #${issue.number}: ${issue.title}`,
-		`status: ${state.status}`,
-		`phase: ${state.phase}`,
-		`cycle: ${state.cycle}/${config.maxCycles}`,
-		`activeAgentId: ${state.activeAgentId ?? "none"}`,
-		state.feedback ? `feedback: ${oneLine(state.feedback)}` : "feedback: none",
-		state.lastResult ? `last: ${state.lastResult.role} ${state.lastResult.status} — ${oneLine(state.lastResult.summary, 100)}` : "last: none",
-		"live output: /agents",
-	]);
+	startAfkWidgetTimer();
+	renderAfkWidgetNow();
 }
 
 function clearAfkWidget(ctx: any) {
+	if (widgetTimer) {
+		clearInterval(widgetTimer);
+		widgetTimer = undefined;
+	}
 	ctx.ui.setStatus("afk", undefined);
 	ctx.ui.setWidget("afk", undefined);
+	widgetRegistered = false;
+	widgetTui = undefined;
+	currentWidgetCtx = undefined;
+	currentWidgetIssue = undefined;
+	currentWidgetState = undefined;
+	currentWidgetConfig = undefined;
 }
 
 async function pauseState(cwd: string, summary?: string) {
@@ -393,6 +544,8 @@ async function requireSubagents(pi: ExtensionAPI) {
 async function spawnSubagent(pi: ExtensionAPI, cwd: string, config: AfkConfig, role: Role, prompt: string, issue: Issue, state: AfkState): Promise<string> {
 	const roleConfig = config.roles[role];
 	const description = `${roleConfig.description} #${issue.number}`;
+	liveActivity = freshLiveActivity();
+	liveActivity.lastText = state.lastResult?.summary || state.feedback || undefined;
 	const data = await rpc<{ id: string }>(pi, "subagents:rpc:spawn", {
 		type: roleConfig.agentType,
 		prompt,
@@ -403,10 +556,41 @@ async function spawnSubagent(pi: ExtensionAPI, cwd: string, config: AfkConfig, r
 			isBackground: true,
 			run_in_background: true,
 			cwd,
+			// Best effort: pi-subagents RPC currently runs in-process and forwards
+			// options to AgentManager, which supports these callbacks. If a future
+			// RPC layer serializes payloads, the panel falls back to /agents hints.
+			onTextDelta: (_delta: string, fullText: string) => {
+				const line = lastTextLine(fullText);
+				if (line) liveActivity.lastText = line;
+				liveActivity.updatedAt = nowIso();
+				renderAfkWidgetNow();
+			},
+			onToolActivity: (activity: ToolActivity) => {
+				if (activity.type === "start") liveActivity.activeTool = toolLabel(activity.toolName);
+				else {
+					liveActivity.lastTool = liveActivity.activeTool || toolLabel(activity.toolName);
+					liveActivity.activeTool = undefined;
+					liveActivity.toolUses++;
+				}
+				liveActivity.updatedAt = nowIso();
+				renderAfkWidgetNow();
+			},
+			onTurnEnd: (turnCount: number) => {
+				liveActivity.turnCount = turnCount;
+				liveActivity.updatedAt = nowIso();
+				renderAfkWidgetNow();
+			},
+			onAssistantUsage: (usage: { input?: number; output?: number; cacheWrite?: number }) => {
+				liveActivity.tokenTotal += (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheWrite ?? 0);
+				liveActivity.updatedAt = nowIso();
+				renderAfkWidgetNow();
+			},
 		},
 	});
 	if (!data?.id) throw new Error("Subagent spawn did not return an id.");
 	state.activeAgentId = data.id;
+	currentWidgetState = { ...state };
+	renderAfkWidgetNow();
 	await saveState(cwd, state);
 	return data.id;
 }
@@ -444,6 +628,8 @@ async function runRole(pi: ExtensionAPI, cwd: string, config: AfkConfig, state: 
 	const id = await spawnSubagent(pi, cwd, config, role, prompt, issue, state);
 	const done = await waitForSubagent(pi, id);
 	state.activeAgentId = undefined;
+	currentWidgetState = { ...state };
+	renderAfkWidgetNow();
 	await saveState(cwd, state);
 	return done.result ?? "";
 }
@@ -745,8 +931,9 @@ async function handleStatus(ctx: any) {
 			`phase: ${state.phase}`,
 			`cycle: ${state.cycle}`,
 			`activeAgentId: ${state.activeAgentId ?? "none"}`,
+			`activity: ${currentActivity(state)}`,
+			`last: ${oneLine(lastOutput(state))}`,
 			state.feedback ? `feedback: ${oneLine(state.feedback)}` : "feedback: none",
-			state.lastResult ? `last: ${state.lastResult.role} ${state.lastResult.status} — ${oneLine(state.lastResult.summary)}` : "last: none",
 			`state: ${STATE_REL}`,
 			"live output: /agents",
 		].join("\n"),
