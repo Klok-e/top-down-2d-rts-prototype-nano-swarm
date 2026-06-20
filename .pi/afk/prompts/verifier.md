@@ -20,21 +20,21 @@ Your job:
 If verification passes:
 1. Stage only intended changes.
 2. Commit with a concise imperative subject and optional body.
-3. Return JSON with status `pass` and the commit hash.
+3. Submit status `pass` and the commit hash through the structured verifier result tool.
 
 If verification fails:
 1. Do not commit.
-2. Return JSON with status `fail` and exact feedback for the implementer.
+2. Submit status `fail` and exact feedback for the implementer through the structured verifier result tool.
 
 If the issue lacks required information or cannot be safely verified:
 1. Do not commit.
-2. Return JSON with status `needs-info` and the reason in feedback.
+2. Submit status `needs-info` and the reason in feedback through the structured verifier result tool.
 
-Final response requirements:
-- JSON object only.
-- No markdown.
-- No code fences.
-- Include keys: `status`, `summary`, `feedback`, `commands_run`, `commit`.
+Completion requirements:
+- Do not write a final prose response.
+- Do not print JSON manually.
+- Use the AFK structured verifier result tool and token provided at the end of this prompt.
+- Include status, summary, feedback, commands_run, and commit in the tool call.
 - `status` must be `pass`, `fail`, or `needs-info`.
 - `commands_run` must be an array of strings.
 - `commit` must be the commit hash on pass, or an empty string otherwise.
