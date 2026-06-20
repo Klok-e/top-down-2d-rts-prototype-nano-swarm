@@ -1,8 +1,10 @@
+mod autonomy;
 mod components;
 mod consts;
 mod debug;
 mod move_system;
 
+pub use autonomy::*;
 pub use components::*;
 pub use consts::*;
 pub use debug::*;
