@@ -7,7 +7,7 @@
 //! without going through rendering.
 
 use bevy::prelude::*;
-use top_down_2d_rts_prototype_nano_swarm::intent::{IntentGrid, IntentKind};
+use top_down_2d_rts_prototype_nano_swarm::intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP};
 
 #[test]
 fn intent_grid_resource_round_trips_through_bevy_app() {
@@ -107,4 +107,106 @@ fn drain_dirty_is_stable_across_runs() {
         first,
         vec![IVec2::new(1, -2), IVec2::new(-2, 0), IVec2::new(0, 1),]
     );
+}
+
+#[test]
+fn paint_saturates_at_cap_through_bevy_app() {
+    let mut app = App::new();
+    app.insert_resource(IntentGrid::new(4, 4));
+    let point = IVec2::new(0, 0);
+
+    for _ in 0..(PAINT_STRENGTH_CAP as usize + 5) {
+        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
+        assert!(grid.paint(point, IntentKind::Build, 1));
+    }
+    app.update();
+
+    let grid = app.world().resource::<IntentGrid>();
+    let cell = grid.cell(point).expect("cell must exist");
+    assert_eq!(cell.strength(IntentKind::Build), PAINT_STRENGTH_CAP);
+}
+
+#[test]
+fn erase_to_zero_removes_the_layer_through_bevy_app() {
+    let mut app = App::new();
+    app.insert_resource(IntentGrid::new(4, 4));
+    let point = IVec2::new(0, 0);
+    let target = 4u8;
+
+    for _ in 0..target {
+        app.world_mut()
+            .resource_mut::<IntentGrid>()
+            .paint(point, IntentKind::Gather, 1);
+    }
+    for _ in 0..target {
+        app.world_mut()
+            .resource_mut::<IntentGrid>()
+            .erase(point, IntentKind::Gather, 1);
+    }
+    app.update();
+
+    let grid = app.world().resource::<IntentGrid>();
+    let cell = grid.cell(point).expect("cell must exist");
+    assert!(!cell.has(IntentKind::Gather));
+    assert_eq!(cell.strength(IntentKind::Gather), 0);
+    assert_eq!(cell.active, 0);
+}
+
+#[test]
+fn paint_persists_across_app_updates_without_input() {
+    let mut app = App::new();
+    app.insert_resource(IntentGrid::new(4, 4));
+    let point = IVec2::new(0, 0);
+
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(point, IntentKind::Gather, 3);
+    app.update();
+
+    // run many updates without any further input; nothing in the app
+    // touches the grid, so the layer must persist unchanged (this also
+    // covers the "depleted local work" persistence contract: no work
+    // system ever clears intent).
+    for _ in 0..20 {
+        app.update();
+    }
+
+    let grid = app.world().resource::<IntentGrid>();
+    let cell = grid.cell(point).expect("cell must exist");
+    assert!(cell.has(IntentKind::Gather));
+    assert_eq!(cell.strength(IntentKind::Gather), 3);
+}
+
+#[test]
+fn overlapping_layers_keep_independent_strengths_through_bevy_app() {
+    let mut app = App::new();
+    app.insert_resource(IntentGrid::new(4, 4));
+    let point = IVec2::new(0, 0);
+
+    {
+        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
+        grid.paint(point, IntentKind::Gather, 5);
+        grid.paint(point, IntentKind::Build, 7);
+        grid.paint(point, IntentKind::Defend, 2);
+        // single big paint clamps to the cap independently of the others
+        grid.paint(point, IntentKind::Corridor, 200);
+    }
+    app.update();
+
+    {
+        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
+        grid.erase(point, IntentKind::Gather, 2);
+    }
+    app.update();
+
+    let grid = app.world().resource::<IntentGrid>();
+    let cell = grid.cell(point).expect("cell must exist");
+    assert_eq!(cell.strength(IntentKind::Gather), 3);
+    assert_eq!(cell.strength(IntentKind::Build), 7);
+    assert_eq!(cell.strength(IntentKind::Defend), 2);
+    assert_eq!(cell.strength(IntentKind::Corridor), PAINT_STRENGTH_CAP);
+    assert!(cell.has(IntentKind::Gather));
+    assert!(cell.has(IntentKind::Build));
+    assert!(cell.has(IntentKind::Defend));
+    assert!(cell.has(IntentKind::Corridor));
 }
