@@ -13,60 +13,24 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    game_settings::GameSettings,
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
-        best_candidate, bot_debug_circle_system, move_velocity_system, separation_system,
-        spawn_opponent_swarm, velocity_system, Commitment, Health, Nanobot, NanobotBundle,
+        best_candidate, spawn_opponent_swarm, Commitment, Health, Nanobot, NanobotBundle,
         NanobotType, OpponentSwarm, OwnerSwarm, PrepaintedIntent, ProductionFacility,
-        ProductionPlugin, ProductionRatio, SeedNanobots, SoftWorkSlots, Swarm, SwarmProduction,
-        VelocityComponent, PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT,
+        ProductionRatio, SeedNanobots, SoftWorkSlots, Swarm, SwarmProduction, VelocityComponent,
+        PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT,
     },
-    resources::{ResourceKind, ResourceLedger, Stockpile},
     ZONE_BLOCK_SIZE,
 };
 
+mod common;
+
 fn build_app() -> App {
-    let mut app = App::new();
-    app.add_plugins(bevy::time::TimePlugin);
-    app.insert_resource(IntentGrid::new(8, 8));
-    app.insert_resource(GameSettings {
-        width: 1000.0,
-        height: 1000.0,
-        bot_speed: 5.0,
-        debug_draw_circles: false,
-    });
-    app.init_resource::<SoftWorkSlots>();
-    app.init_resource::<ResourceLedger>();
     // Use an empty global ratio as a default; opponent tests
     // set their own ratio via SwarmProduction.
+    let mut app = common::sim_app_with_production();
     app.insert_resource(ProductionRatio::new());
-    app.add_systems(
-        Update,
-        (
-            separation_system,
-            velocity_system,
-            move_velocity_system,
-            bot_debug_circle_system,
-        )
-            .chain(),
-    );
-    app.add_plugins(ProductionPlugin);
     app
-}
-
-fn spawn_stockpile(app: &mut App, world_pos: Vec2, amount: u32, capacity: u32) -> Entity {
-    app.world_mut()
-        .spawn((
-            Stockpile {
-                kind: ResourceKind::Minerals,
-                amount,
-                capacity,
-                radius: 32.0,
-            },
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
 }
 
 fn children_of(world: &World, parent: Entity) -> Vec<Entity> {
@@ -214,9 +178,10 @@ fn opponent_swarm_uses_own_fixed_ratio_through_same_production_systems() {
     opponent_ratio.set_target(NanobotType::Hauler, 4);
     let opponent = spawn_opponent_swarm(app.world_mut(), opponent_pos, opponent_ratio, &[], &[]);
 
-    let _player_stock = spawn_stockpile(&mut app, player_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+    let _player_stock =
+        common::spawn_stockpile(&mut app, player_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
     let _opponent_stock =
-        spawn_stockpile(&mut app, opponent_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+        common::spawn_stockpile(&mut app, opponent_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
 
     let player_facility = app
         .world_mut()
@@ -267,7 +232,8 @@ fn opponent_production_spawns_nanobots_as_children_of_opponent_swarm() {
     let mut opponent_ratio = ProductionRatio::new();
     opponent_ratio.set_target(NanobotType::Worker, 1);
     let opponent = spawn_opponent_swarm(app.world_mut(), opponent_pos, opponent_ratio, &[], &[]);
-    let _stockpile = spawn_stockpile(&mut app, opponent_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+    let _stockpile =
+        common::spawn_stockpile(&mut app, opponent_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
     let _facility = app
         .world_mut()
         .spawn((
@@ -314,7 +280,8 @@ fn opponent_uses_default_ratio_when_swarm_production_absent() {
         .world_mut()
         .spawn((Swarm {}, Transform::from_translation(swarm_pos.extend(0.0))))
         .id();
-    let _stockpile = spawn_stockpile(&mut app, swarm_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+    let _stockpile =
+        common::spawn_stockpile(&mut app, swarm_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
     let facility = app
         .world_mut()
         .spawn((

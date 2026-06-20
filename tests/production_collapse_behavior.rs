@@ -9,134 +9,19 @@
 //! chained in order.
 
 use bevy::{math::Vec2, prelude::*};
-use top_down_2d_rts_prototype_nano_swarm::{
-    game_settings::GameSettings,
-    intent::IntentGrid,
-    nanobot::{
-        bot_debug_circle_system, move_velocity_system, separation_system, velocity_system,
-        CollapsePlugin, Commitment, Health, Nanobot, NanobotBundle, NanobotType, OpponentSwarm,
-        OwnerSwarm, ProductionCollapseState, ProductionFacility, ProductionPlugin, ProductionRatio,
-        SoftWorkSlots, Swarm, SwarmProduction, VelocityComponent, PRODUCTION_COST_PER_BOT,
-    },
-    resources::{ResourceKind, ResourceLedger, Stockpile},
+use top_down_2d_rts_prototype_nano_swarm::nanobot::{
+    NanobotType, ProductionCollapseState, ProductionFacility, ProductionRatio, Swarm,
+    PRODUCTION_COST_PER_BOT,
 };
 
+mod common;
+
 fn build_app() -> App {
-    let mut app = App::new();
-    app.add_plugins(bevy::time::TimePlugin);
-    app.insert_resource(IntentGrid::new(8, 8));
-    app.insert_resource(GameSettings {
-        width: 1000.0,
-        height: 1000.0,
-        bot_speed: 5.0,
-        debug_draw_circles: false,
-    });
-    app.init_resource::<SoftWorkSlots>();
-    app.init_resource::<ResourceLedger>();
     // Empty global ratio by default; each test sets the
     // ratio(s) it needs.
+    let mut app = common::sim_app_with_collapse();
     app.insert_resource(ProductionRatio::new());
-    app.add_systems(
-        Update,
-        (
-            separation_system,
-            velocity_system,
-            move_velocity_system,
-            bot_debug_circle_system,
-        )
-            .chain(),
-    );
-    app.add_plugins(ProductionPlugin);
-    app.add_plugins(CollapsePlugin);
     app
-}
-
-fn spawn_swarm_with_nanobots(
-    app: &mut App,
-    world_pos: Vec2,
-    counts: &[(NanobotType, u32)],
-) -> Entity {
-    let swarm = app
-        .world_mut()
-        .spawn((Swarm {}, Transform::from_translation(world_pos.extend(0.0))))
-        .id();
-    app.world_mut().entity_mut(swarm).with_children(|p| {
-        for (kind, n) in counts {
-            for _ in 0..*n {
-                p.spawn((
-                    NanobotBundle {
-                        nanobot: Nanobot {},
-                        nanobot_type: *kind,
-                        velocity: VelocityComponent::default(),
-                        ai_state: Default::default(),
-                        health: Health::default(),
-                    },
-                    Commitment::Idle,
-                    Transform::from_translation(world_pos.extend(0.0)),
-                ));
-            }
-        }
-    });
-    swarm
-}
-
-fn spawn_opponent_with_nanobots(
-    app: &mut App,
-    world_pos: Vec2,
-    ratio: ProductionRatio,
-    counts: &[(NanobotType, u32)],
-) -> Entity {
-    let swarm = app
-        .world_mut()
-        .spawn((
-            Swarm {},
-            OpponentSwarm {},
-            SwarmProduction::new(ratio),
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id();
-    app.world_mut().entity_mut(swarm).with_children(|p| {
-        for (kind, n) in counts {
-            for _ in 0..*n {
-                p.spawn((
-                    NanobotBundle {
-                        nanobot: Nanobot {},
-                        nanobot_type: *kind,
-                        velocity: VelocityComponent::default(),
-                        ai_state: Default::default(),
-                        health: Health::default(),
-                    },
-                    Commitment::Idle,
-                    Transform::from_translation(world_pos.extend(0.0)),
-                ));
-            }
-        }
-    });
-    swarm
-}
-
-fn spawn_stockpile(app: &mut App, world_pos: Vec2, amount: u32, capacity: u32) -> Entity {
-    app.world_mut()
-        .spawn((
-            Stockpile {
-                kind: ResourceKind::Minerals,
-                amount,
-                capacity,
-                radius: 32.0,
-            },
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
-}
-
-fn spawn_facility(app: &mut App, owner: Entity, pos: Vec2) -> Entity {
-    app.world_mut()
-        .spawn((
-            ProductionFacility::new(),
-            OwnerSwarm(owner),
-            Transform::from_translation(pos.extend(0.0)),
-        ))
-        .id()
 }
 
 #[test]
@@ -151,13 +36,13 @@ fn player_swarm_with_working_facility_is_not_collapsed() {
         ratio.set_target(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
-    let player = spawn_swarm_with_nanobots(
+    let player = common::spawn_swarm_with_nanobots(
         &mut app,
         player_pos,
         &[(NanobotType::Worker, 2), (NanobotType::Hauler, 1)],
     );
-    let _pile = spawn_stockpile(&mut app, player_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
-    let facility = spawn_facility(&mut app, player, player_pos);
+    let _pile = common::spawn_stockpile(&mut app, player_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+    let facility = common::spawn_facility_at(&mut app, player, player_pos);
 
     app.update();
 
@@ -191,7 +76,7 @@ fn player_swarm_with_no_facility_and_recoverable_crew_is_not_collapsed() {
         ratio.set_target(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
-    let _player = spawn_swarm_with_nanobots(
+    let _player = common::spawn_swarm_with_nanobots(
         &mut app,
         player_pos,
         &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
@@ -221,7 +106,7 @@ fn player_swarm_with_no_facility_and_no_haulers_is_collapsed() {
         ratio.set_target(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
-    let _player = spawn_swarm_with_nanobots(
+    let _player = common::spawn_swarm_with_nanobots(
         &mut app,
         player_pos,
         &[(NanobotType::Worker, 2), (NanobotType::Defender, 1)],
@@ -251,7 +136,7 @@ fn player_swarm_with_no_facility_and_no_workers_is_collapsed() {
         ratio.set_target(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
-    let _player = spawn_swarm_with_nanobots(
+    let _player = common::spawn_swarm_with_nanobots(
         &mut app,
         player_pos,
         &[(NanobotType::Hauler, 2), (NanobotType::Defender, 1)],
@@ -276,7 +161,7 @@ fn opponent_swarm_with_no_facility_and_no_haulers_means_player_wins() {
         ratio.set_target(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
-    let _player = spawn_swarm_with_nanobots(
+    let _player = common::spawn_swarm_with_nanobots(
         &mut app,
         player_pos,
         &[(NanobotType::Worker, 2), (NanobotType::Hauler, 1)],
@@ -286,7 +171,7 @@ fn opponent_swarm_with_no_facility_and_no_haulers_means_player_wins() {
     let mut opponent_ratio = ProductionRatio::new();
     opponent_ratio.set_target(NanobotType::Worker, 5);
     opponent_ratio.set_target(NanobotType::Hauler, 2);
-    let _opponent = spawn_opponent_with_nanobots(
+    let _opponent = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
         opponent_pos,
         opponent_ratio,
@@ -320,12 +205,13 @@ fn both_swarms_collapsed_is_a_loss_not_a_win() {
         ratio.set_target(NanobotType::Worker, 5);
     }
     let player_pos = Vec2::new(0.0, 0.0);
-    let _player = spawn_swarm_with_nanobots(&mut app, player_pos, &[(NanobotType::Defender, 1)]);
+    let _player =
+        common::spawn_swarm_with_nanobots(&mut app, player_pos, &[(NanobotType::Defender, 1)]);
 
     let opponent_pos = Vec2::new(2000.0, 0.0);
     let mut opponent_ratio = ProductionRatio::new();
     opponent_ratio.set_target(NanobotType::Worker, 5);
-    let _opponent = spawn_opponent_with_nanobots(
+    let _opponent = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
         opponent_pos,
         opponent_ratio,
@@ -352,7 +238,8 @@ fn swarm_at_production_target_is_not_collapsed_without_a_facility() {
         ratio.set_target(NanobotType::Worker, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
-    let _player = spawn_swarm_with_nanobots(&mut app, player_pos, &[(NanobotType::Worker, 2)]);
+    let _player =
+        common::spawn_swarm_with_nanobots(&mut app, player_pos, &[(NanobotType::Worker, 2)]);
 
     app.update();
 
@@ -385,8 +272,8 @@ fn collapse_state_updates_after_facility_is_destroyed() {
             Transform::from_translation(player_pos.extend(0.0)),
         ))
         .id();
-    let facility = spawn_facility(&mut app, player, player_pos);
-    let _pile = spawn_stockpile(&mut app, player_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+    let facility = common::spawn_facility_at(&mut app, player, player_pos);
+    let _pile = common::spawn_stockpile(&mut app, player_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
 
     // Tick once to let the production system start the
     // facility.
@@ -427,7 +314,7 @@ fn opponent_with_recoverable_crew_does_not_trigger_player_win() {
         ratio.set_target(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
-    let _player = spawn_swarm_with_nanobots(
+    let _player = common::spawn_swarm_with_nanobots(
         &mut app,
         player_pos,
         &[(NanobotType::Worker, 2), (NanobotType::Hauler, 1)],
@@ -437,7 +324,7 @@ fn opponent_with_recoverable_crew_does_not_trigger_player_win() {
     let mut opponent_ratio = ProductionRatio::new();
     opponent_ratio.set_target(NanobotType::Worker, 5);
     opponent_ratio.set_target(NanobotType::Hauler, 2);
-    let _opponent = spawn_opponent_with_nanobots(
+    let _opponent = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
         opponent_pos,
         opponent_ratio,
@@ -466,8 +353,9 @@ fn idle_facility_with_no_stockpile_is_not_working_for_collapse_check() {
         ratio.set_target(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
-    let player = spawn_swarm_with_nanobots(&mut app, player_pos, &[(NanobotType::Defender, 2)]);
-    let _facility = spawn_facility(&mut app, player, player_pos);
+    let player =
+        common::spawn_swarm_with_nanobots(&mut app, player_pos, &[(NanobotType::Defender, 2)]);
+    let _facility = common::spawn_facility_at(&mut app, player, player_pos);
     // No stockpile; facility stays idle.
 
     app.update();

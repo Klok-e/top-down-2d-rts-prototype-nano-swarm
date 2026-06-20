@@ -6,82 +6,15 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    game_settings::GameSettings,
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
-    nanobot::{
-        bot_debug_circle_system, move_velocity_system, separation_system, velocity_system,
-        Commitment, GatherPlugin, HaulPlugin, HaulerAssignment, HaulerLoad, Nanobot, NanobotType,
-        SoftWorkSlots, VelocityComponent, HAULER_CARRY_CAPACITY, WORKER_CARRY_CAPACITY,
-    },
+    nanobot::{HaulerAssignment, HaulerLoad, HAULER_CARRY_CAPACITY, WORKER_CARRY_CAPACITY},
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile},
-    ZONE_BLOCK_SIZE,
 };
 
+mod common;
+
 fn build_app() -> App {
-    let mut app = App::new();
-    app.add_plugins(bevy::time::TimePlugin);
-    app.insert_resource(IntentGrid::new(8, 8));
-    app.insert_resource(GameSettings {
-        width: 1000.0,
-        height: 1000.0,
-        bot_speed: 5.0,
-        debug_draw_circles: false,
-    });
-    app.init_resource::<SoftWorkSlots>();
-    app.init_resource::<ResourceLedger>();
-    app.add_systems(
-        Update,
-        (
-            separation_system,
-            velocity_system,
-            move_velocity_system,
-            bot_debug_circle_system,
-        )
-            .chain(),
-    );
-    app.add_plugins(GatherPlugin);
-    app.add_plugins(HaulPlugin);
-    app
-}
-
-fn spawn_deposit(app: &mut App, world_pos: Vec2, amount: u32) -> Entity {
-    app.world_mut()
-        .spawn((
-            ResourceDeposit {
-                kind: ResourceKind::Minerals,
-                amount,
-                capacity: amount.max(1000),
-                radius: 32.0,
-            },
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
-}
-
-fn spawn_stockpile(app: &mut App, world_pos: Vec2, capacity: u32) -> Entity {
-    app.world_mut()
-        .spawn((
-            Stockpile {
-                kind: ResourceKind::Minerals,
-                amount: 0,
-                capacity,
-                radius: 32.0,
-            },
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
-}
-
-fn spawn_hauler_at(app: &mut App, world_pos: Vec2) -> Entity {
-    app.world_mut()
-        .spawn((
-            Nanobot {},
-            NanobotType::Hauler,
-            Commitment::Idle,
-            VelocityComponent::default(),
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
+    common::sim_app_with_gather_haul()
 }
 
 fn stockpile_count(world: &mut World) -> usize {
@@ -97,7 +30,7 @@ fn stockpile_can_hold_local_resource_amounts() {
     // exposes free_space so delivery systems can reason about it.
     let mut app = build_app();
     let stockpile_pos = Vec2::new(200.0, 0.0);
-    let stockpile = spawn_stockpile(&mut app, stockpile_pos, 100);
+    let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 100);
 
     // Empty stockpile: free_space == capacity.
     {
@@ -153,10 +86,7 @@ fn stockpile_auto_emerges_in_gather_cell_with_demand() {
     assert_eq!(s.kind, ResourceKind::Minerals);
     assert_eq!(s.amount, 0, "auto stockpile starts empty");
     assert!(s.capacity > 0);
-    let cell_world_center = Vec2::new(
-        (cell.x as f32 + 0.5) * ZONE_BLOCK_SIZE,
-        (cell.y as f32 + 0.5) * ZONE_BLOCK_SIZE,
-    );
+    let cell_world_center = common::cell_world_center(cell);
     assert!(
         (t.translation.truncate() - cell_world_center).length() < 1.0,
         "stockpile must be created at the cell's world center"
@@ -205,14 +135,11 @@ fn stockpile_not_duplicated_when_one_already_exists() {
         IntentKind::Gather,
         PAINT_STRENGTH_CAP,
     );
-    let cell_world_center = Vec2::new(
-        (cell.x as f32 + 0.5) * ZONE_BLOCK_SIZE,
-        (cell.y as f32 + 0.5) * ZONE_BLOCK_SIZE,
-    );
+    let cell_world_center = common::cell_world_center(cell);
 
     // Manually pre-place a stockpile in the same cell. The
     // auto-creation system must not add another one on top.
-    spawn_stockpile(&mut app, cell_world_center, 500);
+    common::spawn_stockpile(&mut app, cell_world_center, 0, 500);
 
     for _ in 0..5 {
         app.update();
@@ -257,9 +184,9 @@ fn hauler_assigns_to_source_and_sink() {
     let mut app = build_app();
     let deposit_pos = Vec2::new(100.0, 0.0);
     let stockpile_pos = Vec2::new(400.0, 0.0);
-    let deposit = spawn_deposit(&mut app, deposit_pos, 1000);
-    let stockpile = spawn_stockpile(&mut app, stockpile_pos, 1000);
-    let hauler = spawn_hauler_at(&mut app, deposit_pos);
+    let deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
+    let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
+    let hauler = common::spawn_hauler_at(&mut app, deposit_pos);
 
     for _ in 0..3 {
         app.update();
@@ -283,9 +210,9 @@ fn hauler_fills_load_up_to_carry_capacity() {
     let mut app = build_app();
     let deposit_pos = Vec2::new(100.0, 0.0);
     let stockpile_pos = Vec2::new(400.0, 0.0);
-    let deposit = spawn_deposit(&mut app, deposit_pos, 1000);
-    let _stockpile = spawn_stockpile(&mut app, stockpile_pos, 1000);
-    let hauler = spawn_hauler_at(&mut app, deposit_pos);
+    let deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
+    let _stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
+    let hauler = common::spawn_hauler_at(&mut app, deposit_pos);
 
     // Pre-seed an assignment to the source so the test isolates
     // the loading chain from the source/sink selection logic.
@@ -342,9 +269,9 @@ fn hauler_delivers_full_load_to_sink() {
     let mut app = build_app();
     let deposit_pos = Vec2::new(100.0, 0.0);
     let stockpile_pos = Vec2::new(150.0, 0.0); // very close: within radius
-    let deposit = spawn_deposit(&mut app, deposit_pos, 1000);
-    let stockpile = spawn_stockpile(&mut app, stockpile_pos, 1000);
-    let hauler = spawn_hauler_at(&mut app, deposit_pos);
+    let deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
+    let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
+    let hauler = common::spawn_hauler_at(&mut app, deposit_pos);
 
     // Pre-seed assignment pointing at the (very close) stockpile
     // so the hauler fills its load and walks to the sink in a
@@ -392,9 +319,9 @@ fn hauler_transports_deposit_to_sink_end_to_end() {
     let mut app = build_app();
     let deposit_pos = Vec2::new(100.0, 0.0);
     let stockpile_pos = Vec2::new(200.0, 0.0);
-    let deposit = spawn_deposit(&mut app, deposit_pos, 1000);
-    let stockpile = spawn_stockpile(&mut app, stockpile_pos, 1000);
-    let hauler = spawn_hauler_at(&mut app, deposit_pos);
+    let deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
+    let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
+    let hauler = common::spawn_hauler_at(&mut app, deposit_pos);
     // Initial total physical resources in the world: the deposit
     // holds 1000 minerals. The ResourceLedger starts at 0 because
     // pre-existing deposits are not yet in the ledger (only
@@ -449,9 +376,9 @@ fn hauler_does_not_pick_work_when_no_source_available() {
     // With no deposit and no non-empty stockpile, the hauler has
     // no transport job and must not pick one.
     let mut app = build_app();
-    let hauler = spawn_hauler_at(&mut app, Vec2::new(0.0, 0.0));
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(0.0, 0.0));
     // A single empty stockpile is not a source.
-    let _stockpile = spawn_stockpile(&mut app, Vec2::new(200.0, 0.0), 1000);
+    let _stockpile = common::spawn_stockpile(&mut app, Vec2::new(200.0, 0.0), 0, 1000);
 
     for _ in 0..3 {
         app.update();
@@ -479,9 +406,9 @@ fn resource_ledger_stays_consistent_through_transport() {
     let mut app = build_app();
     let deposit_pos = Vec2::new(100.0, 0.0);
     let stockpile_pos = Vec2::new(200.0, 0.0);
-    let deposit = spawn_deposit(&mut app, deposit_pos, 200);
-    let stockpile = spawn_stockpile(&mut app, stockpile_pos, 1000);
-    let _hauler = spawn_hauler_at(&mut app, deposit_pos);
+    let deposit = common::spawn_deposit(&mut app, deposit_pos, 200);
+    let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
+    let _hauler = common::spawn_hauler_at(&mut app, deposit_pos);
 
     // The ResourceLedger starts at 0 because pre-existing
     // deposits are not yet in the ledger (only physical

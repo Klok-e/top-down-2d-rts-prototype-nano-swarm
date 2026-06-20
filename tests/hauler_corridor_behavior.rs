@@ -7,82 +7,15 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    game_settings::GameSettings,
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
-    nanobot::{
-        bot_debug_circle_system, move_velocity_system, separation_system, velocity_system,
-        Commitment, DirectMovementComponent, GatherPlugin, HaulPlugin, HaulerCorridorWaypoint,
-        Nanobot, NanobotType, SoftWorkSlots, VelocityComponent,
-    },
-    resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile},
+    nanobot::{DirectMovementComponent, HaulerCorridorWaypoint},
     ZONE_BLOCK_SIZE,
 };
 
+mod common;
+
 fn build_app() -> App {
-    let mut app = App::new();
-    app.add_plugins(bevy::time::TimePlugin);
-    app.insert_resource(IntentGrid::new(20, 20));
-    app.insert_resource(GameSettings {
-        width: 1000.0,
-        height: 1000.0,
-        bot_speed: 5.0,
-        debug_draw_circles: false,
-    });
-    app.init_resource::<SoftWorkSlots>();
-    app.init_resource::<ResourceLedger>();
-    app.add_systems(
-        Update,
-        (
-            separation_system,
-            velocity_system,
-            move_velocity_system,
-            bot_debug_circle_system,
-        )
-            .chain(),
-    );
-    app.add_plugins(GatherPlugin);
-    app.add_plugins(HaulPlugin);
-    app
-}
-
-fn spawn_deposit(app: &mut App, world_pos: Vec2, amount: u32) -> Entity {
-    app.world_mut()
-        .spawn((
-            ResourceDeposit {
-                kind: ResourceKind::Minerals,
-                amount,
-                capacity: amount.max(1000),
-                radius: 32.0,
-            },
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
-}
-
-fn spawn_stockpile(app: &mut App, world_pos: Vec2, capacity: u32) -> Entity {
-    app.world_mut()
-        .spawn((
-            Stockpile {
-                kind: ResourceKind::Minerals,
-                amount: 0,
-                capacity,
-                radius: 32.0,
-            },
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
-}
-
-fn spawn_hauler_at(app: &mut App, world_pos: Vec2) -> Entity {
-    app.world_mut()
-        .spawn((
-            Nanobot {},
-            NanobotType::Hauler,
-            Commitment::Idle,
-            VelocityComponent::default(),
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
+    common::sim_app_with_gather_haul()
 }
 
 fn paint_corridor(app: &mut App, cell: IVec2, strength: u8) {
@@ -91,10 +24,6 @@ fn paint_corridor(app: &mut App, cell: IVec2, strength: u8) {
         IntentKind::Corridor,
         strength
     ));
-}
-
-fn corridor_cell_center(cell: IVec2) -> Vec2 {
-    top_down_2d_rts_prototype_nano_swarm::ai::get_world_from_zone(cell)
 }
 
 #[test]
@@ -110,9 +39,9 @@ fn hauler_has_no_waypoint_without_corridor() {
     let hauler_pos = Vec2::new(0.0, 0.0);
     let deposit_pos = Vec2::new(2_000.0, 0.0);
     let stockpile_pos = Vec2::new(3_000.0, 0.0);
-    let _deposit = spawn_deposit(&mut app, deposit_pos, 1000);
-    let _stockpile = spawn_stockpile(&mut app, stockpile_pos, 1000);
-    let hauler = spawn_hauler_at(&mut app, hauler_pos);
+    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
+    let _stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
+    let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
 
     for _ in 0..3 {
         app.update();
@@ -148,9 +77,9 @@ fn hauler_picks_corridor_waypoint_when_painted_on_route() {
     let hauler_pos = Vec2::new(0.0, 0.0);
     let deposit_pos = Vec2::new(2_000.0, 0.0);
     let stockpile_pos = Vec2::new(3_000.0, 0.0);
-    let _deposit = spawn_deposit(&mut app, deposit_pos, 1000);
-    let _stockpile = spawn_stockpile(&mut app, stockpile_pos, 1000);
-    let hauler = spawn_hauler_at(&mut app, hauler_pos);
+    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
+    let _stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
+    let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
 
     // Cell (2, 0) is on the line from (0, 0) to (2000, 0) and
     // sits between the hauler and the deposit. Painting it
@@ -168,7 +97,7 @@ fn hauler_picks_corridor_waypoint_when_painted_on_route() {
         .get::<HaulerCorridorWaypoint>()
         .copied()
         .expect("hauler must gain a corridor waypoint when a corridor is painted on the route");
-    let painted_center = corridor_cell_center(painted);
+    let painted_center = common::cell_world_center(painted);
     assert!(
         (waypoint.waypoint - painted_center).length() < 1.0,
         "waypoint must be the painted cell's world center; got {:?}",
@@ -201,9 +130,9 @@ fn hauler_picks_higher_paint_corridor_cell() {
     let hauler_pos = Vec2::new(0.0, 0.0);
     let deposit_pos = Vec2::new(2_000.0, 0.0);
     let stockpile_pos = Vec2::new(3_000.0, 0.0);
-    let _deposit = spawn_deposit(&mut app, deposit_pos, 1000);
-    let _stockpile = spawn_stockpile(&mut app, stockpile_pos, 1000);
-    let hauler = spawn_hauler_at(&mut app, hauler_pos);
+    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
+    let _stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
+    let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
 
     let weak = IVec2::new(1, 0);
     let strong = IVec2::new(2, 0);
@@ -220,7 +149,7 @@ fn hauler_picks_higher_paint_corridor_cell() {
         .get::<HaulerCorridorWaypoint>()
         .copied()
         .expect("hauler must gain a waypoint with multiple painted cells");
-    let strong_center = corridor_cell_center(strong);
+    let strong_center = common::cell_world_center(strong);
     assert!(
         (waypoint.waypoint - strong_center).length() < 1.0,
         "hauler must prefer the high-paint cell; got waypoint {:?}, expected {:?}",
@@ -236,7 +165,7 @@ fn corridor_only_intent_does_not_create_hauling_job() {
     // no source and no sink nearby stays idle even when a
     // corridor is painted at its feet.
     let mut app = build_app();
-    let hauler = spawn_hauler_at(&mut app, Vec2::new(0.0, 0.0));
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(0.0, 0.0));
     paint_corridor(&mut app, IVec2::new(0, 0), PAINT_STRENGTH_CAP);
 
     for _ in 0..5 {
@@ -280,9 +209,9 @@ fn hauler_routes_through_corridor_to_sink_after_loading() {
     // line of cells for the corridor.
     let deposit_pos = Vec2::new(0.0, 0.0);
     let stockpile_pos = Vec2::new(3.0 * ZONE_BLOCK_SIZE, 0.0);
-    let deposit = spawn_deposit(&mut app, deposit_pos, 1000);
-    let stockpile = spawn_stockpile(&mut app, stockpile_pos, 1000);
-    let hauler = spawn_hauler_at(&mut app, deposit_pos);
+    let deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
+    let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
+    let hauler = common::spawn_hauler_at(&mut app, deposit_pos);
 
     // Paint a corridor cell on the line between source and sink.
     // Cell (1, 0) is between (0, 0) and (3, 0) on the x-axis.
@@ -331,7 +260,7 @@ fn hauler_routes_through_corridor_to_sink_after_loading() {
     let dmc_xy =
         dmc_xy_at_appearance.expect("hauler must keep a DMC while the corridor waypoint is active");
 
-    let painted_center = corridor_cell_center(painted);
+    let painted_center = common::cell_world_center(painted);
     assert!(
         (waypoint.waypoint - painted_center).length() < 1.0,
         "waypoint must be the painted cell's world center; got {:?}",

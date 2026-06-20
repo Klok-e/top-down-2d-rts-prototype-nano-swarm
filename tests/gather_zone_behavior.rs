@@ -18,92 +18,21 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    game_settings::GameSettings,
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
-        best_candidate, bot_debug_circle_system, move_velocity_system, separation_system,
-        velocity_system, Commitment, ExtractProgress, GatherAssignment, GatherPlugin, Nanobot,
-        NanobotType, ReturningToStockpile, SoftWorkSlots, WorkerLoad, EXTRACT_PER_TICK,
-        WORKER_CARRY_CAPACITY,
+        best_candidate, Commitment, ExtractProgress, GatherAssignment, NanobotType,
+        ReturningToStockpile, SoftWorkSlots, WorkerLoad, EXTRACT_PER_TICK, WORKER_CARRY_CAPACITY,
     },
-    resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile},
+    resources::{ResourceDeposit, Stockpile},
     ZONE_BLOCK_SIZE,
 };
+
+mod common;
 
 const CELL_SIZE: f32 = ZONE_BLOCK_SIZE;
 
 fn build_app() -> App {
-    let mut app = App::new();
-    // Time advances only by what test code drives; the minimal
-    // `Time` resource from `TimePlugin` is enough for systems that
-    // read `Time`, but extraction in this prototype uses a fixed
-    // per-update amount so the test does not depend on
-    // wall-clock progression.
-    app.add_plugins(bevy::time::TimePlugin);
-    app.insert_resource(IntentGrid::new(8, 8));
-    app.insert_resource(GameSettings {
-        width: 1000.0,
-        height: 1000.0,
-        bot_speed: 5.0,
-        debug_draw_circles: false,
-    });
-    app.init_resource::<SoftWorkSlots>();
-    app.init_resource::<ResourceLedger>();
-    // Minimal nanobot systems: separation, velocity, move_velocity,
-    // bot_debug_circle. The gather systems order themselves after
-    // move_velocity_system, so we need that one registered.
-    app.add_systems(
-        Update,
-        (
-            separation_system,
-            velocity_system,
-            move_velocity_system,
-            bot_debug_circle_system,
-        )
-            .chain(),
-    );
-    app.add_plugins(GatherPlugin);
-    app
-}
-
-fn spawn_deposit(app: &mut App, world_pos: Vec2, amount: u32) -> Entity {
-    app.world_mut()
-        .spawn((
-            ResourceDeposit {
-                kind: ResourceKind::Minerals,
-                amount,
-                capacity: amount,
-                radius: 32.0,
-            },
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
-}
-
-fn spawn_stockpile(app: &mut App, world_pos: Vec2, capacity: u32) -> Entity {
-    app.world_mut()
-        .spawn((
-            Stockpile {
-                kind: ResourceKind::Minerals,
-                amount: 0,
-                capacity,
-                radius: 32.0,
-            },
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
-}
-
-fn spawn_worker_at(app: &mut App, world_pos: Vec2) -> Entity {
-    app.world_mut()
-        .spawn((
-            Nanobot {},
-            NanobotType::Worker,
-            Commitment::Idle,
-            top_down_2d_rts_prototype_nano_swarm::nanobot::VelocityComponent::default(),
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
+    common::sim_app_with_gather()
 }
 
 #[test]
@@ -113,8 +42,8 @@ fn worker_extracts_one_unit_per_tick_when_at_deposit() {
     // deposit and building an ExtractProgress component.
     let mut app = build_app();
     let deposit_pos = Vec2::new(100.0, 0.0);
-    let deposit = spawn_deposit(&mut app, deposit_pos, 10);
-    let worker = spawn_worker_at(&mut app, deposit_pos);
+    let deposit = common::spawn_deposit(&mut app, deposit_pos, 10);
+    let worker = common::spawn_worker_at(&mut app, deposit_pos);
 
     // Pre-seed a GatherAssignment so the test isolates extraction
     // from the assignment algorithm. The assignment algorithm has its
@@ -151,9 +80,9 @@ fn worker_fills_small_load_then_head_to_stockpile() {
     let mut app = build_app();
     let deposit_pos = Vec2::new(100.0, 0.0);
     let stockpile_pos = Vec2::new(200.0, 0.0);
-    let deposit = spawn_deposit(&mut app, deposit_pos, 100);
-    let stockpile = spawn_stockpile(&mut app, stockpile_pos, 100);
-    let worker = spawn_worker_at(&mut app, deposit_pos);
+    let deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 100);
+    let worker = common::spawn_worker_at(&mut app, deposit_pos);
 
     app.world_mut()
         .entity_mut(worker)
@@ -210,9 +139,9 @@ fn worker_delivers_carry_to_nearest_stockpile() {
     let mut app = build_app();
     let deposit_pos = Vec2::new(100.0, 0.0);
     let stockpile_pos = Vec2::new(150.0, 0.0); // very close, within radius
-    let deposit = spawn_deposit(&mut app, deposit_pos, 100);
-    let stockpile = spawn_stockpile(&mut app, stockpile_pos, 100);
-    let worker = spawn_worker_at(&mut app, deposit_pos);
+    let deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 100);
+    let worker = common::spawn_worker_at(&mut app, deposit_pos);
 
     app.world_mut()
         .entity_mut(worker)
@@ -291,9 +220,9 @@ fn idle_worker_reactivates_when_deposit_refills() {
     let mut app = build_app();
     let deposit_pos = Vec2::new(100.0, 0.0);
     let stockpile_pos = Vec2::new(150.0, 0.0);
-    let deposit = spawn_deposit(&mut app, deposit_pos, 4);
-    let _stockpile = spawn_stockpile(&mut app, stockpile_pos, 1000);
-    let worker = spawn_worker_at(&mut app, deposit_pos);
+    let deposit = common::spawn_deposit(&mut app, deposit_pos, 4);
+    let _stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
+    let worker = common::spawn_worker_at(&mut app, deposit_pos);
 
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
@@ -363,15 +292,12 @@ fn idle_worker_chooses_gather_via_autonomy_scoring() {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
         assert!(grid.paint(cell, IntentKind::Gather, PAINT_STRENGTH_CAP));
     }
-    let cell_world_center = Vec2::new(
-        (cell.x as f32 + 0.5) * ZONE_BLOCK_SIZE,
-        (cell.y as f32 + 0.5) * ZONE_BLOCK_SIZE,
-    );
-    let deposit = spawn_deposit(&mut app, cell_world_center, 100);
+    let cell_world_center = common::cell_world_center(cell);
+    let deposit = common::spawn_deposit(&mut app, cell_world_center, 100);
     // Place the worker close to the cell so the assignment system
     // picks it (the scoring is global, but the test wants the
     // assignment to clearly land on this cell).
-    let worker = spawn_worker_at(&mut app, cell_world_center);
+    let worker = common::spawn_worker_at(&mut app, cell_world_center);
 
     // Sanity: the global scoring function picks this cell for an
     // idle Worker; this is the contract the assignment system
@@ -420,21 +346,9 @@ fn haulers_do_not_extract_directly() {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
         assert!(grid.paint(cell, IntentKind::Gather, PAINT_STRENGTH_CAP));
     }
-    let cell_world_center = Vec2::new(
-        (cell.x as f32 + 0.5) * ZONE_BLOCK_SIZE,
-        (cell.y as f32 + 0.5) * ZONE_BLOCK_SIZE,
-    );
-    let _deposit = spawn_deposit(&mut app, cell_world_center, 100);
-    let hauler = app
-        .world_mut()
-        .spawn((
-            Nanobot {},
-            NanobotType::Hauler,
-            Commitment::Idle,
-            top_down_2d_rts_prototype_nano_swarm::nanobot::VelocityComponent::default(),
-            Transform::from_translation(cell_world_center.extend(0.0)),
-        ))
-        .id();
+    let cell_world_center = common::cell_world_center(cell);
+    let _deposit = common::spawn_deposit(&mut app, cell_world_center, 100);
+    let hauler = common::spawn_hauler_at(&mut app, cell_world_center);
 
     for _ in 0..5 {
         app.update();

@@ -14,79 +14,19 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    game_settings::GameSettings,
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
-        bot_debug_circle_system, move_velocity_system, separation_system, velocity_system,
-        world_to_cell, BuildAssignment, BuildPlugin, BuildProgress, BuildSite, Commitment,
-        GatherPlugin, Nanobot, NanobotType, SoftWorkSlots, Structure, StructureKind,
-        VelocityComponent, BUILD_REQUIRED_MATERIALS, STRUCTURE_MAX_HEALTH,
+        world_to_cell, BuildAssignment, BuildProgress, BuildSite, Structure, StructureKind,
+        BUILD_REQUIRED_MATERIALS, STRUCTURE_MAX_HEALTH,
     },
-    resources::{ResourceKind, Stockpile},
+    resources::Stockpile,
     ZONE_BLOCK_SIZE,
 };
 
+mod common;
+
 fn build_app() -> App {
-    let mut app = App::new();
-    app.add_plugins(bevy::time::TimePlugin);
-    app.insert_resource(IntentGrid::new(8, 8));
-    app.insert_resource(GameSettings {
-        width: 1000.0,
-        height: 1000.0,
-        bot_speed: 5.0,
-        debug_draw_circles: false,
-    });
-    app.init_resource::<SoftWorkSlots>();
-    app.init_resource::<top_down_2d_rts_prototype_nano_swarm::resources::ResourceLedger>();
-    app.add_systems(
-        Update,
-        (
-            separation_system,
-            velocity_system,
-            move_velocity_system,
-            bot_debug_circle_system,
-        )
-            .chain(),
-    );
-    // Gather is registered for completeness so the shared
-    // nanobot chain does not panic if a future test in this
-    // file spawns a deposit. Build is the focus.
-    app.add_plugins(GatherPlugin);
-    app.add_plugins(BuildPlugin);
-    app
-}
-
-fn spawn_stockpile(app: &mut App, world_pos: Vec2, amount: u32, capacity: u32) -> Entity {
-    app.world_mut()
-        .spawn((
-            Stockpile {
-                kind: ResourceKind::Minerals,
-                amount,
-                capacity,
-                radius: 32.0,
-            },
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
-}
-
-fn spawn_worker_at(app: &mut App, world_pos: Vec2) -> Entity {
-    app.world_mut()
-        .spawn((
-            Nanobot {},
-            NanobotType::Worker,
-            Commitment::Idle,
-            VelocityComponent::default(),
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
-}
-
-fn cell_world_center(cell: IVec2) -> Vec2 {
-    Vec2::new(
-        (cell.x as f32 + 0.5) * ZONE_BLOCK_SIZE,
-        (cell.y as f32 + 0.5) * ZONE_BLOCK_SIZE,
-    )
+    common::sim_app_with_build()
 }
 
 #[test]
@@ -110,7 +50,7 @@ fn build_site_auto_emerges_in_build_cell_with_demand() {
         .iter(world)
         .next()
         .expect("BuildSite must spawn in a Build-painted cell");
-    let center = cell_world_center(cell);
+    let center = common::cell_world_center(cell);
     assert!(
         (transform.translation.truncate() - center).length() < 1.0,
         "BuildSite must be created at the cell's world center; got {:?}",
@@ -131,7 +71,7 @@ fn build_site_not_duplicated_when_one_already_exists() {
     app.world_mut()
         .resource_mut::<IntentGrid>()
         .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
-    let center = cell_world_center(cell);
+    let center = common::cell_world_center(cell);
 
     // Pre-place a BuildSite manually. Auto-creation must not
     // add a second one.
@@ -187,8 +127,8 @@ fn idle_worker_chooses_build_via_autonomy_scoring() {
     // Auto-creation will spawn a BuildSite in the cell on the
     // first tick. Give the worker a head start so the test is
     // not sensitive to the spawn tick ordering.
-    let center = cell_world_center(cell);
-    let worker = spawn_worker_at(&mut app, center);
+    let center = common::cell_world_center(cell);
+    let worker = common::spawn_worker_at(&mut app, center);
 
     for _ in 0..3 {
         app.update();
@@ -214,11 +154,11 @@ fn worker_builds_structure_consuming_local_stockpile() {
     app.world_mut()
         .resource_mut::<IntentGrid>()
         .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
-    let center = cell_world_center(cell);
+    let center = common::cell_world_center(cell);
     // Pre-seed a stockpile with enough material to finish the
     // site. BuildSite auto-spawns in the cell on the first tick.
-    let stockpile = spawn_stockpile(&mut app, center, BUILD_REQUIRED_MATERIALS * 2, 1000);
-    let worker = spawn_worker_at(&mut app, center);
+    let stockpile = common::spawn_stockpile(&mut app, center, BUILD_REQUIRED_MATERIALS * 2, 1000);
+    let worker = common::spawn_worker_at(&mut app, center);
 
     // 1 tick to auto-create, 1 to assign, 1 to arrive,
     // BUILD_REQUIRED_MATERIALS work ticks, +5 buffer.
@@ -287,7 +227,7 @@ fn worker_repairs_damaged_structure_consuming_materials() {
     app.world_mut()
         .resource_mut::<IntentGrid>()
         .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
-    let center = cell_world_center(cell);
+    let center = common::cell_world_center(cell);
     // Pre-place a damaged Structure in the cell. BuildSite
     // auto-spawn is suppressed for cells that already hold a
     // Structure, so no BuildSite is created.
@@ -299,8 +239,8 @@ fn worker_repairs_damaged_structure_consuming_materials() {
         .id();
     // Local stockpile in the same cell so the repair work has a
     // source of material.
-    let _stockpile = spawn_stockpile(&mut app, center, BUILD_REQUIRED_MATERIALS * 2, 1000);
-    let worker = spawn_worker_at(&mut app, center);
+    let _stockpile = common::spawn_stockpile(&mut app, center, BUILD_REQUIRED_MATERIALS * 2, 1000);
+    let worker = common::spawn_worker_at(&mut app, center);
 
     // 3 overhead ticks + 5 repair ticks (50 damage / 10 health
     // per material) + 5 buffer.
@@ -361,12 +301,12 @@ fn build_work_consumes_minerals_from_local_stockpile_only() {
     app.world_mut()
         .resource_mut::<IntentGrid>()
         .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
-    let center = cell_world_center(cell);
+    let center = common::cell_world_center(cell);
     // A small local stockpile plus a large distant stockpile.
-    let local = spawn_stockpile(&mut app, center, BUILD_REQUIRED_MATERIALS * 2, 1000);
+    let local = common::spawn_stockpile(&mut app, center, BUILD_REQUIRED_MATERIALS * 2, 1000);
     let distant_pos = center + Vec2::new(ZONE_BLOCK_SIZE * 4.0, 0.0);
-    let distant = spawn_stockpile(&mut app, distant_pos, 10_000, 20_000);
-    let worker = spawn_worker_at(&mut app, center);
+    let distant = common::spawn_stockpile(&mut app, distant_pos, 10_000, 20_000);
+    let worker = common::spawn_worker_at(&mut app, center);
 
     // Drive enough ticks for the build to make significant
     // progress but not so many that the build finishes (we want
@@ -405,9 +345,9 @@ fn idle_worker_in_build_cell_idles_when_no_stockpile_has_materials() {
     app.world_mut()
         .resource_mut::<IntentGrid>()
         .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
-    let center = cell_world_center(cell);
-    let stockpile = spawn_stockpile(&mut app, center, 0, 1000);
-    spawn_worker_at(&mut app, center);
+    let center = common::cell_world_center(cell);
+    let stockpile = common::spawn_stockpile(&mut app, center, 0, 1000);
+    common::spawn_worker_at(&mut app, center);
 
     for _ in 0..5 {
         app.update();
