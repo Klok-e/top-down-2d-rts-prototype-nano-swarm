@@ -17,8 +17,9 @@ Your job:
 6. Do not update GitHub labels or comments.
 7. Leave the worktree ready for a quality pass.
 
-Final response requirements:
-- Put any explanation before the final line.
-- End with exactly one JSON line.
-- Use `{"status":"pass"}` when implementation is ready for quality review.
-- Use `{"status":"needs-info","reason":"..."}` when the issue lacks required information or cannot be safely implemented.
+Completion requirements:
+- Do not write a final prose response.
+- Do not print JSON manually.
+- Use the AFK structured result tool and token provided at the end of this prompt.
+- Submit `pass` when implementation is ready for quality review.
+- Submit `needs-info` with a clear reason when the issue lacks required information or cannot be safely implemented.
