@@ -59,6 +59,11 @@ pub fn build_app() -> App {
         // own chain so it sees the post-pick / post-work state
         // before deciding to spawn a new facility.
         .add_plugins(ProductionPlugin)
+        // DefendPlugin chains after `move_velocity_system` so
+        // the arrive system sees the pruned
+        // DirectMovementComponent, the same signal the rest of
+        // the per-role systems use.
+        .add_plugins(nanobot::DefendPlugin)
         .add_plugins(AiPlugin)
         .add_plugins(Camera2dFlyPlugin)
         .add_systems(Startup, setup_things_startup.pipe(error_handler));
