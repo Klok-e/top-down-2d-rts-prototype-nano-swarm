@@ -5,6 +5,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const AFK_DIR = ".pi/afk";
 const STATE_REL = `${AFK_DIR}/state.json`;
+const HISTORY_REL = `${AFK_DIR}/history.json`;
 const CONFIG_REL = `${AFK_DIR}/config.json`;
 const PROMPTS_REL = `${AFK_DIR}/prompts`;
 const READY_LABEL = "ready-for-agent";
@@ -24,15 +25,34 @@ type AfkConfig = {
 	}>;
 };
 
+type AfkRunStatus = "running" | "paused";
+
+type AfkLastResult = {
+	role: Role;
+	status: string;
+	summary: string;
+	at: string;
+};
+
 type AfkState = {
 	version: 1;
+	status: AfkRunStatus;
 	issue: number;
 	phase: Phase;
 	cycle: number;
 	activeAgentId?: string;
 	feedback: string;
+	lastResult?: AfkLastResult;
 	startedAt: string;
 	updatedAt: string;
+};
+
+type AfkHistoryEntry = {
+	issue: number;
+	result: "completed" | "needs-info" | "paused";
+	summary: string;
+	commit?: string;
+	at: string;
 };
 
 type Issue = {
@@ -69,6 +89,13 @@ type SubagentDoneEvent = {
 	toolUses?: number;
 	durationMs?: number;
 };
+
+type ActiveRun = {
+	promise: Promise<void>;
+	stopRequested: boolean;
+};
+
+let activeRun: ActiveRun | undefined;
 
 function nowIso() {
 	return new Date().toISOString();
@@ -108,7 +135,19 @@ async function loadConfig(cwd: string): Promise<AfkConfig> {
 async function loadState(cwd: string): Promise<AfkState | null> {
 	const statePath = path.join(cwd, STATE_REL);
 	if (!(await exists(statePath))) return null;
-	return readJson<AfkState>(statePath);
+	const state = await readJson<AfkState>(statePath);
+	return { ...state, status: state.status ?? "paused" };
+}
+
+async function loadHistory(cwd: string): Promise<AfkHistoryEntry[]> {
+	const historyPath = path.join(cwd, HISTORY_REL);
+	if (!(await exists(historyPath))) return [];
+	return readJson<AfkHistoryEntry[]>(historyPath);
+}
+
+async function appendHistory(cwd: string, entry: AfkHistoryEntry) {
+	const history = [entry, ...(await loadHistory(cwd))].slice(0, 5);
+	await writeJson(path.join(cwd, HISTORY_REL), history);
 }
 
 async function saveState(cwd: string, state: AfkState) {
@@ -282,6 +321,51 @@ function nextPhase(phase: Phase): Phase {
 	return "implement";
 }
 
+function oneLine(text: string, max = 160) {
+	const line = text.replace(/\s+/g, " ").trim();
+	return line.length > max ? `${line.slice(0, max)}…` : line;
+}
+
+function setAfkWidget(ctx: any, issue: Issue, state: AfkState, config: AfkConfig) {
+	ctx.ui.setStatus("afk", `#${issue.number} ${state.phase} ${state.cycle}/${config.maxCycles}`);
+	ctx.ui.setWidget("afk", [
+		`AFK #${issue.number}: ${issue.title}`,
+		`status: ${state.status}`,
+		`phase: ${state.phase}`,
+		`cycle: ${state.cycle}/${config.maxCycles}`,
+		`activeAgentId: ${state.activeAgentId ?? "none"}`,
+		state.feedback ? `feedback: ${oneLine(state.feedback)}` : "feedback: none",
+		state.lastResult ? `last: ${state.lastResult.role} ${state.lastResult.status} — ${oneLine(state.lastResult.summary, 100)}` : "last: none",
+		"live output: /agents",
+	]);
+}
+
+function clearAfkWidget(ctx: any) {
+	ctx.ui.setStatus("afk", undefined);
+	ctx.ui.setWidget("afk", undefined);
+}
+
+async function pauseState(cwd: string, summary?: string) {
+	const state = await loadState(cwd);
+	if (!state) return;
+	state.status = "paused";
+	state.activeAgentId = undefined;
+	if (summary) state.feedback = summary;
+	await saveState(cwd, state);
+}
+
+async function stopActiveSubagent(pi: ExtensionAPI, cwd: string) {
+	const state = await loadState(cwd);
+	if (!state?.activeAgentId) return;
+	try {
+		await rpc(pi, "subagents:rpc:stop", { agentId: state.activeAgentId }, 10_000);
+	} catch {
+		// Best effort: the agent may already have completed or the RPC layer may be gone.
+	}
+	state.activeAgentId = undefined;
+	await saveState(cwd, state);
+}
+
 async function rpc<T>(pi: ExtensionAPI, channel: string, payload: Record<string, unknown>, timeoutMs = 30_000): Promise<T> {
 	const requestId = randomUUID();
 	const replyChannel = `${channel}:reply:${requestId}`;
@@ -394,6 +478,7 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 	const issue = await viewIssue(pi, cwd, initialIssue.number);
 	let state = existingState ?? {
 		version: 1 as const,
+		status: "running" as AfkRunStatus,
 		issue: issue.number,
 		phase: "implement" as Phase,
 		cycle: 1,
@@ -401,27 +486,47 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 		startedAt: nowIso(),
 		updatedAt: nowIso(),
 	};
+	state.status = "running";
 	await saveState(cwd, state);
 
 	while (true) {
-		ctx.ui.setStatus("afk", `#${issue.number} ${state.phase} ${state.cycle}/${config.maxCycles}`);
-		ctx.ui.setWidget("afk", [
-			`AFK #${issue.number}: ${issue.title}`,
-			`phase: ${state.phase}`,
-			`cycle: ${state.cycle}/${config.maxCycles}`,
-			state.feedback ? `feedback: ${state.feedback.slice(0, 160)}` : "feedback: none",
-		]);
+		if (activeRun?.stopRequested) {
+			state.status = "paused";
+			state.activeAgentId = undefined;
+			await saveState(cwd, state);
+			await appendHistory(cwd, {
+				issue: issue.number,
+				result: "paused",
+				summary: `Stopped during ${state.phase} phase.`,
+				at: nowIso(),
+			});
+			return "paused";
+		}
+		setAfkWidget(ctx, issue, state, config);
 
 		if (state.phase === "implement") {
 			let parsed: RoleResult;
 			try {
 				parsed = parseRoleResult(await runRole(pi, cwd, config, state, issue, "implementer"));
 			} catch (err) {
-				ctx.ui.notify(`AFK paused: ${err instanceof Error ? err.message : String(err)}`, "error");
+				state.status = "paused";
+				state.activeAgentId = undefined;
+				state.feedback = err instanceof Error ? err.message : String(err);
+				await saveState(cwd, state);
+				await appendHistory(cwd, { issue: issue.number, result: "paused", summary: state.feedback, at: nowIso() });
+				ctx.ui.notify(`AFK paused: ${state.feedback}`, "error");
 				return "paused";
 			}
+			state.lastResult = {
+				role: "implementer",
+				status: parsed.status,
+				summary: parsed.reason || "Implementer passed.",
+				at: nowIso(),
+			};
 			if (parsed.status === "needs-info") {
-				await markNeedsInfo(pi, cwd, issue, "AFK needs info", parsed.reason || "Implementer requested more information.");
+				const summary = parsed.reason || "Implementer requested more information.";
+				await markNeedsInfo(pi, cwd, issue, "AFK needs info", summary);
+				await appendHistory(cwd, { issue: issue.number, result: "needs-info", summary, at: nowIso() });
 				await clearState(cwd);
 				return "needs-info";
 			}
@@ -436,11 +541,24 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 			try {
 				parsed = parseRoleResult(await runRole(pi, cwd, config, state, issue, "quality"));
 			} catch (err) {
-				ctx.ui.notify(`AFK paused: ${err instanceof Error ? err.message : String(err)}`, "error");
+				state.status = "paused";
+				state.activeAgentId = undefined;
+				state.feedback = err instanceof Error ? err.message : String(err);
+				await saveState(cwd, state);
+				await appendHistory(cwd, { issue: issue.number, result: "paused", summary: state.feedback, at: nowIso() });
+				ctx.ui.notify(`AFK paused: ${state.feedback}`, "error");
 				return "paused";
 			}
+			state.lastResult = {
+				role: "quality",
+				status: parsed.status,
+				summary: parsed.reason || "Quality pass passed.",
+				at: nowIso(),
+			};
 			if (parsed.status === "needs-info") {
-				await markNeedsInfo(pi, cwd, issue, "AFK needs info", parsed.reason || "Quality pass requested more information.");
+				const summary = parsed.reason || "Quality pass requested more information.";
+				await markNeedsInfo(pi, cwd, issue, "AFK needs info", summary);
+				await appendHistory(cwd, { issue: issue.number, result: "needs-info", summary, at: nowIso() });
 				await clearState(cwd);
 				return "needs-info";
 			}
@@ -453,32 +571,50 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 		try {
 			verify = parseVerifyResult(await runRole(pi, cwd, config, state, issue, "verifier"));
 		} catch (err) {
-			ctx.ui.notify(`AFK paused: ${err instanceof Error ? err.message : String(err)}`, "error");
+			state.status = "paused";
+			state.activeAgentId = undefined;
+			state.feedback = err instanceof Error ? err.message : String(err);
+			await saveState(cwd, state);
+			await appendHistory(cwd, { issue: issue.number, result: "paused", summary: state.feedback, at: nowIso() });
+			ctx.ui.notify(`AFK paused: ${state.feedback}`, "error");
 			return "paused";
 		}
+		state.lastResult = {
+			role: "verifier",
+			status: verify.status,
+			summary: verify.summary || verify.feedback,
+			at: nowIso(),
+		};
 
 		if (verify.status === "pass") {
 			try {
 				await ensurePassCommit(pi, cwd, verify.commit);
 			} catch (err) {
+				state.status = "paused";
 				state.feedback = `Verifier reported pass but commit validation failed: ${err instanceof Error ? err.message : String(err)}`;
 				await saveState(cwd, state);
+				await appendHistory(cwd, { issue: issue.number, result: "paused", summary: state.feedback, at: nowIso() });
 				ctx.ui.notify("AFK paused: verifier pass failed commit validation.", "error");
 				return "paused";
 			}
 			await markCompleted(pi, cwd, issue, verify);
+			await appendHistory(cwd, { issue: issue.number, result: "completed", summary: verify.summary, commit: verify.commit, at: nowIso() });
 			await clearState(cwd);
 			return "completed";
 		}
 
 		if (verify.status === "needs-info") {
-			await markNeedsInfo(pi, cwd, issue, "AFK needs info", verify.feedback || verify.summary);
+			const summary = verify.feedback || verify.summary;
+			await markNeedsInfo(pi, cwd, issue, "AFK needs info", summary);
+			await appendHistory(cwd, { issue: issue.number, result: "needs-info", summary, at: nowIso() });
 			await clearState(cwd);
 			return "needs-info";
 		}
 
 		if (state.cycle >= config.maxCycles) {
-			await markNeedsInfo(pi, cwd, issue, `AFK needs info after ${config.maxCycles} cycles`, verify.feedback || verify.summary);
+			const summary = verify.feedback || verify.summary;
+			await markNeedsInfo(pi, cwd, issue, `AFK needs info after ${config.maxCycles} cycles`, summary);
+			await appendHistory(cwd, { issue: issue.number, result: "needs-info", summary, at: nowIso() });
 			await clearState(cwd);
 			return "needs-info";
 		}
@@ -494,6 +630,58 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 	}
 }
 
+function ensureNoActiveRun() {
+	if (activeRun) throw new Error("AFK already running. Use /afk status or /afk stop.");
+}
+
+function startDetachedRun(ctx: any, run: () => Promise<void>) {
+	ensureNoActiveRun();
+	const handle: ActiveRun = {
+		stopRequested: false,
+		promise: Promise.resolve(),
+	};
+	activeRun = handle;
+	handle.promise = run()
+		.catch(async (err) => {
+			const message = err instanceof Error ? err.message : String(err);
+			await pauseState(ctx.cwd, message);
+			clearAfkWidget(ctx);
+			ctx.ui.notify(`AFK paused: ${message}`, "error");
+		})
+		.finally(() => {
+			if (activeRun === handle) activeRun = undefined;
+		});
+}
+
+async function runIssueLoop(pi: ExtensionAPI, ctx: any, config: AfkConfig, runAll: boolean, issueNumber?: number) {
+	const completed: number[] = [];
+	const needsInfo: number[] = [];
+
+	while (true) {
+		if (activeRun?.stopRequested) break;
+		const issue = issueNumber !== undefined ? await viewIssue(pi, ctx.cwd, issueNumber) : await selectIssue(pi, ctx.cwd);
+		if (!issue) break;
+		if (!(await isRunnableIssue(pi, ctx.cwd, issue))) throw new Error(`#${issue.number} is not runnable.`);
+		ctx.ui.notify(`AFK starting #${issue.number}: ${issue.title}`, "info");
+		const result = await runOne(pi, ctx, config, issue);
+		if (result === "paused") {
+			clearAfkWidget(ctx);
+			return;
+		}
+		if (result === "completed") completed.push(issue.number);
+		if (result === "needs-info") needsInfo.push(issue.number);
+		if (!runAll) break;
+		issueNumber = undefined;
+	}
+
+	clearAfkWidget(ctx);
+	if (activeRun?.stopRequested) return;
+	ctx.ui.notify(
+		`AFK finished\ncompleted: ${completed.length ? completed.map((n) => `#${n}`).join(", ") : "none"}\nneeds-info: ${needsInfo.length ? needsInfo.map((n) => `#${n}`).join(", ") : "none"}`,
+		needsInfo.length > 0 ? "warning" : "info",
+	);
+}
+
 async function handleRun(pi: ExtensionAPI, ctx: any, argv: string[]) {
 	let runAll = false;
 	let issueNumber: number | undefined;
@@ -507,78 +695,105 @@ async function handleRun(pi: ExtensionAPI, ctx: any, argv: string[]) {
 		} else throw new Error(usage());
 	}
 	if (runAll && issueNumber !== undefined) throw new Error("--all cannot be combined with --issue.");
+	ensureNoActiveRun();
 	if (await loadState(ctx.cwd)) throw new Error(`AFK state already exists. Use /afk resume or /afk stop. State: ${STATE_REL}`);
 	await ensureCleanForStart(pi, ctx.cwd);
 	await requireSubagents(pi);
 	const config = await loadConfig(ctx.cwd);
-	const completed: number[] = [];
-	const needsInfo: number[] = [];
-
-	while (true) {
-		const issue = issueNumber !== undefined ? await viewIssue(pi, ctx.cwd, issueNumber) : await selectIssue(pi, ctx.cwd);
-		if (!issue) break;
-		if (!(await isRunnableIssue(pi, ctx.cwd, issue))) throw new Error(`#${issue.number} is not runnable.`);
-		ctx.ui.notify(`AFK starting #${issue.number}: ${issue.title}`, "info");
-		const result = await runOne(pi, ctx, config, issue);
-		if (result === "paused") return;
-		if (result === "completed") completed.push(issue.number);
-		if (result === "needs-info") needsInfo.push(issue.number);
-		if (!runAll) break;
-		issueNumber = undefined;
-	}
-
-	ctx.ui.setStatus("afk", undefined);
-	ctx.ui.setWidget("afk", undefined);
-	ctx.ui.notify(
-		`AFK finished\ncompleted: ${completed.length ? completed.map((n) => `#${n}`).join(", ") : "none"}\nneeds-info: ${needsInfo.length ? needsInfo.map((n) => `#${n}`).join(", ") : "none"}`,
-		needsInfo.length > 0 ? "warning" : "info",
-	);
+	startDetachedRun(ctx, () => runIssueLoop(pi, ctx, config, runAll, issueNumber));
+	ctx.ui.notify("AFK started. Live output: /agents. Control: /afk status | /afk stop.", "info");
 }
 
 async function handleResume(pi: ExtensionAPI, ctx: any) {
+	ensureNoActiveRun();
 	const state = await loadState(ctx.cwd);
 	if (!state) throw new Error(`No AFK state found at ${STATE_REL}.`);
 	await requireSubagents(pi);
 	const config = await loadConfig(ctx.cwd);
-	const issue = await viewIssue(pi, ctx.cwd, state.issue);
+	state.status = "running";
 	state.activeAgentId = undefined;
 	await saveState(ctx.cwd, state);
-	const result = await runOne(pi, ctx, config, issue, state);
-	if (result !== "paused") {
-		ctx.ui.setStatus("afk", undefined);
-		ctx.ui.setWidget("afk", undefined);
-	}
+	startDetachedRun(ctx, async () => {
+		const issue = await viewIssue(pi, ctx.cwd, state.issue);
+		await runOne(pi, ctx, config, issue, state);
+		clearAfkWidget(ctx);
+	});
+	ctx.ui.notify("AFK resumed. Live output: /agents. Control: /afk status | /afk stop.", "info");
 }
 
 async function handleStatus(ctx: any) {
 	const state = await loadState(ctx.cwd);
+	if (!state && activeRun) {
+		ctx.ui.notify("AFK active; selecting or starting issue. Live output: /agents.", "info");
+		return;
+	}
 	if (!state) {
-		ctx.ui.notify("AFK idle.", "info");
+		const history = await loadHistory(ctx.cwd);
+		const last = history[0];
+		ctx.ui.notify(
+			last
+				? `AFK idle.\nlast: #${last.issue} ${last.result} — ${oneLine(last.summary)}${last.commit ? `\ncommit: ${last.commit}` : ""}`
+				: "AFK idle.",
+			"info",
+		);
 		return;
 	}
 	ctx.ui.notify(
-		`AFK #${state.issue}\nphase: ${state.phase}\ncycle: ${state.cycle}\nactiveAgentId: ${state.activeAgentId ?? "none"}\nstate: ${STATE_REL}`,
+		[
+			`AFK #${state.issue}`,
+			`status: ${activeRun ? "active" : state.status}`,
+			`phase: ${state.phase}`,
+			`cycle: ${state.cycle}`,
+			`activeAgentId: ${state.activeAgentId ?? "none"}`,
+			state.feedback ? `feedback: ${oneLine(state.feedback)}` : "feedback: none",
+			state.lastResult ? `last: ${state.lastResult.role} ${state.lastResult.status} — ${oneLine(state.lastResult.summary)}` : "last: none",
+			`state: ${STATE_REL}`,
+			"live output: /agents",
+		].join("\n"),
 		"info",
 	);
 }
 
 async function handleStop(pi: ExtensionAPI, ctx: any) {
 	const state = await loadState(ctx.cwd);
-	if (!state) {
+	if (!state && !activeRun) {
 		ctx.ui.notify("AFK idle.", "info");
 		return;
 	}
-	if (state.activeAgentId) {
-		await rpc(pi, "subagents:rpc:stop", { agentId: state.activeAgentId });
-		state.activeAgentId = undefined;
-		await saveState(ctx.cwd, state);
-	}
-	ctx.ui.setStatus("afk", undefined);
-	ctx.ui.setWidget("afk", undefined);
+	if (activeRun) activeRun.stopRequested = true;
+	await stopActiveSubagent(pi, ctx.cwd);
+	await pauseState(ctx.cwd, "Stopped by user. Resume restarts the current phase.");
+	clearAfkWidget(ctx);
 	ctx.ui.notify(`AFK stopped locally. Resume with /afk resume. State kept at ${STATE_REL}.`, "warning");
 }
 
 export default function afkExtension(pi: ExtensionAPI) {
+	pi.on("session_start", async (_event, ctx: any) => {
+		if (activeRun) return;
+		const state = await loadState(ctx.cwd);
+		if (state?.status === "running") {
+			state.status = "paused";
+			state.activeAgentId = undefined;
+			state.feedback = state.feedback || "Paused because Pi restarted or reloaded while AFK was running.";
+			await saveState(ctx.cwd, state);
+		}
+	});
+
+	pi.on("before_agent_start", async (event) => {
+		if (!activeRun) return;
+		return {
+			systemPrompt: `${event.systemPrompt}\n\nAFK run active. Treat AFK task notifications and AFK status as progress/status only. Do not inspect, edit, test, verify, or continue AFK-owned work unless the user explicitly asks you to do so in this turn. You may read AFK state/logs to answer status questions.`,
+		};
+	});
+
+	pi.on("session_shutdown", async (_event, ctx: any) => {
+		if (!activeRun) return;
+		activeRun.stopRequested = true;
+		await stopActiveSubagent(pi, ctx.cwd);
+		await pauseState(ctx.cwd, "Paused because Pi session shut down while AFK was running.");
+		clearAfkWidget(ctx);
+	});
+
 	pi.registerCommand("afk", {
 		description: "Run AFK GitHub issue implementation loop",
 		getArgumentCompletions(prefix: string) {

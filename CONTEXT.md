@@ -115,3 +115,17 @@ _Avoid_: Build queue, manual unit training
 **Production Facility**:
 A player structure automatically created when existing production facilities are too busy for the swarm's production needs. It consumes delivered resources and automatically produces nanobots toward the production ratio. Early nanobot types may share production cost and time; later designs may differentiate costs or requirements.
 _Avoid_: Barracks, factory queue, manual spawner
+
+## Agent Workflow Language
+
+**AFK Run**:
+A user-started automation run that owns an issue from implementation through verification without requiring main-chat intervention. While an AFK run is active, the main chat observes, reports, or stops it but does not inspect, edit, test, or continue its work unless explicitly instructed.
+_Avoid_: Background helper, partial delegation, assistant-side follow-up
+
+**AFK Live Panel**:
+A compact progress view for an active AFK run, showing current issue, phase, active agent, recent activity, and where to inspect the full transcript. It is for monitoring, not for transferring work back to the main chat.
+_Avoid_: Full transcript dump, main-agent handoff, hidden background job
+
+**AFK Watch**:
+An AFK-specific detailed progress view that follows the AFK run's phase story and recent agent activity. It complements the general `/agents` subagent manager, which remains the raw debug view for all subagents.
+_Avoid_: Agents replacement, transcript-only view
