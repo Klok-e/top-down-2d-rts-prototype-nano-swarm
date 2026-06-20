@@ -7,92 +7,21 @@
 //! maintenance under enough worker time. The pure-helper unit
 //! tests for the data layer live in `src/nanobot/maintenance.rs`.
 
-use bevy::{math::Vec2, prelude::*};
+use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    game_settings::GameSettings,
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
-        bot_debug_circle_system, move_velocity_system, separation_system, velocity_system,
-        BuildPlugin, Commitment, MaintenanceAssignment, MaintenancePlugin, MaintenanceProgress,
-        Nanobot, NanobotType, SoftWorkSlots, Structure, StructureKind, VelocityComponent,
+        MaintenanceAssignment, MaintenanceProgress, Structure, StructureKind,
         MAINTENANCE_BUFFER_TICKS, MAINTENANCE_NEEDS_THRESHOLD, MAINTENANCE_WORK_DURATION_TICKS,
         STRUCTURE_MAX_HEALTH,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
-    ZONE_BLOCK_SIZE,
 };
 
+mod common;
+
 fn build_app() -> App {
-    let mut app = App::new();
-    app.add_plugins(bevy::time::TimePlugin);
-    app.insert_resource(IntentGrid::new(8, 8));
-    app.insert_resource(GameSettings {
-        width: 1000.0,
-        height: 1000.0,
-        bot_speed: 5.0,
-        debug_draw_circles: false,
-    });
-    app.init_resource::<SoftWorkSlots>();
-    app.init_resource::<ResourceLedger>();
-    app.add_systems(
-        Update,
-        (
-            separation_system,
-            velocity_system,
-            move_velocity_system,
-            bot_debug_circle_system,
-        )
-            .chain(),
-    );
-    // BuildPlugin covers Structure auto-creation in tests that
-    // paint Build intent; it also gives the maintenance system a
-    // sibling plugin to chain behind. The maintenance plugin
-    // registers the work and degradation systems.
-    app.add_plugins(BuildPlugin);
-    app.add_plugins(MaintenancePlugin);
-    app
-}
-
-fn cell_world_center(cell: IVec2) -> Vec2 {
-    Vec2::new(
-        (cell.x as f32 + 0.5) * ZONE_BLOCK_SIZE,
-        (cell.y as f32 + 0.5) * ZONE_BLOCK_SIZE,
-    )
-}
-
-fn spawn_structure(app: &mut App, world_pos: Vec2) -> Entity {
-    app.world_mut()
-        .spawn((
-            Structure::new(StructureKind::Basic),
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
-}
-
-fn spawn_worker_at(app: &mut App, world_pos: Vec2) -> Entity {
-    app.world_mut()
-        .spawn((
-            Nanobot {},
-            NanobotType::Worker,
-            Commitment::Idle,
-            VelocityComponent::default(),
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
-}
-
-fn spawn_stockpile(app: &mut App, world_pos: Vec2, amount: u32, capacity: u32) -> Entity {
-    app.world_mut()
-        .spawn((
-            Stockpile {
-                kind: ResourceKind::Minerals,
-                amount,
-                capacity,
-                radius: 32.0,
-            },
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
+    common::sim_app_with_maintenance()
 }
 
 fn structure_buffer(app: &App, structure: Entity) -> u32 {
@@ -119,8 +48,8 @@ fn structure_tracks_maintenance_state_via_buffer_counter() {
     // not change.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    let center = cell_world_center(cell);
-    let structure = spawn_structure(&mut app, center);
+    let center = common::cell_world_center(cell);
+    let structure = common::spawn_structure_at(&mut app, center);
 
     for _ in 0..5 {
         app.update();
@@ -149,8 +78,8 @@ fn structure_degrades_when_no_workers_maintain_it() {
     // structure loses one health per tick.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    let center = cell_world_center(cell);
-    let structure = spawn_structure(&mut app, center);
+    let center = common::cell_world_center(cell);
+    let structure = common::spawn_structure_at(&mut app, center);
 
     // Run past the buffer plus a few extra ticks so the
     // degradation actually kicks in.
@@ -184,8 +113,8 @@ fn structure_collapses_at_zero_health() {
     // be despawned when its health reaches zero.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    let center = cell_world_center(cell);
-    let structure = spawn_structure(&mut app, center);
+    let center = common::cell_world_center(cell);
+    let structure = common::spawn_structure_at(&mut app, center);
 
     // Run past the buffer plus the full health bar plus a few
     // extra ticks so the structure is guaranteed to have
@@ -214,8 +143,8 @@ fn worker_travels_to_and_maintains_stale_structure() {
     app.world_mut()
         .resource_mut::<IntentGrid>()
         .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
-    let center = cell_world_center(cell);
-    let structure = spawn_structure(&mut app, center);
+    let center = common::cell_world_center(cell);
+    let structure = common::spawn_structure_at(&mut app, center);
     // Make the structure stale so the maintenance system
     // immediately has a target on the first tick.
     app.world_mut()
@@ -223,7 +152,7 @@ fn worker_travels_to_and_maintains_stale_structure() {
         .get_mut::<Structure>()
         .unwrap()
         .ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
-    let _worker = spawn_worker_at(&mut app, center);
+    let _worker = common::spawn_worker_at(&mut app, center);
 
     // Run long enough for one full maintenance cycle plus a
     // buffer to elapse, so we can be sure the worker is not
@@ -260,8 +189,8 @@ fn maintenance_does_not_consume_stockpile_resources() {
     app.world_mut()
         .resource_mut::<IntentGrid>()
         .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
-    let center = cell_world_center(cell);
-    let structure = spawn_structure(&mut app, center);
+    let center = common::cell_world_center(cell);
+    let structure = common::spawn_structure_at(&mut app, center);
     app.world_mut()
         .entity_mut(structure)
         .get_mut::<Structure>()
@@ -269,8 +198,8 @@ fn maintenance_does_not_consume_stockpile_resources() {
         .ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
     // Stockpile in the same cell with material that must NOT
     // be drained by the maintenance work.
-    let stockpile = spawn_stockpile(&mut app, center, 100, 1000);
-    spawn_worker_at(&mut app, center);
+    let stockpile = common::spawn_stockpile(&mut app, center, 100, 1000);
+    common::spawn_worker_at(&mut app, center);
 
     // Run long enough to cover at least one full maintenance
     // shift plus the worker's return visit. Any pull from the
@@ -316,9 +245,9 @@ fn sufficient_worker_time_keeps_structure_stable() {
     app.world_mut()
         .resource_mut::<IntentGrid>()
         .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
-    let center = cell_world_center(cell);
-    let structure = spawn_structure(&mut app, center);
-    spawn_worker_at(&mut app, center);
+    let center = common::cell_world_center(cell);
+    let structure = common::spawn_structure_at(&mut app, center);
+    common::spawn_worker_at(&mut app, center);
 
     // Run long enough for several maintenance cycles. The cycle
     // is `MAINTENANCE_WORK_DURATION_TICKS` work + a few idle
@@ -357,14 +286,14 @@ fn idle_worker_picks_maintenance_over_idling_when_structure_is_stale() {
     app.world_mut()
         .resource_mut::<IntentGrid>()
         .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
-    let center = cell_world_center(cell);
-    let structure = spawn_structure(&mut app, center);
+    let center = common::cell_world_center(cell);
+    let structure = common::spawn_structure_at(&mut app, center);
     app.world_mut()
         .entity_mut(structure)
         .get_mut::<Structure>()
         .unwrap()
         .ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
-    let worker = spawn_worker_at(&mut app, center);
+    let worker = common::spawn_worker_at(&mut app, center);
 
     // One tick is enough for the assignment system to fire
     // because the worker starts at the structure's position.
@@ -394,7 +323,7 @@ fn maintenance_is_skipped_when_worker_is_busy_with_build() {
     app.world_mut()
         .resource_mut::<IntentGrid>()
         .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
-    let center = cell_world_center(cell);
+    let center = common::cell_world_center(cell);
     // Both a build site and a stale structure exist in the
     // same cell. The build system wins, the maintenance system
     // must not also pick the worker.
@@ -403,13 +332,13 @@ fn maintenance_is_skipped_when_worker_is_busy_with_build() {
         BuildSite::new(cell, StructureKind::Basic),
         Transform::from_translation(center.extend(0.0)),
     ));
-    let structure = spawn_structure(&mut app, center);
+    let structure = common::spawn_structure_at(&mut app, center);
     app.world_mut()
         .entity_mut(structure)
         .get_mut::<Structure>()
         .unwrap()
         .ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
-    let worker = spawn_worker_at(&mut app, center);
+    let worker = common::spawn_worker_at(&mut app, center);
 
     app.update();
 

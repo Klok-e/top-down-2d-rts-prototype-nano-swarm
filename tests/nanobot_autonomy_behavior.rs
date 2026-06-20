@@ -20,13 +20,12 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{best_candidate, Commitment, NanobotType, SoftWorkSlots},
 };
 
+mod common;
+
 const CELL_SIZE: f32 = 1.0;
 
 fn build_app() -> App {
-    let mut app = App::new();
-    app.insert_resource(IntentGrid::new(6, 6));
-    app.init_resource::<SoftWorkSlots>();
-    app
+    common::minimal_app()
 }
 
 #[test]

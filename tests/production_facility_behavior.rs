@@ -8,115 +8,23 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    game_settings::GameSettings,
-    intent::IntentGrid,
     nanobot::{
-        bot_debug_circle_system, move_velocity_system, separation_system, velocity_system,
-        Commitment, Health, Nanobot, NanobotBundle, NanobotType, ProductionFacility,
-        ProductionPlugin, ProductionRatio, SoftWorkSlots, Swarm, VelocityComponent,
-        PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT,
+        NanobotType, ProductionFacility, ProductionRatio, PRODUCTION_COST_PER_BOT,
+        PRODUCTION_TICKS_PER_BOT,
     },
-    resources::{ResourceKind, ResourceLedger, Stockpile},
+    resources::Stockpile,
 };
 
+mod common;
+
 fn build_app() -> App {
-    let mut app = App::new();
-    app.add_plugins(bevy::time::TimePlugin);
-    app.insert_resource(IntentGrid::new(8, 8));
-    app.insert_resource(GameSettings {
-        width: 1000.0,
-        height: 1000.0,
-        bot_speed: 5.0,
-        debug_draw_circles: false,
-    });
-    app.init_resource::<SoftWorkSlots>();
-    app.init_resource::<ResourceLedger>();
     // Use an empty ratio by default so each test starts from a
     // clean slate. Tests that need a specific mix set their own
     // targets; the sensible default lives in the game's
     // `lib.rs` initialization instead.
+    let mut app = common::sim_app_with_production();
     app.insert_resource(ProductionRatio::new());
-    app.add_systems(
-        Update,
-        (
-            separation_system,
-            velocity_system,
-            move_velocity_system,
-            bot_debug_circle_system,
-        )
-            .chain(),
-    );
-    app.add_plugins(ProductionPlugin);
     app
-}
-
-fn spawn_swarm(app: &mut App) -> Entity {
-    app.world_mut().spawn((Swarm {}, Transform::default())).id()
-}
-
-fn spawn_swarm_with_nanobots(
-    app: &mut App,
-    world_pos: Vec2,
-    counts: &[(NanobotType, u32)],
-) -> Entity {
-    let swarm = app
-        .world_mut()
-        .spawn((Swarm {}, Transform::from_translation(world_pos.extend(0.0))))
-        .id();
-    {
-        let world = app.world_mut();
-        let mut entity = world.entity_mut(swarm);
-        entity.with_children(|p| {
-            for (kind, n) in counts {
-                for _ in 0..*n {
-                    p.spawn((
-                        NanobotBundle {
-                            nanobot: Nanobot {},
-                            nanobot_type: *kind,
-                            velocity: VelocityComponent::default(),
-                            ai_state: Default::default(),
-                            health: Health::default(),
-                        },
-                        Commitment::Idle,
-                        Transform::from_translation(world_pos.extend(0.0)),
-                    ));
-                }
-            }
-        });
-    }
-    swarm
-}
-
-fn spawn_stockpile(app: &mut App, world_pos: Vec2, amount: u32, capacity: u32) -> Entity {
-    app.world_mut()
-        .spawn((
-            Stockpile {
-                kind: ResourceKind::Minerals,
-                amount,
-                capacity,
-                radius: 32.0,
-            },
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
-}
-
-fn spawn_idle_facility(app: &mut App, world_pos: Vec2) -> Entity {
-    app.world_mut()
-        .spawn((
-            ProductionFacility::new(),
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
-}
-
-fn spawn_busy_facility(app: &mut App, world_pos: Vec2, target: NanobotType) -> Entity {
-    let mut f = ProductionFacility::new();
-    f.current_target = Some(target);
-    f.progress = 1;
-    app.world_mut()
-        .spawn((f, Transform::from_translation(world_pos.extend(0.0))))
-        .id()
 }
 
 fn facility_count(world: &mut World) -> usize {
@@ -159,7 +67,7 @@ fn facility_picks_type_with_largest_deficit() {
     // Single swarm holding 5 Workers and 1 Defender; targets
     // 5/10/5 -> deficits 0/10/4, so the picker must choose
     // Hauler.
-    spawn_swarm_with_nanobots(
+    common::spawn_swarm_with_nanobots(
         &mut app,
         Vec2::new(100.0, 100.0),
         &[(NanobotType::Worker, 5), (NanobotType::Defender, 1)],
@@ -171,8 +79,9 @@ fn facility_picks_type_with_largest_deficit() {
         ratio.set_target(NanobotType::Defender, 5);
     }
     let stockpile_pos = Vec2::new(200.0, 100.0);
-    let _stockpile = spawn_stockpile(&mut app, stockpile_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
-    let _facility = spawn_idle_facility(&mut app, stockpile_pos);
+    let _stockpile =
+        common::spawn_stockpile(&mut app, stockpile_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+    let _facility = common::spawn_idle_facility_at(&mut app, stockpile_pos);
 
     app.update();
 
@@ -194,14 +103,14 @@ fn facility_skips_blocked_type() {
     // the facility must commit to Hauler. The Worker block
     // does not stall the facility.
     let mut app = build_app();
-    let _swarm = spawn_swarm(&mut app);
+    let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
         ratio.set_target(NanobotType::Worker, 5);
         ratio.set_target(NanobotType::Hauler, 5);
     }
     let pos = Vec2::new(150.0, 50.0);
-    let _stockpile = spawn_stockpile(&mut app, pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+    let _stockpile = common::spawn_stockpile(&mut app, pos, PRODUCTION_COST_PER_BOT * 5, 1000);
     let facility_entity = {
         let mut f = ProductionFacility::new();
         f.blocked_types.insert(NanobotType::Worker);
@@ -238,16 +147,16 @@ fn facility_consumes_delivered_resources() {
     // untouched, matching the "physically delivered" half
     // of the contract.
     let mut app = build_app();
-    let _swarm = spawn_swarm(&mut app);
+    let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
         ratio.set_target(NanobotType::Worker, 5);
     }
     let facility_pos = Vec2::new(0.0, 0.0);
-    let local = spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 2, 1000);
+    let local = common::spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 2, 1000);
     let distant_pos = Vec2::new(5000.0, 0.0);
-    let distant = spawn_stockpile(&mut app, distant_pos, 10_000, 20_000);
-    let _facility = spawn_idle_facility(&mut app, facility_pos);
+    let distant = common::spawn_stockpile(&mut app, distant_pos, 10_000, 20_000);
+    let _facility = common::spawn_idle_facility_at(&mut app, facility_pos);
 
     app.update();
 
@@ -272,14 +181,15 @@ fn facility_produces_nanobot_after_full_cycle() {
     // PRODUCTION_TICKS_PER_BOT ticks. The new nanobot is a
     // child of the swarm.
     let mut app = build_app();
-    let swarm = spawn_swarm(&mut app);
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
         ratio.set_target(NanobotType::Worker, 3);
     }
     let facility_pos = Vec2::new(0.0, 0.0);
-    let _stockpile = spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
-    let _facility = spawn_idle_facility(&mut app, facility_pos);
+    let _stockpile =
+        common::spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+    let _facility = common::spawn_idle_facility_at(&mut app, facility_pos);
 
     // 1 tick to pick the target, PRODUCTION_TICKS_PER_BOT
     // ticks of progress (the cycle completes on the
@@ -329,15 +239,15 @@ fn shared_early_cost_across_types() {
     // of material from their stockpiles.
     fn run_scenario(target: NanobotType) -> u32 {
         let mut app = build_app();
-        let _swarm = spawn_swarm(&mut app);
+        let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
         {
             let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
             ratio.set_target(target, 1);
         }
         let facility_pos = Vec2::new(0.0, 0.0);
         let stockpile_entity =
-            spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 3, 1000);
-        let _facility = spawn_idle_facility(&mut app, facility_pos);
+            common::spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 3, 1000);
+        let _facility = common::spawn_idle_facility_at(&mut app, facility_pos);
         app.update();
         app.world()
             .entity(stockpile_entity)
@@ -371,14 +281,15 @@ fn shared_early_ticks_across_types() {
     // both and checking the cycle state pins the time half.
     fn run_to_cycle_completion(target: NanobotType) -> u32 {
         let mut app = build_app();
-        let swarm = spawn_swarm(&mut app);
+        let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
         {
             let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
             ratio.set_target(target, 1);
         }
         let facility_pos = Vec2::new(0.0, 0.0);
-        let _stockpile = spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 3, 1000);
-        let _facility = spawn_idle_facility(&mut app, facility_pos);
+        let _stockpile =
+            common::spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 3, 1000);
+        let _facility = common::spawn_idle_facility_at(&mut app, facility_pos);
         // 1 pick tick + PRODUCTION_TICKS_PER_BOT work ticks
         // = PRODUCTION_TICKS_PER_BOT + 1 total ticks. The
         // cycle completes on the last tick, spawning a
@@ -430,7 +341,7 @@ fn additional_facility_emerges_when_existing_busy() {
     // that is itself busy (pre-picked target), so the
     // emergence path actually starts production.
     let mut app = build_app();
-    spawn_swarm(&mut app);
+    common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
         ratio.set_target(NanobotType::Worker, 10);
@@ -441,9 +352,10 @@ fn additional_facility_emerges_when_existing_busy() {
     // deficit is high (3 * 10 = 30) so the emergence
     // threshold is comfortably exceeded.
     let facility_pos = Vec2::new(0.0, 0.0);
-    let _busy = spawn_busy_facility(&mut app, facility_pos, NanobotType::Worker);
+    let _busy = common::spawn_busy_facility_at(&mut app, facility_pos, NanobotType::Worker);
     // Stockpile with enough material for the new facility.
-    let _stockpile = spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+    let _stockpile =
+        common::spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
 
     app.update();
 
@@ -471,14 +383,15 @@ fn no_emergence_when_existing_facility_is_idle() {
     // means the swarm has spare capacity, so the auto
     // creator must NOT spawn a duplicate.
     let mut app = build_app();
-    let _swarm = spawn_swarm(&mut app);
+    let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
         ratio.set_target(NanobotType::Worker, 10);
     }
     let facility_pos = Vec2::new(0.0, 0.0);
-    let _idle = spawn_idle_facility(&mut app, facility_pos);
-    let _stockpile = spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+    let _idle = common::spawn_idle_facility_at(&mut app, facility_pos);
+    let _stockpile =
+        common::spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
 
     app.update();
 
@@ -498,7 +411,7 @@ fn blocked_types_cleared_after_full_cycle() {
     // cleared. Next cycle Worker is re-evaluated and gets
     // unblocked because material is available.
     let mut app = build_app();
-    let _swarm = spawn_swarm(&mut app);
+    let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
         ratio.set_target(NanobotType::Worker, 1);
@@ -512,7 +425,8 @@ fn blocked_types_cleared_after_full_cycle() {
             .spawn((f, Transform::from_translation(facility_pos.extend(0.0))))
             .id()
     };
-    let _stockpile = spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+    let _stockpile =
+        common::spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
 
     // 1 pick tick + PRODUCTION_TICKS_PER_BOT work ticks to
     // complete the cycle.
@@ -541,7 +455,7 @@ fn no_production_when_all_types_blocked() {
     // the facility stalls only when *every* candidate is
     // blocked, not when one is.
     let mut app = build_app();
-    let _swarm = spawn_swarm(&mut app);
+    let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
         ratio.set_target(NanobotType::Worker, 5);
@@ -557,7 +471,8 @@ fn no_production_when_all_types_blocked() {
             .spawn((f, Transform::from_translation(facility_pos.extend(0.0))))
             .id()
     };
-    let stockpile = spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+    let stockpile =
+        common::spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
 
     app.update();
 
@@ -585,14 +500,15 @@ fn production_increases_population_of_picked_type() {
     // and one full cycle must produce exactly one Hauler
     // and bring the population to 1.
     let mut app = build_app();
-    let _swarm = spawn_swarm(&mut app);
+    let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
         ratio.set_target(NanobotType::Hauler, 1);
     }
     let facility_pos = Vec2::new(0.0, 0.0);
-    let _stockpile = spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
-    let _facility = spawn_idle_facility(&mut app, facility_pos);
+    let _stockpile =
+        common::spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+    let _facility = common::spawn_idle_facility_at(&mut app, facility_pos);
 
     // Initial hauler population is 0.
     assert_eq!(

@@ -16,89 +16,18 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    game_settings::GameSettings,
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
-        best_candidate, bot_debug_circle_system, is_enemy_territory, move_velocity_system,
-        separation_system, velocity_system, Commitment, DefendAssignment, DefendHold, DefendPlugin,
-        DirectMovementComponent, Nanobot, NanobotType, SoftWorkSlots, Swarm, VelocityComponent,
-        DEFEND_HOME_RADIUS_CELLS,
+        best_candidate, is_enemy_territory, Commitment, DefendAssignment, DefendHold,
+        DirectMovementComponent, NanobotType, SoftWorkSlots, DEFEND_HOME_RADIUS_CELLS,
     },
     ZONE_BLOCK_SIZE,
 };
 
-fn cell_world_center(cell: IVec2) -> Vec2 {
-    Vec2::new(
-        (cell.x as f32 + 0.5) * ZONE_BLOCK_SIZE,
-        (cell.y as f32 + 0.5) * ZONE_BLOCK_SIZE,
-    )
-}
+mod common;
 
 fn build_app() -> App {
-    let mut app = App::new();
-    app.add_plugins(bevy::time::TimePlugin);
-    app.insert_resource(IntentGrid::new(8, 8));
-    app.insert_resource(GameSettings {
-        width: 1000.0,
-        height: 1000.0,
-        bot_speed: 5.0,
-        debug_draw_circles: false,
-    });
-    app.init_resource::<SoftWorkSlots>();
-    app.add_systems(
-        Update,
-        (
-            separation_system,
-            velocity_system,
-            move_velocity_system,
-            bot_debug_circle_system,
-        )
-            .chain(),
-    );
-    app.add_plugins(DefendPlugin);
-    app
-}
-
-fn spawn_swarm_at(app: &mut App, world_pos: Vec2) -> Entity {
-    app.world_mut()
-        .spawn((Swarm {}, Transform::from_translation(world_pos.extend(0.0))))
-        .id()
-}
-
-fn spawn_defender_at(app: &mut App, world_pos: Vec2) -> Entity {
-    app.world_mut()
-        .spawn((
-            Nanobot {},
-            NanobotType::Defender,
-            Commitment::Idle,
-            VelocityComponent::default(),
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
-}
-
-fn spawn_worker_at(app: &mut App, world_pos: Vec2) -> Entity {
-    app.world_mut()
-        .spawn((
-            Nanobot {},
-            NanobotType::Worker,
-            Commitment::Idle,
-            VelocityComponent::default(),
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
-}
-
-fn spawn_hauler_at(app: &mut App, world_pos: Vec2) -> Entity {
-    app.world_mut()
-        .spawn((
-            Nanobot {},
-            NanobotType::Hauler,
-            Commitment::Idle,
-            VelocityComponent::default(),
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id()
+    common::sim_app_with_defend()
 }
 
 #[test]
@@ -109,13 +38,13 @@ fn idle_defender_picks_defend_cell_via_autonomy_scoring() {
     // `DefendAssignment` pointing at that cell and a DMC toward
     // its world center.
     let mut app = build_app();
-    let _swarm = spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
+    let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
         assert!(grid.paint(cell, IntentKind::Defend, PAINT_STRENGTH_CAP));
     }
-    let defender = spawn_defender_at(&mut app, Vec2::new(0.0, 0.0));
+    let defender = common::spawn_defender_at(&mut app, Vec2::new(0.0, 0.0));
 
     // Sanity: the global scoring function picks this cell for an
     // idle Defender; this is the contract the assignment system
@@ -169,14 +98,14 @@ fn workers_and_haulers_do_not_get_defend_assignments() {
     // workers to Gather and haulers to Corridor; the Defend layer
     // gets the same gate applied to it.
     let mut app = build_app();
-    let _swarm = spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
+    let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
         assert!(grid.paint(cell, IntentKind::Defend, PAINT_STRENGTH_CAP));
     }
-    let worker = spawn_worker_at(&mut app, Vec2::new(0.0, 0.0));
-    let hauler = spawn_hauler_at(&mut app, Vec2::new(0.0, 0.0));
+    let worker = common::spawn_worker_at(&mut app, Vec2::new(0.0, 0.0));
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(0.0, 0.0));
 
     for _ in 0..5 {
         app.update();
@@ -205,14 +134,14 @@ fn defender_holds_position_at_defend_cell_after_arrival() {
     // the hold state and stay at the cell center even when
     // separation forces push other bots nearby.
     let mut app = build_app();
-    let _swarm = spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
+    let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
         assert!(grid.paint(cell, IntentKind::Defend, PAINT_STRENGTH_CAP));
     }
-    let cell_center = cell_world_center(cell);
-    let defender = spawn_defender_at(&mut app, Vec2::new(0.0, 0.0));
+    let cell_center = common::cell_world_center(cell);
+    let defender = common::spawn_defender_at(&mut app, Vec2::new(0.0, 0.0));
 
     // One update for the assignment; then enough updates to walk
     // from (0, 0) to (512, 256) at bot_speed 5.0 (about 110
@@ -274,14 +203,14 @@ fn defender_hold_releases_when_paint_erased() {
     // drops the hold marker so the defender returns to the
     // assignment pool.
     let mut app = build_app();
-    let _swarm = spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
+    let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
         assert!(grid.paint(cell, IntentKind::Defend, PAINT_STRENGTH_CAP));
     }
-    let cell_center = cell_world_center(cell);
-    let defender = spawn_defender_at(&mut app, Vec2::new(0.0, 0.0));
+    let cell_center = common::cell_world_center(cell);
+    let defender = common::spawn_defender_at(&mut app, Vec2::new(0.0, 0.0));
 
     // Travel to the cell.
     for _ in 0..200 {
@@ -329,7 +258,7 @@ fn defender_advances_into_enemy_territory_when_paint_far_from_swarm() {
     // player paints it. This is the "advance" half of the
     // hold/advance contract.
     let mut app = build_app();
-    let _swarm = spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
+    let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let swarm_cell = IVec2::new(0, 0);
 
     // Paint the first Defend cell at (1, 0) -- inside the home
@@ -339,7 +268,7 @@ fn defender_advances_into_enemy_territory_when_paint_far_from_swarm() {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
         assert!(grid.paint(friendly_cell, IntentKind::Defend, 8));
     }
-    let defender = spawn_defender_at(&mut app, Vec2::new(0.0, 0.0));
+    let defender = common::spawn_defender_at(&mut app, Vec2::new(0.0, 0.0));
 
     // Travel to the friendly cell and enter hold.
     for _ in 0..200 {
@@ -405,7 +334,7 @@ fn defender_advances_into_enemy_territory_when_paint_far_from_swarm() {
     }
 
     let world = app.world();
-    let enemy_cell_center = cell_world_center(enemy_cell);
+    let enemy_cell_center = common::cell_world_center(enemy_cell);
     let transform = world.entity(defender).get::<Transform>().unwrap();
     let distance = transform.translation.truncate().distance(enemy_cell_center);
     assert!(
@@ -427,7 +356,7 @@ fn multiple_defenders_route_independently_to_distinct_defend_cells() {
     // the autonomy scorer. There is no "group move to cell A"
     // command; each defender picks its own best-scoring cell.
     let mut app = build_app();
-    let _swarm = spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
+    let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let left_cell = IVec2::new(-2, 0);
     let right_cell = IVec2::new(2, 0);
     {
@@ -435,8 +364,8 @@ fn multiple_defenders_route_independently_to_distinct_defend_cells() {
         assert!(grid.paint(left_cell, IntentKind::Defend, PAINT_STRENGTH_CAP));
         assert!(grid.paint(right_cell, IntentKind::Defend, PAINT_STRENGTH_CAP));
     }
-    let d1 = spawn_defender_at(&mut app, Vec2::new(0.0, 0.0));
-    let d2 = spawn_defender_at(&mut app, Vec2::new(0.0, 0.0));
+    let d1 = common::spawn_defender_at(&mut app, Vec2::new(0.0, 0.0));
+    let d2 = common::spawn_defender_at(&mut app, Vec2::new(0.0, 0.0));
 
     // One update for the assignment system: each defender must
     // get a DefendAssignment. They can land on either cell; the

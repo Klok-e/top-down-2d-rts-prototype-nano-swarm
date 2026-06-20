@@ -45,6 +45,23 @@ tests/
   *_visual.rs
 ```
 
+`tests/common/mod.rs` is the shared test seam introduced for
+issue #17. Every `*_behavior.rs` file pulls in the helpers via
+`mod common;` and uses the `sim_app_with_*` builders and
+`spawn_*` helpers from there. New behaviour tests should follow
+the same pattern:
+
+1. `use ... mod common;` at the top of the test file.
+2. Replace any local `build_app`, `cell_world_center`,
+   `spawn_*` helpers with the canonical ones in `common::`.
+3. Pick the smallest `common::sim_app_with_*` builder that
+   covers the test's plugin set (e.g. `sim_app_with_build` for
+   a build-zone contract).
+4. Specialised spawn helpers that need a marker or a non-default
+   field (e.g. an `OwnerSwarm`, a `Health::default()` set to
+   non-full) belong in `tests/common/mod.rs` next to the rest
+   of the seams, not duplicated in the test file.
+
 Unit tests live beside the module they test. Automated integration tests live in `tests/*_behavior.rs`. Temporary screenshot checks live in `tests/*_visual.rs` and must be ignored.
 
 ## Unit tests
