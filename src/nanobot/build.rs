@@ -81,10 +81,19 @@ pub enum StructureKind {
 /// health; degradation (issue #12) lowers it. The build work
 /// system treats a `Structure` with `health < max` as repair work
 /// and raises the value back to the cap.
+///
+/// `ticks_since_maintained` is the maintenance buffer counter
+/// from issue #12. The maintenance system resets it to 0 when a
+/// worker maintains the structure, and increments it every tick
+/// otherwise. When the counter exceeds the buffer, the structure
+/// starts losing health. The counter lives on the structure so
+/// the maintenance work system can reset it without searching
+/// for a separate state object.
 #[derive(Debug, Component, Default, Clone, Copy)]
 pub struct Structure {
     pub kind: StructureKind,
     pub health: u32,
+    pub ticks_since_maintained: u32,
 }
 
 impl Structure {
@@ -94,6 +103,7 @@ impl Structure {
         Self {
             kind,
             health: STRUCTURE_MAX_HEALTH,
+            ticks_since_maintained: 0,
         }
     }
 
@@ -102,6 +112,14 @@ impl Structure {
     /// still useful.
     pub fn is_full_health(&self) -> bool {
         self.health >= STRUCTURE_MAX_HEALTH
+    }
+
+    /// True when the structure has just collapsed (no health
+    /// left). The degradation system uses this to despawn
+    /// collapsed structures. A structure that has not been
+    /// collapsed has at least 1 health point.
+    pub fn is_collapsed(&self) -> bool {
+        self.health == 0
     }
 }
 

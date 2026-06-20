@@ -50,6 +50,10 @@ pub fn build_app() -> App {
         // BuildPlugin chains after `move_velocity_system` so the
         // arrive system sees the pruned DirectMovementComponent.
         .add_plugins(nanobot::BuildPlugin)
+        // MaintenancePlugin chains after BuildPlugin so the
+        // maintenance work system can reset a structure's
+        // buffer counter before the degradation system runs.
+        .add_plugins(nanobot::MaintenancePlugin)
         // ProductionPlugin chains after `move_velocity_system`
         // for the same reason; auto-creation runs last in its
         // own chain so it sees the post-pick / post-work state
