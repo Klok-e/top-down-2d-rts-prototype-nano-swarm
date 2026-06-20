@@ -1,0 +1,649 @@
+//! Production Facilities and Production Ratio control.
+//!
+//! Issue #11 contract: production facilities consume delivered
+//! resources and produce the type furthest below target ratio.
+//! Additional facilities emerge from demand pressure when existing
+//! capacity is too busy. Blocked types are skipped temporarily
+//! instead of stalling all production.
+//!
+//! ## State machine
+//!
+//! Each [`ProductionFacility`] cycles through:
+//!
+//! ```text
+//!   Idle (no current_target)
+//!      -> pick deficit type
+//!      -> try consume material from nearest stockpile
+//!      -> on success: Working (current_target set, progress=0)
+//!      -> on failure: type added to blocked set, try next
+//!   Working
+//!      -> advance progress each tick
+//!      -> on progress >= PRODUCTION_TICKS_PER_BOT:
+//!         spawn a new nanobot of current_target
+//!         reset to Idle, clear blocked_types
+//! ```
+//!
+//! Material flow: the facility pulls the full
+//! [`PRODUCTION_COST_PER_BOT`] from the nearest local stockpile at
+//! the start of a production cycle, so the resource is consumed
+//! up-front rather than in dribbles. This matches the build
+//! system's per-tick consumption pattern but at cycle boundaries.
+//! No teleporting resources; the hauler chain is the upstream
+//! source of those stockpiles.
+//!
+//! Shared cost/time: all three early types (Worker, Hauler,
+//! Defender) cost the same number of minerals and take the same
+//! number of ticks to produce. Differentiated costs are a
+//! follow-up issue per the PRD.
+
+use std::collections::{HashMap, HashSet};
+
+use bevy::prelude::*;
+
+use crate::ai::AiStateComponent;
+use crate::nanobot::autonomy::NanobotType;
+use crate::nanobot::components::{Nanobot, Swarm, VelocityComponent};
+use crate::nanobot::NanobotBundle;
+use crate::resources::{ResourceKind, ResourceLedger, Stockpile};
+
+/// Material (in `ResourceKind::Minerals`) consumed to produce one
+/// nanobot. Shared across all three early types per the project's
+/// "shared cost/time" decision. The facility takes the full cost
+/// up-front at the start of a production cycle.
+pub const PRODUCTION_COST_PER_BOT: u32 = 20;
+
+/// Number of ticks a facility needs to finish a production cycle
+/// after consuming material. Shared across all three early types.
+/// Picked to be a small, deterministic number so tests can drive
+/// the simulation with a handful of `app.update()` calls.
+pub const PRODUCTION_TICKS_PER_BOT: u32 = 5;
+
+/// Sum of positive deficits that triggers a new facility to
+/// emerge. A small value means a single missing nanobot is
+/// already enough to ask for more production capacity, so
+/// tests can drive the emergence path with a tight budget.
+pub const FACILITY_EMERGE_DEFICIT_THRESHOLD: i32 = 5;
+
+/// Minimum progress an existing facility must have reached in
+/// its current cycle before a new facility is allowed to
+/// emerge alongside it. This is the "lag" that prevents the
+/// auto-creation system from spawning one new facility per
+/// tick: a facility that was just picked has progress 0, so
+/// the auto-creator skips emergence for at least one tick
+/// after the existing facility started producing.
+pub const FACILITY_MIN_PROGRESS_FOR_EMERGENCE: u32 = 2;
+
+/// Player-set target production mix. Inserted as a Bevy
+/// [`Resource`] so the production systems can read and write it
+/// without a public crate API surface.
+///
+/// `targets` is a map from nanobot type to desired population.
+/// The contract is "target the mix", not "exact counts" --
+/// production picks the type furthest from its target, so the
+/// swarm converges on the target asymptotically.
+#[derive(Debug, Clone, Resource)]
+pub struct ProductionRatio {
+    pub targets: HashMap<NanobotType, u32>,
+}
+
+impl ProductionRatio {
+    /// Build an empty ratio. Tests use this to set only the
+    /// types they care about; the game starts with [`Default`]
+    /// which seeds a sensible early-game mix.
+    pub fn new() -> Self {
+        Self {
+            targets: HashMap::new(),
+        }
+    }
+
+    /// Set the target count for `kind`. The value is whatever the
+    /// player chose; no clamping. Tests use small values to keep
+    /// the deficit math obvious.
+    pub fn set_target(&mut self, kind: NanobotType, count: u32) {
+        self.targets.insert(kind, count);
+    }
+
+    /// Current target for `kind`, or `0` when the player has not
+    /// set one.
+    pub fn target(&self, kind: NanobotType) -> u32 {
+        self.targets.get(&kind).copied().unwrap_or(0)
+    }
+
+    /// Sum of all targets. Useful for "do we have any demand at
+    /// all?" checks.
+    pub fn total(&self) -> u32 {
+        self.targets.values().sum()
+    }
+}
+
+impl Default for ProductionRatio {
+    fn default() -> Self {
+        let mut r = Self::new();
+        // Default to a reasonable early-game mix: lots of
+        // Workers, fewer Haulers, even fewer Defenders. Tests
+        // can override this directly.
+        r.set_target(NanobotType::Worker, 10);
+        r.set_target(NanobotType::Hauler, 3);
+        r.set_target(NanobotType::Defender, 1);
+        r
+    }
+}
+
+/// An automatic production facility. Spawned by
+/// `production_facility_auto_creation_system` near a swarm that
+/// has unmet production demand. The facility's own state is
+/// carried on this component so multiple facilities can run
+/// independently.
+#[derive(Debug, Component, Clone)]
+pub struct ProductionFacility {
+    /// Tick counter within the current production cycle. Reset
+    /// to 0 when a new cycle starts; reaches
+    /// [`PRODUCTION_TICKS_PER_BOT`] to finish the cycle.
+    pub progress: u32,
+    /// Type currently being produced, or `None` if the facility
+    /// is idle and waiting to pick its next target.
+    pub current_target: Option<NanobotType>,
+    /// Types the facility could not start producing this cycle
+    /// (e.g. because no stockpile has the material). The system
+    /// clears this set at the end of a cycle so blocked types
+    /// get re-tried in the next one.
+    pub blocked_types: HashSet<NanobotType>,
+}
+
+impl ProductionFacility {
+    /// New idle facility. Used by the auto-creation system and
+    /// by tests.
+    pub fn new() -> Self {
+        Self {
+            progress: 0,
+            current_target: None,
+            blocked_types: HashSet::new(),
+        }
+    }
+
+    /// True when the facility is currently producing a nanobot.
+    /// Used by the auto-creation system to detect "all existing
+    /// facilities are too busy".
+    pub fn is_busy(&self) -> bool {
+        self.current_target.is_some()
+    }
+
+    /// True when `kind` is currently in the blocked set.
+    pub fn is_blocked(&self, kind: NanobotType) -> bool {
+        self.blocked_types.contains(&kind)
+    }
+}
+
+impl Default for ProductionFacility {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Pick the type with the largest deficit (most under target) from
+/// the given `targets` and `current_counts`, skipping any types
+/// in `blocked`. Returns `None` when every type is blocked or
+/// when the total target is zero.
+///
+/// This is the pure version of the deficit-priority rule. The Bevy
+/// system that drives production calls this on every idle
+/// facility to decide what to produce next.
+///
+/// Ties are broken by [`NanobotType::ALL`] order, so the picker
+/// is deterministic across runs and tests.
+pub fn pick_deficit_type(
+    targets: &ProductionRatio,
+    current_counts: &HashMap<NanobotType, u32>,
+    blocked: &HashSet<NanobotType>,
+) -> Option<NanobotType> {
+    let mut best: Option<(i32, NanobotType)> = None;
+    for &kind in &NanobotType::ALL {
+        if blocked.contains(&kind) {
+            continue;
+        }
+        let target = targets.target(kind) as i32;
+        let current = *current_counts.get(&kind).unwrap_or(&0) as i32;
+        let deficit = target - current;
+        match best {
+            None => best = Some((deficit, kind)),
+            Some((d, _)) if deficit > d => best = Some((deficit, kind)),
+            _ => {}
+        }
+    }
+    // Only return a type with a positive deficit. If everything
+    // is at or above target there is nothing to produce.
+    best.filter(|(d, _)| *d > 0).map(|(_, k)| k)
+}
+
+/// Sum of `max(0, target - current)` across all types. Used by
+/// the auto-creation system to detect "production pressure":
+/// high totals mean the swarm is short on multiple types at
+/// once and existing capacity cannot keep up.
+pub fn total_deficit(targets: &ProductionRatio, current_counts: &HashMap<NanobotType, u32>) -> i32 {
+    let mut total = 0;
+    for &kind in &NanobotType::ALL {
+        let target = targets.target(kind) as i32;
+        let current = *current_counts.get(&kind).unwrap_or(&0) as i32;
+        total += (target - current).max(0);
+    }
+    total
+}
+
+/// Count nanobots in the world, keyed by type. Used by the
+/// production systems to measure the current population mix.
+///
+/// The first implementation counts every nanobot with a
+/// `NanobotType` component globally; later issues can scope this
+/// to a specific swarm once multi-swarm production lands.
+pub fn count_nanobots_by_type(
+    nanobots: &Query<&NanobotType, With<Nanobot>>,
+) -> HashMap<NanobotType, u32> {
+    let mut counts = HashMap::new();
+    for ty in nanobots.iter() {
+        *counts.entry(*ty).or_insert(0) += 1;
+    }
+    counts
+}
+
+/// Auto-create production facilities from demand pressure. A new
+/// facility emerges when:
+///
+/// 1. the total deficit (sum of `target - current` across all
+///    types) is at or above
+///    [`FACILITY_EMERGE_DEFICIT_THRESHOLD`], AND
+/// 2. every existing facility has a `current_target` (they are
+///    all busy) and is past [`FACILITY_MIN_PROGRESS_FOR_EMERGENCE`]
+///    (the lag that rate-limits emergence to one new facility
+///    per progress-tick).
+///
+/// The new facility is spawned at the first `Swarm`'s position,
+/// pre-picks a deficit type, and consumes the production
+/// material up-front so it is busy from the moment it exists.
+/// This ties emergence to the swarm's actual ability to feed
+/// facilities.
+#[allow(clippy::type_complexity)]
+pub fn production_facility_auto_creation_system(
+    mut commands: Commands,
+    ratio: Res<ProductionRatio>,
+    nanobots: Query<&NanobotType, With<Nanobot>>,
+    facilities: Query<&ProductionFacility>,
+    swarms: Query<&Transform, With<Swarm>>,
+    mut stockpiles: Query<(Entity, &mut Stockpile, &Transform)>,
+    mut ledger: ResMut<ResourceLedger>,
+) {
+    let counts = count_nanobots_by_type(&nanobots);
+    if total_deficit(&ratio, &counts) < FACILITY_EMERGE_DEFICIT_THRESHOLD {
+        return;
+    }
+    // Every existing facility must be busy and past the
+    // minimum-progress gate. If any is idle there is spare
+    // capacity; if any is too fresh, emergence would be one
+    // new facility per tick.
+    let all_busy = facilities.iter().all(ProductionFacility::is_busy);
+    let all_progressed = facilities
+        .iter()
+        .all(|f| f.progress >= FACILITY_MIN_PROGRESS_FOR_EMERGENCE);
+    if !all_busy || !all_progressed {
+        return;
+    }
+    let Some(swarm_transform) = swarms.iter().next() else {
+        return;
+    };
+    let origin = swarm_transform.translation.truncate();
+    let Some(target) = pick_deficit_type(&ratio, &counts, &HashSet::new()) else {
+        return;
+    };
+    if !try_consume_production_material(origin, &mut stockpiles, &mut ledger) {
+        return;
+    }
+    let mut new_facility = ProductionFacility::new();
+    new_facility.current_target = Some(target);
+    commands.spawn((
+        new_facility,
+        Transform::from_translation(origin.extend(0.0)),
+    ));
+}
+
+/// Pick the next production target for every idle facility and
+/// try to consume the material up-front. If material cannot be
+/// pulled for a candidate type, the type is added to the
+/// facility's blocked set and the picker tries the next one.
+///
+/// A facility whose blocked set covers every type stays idle
+/// (it has nothing to produce) until material arrives and a
+/// future pick run can break the deadlock.
+#[allow(clippy::type_complexity)]
+pub fn production_facility_pick_target_system(
+    ratio: Res<ProductionRatio>,
+    nanobots: Query<&NanobotType, With<Nanobot>>,
+    mut facilities: Query<(&Transform, &mut ProductionFacility)>,
+    mut stockpiles: Query<(Entity, &mut Stockpile, &Transform)>,
+    mut ledger: ResMut<ResourceLedger>,
+) {
+    let counts = count_nanobots_by_type(&nanobots);
+    for (transform, mut facility) in &mut facilities {
+        if facility.is_busy() {
+            continue;
+        }
+
+        // Try the deficit priority; if material cannot be
+        // pulled, block the type and try the next. We loop
+        // because blocking one type changes the ranking for
+        // the next attempt.
+        while let Some(kind) = pick_deficit_type(&ratio, &counts, &facility.blocked_types) {
+            if try_consume_production_material(
+                transform.translation.truncate(),
+                &mut stockpiles,
+                &mut ledger,
+            ) {
+                facility.current_target = Some(kind);
+                facility.progress = 0;
+                // The blocked set is preserved for the
+                // current cycle: the picker is working
+                // through the deficit order, blocking types
+                // as it goes. The set clears at the end of
+                // the cycle so the next cycle re-tries
+                // everything from scratch.
+                break;
+            }
+            facility.blocked_types.insert(kind);
+        }
+    }
+}
+
+/// Advance each busy facility's progress counter. When progress
+/// reaches [`PRODUCTION_TICKS_PER_BOT`], spawn a new nanobot of
+/// the facility's `current_target` as a child of the first Swarm
+/// entity in the world, then reset the facility to idle and
+/// clear the blocked set so the next cycle re-tries blocked
+/// types.
+#[allow(clippy::type_complexity)]
+pub fn production_facility_work_system(
+    mut commands: Commands,
+    mut facilities: Query<(&mut ProductionFacility, &Transform)>,
+    swarms: Query<Entity, With<Swarm>>,
+) {
+    for (mut facility, transform) in &mut facilities {
+        let Some(target) = facility.current_target else {
+            continue;
+        };
+        facility.progress = facility.progress.saturating_add(1);
+        if facility.progress < PRODUCTION_TICKS_PER_BOT {
+            continue;
+        }
+        // Cycle complete: spawn the nanobot. If no swarm
+        // exists the spawn is dropped (tests with no swarm
+        // drive the systems directly).
+        if let Some(swarm_entity) = swarms.iter().next() {
+            let pos = transform.translation.truncate();
+            commands.entity(swarm_entity).with_children(|p| {
+                p.spawn((
+                    NanobotBundle {
+                        nanobot: Nanobot {},
+                        nanobot_type: target,
+                        velocity: VelocityComponent::default(),
+                        ai_state: AiStateComponent::new(),
+                    },
+                    Transform::from_translation(pos.extend(0.0)),
+                ));
+            });
+        }
+        // Reset for the next cycle. Clearing the blocked set
+        // is the "blocked types are skipped temporarily"
+        // half of the contract: a type that could not be
+        // produced this cycle is re-evaluated next cycle.
+        facility.current_target = None;
+        facility.progress = 0;
+        facility.blocked_types.clear();
+    }
+}
+
+/// Try to consume [`PRODUCTION_COST_PER_BOT`] units of
+/// `ResourceKind::Minerals` from the stockpile closest to
+/// `facility_pos` that has at least that much. Returns true on
+/// success.
+///
+/// Same scan-then-mutate pattern as the build work helper in
+/// `nanobot/build.rs` to keep the system in line with the rest
+/// of the resource-economy code.
+fn try_consume_production_material(
+    facility_pos: Vec2,
+    stockpiles: &mut Query<(Entity, &mut Stockpile, &Transform)>,
+    ledger: &mut ResMut<ResourceLedger>,
+) -> bool {
+    let Some(target) = stockpiles
+        .iter()
+        .filter(|(_, s, _)| s.kind == ResourceKind::Minerals && s.amount >= PRODUCTION_COST_PER_BOT)
+        .min_by(|(_, _, ta), (_, _, tb)| {
+            facility_pos
+                .distance(ta.translation.truncate())
+                .partial_cmp(&facility_pos.distance(tb.translation.truncate()))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(e, _, _)| e)
+    else {
+        return false;
+    };
+    let Ok((_, mut stockpile, _)) = stockpiles.get_mut(target) else {
+        return false;
+    };
+    stockpile.amount -= PRODUCTION_COST_PER_BOT;
+    ledger.remove(stockpile.kind, PRODUCTION_COST_PER_BOT);
+    true
+}
+
+/// Plugin that wires the production systems into the Update
+/// schedule. The chain runs after `move_velocity_system` so the
+/// movement step has settled before production picks targets and
+/// spawns new nanobots. Auto-creation runs last so it sees the
+/// post-pick / post-work state of the swarm and only spawns a
+/// new facility when the existing ones are all busy.
+pub struct ProductionPlugin;
+
+impl Plugin for ProductionPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            Update,
+            (
+                production_facility_pick_target_system,
+                production_facility_work_system,
+                production_facility_auto_creation_system,
+            )
+                .chain()
+                .after(crate::nanobot::move_velocity_system),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Pure-helper unit tests. The end-to-end contracts (auto
+    //! creation, deficit priority, blocked-type skip, material
+    //! consumption, full-cycle spawn) are covered by
+    //! `tests/production_facility_behavior.rs`.
+
+    use super::*;
+
+    #[test]
+    fn production_ratio_set_and_get_round_trip() {
+        let mut r = ProductionRatio::new();
+        r.set_target(NanobotType::Worker, 5);
+        r.set_target(NanobotType::Hauler, 2);
+        r.set_target(NanobotType::Defender, 1);
+        assert_eq!(r.target(NanobotType::Worker), 5);
+        assert_eq!(r.target(NanobotType::Hauler), 2);
+        assert_eq!(r.target(NanobotType::Defender), 1);
+        assert_eq!(r.total(), 8);
+    }
+
+    #[test]
+    fn production_ratio_target_unset_returns_zero() {
+        // An unset target must not contribute to the total and
+        // must read back as zero so the deficit math does not
+        // accidentally count it as a real demand.
+        let r = ProductionRatio::new();
+        assert_eq!(r.target(NanobotType::Worker), 0);
+        assert_eq!(r.total(), 0);
+    }
+
+    #[test]
+    fn production_ratio_default_seeds_all_three_types() {
+        // The default mix exists so a freshly-spawned game
+        // (with no UI to set the ratio yet) has something to
+        // converge on. Every early type must be set or the
+        // picker would never produce it.
+        let r = ProductionRatio::default();
+        assert!(r.target(NanobotType::Worker) > 0);
+        assert!(r.target(NanobotType::Hauler) > 0);
+        assert!(r.target(NanobotType::Defender) > 0);
+    }
+
+    #[test]
+    fn pick_deficit_picks_type_with_largest_deficit() {
+        // 5 workers already exist (deficit 0), no haulers
+        // (deficit 10), 1 defender (deficit 4). The picker
+        // must choose Hauler, the unique type with the
+        // largest deficit.
+        let mut r = ProductionRatio::new();
+        r.set_target(NanobotType::Worker, 5);
+        r.set_target(NanobotType::Hauler, 10);
+        r.set_target(NanobotType::Defender, 5);
+
+        let mut counts = HashMap::new();
+        counts.insert(NanobotType::Worker, 5);
+        counts.insert(NanobotType::Hauler, 0);
+        counts.insert(NanobotType::Defender, 1);
+
+        let blocked = HashSet::new();
+        let picked = pick_deficit_type(&r, &counts, &blocked);
+        assert_eq!(picked, Some(NanobotType::Hauler));
+    }
+
+    #[test]
+    fn pick_deficit_tie_breaks_in_stable_order() {
+        // Two types share the maximum deficit. The picker
+        // must be deterministic so tests and replays match.
+        // `NanobotType::ALL` is `[Worker, Hauler, Defender]`
+        // so Worker -- the first in declaration order with
+        // the max deficit -- wins the tie.
+        let mut r = ProductionRatio::new();
+        r.set_target(NanobotType::Worker, 5);
+        r.set_target(NanobotType::Hauler, 5);
+        r.set_target(NanobotType::Defender, 5);
+
+        let mut counts = HashMap::new();
+        counts.insert(NanobotType::Worker, 0);
+        counts.insert(NanobotType::Hauler, 0);
+        counts.insert(NanobotType::Defender, 0);
+
+        let blocked = HashSet::new();
+        let picked = pick_deficit_type(&r, &counts, &blocked);
+        assert_eq!(picked, Some(NanobotType::Worker));
+    }
+
+    #[test]
+    fn pick_deficit_returns_none_when_all_at_or_above_target() {
+        let mut r = ProductionRatio::new();
+        r.set_target(NanobotType::Worker, 5);
+        let mut counts = HashMap::new();
+        counts.insert(NanobotType::Worker, 5);
+        let blocked = HashSet::new();
+        assert_eq!(pick_deficit_type(&r, &counts, &blocked), None);
+
+        // Surplus (current > target) also counts as nothing
+        // to do.
+        counts.insert(NanobotType::Worker, 8);
+        assert_eq!(pick_deficit_type(&r, &counts, &blocked), None);
+    }
+
+    #[test]
+    fn pick_deficit_skips_blocked_type() {
+        // The blocked type has the same deficit as a viable
+        // one. The picker must skip it and return the
+        // unblocked one.
+        let mut r = ProductionRatio::new();
+        r.set_target(NanobotType::Worker, 5);
+        r.set_target(NanobotType::Hauler, 5);
+
+        let mut counts = HashMap::new();
+        counts.insert(NanobotType::Worker, 0);
+        counts.insert(NanobotType::Hauler, 0);
+
+        let mut blocked = HashSet::new();
+        blocked.insert(NanobotType::Worker);
+
+        let picked = pick_deficit_type(&r, &counts, &blocked);
+        assert_eq!(picked, Some(NanobotType::Hauler));
+    }
+
+    #[test]
+    fn pick_deficit_returns_none_when_all_blocked() {
+        // The "skip blocked types temporarily" contract
+        // degenerates to "no production this tick" when the
+        // blocked set covers every deficit type. The
+        // facility stays idle until something changes.
+        let mut r = ProductionRatio::new();
+        r.set_target(NanobotType::Worker, 5);
+        r.set_target(NanobotType::Hauler, 5);
+
+        let mut counts = HashMap::new();
+        counts.insert(NanobotType::Worker, 0);
+        counts.insert(NanobotType::Hauler, 0);
+
+        let mut blocked = HashSet::new();
+        blocked.insert(NanobotType::Worker);
+        blocked.insert(NanobotType::Hauler);
+        blocked.insert(NanobotType::Defender);
+
+        let picked = pick_deficit_type(&r, &counts, &blocked);
+        assert_eq!(picked, None);
+    }
+
+    #[test]
+    fn total_deficit_sums_positive_gaps() {
+        let mut r = ProductionRatio::new();
+        r.set_target(NanobotType::Worker, 5);
+        r.set_target(NanobotType::Hauler, 3);
+        r.set_target(NanobotType::Defender, 0);
+        let mut counts = HashMap::new();
+        counts.insert(NanobotType::Worker, 2); // deficit 3
+        counts.insert(NanobotType::Hauler, 5); // deficit 0 (surplus ignored)
+        counts.insert(NanobotType::Defender, 0);
+        assert_eq!(total_deficit(&r, &counts), 3);
+    }
+
+    #[test]
+    fn total_deficit_zero_when_all_met() {
+        let mut r = ProductionRatio::new();
+        r.set_target(NanobotType::Worker, 5);
+        r.set_target(NanobotType::Hauler, 3);
+        let mut counts = HashMap::new();
+        counts.insert(NanobotType::Worker, 5);
+        counts.insert(NanobotType::Hauler, 3);
+        assert_eq!(total_deficit(&r, &counts), 0);
+    }
+
+    #[test]
+    fn production_facility_starts_idle() {
+        let f = ProductionFacility::new();
+        assert!(!f.is_busy());
+        assert_eq!(f.progress, 0);
+        assert_eq!(f.current_target, None);
+        assert!(f.blocked_types.is_empty());
+    }
+
+    #[test]
+    fn production_facility_is_busy_with_target() {
+        let mut f = ProductionFacility::new();
+        f.current_target = Some(NanobotType::Worker);
+        assert!(f.is_busy());
+    }
+
+    #[test]
+    fn production_facility_blocked_set_tracks_types() {
+        let mut f = ProductionFacility::new();
+        f.blocked_types.insert(NanobotType::Hauler);
+        assert!(f.is_blocked(NanobotType::Hauler));
+        assert!(!f.is_blocked(NanobotType::Worker));
+    }
+}

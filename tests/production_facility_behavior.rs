@@ -1,0 +1,612 @@
+//! Integration tests for issue #11: Production Facilities and
+//! Production Ratio control.
+//!
+//! Each test isolates one behavior so a failure points at a single
+//! contract: ratio set/get, deficit priority, blocked-type skip,
+//! material consumption from local stockpiles, full-cycle
+//! nanobot spawn, shared cost/time, and facility emergence.
+
+use bevy::{math::Vec2, prelude::*};
+use top_down_2d_rts_prototype_nano_swarm::{
+    game_settings::GameSettings,
+    intent::IntentGrid,
+    nanobot::{
+        bot_debug_circle_system, move_velocity_system, separation_system, velocity_system,
+        Commitment, Nanobot, NanobotBundle, NanobotType, ProductionFacility, ProductionPlugin,
+        ProductionRatio, SoftWorkSlots, Swarm, VelocityComponent, PRODUCTION_COST_PER_BOT,
+        PRODUCTION_TICKS_PER_BOT,
+    },
+    resources::{ResourceKind, ResourceLedger, Stockpile},
+};
+
+fn build_app() -> App {
+    let mut app = App::new();
+    app.add_plugins(bevy::time::TimePlugin);
+    app.insert_resource(IntentGrid::new(8, 8));
+    app.insert_resource(GameSettings {
+        width: 1000.0,
+        height: 1000.0,
+        bot_speed: 5.0,
+        debug_draw_circles: false,
+    });
+    app.init_resource::<SoftWorkSlots>();
+    app.init_resource::<ResourceLedger>();
+    // Use an empty ratio by default so each test starts from a
+    // clean slate. Tests that need a specific mix set their own
+    // targets; the sensible default lives in the game's
+    // `lib.rs` initialization instead.
+    app.insert_resource(ProductionRatio::new());
+    app.add_systems(
+        Update,
+        (
+            separation_system,
+            velocity_system,
+            move_velocity_system,
+            bot_debug_circle_system,
+        )
+            .chain(),
+    );
+    app.add_plugins(ProductionPlugin);
+    app
+}
+
+fn spawn_swarm(app: &mut App) -> Entity {
+    app.world_mut().spawn((Swarm {}, Transform::default())).id()
+}
+
+fn spawn_swarm_with_nanobots(
+    app: &mut App,
+    world_pos: Vec2,
+    counts: &[(NanobotType, u32)],
+) -> Entity {
+    let swarm = app
+        .world_mut()
+        .spawn((Swarm {}, Transform::from_translation(world_pos.extend(0.0))))
+        .id();
+    {
+        let world = app.world_mut();
+        let mut entity = world.entity_mut(swarm);
+        entity.with_children(|p| {
+            for (kind, n) in counts {
+                for _ in 0..*n {
+                    p.spawn((
+                        NanobotBundle {
+                            nanobot: Nanobot {},
+                            nanobot_type: *kind,
+                            velocity: VelocityComponent::default(),
+                            ai_state: Default::default(),
+                        },
+                        Commitment::Idle,
+                        Transform::from_translation(world_pos.extend(0.0)),
+                    ));
+                }
+            }
+        });
+    }
+    swarm
+}
+
+fn spawn_stockpile(app: &mut App, world_pos: Vec2, amount: u32, capacity: u32) -> Entity {
+    app.world_mut()
+        .spawn((
+            Stockpile {
+                kind: ResourceKind::Minerals,
+                amount,
+                capacity,
+                radius: 32.0,
+            },
+            Transform::from_translation(world_pos.extend(0.0)),
+        ))
+        .id()
+}
+
+fn spawn_idle_facility(app: &mut App, world_pos: Vec2) -> Entity {
+    app.world_mut()
+        .spawn((
+            ProductionFacility::new(),
+            Transform::from_translation(world_pos.extend(0.0)),
+        ))
+        .id()
+}
+
+fn spawn_busy_facility(app: &mut App, world_pos: Vec2, target: NanobotType) -> Entity {
+    let mut f = ProductionFacility::new();
+    f.current_target = Some(target);
+    f.progress = 1;
+    app.world_mut()
+        .spawn((f, Transform::from_translation(world_pos.extend(0.0))))
+        .id()
+}
+
+fn facility_count(world: &mut World) -> usize {
+    let mut q = world.query::<&ProductionFacility>();
+    q.iter(world).count()
+}
+
+fn nanobot_count_by_type(world: &mut World, kind: NanobotType) -> u32 {
+    let mut q = world.query::<&NanobotType>();
+    q.iter(world).filter(|t| **t == kind).count() as u32
+}
+
+#[test]
+fn production_ratio_can_be_set_for_each_type() {
+    // Acceptance: "Player can set target Production Ratio for
+    // Worker, Hauler, and Defender." A round-trip through the
+    // resource proves the public surface works for all three
+    // types and the total tracks the sum.
+    let mut app = build_app();
+    {
+        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
+        ratio.set_target(NanobotType::Worker, 8);
+        ratio.set_target(NanobotType::Hauler, 3);
+        ratio.set_target(NanobotType::Defender, 1);
+    }
+    let ratio = app.world().resource::<ProductionRatio>();
+    assert_eq!(ratio.target(NanobotType::Worker), 8);
+    assert_eq!(ratio.target(NanobotType::Hauler), 3);
+    assert_eq!(ratio.target(NanobotType::Defender), 1);
+    assert_eq!(ratio.total(), 12);
+}
+
+#[test]
+fn facility_picks_type_with_largest_deficit() {
+    // Acceptance: "Production picks type with largest deficit
+    // from target ratio." A facility facing a 10-unit Hauler
+    // deficit, 0-unit Worker deficit, and 4-unit Defender
+    // deficit must commit to producing Haulers first.
+    let mut app = build_app();
+    // Single swarm holding 5 Workers and 1 Defender; targets
+    // 5/10/5 -> deficits 0/10/4, so the picker must choose
+    // Hauler.
+    spawn_swarm_with_nanobots(
+        &mut app,
+        Vec2::new(100.0, 100.0),
+        &[(NanobotType::Worker, 5), (NanobotType::Defender, 1)],
+    );
+    {
+        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
+        ratio.set_target(NanobotType::Worker, 5);
+        ratio.set_target(NanobotType::Hauler, 10);
+        ratio.set_target(NanobotType::Defender, 5);
+    }
+    let stockpile_pos = Vec2::new(200.0, 100.0);
+    let _stockpile = spawn_stockpile(&mut app, stockpile_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+    let _facility = spawn_idle_facility(&mut app, stockpile_pos);
+
+    app.update();
+
+    let world = app.world_mut();
+    let mut q = world.query::<&ProductionFacility>();
+    let facility = q.iter(world).next().expect("facility must exist");
+    assert_eq!(
+        facility.current_target,
+        Some(NanobotType::Hauler),
+        "facility must pick the type with the largest deficit"
+    );
+}
+
+#[test]
+fn facility_skips_blocked_type() {
+    // Acceptance: "Blocked types are skipped temporarily
+    // instead of stalling all production." With Worker and
+    // Hauler both at equal deficit, but Worker pre-blocked,
+    // the facility must commit to Hauler. The Worker block
+    // does not stall the facility.
+    let mut app = build_app();
+    let _swarm = spawn_swarm(&mut app);
+    {
+        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
+        ratio.set_target(NanobotType::Worker, 5);
+        ratio.set_target(NanobotType::Hauler, 5);
+    }
+    let pos = Vec2::new(150.0, 50.0);
+    let _stockpile = spawn_stockpile(&mut app, pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+    let facility_entity = {
+        let mut f = ProductionFacility::new();
+        f.blocked_types.insert(NanobotType::Worker);
+        app.world_mut()
+            .spawn((f, Transform::from_translation(pos.extend(0.0))))
+            .id()
+    };
+
+    app.update();
+
+    let facility = app
+        .world()
+        .entity(facility_entity)
+        .get::<ProductionFacility>()
+        .expect("facility must exist");
+    assert_eq!(
+        facility.current_target,
+        Some(NanobotType::Hauler),
+        "facility must skip the blocked type and pick the next viable one"
+    );
+    // The blocked set is preserved across the current cycle:
+    // it is the running list of types that could not be
+    // started yet. It clears at the end of the cycle, not
+    // partway through.
+    assert!(facility.is_blocked(NanobotType::Worker));
+}
+
+#[test]
+fn facility_consumes_delivered_resources() {
+    // Acceptance: "Production Facilities consume physically
+    // delivered resources." A facility at a local stockpile
+    // drains exactly PRODUCTION_COST_PER_BOT when it starts
+    // a production cycle. A second stockpile far away is
+    // untouched, matching the "physically delivered" half
+    // of the contract.
+    let mut app = build_app();
+    let _swarm = spawn_swarm(&mut app);
+    {
+        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
+        ratio.set_target(NanobotType::Worker, 5);
+    }
+    let facility_pos = Vec2::new(0.0, 0.0);
+    let local = spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 2, 1000);
+    let distant_pos = Vec2::new(5000.0, 0.0);
+    let distant = spawn_stockpile(&mut app, distant_pos, 10_000, 20_000);
+    let _facility = spawn_idle_facility(&mut app, facility_pos);
+
+    app.update();
+
+    let world = app.world_mut();
+    let local_state = world.entity(local).get::<Stockpile>().unwrap();
+    let distant_state = world.entity(distant).get::<Stockpile>().unwrap();
+    assert_eq!(
+        local_state.amount, PRODUCTION_COST_PER_BOT,
+        "local stockpile must lose exactly the production cost; got {}",
+        local_state.amount
+    );
+    assert_eq!(
+        distant_state.amount, 10_000,
+        "distant stockpile must not be drained by local production"
+    );
+}
+
+#[test]
+fn facility_produces_nanobot_after_full_cycle() {
+    // End-to-end: a facility with enough material and a
+    // positive deficit produces a nanobot after
+    // PRODUCTION_TICKS_PER_BOT ticks. The new nanobot is a
+    // child of the swarm.
+    let mut app = build_app();
+    let swarm = spawn_swarm(&mut app);
+    {
+        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
+        ratio.set_target(NanobotType::Worker, 3);
+    }
+    let facility_pos = Vec2::new(0.0, 0.0);
+    let _stockpile = spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+    let _facility = spawn_idle_facility(&mut app, facility_pos);
+
+    // 1 tick to pick the target, PRODUCTION_TICKS_PER_BOT
+    // ticks of progress (the cycle completes on the
+    // PRODUCTION_TICKS_PER_BOT-th tick), +2 buffer.
+    let total_ticks = 1 + PRODUCTION_TICKS_PER_BOT as usize + 2;
+    for _ in 0..total_ticks {
+        app.update();
+    }
+
+    // A new Worker child of the swarm must exist.
+    let world = app.world_mut();
+    let children: Vec<Entity> = world
+        .get::<Children>(swarm)
+        .map(|c| c.iter().collect())
+        .unwrap_or_default();
+    let mut worker_children = 0;
+    for child in children {
+        if let Some(ty) = world.entity(child).get::<NanobotType>() {
+            if *ty == NanobotType::Worker {
+                worker_children += 1;
+            }
+        }
+    }
+    assert_eq!(
+        worker_children, 1,
+        "facility must spawn exactly one Worker after a full cycle"
+    );
+    // The facility has either just finished the first cycle
+    // and reset, or already started a second cycle. Both
+    // states are valid post-conditions; the spawn count is
+    // the load-bearing assertion.
+    let _facility = world
+        .query::<&ProductionFacility>()
+        .iter(world)
+        .next()
+        .expect("facility must still exist");
+}
+
+#[test]
+fn shared_early_cost_across_types() {
+    // Acceptance: "Tests cover ... shared early cost/time ..."
+    // All three early types consume the same
+    // PRODUCTION_COST_PER_BOT and take the same
+    // PRODUCTION_TICKS_PER_BOT. Run two side-by-side
+    // scenarios: one facility producing Worker, one
+    // producing Hauler. Both must consume the same amount
+    // of material from their stockpiles.
+    fn run_scenario(target: NanobotType) -> u32 {
+        let mut app = build_app();
+        let _swarm = spawn_swarm(&mut app);
+        {
+            let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
+            ratio.set_target(target, 1);
+        }
+        let facility_pos = Vec2::new(0.0, 0.0);
+        let stockpile_entity =
+            spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 3, 1000);
+        let _facility = spawn_idle_facility(&mut app, facility_pos);
+        app.update();
+        app.world()
+            .entity(stockpile_entity)
+            .get::<Stockpile>()
+            .unwrap()
+            .amount
+    }
+
+    let worker_remaining = run_scenario(NanobotType::Worker);
+    let hauler_remaining = run_scenario(NanobotType::Hauler);
+    let defender_remaining = run_scenario(NanobotType::Defender);
+
+    // All three must have consumed exactly the production
+    // cost, leaving the same amount in the stockpile.
+    let expected = PRODUCTION_COST_PER_BOT * 3 - PRODUCTION_COST_PER_BOT;
+    assert_eq!(worker_remaining, expected, "Worker cycle cost");
+    assert_eq!(hauler_remaining, expected, "Hauler cycle cost");
+    assert_eq!(defender_remaining, expected, "Defender cycle cost");
+    // And explicitly: the three remaining amounts are equal
+    // -- the cost is shared.
+    assert_eq!(worker_remaining, hauler_remaining);
+    assert_eq!(hauler_remaining, defender_remaining);
+}
+
+#[test]
+fn shared_early_ticks_across_types() {
+    // The "shared cost/time" contract is half cost and half
+    // time. A Worker and a Hauler cycle must both complete
+    // on the PRODUCTION_TICKS_PER_BOT-th tick after the
+    // initial pick tick. Driving the same tick count for
+    // both and checking the cycle state pins the time half.
+    fn run_to_cycle_completion(target: NanobotType) -> u32 {
+        let mut app = build_app();
+        let swarm = spawn_swarm(&mut app);
+        {
+            let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
+            ratio.set_target(target, 1);
+        }
+        let facility_pos = Vec2::new(0.0, 0.0);
+        let _stockpile = spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 3, 1000);
+        let _facility = spawn_idle_facility(&mut app, facility_pos);
+        // 1 pick tick + PRODUCTION_TICKS_PER_BOT work ticks
+        // = PRODUCTION_TICKS_PER_BOT + 1 total ticks. The
+        // cycle completes on the last tick, spawning a
+        // nanobot. Counting children of the swarm after
+        // exactly that many updates is the assertion.
+        let total_ticks = 1 + PRODUCTION_TICKS_PER_BOT as usize;
+        for _ in 0..total_ticks {
+            app.update();
+        }
+        let world = app.world();
+        let children: Vec<Entity> = world
+            .get::<Children>(swarm)
+            .map(|c| c.iter().collect())
+            .unwrap_or_default();
+        let mut count = 0;
+        for child in children {
+            if let Some(ty) = world.entity(child).get::<NanobotType>() {
+                if *ty == target {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    assert_eq!(
+        run_to_cycle_completion(NanobotType::Worker),
+        1,
+        "Worker cycle must complete in PRODUCTION_TICKS_PER_BOT ticks"
+    );
+    assert_eq!(
+        run_to_cycle_completion(NanobotType::Hauler),
+        1,
+        "Hauler cycle must complete in PRODUCTION_TICKS_PER_BOT ticks"
+    );
+    assert_eq!(
+        run_to_cycle_completion(NanobotType::Defender),
+        1,
+        "Defender cycle must complete in PRODUCTION_TICKS_PER_BOT ticks"
+    );
+}
+
+#[test]
+fn additional_facility_emerges_when_existing_busy() {
+    // Acceptance: "Additional Production Facilities emerge
+    // from demand pressure when existing capacity is too
+    // busy." A swarm with a single already-busy facility
+    // and unmet demand must auto-spawn a second facility
+    // that is itself busy (pre-picked target), so the
+    // emergence path actually starts production.
+    let mut app = build_app();
+    spawn_swarm(&mut app);
+    {
+        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
+        ratio.set_target(NanobotType::Worker, 10);
+        ratio.set_target(NanobotType::Hauler, 10);
+        ratio.set_target(NanobotType::Defender, 10);
+    }
+    // One facility already producing Worker (busy). The
+    // deficit is high (3 * 10 = 30) so the emergence
+    // threshold is comfortably exceeded.
+    let facility_pos = Vec2::new(0.0, 0.0);
+    let _busy = spawn_busy_facility(&mut app, facility_pos, NanobotType::Worker);
+    // Stockpile with enough material for the new facility.
+    let _stockpile = spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+
+    app.update();
+
+    let world = app.world_mut();
+    let count = facility_count(world);
+    assert_eq!(
+        count, 2,
+        "a second facility must emerge from demand pressure when the first is busy"
+    );
+    let busy_count = world
+        .query::<&ProductionFacility>()
+        .iter(world)
+        .filter(|f| f.is_busy())
+        .count();
+    assert_eq!(
+        busy_count, 2,
+        "both facilities must be busy after emergence -- the new one is pre-picked"
+    );
+}
+
+#[test]
+fn no_emergence_when_existing_facility_is_idle() {
+    // The "existing capacity is too busy" half of the
+    // emergence contract is symmetric: an idle facility
+    // means the swarm has spare capacity, so the auto
+    // creator must NOT spawn a duplicate.
+    let mut app = build_app();
+    let _swarm = spawn_swarm(&mut app);
+    {
+        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
+        ratio.set_target(NanobotType::Worker, 10);
+    }
+    let facility_pos = Vec2::new(0.0, 0.0);
+    let _idle = spawn_idle_facility(&mut app, facility_pos);
+    let _stockpile = spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+
+    app.update();
+
+    let world = app.world_mut();
+    let count = facility_count(world);
+    assert_eq!(
+        count, 1,
+        "no second facility must emerge while an existing one is idle"
+    );
+}
+
+#[test]
+fn blocked_types_cleared_after_full_cycle() {
+    // The "skip blocked types temporarily" half of the
+    // contract is tested by a full cycle: pre-block Worker,
+    // pick Hauler, run the cycle, the blocked set is
+    // cleared. Next cycle Worker is re-evaluated and gets
+    // unblocked because material is available.
+    let mut app = build_app();
+    let _swarm = spawn_swarm(&mut app);
+    {
+        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
+        ratio.set_target(NanobotType::Worker, 1);
+        ratio.set_target(NanobotType::Hauler, 1);
+    }
+    let facility_pos = Vec2::new(0.0, 0.0);
+    let facility_entity = {
+        let mut f = ProductionFacility::new();
+        f.blocked_types.insert(NanobotType::Worker);
+        app.world_mut()
+            .spawn((f, Transform::from_translation(facility_pos.extend(0.0))))
+            .id()
+    };
+    let _stockpile = spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+
+    // 1 pick tick + PRODUCTION_TICKS_PER_BOT work ticks to
+    // complete the cycle.
+    for _ in 0..(1 + PRODUCTION_TICKS_PER_BOT as usize) {
+        app.update();
+    }
+
+    let facility = app
+        .world()
+        .entity(facility_entity)
+        .get::<ProductionFacility>()
+        .expect("facility must exist");
+    assert!(
+        facility.blocked_types.is_empty(),
+        "blocked_types must clear at the end of a cycle so the next cycle re-tries them"
+    );
+}
+
+#[test]
+fn no_production_when_all_types_blocked() {
+    // With every type in the blocked set, the facility has
+    // nothing to produce. The current_target stays None and
+    // no material is consumed. This is the "stalling
+    // temporarily" half of the "blocked types are skipped
+    // temporarily instead of stalling all production" rule:
+    // the facility stalls only when *every* candidate is
+    // blocked, not when one is.
+    let mut app = build_app();
+    let _swarm = spawn_swarm(&mut app);
+    {
+        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
+        ratio.set_target(NanobotType::Worker, 5);
+        ratio.set_target(NanobotType::Hauler, 5);
+    }
+    let facility_pos = Vec2::new(0.0, 0.0);
+    let facility_entity = {
+        let mut f = ProductionFacility::new();
+        f.blocked_types.insert(NanobotType::Worker);
+        f.blocked_types.insert(NanobotType::Hauler);
+        f.blocked_types.insert(NanobotType::Defender);
+        app.world_mut()
+            .spawn((f, Transform::from_translation(facility_pos.extend(0.0))))
+            .id()
+    };
+    let stockpile = spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+
+    app.update();
+
+    let facility = app
+        .world()
+        .entity(facility_entity)
+        .get::<ProductionFacility>()
+        .expect("facility must exist");
+    assert_eq!(
+        facility.current_target, None,
+        "facility with all types blocked must stay idle"
+    );
+    let stockpile_state = app.world().entity(stockpile).get::<Stockpile>().unwrap();
+    assert_eq!(
+        stockpile_state.amount,
+        PRODUCTION_COST_PER_BOT * 5,
+        "stockpile must not be drained while facility is fully blocked"
+    );
+}
+
+#[test]
+fn production_increases_population_of_picked_type() {
+    // End-to-end counter test: a target of 1 Hauler with 0
+    // existing haulers, a single facility and stockpile,
+    // and one full cycle must produce exactly one Hauler
+    // and bring the population to 1.
+    let mut app = build_app();
+    let _swarm = spawn_swarm(&mut app);
+    {
+        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
+        ratio.set_target(NanobotType::Hauler, 1);
+    }
+    let facility_pos = Vec2::new(0.0, 0.0);
+    let _stockpile = spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
+    let _facility = spawn_idle_facility(&mut app, facility_pos);
+
+    // Initial hauler population is 0.
+    assert_eq!(
+        nanobot_count_by_type(app.world_mut(), NanobotType::Hauler),
+        0
+    );
+
+    // 1 pick tick + PRODUCTION_TICKS_PER_BOT work ticks.
+    for _ in 0..(1 + PRODUCTION_TICKS_PER_BOT as usize) {
+        app.update();
+    }
+
+    assert_eq!(
+        nanobot_count_by_type(app.world_mut(), NanobotType::Hauler),
+        1,
+        "exactly one Hauler must be produced after one full cycle"
+    );
+}
