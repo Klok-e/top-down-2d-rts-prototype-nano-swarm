@@ -1,6 +1,7 @@
 mod autonomy;
 mod build;
 mod charge;
+mod collapse;
 mod components;
 mod consts;
 mod debug;
@@ -15,6 +16,7 @@ mod production;
 pub use autonomy::*;
 pub use build::*;
 pub use charge::*;
+pub use collapse::*;
 pub use components::*;
 pub use consts::*;
 pub use debug::*;
