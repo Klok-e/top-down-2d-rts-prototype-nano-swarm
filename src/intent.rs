@@ -7,7 +7,10 @@
 
 use std::collections::HashSet;
 
-use bevy::prelude::{IVec2, Resource};
+use bevy::{
+    input::{keyboard::KeyCode, ButtonInput},
+    prelude::{IVec2, Res, ResMut, Resource},
+};
 
 /// Upper bound on paint strength for any single layer at a cell. Repeated
 /// painting saturates at this value rather than overflowing. The cap is part
@@ -576,5 +579,54 @@ mod tests {
         let mut grid = IntentGrid::new(3, 3);
         assert!(!grid.paint(IVec2::new(-2, 0), IntentKind::Gather, 1));
         assert!(!grid.erase(IVec2::new(2, 0), IntentKind::Gather, 1));
+    }
+}
+
+/// Which intent layer the player brush is currently writing. The brush
+/// systems read this resource and target the selected kind instead of a
+/// hard-coded one, so the player can switch between Gather, Build, Defend,
+/// and Corridor layers at runtime. Default is [`IntentKind::Gather`]
+/// because that is the most common production layer.
+#[derive(Debug, Clone, Copy, Resource, PartialEq, Eq)]
+pub struct BrushSelection {
+    pub kind: IntentKind,
+}
+
+impl Default for BrushSelection {
+    fn default() -> Self {
+        Self {
+            kind: IntentKind::Gather,
+        }
+    }
+}
+
+impl BrushSelection {
+    pub const fn new(kind: IntentKind) -> Self {
+        Self { kind }
+    }
+}
+
+/// Number-row bindings for the brush layer. `Digit1` selects Gather,
+/// `Digit2` Build, `3` Defend, `4` Corridor. Numpad variants are also
+/// accepted. Uses `just_pressed` so holding the key does not strobe the
+/// selection; if multiple keys are pressed in one frame the first matching
+/// binding wins.
+const BRUSH_KEY_BINDINGS: &[(KeyCode, KeyCode, IntentKind)] = &[
+    (KeyCode::Digit1, KeyCode::Numpad1, IntentKind::Gather),
+    (KeyCode::Digit2, KeyCode::Numpad2, IntentKind::Build),
+    (KeyCode::Digit3, KeyCode::Numpad3, IntentKind::Defend),
+    (KeyCode::Digit4, KeyCode::Numpad4, IntentKind::Corridor),
+];
+
+/// Reads number-row key presses and updates the active [`BrushSelection`].
+pub fn brush_selection_keyboard_system(
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut brush_selection: ResMut<BrushSelection>,
+) {
+    for &(main, numpad, kind) in BRUSH_KEY_BINDINGS {
+        if keyboard_input.just_pressed(main) || keyboard_input.just_pressed(numpad) {
+            brush_selection.kind = kind;
+            break;
+        }
     }
 }

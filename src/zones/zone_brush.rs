@@ -15,15 +15,14 @@ use bevy::{
 };
 
 use crate::{
-    intent::{IntentGrid, IntentKind},
+    intent::{BrushSelection, IntentGrid, IntentKind},
     ui::UiHandling,
     ZONE_BLOCK_SIZE,
 };
 
 /// Per-cell data uploaded to the zone shader storage buffer. The shader still
 /// uses a 4-bit colour mask + 14-bit id layout; the id bits are written as
-/// zero because the swarm-owned intent resource no longer tracks per-cell ids
-/// (issues #4/#5 will add layer-specific ids if needed).
+/// zero because the swarm-owned intent resource has no per-cell ids.
 #[derive(AsBindGroup, Asset, TypePath, Debug, Clone)]
 pub struct ZoneMaterial {
     #[storage(2, read_only)]
@@ -147,20 +146,19 @@ pub struct ZoneMaterialHandleComponent {
     pub handle: Handle<ZoneMaterial>,
 }
 
-/// Default paint kind used by the brush until issue #4 adds layer switching.
-const BRUSH_KIND: IntentKind = IntentKind::Gather;
 /// Per-frame paint delta. Held mouse input that calls
 /// [`IntentGrid::paint`] every frame accumulates strength up to
 /// `PAINT_STRENGTH_CAP` defined in [`crate::intent`].
 const BRUSH_PAINT_DELTA: u8 = 1;
 
 /// Reads mouse input and writes player intent into the [`IntentGrid`]
-/// resource. The simulation owns the grid; the GPU zone material is a
-/// downstream mirror of the resource, updated by
-/// [`mirror_intent_to_zone_material_system`].
+/// resource for the layer currently selected in [`BrushSelection`]. The
+/// simulation owns the grid; the GPU zone material is a downstream mirror of
+/// the resource, updated by [`mirror_intent_to_zone_material_system`].
 pub fn zone_brush_system(
     windows: Query<&Window>,
     mouse_button_input: Res<ButtonInput<MouseButton>>,
+    brush_selection: Res<BrushSelection>,
     ui_handling: Res<UiHandling>,
     camera_query: Query<(&GlobalTransform, &Camera)>,
     mut intent_grid: ResMut<IntentGrid>,
@@ -193,10 +191,11 @@ pub fn zone_brush_system(
         return;
     }
 
+    let brush_kind = brush_selection.kind;
     if mouse_button_input.pressed(MouseButton::Left) {
-        intent_grid.paint(idx, BRUSH_KIND, BRUSH_PAINT_DELTA);
+        intent_grid.paint(idx, brush_kind, BRUSH_PAINT_DELTA);
     } else if mouse_button_input.pressed(MouseButton::Right) {
-        intent_grid.erase(idx, BRUSH_KIND, BRUSH_PAINT_DELTA);
+        intent_grid.erase(idx, brush_kind, BRUSH_PAINT_DELTA);
     }
 }
 
@@ -236,8 +235,8 @@ pub fn mirror_intent_to_zone_material_system(
             for kind in IntentKind::ALL {
                 let zone_color = ZonePointData::id_to_zone(kind.index() as u32);
                 zone_data.set_zone(zone_color, cell.has(kind));
-                // The render mirror no longer tracks group/owner ids; keep id
-                // bits deterministic and clear for every layer.
+                // The render mirror never assigns id bits; clear them so any
+                // stale value from prior frames is not shown.
                 zone_data.set_zone_id(zone_color, 0);
             }
         }
