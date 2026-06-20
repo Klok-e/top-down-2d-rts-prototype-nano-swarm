@@ -149,10 +149,13 @@ function shellQuote(value: unknown) {
 }
 
 async function listCandidateIssues(pi: ExtensionAPI, cwd: string): Promise<Issue[]> {
+	// Do not use `gh issue list --label` here. Some repos return zero rows even
+	// when `gh issue view` shows the label on matching issues. List open issues
+	// and apply the runnable label rules locally instead.
 	const stdout = await gh(
 		pi,
 		cwd,
-		`gh issue list --state open --label ${shellQuote(READY_LABEL)} --limit 1000 --json number,title,body,labels,updatedAt`,
+		"gh issue list --state open --limit 1000 --json number,title,body,labels,updatedAt",
 	);
 	return JSON.parse(stdout) as Issue[];
 }
@@ -188,6 +191,7 @@ function blockerNumbers(body: string): number[] {
 }
 
 async function isRunnableIssue(pi: ExtensionAPI, cwd: string, issue: Issue): Promise<boolean> {
+	if (/^PRD:/i.test(issue.title.trim())) return false;
 	const labels = labelNames(issue);
 	if (!labels.has(READY_LABEL)) return false;
 	for (const label of EXCLUDED_LABELS) if (labels.has(label)) return false;
