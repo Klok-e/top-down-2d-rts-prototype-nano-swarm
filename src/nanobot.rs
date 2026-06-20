@@ -65,6 +65,7 @@ impl Default for NanobotBundle {
 pub struct SwarmBundle {
     pub swarm: Swarm,
     pub transform: Transform,
+    pub global_transform: GlobalTransform,
 }
 
 #[derive(Debug, Default)]
