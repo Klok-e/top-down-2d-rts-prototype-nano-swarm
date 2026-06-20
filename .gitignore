@@ -3,4 +3,5 @@
 /.pi/afk/state.json
 /.pi/afk/history.json
 /.pi/afk/logs/
+/.pi/afk/active-results.json
 /.pi/tasks/tasks-*.json
