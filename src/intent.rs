@@ -618,6 +618,17 @@ const BRUSH_KEY_BINDINGS: &[(KeyCode, KeyCode, IntentKind)] = &[
     (KeyCode::Digit4, KeyCode::Numpad4, IntentKind::Corridor),
 ];
 
+/// Primary number-row [`KeyCode`] for `kind`, or `None` if the kind has no
+/// binding. Tests and other automation can use this to drive
+/// [`brush_selection_keyboard_system`] through Bevy's `ButtonInput` with
+/// the same key the player would press.
+pub fn brush_key_for_kind(kind: IntentKind) -> Option<KeyCode> {
+    BRUSH_KEY_BINDINGS
+        .iter()
+        .find(|(_, _, k)| *k == kind)
+        .map(|(main, _, _)| *main)
+}
+
 /// Reads number-row key presses and updates the active [`BrushSelection`].
 pub fn brush_selection_keyboard_system(
     keyboard_input: Res<ButtonInput<KeyCode>>,

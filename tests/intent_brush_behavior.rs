@@ -8,8 +8,25 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::intent::{
-    brush_selection_keyboard_system, BrushSelection, IntentGrid, IntentKind, PAINT_STRENGTH_CAP,
+    brush_key_for_kind, brush_selection_keyboard_system, BrushSelection, IntentGrid, IntentKind,
+    PAINT_STRENGTH_CAP,
 };
+
+/// Press `key` and run the schedule once. We replace the `ButtonInput`
+/// resource rather than mutating it so `just_pressed` starts fresh — we
+/// deliberately do not add Bevy's `InputPlugin`, whose `PreUpdate`
+/// `keyboard_input_system` calls `ButtonInput::clear()` before our
+/// `Update` system runs and would wipe manual presses.
+fn press_key(app: &mut App, key: KeyCode) {
+    let mut keyboard = ButtonInput::<KeyCode>::default();
+    keyboard.press(key);
+    app.insert_resource(keyboard);
+    app.update();
+}
+
+fn cell_has_layer(grid: &IntentGrid, point: IVec2, kind: IntentKind) -> bool {
+    grid.cell(point).map(|c| c.has(kind)).unwrap_or(false)
+}
 
 #[test]
 fn intent_grid_resource_round_trips_through_bevy_app() {
@@ -360,6 +377,186 @@ fn defend_layer_exists_in_data_with_no_attack_kind() {
     // Corridor. There is no Attack variant. Asserting the count here catches
     // a future addition that would silently violate the PRD.
     assert_eq!(IntentKind::COUNT, 4);
+}
+
+#[test]
+fn smoke_path_paint_and_erase_each_intent_layer() {
+    // End-to-end smoke path for issue #5: for every supported intent layer
+    // the player can (1) select it via the keyboard, (2) paint at a target
+    // cell, (3) erase the same cell, and (4) leave the other three layers
+    // untouched. This is the contract the manual smoke check verifies, and
+    // the same flow the visible UI buttons drive.
+    //
+    // The test does not go through the window/camera brush system because
+    // headless integration tests don't ship a real cursor. Instead it drives
+    // the same resources the brush system reads: `BrushSelection` is set
+    // through `brush_selection_keyboard_system`, and the grid is updated
+    // through `IntentGrid::paint` / `IntentGrid::erase` exactly as the brush
+    // system would.
+    let target = IVec2::new(0, 0);
+    let mut app = App::new();
+    app.insert_resource(IntentGrid::new(4, 4));
+    app.init_resource::<BrushSelection>();
+    app.add_systems(Update, brush_selection_keyboard_system);
+
+    for layer in IntentKind::ALL {
+        let key = brush_key_for_kind(layer).expect("every kind has a binding");
+        press_key(&mut app, key);
+
+        assert_eq!(
+            app.world().resource::<BrushSelection>().kind,
+            layer,
+            "press {key:?} must select {layer:?}"
+        );
+
+        // Paint at the target. The brush system calls `IntentGrid::paint` with
+        // the active kind and a per-frame delta; replicate that here.
+        let selected = app.world().resource::<BrushSelection>().kind;
+        {
+            let mut grid = app.world_mut().resource_mut::<IntentGrid>();
+            assert!(
+                grid.paint(target, selected, 1),
+                "paint at {target:?} for {selected:?} must succeed"
+            );
+        }
+        app.update();
+
+        // The painted layer is active with non-zero strength; the other
+        // three layers are not active in this cell.
+        let grid = app.world().resource::<IntentGrid>();
+        let cell = grid.cell(target).expect("cell must exist");
+        assert!(
+            cell.has(layer),
+            "after paint, cell must have {layer:?} active"
+        );
+        assert!(
+            cell.strength(layer) > 0,
+            "after paint, {layer:?} strength must be positive"
+        );
+        for other in IntentKind::ALL {
+            if other == layer {
+                continue;
+            }
+            assert!(
+                !cell.has(other),
+                "after paint of {layer:?}, cell must not also have {other:?}"
+            );
+        }
+
+        // Erase until the layer is gone. Right-click in the brush system
+        // calls `IntentGrid::erase` once per frame; loop to clear the full
+        // accumulated strength (well under the cap, so a small loop is fine).
+        for _ in 0..(PAINT_STRENGTH_CAP as usize * 2) {
+            let selected = app.world().resource::<BrushSelection>().kind;
+            let mut grid = app.world_mut().resource_mut::<IntentGrid>();
+            if !cell_has_layer(&grid, target, selected) {
+                break;
+            }
+            assert!(
+                grid.erase(target, selected, 1),
+                "erase at {target:?} for {selected:?} must succeed"
+            );
+        }
+        app.update();
+
+        let grid = app.world().resource::<IntentGrid>();
+        let cell = grid.cell(target).expect("cell must exist");
+        assert!(
+            !cell.has(layer),
+            "after erase, {layer:?} must be removed from the cell"
+        );
+        assert_eq!(
+            cell.strength(layer),
+            0,
+            "after erase, {layer:?} strength must be zero"
+        );
+        // Other layers are still untouched at this cell: we only ever
+        // painted/erased the active kind, so the smoke path does not leak
+        // state into the other three layers.
+        for other in IntentKind::ALL {
+            if other == layer {
+                continue;
+            }
+            assert!(
+                !cell.has(other),
+                "after erase of {layer:?}, cell must not have {other:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn smoke_path_overlapping_layers_remain_independent() {
+    // Smoke check for overlap: painting one layer, switching the selection,
+    // painting a second layer at the same point, then erasing the first
+    // must leave the second layer intact. This is the contract behind the
+    // "overlapping intent" glossary term and the manual smoke test for the
+    // "player can paint/erase each supported intent layer" bullet.
+    let target = IVec2::new(0, 0);
+    let mut app = App::new();
+    app.insert_resource(IntentGrid::new(4, 4));
+    app.init_resource::<BrushSelection>();
+    app.add_systems(Update, brush_selection_keyboard_system);
+
+    for kind in IntentKind::ALL {
+        let key = brush_key_for_kind(kind).expect("every kind has a binding");
+        press_key(&mut app, key);
+        assert_eq!(app.world().resource::<BrushSelection>().kind, kind);
+
+        let selected = app.world().resource::<BrushSelection>().kind;
+        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
+        assert!(grid.paint(target, selected, 1));
+    }
+
+    // All four layers are now active at the same cell.
+    {
+        let grid = app.world().resource::<IntentGrid>();
+        let cell = grid.cell(target).expect("cell must exist");
+        for kind in IntentKind::ALL {
+            assert!(
+                cell.has(kind),
+                "after selecting and painting each layer, cell must have {kind:?}"
+            );
+        }
+    }
+
+    // Switch back to Gather, then erase it. The other three layers must
+    // stay at their painted strength.
+    press_key(
+        &mut app,
+        brush_key_for_kind(IntentKind::Gather).expect("Gather has a binding"),
+    );
+    assert_eq!(
+        app.world().resource::<BrushSelection>().kind,
+        IntentKind::Gather
+    );
+
+    for _ in 0..(PAINT_STRENGTH_CAP as usize * 2) {
+        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
+        if !cell_has_layer(&grid, target, IntentKind::Gather) {
+            break;
+        }
+        assert!(grid.erase(target, IntentKind::Gather, 1));
+    }
+
+    let grid = app.world().resource::<IntentGrid>();
+    let cell = grid.cell(target).expect("cell must exist");
+    assert!(!cell.has(IntentKind::Gather), "Gather must be removed");
+    assert!(
+        cell.has(IntentKind::Build),
+        "Build must remain after erasing Gather"
+    );
+    assert!(
+        cell.has(IntentKind::Defend),
+        "Defend must remain after erasing Gather"
+    );
+    assert!(
+        cell.has(IntentKind::Corridor),
+        "Corridor must remain after erasing Gather"
+    );
+    assert!(cell.strength(IntentKind::Build) > 0);
+    assert!(cell.strength(IntentKind::Defend) > 0);
+    assert!(cell.strength(IntentKind::Corridor) > 0);
 }
 
 #[test]
