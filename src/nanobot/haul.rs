@@ -10,6 +10,7 @@ use bevy::prelude::*;
 use crate::ai::get_world_from_zone;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::{
+    charge::Charger,
     components::{DirectMovementComponent, Nanobot},
     gather::world_to_cell,
     NanobotType, STOP_THRESHOLD,
@@ -223,15 +224,21 @@ pub fn corridor_waypoint_between(start: Vec2, end: Vec2, grid: &IntentGrid) -> O
 /// resource kind the hauler currently wants to transport (only
 /// [`ResourceKind::Minerals`] is supported for now; multi-kind
 /// support is a follow-up issue).
+///
+/// Sinks include any [`Charger`] with matching kind and free space
+/// in addition to [`Stockpile`]s so haulers can deliver minerals
+/// to a defender-support charger (issue #14's "logistics support"
+/// half of the contract).
 pub fn find_transport_pair(
     worker_pos: Vec2,
     kind: ResourceKind,
     deposits: &Query<(Entity, &ResourceDeposit, &Transform)>,
     stockpiles: &Query<(Entity, &Stockpile, &Transform)>,
+    chargers: &Query<(Entity, &Charger, &Transform)>,
 ) -> Option<(Entity, Entity)> {
     let source = find_nearest_source(worker_pos, kind, deposits, stockpiles)?;
     let source_pos = source_transform(source, deposits, stockpiles)?;
-    let sink = find_nearest_sink(source, source_pos, kind, stockpiles)?;
+    let sink = find_nearest_sink(source, source_pos, kind, stockpiles, chargers)?;
     Some((source, sink))
 }
 
@@ -294,10 +301,26 @@ fn find_nearest_sink(
     source_pos: Vec2,
     kind: ResourceKind,
     stockpiles: &Query<(Entity, &Stockpile, &Transform)>,
+    chargers: &Query<(Entity, &Charger, &Transform)>,
 ) -> Option<Entity> {
     let mut best: Option<(f32, Entity)> = None;
     for (entity, stockpile, transform) in stockpiles.iter() {
         if stockpile.kind != kind || stockpile.free_space() == 0 || entity == source {
+            continue;
+        }
+        let d = source_pos.distance(transform.translation.truncate());
+        if best.is_none_or(|(bd, _)| d < bd) {
+            best = Some((d, entity));
+        }
+    }
+    // Chargers with free space are also valid sinks; the
+    // closest one wins. The same `entity == source` guard
+    // is unnecessary because a charger is never a source in
+    // the current model (a charger does not feed the
+    // resource network -- it consumes minerals to refill
+    // defenders).
+    for (entity, charger, transform) in chargers.iter() {
+        if charger.kind != kind || charger.free_space() == 0 {
             continue;
         }
         let d = source_pos.distance(transform.translation.truncate());
@@ -329,6 +352,7 @@ pub fn hauler_assignment_system(
     >,
     deposits: Query<(Entity, &ResourceDeposit, &Transform)>,
     stockpiles: Query<(Entity, &Stockpile, &Transform)>,
+    chargers: Query<(Entity, &Charger, &Transform)>,
 ) {
     for (entity, transform, nanobot_type) in &haulers {
         if *nanobot_type != NanobotType::Hauler {
@@ -336,9 +360,13 @@ pub fn hauler_assignment_system(
         }
         let worker_pos = transform.translation.truncate();
 
-        let Some((source, sink)) =
-            find_transport_pair(worker_pos, ResourceKind::Minerals, &deposits, &stockpiles)
-        else {
+        let Some((source, sink)) = find_transport_pair(
+            worker_pos,
+            ResourceKind::Minerals,
+            &deposits,
+            &stockpiles,
+            &chargers,
+        ) else {
             continue;
         };
         let Some(source_pos) = source_transform(source, &deposits, &stockpiles) else {
@@ -373,12 +401,15 @@ pub fn hauler_arrive_source_system(
     >,
     deposits: Query<(&ResourceDeposit, &Transform)>,
     stockpiles: Query<(&Stockpile, &Transform)>,
+    chargers: Query<(&Charger, &Transform)>,
 ) {
     for (entity, transform, assignment) in &haulers {
         let (source_pos, source_radius) = if let Ok((d, t)) = deposits.get(assignment.source) {
             (t.translation.truncate(), d.radius)
         } else if let Ok((s, t)) = stockpiles.get(assignment.source) {
             (t.translation.truncate(), s.radius)
+        } else if let Ok((c, t)) = chargers.get(assignment.source) {
+            (t.translation.truncate(), c.radius)
         } else {
             // Source entity disappeared; drop the assignment and
             // let a later tick reassign.
@@ -406,6 +437,7 @@ pub fn hauler_load_system(
     >,
     mut deposits: Query<&mut ResourceDeposit>,
     mut source_stockpiles: Query<&mut Stockpile>,
+    source_chargers: Query<&mut Charger>,
     mut ledger: ResMut<ResourceLedger>,
 ) {
     for (entity, mut loading, assignment) in &mut haulers {
@@ -441,6 +473,17 @@ pub fn hauler_load_system(
             loading.collected += actual;
             stockpile.amount -= actual;
             ledger.remove(stockpile.kind, actual);
+            continue;
+        }
+
+        if source_chargers.get(assignment.source).is_ok() {
+            // Chargers are not a hauler source: the logistics
+            // contract is "haulers bring material TO the
+            // charger", not "haulers extract FROM the charger".
+            // If a future assignment points at a charger as a
+            // source, drop the assignment with no load so the
+            // hauler re-picks work on the next tick.
+            transition_to_carrying(&mut commands, entity, 0);
             continue;
         }
 
@@ -480,9 +523,20 @@ pub fn hauler_carry_assign_system(
         ),
     >,
     stockpiles: Query<&Transform, With<Stockpile>>,
+    chargers: Query<&Transform, With<Charger>>,
 ) {
     for (entity, transform, _load, assignment) in &haulers {
-        let Ok(sink_transform) = stockpiles.get(assignment.sink) else {
+        let sink_transform = if let Ok(t) = stockpiles.get(assignment.sink) {
+            t
+        } else if let Ok(t) = chargers.get(assignment.sink) {
+            t
+        } else {
+            // Sink entity disappeared between assignment and
+            // the carry phase. Drop the assignment so a later
+            // tick re-evaluates; the load is kept so the hauler
+            // can finish the trip if a future assignment points
+            // back at the same kind of sink.
+            commands.entity(entity).remove::<HaulerAssignment>();
             continue;
         };
         // If the hauler is already at the sink, the delivery
@@ -521,10 +575,43 @@ pub fn hauler_delivery_system(
         ),
     >,
     mut stockpiles: Query<(&mut Stockpile, &Transform)>,
+    mut chargers: Query<(&mut Charger, &Transform)>,
     mut ledger: ResMut<ResourceLedger>,
 ) {
     for (entity, transform, mut load, assignment) in &mut haulers {
-        let Ok((mut sink, sink_transform)) = stockpiles.get_mut(assignment.sink) else {
+        let delivery = if let Ok((mut sink, sink_transform)) = stockpiles.get_mut(assignment.sink) {
+            if transform
+                .translation
+                .truncate()
+                .distance(sink_transform.translation.truncate())
+                > sink.radius
+            {
+                continue;
+            }
+            if sink.free_space() < load.amount {
+                continue;
+            }
+            let delivered = load.amount;
+            sink.amount += delivered;
+            ledger.add(sink.kind, delivered);
+            Some(delivered)
+        } else if let Ok((mut charger, charger_transform)) = chargers.get_mut(assignment.sink) {
+            if transform
+                .translation
+                .truncate()
+                .distance(charger_transform.translation.truncate())
+                > charger.radius
+            {
+                continue;
+            }
+            if charger.free_space() < load.amount {
+                continue;
+            }
+            let delivered = load.amount;
+            charger.amount += delivered;
+            ledger.add(charger.kind, delivered);
+            Some(delivered)
+        } else {
             // Assigned sink is gone. Drop the load so the hauler
             // can pick new work; the assignment is removed too so
             // the assignment system can re-evaluate on the next
@@ -535,15 +622,7 @@ pub fn hauler_delivery_system(
                 .remove::<HaulerLoad>();
             continue;
         };
-        if transform
-            .translation
-            .truncate()
-            .distance(sink_transform.translation.truncate())
-            > sink.radius
-        {
-            continue;
-        }
-        if sink.free_space() < load.amount {
+        if delivery.is_none() {
             // Sink too full. The carry-assign system reuses the
             // same assignment.sink, so the hauler cannot redirect
             // to a different sink. The hauler waits at the sink
@@ -551,9 +630,6 @@ pub fn hauler_delivery_system(
             // first implementation, addressed in a follow-up.
             continue;
         }
-        let delivered = load.amount;
-        sink.amount += delivered;
-        ledger.add(sink.kind, delivered);
         load.amount = 0;
         commands
             .entity(entity)

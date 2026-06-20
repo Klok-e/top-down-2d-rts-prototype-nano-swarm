@@ -42,7 +42,7 @@ use bevy::prelude::*;
 
 use crate::ai::AiStateComponent;
 use crate::nanobot::autonomy::NanobotType;
-use crate::nanobot::components::{Nanobot, Swarm, VelocityComponent};
+use crate::nanobot::components::{Health, Nanobot, Swarm, VelocityComponent};
 use crate::nanobot::NanobotBundle;
 use crate::resources::{ResourceKind, ResourceLedger, Stockpile};
 
@@ -383,6 +383,7 @@ pub fn production_facility_work_system(
                         nanobot_type: target,
                         velocity: VelocityComponent::default(),
                         ai_state: AiStateComponent::new(),
+                        health: Health::default(),
                     },
                     Transform::from_translation(pos.extend(0.0)),
                 ));

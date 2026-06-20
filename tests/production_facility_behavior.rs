@@ -12,9 +12,9 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::IntentGrid,
     nanobot::{
         bot_debug_circle_system, move_velocity_system, separation_system, velocity_system,
-        Commitment, Nanobot, NanobotBundle, NanobotType, ProductionFacility, ProductionPlugin,
-        ProductionRatio, SoftWorkSlots, Swarm, VelocityComponent, PRODUCTION_COST_PER_BOT,
-        PRODUCTION_TICKS_PER_BOT,
+        Commitment, Health, Nanobot, NanobotBundle, NanobotType, ProductionFacility,
+        ProductionPlugin, ProductionRatio, SoftWorkSlots, Swarm, VelocityComponent,
+        PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
 };
@@ -75,6 +75,7 @@ fn spawn_swarm_with_nanobots(
                             nanobot_type: *kind,
                             velocity: VelocityComponent::default(),
                             ai_state: Default::default(),
+                            health: Health::default(),
                         },
                         Commitment::Idle,
                         Transform::from_translation(world_pos.extend(0.0)),

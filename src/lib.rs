@@ -64,6 +64,13 @@ pub fn build_app() -> App {
         // DirectMovementComponent, the same signal the rest of
         // the per-role systems use.
         .add_plugins(nanobot::DefendPlugin)
+        // ChargePlugin chains after `move_velocity_system`
+        // and after DefendPlugin so the defend hold is
+        // established before the rotation system releases it.
+        // The internal order (drain -> health loss ->
+        // auto-creation -> rotation -> arrive -> work) keeps
+        // the charge loop self-consistent per tick.
+        .add_plugins(nanobot::ChargePlugin)
         .add_plugins(AiPlugin)
         .add_plugins(Camera2dFlyPlugin)
         .add_systems(Startup, setup_things_startup.pipe(error_handler));
