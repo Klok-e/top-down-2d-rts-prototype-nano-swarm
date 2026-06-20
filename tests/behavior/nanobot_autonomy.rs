@@ -20,6 +20,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{best_candidate, Commitment, NanobotType, SoftWorkSlots},
 };
 
+#[path = "../common/mod.rs"]
 mod common;
 
 const CELL_SIZE: f32 = 1.0;

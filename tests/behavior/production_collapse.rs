@@ -14,6 +14,7 @@ use top_down_2d_rts_prototype_nano_swarm::nanobot::{
     PRODUCTION_COST_PER_BOT,
 };
 
+#[path = "../common/mod.rs"]
 mod common;
 
 fn build_app() -> App {

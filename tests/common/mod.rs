@@ -1,12 +1,11 @@
 //! Shared test helpers for the deterministic simulation test seams
 //! introduced by issue #17.
 //!
-//! Every `tests/*_behavior.rs` file in this crate re-creates a tiny
-//! Bevy `App` from the same handful of resources and systems. Before
-//! this module landed that setup was duplicated across eleven
-//! files, and the per-file `build_app` functions drifted apart in
-//! subtle ways (different grid sizes, missing `ResourceLedger`,
-//! different `GameSettings`).
+//! Every behavior/playtest integration file in this crate starts from a tiny
+//! Bevy `App` assembled from the same handful of resources and systems. Before
+//! this module landed that setup was duplicated across eleven files, and the
+//! per-file `build_app` functions drifted apart in subtle ways (different grid
+//! sizes, missing `ResourceLedger`, different `GameSettings`).
 //!
 //! The helpers here are the canonical seams for future behaviour
 //! tests:
@@ -26,10 +25,10 @@
 //!   position, so tests can compare ECS state without repeating
 //!   spawn boilerplate.
 //!
-//! The module is `pub` and consumed by every behaviour test via
-//! `mod common;`. Each test file imports the helpers it actually
-//! needs; nothing here is `pub` outside the test crate, so the
-//! production crate stays free of test-only types.
+//! The module is `pub` and consumed by nested integration tests via
+//! `#[path = "../common/mod.rs"] mod common;`. Each test file imports the
+//! helpers it actually needs; nothing here is `pub` outside the test crate, so
+//! the production crate stays free of test-only types.
 
 #![allow(dead_code)]
 
