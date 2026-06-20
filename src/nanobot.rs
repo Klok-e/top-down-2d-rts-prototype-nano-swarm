@@ -2,12 +2,14 @@ mod autonomy;
 mod components;
 mod consts;
 mod debug;
+mod gather;
 mod move_system;
 
 pub use autonomy::*;
 pub use components::*;
 pub use consts::*;
 pub use debug::*;
+pub use gather::*;
 pub use move_system::*;
 
 use bevy::prelude::*;
@@ -16,11 +18,27 @@ use crate::ai::AiStateComponent;
 
 pub use self::components::{Nanobot, VelocityComponent};
 
-#[derive(Debug, Bundle, Default)]
+/// Bundle for a freshly spawned nanobot. The default is a Worker
+/// (the most common type for the first implementation) with zero
+/// velocity and a fresh AI state. Spawners can override individual
+/// fields to specialise the bot (e.g. tests spawn Haulers).
+#[derive(Debug, Bundle)]
 pub struct NanobotBundle {
     pub nanobot: Nanobot,
+    pub nanobot_type: NanobotType,
     pub velocity: VelocityComponent,
     pub ai_state: AiStateComponent,
+}
+
+impl Default for NanobotBundle {
+    fn default() -> Self {
+        Self {
+            nanobot: Nanobot {},
+            nanobot_type: NanobotType::Worker,
+            velocity: VelocityComponent::default(),
+            ai_state: AiStateComponent::new(),
+        }
+    }
 }
 
 /// Top-level bundle for the player swarm. Holds the [`Swarm`] marker and a
