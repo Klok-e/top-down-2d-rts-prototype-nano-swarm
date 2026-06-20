@@ -40,6 +40,11 @@ pub fn build_app() -> App {
         // chain orders itself behind `move_velocity_system`, which
         // only exists once NanobotPlugin is registered.
         .add_plugins(nanobot::GatherPlugin)
+        // HaulPlugin chains after `move_velocity_system`, which is
+        // registered by NanobotPlugin above. The arrival signal the
+        // hauler systems wait for is the same one the gather chain
+        // uses, so they only need to run after the movement step.
+        .add_plugins(nanobot::HaulPlugin)
         .add_plugins(AiPlugin)
         .add_plugins(Camera2dFlyPlugin)
         .add_systems(Startup, setup_things_startup.pipe(error_handler));
