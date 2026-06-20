@@ -8,7 +8,6 @@ use bevy::{
 
 use crate::{
     nanobot::{DirectMovementComponent, Nanobot},
-    zones::ZoneComponent,
     ZONE_BLOCK_SIZE,
 };
 
@@ -60,7 +59,6 @@ pub struct Build;
 pub fn idle_behaviour_system(
     mut states: Query<(Entity, &mut AiStateComponent)>,
     _bot_positions: Query<(&Transform, &ChildOf), With<Nanobot>>,
-    _zones: Query<(&ZoneComponent,)>,
 ) {
     let _rng = rand::rng();
 
