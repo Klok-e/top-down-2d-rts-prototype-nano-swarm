@@ -3,6 +3,7 @@ mod components;
 mod consts;
 mod debug;
 mod gather;
+mod haul;
 mod move_system;
 
 pub use autonomy::*;
@@ -10,6 +11,7 @@ pub use components::*;
 pub use consts::*;
 pub use debug::*;
 pub use gather::*;
+pub use haul::*;
 pub use move_system::*;
 
 use bevy::prelude::*;
