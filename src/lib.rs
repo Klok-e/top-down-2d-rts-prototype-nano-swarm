@@ -45,6 +45,9 @@ pub fn build_app() -> App {
         // hauler systems wait for is the same one the gather chain
         // uses, so they only need to run after the movement step.
         .add_plugins(nanobot::HaulPlugin)
+        // BuildPlugin chains after `move_velocity_system` so the
+        // arrive system sees the pruned DirectMovementComponent.
+        .add_plugins(nanobot::BuildPlugin)
         .add_plugins(AiPlugin)
         .add_plugins(Camera2dFlyPlugin)
         .add_systems(Startup, setup_things_startup.pipe(error_handler));
