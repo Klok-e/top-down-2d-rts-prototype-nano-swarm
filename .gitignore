@@ -1,5 +1,6 @@
 /target
 /.env
 /.pi/afk/state.json
+/.pi/afk/history.json
 /.pi/afk/logs/
 /.pi/tasks/tasks-*.json
