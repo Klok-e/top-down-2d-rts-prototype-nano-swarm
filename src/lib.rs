@@ -32,7 +32,11 @@ use zones::{ZoneMaterial, ZoneMaterialHandleComponent, ZonesPlugin};
 
 pub fn build_app() -> App {
     let mut app = App::new();
-    app.add_plugins(DefaultPlugins)
+    app.insert_resource(IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32))
+        .init_resource::<ResourceLedger>()
+        .init_resource::<ProductionRatio>()
+        .init_resource::<nanobot::SoftWorkSlots>()
+        .add_plugins(DefaultPlugins)
         .add_plugins(Material2dPlugin::<BackgroundMaterial>::default())
         // must be before NanobotPlugin because otherwise it receives events with despawned entities
         .add_plugins(NanoswarmUiSetupPlugin)
@@ -114,9 +118,6 @@ fn setup_things_startup(
         });
 
     commands.insert_resource(GameSettings::from_file_ron("config/game_settings.ron")?);
-    commands.insert_resource(IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32));
-    commands.init_resource::<ResourceLedger>();
-    commands.init_resource::<ProductionRatio>();
 
     spawn_initial_swarm(&mut commands, &asset_server);
 
@@ -186,6 +187,7 @@ fn spawn_initial_swarm(commands: &mut Commands<'_, '_>, asset_server: &Res<'_, A
         .spawn(SwarmBundle {
             swarm: Swarm {},
             transform: Transform::default(),
+            global_transform: GlobalTransform::default(),
         })
         .with_children(|p| {
             for _ in 0..4 {

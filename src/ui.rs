@@ -10,7 +10,7 @@ pub use ui_setup::*;
 
 use bevy::{
     diagnostic::FrameTimeDiagnosticsPlugin,
-    prelude::{App, Plugin, Startup, Update},
+    prelude::{App, IntoScheduleConfigs, Plugin, Startup, Update},
 };
 
 use self::{
@@ -29,8 +29,7 @@ impl Plugin for NanoswarmUiSetupPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(UiHandling::default())
             .add_plugins(FrameTimeDiagnosticsPlugin::default())
-            .add_systems(Startup, setup_ui_system)
-            .add_systems(Startup, setup_intent_layer_panel)
+            .add_systems(Startup, (setup_ui_system, setup_intent_layer_panel).chain())
             .add_systems(Update, check_ui_interaction)
             .add_systems(Update, fps_ui_system)
             .add_systems(Update, button_background_system)
