@@ -5,6 +5,7 @@ mod consts;
 mod debug;
 mod gather;
 mod haul;
+mod maintenance;
 mod move_system;
 mod production;
 
@@ -15,6 +16,7 @@ pub use consts::*;
 pub use debug::*;
 pub use gather::*;
 pub use haul::*;
+pub use maintenance::*;
 pub use move_system::*;
 pub use production::*;
 
