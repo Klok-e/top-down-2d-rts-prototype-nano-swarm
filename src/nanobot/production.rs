@@ -129,6 +129,42 @@ impl Default for ProductionRatio {
     }
 }
 
+/// Marker for a [`crate::nanobot::Swarm`] that is driven by
+/// prepainted intent and a fixed production ratio (the project
+/// glossary's "Opponent Swarm"). Opponent nanobots still run
+/// through the same scoring, logistics, and production systems
+/// as the player swarm; the marker only lets callers query
+/// opponents separately.
+#[derive(Debug, Component, Default)]
+pub struct OpponentSwarm {}
+
+/// Per-swarm production ratio override. Attached to a
+/// [`crate::nanobot::Swarm`] to give it its own production mix.
+/// When present, the production systems prefer this over the
+/// global [`ProductionRatio`] resource, so the opponent can
+/// keep a fixed mix while the player keeps mutating the global
+/// resource.
+#[derive(Debug, Component, Clone)]
+pub struct SwarmProduction {
+    pub ratio: ProductionRatio,
+}
+
+impl SwarmProduction {
+    pub fn new(ratio: ProductionRatio) -> Self {
+        Self { ratio }
+    }
+}
+
+/// Ties a production facility to the swarm that owns it. Used
+/// to resolve the per-swarm [`SwarmProduction`] (or the
+/// global [`ProductionRatio`] resource as a fallback) and to
+/// decide which swarm a completed cycle spawns its new
+/// nanobot under. Facilities without this marker fall back to
+/// the global ratio and the first swarm in the world, which
+/// keeps the pre-multi-swarm tests working.
+#[derive(Debug, Component, Clone, Copy)]
+pub struct OwnerSwarm(pub Entity);
+
 /// An automatic production facility. Spawned by
 /// `production_facility_auto_creation_system` near a swarm that
 /// has unmet production demand. The facility's own state is
@@ -245,63 +281,109 @@ pub fn count_nanobots_by_type(
     counts
 }
 
-/// Auto-create production facilities from demand pressure. A new
-/// facility emerges when:
+/// Count nanobots that are children of `swarm_entity`, keyed by
+/// type. Used by the per-swarm production systems to measure
+/// only the population that the swarm owns, so an opponent
+/// swarm's deficit is not muddied by the player swarm's
+/// nanobots.
+pub fn count_swarm_nanobots_by_type(
+    swarm_entity: Entity,
+    children_query: &Query<&Children>,
+    nanobots: &Query<&NanobotType, With<Nanobot>>,
+) -> HashMap<NanobotType, u32> {
+    let mut counts = HashMap::new();
+    let Ok(children) = children_query.get(swarm_entity) else {
+        return counts;
+    };
+    for child in children.iter() {
+        if let Ok(ty) = nanobots.get(child) {
+            *counts.entry(*ty).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+/// Auto-create production facilities from demand pressure. For
+/// each swarm in the world, a new facility emerges when:
 ///
-/// 1. the total deficit (sum of `target - current` across all
-///    types) is at or above
+/// 1. the swarm's per-swarm deficit (sum of
+///    `target - current` across all types, using the swarm's
+///    own children as the current count) is at or above
 ///    [`FACILITY_EMERGE_DEFICIT_THRESHOLD`], AND
-/// 2. every existing facility has a `current_target` (they are
-///    all busy) and is past [`FACILITY_MIN_PROGRESS_FOR_EMERGENCE`]
-///    (the lag that rate-limits emergence to one new facility
-///    per progress-tick).
+/// 2. every existing facility that belongs to this swarm
+///    (those with [`OwnerSwarm`] pointing at it, plus any
+///    unowned facilities -- the fallback for the
+///    pre-multi-swarm case) has a `current_target` and is
+///    past [`FACILITY_MIN_PROGRESS_FOR_EMERGENCE`].
 ///
-/// The new facility is spawned at the first `Swarm`'s position,
-/// pre-picks a deficit type, and consumes the production
+/// The new facility is spawned at the swarm's position,
+/// pre-picks a deficit type using the swarm's own
+/// [`SwarmProduction`] (or the global [`ProductionRatio`]
+/// resource as a fallback), and consumes the production
 /// material up-front so it is busy from the moment it exists.
-/// This ties emergence to the swarm's actual ability to feed
-/// facilities.
-#[allow(clippy::type_complexity)]
+/// This ties emergence to each swarm's actual ability to
+/// feed facilities, so the opponent swarm's demand spawns
+/// opponent facilities and the player's demand spawns
+/// player facilities independently.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn production_facility_auto_creation_system(
     mut commands: Commands,
-    ratio: Res<ProductionRatio>,
+    global_ratio: Res<ProductionRatio>,
     nanobots: Query<&NanobotType, With<Nanobot>>,
-    facilities: Query<&ProductionFacility>,
-    swarms: Query<&Transform, With<Swarm>>,
+    children_query: Query<&Children>,
+    facilities: Query<(Entity, &ProductionFacility, Option<&OwnerSwarm>)>,
+    swarm_productions: Query<&SwarmProduction>,
+    swarms: Query<(Entity, &Transform), With<Swarm>>,
     mut stockpiles: Query<(Entity, &mut Stockpile, &Transform)>,
     mut ledger: ResMut<ResourceLedger>,
 ) {
-    let counts = count_nanobots_by_type(&nanobots);
-    if total_deficit(&ratio, &counts) < FACILITY_EMERGE_DEFICIT_THRESHOLD {
-        return;
+    for (swarm_entity, swarm_transform) in &swarms {
+        let ratio = swarm_productions
+            .get(swarm_entity)
+            .map(|sp| &sp.ratio)
+            .unwrap_or(&*global_ratio);
+        let counts = count_swarm_nanobots_by_type(swarm_entity, &children_query, &nanobots);
+        if total_deficit(ratio, &counts) < FACILITY_EMERGE_DEFICIT_THRESHOLD {
+            continue;
+        }
+        // Facilities that "count" for this swarm: the ones
+        // explicitly owned by it plus any unowned
+        // facilities. Unowned facilities are kept in the
+        // busy-progressed gate so pre-multi-swarm tests --
+        // which spawn a facility without an OwnerSwarm --
+        // still observe the emergence trigger.
+        let relevant: Vec<&ProductionFacility> = facilities
+            .iter()
+            .filter(|(_, _, owner)| match owner {
+                Some(OwnerSwarm(e)) => *e == swarm_entity,
+                None => true,
+            })
+            .map(|(_, f, _)| f)
+            .collect();
+        if !relevant.is_empty() {
+            let all_busy = relevant.iter().all(|f| f.is_busy());
+            let all_progressed = relevant
+                .iter()
+                .all(|f| f.progress >= FACILITY_MIN_PROGRESS_FOR_EMERGENCE);
+            if !all_busy || !all_progressed {
+                continue;
+            }
+        }
+        let origin = swarm_transform.translation.truncate();
+        let Some(target) = pick_deficit_type(ratio, &counts, &HashSet::new()) else {
+            continue;
+        };
+        if !try_consume_production_material(origin, &mut stockpiles, &mut ledger) {
+            continue;
+        }
+        let mut new_facility = ProductionFacility::new();
+        new_facility.current_target = Some(target);
+        commands.spawn((
+            new_facility,
+            OwnerSwarm(swarm_entity),
+            Transform::from_translation(origin.extend(0.0)),
+        ));
     }
-    // Every existing facility must be busy and past the
-    // minimum-progress gate. If any is idle there is spare
-    // capacity; if any is too fresh, emergence would be one
-    // new facility per tick.
-    let all_busy = facilities.iter().all(ProductionFacility::is_busy);
-    let all_progressed = facilities
-        .iter()
-        .all(|f| f.progress >= FACILITY_MIN_PROGRESS_FOR_EMERGENCE);
-    if !all_busy || !all_progressed {
-        return;
-    }
-    let Some(swarm_transform) = swarms.iter().next() else {
-        return;
-    };
-    let origin = swarm_transform.translation.truncate();
-    let Some(target) = pick_deficit_type(&ratio, &counts, &HashSet::new()) else {
-        return;
-    };
-    if !try_consume_production_material(origin, &mut stockpiles, &mut ledger) {
-        return;
-    }
-    let mut new_facility = ProductionFacility::new();
-    new_facility.current_target = Some(target);
-    commands.spawn((
-        new_facility,
-        Transform::from_translation(origin.extend(0.0)),
-    ));
 }
 
 /// Pick the next production target for every idle facility and
@@ -312,25 +394,48 @@ pub fn production_facility_auto_creation_system(
 /// A facility whose blocked set covers every type stays idle
 /// (it has nothing to produce) until material arrives and a
 /// future pick run can break the deadlock.
+///
+/// Each facility reads its ratio from the [`SwarmProduction`]
+/// of its [`OwnerSwarm`] (if present) or falls back to the
+/// global [`ProductionRatio`] resource. Counts are scoped to
+/// the owner's children so opponent and player populations
+/// cannot leak into each other's deficit math.
 #[allow(clippy::type_complexity)]
 pub fn production_facility_pick_target_system(
-    ratio: Res<ProductionRatio>,
+    global_ratio: Res<ProductionRatio>,
     nanobots: Query<&NanobotType, With<Nanobot>>,
-    mut facilities: Query<(&Transform, &mut ProductionFacility)>,
+    children_query: Query<&Children>,
+    swarm_productions: Query<&SwarmProduction>,
+    mut facilities: Query<(&Transform, &mut ProductionFacility, Option<&OwnerSwarm>)>,
     mut stockpiles: Query<(Entity, &mut Stockpile, &Transform)>,
     mut ledger: ResMut<ResourceLedger>,
 ) {
-    let counts = count_nanobots_by_type(&nanobots);
-    for (transform, mut facility) in &mut facilities {
+    for (transform, mut facility, owner) in &mut facilities {
         if facility.is_busy() {
             continue;
         }
+
+        // Owned facility: owner's ratio and owner's children
+        // counts. Unowned facility: global ratio and global
+        // population. The unowned branch is the fallback that
+        // keeps the pre-multi-swarm tests green.
+        let (ratio, counts): (&ProductionRatio, HashMap<NanobotType, u32>) = match owner {
+            Some(OwnerSwarm(swarm)) => {
+                let ratio = swarm_productions
+                    .get(*swarm)
+                    .map(|sp| &sp.ratio)
+                    .unwrap_or(&*global_ratio);
+                let counts = count_swarm_nanobots_by_type(*swarm, &children_query, &nanobots);
+                (ratio, counts)
+            }
+            None => (&*global_ratio, count_nanobots_by_type(&nanobots)),
+        };
 
         // Try the deficit priority; if material cannot be
         // pulled, block the type and try the next. We loop
         // because blocking one type changes the ranking for
         // the next attempt.
-        while let Some(kind) = pick_deficit_type(&ratio, &counts, &facility.blocked_types) {
+        while let Some(kind) = pick_deficit_type(ratio, &counts, &facility.blocked_types) {
             if try_consume_production_material(
                 transform.translation.truncate(),
                 &mut stockpiles,
@@ -353,17 +458,18 @@ pub fn production_facility_pick_target_system(
 
 /// Advance each busy facility's progress counter. When progress
 /// reaches [`PRODUCTION_TICKS_PER_BOT`], spawn a new nanobot of
-/// the facility's `current_target` as a child of the first Swarm
-/// entity in the world, then reset the facility to idle and
-/// clear the blocked set so the next cycle re-tries blocked
-/// types.
+/// the facility's `current_target` as a child of the owning
+/// [`Swarm`] (or the first swarm in the world for unowned
+/// facilities, matching the pre-multi-swarm behaviour), then
+/// reset the facility to idle and clear the blocked set so the
+/// next cycle re-tries blocked types.
 #[allow(clippy::type_complexity)]
 pub fn production_facility_work_system(
     mut commands: Commands,
-    mut facilities: Query<(&mut ProductionFacility, &Transform)>,
+    mut facilities: Query<(&mut ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
     swarms: Query<Entity, With<Swarm>>,
 ) {
-    for (mut facility, transform) in &mut facilities {
+    for (mut facility, transform, owner) in &mut facilities {
         let Some(target) = facility.current_target else {
             continue;
         };
@@ -371,10 +477,16 @@ pub fn production_facility_work_system(
         if facility.progress < PRODUCTION_TICKS_PER_BOT {
             continue;
         }
-        // Cycle complete: spawn the nanobot. If no swarm
-        // exists the spawn is dropped (tests with no swarm
-        // drive the systems directly).
-        if let Some(swarm_entity) = swarms.iter().next() {
+        // Cycle complete: spawn the nanobot. The owner
+        // swarm is the natural parent (the facility belongs
+        // to it), with a fallback to the first swarm in the
+        // world for unowned facilities. If no swarm exists
+        // the spawn is dropped (tests with no swarm drive
+        // the systems directly).
+        let parent = owner
+            .map(|OwnerSwarm(e)| Some(*e))
+            .unwrap_or_else(|| swarms.iter().next());
+        if let Some(swarm_entity) = parent {
             let pos = transform.translation.truncate();
             commands.entity(swarm_entity).with_children(|p| {
                 p.spawn((
@@ -646,5 +758,21 @@ mod tests {
         f.blocked_types.insert(NanobotType::Hauler);
         assert!(f.is_blocked(NanobotType::Hauler));
         assert!(!f.is_blocked(NanobotType::Worker));
+    }
+
+    #[test]
+    fn swarm_production_wraps_a_production_ratio() {
+        let mut r = ProductionRatio::new();
+        r.set_target(NanobotType::Hauler, 4);
+        let sp = SwarmProduction::new(r.clone());
+        assert_eq!(sp.ratio.target(NanobotType::Hauler), 4);
+    }
+
+    #[test]
+    fn owner_swarm_stores_the_entity_reference() {
+        let mut world = World::new();
+        let swarm = world.spawn_empty().id();
+        let owner = OwnerSwarm(swarm);
+        assert_eq!(owner.0, swarm);
     }
 }

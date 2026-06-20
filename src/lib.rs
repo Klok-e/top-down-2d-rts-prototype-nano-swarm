@@ -20,10 +20,11 @@ use bevy::{
 use building::{Minerals, ProcessingFacility};
 use fly_camera::{Camera2dFlyPlugin, CameraZoom2d, FlyCamera2d};
 use game_settings::GameSettings;
-use intent::IntentGrid;
+use intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP};
 use materials::BackgroundMaterial;
 use nanobot::{
-    NanobotBundle, NanobotPlugin, ProductionPlugin, ProductionRatio, Swarm, SwarmBundle,
+    spawn_opponent_swarm, NanobotBundle, NanobotPlugin, NanobotType, PrepaintedIntent,
+    ProductionPlugin, ProductionRatio, SeedNanobots, Swarm, SwarmBundle,
 };
 use resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
 use ui::NanoswarmUiSetupPlugin;
@@ -73,7 +74,8 @@ pub fn build_app() -> App {
         .add_plugins(nanobot::ChargePlugin)
         .add_plugins(AiPlugin)
         .add_plugins(Camera2dFlyPlugin)
-        .add_systems(Startup, setup_things_startup.pipe(error_handler));
+        .add_systems(Startup, setup_things_startup.pipe(error_handler))
+        .add_systems(Startup, setup_opponent_swarm_startup);
     app
 }
 
@@ -202,4 +204,37 @@ fn error_handler(In(result): In<Result<()>>) {
     if let Err(err) = result {
         println!("encountered an error {:?}", err);
     }
+}
+
+/// Materialise the first opponent swarm on the far side of
+/// the map with a fixed Hauler-heavy production ratio and a
+/// small prepainted Gather/Defend territory, so a player
+/// running the game out of the box sees the opponent working
+/// through the same systems as the player swarm. Kept as a
+/// separate system because it needs `&mut World` access to
+/// paint the intent grid, while the main startup system
+/// stays `Commands`-based.
+fn setup_opponent_swarm_startup(world: &mut World) {
+    let opponent_world_pos = vec3(40.0 * ZONE_BLOCK_SIZE, 0.0, 0.0);
+    let mut opponent_ratio = ProductionRatio::new();
+    // Hauler-heavy so logistics keep up; a Defender
+    // presence so the prepainted base holds. No active AI.
+    opponent_ratio.set_target(NanobotType::Hauler, 6);
+    opponent_ratio.set_target(NanobotType::Defender, 4);
+    opponent_ratio.set_target(NanobotType::Worker, 4);
+
+    spawn_opponent_swarm(
+        world,
+        opponent_world_pos.truncate(),
+        opponent_ratio,
+        &[
+            PrepaintedIntent::new(IVec2::new(40, 0), IntentKind::Gather, PAINT_STRENGTH_CAP),
+            PrepaintedIntent::new(IVec2::new(41, 0), IntentKind::Defend, PAINT_STRENGTH_CAP),
+        ],
+        &[
+            SeedNanobots::new(NanobotType::Worker, 2),
+            SeedNanobots::new(NanobotType::Hauler, 1),
+            SeedNanobots::new(NanobotType::Defender, 1),
+        ],
+    );
 }
