@@ -33,6 +33,7 @@ use bevy::prelude::*;
 
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::{best_candidate, Commitment, NanobotType, SoftWorkSlots};
+use crate::nanobot::charge::{ChargerAssignment, ChargerProgress};
 use crate::nanobot::components::{DirectMovementComponent, Nanobot};
 use crate::nanobot::consts::STOP_THRESHOLD;
 use crate::ZONE_BLOCK_SIZE;
@@ -128,6 +129,14 @@ pub fn defender_assignment_system(
             With<NanobotType>,
             Without<DefendAssignment>,
             Without<DirectMovementComponent>,
+            // Defenders en route to a charger or already
+            // charging must not be re-routed to a fresh
+            // Defend cell until the charge loop releases
+            // them. The rotation system drops the hold and
+            // inserts the charger markers; the assignment
+            // system must wait for both markers to clear.
+            Without<ChargerAssignment>,
+            Without<ChargerProgress>,
         ),
     >,
 ) {

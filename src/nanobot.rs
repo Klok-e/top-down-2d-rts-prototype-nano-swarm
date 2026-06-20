@@ -1,5 +1,6 @@
 mod autonomy;
 mod build;
+mod charge;
 mod components;
 mod consts;
 mod debug;
@@ -12,6 +13,7 @@ mod production;
 
 pub use autonomy::*;
 pub use build::*;
+pub use charge::*;
 pub use components::*;
 pub use consts::*;
 pub use debug::*;
@@ -26,7 +28,7 @@ use bevy::prelude::*;
 
 use crate::ai::AiStateComponent;
 
-pub use self::components::{Nanobot, VelocityComponent};
+pub use self::components::{Health, Nanobot, VelocityComponent};
 
 /// Bundle for a freshly spawned nanobot. The default is a Worker
 /// (the most common type for the first implementation) with zero
@@ -38,6 +40,7 @@ pub struct NanobotBundle {
     pub nanobot_type: NanobotType,
     pub velocity: VelocityComponent,
     pub ai_state: AiStateComponent,
+    pub health: Health,
 }
 
 impl Default for NanobotBundle {
@@ -47,6 +50,7 @@ impl Default for NanobotBundle {
             nanobot_type: NanobotType::Worker,
             velocity: VelocityComponent::default(),
             ai_state: AiStateComponent::new(),
+            health: Health::default(),
         }
     }
 }
