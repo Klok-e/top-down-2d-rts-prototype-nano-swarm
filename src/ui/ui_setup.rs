@@ -21,9 +21,11 @@ fn text_components(
     )
 }
 
-/// Minimal UI: a single FPS counter in the top-left corner. The group-select
-/// panel, merge/split buttons, and zone-mode toggle are gone; the swarm intent
-/// model drives all player feedback through the world itself.
+/// UI chrome that does not depend on the brush system: a single FPS counter
+/// in the top-left corner. The group-select panel, merge/split buttons, and
+/// zone-mode toggle are gone; the swarm intent model drives all player
+/// feedback through the world itself. The visible intent-layer controls
+/// live in [`crate::ui::intent_layer_panel`].
 pub fn setup_ui_system(mut commands: Commands, asset_server: Res<AssetServer>) {
     let font = asset_server.load("fonts/fira_sans/FiraSans-Bold.ttf");
     commands.insert_resource(FontsResource { font: font.clone() });
