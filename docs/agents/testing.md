@@ -10,10 +10,11 @@ Run one focused test while developing:
 cargo test <test_name>
 ```
 
-Run one integration test file:
+Run the behavior or playtest integration target:
 
 ```bash
-cargo test --test <file_name_without_rs>
+cargo test --test behavior
+cargo test --test playtest
 ```
 
 Before handoff, run:
@@ -24,11 +25,7 @@ cargo clippy -- -D warnings
 cargo test
 ```
 
-`cargo test` runs unit tests and automated integration tests. Ignored checks run only when requested:
-
-```bash
-cargo test -- --ignored
-```
+`cargo test` runs unit tests, behavior tests, and headless scripted playtests.
 
 ## File layout
 
@@ -41,28 +38,30 @@ src/
 tests/
   common/
     mod.rs
-  *_behavior.rs
-  *_visual.rs
+  behavior.rs          # aggregate integration target
+  behavior/
+    *.rs              # focused behavior / acceptance tests
+  playtest.rs         # aggregate integration target
+  playtest/
+    *.rs              # scripted player/runtime flows
 ```
 
-`tests/common/mod.rs` is the shared test seam introduced for
-issue #17. Every `*_behavior.rs` file pulls in the helpers via
-`mod common;` and uses the `sim_app_with_*` builders and
-`spawn_*` helpers from there. New behaviour tests should follow
-the same pattern:
+Nested integration files import the shared seam explicitly:
 
-1. `use ... mod common;` at the top of the test file.
-2. Replace any local `build_app`, `cell_world_center`,
-   `spawn_*` helpers with the canonical ones in `common::`.
-3. Pick the smallest `common::sim_app_with_*` builder that
-   covers the test's plugin set (e.g. `sim_app_with_build` for
-   a build-zone contract).
-4. Specialised spawn helpers that need a marker or a non-default
-   field (e.g. an `OwnerSwarm`, a `Health::default()` set to
-   non-full) belong in `tests/common/mod.rs` next to the rest
-   of the seams, not duplicated in the test file.
+```rust
+#[path = "../common/mod.rs"]
+mod common;
+```
 
-Unit tests live beside the module they test. Automated integration tests live in `tests/*_behavior.rs`. Temporary screenshot checks live in `tests/*_visual.rs` and must be ignored.
+`tests/common/mod.rs` is the shared test seam introduced for issue #17. Behavior and playtest files use the `sim_app_with_*` builders and `spawn_*` helpers from there. New tests should follow the same pattern:
+
+1. Import the common seam with `#[path = "../common/mod.rs"] mod common;` when the test needs shared helpers.
+2. Replace local `build_app`, `cell_world_center`, and `spawn_*` helpers with canonical helpers in `common::`.
+3. Pick the smallest `common::sim_app_with_*` builder that covers the test's plugin set.
+4. Put specialised spawn helpers that need markers or non-default fields in `tests/common/mod.rs`, not duplicated in test files.
+5. Add new files to the matching aggregate target (`tests/behavior.rs` or `tests/playtest.rs`) so Cargo discovers them.
+
+Unit tests live beside the module they test. Automated integration tests live under `tests/behavior/`. Scripted playtests live under `tests/playtest/`.
 
 ## Unit tests
 
@@ -78,13 +77,13 @@ Good unit-test targets in this repo:
 
 Prefer extracting pure functions over mocking Bevy queries, resources, commands, assets, or windows. Use fakes only at real module boundaries, not to simulate Bevy internals.
 
-If test needs `App::new()`, schedules, events/messages flowing between multiple systems, spawned entities with several components, or access through `tests/` and crate public API, make it integration test.
+If test needs `App::new()`, schedules, events/messages flowing between multiple systems, spawned entities with several components, or access through `tests/` and crate public API, make it an integration test.
 
 Keep unit tests narrow: one behavior, one module, minimal setup, direct assertions. Test private implementation details only when they are invariant under test, such as corruption-prone packed storage layout; otherwise verify behavior through module public methods.
 
-## Integration tests
+## Behavior tests
 
-Use integration tests for automated behavior that crosses module or system boundaries. Build the smallest Bevy `App` that proves behavior:
+Use `tests/behavior/*.rs` for automated behavior that crosses module or system boundaries. Build the smallest Bevy `App` that proves behavior:
 
 - Add only needed plugins, systems, resources, and messages.
 - Spawn entities directly instead of running full startup.
@@ -94,33 +93,48 @@ Use integration tests for automated behavior that crosses module or system bound
 
 Assert deterministic ECS state: components, resources, events/messages, spawned/despawned entities, or other world state. Do not assert through screenshots, logs, wall-clock timing, or human/LLM interpretation.
 
-Use `app.update()` or a small helper such as `run_frames(&mut app, n)` for deterministic progression. Avoid sleeps and wall-clock waits.
+Use `app.update()` or a small helper only after repetition appears. Avoid sleeps and wall-clock waits.
 
-Headless integration tests run in normal `cargo test`. Mark only slow, window, or local-debug checks with `#[ignore]`. Every ignored check must state why it is ignored and how to run it.
+Headless behavior tests run in normal `cargo test`. Mark only slow, window, rendering, or local-debug checks with `#[ignore]`. Every ignored check must state why it is ignored and how to run it.
 
-## Input tests
+## Scripted playtests
 
-Prefer Bevy-level input simulation:
+For runtime/player-facing changes, add or update a scripted playtest when the change touches input, UI, camera, startup/plugin wiring, gameplay flow, or rendering-visible behavior. Playtests are automated: they build a representative Bevy app, script the player-facing interaction, advance frames, and assert the resulting world/UI/camera/render state.
+
+Use `tests/playtest/*.rs` for flows that combine app wiring and player actions. Examples:
+
+- Select an intent layer, paint/erase, and assert the intended layer changed.
+- Press camera controls, advance frames, and assert camera state changed.
+- Click UI controls by setting `Interaction::Pressed`, advance frames, and assert resources/components changed.
+- Run a near-runtime plugin stack long enough to catch missing startup resources or ordering failures.
+
+Script input through Bevy state, not OS automation:
 
 - Mutate `ButtonInput<KeyCode>` / `ButtonInput<MouseButton>`.
 - Send Bevy events/messages such as mouse wheel or app messages.
-- Set cursor/window state only if system reads it.
-- Run `app.update()`.
-- Assert resulting components, resources, entities, or messages.
+- Set cursor/window state only if the system reads it.
+- Set UI `Interaction` components for UI controls.
+- Run `app.update()` and assert deterministic ECS state.
 
-Do not use OS-level input automation for normal tests.
+Headless scripted playtests run in normal `cargo test`. If a playtest needs a real window, GPU, or screenshot, keep it under `tests/playtest/`, mark it ignored, and explain how to run it.
 
-Keep helpers small. Start with generic helpers such as `run_frames`, `press_key`, `press_mouse`, or `send_mouse_wheel`. Add domain scenario helpers only after repetition appears.
+### Screenshot evidence
 
-Do not build a large test harness before tests need it. Add the smallest helper that removes real duplication in current tests.
+Screenshots are a scripted playtest technique, not a separate test category. For changes affecting shaders, UI layout, materials, cameras, render targets, or other visual appearance, agents must produce screenshot evidence in addition to any deterministic ECS assertions.
 
-## Screenshot checks
+Use a temporary ignored playtest for screenshot investigations:
 
-Screenshot checks are manual, temporary debugging aids for a specific visual purpose. Add them only for rendering, window, or UI problems where ECS assertions do not explain the issue, or when the user asks for visual evidence.
+```txt
+tests/playtest/temp_<thing>.rs
+```
 
-Screenshot checks are not automated integration tests and are not an acceptance gate. They must be ignored by default and must not require normal `cargo test`, human inspection, or LLM interpretation.
+The temporary playtest should write artifacts under:
 
-Before handoff, remove screenshot checks or convert the learned behavior into an automated unit or integration test. Leave one only if the user explicitly wants a local visual debug harness.
+```txt
+target/playtest-screenshots/
+```
+
+Remove temporary screenshot playtests before handoff unless the user explicitly asks to keep them or the rendering regression cannot be covered through ECS/state assertions. Durable screenshot-producing playtests may live under `tests/playtest/` only with a clear comment explaining why screenshot evidence is required. Do not commit screenshot image artifacts unless the user explicitly asks for committed baselines. If the environment lacks a usable window/GPU, report the exact blocker instead of treating it as a normal test failure.
 
 ## Test data
 
@@ -128,4 +142,4 @@ Create needed data in code. Avoid loading assets or config files unless behavior
 
 ## Testing hard-to-reach behavior
 
-When behavior is trapped inside a large Bevy system, extract the decision or calculation into a small pure function or module. Unit-test that function, then keep one integration test for system wiring if needed.
+When behavior is trapped inside a large Bevy system, extract the decision or calculation into a small pure function or module. Unit-test that function, then keep one behavior or playtest test for system wiring if needed.

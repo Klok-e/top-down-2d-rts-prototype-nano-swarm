@@ -18,6 +18,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     resources::{ResourceKind, ResourceLedger, Stockpile},
 };
 
+#[path = "../common/mod.rs"]
 mod common;
 
 fn build_app() -> App {
