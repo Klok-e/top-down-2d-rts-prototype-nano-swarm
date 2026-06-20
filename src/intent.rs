@@ -9,6 +9,12 @@ use std::collections::HashSet;
 
 use bevy::prelude::{IVec2, Resource};
 
+/// Upper bound on paint strength for any single layer at a cell. Repeated
+/// painting saturates at this value rather than overflowing. The cap is part
+/// of the public simulation contract: downstream systems (allocation, path
+/// preference, scoring) read strengths in `[0, PAINT_STRENGTH_CAP]`.
+pub const PAINT_STRENGTH_CAP: u8 = 16;
+
 /// Player intent kinds. The order matches the four zone colour slots used by the
 /// existing zone shader, so the bit index of each kind lines up with the shader's
 /// per-cell bit layout until a future issue replaces that mirror.
@@ -181,6 +187,46 @@ impl IntentGrid {
     pub fn remove(&mut self, point: IVec2, kind: IntentKind) -> bool {
         if let Some(cell) = self.cell_mut(point) {
             cell.remove(kind);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Add `delta` to the paint strength of `kind` at `point`, saturating at
+    /// [`PAINT_STRENGTH_CAP`]. If the layer is not yet active it is
+    /// activated at `min(delta, PAINT_STRENGTH_CAP)`. Returns `true` when
+    /// the cell was within bounds.
+    pub fn paint(&mut self, point: IVec2, kind: IntentKind, delta: u8) -> bool {
+        if let Some(cell) = self.cell_mut(point) {
+            // Inactive layers have a zeroed strength slot, so this single
+            // expression covers both the first-paint and accumulate cases.
+            let next = cell.strength[kind.index()]
+                .saturating_add(delta)
+                .min(PAINT_STRENGTH_CAP);
+            cell.add(kind, next);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Subtract `delta` from the paint strength of `kind` at `point`. If
+    /// the resulting strength is zero the layer is removed. Returns `true`
+    /// when the cell was within bounds. Erasing an inactive kind is a
+    /// no-op.
+    pub fn erase(&mut self, point: IVec2, kind: IntentKind, delta: u8) -> bool {
+        if let Some(cell) = self.cell_mut(point) {
+            if !cell.has(kind) {
+                return true;
+            }
+            let current = cell.strength[kind.index()];
+            let next = current.saturating_sub(delta);
+            if next == 0 {
+                cell.remove(kind);
+            } else {
+                cell.strength[kind.index()] = next;
+            }
             true
         } else {
             false
@@ -398,5 +444,137 @@ mod tests {
         assert_eq!(grid.height(), 0);
         assert!(!grid.add(IVec2::new(0, 0), IntentKind::Gather, 1));
         assert!(grid.cell(IVec2::new(0, 0)).is_none());
+    }
+
+    #[test]
+    fn paint_activates_layer_at_delta_for_inactive_kind() {
+        let mut grid = IntentGrid::new(4, 4);
+        assert!(grid.paint(IVec2::new(0, 0), IntentKind::Gather, 3));
+
+        let cell = grid.cell(IVec2::new(0, 0)).unwrap();
+        assert!(cell.has(IntentKind::Gather));
+        assert_eq!(cell.strength(IntentKind::Gather), 3);
+    }
+
+    #[test]
+    fn paint_accumulates_until_cap() {
+        let mut grid = IntentGrid::new(4, 4);
+        let point = IVec2::new(0, 0);
+        for _ in 0..(PAINT_STRENGTH_CAP as usize) {
+            assert!(grid.paint(point, IntentKind::Gather, 1));
+        }
+        assert_eq!(
+            grid.cell(point).unwrap().strength(IntentKind::Gather),
+            PAINT_STRENGTH_CAP
+        );
+
+        // more painting saturates, does not overflow
+        assert!(grid.paint(point, IntentKind::Gather, 5));
+        assert_eq!(
+            grid.cell(point).unwrap().strength(IntentKind::Gather),
+            PAINT_STRENGTH_CAP
+        );
+        assert!(grid.paint(point, IntentKind::Gather, 200));
+        assert_eq!(
+            grid.cell(point).unwrap().strength(IntentKind::Gather),
+            PAINT_STRENGTH_CAP
+        );
+    }
+
+    #[test]
+    fn paint_above_cap_delta_clamps_on_first_paint() {
+        let mut grid = IntentGrid::new(4, 4);
+        let point = IVec2::new(0, 0);
+        assert!(grid.paint(point, IntentKind::Build, 200));
+        assert_eq!(
+            grid.cell(point).unwrap().strength(IntentKind::Build),
+            PAINT_STRENGTH_CAP
+        );
+    }
+
+    #[test]
+    fn erase_decrements_strength_without_touching_other_kinds() {
+        let mut grid = IntentGrid::new(4, 4);
+        let point = IVec2::new(0, 0);
+        grid.paint(point, IntentKind::Gather, 5);
+        grid.paint(point, IntentKind::Defend, 4);
+
+        assert!(grid.erase(point, IntentKind::Gather, 2));
+        let cell = grid.cell(point).unwrap();
+        assert_eq!(cell.strength(IntentKind::Gather), 3);
+        assert_eq!(cell.strength(IntentKind::Defend), 4);
+    }
+
+    #[test]
+    fn erase_to_zero_removes_the_layer() {
+        let mut grid = IntentGrid::new(4, 4);
+        let point = IVec2::new(0, 0);
+        grid.paint(point, IntentKind::Gather, 3);
+
+        assert!(grid.erase(point, IntentKind::Gather, 3));
+
+        let cell = grid.cell(point).unwrap();
+        assert!(!cell.has(IntentKind::Gather));
+        assert_eq!(cell.strength(IntentKind::Gather), 0);
+        assert_eq!(cell.active, 0);
+    }
+
+    #[test]
+    fn erase_below_zero_treated_as_full_removal() {
+        let mut grid = IntentGrid::new(4, 4);
+        let point = IVec2::new(0, 0);
+        grid.paint(point, IntentKind::Corridor, 2);
+
+        // a single big erase removes the layer entirely rather than
+        // leaving a negative or underflowed value behind
+        assert!(grid.erase(point, IntentKind::Corridor, 10));
+        let cell = grid.cell(point).unwrap();
+        assert!(!cell.has(IntentKind::Corridor));
+        assert_eq!(cell.active, 0);
+    }
+
+    #[test]
+    fn erase_on_inactive_kind_is_a_noop() {
+        let mut grid = IntentGrid::new(4, 4);
+        let point = IVec2::new(0, 0);
+        grid.paint(point, IntentKind::Gather, 4);
+
+        // Defend was never painted; erasing it must not touch Gather.
+        assert!(grid.erase(point, IntentKind::Defend, 5));
+        let cell = grid.cell(point).unwrap();
+        assert_eq!(cell.strength(IntentKind::Gather), 4);
+        assert!(!cell.has(IntentKind::Defend));
+    }
+
+    #[test]
+    fn overlapping_layers_keep_independent_strengths() {
+        let mut grid = IntentGrid::new(4, 4);
+        let point = IVec2::new(0, 0);
+        grid.paint(point, IntentKind::Gather, 5);
+        grid.paint(point, IntentKind::Build, 7);
+        grid.paint(point, IntentKind::Defend, 2);
+        // Corridor delta is over the cap so the first paint clamps to it
+        grid.paint(point, IntentKind::Corridor, 200);
+
+        let cell = grid.cell(point).unwrap();
+        assert_eq!(cell.strength(IntentKind::Gather), 5);
+        assert_eq!(cell.strength(IntentKind::Build), 7);
+        assert_eq!(cell.strength(IntentKind::Defend), 2);
+        assert_eq!(cell.strength(IntentKind::Corridor), PAINT_STRENGTH_CAP);
+
+        // erasing one kind does not move the others
+        grid.erase(point, IntentKind::Gather, 2);
+        let cell = grid.cell(point).unwrap();
+        assert_eq!(cell.strength(IntentKind::Gather), 3);
+        assert_eq!(cell.strength(IntentKind::Build), 7);
+        assert_eq!(cell.strength(IntentKind::Defend), 2);
+        assert_eq!(cell.strength(IntentKind::Corridor), PAINT_STRENGTH_CAP);
+    }
+
+    #[test]
+    fn paint_out_of_bounds_is_rejected() {
+        let mut grid = IntentGrid::new(3, 3);
+        assert!(!grid.paint(IVec2::new(-2, 0), IntentKind::Gather, 1));
+        assert!(!grid.erase(IVec2::new(2, 0), IntentKind::Gather, 1));
     }
 }

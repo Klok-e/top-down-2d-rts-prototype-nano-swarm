@@ -149,9 +149,10 @@ pub struct ZoneMaterialHandleComponent {
 
 /// Default paint kind used by the brush until issue #4 adds layer switching.
 const BRUSH_KIND: IntentKind = IntentKind::Gather;
-/// Default paint strength used by the brush. Tracked in the resource so future
-/// issues (#3) can vary this with repeated painting.
-const BRUSH_STRENGTH: u8 = 1;
+/// Per-frame paint delta. Held mouse input that calls
+/// [`IntentGrid::paint`] every frame accumulates strength up to
+/// `PAINT_STRENGTH_CAP` defined in [`crate::intent`].
+const BRUSH_PAINT_DELTA: u8 = 1;
 
 /// Reads mouse input and writes player intent into the [`IntentGrid`]
 /// resource. The simulation owns the grid; the GPU zone material is a
@@ -193,9 +194,9 @@ pub fn zone_brush_system(
     }
 
     if mouse_button_input.pressed(MouseButton::Left) {
-        intent_grid.add(idx, BRUSH_KIND, BRUSH_STRENGTH);
+        intent_grid.paint(idx, BRUSH_KIND, BRUSH_PAINT_DELTA);
     } else if mouse_button_input.pressed(MouseButton::Right) {
-        intent_grid.remove(idx, BRUSH_KIND);
+        intent_grid.erase(idx, BRUSH_KIND, BRUSH_PAINT_DELTA);
     }
 }
 
