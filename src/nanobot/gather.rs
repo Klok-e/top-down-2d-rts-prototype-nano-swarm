@@ -85,7 +85,7 @@ pub struct ReturningToStockpile {
     pub stockpile: Entity,
 }
 
-pub(crate) fn world_to_cell(world: Vec2) -> IVec2 {
+pub fn world_to_cell(world: Vec2) -> IVec2 {
     IVec2::new(
         (world.x / ZONE_BLOCK_SIZE).floor() as i32,
         (world.y / ZONE_BLOCK_SIZE).floor() as i32,

@@ -1,4 +1,5 @@
 mod autonomy;
+mod build;
 mod components;
 mod consts;
 mod debug;
@@ -7,6 +8,7 @@ mod haul;
 mod move_system;
 
 pub use autonomy::*;
+pub use build::*;
 pub use components::*;
 pub use consts::*;
 pub use debug::*;
