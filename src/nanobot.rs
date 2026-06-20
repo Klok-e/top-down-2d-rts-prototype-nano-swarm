@@ -9,6 +9,7 @@ mod gather;
 mod haul;
 mod maintenance;
 mod move_system;
+mod opponent;
 mod production;
 
 pub use autonomy::*;
@@ -22,6 +23,7 @@ pub use gather::*;
 pub use haul::*;
 pub use maintenance::*;
 pub use move_system::*;
+pub use opponent::*;
 pub use production::*;
 
 use bevy::prelude::*;
