@@ -61,12 +61,155 @@ pub struct HaulerLoading {
     pub collected: u32,
 }
 
+/// Marks a Hauler as biased by a Logistics Corridor paint. The
+/// hauler first walks to `waypoint` (the corridor cell picked by
+/// [`corridor_waypoint_between`]) and then continues to `target`
+/// (the original source or sink the assignment chain gave the
+/// hauler). The component is removed once the hauler reaches
+/// `target`; while it is present, the waypoint system redirects
+/// the hauler's [`DirectMovementComponent`] to keep the trip
+/// inside the corridor.
+///
+/// A corridor alone never produces this component: the
+/// assignment systems only insert it as a follow-up to a real
+/// source/sink trip, preserving the "corridors bias paths, they
+/// do not create jobs" contract.
+#[derive(Debug, Component, Clone, Copy)]
+pub struct HaulerCorridorWaypoint {
+    pub waypoint: Vec2,
+    pub target: Vec2,
+}
+
+/// Pushes the hauler toward `target` through a corridor waypoint
+/// when the player painted a Logistics Corridor cell on the line
+/// between the hauler's current position and its current
+/// [`DirectMovementComponent`] target.
+///
+/// Two responsibilities live in one system because both depend on
+/// the same per-tick check: assign a fresh waypoint when the
+/// hauler starts a leg with a painted corridor, and progress an
+/// existing waypoint through its `waypoint -> target` transition.
+/// The system runs in the same chain as the rest of the hauler
+/// stages so a freshly-assigned DMC is re-routed through the
+/// corridor on the same tick.
+///
+/// A hauler with no painted corridor, or with a corridor that
+/// is off the line, has no `HaulerCorridorWaypoint` inserted and
+/// the original straight-line DMC stands. This is the path that
+/// keeps the existing tests (and the player experience) green
+/// when no corridor is painted.
+#[allow(clippy::type_complexity)]
+pub fn hauler_corridor_waypoint_system(
+    mut commands: Commands,
+    grid: Res<IntentGrid>,
+    haulers_in_transit: Query<
+        (Entity, &Transform, &DirectMovementComponent),
+        (
+            With<Nanobot>,
+            With<NanobotType>,
+            With<DirectMovementComponent>,
+            With<HaulerAssignment>,
+            Without<HaulerCorridorWaypoint>,
+        ),
+    >,
+    haulers_with_waypoint: Query<
+        (Entity, &Transform, &HaulerCorridorWaypoint),
+        (With<Nanobot>, With<HaulerCorridorWaypoint>),
+    >,
+) {
+    for (entity, transform, dmc) in &haulers_in_transit {
+        let pos = transform.translation.truncate();
+        let Some(waypoint) = corridor_waypoint_between(pos, dmc.xy, &grid) else {
+            continue;
+        };
+        // Same world position: no detour is needed. Skip the
+        // waypoint so the hauler arrives normally.
+        if (waypoint - dmc.xy).length() < 1.0 {
+            continue;
+        }
+        commands.entity(entity).insert((
+            HaulerCorridorWaypoint {
+                waypoint,
+                target: dmc.xy,
+            },
+            DirectMovementComponent { xy: waypoint },
+        ));
+    }
+
+    for (entity, transform, waypoint) in &haulers_with_waypoint {
+        let pos = transform.translation.truncate();
+        let to_waypoint = pos.distance(waypoint.waypoint);
+        let to_target = pos.distance(waypoint.target);
+
+        if to_waypoint > STOP_THRESHOLD {
+            // Still on the waypoint leg. The DMC was set when the
+            // waypoint was first assigned and the move system keeps
+            // it until arrival, so there is nothing to do here.
+        } else if to_target > STOP_THRESHOLD {
+            // At the waypoint, head to the original target.
+            commands.entity(entity).insert(DirectMovementComponent {
+                xy: waypoint.target,
+            });
+        } else {
+            // At the target. The arrival hauler systems (arrive
+            // or delivery) will fire on the same tick from the
+            // DMC removal; clear the waypoint so the hauler is
+            // ready for its next leg.
+            commands.entity(entity).remove::<HaulerCorridorWaypoint>();
+        }
+    }
+}
+
 /// Default kind, capacity, and radius for an auto-created stockpile.
 /// Matches the manual stockpile spawned in `lib.rs` so the swarm
 /// cannot tell the two apart.
 pub const AUTO_STOCKPILE_KIND: ResourceKind = ResourceKind::Minerals;
 pub const AUTO_STOCKPILE_CAPACITY: u32 = 1000;
 pub const AUTO_STOCKPILE_RADIUS: f32 = 64.0;
+
+/// Find the highest-paint corridor cell on the straight line from
+/// `start` to `end` and return its world center. Returns `None` when
+/// no corridor is painted on any sampled cell on the line, or when
+/// `start` and `end` coincide.
+///
+/// `corridor_waypoint_between` is the path-bias helper behind the
+/// Logistics Corridor intent layer: when a hauler is travelling
+/// between a source and a sink, the hauler systems use the cell
+/// returned here as an intermediate waypoint so the hauler's path
+/// follows the corridor. Without a corridor, the hauler falls back
+/// to the straight-line `DirectMovementComponent` assigned by the
+/// existing transport chain.
+///
+/// The function samples cells along the line at roughly one sample
+/// per [`crate::ZONE_BLOCK_SIZE`] (capped at 64 samples) so a long
+/// trip and a short trip both get a useful answer without scanning
+/// the whole grid. Out-of-bounds cells are skipped silently. When
+/// two sampled cells tie on paint strength, the one closer to
+/// `start` wins because sampling iterates `start -> end`.
+pub fn corridor_waypoint_between(start: Vec2, end: Vec2, grid: &IntentGrid) -> Option<Vec2> {
+    let distance = start.distance(end);
+    if distance < 1.0 {
+        return None;
+    }
+    let n_samples = ((distance / crate::ZONE_BLOCK_SIZE).ceil() as usize).clamp(2, 64);
+    let mut best: Option<(u8, IVec2)> = None;
+    for i in 0..=n_samples {
+        let t = i as f32 / n_samples as f32;
+        let sample = start.lerp(end, t);
+        let cell = world_to_cell(sample);
+        let Some(intent_cell) = grid.cell(cell) else {
+            continue;
+        };
+        let strength = intent_cell.strength(IntentKind::Corridor);
+        if strength == 0 {
+            continue;
+        }
+        if best.is_none_or(|(s, _)| strength > s) {
+            best = Some((strength, cell));
+        }
+    }
+    best.map(|(_, cell)| get_world_from_zone(cell))
+}
 
 /// Find the (source, sink) pair a hauler should commit to.
 ///
@@ -479,6 +622,7 @@ impl Plugin for HaulPlugin {
                 hauler_carry_assign_system,
                 hauler_delivery_system,
                 stockpile_auto_creation_system,
+                hauler_corridor_waypoint_system,
             )
                 .chain()
                 .after(crate::nanobot::move_velocity_system),
@@ -493,6 +637,7 @@ mod tests {
     //! `tests/stockpile_and_haul_behavior.rs`.
 
     use super::*;
+    use crate::intent::PAINT_STRENGTH_CAP;
     use crate::nanobot::gather::WORKER_CARRY_CAPACITY;
 
     #[test]
@@ -514,5 +659,83 @@ mod tests {
         // a future tuning pass that breaks the invariant fails
         // the build, not just a test run.
         const { assert!(HAULER_CARRY_CAPACITY.is_multiple_of(HAULER_EXTRACT_PER_TICK)) };
+    }
+
+    #[test]
+    fn corridor_waypoint_between_returns_none_when_no_corridor() {
+        // Tracer bullet for issue #9: the helper that finds a
+        // corridor waypoint on a line must return None when no
+        // corridor cells are painted. This pins the "corridors do
+        // not create jobs" baseline: a missing corridor means a
+        // straight-line hauler trip.
+        let grid = IntentGrid::new(8, 8);
+        let start = Vec2::new(0.0, 0.0);
+        let end = Vec2::new(2_000.0, 0.0);
+        assert!(super::corridor_waypoint_between(start, end, &grid).is_none());
+    }
+
+    #[test]
+    fn corridor_waypoint_between_returns_painted_cell_center() {
+        // Painting a single corridor cell on the line between
+        // start and end must make the helper return that cell's
+        // world center as the waypoint. This pins the "corridors
+        // bias hauler paths" contract for the simplest case.
+        let mut grid = IntentGrid::new(8, 8);
+        // The line goes from (0, 0) to (2_000, 0). Cell (0, 0)
+        // is the world origin's cell; cell (1, 0) is the first
+        // cell past +512; the line passes through both.
+        let painted = IVec2::new(1, 0);
+        assert!(grid.paint(painted, IntentKind::Corridor, 4));
+        let start = Vec2::new(0.0, 0.0);
+        let end = Vec2::new(2_000.0, 0.0);
+        let waypoint = super::corridor_waypoint_between(start, end, &grid)
+            .expect("painted corridor must produce a waypoint");
+        let painted_world = crate::ai::get_world_from_zone(painted);
+        assert!(
+            (waypoint - painted_world).length() < 1.0,
+            "waypoint must be the painted cell's world center; got {waypoint:?}"
+        );
+    }
+
+    #[test]
+    fn corridor_waypoint_between_picks_highest_paint_strength() {
+        // Two corridor cells on the line, one with low paint and
+        // one with high paint. The hauler system must prefer the
+        // high-paint cell so corridor Paint Strength can increase
+        // path preference (acceptance criterion).
+        let mut grid = IntentGrid::new(8, 8);
+        let weak = IVec2::new(0, 0);
+        let strong = IVec2::new(1, 0);
+        assert!(grid.paint(weak, IntentKind::Corridor, 1));
+        assert!(grid.paint(strong, IntentKind::Corridor, PAINT_STRENGTH_CAP));
+        let start = Vec2::new(0.0, 0.0);
+        let end = Vec2::new(2_000.0, 0.0);
+        let waypoint = super::corridor_waypoint_between(start, end, &grid)
+            .expect("painted corridor must produce a waypoint");
+        let strong_world = crate::ai::get_world_from_zone(strong);
+        assert!(
+            (waypoint - strong_world).length() < 1.0,
+            "waypoint must be the high-paint cell; got {waypoint:?}"
+        );
+    }
+
+    #[test]
+    fn corridor_waypoint_between_skips_out_of_bounds_cells() {
+        // A small grid (3x3 spans -1..2 on both axes) cannot
+        // hold a corridor waypoint for a line that exits the
+        // grid. The helper must not crash and must not return a
+        // world position outside the grid.
+        let mut grid = IntentGrid::new(3, 3);
+        // Paint the only corridor cell on the line that is still
+        // in-bounds, so the test failure mode is unambiguous:
+        // the helper must look at the line, not at the grid.
+        let in_bounds = IVec2::new(1, 0);
+        assert!(grid.paint(in_bounds, IntentKind::Corridor, 4));
+        let start = Vec2::new(0.0, 0.0);
+        let end = Vec2::new(20_000.0, 0.0);
+        let wp = super::corridor_waypoint_between(start, end, &grid)
+            .expect("in-bounds painted cell must produce a waypoint");
+        let wp_cell = crate::nanobot::gather::world_to_cell(wp);
+        assert!(grid.in_bounds(wp_cell), "waypoint must be in-bounds");
     }
 }
