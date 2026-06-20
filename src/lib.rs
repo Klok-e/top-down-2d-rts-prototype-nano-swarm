@@ -5,6 +5,7 @@ pub mod game_settings;
 pub mod intent;
 pub mod materials;
 pub mod nanobot;
+pub mod resources;
 pub mod ui;
 pub mod zones;
 
@@ -22,6 +23,7 @@ use game_settings::GameSettings;
 use intent::IntentGrid;
 use materials::BackgroundMaterial;
 use nanobot::{NanobotBundle, NanobotPlugin, Swarm, SwarmBundle};
+use resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
 use ui::NanoswarmUiSetupPlugin;
 use zones::{ZoneMaterial, ZoneMaterialHandleComponent, ZonesPlugin};
 
@@ -34,6 +36,10 @@ pub fn build_app() -> App {
         // must be before NanobotPlugin because otherwise it receives events with despawned entities
         .add_plugins(ZonesPlugin::default())
         .add_plugins(NanobotPlugin::default())
+        // GatherPlugin must come after NanobotPlugin: the gather
+        // chain orders itself behind `move_velocity_system`, which
+        // only exists once NanobotPlugin is registered.
+        .add_plugins(nanobot::GatherPlugin)
         .add_plugins(AiPlugin)
         .add_plugins(Camera2dFlyPlugin)
         .add_systems(Startup, setup_things_startup.pipe(error_handler));
@@ -71,23 +77,36 @@ fn setup_things_startup(
 
     commands.insert_resource(GameSettings::from_file_ron("config/game_settings.ron")?);
     commands.insert_resource(IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32));
+    commands.init_resource::<ResourceLedger>();
 
     spawn_initial_swarm(&mut commands, &asset_server);
 
-    // minerals
+    // minerals (deposit + visual marker)
     let minerals_texture = asset_server.load("minerals.png");
     commands.spawn((
         Minerals {},
+        ResourceDeposit {
+            kind: ResourceKind::Minerals,
+            amount: 1000,
+            capacity: 1000,
+            radius: 64.0,
+        },
         (
             Sprite::from_image(minerals_texture.clone()),
             Transform::from_translation(vec3(-800., 0., 1.)).with_scale(vec3(2., 2., 1.)),
         ),
     ));
 
-    // processing
+    // processing (stockpile + visual marker)
     let processing_texture = asset_server.load("mineral processing.png");
     commands.spawn((
         ProcessingFacility {},
+        Stockpile {
+            kind: ResourceKind::Minerals,
+            amount: 0,
+            capacity: 1000,
+            radius: 64.0,
+        },
         (
             Sprite::from_image(processing_texture.clone()),
             Transform::from_translation(vec3(-300., 0., 1.)).with_scale(vec3(3., 3., 1.)),
