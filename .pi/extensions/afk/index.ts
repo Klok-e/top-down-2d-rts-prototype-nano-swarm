@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { Box, Text, truncateToWidth } from "@earendil-works/pi-tui";
 
 const AFK_DIR = ".pi/afk";
 const STATE_REL = `${AFK_DIR}/state.json`;
@@ -138,6 +138,7 @@ type ToolActivity = {
 
 type Theme = {
 	fg(color: string, text: string): string;
+	bg(color: string, text: string): string;
 	bold(text: string): string;
 };
 
@@ -555,6 +556,53 @@ function renderAfkPanel(tui: any, theme: Theme): string[] {
 	].map((line) => truncateLine(line, width));
 }
 
+type AfkResultMessageDetails = {
+	issue: number;
+	title: string;
+	role: Role;
+	phase: Phase;
+	cycle: number;
+	status: string;
+	summary: string;
+	reason?: string;
+	feedback?: string;
+	commands_run?: string[];
+	commit?: string;
+};
+
+function afkResultContent(details: AfkResultMessageDetails) {
+	return `AFK ${details.role} #${details.issue}: ${details.status} — ${oneLine(details.summary)}`;
+}
+
+function sendAfkResultMessage(pi: ExtensionAPI, issue: Issue, state: AfkState, role: Role, result: RoleResult | VerifyResult) {
+	const isVerify = "feedback" in result;
+	const details: AfkResultMessageDetails = {
+		issue: issue.number,
+		title: issue.title,
+		role,
+		phase: state.phase,
+		cycle: state.cycle,
+		status: result.status,
+		summary: result.summary,
+		...("reason" in result && result.reason ? { reason: result.reason } : {}),
+		...(isVerify ? {
+			feedback: result.feedback,
+			commands_run: result.commands_run,
+			commit: result.commit,
+		} : {}),
+	};
+	try {
+		pi.sendMessage({
+			customType: "afk-result",
+			content: afkResultContent(details),
+			display: true,
+			details,
+		});
+	} catch {
+		// Result messages are for transcript visibility only; never break the AFK loop.
+	}
+}
+
 function renderAfkWidgetNow() {
 	if (!currentWidgetCtx) return;
 	if (widgetRegistered) {
@@ -940,6 +988,7 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 			let parsed: RoleResult;
 			try {
 				parsed = await runRoleResult(pi, cwd, config, state, issue, "implementer");
+				sendAfkResultMessage(pi, issue, state, "implementer", parsed);
 			} catch (err) {
 				state.status = "paused";
 				state.activeAgentId = undefined;
@@ -972,6 +1021,7 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 			let parsed: RoleResult;
 			try {
 				parsed = await runRoleResult(pi, cwd, config, state, issue, "quality");
+				sendAfkResultMessage(pi, issue, state, "quality", parsed);
 			} catch (err) {
 				state.status = "paused";
 				state.activeAgentId = undefined;
@@ -1002,6 +1052,7 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 		let verify: VerifyResult;
 		try {
 			verify = await runVerifyResult(pi, cwd, config, state, issue);
+			sendAfkResultMessage(pi, issue, state, "verifier", verify);
 		} catch (err) {
 			state.status = "paused";
 			state.activeAgentId = undefined;
@@ -1202,6 +1253,27 @@ async function handleStop(pi: ExtensionAPI, ctx: any) {
 
 export default function afkExtension(pi: ExtensionAPI) {
 	registerAfkResultTools(pi);
+
+	pi.registerMessageRenderer("afk-result", (message: any, { expanded }: { expanded: boolean }, theme: any) => {
+		const details = message.details as AfkResultMessageDetails | undefined;
+		const status = details?.status ?? "unknown";
+		const color = status === "pass" ? "success" : status === "fail" ? "error" : "warning";
+		let text = `${theme.fg(color, `[AFK ${status.toUpperCase()}]`)} ${message.content}`;
+		if (expanded && details) {
+			const lines = [
+				`role: ${details.role}`,
+				`phase: ${details.phase} cycle ${details.cycle}`,
+			];
+			if (details.commit) lines.push(`commit: ${details.commit}`);
+			if (details.reason) lines.push(`reason: ${details.reason}`);
+			if (details.feedback) lines.push(`feedback: ${details.feedback}`);
+			if (details.commands_run?.length) lines.push(`commands:\n${details.commands_run.map((command) => `  - ${command}`).join("\n")}`);
+			text += `\n${theme.fg("dim", lines.join("\n"))}`;
+		}
+		const box = new Box(1, 1, (value: string) => theme.bg("customMessageBg", value));
+		box.addChild(new Text(text, 0, 0));
+		return box;
+	});
 
 	pi.on("session_start", async (_event, ctx: any) => {
 		if (activeRun) return;
