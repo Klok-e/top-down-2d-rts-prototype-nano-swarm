@@ -21,7 +21,7 @@ use fly_camera::{Camera2dFlyPlugin, CameraZoom2d, FlyCamera2d};
 use game_settings::GameSettings;
 use intent::IntentGrid;
 use materials::BackgroundMaterial;
-use nanobot::{CollapsePlugin, NanobotPlugin, ProductionPlugin};
+use nanobot::{CollapsePlugin, NanobotPlugin, PlannedStructurePlugin, ProductionPlugin};
 use resources::ResourceLedger;
 use ui::NanoswarmUiSetupPlugin;
 use zones::{ZoneMaterial, ZoneMaterialHandleComponent, ZonesPlugin};
@@ -52,6 +52,13 @@ pub fn build_app() -> App {
         // BuildPlugin chains after `move_velocity_system` so the
         // arrive system sees the pruned DirectMovementComponent.
         .add_plugins(nanobot::BuildPlugin)
+        // PlannedStructurePlugin chains after `move_velocity_system`
+        // for the same reason; the planned-structure arrive system
+        // also waits for the pruned DirectMovementComponent. It
+        // sits next to BuildPlugin because the foundation demo
+        // (Source Stockpile) lives in Build cells, and the full
+        // game is the place the two lifecycles coexist.
+        .add_plugins(PlannedStructurePlugin)
         // MaintenancePlugin chains after BuildPlugin so the
         // maintenance work system can reset a structure's
         // buffer counter before the degradation system runs.

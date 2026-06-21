@@ -40,8 +40,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
         bot_debug_circle_system, move_velocity_system, separation_system, velocity_system,
         BuildPlugin, Charge, ChargePlugin, Charger, CollapsePlugin, Commitment, DefendPlugin,
         GatherPlugin, HaulPlugin, Health, MaintenancePlugin, Nanobot, NanobotBundle, NanobotType,
-        OwnerSwarm, ProductionFacility, ProductionPlugin, SoftWorkSlots, Structure, StructureKind,
-        Swarm, SwarmId, SwarmMember, VelocityComponent,
+        OwnerSwarm, PlannedStructure, PlannedStructurePlugin, ProductionFacility, ProductionPlugin,
+        SoftWorkSlots, Structure, StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile},
 };
@@ -137,6 +137,18 @@ pub fn sim_app_with_gather_haul() -> App {
 pub fn sim_app_with_build() -> App {
     let mut app = sim_app_with_gather();
     app.add_plugins(BuildPlugin);
+    app
+}
+
+/// `sim_app` + planned structure plugin. The planned-structure
+/// foundation runs the auto-creation / claim / work lifecycle;
+/// tests that exercise planned structures use this builder so
+/// they can paint Build intent and observe a planned structure
+/// emerge without the gather/haul/build chain running around
+/// the same cells.
+pub fn sim_app_with_planned() -> App {
+    let mut app = sim_app();
+    app.add_plugins(PlannedStructurePlugin);
     app
 }
 
@@ -385,6 +397,31 @@ pub fn spawn_structure_at(app: &mut App, world_pos: Vec2) -> Entity {
         .spawn((
             Structure::new(StructureKind::Basic),
             Transform::from_translation(world_pos.extend(0.0)),
+        ))
+        .id()
+}
+
+/// Spawn a fresh [`PlannedStructure`] in `cell` for the Source
+/// Stockpile demo kind. The test-only entry point mirrors what
+/// the auto-creation system does so behaviour tests that
+/// already have paint can skip the spawn tick. The planned
+/// visual is included so tests that pin the visual flip can
+/// compare colors against the same starting state the
+/// production code produces.
+pub fn spawn_planned_structure_at_cell(app: &mut App, cell: IVec2) -> Entity {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{
+        planned_visual_color, PlannedKind, PLANNED_STRUCTURE_FOOTPRINT,
+    };
+    let center = cell_world_center(cell);
+    app.world_mut()
+        .spawn((
+            PlannedStructure::new(PlannedKind::SourceStockpile, cell),
+            Sprite {
+                color: planned_visual_color(),
+                custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
+                ..default()
+            },
+            Transform::from_translation(center.extend(0.0)),
         ))
         .id()
 }
