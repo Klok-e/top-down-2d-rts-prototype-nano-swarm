@@ -219,6 +219,23 @@ pub fn sim_app_with_production_planned() -> App {
     app
 }
 
+/// `sim_app` + charge + planned structure. The issue #28
+/// flow: Defend cell demand creates a Planned Charger, a
+/// Worker builds it, the completed charger then runs
+/// through the existing charge sustain loop (drain, health
+/// loss, rotation, arrive, work). Use this builder for any
+/// test that exercises the
+/// defend -> plan -> build -> charge chain.
+pub fn sim_app_with_charge_planned() -> App {
+    let mut app = sim_app();
+    app.add_plugins(GatherPlugin);
+    app.add_plugins(HaulPlugin);
+    app.add_plugins(DefendPlugin);
+    app.add_plugins(ChargePlugin);
+    app.add_plugins(PlannedStructurePlugin);
+    app
+}
+
 /// `sim_app` + production + collapse. The collapse detection
 /// system runs after the production work system, so both plugins
 /// must be registered together for the order to match the
@@ -511,6 +528,32 @@ pub fn spawn_planned_production_facility_at_cell(
         .spawn((
             PlannedStructure::new(PlannedKind::ProductionFacility, cell),
             PlannedProductionTarget(first_target),
+            Sprite {
+                color: planned_visual_color(),
+                custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
+                ..default()
+            },
+            Transform::from_translation(center.extend(0.0)),
+        ))
+        .id()
+}
+
+/// Spawn a fresh [`PlannedStructure`] of
+/// [`top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedKind::Charger`]
+/// in `cell`. Use this when a test needs to drive the
+/// build/claim flow for a planned Charger without the
+/// auto-creation system (issue #28). The planned visual is
+/// included so tests that pin the visual flip can compare
+/// colors against the same starting state the
+/// charger-auto-creation system produces.
+pub fn spawn_planned_charger_at_cell(app: &mut App, cell: IVec2) -> Entity {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{
+        planned_visual_color, PlannedKind, PLANNED_STRUCTURE_FOOTPRINT,
+    };
+    let center = cell_world_center(cell);
+    app.world_mut()
+        .spawn((
+            PlannedStructure::new(PlannedKind::Charger, cell),
             Sprite {
                 color: planned_visual_color(),
                 custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),

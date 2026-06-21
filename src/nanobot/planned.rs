@@ -18,11 +18,15 @@
 //!    minerals; the only cost is worker time.
 //! 4. When `work_remaining` reaches 0, the planned structure
 //!    is replaced by the appropriate completed structure for
-//!    its kind. The foundation ships two kinds:
+//!    its kind. The foundation slice ships four kinds:
 //!    [`PlannedKind::SourceStockpile`] and
-//!    [`PlannedKind::SinkStockpile`], both of which complete
-//!    into a [`crate::resources::Stockpile`] stamped with
-//!    the matching [`crate::resources::StockpileRole`].
+//!    [`PlannedKind::SinkStockpile`] (both complete into a
+//!    [`crate::resources::Stockpile`] stamped with the
+//!    matching [`crate::resources::StockpileRole`]),
+//!    [`PlannedKind::ProductionFacility`] (completes into a
+//!    [`crate::nanobot::ProductionFacility`], issue #27), and
+//!    [`PlannedKind::Charger`] (completes into a
+//!    [`crate::nanobot::Charger`], issue #28).
 //!
 //! State machine carried on the worker by marker components:
 //!
@@ -44,7 +48,8 @@
 //! Visual distinction: planned structures render with a
 //! semi-transparent planned color ([`planned_visual_color`])
 //! and a fixed footprint size. Completed structures
-//! (Source and Sink Stockpiles) render with a different
+//! (Source Stockpiles, Sink Stockpiles, Production
+//! Facilities, and Chargers) render with a different
 //! (full-opacity) color and the same footprint. Tests can
 //! pin the distinction by reading the `Sprite` `color`
 //! channel, or by reading the component (`PlannedStructure`
@@ -85,8 +90,9 @@ pub const PLANNED_STRUCTURE_FOOTPRINT: f32 = 64.0;
 /// foundation slice ships the lifecycle plus the Source and
 /// Sink Stockpile kinds (issue #26 migrates Sink Stockpiles
 /// onto the planned-structure lifecycle). Issue #27 migrates
-/// Production Facilities onto the same lifecycle. Charger is
-/// the next kind to add when its slice lands.
+/// Production Facilities onto the same lifecycle. Issue #28
+/// migrates Chargers onto the same lifecycle. All four
+/// PRD-named kinds now live on the shared foundation.
 ///
 /// All variants are data-less so [`PlannedKind::ALL`] can stay
 /// a `const` array (the future-target kind for a planned
@@ -116,6 +122,20 @@ pub enum PlannedKind {
     /// the enum itself, so the planned kind stays a
     /// const-friendly tag.
     ProductionFacility,
+    /// Completes into a [`crate::nanobot::Charger`]. The
+    /// kind emerges from Defend Zone demand (issue #28):
+    /// when a Defend cell has defender load and the
+    /// existing chargers (planned or completed) cannot
+    /// cover it, a Planned Charger is planned at the cell's
+    /// world center. A Worker then builds it through the
+    /// same lifecycle as the other kinds; the completed
+    /// charger uses the default `Charger::new(cell)` shape
+    /// so the existing charge sustain loop picks it up
+    /// without any further wiring. The planned kind stays
+    /// a const-friendly tag and does not carry the cell on
+    /// the enum because `PlannedStructure` already records
+    /// it.
+    Charger,
 }
 
 impl PlannedKind {
@@ -126,12 +146,13 @@ impl PlannedKind {
             PlannedKind::SourceStockpile => 0,
             PlannedKind::SinkStockpile => 1,
             PlannedKind::ProductionFacility => 2,
+            PlannedKind::Charger => 3,
         }
     }
 
     /// Number of distinct planned kinds the foundation slice
     /// models.
-    pub const COUNT: usize = 3;
+    pub const COUNT: usize = 4;
 
     /// Every planned kind in stable declaration order. Useful
     /// for tests and future "iterate every kind" loops.
@@ -139,6 +160,7 @@ impl PlannedKind {
         PlannedKind::SourceStockpile,
         PlannedKind::SinkStockpile,
         PlannedKind::ProductionFacility,
+        PlannedKind::Charger,
     ];
 }
 
@@ -332,12 +354,22 @@ pub fn planned_structure_auto_creation_system(
 /// the planned structure itself (`active_worker = Some(worker)`)
 /// so every other system that looks at planned structures
 /// sees it without going through the worker's marker.
+///
+/// The "only Workers build" half of the lifecycle is
+/// enforced by filtering on `NanobotType::Worker`: the
+/// claim system pulls `&NanobotType` out of the query and
+/// skips any nanobot that is not a Worker. Defenders and
+/// Haulers do not claim planned structures; the
+/// "defend" path's defenders stay on their cell and the
+/// "hauler" path's haulers stay on their run. Issue #28
+/// added the Worker filter so a Defend cell's defenders
+/// do not accidentally claim a planned Charger.
 #[allow(clippy::type_complexity)]
 pub fn worker_planned_structure_claim_system(
     mut commands: Commands,
     planned_structures: Query<(Entity, &Transform, &PlannedStructure)>,
     workers: Query<
-        (Entity, &Transform),
+        (Entity, &Transform, &NanobotType),
         (
             With<Nanobot>,
             Without<PlannedStructureClaim>,
@@ -347,7 +379,17 @@ pub fn worker_planned_structure_claim_system(
     >,
 ) {
     let mut claimed: std::collections::HashSet<Entity> = std::collections::HashSet::new();
-    for (worker_entity, worker_transform) in &workers {
+    for (worker_entity, worker_transform, nanobot_type) in &workers {
+        // The Planned Structure lifecycle is a Worker job:
+        // only Workers carry material to a build site and
+        // spend worker time on construction. Defenders and
+        // Haulers are filtered out so a Defend cell's
+        // defenders do not accidentally claim a planned
+        // Charger and a busy Hauler does not get pulled
+        // off its run to build a structure.
+        if *nanobot_type != NanobotType::Worker {
+            continue;
+        }
         let worker_pos = worker_transform.translation.truncate();
 
         let mut best: Option<(f32, Entity, &PlannedStructure, Vec2)> = None;
@@ -485,6 +527,7 @@ pub fn worker_planned_structure_work_system(
                 planned_entity,
                 planned_state.kind,
                 planned_transform.translation.truncate(),
+                planned_state.cell,
                 first_target,
             );
             release_planned_worker(&mut commands, worker_entity);
@@ -498,6 +541,7 @@ pub fn worker_planned_structure_work_system(
                 planned_entity,
                 planned_state.kind,
                 planned_transform.translation.truncate(),
+                planned_state.cell,
                 first_target,
             );
             release_planned_worker(&mut commands, worker_entity);
@@ -549,11 +593,23 @@ fn release_planned_worker(commands: &mut Commands, worker_entity: Entity) {
 ///   `PlannedProductionTarget` sidecar, or `None` for test
 ///   fixtures that bypass the auto-creation system (the
 ///   same fallback the pre-multi-swarm tests rely on).
+/// - [`PlannedKind::Charger`] completes into a
+///   [`crate::nanobot::Charger`] built from the plan's
+///   cell, with the default capacity / radius / initial
+///   amount so the existing charge sustain loop sees a
+///   "ready to serve" charger with `AUTO_CHARGER_INITIAL_AMOUNT`
+///   material already on hand. The `OwnerSwarm` is
+///   preserved so the completed charger keeps the swarm
+///   that painted the Defend cell the plan lived in.
+///   `first_target` is unused for this kind; the
+///   pre-existing test fixtures that pre-spawn a Charger
+///   already establish the default-shape contract.
 fn promote_planned_to_completion(
     commands: &mut Commands,
     planned_entity: Entity,
     kind: PlannedKind,
     world_pos: Vec2,
+    cell: IVec2,
     first_target: Option<NanobotType>,
 ) {
     let visual = completed_visual_bundle(world_pos);
@@ -598,7 +654,36 @@ fn promote_planned_to_completion(
                 .entity(planned_entity)
                 .insert((facility, empty_mineral_stockpile(), visual));
         }
+        PlannedKind::Charger => {
+            // Promote to a real `Charger` with the default
+            // shape (`AUTO_CHARGER_INITIAL_AMOUNT` material
+            // already on hand, full capacity, default
+            // radius). The `OwnerSwarm` stays on the entity
+            // through Bevy's component-merge semantics, so
+            // the completed charger keeps the swarm that
+            // painted the Defend cell the plan lived in.
+            let charger = crate::nanobot::Charger::new(cell);
+            commands.entity(planned_entity).remove::<PlannedStructure>();
+            commands.entity(planned_entity).insert((charger, visual));
+        }
     }
+}
+
+/// The "build pending" visual shared by every planned kind.
+/// Each auto-creation path pairs the [`PlannedStructure`]
+/// component with this bundle, then completes by
+/// [`completed_visual_bundle`] on promotion. Bevy replaces
+/// the planned `Sprite` on `insert`, so the planned visual
+/// does not leak through to the completed entity.
+pub(crate) fn planned_visual_components(world_pos: Vec2) -> (Sprite, Transform) {
+    (
+        Sprite {
+            color: planned_visual_color(),
+            custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
+            ..default()
+        },
+        Transform::from_translation(world_pos.extend(GAMEPLAY_SPRITE_Z)),
+    )
 }
 
 /// The "build finished" visual shared by every completed

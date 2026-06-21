@@ -53,9 +53,11 @@ use crate::ai::get_world_from_zone;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::NanobotType;
 use crate::nanobot::autonomy::SoftWorkSlots;
-use crate::nanobot::components::{DirectMovementComponent, Health, Nanobot};
+use crate::nanobot::components::{DirectMovementComponent, Health, Nanobot, Swarm, SwarmId};
 use crate::nanobot::defend::DefendHold;
 use crate::nanobot::gather::world_to_cell;
+use crate::nanobot::planned::{planned_visual_components, PlannedKind, PlannedStructure};
+use crate::nanobot::production::OwnerSwarm;
 use crate::resources::ResourceKind;
 
 // ---------------------------------------------------------------------------
@@ -437,31 +439,44 @@ pub fn defender_health_loss_when_empty_system(
 
 /// Walk the [`IntentGrid`] and ensure every Defend cell with
 /// load (defenders committed to that cell) has enough
-/// chargers to cover the demand. A new charger emerges in a
-/// cell when:
+/// chargers to cover the demand. As of issue #28 the demand
+/// is satisfied through the Planned Structure lifecycle: a
+/// new [`PlannedStructure`] of [`PlannedKind::Charger`]
+/// emerges in a cell when:
 ///
 /// 1. the cell is painted with `IntentKind::Defend`,
 /// 2. the cell has at least one defender holding or assigned
 ///    to it, AND
-/// 3. the cell's current `chargers * MAX_DEFENDERS_PER_CHARGER`
-///    is below the load.
+/// 3. the cell's current `(chargers + planned_chargers) *
+///    MAX_DEFENDERS_PER_CHARGER` is below the load.
 ///
 /// The "existing charger busyness" half of the issue lives
 /// here: a cell with a single charger and 4 defenders spawns
-/// a second charger, so the existing charger is not asked to
-/// serve more than [`MAX_DEFENDERS_PER_CHARGER`] defenders at
-/// once.
+/// a second (planned) charger, so the existing charger is
+/// not asked to serve more than [`MAX_DEFENDERS_PER_CHARGER`]
+/// defenders at once. The busyness count INCLUDES planned
+/// chargers in the same cell: a cell with one built charger
+/// and a pending plan must not pile a second plan, otherwise
+/// the auto-creation loop would emit one plan per tick.
 ///
-/// A cell whose existing chargers are already at
-/// [`MAX_CHARGERS_PER_CELL`] does not get more chargers in
-/// the first implementation; the cap is the hard ceiling and
-/// a follow-up issue can revisit it if defenders starve in
-/// practice.
+/// A cell whose existing chargers + planned chargers are
+/// already at [`MAX_CHARGERS_PER_CELL`] does not get more
+/// plans; the cap is the hard ceiling and a follow-up issue
+/// can revisit it if defenders starve in practice.
+///
+/// Ownership: the plan is stamped with [`OwnerSwarm`] from
+/// the Defend cell's intent owner (issue #20's per-swarm
+/// intent ownership). Unowned Defend paint falls back to
+/// the first [`Swarm`] in the world, matching the
+/// unowned-paint contract in the rest of the simulation.
+/// The promotion path preserves [`OwnerSwarm`] on the
+/// completed charger.
 #[allow(clippy::type_complexity)]
 pub fn charger_auto_creation_system(
     mut commands: Commands,
     grid: Res<IntentGrid>,
     chargers: Query<(Entity, &Charger)>,
+    planned_chargers: Query<&PlannedStructure, With<PlannedStructure>>,
     defenders_in_cell: Query<
         (&Transform, &NanobotType),
         Or<(
@@ -469,6 +484,7 @@ pub fn charger_auto_creation_system(
             With<crate::nanobot::defend::DefendAssignment>,
         )>,
     >,
+    swarms: Query<(Entity, &SwarmId), With<Swarm>>,
 ) {
     // Index existing chargers by cell so per-cell logic is
     // O(1) per cell rather than O(chargers * cells).
@@ -476,6 +492,12 @@ pub fn charger_auto_creation_system(
         std::collections::HashMap::new();
     for (_, charger) in &chargers {
         *chargers_per_cell.entry(charger.cell).or_insert(0) += 1;
+    }
+    for planned in &planned_chargers {
+        if planned.kind != PlannedKind::Charger {
+            continue;
+        }
+        *chargers_per_cell.entry(planned.cell).or_insert(0) += 1;
     }
 
     // Count defenders per cell: holding or assigned. Defenders
@@ -492,6 +514,10 @@ pub fn charger_auto_creation_system(
         *defenders_per_cell.entry(cell).or_insert(0) += 1;
     }
 
+    let swarm_by_id: std::collections::HashMap<SwarmId, Entity> =
+        swarms.iter().map(|(e, id)| (*id, e)).collect();
+    let fallback_owner = swarms.iter().next().map(|(e, _)| e);
+
     for (cell, intent_cell) in grid.iter_cells() {
         if !intent_cell.has(IntentKind::Defend) {
             continue;
@@ -500,9 +526,9 @@ pub fn charger_auto_creation_system(
         if load == 0 {
             // No demand: a previously-occupied cell whose
             // defenders have all left (e.g. wiped) is left
-            // alone. The existing chargers remain; the
-            // follow-up "charger collapse" issue can decide
-            // whether to despawn them.
+            // alone. The existing chargers and pending
+            // plans remain; the follow-up "charger collapse"
+            // issue can decide whether to despawn them.
             continue;
         }
         let existing = *chargers_per_cell.get(&cell).unwrap_or(&0);
@@ -514,11 +540,26 @@ pub fn charger_auto_creation_system(
             continue;
         }
         let to_spawn = (target_chargers - existing).min(MAX_CHARGERS_PER_CELL - existing);
+        // Per-swarm intent ownership: the Defend cell's
+        // owner is the swarm that painted it. Unowned
+        // paint falls back to the first Swarm, matching
+        // the unowned-paint contract in the rest of the
+        // simulation.
+        let owner = intent_cell
+            .owner(IntentKind::Defend)
+            .and_then(|id| swarm_by_id.get(&id).copied())
+            .or(fallback_owner);
+        let center = get_world_from_zone(cell);
         for _ in 0..to_spawn {
-            commands.spawn((
-                Charger::new(cell),
-                Transform::from_translation(get_world_from_zone(cell).extend(0.0)),
+            let (sprite, transform) = planned_visual_components(center);
+            let mut entity_commands = commands.spawn((
+                PlannedStructure::new(PlannedKind::Charger, cell),
+                sprite,
+                transform,
             ));
+            if let Some(swarm_entity) = owner {
+                entity_commands.insert(OwnerSwarm(swarm_entity));
+            }
         }
     }
 }
@@ -723,41 +764,77 @@ pub fn defender_charger_work_system(
 // ---------------------------------------------------------------------------
 
 /// Plugin that wires the charge-sustain systems into the
-/// Update schedule. The chain runs after `move_velocity_system`
-/// (so arrival detection works) and after `DefendPlugin`
-/// (so the defend hold is established before the rotation
-/// system releases it). The internal order is:
+/// Update schedule.
 ///
-/// 1. [`defender_charge_drain_system`] -- passive drain first
-///    so the rotation trigger sees the post-drain value.
+/// As of issue #28, the demand side and the consumer side
+/// are split across two update chains so the demand
+/// `charger_auto_creation_system` runs **before** the
+/// planned-structure claim system (so freshly planned
+/// chargers are visible to the next claim tick) and the
+/// consumer systems run **after** the planned-structure
+/// work system (so freshly promoted chargers are visible
+/// to the rotation system).
+///
+/// Demand chain (single system, ordered with the planned
+/// structure plugin's claim system):
+///
+/// 1. [`charger_auto_creation_system`] -- spawn new planned
+///    chargers from current load. The plan is visible
+///    immediately; a Worker builds it through the
+///    planned-structure lifecycle.
+///
+/// Consumer chain (after the planned structure work
+/// system, so the promotion has fired before rotation
+/// reads chargers):
+///
+/// 1. [`defender_charge_drain_system`] -- passive drain
+///    first so the rotation trigger sees the post-drain
+///    value.
 /// 2. [`defender_health_loss_when_empty_system`] -- health
 ///    loss fires for holding defenders with empty charge
 ///    that have not been picked up by the rotation chain.
-/// 3. [`charger_auto_creation_system`] -- spawn new chargers
-///    based on current load before defenders try to rotate.
-/// 4. [`defender_rotation_to_charger_system`] -- rotate
+/// 3. [`defender_rotation_to_charger_system`] -- rotate
 ///    low-charge holding defenders to working chargers.
-/// 5. [`defender_charger_arrive_system`] -- transition
+/// 4. [`defender_charger_arrive_system`] -- transition
 ///    arrived defenders into the charging state.
-/// 6. [`defender_charger_work_system`] -- refill charge and
+/// 5. [`defender_charger_work_system`] -- refill charge and
 ///    drain charger material.
 pub struct ChargePlugin;
 
 impl Plugin for ChargePlugin {
     fn build(&self, app: &mut App) {
+        // Demand: spawn planned chargers from current load
+        // before the planned-structure claim system runs so
+        // the claim system can pick up a freshly planned
+        // charger on the same tick. The chain runs after
+        // `move_velocity_system` (so the defenders' cell
+        // positions are stable) and after the defend hold
+        // system (so load is counted correctly).
+        app.add_systems(
+            Update,
+            charger_auto_creation_system
+                .before(crate::nanobot::planned::worker_planned_structure_claim_system)
+                .after(crate::nanobot::move_velocity_system)
+                .after(crate::nanobot::defend::defender_hold_system),
+        );
+        // Consumer: drain, health-loss, rotation, arrive,
+        // work. The chain runs after the planned-structure
+        // work system so a freshly promoted charger is
+        // visible to the rotation system's "find nearest
+        // working charger" scan in the same tick.
         app.add_systems(
             Update,
             (
                 defender_charge_drain_system,
                 defender_health_loss_when_empty_system,
-                charger_auto_creation_system,
                 defender_rotation_to_charger_system,
                 defender_charger_arrive_system,
                 defender_charger_work_system,
             )
                 .chain()
                 .after(crate::nanobot::move_velocity_system)
-                .after(crate::nanobot::defend::defender_hold_system),
+                .after(crate::nanobot::defend::defender_hold_system)
+                .after(crate::nanobot::planned::worker_planned_structure_work_system),
         );
     }
 }
