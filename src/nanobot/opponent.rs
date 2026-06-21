@@ -18,6 +18,7 @@ use bevy::prelude::*;
 
 use crate::ai::AiStateComponent;
 use crate::intent::{IntentGrid, IntentKind};
+use crate::nanobot::autonomy::Commitment;
 use crate::nanobot::components::{Health, Nanobot, Swarm, VelocityComponent};
 use crate::nanobot::production::{OpponentSwarm, ProductionRatio, SwarmProduction};
 use crate::nanobot::{NanobotBundle, NanobotType};
@@ -115,6 +116,7 @@ pub fn spawn_opponent_swarm(
                         ai_state: AiStateComponent::new(),
                         health: Health::default(),
                     },
+                    Commitment::Idle,
                     Transform::from_translation(world_pos.extend(0.0)),
                 ));
             }

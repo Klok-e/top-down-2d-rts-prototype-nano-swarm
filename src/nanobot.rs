@@ -12,6 +12,7 @@ mod maintenance;
 mod move_system;
 mod opponent;
 mod production;
+mod sprites;
 
 pub use autonomy::*;
 pub use build::*;
@@ -27,6 +28,7 @@ pub use maintenance::*;
 pub use move_system::*;
 pub use opponent::*;
 pub use production::*;
+pub use sprites::*;
 
 use bevy::prelude::*;
 
