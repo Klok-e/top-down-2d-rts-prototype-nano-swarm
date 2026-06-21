@@ -40,11 +40,18 @@ use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
-use crate::ai::AiStateComponent;
+use crate::ai::{get_world_from_zone, AiStateComponent};
+use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::{Commitment, NanobotType};
 use crate::nanobot::components::{Health, Nanobot, Swarm, SwarmId, SwarmMember, VelocityComponent};
+use crate::nanobot::gather::world_to_cell;
+use crate::nanobot::planned::{
+    planned_visual_color, PlannedKind, PlannedProductionTarget, PlannedStructure,
+    PLANNED_STRUCTURE_FOOTPRINT,
+};
 use crate::nanobot::{NanobotBundle, NanobotSprites};
 use crate::resources::{ResourceKind, ResourceLedger, Stockpile};
+use crate::GAMEPLAY_SPRITE_Z;
 
 /// Material (in `ResourceKind::Minerals`) consumed to produce one
 /// nanobot. Shared across all three early types per the project's
@@ -303,8 +310,9 @@ pub fn count_swarm_nanobots_by_type(
     counts
 }
 
-/// Auto-create production facilities from demand pressure. For
-/// each swarm in the world, a new facility emerges when:
+/// Plan a new production facility from demand pressure. For
+/// each swarm in the world, a [`PlannedStructure`] of
+/// [`PlannedKind::ProductionFacility`] emerges when:
 ///
 /// 1. the swarm's per-swarm deficit (sum of
 ///    `target - current` across all types, using the swarm's
@@ -314,30 +322,84 @@ pub fn count_swarm_nanobots_by_type(
 ///    (those with [`OwnerSwarm`] pointing at it, plus any
 ///    unowned facilities -- the fallback for the
 ///    pre-multi-swarm case) has a `current_target` and is
-///    past [`FACILITY_MIN_PROGRESS_FOR_EMERGENCE`].
+///    past [`FACILITY_MIN_PROGRESS_FOR_EMERGENCE`], AND
+/// 3. the swarm owns at least one `Build`-painted cell that
+///    does not already host a planned or completed
+///    structure. The Build Zone is the placement constraint
+///    (issue #27 acceptance: "Planned Production Facility
+///    placement is constrained to an owned Build Zone").
 ///
-/// The new facility is spawned at the swarm's position,
-/// pre-picks a deficit type using the swarm's own
-/// [`SwarmProduction`] (or the global [`ProductionRatio`]
-/// resource as a fallback), and consumes the production
-/// material up-front so it is busy from the moment it exists.
-/// This ties emergence to each swarm's actual ability to
-/// feed facilities, so the opponent swarm's demand spawns
-/// opponent facilities and the player's demand spawns
-/// player facilities independently.
+/// The plan carries a [`PlannedProductionTarget`] sidecar
+/// recording the type the completed facility should produce
+/// first, so the demand layer can pre-allocate the kind
+/// that was most under target at planning time. The plan
+/// itself does NOT consume any material: build work is
+/// worker-time-only in v1, so a Worker can build the plan
+/// even when the swarm is short on minerals. The completed
+/// `ProductionFacility` then runs through the existing pick
+/// + work systems, which consume material on the first
+///   pick cycle (or skip the cycle if material is unavailable,
+///   matching the existing blocked-type behaviour).
+///
+/// Acceptance: "No new Production Facility is planned when
+/// no suitable Build Zone exists." A swarm without any
+/// owned Build cells cannot plan a Production Facility, so
+/// the auto-creation is a no-op for that swarm. This is the
+/// "Build Zone constrains placement" half of the contract.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn production_facility_auto_creation_system(
     mut commands: Commands,
+    grid: Res<IntentGrid>,
     global_ratio: Res<ProductionRatio>,
     nanobots: Query<&NanobotType, With<Nanobot>>,
     children_query: Query<&Children>,
     facilities: Query<(Entity, &ProductionFacility, Option<&OwnerSwarm>)>,
+    existing_targets: Query<
+        &Transform,
+        Or<(
+            With<PlannedStructure>,
+            With<ProductionFacility>,
+            With<Stockpile>,
+        )>,
+    >,
     swarm_productions: Query<&SwarmProduction>,
-    swarms: Query<(Entity, &Transform), With<Swarm>>,
-    mut stockpiles: Query<(Entity, &mut Stockpile, &Transform)>,
-    mut ledger: ResMut<ResourceLedger>,
+    swarms: Query<(Entity, &SwarmId), With<Swarm>>,
 ) {
-    for (swarm_entity, swarm_transform) in &swarms {
+    // Build the set of cells already occupied by any
+    // planned or completed structure. A planned
+    // Production Facility is in this set, so subsequent
+    // ticks do not pile a second plan on the same cell.
+    let mut cells_with_target: HashSet<IVec2> = HashSet::new();
+    for transform in &existing_targets {
+        cells_with_target.insert(world_to_cell(transform.translation.truncate()));
+    }
+    // Pre-compute the list of (cell, swarm) pairs that are
+    // Build-painted, owned by a swarm, and not already
+    // occupied. The swarm-by-id map and the per-cell
+    // ownership lookup drive the per-swarm placement
+    // decision below.
+    let mut build_cells_by_swarm: HashMap<SwarmId, Vec<IVec2>> = HashMap::new();
+    for (cell, intent_cell) in grid.iter_cells() {
+        if !intent_cell.has(IntentKind::Build) {
+            continue;
+        }
+        if cells_with_target.contains(&cell) {
+            continue;
+        }
+        // Unowned Build paint is treated as a swarm-less
+        // cell: the per-swarm loop below will not see it,
+        // so the demand layer must have a swarm-owned Build
+        // Zone to plan a Production Facility. The
+        // per-swarm contract (issue #20) makes unowned
+        // paint visible to every swarm, but the planning
+        // layer here is per-swarm so we filter on the
+        // painted owner only.
+        let Some(owner_id) = intent_cell.owner(IntentKind::Build) else {
+            continue;
+        };
+        build_cells_by_swarm.entry(owner_id).or_default().push(cell);
+    }
+    for (swarm_entity, swarm_id) in &swarms {
         let ratio = swarm_productions
             .get(swarm_entity)
             .map(|sp| &sp.ratio)
@@ -369,19 +431,31 @@ pub fn production_facility_auto_creation_system(
                 continue;
             }
         }
-        let origin = swarm_transform.translation.truncate();
         let Some(target) = pick_deficit_type(ratio, &counts, &HashSet::new()) else {
             continue;
         };
-        if !try_consume_production_material(origin, &mut stockpiles, &mut ledger) {
+        // Build-Zone constrained placement. The swarm must
+        // own at least one free Build cell. Without it,
+        // the swarm cannot plan a new facility and the
+        // system is a no-op for this swarm this tick.
+        let Some(build_cell) = build_cells_by_swarm.get(swarm_id).and_then(|cells| {
+            // Stable order so test runs that compare
+            // entity ids are deterministic.
+            cells.iter().min_by_key(|c| (c.x, c.y)).copied()
+        }) else {
             continue;
-        }
-        let mut new_facility = ProductionFacility::new();
-        new_facility.current_target = Some(target);
+        };
+        let center = get_world_from_zone(build_cell);
         commands.spawn((
-            new_facility,
+            PlannedStructure::new(PlannedKind::ProductionFacility, build_cell),
+            PlannedProductionTarget(target),
             OwnerSwarm(swarm_entity),
-            Transform::from_translation(origin.extend(0.0)),
+            Sprite {
+                color: planned_visual_color(),
+                custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
+                ..default()
+            },
+            Transform::from_translation(center.extend(GAMEPLAY_SPRITE_Z)),
         ));
     }
 }
@@ -572,9 +646,23 @@ fn try_consume_production_material(
 /// Plugin that wires the production systems into the Update
 /// schedule. The chain runs after `move_velocity_system` so the
 /// movement step has settled before production picks targets and
-/// spawns new nanobots. Auto-creation runs last so it sees the
-/// post-pick / post-work state of the swarm and only spawns a
-/// new facility when the existing ones are all busy.
+/// spawns new nanobots. Auto-creation runs last in its own
+/// internal chain so it sees the post-pick / post-work state of
+/// the swarm and only spawns a new facility when the existing
+/// ones are all busy.
+///
+/// Cross-plugin ordering: the auto-creation system runs
+/// `before(planned_structure_auto_creation_system)` so the
+/// production demand layer claims a Build cell *before* the
+/// sink-stockpile demand layer fills every Build cell with
+/// a Sink Stockpile plan. Without this ordering, a swarm
+/// with high unmet demand and a single Build cell would
+/// never plan a Production Facility -- the Sink Stockpile
+/// auto-creator would claim the only cell first. The
+/// production facility now gets first pick of any free
+/// Build cell; the sink-stockpile auto-creator then fills
+/// the remaining cells, matching the "logistics follow
+/// production" build order in the PRD.
 pub struct ProductionPlugin;
 
 impl Plugin for ProductionPlugin {
@@ -584,7 +672,8 @@ impl Plugin for ProductionPlugin {
             (
                 production_facility_pick_target_system,
                 production_facility_work_system,
-                production_facility_auto_creation_system,
+                production_facility_auto_creation_system
+                    .before(crate::nanobot::planned::planned_structure_auto_creation_system),
             )
                 .chain()
                 .after(crate::nanobot::move_velocity_system),

@@ -56,10 +56,11 @@ use bevy::prelude::*;
 
 use crate::ai::get_world_from_zone;
 use crate::intent::{IntentGrid, IntentKind};
+use crate::nanobot::autonomy::NanobotType;
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm, SwarmId};
 use crate::nanobot::consts::STOP_THRESHOLD;
 use crate::nanobot::gather::world_to_cell;
-use crate::nanobot::production::OwnerSwarm;
+use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
 use crate::resources::{ResourceKind, Stockpile, StockpileRole};
 use crate::GAMEPLAY_SPRITE_Z;
 
@@ -83,9 +84,14 @@ pub const PLANNED_STRUCTURE_FOOTPRINT: f32 = 64.0;
 /// Facility, and Charger as the eventual kinds. The
 /// foundation slice ships the lifecycle plus the Source and
 /// Sink Stockpile kinds (issue #26 migrates Sink Stockpiles
-/// onto the planned-structure lifecycle). Production
-/// Facility and Charger are the next kinds to add when those
-/// slices land.
+/// onto the planned-structure lifecycle). Issue #27 migrates
+/// Production Facilities onto the same lifecycle. Charger is
+/// the next kind to add when its slice lands.
+///
+/// All variants are data-less so [`PlannedKind::ALL`] can stay
+/// a `const` array (the future-target kind for a planned
+/// Production Facility lives on a sidecar component,
+/// [`PlannedProductionTarget`], instead of on the enum).
 #[derive(Debug, Component, Default, Clone, Copy, PartialEq, Eq)]
 pub enum PlannedKind {
     /// Completes into a [`Stockpile`] (Source Stockpile in the
@@ -100,6 +106,16 @@ pub enum PlannedKind {
     /// builds it through the same lifecycle as the Source
     /// Stockpile.
     SinkStockpile,
+    /// Completes into a [`ProductionFacility`]. The kind
+    /// emerges from production demand pressure (issue #27)
+    /// rather than from raw Build paint: the auto-creation
+    /// system plans one inside an owned Build Zone cell when
+    /// existing capacity is too busy. The first production
+    /// target the completed facility should pick lives on a
+    /// sidecar [`PlannedProductionTarget`] component, not on
+    /// the enum itself, so the planned kind stays a
+    /// const-friendly tag.
+    ProductionFacility,
 }
 
 impl PlannedKind {
@@ -109,17 +125,21 @@ impl PlannedKind {
         match self {
             PlannedKind::SourceStockpile => 0,
             PlannedKind::SinkStockpile => 1,
+            PlannedKind::ProductionFacility => 2,
         }
     }
 
     /// Number of distinct planned kinds the foundation slice
     /// models.
-    pub const COUNT: usize = 2;
+    pub const COUNT: usize = 3;
 
     /// Every planned kind in stable declaration order. Useful
     /// for tests and future "iterate every kind" loops.
-    pub const ALL: [PlannedKind; Self::COUNT] =
-        [PlannedKind::SourceStockpile, PlannedKind::SinkStockpile];
+    pub const ALL: [PlannedKind; Self::COUNT] = [
+        PlannedKind::SourceStockpile,
+        PlannedKind::SinkStockpile,
+        PlannedKind::ProductionFacility,
+    ];
 }
 
 /// A visible, not-yet-built support structure. Lives in a
@@ -208,6 +228,25 @@ pub struct PlannedStructureProgress {
     pub cell: IVec2,
     pub target: Entity,
 }
+
+/// Sidecar on a `PlannedStructure` of
+/// [`PlannedKind::ProductionFacility`]. Records the type the
+/// completed facility should produce first, so the demand
+/// layer can pre-allocate the kind that was most under target
+/// at planning time. The completed `ProductionFacility`
+/// starts with `current_target = Some(this type)`, so its
+/// first pick cycle respects the original demand even if the
+/// swarm's ratio has shifted between plan and completion.
+///
+/// The target lives on a sidecar component rather than as
+/// data on [`PlannedKind`] so the enum (and its
+/// `const` [`PlannedKind::ALL`] array) stay data-less and
+/// trivially copyable. The promotion path reads this
+/// component and removes it on completion; the production
+/// pick/work systems then re-evaluate the target every cycle
+/// as usual.
+#[derive(Debug, Component, Clone, Copy)]
+pub struct PlannedProductionTarget(pub NanobotType);
 
 /// Walk the [`IntentGrid`] and spawn a new
 /// [`PlannedStructure`] of [`PlannedKind::SinkStockpile`] in
@@ -415,10 +454,15 @@ pub fn worker_planned_structure_work_system(
         (Entity, &PlannedStructureProgress),
         (With<Nanobot>, With<PlannedStructureProgress>),
     >,
-    mut planned: Query<(Entity, &mut PlannedStructure, &Transform)>,
+    mut planned: Query<(
+        Entity,
+        &mut PlannedStructure,
+        &Transform,
+        Option<&PlannedProductionTarget>,
+    )>,
 ) {
     for (worker_entity, progress) in &workers {
-        let Ok((planned_entity, mut planned_state, planned_transform)) =
+        let Ok((planned_entity, mut planned_state, planned_transform, first_target)) =
             planned.get_mut(progress.target)
         else {
             // Target disappeared. Release the worker; the
@@ -430,6 +474,7 @@ pub fn worker_planned_structure_work_system(
                 .remove::<PlannedStructureProgress>();
             continue;
         };
+        let first_target = first_target.copied().map(|t| t.0);
 
         if planned_state.is_complete() {
             // Another worker (or a future system) already
@@ -440,6 +485,7 @@ pub fn worker_planned_structure_work_system(
                 planned_entity,
                 planned_state.kind,
                 planned_transform.translation.truncate(),
+                first_target,
             );
             release_planned_worker(&mut commands, worker_entity);
             continue;
@@ -452,6 +498,7 @@ pub fn worker_planned_structure_work_system(
                 planned_entity,
                 planned_state.kind,
                 planned_transform.translation.truncate(),
+                first_target,
             );
             release_planned_worker(&mut commands, worker_entity);
         }
@@ -475,47 +522,113 @@ fn release_planned_worker(commands: &mut Commands, worker_entity: Entity) {
 /// structure for its kind, at the planned structure's world
 /// position. The promotion removes the `PlannedStructure`
 /// component, swaps the planned visual for the completed
-/// visual, and stamps the matching [`StockpileRole`] on the
-/// completed entity. The `Transform` is preserved by Bevy's
-/// component-merge semantics.
+/// visual, and stamps the matching completion payload on
+/// the completed entity. The `Transform` is preserved by
+/// Bevy's component-merge semantics.
 ///
-/// Both shipped kinds complete into a [`Stockpile`]: a
-/// Source Stockpile carries [`StockpileRole::Source`], a
-/// Sink Stockpile carries [`StockpileRole::Sink`]. Future
-/// kinds (Production Facility, Charger) extend this
-/// function with their own completion shapes -- the
-/// lifecycle is shared, only the per-kind completion
-/// payload differs.
+/// The visual flip is shared by every kind (the completed
+/// sprite + transform at `world_pos`), so
+/// [`completed_visual_bundle`] factors it out. The
+/// per-kind completion payload differs:
+///
+/// - [`PlannedKind::SourceStockpile`] and
+///   [`PlannedKind::SinkStockpile`] both complete into an
+///   empty [`Stockpile`] buffer, with
+///   [`StockpileRole::Source`] or [`StockpileRole::Sink`]
+///   respectively.
+/// - [`PlannedKind::ProductionFacility`] completes into a
+///   [`ProductionFacility`] carrying `first_target` as its
+///   first `current_target`, plus a local [`Stockpile`]
+///   buffer so the production chain can pull minerals
+///   through the facility's own staging buffer (matching the
+///   seed facility shape in the default scenario). The
+///   `OwnerSwarm` is preserved through the promotion, so
+///   the completed facility keeps the swarm that painted
+///   the Build Zone the plan lived in. `first_target` is
+///   `Some(target)` for plans created by the
+///   `PlannedProductionTarget` sidecar, or `None` for test
+///   fixtures that bypass the auto-creation system (the
+///   same fallback the pre-multi-swarm tests rely on).
 fn promote_planned_to_completion(
     commands: &mut Commands,
     planned_entity: Entity,
     kind: PlannedKind,
     world_pos: Vec2,
+    first_target: Option<NanobotType>,
 ) {
-    let role = match kind {
-        PlannedKind::SourceStockpile => StockpileRole::Source,
-        PlannedKind::SinkStockpile => StockpileRole::Sink,
-    };
-    commands.entity(planned_entity).remove::<PlannedStructure>();
-    // The visual flip is the visible "build finished"
-    // moment. Bevy replaces the old Sprite component on
-    // `insert`, so the planned visual does not leak
-    // through.
-    commands.entity(planned_entity).insert((
-        Stockpile {
-            kind: ResourceKind::Minerals,
-            amount: 0,
-            capacity: 1000,
-            radius: 32.0,
-        },
-        role,
+    let visual = completed_visual_bundle(world_pos);
+    match kind {
+        PlannedKind::SourceStockpile => {
+            commands.entity(planned_entity).remove::<PlannedStructure>();
+            commands.entity(planned_entity).insert((
+                empty_mineral_stockpile(),
+                StockpileRole::Source,
+                visual,
+            ));
+        }
+        PlannedKind::SinkStockpile => {
+            commands.entity(planned_entity).remove::<PlannedStructure>();
+            commands.entity(planned_entity).insert((
+                empty_mineral_stockpile(),
+                StockpileRole::Sink,
+                visual,
+            ));
+        }
+        PlannedKind::ProductionFacility => {
+            // The first production target was decided when
+            // the plan was created. The work system reads
+            // it off the sidecar and passes it in, so the
+            // promotion path is a single function call
+            // with no `Entity` lookup.
+            let mut facility = ProductionFacility::new();
+            facility.current_target = first_target;
+            commands
+                .entity(planned_entity)
+                .remove::<PlannedStructure>()
+                .remove::<PlannedProductionTarget>();
+            // ProductionFacility + local Stockpile buffer.
+            // The buffer matches the seed facility shape
+            // (see `scenario::spawn_production_facility`) so
+            // the production chain's "scan for the closest
+            // stockpile with material" picks a sink
+            // stockpile first, then falls through to the
+            // facility's own buffer if a hauler delivers
+            // directly.
+            commands
+                .entity(planned_entity)
+                .insert((facility, empty_mineral_stockpile(), visual));
+        }
+    }
+}
+
+/// The "build finished" visual shared by every completed
+/// planned-structure kind. Bevy replaces the planned
+/// `Sprite` on `insert`, so the planned visual does not
+/// leak through to the completed entity.
+fn completed_visual_bundle(world_pos: Vec2) -> (Sprite, Transform) {
+    (
         Sprite {
             color: completed_visual_color(),
             custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
             ..default()
         },
         Transform::from_translation(world_pos.extend(GAMEPLAY_SPRITE_Z)),
-    ));
+    )
+}
+
+/// Empty mineral buffer used by every completed planned
+/// kind that needs a local `Stockpile` (Sink Stockpile,
+/// Production Facility). The `Source` kind is satisfied by
+/// the same buffer shape. Kept as a single source of truth
+/// so future planned kinds (Charger) can drop in without
+/// re-stating the literal.
+fn empty_mineral_stockpile() -> Stockpile {
+    Stockpile {
+        kind: ResourceKind::Minerals,
+        amount: 0,
+        capacity: 1000,
+        radius: 32.0,
+    }
 }
 
 /// Plugin that wires the planned-structure systems into the

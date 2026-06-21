@@ -206,6 +206,19 @@ pub fn sim_app_with_production() -> App {
     app
 }
 
+/// `sim_app` + production + planned structure. The issue #27
+/// flow: demand creates a Planned Production Facility, a
+/// Worker builds it, the completed facility then runs
+/// through the existing production pick/work systems. Use
+/// this builder for any test that exercises the
+/// plan -> build -> production chain.
+pub fn sim_app_with_production_planned() -> App {
+    let mut app = sim_app();
+    app.add_plugins(ProductionPlugin);
+    app.add_plugins(PlannedStructurePlugin);
+    app
+}
+
 /// `sim_app` + production + collapse. The collapse detection
 /// system runs after the production work system, so both plugins
 /// must be registered together for the order to match the
@@ -465,6 +478,39 @@ pub fn spawn_planned_structure_of_kind_at_cell(
     app.world_mut()
         .spawn((
             PlannedStructure::new(kind, cell),
+            Sprite {
+                color: planned_visual_color(),
+                custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
+                ..default()
+            },
+            Transform::from_translation(center.extend(0.0)),
+        ))
+        .id()
+}
+
+/// Spawn a fresh [`PlannedStructure`] of
+/// [`top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedKind::ProductionFacility`]
+/// in `cell`, with a [`PlannedProductionTarget`] sidecar
+/// recording the type the completed facility should produce
+/// first. Use this when a test needs to drive the
+/// build/claim flow for a planned Production Facility
+/// without the auto-creation system (issue #27). The
+/// planned visual is included so tests that pin the visual
+/// flip can compare colors against the same starting state
+/// the production code produces.
+pub fn spawn_planned_production_facility_at_cell(
+    app: &mut App,
+    cell: IVec2,
+    first_target: top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotType,
+) -> Entity {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{
+        planned_visual_color, PlannedKind, PlannedProductionTarget, PLANNED_STRUCTURE_FOOTPRINT,
+    };
+    let center = cell_world_center(cell);
+    app.world_mut()
+        .spawn((
+            PlannedStructure::new(PlannedKind::ProductionFacility, cell),
+            PlannedProductionTarget(first_target),
             Sprite {
                 color: planned_visual_color(),
                 custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
