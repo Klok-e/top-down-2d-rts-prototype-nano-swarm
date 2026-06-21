@@ -11,7 +11,7 @@ use bevy::{
         storage::ShaderStorageBuffer,
     },
     shader::ShaderRef,
-    sprite_render::Material2d,
+    sprite_render::{AlphaMode2d, Material2d},
 };
 
 use crate::{
@@ -138,6 +138,10 @@ impl ZonePointData {
 impl Material2d for ZoneMaterial {
     fn fragment_shader() -> ShaderRef {
         "shaders/zone_shader.wgsl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode2d {
+        AlphaMode2d::Blend
     }
 }
 
@@ -284,6 +288,14 @@ mod tests {
             point.get_zone_id(ZonePointData::ZONE4),
             ZonePointData::ZONE_ID_MASK
         );
+    }
+
+    #[test]
+    fn zone_material_uses_alpha_blending_so_empty_pixels_show_background() {
+        let mut buffers = Assets::<ShaderStorageBuffer>::default();
+        let material = ZoneMaterial::new(2, 2, &mut buffers);
+
+        assert_eq!(material.alpha_mode(), AlphaMode2d::Blend);
     }
 
     #[test]
