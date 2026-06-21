@@ -13,6 +13,8 @@ use bevy::{
     prelude::{App, IntoScheduleConfigs, Plugin, Startup, Update},
 };
 
+use crate::zones::zone_brush_system;
+
 use self::{
     button_bg_interaction::button_background_system,
     fps_count::fps_ui_system,
@@ -30,7 +32,11 @@ impl Plugin for NanoswarmUiSetupPlugin {
         app.insert_resource(UiHandling::default())
             .add_plugins(FrameTimeDiagnosticsPlugin::default())
             .add_systems(Startup, (setup_ui_system, setup_intent_layer_panel).chain())
-            .add_systems(Update, check_ui_interaction)
+            // The brush reads `UiHandling::is_pointer_over_ui` as its
+            // first gate; ordering the capture system before the brush
+            // keeps the resource in sync with the current frame's
+            // cursor state.
+            .add_systems(Update, check_ui_interaction.before(zone_brush_system))
             .add_systems(Update, fps_ui_system)
             .add_systems(Update, button_background_system)
             .add_systems(Update, intent_layer_button_click_system)

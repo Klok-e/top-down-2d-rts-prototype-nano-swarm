@@ -18,10 +18,18 @@ use crate::intent::{BrushSelection, IntentKind};
 use crate::ui::ui_setup::FontsResource;
 
 use super::consts::NORMAL_BUTTON;
+use super::ui_interaction_system::NoPointerCapture;
 
 /// Marker for the panel root entity. The click and highlight systems only
 /// touch descendants of this root, so a stray button in another system
 /// cannot drive [`BrushSelection`] or have its visuals overridden.
+///
+/// The root is also tagged with [`NoPointerCapture`] (see
+/// [`setup_intent_layer_panel`]) because the panel spans the full
+/// window width as a layout anchor; without the marker its
+/// `RelativeCursorPosition` would mark the cursor as "over UI" for
+/// the whole viewport, blocking world-brush input even when the
+/// cursor is far from any visible button.
 #[derive(Debug, Component)]
 pub struct IntentLayerPanelRoot;
 
@@ -102,6 +110,7 @@ pub fn setup_intent_layer_panel(mut commands: Commands, fonts: Res<FontsResource
                 ..default()
             },
             IntentLayerPanelRoot,
+            NoPointerCapture,
         ))
         .with_children(|parent| {
             parent.spawn((

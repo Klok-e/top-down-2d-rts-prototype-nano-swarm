@@ -24,3 +24,7 @@ mod production_collapse;
 mod production_facility;
 #[path = "behavior/stockpile_and_haul.rs"]
 mod stockpile_and_haul;
+#[path = "behavior/zone_brush_ui_capture.rs"]
+mod zone_brush_ui_capture;
+#[path = "behavior/zone_overlay_draw_order.rs"]
+mod zone_overlay_draw_order;
