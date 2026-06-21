@@ -639,10 +639,21 @@ pub fn hauler_delivery_system(
 }
 
 /// Walk the [`IntentGrid`] and spawn a new [`Stockpile`] in any
-/// Gather or Build cell that has paint but no stockpile. The
-/// acceptance criterion is "stockpiles emerge automatically from
-/// sustained gather/build demand"; painting the cell is the
-/// player's expression of that demand.
+/// Build cell that has paint but no stockpile. The acceptance
+/// criterion is "stockpiles emerge automatically from sustained
+/// build demand"; painting the cell is the player's expression
+/// of that demand.
+///
+/// Gather cells are deliberately skipped: Source Stockpiles in
+/// Gather zones are not auto-created as completed structures.
+/// They emerge through the planned-structure lifecycle (see
+/// `source_stockpile_demand_system` in `gather.rs`): when a
+/// Worker is assigned to a Gather-overlapped deposit, a
+/// Planned Source Stockpile is created near the deposit, a
+/// Worker claims and builds it, and only then does it become a
+/// physical Stockpile. This is the issue #23 acceptance bullet
+/// "no completed Source Stockpile appears instantly from Gather
+/// paint alone".
 ///
 /// The system reads the current set of stockpile positions every
 /// tick rather than caching it, so a destroyed stockpile is
@@ -662,7 +673,7 @@ pub fn stockpile_auto_creation_system(
         if intent_cell.is_empty() {
             continue;
         }
-        if !intent_cell.has(IntentKind::Gather) && !intent_cell.has(IntentKind::Build) {
+        if !intent_cell.has(IntentKind::Build) {
             continue;
         }
         if cells_with_stockpile.contains(&cell) {

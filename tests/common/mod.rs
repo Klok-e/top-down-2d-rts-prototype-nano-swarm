@@ -152,6 +152,21 @@ pub fn sim_app_with_planned() -> App {
     app
 }
 
+/// `sim_app` + gather + planned structure. The full Source
+/// Stockpile flow for issue #23: painting Gather intent alone
+/// does not create a completed Source Stockpile, but a Worker
+/// assigned to a Gather-overlapped deposit causes a Planned
+/// Source Stockpile to emerge, which a Worker (often the same
+/// one) claims and builds into a physical Stockpile. Use this
+/// builder for any test that exercises the plan-build-gather
+/// flow without the rest of the production/maintenance chain.
+pub fn sim_app_with_gather_planned() -> App {
+    let mut app = sim_app();
+    app.add_plugins(GatherPlugin);
+    app.add_plugins(PlannedStructurePlugin);
+    app
+}
+
 /// `sim_app` + build + maintenance. The maintenance plugin chains
 /// after the build plugin so its work system can reset a
 /// structure's buffer counter before the degradation system runs.

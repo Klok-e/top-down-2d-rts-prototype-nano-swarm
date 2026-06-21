@@ -42,9 +42,20 @@ fn worker_extracts_one_unit_per_tick_when_at_deposit() {
     // Tracer bullet: a worker assigned to a deposit and standing on
     // it extracts EXTRACT_PER_TICK units per update, draining the
     // deposit and building an ExtractProgress component.
+    //
+    // The worker also needs a usable Source Stockpile nearby
+    // (issue #23); the test pre-spawns one so the gather arrive
+    // system inserts `ExtractProgress` rather than waiting for
+    // the demand system to plan a new Source Stockpile.
     let mut app = build_app();
     let deposit_pos = Vec2::new(100.0, 0.0);
     let deposit = common::spawn_deposit(&mut app, deposit_pos, 10);
+    let _stockpile = common::spawn_stockpile(
+        &mut app,
+        deposit_pos + top_down_2d_rts_prototype_nano_swarm::nanobot::SOURCE_STOCKPILE_OFFSET,
+        0,
+        1000,
+    );
     let worker = common::spawn_worker_at(&mut app, deposit_pos);
 
     // Pre-seed a GatherAssignment so the test isolates extraction
@@ -296,6 +307,16 @@ fn idle_worker_chooses_gather_via_autonomy_scoring() {
     }
     let cell_world_center = common::cell_world_center(cell);
     let deposit = common::spawn_deposit(&mut app, cell_world_center, 100);
+    // Pre-spawn a usable Source Stockpile near the deposit so
+    // the gather arrive system can insert `ExtractProgress`
+    // and the assignment is the only thing under test
+    // (issue #23 Source Stockpile flow has its own tests).
+    let _stockpile = common::spawn_stockpile(
+        &mut app,
+        cell_world_center + top_down_2d_rts_prototype_nano_swarm::nanobot::SOURCE_STOCKPILE_OFFSET,
+        0,
+        1000,
+    );
     // Place the worker close to the cell so the assignment system
     // picks it (the scoring is global, but the test wants the
     // assignment to clearly land on this cell).
