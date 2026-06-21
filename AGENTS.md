@@ -9,7 +9,7 @@
 
 ## Testing
 
-For coding-agent implementation work, follow `docs/agents/testing.md`.
+For coding-agent implementation work, follow `docs/agents/testing.md`. Don't edit this doc autonomously: human approval always required.
 
 ## Agent skills
 
