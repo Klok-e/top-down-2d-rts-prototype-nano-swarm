@@ -66,6 +66,7 @@ pub struct SwarmBundle {
     pub swarm: Swarm,
     pub transform: Transform,
     pub global_transform: GlobalTransform,
+    pub visibility: Visibility,
 }
 
 #[derive(Debug, Default)]
