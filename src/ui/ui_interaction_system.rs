@@ -1,5 +1,5 @@
 use bevy::{
-    prelude::{Changed, Component, Query, ResMut, Resource, With, Without},
+    prelude::{Component, Query, ResMut, Resource, With, Without},
     ui::{Node, RelativeCursorPosition},
 };
 
@@ -13,14 +13,7 @@ pub struct NoPointerCapture;
 #[allow(clippy::type_complexity)]
 pub fn check_ui_interaction(
     mut ui_handling: ResMut<UiHandling>,
-    interaction_query: Query<
-        &RelativeCursorPosition,
-        (
-            With<Node>,
-            Changed<RelativeCursorPosition>,
-            Without<NoPointerCapture>,
-        ),
-    >,
+    interaction_query: Query<&RelativeCursorPosition, (With<Node>, Without<NoPointerCapture>)>,
 ) {
     let any = interaction_query.iter().any(|x| x.cursor_over());
     if ui_handling.is_pointer_over_ui != any {

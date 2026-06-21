@@ -12,7 +12,9 @@ use bevy::prelude::{
     Component, DetectChanges, Entity, Interaction, Node, PositionType, Query, Res, ResMut, Text,
     TextColor, TextFont, Val, With,
 };
-use bevy::ui::{AlignItems, BorderRadius, FlexDirection, JustifyContent, UiRect};
+use bevy::ui::{
+    AlignItems, BorderRadius, FlexDirection, JustifyContent, RelativeCursorPosition, UiRect,
+};
 
 use crate::intent::{BrushSelection, IntentKind};
 use crate::ui::ui_setup::FontsResource;
@@ -59,7 +61,6 @@ const BUTTON_PADDING_X: f32 = 12.0;
 const BUTTON_PADDING_Y: f32 = 6.0;
 const PANEL_FONT_SIZE: f32 = 16.0;
 const PANEL_TOP: f32 = 8.0;
-const LABEL_GAP: f32 = 6.0;
 
 fn layer_color(kind: IntentKind) -> Color {
     LAYER_COLORS
@@ -111,24 +112,9 @@ pub fn setup_intent_layer_panel(mut commands: Commands, fonts: Res<FontsResource
             },
             IntentLayerPanelRoot,
             NoPointerCapture,
+            RelativeCursorPosition::default(),
         ))
         .with_children(|parent| {
-            parent.spawn((
-                Text::new("Swarm Intent"),
-                TextFont {
-                    font: font.clone(),
-                    font_size: PANEL_FONT_SIZE,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.85, 0.85, 0.85)),
-                Node {
-                    margin: UiRect {
-                        right: Val::Px(LABEL_GAP),
-                        ..default()
-                    },
-                    ..default()
-                },
-            ));
             for (kind, _) in LAYER_COLORS {
                 parent
                     .spawn(spawn_layer_button(kind))
@@ -153,6 +139,7 @@ fn spawn_layer_button(kind: IntentKind) -> impl Bundle {
         IntentLayerButton { kind },
         BackgroundColor(NORMAL_BUTTON),
         BorderColor::all(BORDER_INACTIVE),
+        RelativeCursorPosition::default(),
         Node {
             padding: UiRect {
                 left: Val::Px(BUTTON_PADDING_X),
@@ -293,6 +280,23 @@ mod tests {
         assert_eq!(border.bottom, BORDER_INACTIVE);
         assert_eq!(border.left, BORDER_INACTIVE);
         assert_eq!(thickness, INACTIVE_BORDER_THICKNESS);
+    }
+
+    #[test]
+    fn layer_buttons_participate_in_pointer_capture() {
+        let mut app = bevy::prelude::App::new();
+        let button = app
+            .world_mut()
+            .spawn(spawn_layer_button(IntentKind::Gather))
+            .id();
+
+        assert!(
+            app.world()
+                .entity(button)
+                .get::<RelativeCursorPosition>()
+                .is_some(),
+            "intent buttons must expose RelativeCursorPosition so UI capture can block world brush input"
+        );
     }
 
     fn spawn_button_in_panel(app: &mut bevy::prelude::App, root: Entity, kind: IntentKind) {
