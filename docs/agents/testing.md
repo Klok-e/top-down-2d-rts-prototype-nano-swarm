@@ -99,7 +99,9 @@ Headless behavior tests run in normal `cargo test`. Mark only slow, window, rend
 
 ## Scripted playtests
 
-For runtime/player-facing changes, add or update a scripted playtest when the change touches input, UI, camera, startup/plugin wiring, gameplay flow, or rendering-visible behavior. Playtests are automated: they build a representative Bevy app, script the player-facing interaction, advance frames, and assert the resulting world/UI/camera/render state.
+For runtime/player-facing changes, add or update a scripted playtest when the change touches input, UI, camera, startup/plugin wiring, gameplay flow, or rendering-visible behavior. This is mandatory for bug fixes in those areas: reproduce the reported failure in a failing playtest before or alongside the fix, then prove the same playtest passes after the fix. Existing passing playtests are not enough unless one is explicitly updated or identified as covering the exact reported regression.
+
+A handoff for runtime/player-facing fixes must state the playtest coverage by file and test name. If no scripted playtest was added or changed, the handoff must explain why the change is not player-facing or why an existing named playtest covers the exact bug. "cargo test passed" alone is not sufficient evidence.
 
 Use `tests/playtest/*.rs` for flows that combine app wiring and player actions. Examples:
 
