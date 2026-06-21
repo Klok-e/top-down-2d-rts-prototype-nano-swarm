@@ -48,7 +48,8 @@ fn planned_structure_emerges_in_build_painted_cell() {
         .expect("PlannedStructure must spawn in a Build-painted cell");
     assert_eq!(
         planned.kind,
-        top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedKind::SourceStockpile
+        top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedKind::SinkStockpile,
+        "Build-painted cell must plan a Sink Stockpile (issue #26 migrates the Build Zone demand to the planned-structure lifecycle)"
     );
     assert_eq!(planned.cell, cell);
     // The visual is the planned color so the player can tell
