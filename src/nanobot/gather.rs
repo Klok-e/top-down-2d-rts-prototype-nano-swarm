@@ -234,6 +234,18 @@ pub(crate) fn has_usable_built_source_stockpile(
 /// the swarm does not pile multiple Source Stockpile plans
 /// around the same deposit.
 ///
+/// ## Issue #25: full-stockpile expansion
+///
+/// Both checks use the same "usable" definition: a built
+/// stockpile with `free_space() > 0` is "usable", a full one
+/// is not. So when the only nearby built Source Stockpiles
+/// are full, the demand system sees no usable destination and
+/// plans another Source Stockpile rather than treating the
+/// saturated site as "demand satisfied". The carry-assign and
+/// delivery systems apply the same `free_space() > 0` filter,
+/// so a Worker carrying a load also ignores full stockpiles
+/// and waits for a usable destination.
+///
 /// `newly_planned` is the set of positions where this same
 /// demand system has just spawned a planned structure on
 /// this tick. Bevy [`Commands`] are deferred, so the live
@@ -296,7 +308,9 @@ pub(crate) fn has_any_near_source_stockpile(
 /// and a local set of positions planned on this same tick
 /// (Bevy [`Commands`] are deferred, so a planned structure
 /// spawned earlier in this tick is not yet visible to the
-/// query but is still "real" for the reuse check).
+/// query but is still "real" for the reuse check). See
+/// [`has_any_near_source_stockpile`] for the full-stockpile
+/// expansion half of the contract.
 ///
 /// ## Placement (issue #24)
 ///
