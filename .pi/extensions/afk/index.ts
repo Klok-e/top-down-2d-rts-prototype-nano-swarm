@@ -118,6 +118,8 @@ type SubagentDoneEvent = {
 type ActiveRun = {
 	promise: Promise<void>;
 	stopRequested: boolean;
+	abortController: AbortController;
+	activeAgentId?: string;
 };
 
 type AfkLiveActivity = {
@@ -666,15 +668,22 @@ async function pauseState(cwd: string, summary?: string) {
 }
 
 async function stopActiveSubagent(pi: ExtensionAPI, cwd: string) {
+	activeRun?.abortController.abort();
 	const state = await loadState(cwd);
-	if (!state?.activeAgentId) return;
-	try {
-		await rpc(pi, "subagents:rpc:stop", { agentId: state.activeAgentId }, 10_000);
-	} catch {
-		// Best effort: the agent may already have completed or the RPC layer may be gone.
+	const agentId = state?.activeAgentId ?? activeRun?.activeAgentId;
+	if (agentId) {
+		try {
+			await rpc(pi, "subagents:rpc:stop", { agentId }, 10_000);
+		} catch {
+			// Best effort: the agent may already have completed or the RPC layer may be gone.
+			// The AFK AbortController above is the primary stop path for running agents.
+		}
 	}
-	state.activeAgentId = undefined;
-	await saveState(cwd, state);
+	if (state) {
+		state.activeAgentId = undefined;
+		await saveState(cwd, state);
+	}
+	if (agentId && activeRun?.activeAgentId === agentId) activeRun.activeAgentId = undefined;
 }
 
 async function rpc<T>(pi: ExtensionAPI, channel: string, payload: Record<string, unknown>, timeoutMs = 30_000): Promise<T> {
@@ -716,6 +725,7 @@ async function spawnSubagent(pi: ExtensionAPI, cwd: string, config: AfkConfig, r
 			isBackground: true,
 			run_in_background: true,
 			cwd,
+			signal: activeRun?.abortController.signal,
 			// Best effort: pi-subagents RPC currently runs in-process and forwards
 			// options to AgentManager, which supports these callbacks. If a future
 			// RPC layer serializes payloads, the panel falls back to /agents hints.
@@ -749,9 +759,11 @@ async function spawnSubagent(pi: ExtensionAPI, cwd: string, config: AfkConfig, r
 	});
 	if (!data?.id) throw new Error("Subagent spawn did not return an id.");
 	state.activeAgentId = data.id;
+	if (activeRun) activeRun.activeAgentId = data.id;
 	currentWidgetState = { ...state };
 	renderAfkWidgetNow();
 	await saveState(cwd, state);
+	if (activeRun?.stopRequested) await stopActiveSubagent(pi, cwd);
 	return data.id;
 }
 
@@ -1121,6 +1133,7 @@ function startDetachedRun(ctx: any, run: () => Promise<void>) {
 	ensureNoActiveRun();
 	const handle: ActiveRun = {
 		stopRequested: false,
+		abortController: new AbortController(),
 		promise: Promise.resolve(),
 	};
 	activeRun = handle;
@@ -1224,7 +1237,7 @@ async function handleStatus(ctx: any) {
 	ctx.ui.notify(
 		[
 			`AFK #${state.issue}`,
-			`status: ${activeRun ? "active" : state.status}`,
+			`status: ${activeRun ? activeRun.stopRequested ? "stopping" : "active" : state.status}`,
 			`phase: ${state.phase}`,
 			`cycle: ${state.cycle}`,
 			`activeAgentId: ${state.activeAgentId ?? "none"}`,
@@ -1244,7 +1257,10 @@ async function handleStop(pi: ExtensionAPI, ctx: any) {
 		ctx.ui.notify("AFK idle.", "info");
 		return;
 	}
-	if (activeRun) activeRun.stopRequested = true;
+	if (activeRun) {
+		activeRun.stopRequested = true;
+		activeRun.abortController.abort();
+	}
 	await stopActiveSubagent(pi, ctx.cwd);
 	await pauseState(ctx.cwd, "Stopped by user. Resume restarts the current phase.");
 	clearAfkWidget(ctx);
