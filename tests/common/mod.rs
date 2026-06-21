@@ -325,17 +325,32 @@ pub fn spawn_hauler_at(app: &mut App, world_pos: Vec2) -> Entity {
 }
 
 /// Spawn a [`ResourceDeposit`] of `ResourceKind::Minerals` at
-/// `world_pos` with `amount` units and a `capacity` that matches
-/// `amount` (tests can override the resource after the spawn if
-/// they need a different cap).
+/// `world_pos` with `amount` units, a `capacity` that matches
+/// `amount`, and the standard gather-test `radius` of `32.0`.
+/// Tests that need a different `radius` (e.g. the issue #22
+/// overlap suite, where the deposit's circle is the eligibility
+/// geometry) call [`spawn_deposit_with_radius`] instead.
 pub fn spawn_deposit(app: &mut App, world_pos: Vec2, amount: u32) -> Entity {
+    spawn_deposit_with_radius(app, world_pos, amount, 32.0)
+}
+
+/// Spawn a [`ResourceDeposit`] of `ResourceKind::Minerals` at
+/// `world_pos` with an explicit `radius`. The `capacity` matches
+/// `amount`, mirroring [`spawn_deposit`]; tests that need a
+/// different cap override the field after the spawn.
+pub fn spawn_deposit_with_radius(
+    app: &mut App,
+    world_pos: Vec2,
+    amount: u32,
+    radius: f32,
+) -> Entity {
     app.world_mut()
         .spawn((
             ResourceDeposit {
                 kind: ResourceKind::Minerals,
                 amount,
                 capacity: amount.max(1000),
-                radius: 32.0,
+                radius,
             },
             Transform::from_translation(world_pos.extend(0.0)),
         ))

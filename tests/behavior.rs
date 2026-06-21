@@ -6,6 +6,8 @@ mod build_zone;
 mod charger;
 #[path = "behavior/defend_zone.rs"]
 mod defend_zone;
+#[path = "behavior/gather_overlap.rs"]
+mod gather_overlap;
 #[path = "behavior/gather_zone.rs"]
 mod gather_zone;
 #[path = "behavior/hauler_corridor.rs"]
