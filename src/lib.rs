@@ -7,6 +7,7 @@ pub mod materials;
 pub mod nanobot;
 pub mod resources;
 pub mod scenario;
+pub mod structure_overlay;
 pub mod ui;
 pub mod zones;
 
@@ -23,6 +24,7 @@ use intent::IntentGrid;
 use materials::BackgroundMaterial;
 use nanobot::{CollapsePlugin, NanobotPlugin, PlannedStructurePlugin, ProductionPlugin};
 use resources::ResourceLedger;
+use structure_overlay::StructureOverlayPlugin;
 use ui::NanoswarmUiSetupPlugin;
 use zones::{ZoneMaterial, ZoneMaterialHandleComponent, ZonesPlugin};
 
@@ -101,6 +103,14 @@ pub fn build_app() -> App {
         // auto-creation -> rotation -> arrive -> work) keeps
         // the charge loop self-consistent per tick.
         .add_plugins(nanobot::ChargePlugin)
+        // StructureOverlayPlugin is a consumer of the
+        // simulation's per-structure state. It registers
+        // its spawn/update/visibility/cleanup systems on
+        // the `Update` schedule; nothing in the rest of
+        // the plugin graph needs to be ordered relative
+        // to it, so the placement near the end of the
+        // plugin list is purely cosmetic.
+        .add_plugins(StructureOverlayPlugin)
         .add_plugins(AiPlugin)
         .add_plugins(Camera2dFlyPlugin)
         .add_systems(Startup, setup_things_startup.pipe(error_handler));

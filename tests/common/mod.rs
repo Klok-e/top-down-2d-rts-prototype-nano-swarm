@@ -44,6 +44,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         SoftWorkSlots, Structure, StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile},
+    structure_overlay::StructureOverlayPlugin,
 };
 
 /// Default `GameSettings` for behaviour tests. The values match the
@@ -256,6 +257,19 @@ pub fn sim_app_with_charge_planned() -> App {
 pub fn sim_app_with_collapse() -> App {
     let mut app = sim_app_with_production();
     app.add_plugins(CollapsePlugin);
+    app
+}
+
+/// `sim_app` + structure overlay plugin. The overlay plugin is
+/// independent of the per-role simulation plugins; this builder
+/// is the canonical seam for any test that exercises
+/// `StructureOverlay`, `StructureOverlaySettings`, or the
+/// spawn/update/visibility/cleanup systems. The plugin inserts
+/// its own settings resource on startup, so the test does not
+/// need to add it.
+pub fn sim_app_with_overlay() -> App {
+    let mut app = sim_app();
+    app.add_plugins(StructureOverlayPlugin);
     app
 }
 

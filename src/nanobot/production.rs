@@ -272,6 +272,28 @@ pub fn total_deficit(targets: &ProductionRatio, current_counts: &HashMap<Nanobot
     total
 }
 
+/// Cycle progress for a [`ProductionFacility`] as an
+/// integer percent in `[0, 100]`. An idle facility
+/// (`current_target = None`) reports 0% so the label
+/// formatter does not have to special-case it. A working
+/// facility's percent is `progress / PRODUCTION_TICKS_PER_BOT`
+/// floored to an integer; the label uses this directly.
+///
+/// The function is pure and lives next to the
+/// production data so unit tests can pin the contract
+/// without a Bevy `App`. The structure-overlay module
+/// uses it through the `crate::nanobot` re-export.
+pub fn production_progress_percent(facility: &ProductionFacility) -> u32 {
+    if facility.current_target.is_none() {
+        return 0;
+    }
+    if PRODUCTION_TICKS_PER_BOT == 0 {
+        return 100;
+    }
+    let pct = (facility.progress as u64 * 100 / PRODUCTION_TICKS_PER_BOT as u64) as u32;
+    pct.min(100)
+}
+
 /// Count nanobots in the world, keyed by type. Used by the
 /// production systems to measure the current population mix.
 ///
@@ -887,5 +909,28 @@ mod tests {
         let swarm = world.spawn_empty().id();
         let owner = OwnerSwarm(swarm);
         assert_eq!(owner.0, swarm);
+    }
+
+    #[test]
+    fn production_progress_percent_reports_zero_when_idle() {
+        let f = ProductionFacility::new();
+        assert_eq!(production_progress_percent(&f), 0);
+    }
+
+    #[test]
+    fn production_progress_percent_scales_with_progress() {
+        let mut f = ProductionFacility::new();
+        f.current_target = Some(NanobotType::Worker);
+        f.progress = 0;
+        assert_eq!(production_progress_percent(&f), 0);
+        f.progress = 2;
+        assert_eq!(production_progress_percent(&f), 40);
+        f.progress = PRODUCTION_TICKS_PER_BOT;
+        assert_eq!(production_progress_percent(&f), 100);
+        // Over-progressed (defensive): a future bug that
+        // let `progress` exceed the budget must not show
+        // >100% in the label.
+        f.progress = PRODUCTION_TICKS_PER_BOT + 5;
+        assert_eq!(production_progress_percent(&f), 100);
     }
 }
