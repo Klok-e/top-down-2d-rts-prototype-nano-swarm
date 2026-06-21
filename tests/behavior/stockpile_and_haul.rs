@@ -56,10 +56,15 @@ fn stockpile_can_hold_local_resource_amounts() {
 
 #[test]
 fn stockpile_auto_emerges_in_gather_cell_with_demand() {
-    // Acceptance: "Stockpiles emerge automatically from sustained
-    // gather/build demand". A Gather-painted cell with no
-    // pre-existing stockpile must gain one as soon as the
-    // auto-creation system runs.
+    // Issue #23 contract: "no completed Source Stockpile appears
+    // instantly from Gather paint alone". A Gather-painted cell
+    // with no pre-existing stockpile must NOT gain one as soon
+    // as the auto-creation system runs -- Source Stockpiles in
+    // Gather zones emerge through the planned-structure
+    // lifecycle (plan -> build -> Stockpile) rather than as
+    // instant auto-spawns. The test paints Gather intent and
+    // asserts the world is still empty of stockpiles after a
+    // tick of simulation.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
     app.world_mut().resource_mut::<IntentGrid>().paint(
@@ -73,31 +78,27 @@ fn stockpile_auto_emerges_in_gather_cell_with_demand() {
         "no stockpile before the tick"
     );
 
-    app.update();
+    for _ in 0..5 {
+        app.update();
+    }
 
     assert_eq!(
         stockpile_count(app.world_mut()),
-        1,
-        "exactly one stockpile emerged from Gather demand"
+        0,
+        "Gather paint alone must not create a completed Source Stockpile"
     );
-    // The auto-created stockpile must live in the painted cell.
-    let world = app.world_mut();
-    let mut q = world.query::<(&Stockpile, &Transform)>();
-    let (s, t) = q.iter(world).next().expect("stockpile exists");
-    assert_eq!(s.kind, ResourceKind::Minerals);
-    assert_eq!(s.amount, 0, "auto stockpile starts empty");
-    assert!(s.capacity > 0);
-    let cell_world_center = common::cell_world_center(cell);
-    assert!(
-        (t.translation.truncate() - cell_world_center).length() < 1.0,
-        "stockpile must be created at the cell's world center"
-    );
+    // The full Source Stockpile flow (plan -> build ->
+    // Stockpile) lives in tests/behavior/source_stockpile_flow.rs.
 }
 
 #[test]
 fn stockpile_auto_emerges_in_build_cell_with_demand() {
     // Build-painted cells count as "sustained demand" too --
-    // a Build zone needs local materials on hand.
+    // a Build zone needs local materials on hand. Issue #23
+    // removes the Gather-cell branch of the auto-creation
+    // (Source Stockpiles go through the planned-structure
+    // flow), so a second Gather-painted cell does NOT spawn
+    // a second stockpile on its own.
     let mut app = build_app();
     let cell = IVec2::new(1, 1);
     app.world_mut()
@@ -107,19 +108,23 @@ fn stockpile_auto_emerges_in_build_cell_with_demand() {
     app.update();
 
     assert_eq!(stockpile_count(app.world_mut()), 1);
-    // A Gather-only cell does not satisfy Build demand, and vice
-    // versa. The two layers create two stockpiles.
+    // A Gather-painted cell no longer auto-spawns a
+    // completed stockpile (issue #23 contract). The second
+    // cell stays empty until a Worker is routed there and
+    // the demand system plans a Source Stockpile.
     let other = IVec2::new(2, 2);
     app.world_mut().resource_mut::<IntentGrid>().paint(
         other,
         IntentKind::Gather,
         PAINT_STRENGTH_CAP,
     );
-    app.update();
+    for _ in 0..3 {
+        app.update();
+    }
     assert_eq!(
         stockpile_count(app.world_mut()),
-        2,
-        "Build and Gather cells spawn separate stockpiles"
+        1,
+        "Gather paint alone does not spawn a stockpile; only the Build cell counts"
     );
 }
 

@@ -28,6 +28,8 @@ mod planned_structure;
 mod production_collapse;
 #[path = "behavior/production_facility.rs"]
 mod production_facility;
+#[path = "behavior/source_stockpile_flow.rs"]
+mod source_stockpile_flow;
 #[path = "behavior/stockpile_and_haul.rs"]
 mod stockpile_and_haul;
 #[path = "behavior/zone_brush_ui_capture.rs"]

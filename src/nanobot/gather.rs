@@ -26,9 +26,14 @@ use bevy::prelude::*;
 
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::{best_candidate, Commitment, NanobotType, SoftWorkSlots};
-use crate::nanobot::components::{DirectMovementComponent, Nanobot, SwarmMember};
+use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm, SwarmMember};
+use crate::nanobot::planned::{
+    planned_visual_color, PlannedKind, PlannedStructure, PlannedStructureClaim,
+    PlannedStructureProgress, PLANNED_STRUCTURE_FOOTPRINT,
+};
+use crate::nanobot::production::OwnerSwarm;
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
-use crate::ZONE_BLOCK_SIZE;
+use crate::{GAMEPLAY_SPRITE_Z, ZONE_BLOCK_SIZE};
 
 /// Maximum units a Worker can carry in a single trip. The glossary
 /// is explicit: Workers carry "small" amounts; Haulers carry more.
@@ -42,6 +47,28 @@ pub const WORKER_CARRY_CAPACITY: u32 = 4;
 /// `app.update()` calls. The real game can scale this with
 /// `Time::delta_secs()` once the simulation has a real clock.
 pub const EXTRACT_PER_TICK: u32 = 1;
+
+/// Maximum distance (world units) from a Resource Deposit at
+/// which a Source Stockpile is considered "near" the deposit.
+///
+/// Picked at three quarters of `ZONE_BLOCK_SIZE` (384 < 512)
+/// so a Source Stockpile placed at the canonical offset from
+/// a deposit inside one cell stays inside that same cell. The
+/// "near" check is the same for both the demand system (which
+/// decides whether to plan another Source Stockpile) and the
+/// gather arrive system (which decides whether the worker has
+/// a usable built Source Stockpile to deliver into).
+pub const SOURCE_STOCKPILE_PROXIMITY_RADIUS: f32 = 384.0;
+
+/// World-space offset from a Resource Deposit's center where
+/// the Source Stockpile demand system places a new
+/// `PlannedStructure`. Picked so the planned structure's
+/// footprint (`PLANNED_STRUCTURE_FOOTPRINT` = 64) does not
+/// overlap the deposit's circle (default radius 32): the
+/// planned structure's centre is 96 units from the deposit's
+/// centre, leaving a 32-unit gap between the deposit's edge
+/// and the planned structure's edge.
+pub const SOURCE_STOCKPILE_OFFSET: Vec2 = Vec2::new(96.0, 0.0);
 
 /// What a Worker is currently carrying. The component is only
 /// present with `amount > 0`: it is inserted on extraction
@@ -170,6 +197,166 @@ fn find_nearest_stockpile(
     best.map(|(_, e)| e)
 }
 
+/// True when a built [`Stockpile`] of `kind` with free space
+/// is within [`SOURCE_STOCKPILE_PROXIMITY_RADIUS`] of
+/// `deposit_pos`. This is the "worker can extract and deliver
+/// to a usable Source Stockpile right now" half of the gather
+/// contract; a planned (not yet built) Source Stockpile does
+/// not count as usable here because the worker has nowhere to
+/// drop the carried load until the planned structure promotes
+/// to a completed `Stockpile`.
+pub(crate) fn has_usable_built_source_stockpile(
+    deposit_pos: Vec2,
+    stockpiles: &Query<(&Stockpile, &Transform)>,
+) -> bool {
+    stockpiles.iter().any(|(s, t)| {
+        s.kind == ResourceKind::Minerals
+            && s.free_space() > 0
+            && t.translation.truncate().distance(deposit_pos) <= SOURCE_STOCKPILE_PROXIMITY_RADIUS
+    })
+}
+
+/// True when a built Source Stockpile (per
+/// [`has_usable_built_source_stockpile`]) OR a planned Source
+/// Stockpile is within [`SOURCE_STOCKPILE_PROXIMITY_RADIUS`]
+/// of `deposit_pos`. This is the "demand is already
+/// satisfied, do not plan another" half of the contract. The
+/// gather arrive system uses the stricter built-only check so
+/// the worker only extracts when delivery is actually
+/// possible; the demand system uses this looser check so a
+/// pending planned structure counts as demand satisfied and
+/// the swarm does not pile multiple Source Stockpile plans
+/// around the same deposit.
+///
+/// `newly_planned` is the set of positions where this same
+/// demand system has just spawned a planned structure on
+/// this tick. Bevy [`Commands`] are deferred, so the live
+/// `planned` query cannot see them yet; passing the in-tick
+/// positions keeps the "near" check correct within a single
+/// tick.
+pub(crate) fn has_any_near_source_stockpile(
+    deposit_pos: Vec2,
+    stockpiles: &Query<(&Stockpile, &Transform)>,
+    planned: &Query<(&PlannedStructure, &Transform)>,
+    newly_planned: &[Vec2],
+) -> bool {
+    if has_usable_built_source_stockpile(deposit_pos, stockpiles) {
+        return true;
+    }
+    if planned.iter().any(|(p, t)| {
+        p.kind == PlannedKind::SourceStockpile
+            && t.translation.truncate().distance(deposit_pos) <= SOURCE_STOCKPILE_PROXIMITY_RADIUS
+    }) {
+        return true;
+    }
+    newly_planned
+        .iter()
+        .any(|pos| pos.distance(deposit_pos) <= SOURCE_STOCKPILE_PROXIMITY_RADIUS)
+}
+
+/// For each unique deposit that has at least one Worker with a
+/// [`GatherAssignment`], ensure a Planned Source Stockpile
+/// exists within [`SOURCE_STOCKPILE_PROXIMITY_RADIUS`] of the
+/// deposit.
+///
+/// The demand system is the "Gather intent asks for a Source
+/// Stockpile" half of the issue #23 contract. A Worker that
+/// arrives at a deposit with no usable built Source Stockpile
+/// pauses extraction; the planned structure's claim system
+/// then picks up the planned structure (the same gather Worker
+/// is the natural claimer when it is the only idle worker)
+/// and the build proceeds. Once the planned structure
+/// promotes to a completed [`Stockpile`], the gather arrive
+/// system sees the usable Source Stockpile and the Worker
+/// resumes extraction.
+///
+/// The demand system is "demand-driven" rather than
+/// "intent-driven": a Planned Source Stockpile is only created
+/// when a Worker is actually assigned to the deposit, not
+/// when Gather paint is applied. This matches the acceptance
+/// criterion "no completed Source Stockpile appears
+/// instantly from Gather paint alone" -- the visible result
+/// of painting Gather intent is a planned structure, not a
+/// completed stockpile, and it only appears once a Worker has
+/// been routed to the deposit.
+///
+/// The "reused" half of the contract: if a planned Source
+/// Stockpile already exists within proximity, the demand
+/// system does not plan another. Two Workers assigned to the
+/// same deposit (or to two deposits in the same area) share
+/// the single planned structure. The reuse check accounts
+/// for two sources of "existing" planned structures: the
+/// live ECS query (structures spawned on a previous tick)
+/// and a local set of positions planned on this same tick
+/// (Bevy [`Commands`] are deferred, so a planned structure
+/// spawned earlier in this tick is not yet visible to the
+/// query but is still "real" for the reuse check).
+///
+/// Ownership: the planned structure is stamped with
+/// [`OwnerSwarm`] using the first [`Swarm`] in the world,
+/// matching the existing planned-structure auto-creation
+/// pattern from issue #21. The promotion path preserves
+/// `OwnerSwarm` on the completed Stockpile, so the
+/// "Source Stockpile owned by the same swarm" contract
+/// holds end-to-end. A per-swarm filter tied to the painted
+/// cell's intent owner is a follow-up; the v1 simulation
+/// has one swarm.
+pub fn source_stockpile_demand_system(
+    mut commands: Commands,
+    gather_assignments: Query<&GatherAssignment>,
+    deposits: Query<&Transform, With<ResourceDeposit>>,
+    stockpiles: Query<(&Stockpile, &Transform)>,
+    planned: Query<(&PlannedStructure, &Transform)>,
+    swarms: Query<Entity, With<Swarm>>,
+) {
+    let first_swarm = swarms.iter().next();
+    let mut deposits_seen: std::collections::HashSet<Entity> = std::collections::HashSet::new();
+    for assignment in &gather_assignments {
+        deposits_seen.insert(assignment.deposit);
+    }
+    // Positions of Planned Source Stockpiles planned earlier
+    // in this tick. Passed to `has_any_near_source_stockpile`
+    // so two deposits processed in the same tick share a
+    // single planned structure (Bevy `Commands` are deferred,
+    // so the live `planned` query cannot see the in-tick
+    // spawns yet).
+    let mut newly_planned_positions: Vec<Vec2> = Vec::new();
+    for deposit_entity in deposits_seen {
+        let Ok(deposit_transform) = deposits.get(deposit_entity) else {
+            continue;
+        };
+        let deposit_pos = deposit_transform.translation.truncate();
+        if has_any_near_source_stockpile(
+            deposit_pos,
+            &stockpiles,
+            &planned,
+            &newly_planned_positions,
+        ) {
+            continue;
+        }
+        // Place the planned structure at the canonical offset
+        // from the deposit. The offset is small enough that
+        // the planned structure stays inside the deposit's
+        // intent grid cell, which keeps the "Source Stockpile
+        // inside the Gather Zone" contract honest for v1.
+        let placement_pos = deposit_pos + SOURCE_STOCKPILE_OFFSET;
+        let placement_cell = world_to_cell(placement_pos);
+        newly_planned_positions.push(placement_pos);
+        let mut entity_commands = commands.spawn((
+            PlannedStructure::new(PlannedKind::SourceStockpile, placement_cell),
+            Sprite {
+                color: planned_visual_color(),
+                custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
+                ..default()
+            },
+            Transform::from_translation(placement_pos.extend(GAMEPLAY_SPRITE_Z)),
+        ));
+        if let Some(swarm_entity) = first_swarm {
+            entity_commands.insert(OwnerSwarm(swarm_entity));
+        }
+    }
+}
+
 /// For each idle Worker with no in-flight gather or carry work, pick
 /// a Gather cell through the autonomy scoring from issue #6 and
 /// assign the closest deposit in that cell. The (cell, Gather) soft
@@ -251,6 +438,29 @@ pub fn worker_gather_assignment_system(
 /// Detect a worker that has arrived at its assigned deposit and
 /// start the extraction phase. The `Without<ExtractProgress>` filter
 /// makes arrival idempotent -- the same tick cannot fire twice.
+///
+/// Issue #23 contract: a Worker does not start extracting until a
+/// usable built Source Stockpile exists within
+/// [`SOURCE_STOCKPILE_PROXIMITY_RADIUS`] of the deposit. If no
+/// built stockpile exists, the worker stays put; the
+/// [`source_stockpile_demand_system`] has already (or will on a
+/// subsequent tick) planned a Source Stockpile, and the planned
+/// structure's claim system will route a worker -- often this
+/// same worker once it is the only idle one -- to build it.
+///
+/// The `Without<PlannedStructureClaim>` and
+/// `Without<PlannedStructureProgress>` filters ensure the
+/// arrive system does not interfere with a worker that has
+/// been claimed to build a nearby planned Source Stockpile;
+/// the planned structure's own arrive/work systems handle
+/// that worker's state machine.
+///
+/// When the worker is not at the deposit (for example, after
+/// completing a build and walking back) the system re-issues
+/// a [`DirectMovementComponent`] pointing at the deposit so
+/// the movement system routes it there. This is the "resume
+/// extraction after the Source Stockpile exists" half of the
+/// contract.
 #[allow(clippy::type_complexity)]
 pub fn worker_gather_arrive_system(
     mut commands: Commands,
@@ -262,9 +472,12 @@ pub fn worker_gather_arrive_system(
             With<GatherAssignment>,
             Without<DirectMovementComponent>,
             Without<ExtractProgress>,
+            Without<PlannedStructureClaim>,
+            Without<PlannedStructureProgress>,
         ),
     >,
     deposits: Query<(&ResourceDeposit, &Transform)>,
+    stockpiles: Query<(&Stockpile, &Transform)>,
 ) {
     for (entity, transform, assignment) in &workers {
         let Ok((deposit, deposit_transform)) = deposits.get(assignment.deposit) else {
@@ -283,13 +496,32 @@ pub fn worker_gather_arrive_system(
             continue;
         }
 
-        let distance = transform
-            .translation
-            .truncate()
-            .distance(deposit_transform.translation.truncate());
-        if distance <= deposit.radius {
-            commands.entity(entity).insert(ExtractProgress::default());
+        let worker_pos = transform.translation.truncate();
+        let deposit_pos = deposit_transform.translation.truncate();
+        let distance = worker_pos.distance(deposit_pos);
+        if distance > deposit.radius {
+            // Not at the deposit yet (e.g. after completing a
+            // build and walking back). Re-issue the movement
+            // command so the worker returns. Commands are
+            // idempotent on a stale `DirectMovementComponent`
+            // because the system that already pruned the
+            // component only runs on arrival, not every tick.
+            commands
+                .entity(entity)
+                .insert(DirectMovementComponent { xy: deposit_pos });
+            continue;
         }
+        if !has_usable_built_source_stockpile(deposit_pos, &stockpiles) {
+            // No usable built Source Stockpile. The demand
+            // system has already (or will) plan one. The
+            // planned structure's claim system will route a
+            // worker to build it; this worker stays put until
+            // the planned structure promotes to a real
+            // stockpile and the next tick's arrive check
+            // passes.
+            continue;
+        }
+        commands.entity(entity).insert(ExtractProgress::default());
     }
 }
 
@@ -467,6 +699,15 @@ pub fn worker_gather_delivery_system(
 /// The chain runs after `move_velocity_system` so the movement
 /// system has already pruned arrived bots (which is the trigger the
 /// arrive and delivery systems wait for).
+///
+/// Internal order: assignment -> source stockpile demand ->
+/// arrive -> extract -> carry-assign -> delivery. The demand
+/// system runs after assignment so it sees the current tick's
+/// new assignments and plans a Source Stockpile on the same
+/// tick the Worker is routed to the deposit; the planned
+/// structure's claim system (in `PlannedStructurePlugin`,
+/// registered after this one) then picks up the planned
+/// structure for the same tick.
 pub struct GatherPlugin;
 
 impl Plugin for GatherPlugin {
@@ -475,6 +716,7 @@ impl Plugin for GatherPlugin {
             Update,
             (
                 worker_gather_assignment_system,
+                source_stockpile_demand_system,
                 worker_gather_arrive_system,
                 worker_gather_extract_system,
                 worker_gather_carry_assign_system,
