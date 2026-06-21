@@ -19,7 +19,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
         best_candidate, is_enemy_territory, Commitment, DefendAssignment, DefendHold,
-        DirectMovementComponent, NanobotType, SoftWorkSlots, DEFEND_HOME_RADIUS_CELLS,
+        DirectMovementComponent, NanobotType, SoftWorkSlots, SwarmId, DEFEND_HOME_RADIUS_CELLS,
     },
     ZONE_BLOCK_SIZE,
 };
@@ -61,6 +61,7 @@ fn idle_defender_picks_defend_cell_via_autonomy_scoring() {
             slots,
             ZONE_BLOCK_SIZE,
             &[IntentKind::Defend],
+            SwarmId::PLAYER,
         )
         .expect("Defend cell must be a candidate");
         assert_eq!(picked.cell, cell);

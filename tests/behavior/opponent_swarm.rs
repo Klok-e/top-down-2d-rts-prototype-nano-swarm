@@ -17,8 +17,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         best_candidate, spawn_opponent_swarm, Commitment, Health, Nanobot, NanobotBundle,
         NanobotType, OpponentSwarm, OwnerSwarm, PrepaintedIntent, ProductionFacility,
-        ProductionRatio, SeedNanobots, SoftWorkSlots, Swarm, SwarmProduction, VelocityComponent,
-        PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT,
+        ProductionRatio, SeedNanobots, SoftWorkSlots, Swarm, SwarmId, SwarmProduction,
+        VelocityComponent, PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT,
     },
     ZONE_BLOCK_SIZE,
 };
@@ -122,6 +122,18 @@ fn opponent_nanobot_picks_prepainted_intent_via_same_scoring() {
 
     let grid = app.world().resource::<IntentGrid>();
     let slots = app.world().resource::<SoftWorkSlots>();
+    // The opponent's `SwarmId` is the owner stamped on the
+    // prepainted cell; the scoring filter requires the
+    // candidate nanobot's swarm to match. Reading the id off
+    // the opponent entity keeps the test in lock-step with
+    // `spawn_opponent_swarm`'s allocation rather than
+    // hard-coding a value.
+    let opponent_id = app
+        .world()
+        .entity(_opponent)
+        .get::<SwarmId>()
+        .copied()
+        .expect("opponent swarm must carry a SwarmId");
     let bot_pos = world_to_bot_pos(2, 0);
     let picked = best_candidate(
         grid,
@@ -131,6 +143,7 @@ fn opponent_nanobot_picks_prepainted_intent_via_same_scoring() {
         slots,
         ZONE_BLOCK_SIZE,
         &IntentKind::ALL,
+        opponent_id,
     )
     .expect("opponent nanobot must find a candidate via the same scoring");
     assert_eq!(picked.cell, gather_cell);
@@ -168,6 +181,9 @@ fn opponent_swarm_uses_own_fixed_ratio_through_same_production_systems() {
                 velocity: VelocityComponent::default(),
                 ai_state: Default::default(),
                 health: Health::default(),
+                swarm_member: top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmMember::new(
+                    top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
+                ),
             },
             Commitment::Idle,
             Transform::from_translation(player_pos.extend(0.0)),

@@ -18,6 +18,8 @@ mod maintenance;
 mod nanobot_autonomy;
 #[path = "behavior/opponent_swarm.rs"]
 mod opponent_swarm;
+#[path = "behavior/per_swarm_intent_ownership.rs"]
+mod per_swarm_intent_ownership;
 #[path = "behavior/production_collapse.rs"]
 mod production_collapse;
 #[path = "behavior/production_facility.rs"]

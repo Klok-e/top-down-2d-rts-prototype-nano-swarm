@@ -21,7 +21,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
         best_candidate, Commitment, ExtractProgress, GatherAssignment, NanobotType,
-        ReturningToStockpile, SoftWorkSlots, WorkerLoad, EXTRACT_PER_TICK, WORKER_CARRY_CAPACITY,
+        ReturningToStockpile, SoftWorkSlots, SwarmId, WorkerLoad, EXTRACT_PER_TICK,
+        WORKER_CARRY_CAPACITY,
     },
     resources::{ResourceDeposit, Stockpile},
     ZONE_BLOCK_SIZE,
@@ -314,6 +315,7 @@ fn idle_worker_chooses_gather_via_autonomy_scoring() {
             slots,
             CELL_SIZE,
             &[IntentKind::Gather],
+            SwarmId::PLAYER,
         )
         .expect("Gather cell must be a candidate");
         assert_eq!(picked.cell, cell);

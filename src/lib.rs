@@ -32,6 +32,7 @@ pub fn build_app() -> App {
         .init_resource::<ResourceLedger>()
         .insert_resource(scenario::default_player_ratio())
         .init_resource::<nanobot::SoftWorkSlots>()
+        .init_resource::<nanobot::OpponentSwarmIdAlloc>()
         .add_plugins(DefaultPlugins)
         .add_plugins(Material2dPlugin::<BackgroundMaterial>::default())
         // must be before NanobotPlugin because otherwise it receives events with despawned entities
@@ -125,6 +126,7 @@ pub fn zone_overlay_transform(width: f32, height: f32) -> Transform {
         .with_scale(Vec3::new(width, height, 1.0))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn setup_things_startup(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -133,6 +135,7 @@ fn setup_things_startup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
     mut grid: ResMut<IntentGrid>,
+    opponent_id_alloc: ResMut<nanobot::OpponentSwarmIdAlloc>,
 ) -> Result<()> {
     let handle = zone_mats.add(ZoneMaterial::new(MAP_WIDTH, MAP_HEIGHT, &mut buffers));
     commands
@@ -150,7 +153,12 @@ fn setup_things_startup(
     commands.insert_resource(GameSettings::from_file_ron("config/game_settings.ron")?);
 
     scenario::spawn_default_player_scenario(&mut commands, &asset_server, &mut grid);
-    scenario::spawn_default_opponent_scenario(&mut commands, &asset_server, &mut grid);
+    scenario::spawn_default_opponent_scenario(
+        &mut commands,
+        &asset_server,
+        &mut grid,
+        opponent_id_alloc,
+    );
 
     // background
     commands.spawn((

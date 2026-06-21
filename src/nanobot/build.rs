@@ -38,7 +38,7 @@ use bevy::prelude::*;
 use crate::ai::get_world_from_zone;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::{best_candidate, Commitment, NanobotType, SoftWorkSlots};
-use crate::nanobot::components::{DirectMovementComponent, Nanobot};
+use crate::nanobot::components::{DirectMovementComponent, Nanobot, SwarmMember};
 use crate::nanobot::consts::STOP_THRESHOLD;
 use crate::nanobot::gather::world_to_cell;
 use crate::resources::{ResourceKind, ResourceLedger, Stockpile};
@@ -234,7 +234,7 @@ pub fn worker_build_assignment_system(
     grid: Res<IntentGrid>,
     mut slots: ResMut<SoftWorkSlots>,
     workers: Query<
-        (Entity, &Transform, &Commitment, &NanobotType),
+        (Entity, &Transform, &Commitment, &NanobotType, &SwarmMember),
         (
             With<Nanobot>,
             Without<BuildAssignment>,
@@ -246,7 +246,7 @@ pub fn worker_build_assignment_system(
     damaged_structures: Query<(Entity, &Transform, &Structure)>,
 ) {
     let slots_snapshot = slots.clone();
-    for (entity, transform, commitment, nanobot_type) in &workers {
+    for (entity, transform, commitment, nanobot_type, swarm_member) in &workers {
         if *nanobot_type != NanobotType::Worker {
             continue;
         }
@@ -263,6 +263,7 @@ pub fn worker_build_assignment_system(
             &slots_snapshot,
             ZONE_BLOCK_SIZE,
             &[IntentKind::Build],
+            swarm_member.0,
         ) else {
             continue;
         };

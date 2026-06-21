@@ -29,6 +29,7 @@ use bevy::{
 };
 
 use crate::intent::{IntentCell, IntentGrid, IntentKind};
+use crate::nanobot::components::SwarmId;
 
 /// Specialization of a nanobot. The player does not assign individual
 /// nanobots to types manually (see the project glossary); types emerge
@@ -283,6 +284,13 @@ pub fn score_intent(
 /// the size of one intent grid cell in world units. The slot count is
 /// looked up from `slots` per (cell, kind) pair, so callers can model
 /// current swarm pressure without recomputing it.
+///
+/// `nanobot_swarm` is the [`SwarmId`] the calling nanobot belongs
+/// to. Cells whose owner is a different swarm are skipped: the
+/// per-swarm intent ownership contract from issue #20. Cells
+/// with `owner == None` (legacy shared paint, or paint written
+/// through the unowned API) are visible to every swarm.
+#[allow(clippy::too_many_arguments)]
 pub fn best_candidate(
     grid: &IntentGrid,
     nanobot_type: NanobotType,
@@ -291,6 +299,7 @@ pub fn best_candidate(
     slots: &SoftWorkSlots,
     cell_size: f32,
     kinds: &[IntentKind],
+    nanobot_swarm: SwarmId,
 ) -> Option<IntentCandidate> {
     let mut best: Option<IntentCandidate> = None;
 
@@ -300,6 +309,9 @@ pub fn best_candidate(
         }
         for &kind in kinds {
             if !intent_cell.has(kind) {
+                continue;
+            }
+            if !intent_cell.visible_to(kind, nanobot_swarm) {
                 continue;
             }
             let paint_strength = intent_cell.strength(kind);
@@ -733,6 +745,7 @@ mod tests {
             &slots,
             cell_size(),
             &IntentKind::ALL,
+            SwarmId::PLAYER,
         )
         .expect("must find a candidate");
 
@@ -761,6 +774,7 @@ mod tests {
             &slots,
             cell_size(),
             &IntentKind::ALL,
+            SwarmId::PLAYER,
         )
         .expect("must find a candidate");
         assert_eq!(picked.cell, strong_cell);
@@ -787,6 +801,7 @@ mod tests {
             &slots,
             cell_size(),
             &IntentKind::ALL,
+            SwarmId::PLAYER,
         )
         .expect("defender must find a defend candidate");
         assert_eq!(picked.cell, defend_cell);
@@ -816,6 +831,7 @@ mod tests {
             &slots,
             cell_size(),
             &IntentKind::ALL,
+            SwarmId::PLAYER,
         )
         .expect("must find a candidate");
         assert_eq!(
@@ -836,6 +852,7 @@ mod tests {
             &slots,
             cell_size(),
             &IntentKind::ALL,
+            SwarmId::PLAYER,
         )
         .is_none());
     }

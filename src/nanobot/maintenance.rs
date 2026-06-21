@@ -41,6 +41,7 @@ use bevy::prelude::*;
 
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::{best_candidate, Commitment, NanobotType, SoftWorkSlots};
+use crate::nanobot::components::SwarmMember;
 // `StructureKind` is only used by the unit tests in this
 // module. Marked `allow(unused_imports)` so the lib build does
 // not warn; the tests do pick the import up via `use super::*`.
@@ -183,7 +184,7 @@ pub fn worker_maintenance_assignment_system(
     grid: Res<IntentGrid>,
     mut slots: ResMut<SoftWorkSlots>,
     workers: Query<
-        (Entity, &Transform, &Commitment, &NanobotType),
+        (Entity, &Transform, &Commitment, &NanobotType, &SwarmMember),
         (
             With<Nanobot>,
             Without<super::build::BuildAssignment>,
@@ -196,7 +197,7 @@ pub fn worker_maintenance_assignment_system(
     structures: Query<(Entity, &Transform, &Structure)>,
 ) {
     let slots_snapshot = slots.clone();
-    for (entity, transform, commitment, nanobot_type) in &workers {
+    for (entity, transform, commitment, nanobot_type, swarm_member) in &workers {
         if *nanobot_type != NanobotType::Worker {
             continue;
         }
@@ -213,6 +214,7 @@ pub fn worker_maintenance_assignment_system(
             &slots_snapshot,
             ZONE_BLOCK_SIZE,
             &[IntentKind::Build],
+            swarm_member.0,
         ) else {
             continue;
         };

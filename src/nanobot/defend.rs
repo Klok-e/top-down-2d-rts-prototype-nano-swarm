@@ -34,7 +34,7 @@ use bevy::prelude::*;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::{best_candidate, Commitment, NanobotType, SoftWorkSlots};
 use crate::nanobot::charge::{ChargerAssignment, ChargerProgress};
-use crate::nanobot::components::{DirectMovementComponent, Nanobot};
+use crate::nanobot::components::{DirectMovementComponent, Nanobot, SwarmMember};
 use crate::nanobot::consts::STOP_THRESHOLD;
 use crate::ZONE_BLOCK_SIZE;
 
@@ -122,6 +122,7 @@ pub fn defender_assignment_system(
             &Transform,
             &Commitment,
             &NanobotType,
+            &SwarmMember,
             Option<&DefendHold>,
         ),
         (
@@ -140,7 +141,7 @@ pub fn defender_assignment_system(
         ),
     >,
 ) {
-    for (entity, transform, commitment, nanobot_type, hold) in &defenders {
+    for (entity, transform, commitment, nanobot_type, swarm_member, hold) in &defenders {
         if *nanobot_type != NanobotType::Defender {
             continue;
         }
@@ -165,6 +166,7 @@ pub fn defender_assignment_system(
             &slots_snapshot,
             ZONE_BLOCK_SIZE,
             &[IntentKind::Defend],
+            swarm_member.0,
         ) else {
             continue;
         };
