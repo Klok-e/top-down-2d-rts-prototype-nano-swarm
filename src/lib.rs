@@ -218,6 +218,7 @@ fn spawn_initial_swarm(commands: &mut Commands<'_, '_>, asset_server: &Res<'_, A
             swarm: Swarm {},
             transform: Transform::default(),
             global_transform: GlobalTransform::default(),
+            visibility: Visibility::default(),
         })
         .with_children(|p| {
             for _ in 0..4 {

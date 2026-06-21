@@ -87,6 +87,7 @@ pub fn spawn_opponent_swarm(
             OpponentSwarm {},
             SwarmProduction::new(ratio),
             Transform::from_translation(world_pos.extend(0.0)),
+            Visibility::default(),
         ))
         .id();
 
