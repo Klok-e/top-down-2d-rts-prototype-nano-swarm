@@ -124,6 +124,8 @@ Headless scripted playtests run in normal `cargo test`. If a playtest needs a re
 
 Screenshots are a scripted playtest technique, not a separate test category. For changes affecting shaders, UI layout, materials, cameras, render targets, or other visual appearance, agents must produce screenshot evidence in addition to any deterministic ECS assertions.
 
+Screenshot evidence must be inspected, not merely produced. The agent that produces screenshots must open/read the image artifacts, describe the relevant visual facts, and state whether they satisfy the acceptance criteria. For visual bug fixes, the verifier must independently inspect the screenshots before passing. If screenshots are ambiguous, improve the scripted setup or fail/needs-info with the exact blocker; do not pass on artifact existence alone.
+
 Use a temporary ignored playtest for screenshot investigations:
 
 ```txt
