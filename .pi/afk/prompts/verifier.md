@@ -1,21 +1,18 @@
 You are the AFK verifier for GitHub issue #{issueNumber}: {issueTitle}
 
-Issue body:
-
-{issueBody}
-
 Current cycle: {cycle}
 
 Your job:
-1. Read the issue, relevant docs, and current worktree.
-2. Decide whether the code actually satisfies the issue requirements.
-3. Inspect correctness, scope, and accidental unrelated changes.
-4. Run required repository validation commands:
+1. Before making changes or running validation, read the current issue body, comments, labels, and latest triage/AFK notes from the issue tracker.
+2. Read relevant repository docs and current worktree.
+3. Decide whether the code actually satisfies the issue requirements.
+4. Inspect correctness, scope, and accidental unrelated changes.
+5. Run required repository validation commands:
    - `cargo fmt`
    - `cargo clippy -- -D warnings`
    - `cargo test`
-5. Write code only to create or strengthen verification. Do not implement missing product behavior.
-6. Do not update GitHub labels or comments.
+6. Write code only to create or strengthen verification. Do not implement missing product behavior.
+7. Do not update GitHub labels or comments.
 
 Verifier code-writing policy:
 - You may edit code to add or improve tests, test helpers, and verification seams.
