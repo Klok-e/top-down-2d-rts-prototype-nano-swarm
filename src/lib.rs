@@ -96,6 +96,40 @@ pub const MAP_WIDTH: u32 = 1000;
 pub const MAP_HEIGHT: u32 = 1000;
 pub const ZONE_BLOCK_SIZE: f32 = 512.;
 
+/// Z-translation for the full-map background mesh. Bevy 2D draws
+/// meshes with the largest `translation.z` first, so a negative z
+/// keeps the background behind every other render layer.
+pub const BACKGROUND_OVERLAY_Z: f32 = -100.0;
+
+/// Z-translation for the player-intent zone mesh. Sits above the
+/// background and below the gameplay sprites so the semi-transparent
+/// zone shader is visible and the swarm always renders in front of
+/// paint.
+pub const ZONE_OVERLAY_Z: f32 = -99.0;
+
+/// Z-translation for gameplay sprites (minerals, processing
+/// facility, swarm children). Higher than the zone overlay so the
+/// swarm renders in front of the player's paint.
+pub const GAMEPLAY_SPRITE_Z: f32 = 1.0;
+
+/// Build the [`Transform`] for the full-map background mesh. The
+/// draw-order z lives on the translation (the field Bevy 2D reads
+/// for draw order); the mesh scale keeps `z = 1.0` so the unit
+/// rectangle is not distorted.
+pub fn background_overlay_transform(width: f32, height: f32) -> Transform {
+    Transform::from_translation(Vec3::new(0.0, 0.0, BACKGROUND_OVERLAY_Z))
+        .with_scale(Vec3::new(width, height, 1.0))
+}
+
+/// Build the [`Transform`] for the player-intent zone mesh. Same
+/// draw-order contract as [`background_overlay_transform`]: z on
+/// the translation, scale `z = 1.0`, and the zone sits above the
+/// background and below the gameplay sprites.
+pub fn zone_overlay_transform(width: f32, height: f32) -> Transform {
+    Transform::from_translation(Vec3::new(0.0, 0.0, ZONE_OVERLAY_Z))
+        .with_scale(Vec3::new(width, height, 1.0))
+}
+
 fn setup_things_startup(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -157,12 +191,9 @@ fn setup_things_startup(
     commands.spawn((
         Mesh2d(meshes.add(Mesh::from(Rectangle::default()))),
         MeshMaterial2d(bg_mats.add(BackgroundMaterial {})),
-        Transform::default().with_scale(
-            Vec2::new(
-                MAP_WIDTH as f32 * ZONE_BLOCK_SIZE,
-                MAP_HEIGHT as f32 * ZONE_BLOCK_SIZE,
-            )
-            .extend(-100.),
+        background_overlay_transform(
+            MAP_WIDTH as f32 * ZONE_BLOCK_SIZE,
+            MAP_HEIGHT as f32 * ZONE_BLOCK_SIZE,
         ),
     ));
 
@@ -170,12 +201,9 @@ fn setup_things_startup(
     commands.spawn((
         Mesh2d(meshes.add(Mesh::from(Rectangle::default()))),
         MeshMaterial2d(handle),
-        Transform::default().with_scale(
-            Vec2::new(
-                MAP_WIDTH as f32 * ZONE_BLOCK_SIZE,
-                MAP_HEIGHT as f32 * ZONE_BLOCK_SIZE,
-            )
-            .extend(-101.),
+        zone_overlay_transform(
+            MAP_WIDTH as f32 * ZONE_BLOCK_SIZE,
+            MAP_HEIGHT as f32 * ZONE_BLOCK_SIZE,
         ),
     ));
     Ok(())
@@ -244,4 +272,63 @@ fn setup_opponent_swarm_startup(world: &mut World) {
             SeedNanobots::new(NanobotType::Defender, 1),
         ],
     );
+}
+
+#[cfg(test)]
+mod overlay_transform_tests {
+    //! Pins the overlay draw-order contract: z lives on
+    //! `translation.z` (the field Bevy 2D reads for draw order), the
+    //! mesh scale keeps `z = 1.0`, and the zone overlay draws in
+    //! front of the background and behind the gameplay sprites.
+
+    use super::*;
+
+    #[test]
+    fn background_overlay_transform_uses_translation_z_not_scale_z() {
+        let t = background_overlay_transform(1024.0, 2048.0);
+        assert_eq!(
+            t.translation.z, BACKGROUND_OVERLAY_Z,
+            "draw order lives on translation.z, not scale.z"
+        );
+        assert_eq!(t.scale.x, 1024.0, "world width is preserved on scale.x");
+        assert_eq!(t.scale.y, 2048.0, "world height is preserved on scale.y");
+        assert_eq!(
+            t.scale.z, 1.0,
+            "mesh scale.z must stay 1.0 so the unit rectangle is not distorted"
+        );
+    }
+
+    #[test]
+    fn zone_overlay_transform_uses_translation_z_above_background() {
+        let bg = background_overlay_transform(1024.0, 2048.0);
+        let zone = zone_overlay_transform(1024.0, 2048.0);
+        assert_eq!(
+            zone.translation.z, ZONE_OVERLAY_Z,
+            "draw order lives on translation.z, not scale.z"
+        );
+        assert!(
+            zone.translation.z > bg.translation.z,
+            "zone overlay must draw in front of the background \
+             (zone z={} must be greater than background z={})",
+            zone.translation.z,
+            bg.translation.z
+        );
+        assert_eq!(zone.scale.z, 1.0);
+    }
+
+    #[test]
+    fn zone_overlay_transform_sits_below_gameplay_sprite_z() {
+        // Gameplay sprites (minerals, processing facility, swarm
+        // children) all sit at `GAMEPLAY_SPRITE_Z`. The zone overlay
+        // must stay below that so the swarm renders in front of the
+        // player's paint.
+        let zone = zone_overlay_transform(1024.0, 2048.0);
+        assert!(
+            zone.translation.z < GAMEPLAY_SPRITE_Z,
+            "zone overlay must draw behind gameplay sprites \
+             (zone z={} must be less than gameplay z={})",
+            zone.translation.z,
+            GAMEPLAY_SPRITE_Z
+        );
+    }
 }
