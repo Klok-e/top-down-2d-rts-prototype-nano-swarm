@@ -29,7 +29,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         completed_visual_color, ExtractProgress, GatherAssignment, OwnerSwarm, PlannedKind,
         PlannedStructure, PlannedStructureClaim, PlannedStructureProgress, SwarmId,
-        DEFAULT_PLANNED_WORK_TICKS, SOURCE_STOCKPILE_OFFSET,
+        DEFAULT_PLANNED_WORK_TICKS, SOURCE_STOCKPILE_JITTER_AMPLITUDE,
+        SOURCE_STOCKPILE_PLACEMENT_RADIUS,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
 };
@@ -43,11 +44,15 @@ const BOT_SPEED: f32 = 5.0;
 
 /// Distance the gather worker has to walk to reach the planned
 /// Source Stockpile from the deposit (or back). The demand
-/// system uses `SOURCE_STOCKPILE_OFFSET` so the travel is
-/// fixed regardless of cell layout; the constant is here so a
-/// future tuning pass that changes the offset cannot silently
-/// shift the test math.
-const PLANNED_TRAVEL_DISTANCE: f32 = SOURCE_STOCKPILE_OFFSET.x;
+/// system places the planned structure on the placement ring
+/// at [`SOURCE_STOCKPILE_PLACEMENT_RADIUS`] from the deposit,
+/// plus a deterministic jitter of up to
+/// [`SOURCE_STOCKPILE_JITTER_AMPLITUDE`]. The travel-time math
+/// uses the worst case (ring radius + max jitter) so the
+/// worker has arrived by the time the test checks for the
+/// completed build, regardless of the specific jitter draw.
+const PLANNED_TRAVEL_DISTANCE: f32 =
+    SOURCE_STOCKPILE_PLACEMENT_RADIUS + SOURCE_STOCKPILE_JITTER_AMPLITUDE;
 
 /// Ticks of simulation needed for the worker to walk
 /// `distance` world units at `BOT_SPEED`. The arrival is
@@ -173,11 +178,19 @@ fn gather_assignment_triggers_planned_source_stockpile() {
         planned_cell, cell,
         "Planned Source Stockpile must live in the same cell as the deposit"
     );
-    let expected_pos = deposit_pos + SOURCE_STOCKPILE_OFFSET;
+    // Issue #24: the placement algorithm picks a position on
+    // the ring at `SOURCE_STOCKPILE_PLACEMENT_RADIUS` from the
+    // deposit, plus a deterministic jitter of up to
+    // `SOURCE_STOCKPILE_JITTER_AMPLITUDE`. The test pins the
+    // new "inside the gather zone, at the ring distance"
+    // contract rather than the v0 "exact offset" contract.
+    let ring_distance = (planned_pos - deposit_pos).length();
+    let min_distance = SOURCE_STOCKPILE_PLACEMENT_RADIUS - SOURCE_STOCKPILE_JITTER_AMPLITUDE;
+    let max_distance = SOURCE_STOCKPILE_PLACEMENT_RADIUS + SOURCE_STOCKPILE_JITTER_AMPLITUDE;
     assert!(
-        (planned_pos - expected_pos).length() < 1.0,
-        "Planned Source Stockpile must be placed at the canonical offset; got {:?}",
-        planned_pos
+        ring_distance >= min_distance - 1.0 && ring_distance <= max_distance + 1.0,
+        "Planned Source Stockpile must be placed on the placement ring within jitter; \
+         got distance={ring_distance} from deposit (expected in [{min_distance}, {max_distance}])"
     );
     assert_eq!(
         planned_owner,
