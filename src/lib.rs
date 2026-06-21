@@ -49,19 +49,35 @@ pub fn build_app() -> App {
         // hauler systems wait for is the same one the gather chain
         // uses, so they only need to run after the movement step.
         .add_plugins(nanobot::HaulPlugin)
-        // BuildPlugin chains after `move_velocity_system` so the
-        // arrive system sees the pruned DirectMovementComponent.
-        .add_plugins(nanobot::BuildPlugin)
-        // PlannedStructurePlugin chains after `move_velocity_system`
-        // for the same reason; the planned-structure arrive system
-        // also waits for the pruned DirectMovementComponent. It
-        // sits next to BuildPlugin because the foundation demo
-        // (Source Stockpile) lives in Build cells, and the full
-        // game is the place the two lifecycles coexist.
+        // The legacy `BuildPlugin` (issue #10's `BuildSite` /
+        // `Structure` auto-creation) is intentionally NOT
+        // registered. After the four Planned Structure
+        // migration issues (#25 Source Stockpile, #26 Sink
+        // Stockpile, #27 Production Facility, #28 Charger)
+        // every demand-driven support structure lives on
+        // the `PlannedStructurePlugin` lifecycle. Issue #29
+        // removed the remaining "spontaneous Build-paint
+        // spawn" path -- a Build cell now plans a Sink
+        // Stockpile through the planned-structure chain,
+        // and never spawns a legacy `BuildSite`. The
+        // `BuildSite` and `BuildPlugin` types still exist
+        // in the codebase for the unit tests in
+        // `src/nanobot/build.rs`; the `Structure` type
+        // also stays because the maintenance test fixtures
+        // spawn `Structure` entities directly to drive the
+        // maintenance chain. No production system
+        // auto-spawns any of them.
         .add_plugins(PlannedStructurePlugin)
-        // MaintenancePlugin chains after BuildPlugin so the
-        // maintenance work system can reset a structure's
-        // buffer counter before the degradation system runs.
+        // MaintenancePlugin chains after the planned-structure
+        // work system so the maintenance work system can reset
+        // a structure's buffer counter before the degradation
+        // system runs. Maintenance operates on the legacy
+        // `Structure` component, which is still in the codebase
+        // for test fixtures and unit tests; production
+        // structures (Stockpile, ProductionFacility, Charger)
+        // do not currently participate in the maintenance
+        // loop. Future support-structure kinds can opt in to
+        // maintenance by carrying a `Structure` sidecar.
         .add_plugins(nanobot::MaintenancePlugin)
         // ProductionPlugin chains after `move_velocity_system`
         // for the same reason; auto-creation runs last in its
