@@ -12,43 +12,38 @@ use top_down_2d_rts_prototype_nano_swarm::{
         check_ui_interaction, intent_layer_panel::IntentLayerPanelRoot, NoPointerCapture,
         UiHandling,
     },
-    zone_overlay_transform, MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
+    zone_overlay_transform, GAMEPLAY_SPRITE_Z, MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
 };
 
-/// Spawn the two overlay entities with the production component
-/// bundle (`Mesh2d` + `Transform`) and the literal z values the
-/// helpers must produce. The tests then assert the spawned values
-/// match the helpers, so a future regression that swaps `scale.z`
-/// back in for `translation.z` is caught here.
+/// Spawn the two overlay entities using the production transform
+/// helpers, mirroring the production setup. The tests then assert
+/// the contract relationships (zone draws in front of background;
+/// scale.z stays 1.0; world dimensions preserved on x/y).
 fn spawn_overlays(app: &mut App) -> (Entity, Entity) {
     app.init_resource::<Assets<Mesh>>();
     let mut meshes = app.world_mut().resource_mut::<Assets<Mesh>>();
     let mesh = meshes.add(Mesh::from(Rectangle::default()));
     let mesh_handle = mesh.clone();
 
-    // Background
     let bg = app
         .world_mut()
         .spawn((
             Mesh2d(mesh),
-            Transform::from_translation(Vec3::new(0.0, 0.0, -100.0)).with_scale(Vec3::new(
+            background_overlay_transform(
                 MAP_WIDTH as f32 * ZONE_BLOCK_SIZE,
                 MAP_HEIGHT as f32 * ZONE_BLOCK_SIZE,
-                1.0,
-            )),
+            ),
         ))
         .id();
 
-    // Zone overlay
     let zone = app
         .world_mut()
         .spawn((
             Mesh2d(mesh_handle),
-            Transform::from_translation(Vec3::new(0.0, 0.0, -99.0)).with_scale(Vec3::new(
+            zone_overlay_transform(
                 MAP_WIDTH as f32 * ZONE_BLOCK_SIZE,
                 MAP_HEIGHT as f32 * ZONE_BLOCK_SIZE,
-                1.0,
-            )),
+            ),
         ))
         .id();
 
@@ -75,15 +70,13 @@ fn background_overlay_translation_z_is_below_zone_overlay() {
         .translation
         .z;
 
-    assert_eq!(bg_z, background_overlay_transform(1.0, 1.0).translation.z);
-    assert_eq!(zone_z, zone_overlay_transform(1.0, 1.0).translation.z);
     assert!(
         zone_z > bg_z,
         "zone overlay (z={zone_z}) must draw in front of the background (z={bg_z})"
     );
     assert!(
-        zone_z < 1.0,
-        "zone overlay must sit below gameplay sprites at z=1"
+        zone_z < GAMEPLAY_SPRITE_Z,
+        "zone overlay must sit below gameplay sprites at z={GAMEPLAY_SPRITE_Z}"
     );
 }
 
