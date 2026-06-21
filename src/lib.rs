@@ -6,27 +6,23 @@ pub mod intent;
 pub mod materials;
 pub mod nanobot;
 pub mod resources;
+pub mod scenario;
 pub mod ui;
 pub mod zones;
 
 use ai::AiPlugin;
 use anyhow::Result;
 use bevy::{
-    math::vec3,
     prelude::*,
     render::storage::ShaderStorageBuffer,
     sprite_render::{Material2dPlugin, MeshMaterial2d},
 };
-use building::{Minerals, ProcessingFacility};
 use fly_camera::{Camera2dFlyPlugin, CameraZoom2d, FlyCamera2d};
 use game_settings::GameSettings;
-use intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP};
+use intent::IntentGrid;
 use materials::BackgroundMaterial;
-use nanobot::{
-    spawn_opponent_swarm, CollapsePlugin, NanobotBundle, NanobotPlugin, NanobotType,
-    PrepaintedIntent, ProductionPlugin, ProductionRatio, SeedNanobots, Swarm, SwarmBundle,
-};
-use resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
+use nanobot::{CollapsePlugin, NanobotPlugin, ProductionPlugin};
+use resources::ResourceLedger;
 use ui::NanoswarmUiSetupPlugin;
 use zones::{ZoneMaterial, ZoneMaterialHandleComponent, ZonesPlugin};
 
@@ -34,7 +30,7 @@ pub fn build_app() -> App {
     let mut app = App::new();
     app.insert_resource(IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32))
         .init_resource::<ResourceLedger>()
-        .init_resource::<ProductionRatio>()
+        .insert_resource(scenario::default_player_ratio())
         .init_resource::<nanobot::SoftWorkSlots>()
         .add_plugins(DefaultPlugins)
         .add_plugins(Material2dPlugin::<BackgroundMaterial>::default())
@@ -83,8 +79,7 @@ pub fn build_app() -> App {
         .add_plugins(nanobot::ChargePlugin)
         .add_plugins(AiPlugin)
         .add_plugins(Camera2dFlyPlugin)
-        .add_systems(Startup, setup_things_startup.pipe(error_handler))
-        .add_systems(Startup, setup_opponent_swarm_startup);
+        .add_systems(Startup, setup_things_startup.pipe(error_handler));
     app
 }
 
@@ -137,6 +132,7 @@ fn setup_things_startup(
     mut zone_mats: ResMut<Assets<ZoneMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
+    mut grid: ResMut<IntentGrid>,
 ) -> Result<()> {
     let handle = zone_mats.add(ZoneMaterial::new(MAP_WIDTH, MAP_HEIGHT, &mut buffers));
     commands
@@ -153,41 +149,8 @@ fn setup_things_startup(
 
     commands.insert_resource(GameSettings::from_file_ron("config/game_settings.ron")?);
 
-    spawn_initial_swarm(&mut commands, &asset_server);
-
-    // Resource Deposit (mineral-bearing deposit + visual marker)
-    let resource_deposit_texture = asset_server.load("resource_deposit.png");
-    commands.spawn((
-        Minerals {},
-        ResourceDeposit {
-            kind: ResourceKind::Minerals,
-            amount: 1000,
-            capacity: 1000,
-            radius: 64.0,
-        },
-        (
-            Sprite::from_image(resource_deposit_texture.clone()),
-            Transform::from_translation(vec3(-800., 0., GAMEPLAY_SPRITE_Z))
-                .with_scale(vec3(2., 2., 1.)),
-        ),
-    ));
-
-    // Production Facility (starting stockpile + visual marker)
-    let production_facility_texture = asset_server.load("production_facility.png");
-    commands.spawn((
-        ProcessingFacility {},
-        Stockpile {
-            kind: ResourceKind::Minerals,
-            amount: 0,
-            capacity: 1000,
-            radius: 64.0,
-        },
-        (
-            Sprite::from_image(production_facility_texture.clone()),
-            Transform::from_translation(vec3(-300., 0., GAMEPLAY_SPRITE_Z))
-                .with_scale(vec3(3., 3., 1.)),
-        ),
-    ));
+    scenario::spawn_default_player_scenario(&mut commands, &asset_server, &mut grid);
+    scenario::spawn_default_opponent_scenario(&mut commands, &asset_server, &mut grid);
 
     // background
     commands.spawn((
@@ -211,70 +174,10 @@ fn setup_things_startup(
     Ok(())
 }
 
-fn spawn_initial_swarm(commands: &mut Commands<'_, '_>, asset_server: &Res<'_, AssetServer>) {
-    let texture = asset_server.load("circle.png");
-    commands
-        .spawn(SwarmBundle {
-            swarm: Swarm {},
-            transform: Transform::default(),
-            global_transform: GlobalTransform::default(),
-            visibility: Visibility::default(),
-        })
-        .with_children(|p| {
-            for _ in 0..4 {
-                p.spawn((
-                    NanobotBundle::default(),
-                    Sprite::from_image(texture.clone()),
-                    Transform::from_translation(vec3(0., 0., GAMEPLAY_SPRITE_Z)),
-                ));
-            }
-            for _ in 0..100 {
-                p.spawn((
-                    NanobotBundle::default(),
-                    Sprite::from_image(texture.clone()),
-                    Transform::from_translation(vec3(100., 0., GAMEPLAY_SPRITE_Z)),
-                ));
-            }
-        });
-}
-
 fn error_handler(In(result): In<Result<()>>) {
     if let Err(err) = result {
         println!("encountered an error {:?}", err);
     }
-}
-
-/// Materialise the first opponent swarm on the far side of
-/// the map with a fixed Hauler-heavy production ratio and a
-/// small prepainted Gather/Defend territory, so a player
-/// running the game out of the box sees the opponent working
-/// through the same systems as the player swarm. Kept as a
-/// separate system because it needs `&mut World` access to
-/// paint the intent grid, while the main startup system
-/// stays `Commands`-based.
-fn setup_opponent_swarm_startup(world: &mut World) {
-    let opponent_world_pos = vec3(40.0 * ZONE_BLOCK_SIZE, 0.0, 0.0);
-    let mut opponent_ratio = ProductionRatio::new();
-    // Hauler-heavy so logistics keep up; a Defender
-    // presence so the prepainted base holds. No active AI.
-    opponent_ratio.set_target(NanobotType::Hauler, 6);
-    opponent_ratio.set_target(NanobotType::Defender, 4);
-    opponent_ratio.set_target(NanobotType::Worker, 4);
-
-    spawn_opponent_swarm(
-        world,
-        opponent_world_pos.truncate(),
-        opponent_ratio,
-        &[
-            PrepaintedIntent::new(IVec2::new(40, 0), IntentKind::Gather, PAINT_STRENGTH_CAP),
-            PrepaintedIntent::new(IVec2::new(41, 0), IntentKind::Defend, PAINT_STRENGTH_CAP),
-        ],
-        &[
-            SeedNanobots::new(NanobotType::Worker, 2),
-            SeedNanobots::new(NanobotType::Hauler, 1),
-            SeedNanobots::new(NanobotType::Defender, 1),
-        ],
-    );
 }
 
 #[cfg(test)]

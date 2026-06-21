@@ -1,5 +1,5 @@
 use bevy::{
-    prelude::{Commands, Entity, Query, Res, Transform, Vec2, Vec3, With},
+    prelude::{Commands, Entity, Quat, Query, Res, Transform, Vec2, Vec3, With},
     time::Time,
 };
 use rand::RngExt;
@@ -114,9 +114,64 @@ pub fn separation_system(mut query: Query<(&Transform, &mut VelocityComponent), 
     }
 }
 
+pub const MIN_FACING_SPEED: f32 = 0.001;
+
+pub fn rotation_for_direction(direction: Vec2) -> Option<Quat> {
+    if direction.length_squared() <= MIN_FACING_SPEED * MIN_FACING_SPEED {
+        return None;
+    }
+    let normalized = direction.normalize();
+    Some(Quat::from_rotation_z(-normalized.x.atan2(normalized.y)))
+}
+
 pub fn velocity_system(mut query: Query<(&mut VelocityComponent, &mut Transform)>) {
     for (mut velocity, mut transform) in query.iter_mut() {
         transform.translation += velocity.value.extend(0.);
+        if let Some(rotation) = rotation_for_direction(velocity.value) {
+            transform.rotation = rotation;
+        }
         velocity.value = Vec2::ZERO;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::f32::consts::{FRAC_PI_2, PI};
+
+    use bevy::prelude::EulerRot;
+
+    use super::*;
+
+    fn rotation_z(direction: Vec2) -> f32 {
+        let rotation = rotation_for_direction(direction).expect("moving direction should rotate");
+        let (_, _, z) = rotation.to_euler(EulerRot::XYZ);
+        z
+    }
+
+    fn assert_angle_close(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < 0.0001,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn facing_rotation_keeps_plus_y_as_unrotated_sprite_forward() {
+        assert_angle_close(rotation_z(Vec2::Y), 0.0);
+    }
+
+    #[test]
+    fn facing_rotation_turns_right_for_plus_x_motion() {
+        assert_angle_close(rotation_z(Vec2::X), -FRAC_PI_2);
+    }
+
+    #[test]
+    fn facing_rotation_turns_around_for_negative_y_motion() {
+        assert_angle_close(rotation_z(Vec2::NEG_Y).abs(), PI);
+    }
+
+    #[test]
+    fn facing_rotation_ignores_near_zero_motion() {
+        assert!(rotation_for_direction(Vec2::ZERO).is_none());
     }
 }

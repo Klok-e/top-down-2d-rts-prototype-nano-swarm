@@ -41,9 +41,9 @@ use std::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 
 use crate::ai::AiStateComponent;
-use crate::nanobot::autonomy::NanobotType;
+use crate::nanobot::autonomy::{Commitment, NanobotType};
 use crate::nanobot::components::{Health, Nanobot, Swarm, VelocityComponent};
-use crate::nanobot::NanobotBundle;
+use crate::nanobot::{NanobotBundle, NanobotSprites};
 use crate::resources::{ResourceKind, ResourceLedger, Stockpile};
 
 /// Material (in `ResourceKind::Minerals`) consumed to produce one
@@ -467,7 +467,9 @@ pub fn production_facility_pick_target_system(
 pub fn production_facility_work_system(
     mut commands: Commands,
     mut facilities: Query<(&mut ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
-    swarms: Query<Entity, With<Swarm>>,
+    swarms: Query<(Entity, &Transform), With<Swarm>>,
+    opponent_swarms: Query<(), With<OpponentSwarm>>,
+    sprites: Option<Res<NanobotSprites>>,
 ) {
     for (mut facility, transform, owner) in &mut facilities {
         let Some(target) = facility.current_target else {
@@ -485,11 +487,17 @@ pub fn production_facility_work_system(
         // the systems directly).
         let parent = owner
             .map(|OwnerSwarm(e)| Some(*e))
-            .unwrap_or_else(|| swarms.iter().next());
+            .unwrap_or_else(|| swarms.iter().next().map(|(entity, _)| entity));
         if let Some(swarm_entity) = parent {
             let pos = transform.translation.truncate();
+            let swarm_pos = swarms
+                .get(swarm_entity)
+                .map(|(_, swarm_transform)| swarm_transform.translation.truncate())
+                .unwrap_or(Vec2::ZERO);
+            let local_pos = pos - swarm_pos;
+            let is_opponent = opponent_swarms.get(swarm_entity).is_ok();
             commands.entity(swarm_entity).with_children(|p| {
-                p.spawn((
+                let mut entity = p.spawn((
                     NanobotBundle {
                         nanobot: Nanobot {},
                         nanobot_type: target,
@@ -497,8 +505,12 @@ pub fn production_facility_work_system(
                         ai_state: AiStateComponent::new(),
                         health: Health::default(),
                     },
-                    Transform::from_translation(pos.extend(0.0)),
+                    Commitment::Idle,
+                    Transform::from_translation(local_pos.extend(0.0)),
                 ));
+                if let Some(sprites) = sprites.as_deref() {
+                    entity.insert(Sprite::from_image(sprites.handle(target, is_opponent)));
+                }
             });
         }
         // Reset for the next cycle. Clearing the blocked set

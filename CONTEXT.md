@@ -25,16 +25,24 @@ A map object that contains extractable resources for gather work. It is separate
 _Avoid_: Mineral node, mineral patch, resource pile
 
 **Build Zone**:
-An intent zone where nanobots construct or repair player structures. Build zones include local stockpiles because production facilities and construction sites cannot store many resources at once.
-_Avoid_: Construction group, builder assignment
+An intent zone that marks free base space where automatic construction may place production facilities, sink stockpiles, and similar support structures. Build zones are not direct building placement commands; they constrain where base infrastructure may emerge.
+_Avoid_: Construction group, builder assignment, manual building placement
 
 **Defend Zone**:
 An intent zone where nanobots hold and protect an area. Painting defend intent into enemy territory functions as an attack or advance order; no separate attack zone is needed initially. Defend zones include chargers that resupply defenders, making cut-off or surrounded defenders weaker over time.
 _Avoid_: Fighter group, combat squad, attack zone
 
 **Stockpile**:
-A local resource buffer automatically created where an intent needs sustained material flow, such as gather zones and build zones. Haulers move materials between stockpiles, facilities, and other needs. Stockpiles are implied by intent zones rather than directly placed by the player.
+A local resource buffer automatically created where sustained material flow is needed. Source stockpiles stage gathered resources near deposits; sink stockpiles in build zones feed production facilities, chargers, and future infrastructure.
 _Avoid_: Deposit zone, global storage
+
+**Source Stockpile**:
+A stockpile placed near a resource deposit to receive resources extracted by workers before haulers move them onward.
+_Avoid_: Mining depot, deposit storage
+
+**Sink Stockpile**:
+A stockpile placed in a build zone or base area to feed production facilities, chargers, construction, and other infrastructure needs.
+_Avoid_: Global storage, base inventory
 
 **Charger**:
 A local support structure automatically created where defenders need resupply. Defender effectiveness depends on regularly visiting chargers; defenders that go too long without charging lose health and attack/defense strength. Charger creation responds to defend-zone load and existing charger busyness, and chargers require logistics support so isolated defenses degrade when haulers cannot reach them.
@@ -55,6 +63,10 @@ _Avoid_: Population wipeout, king unit death
 **Automatic Construction**:
 The swarm creates needed structures from demand pressure rather than direct player placement. Production facilities, stockpiles, chargers, and similar support structures emerge inside or near matching intent paint when existing capacity is too busy for current intent.
 _Avoid_: Manual building placement, blueprint palette
+
+**Planned Structure**:
+A not-yet-built support structure selected by automatic construction and waiting for worker time. Planned structures have a kind, owner, location, and build work remaining before they become physical structures.
+_Avoid_: Blueprint, ghost building, construction order
 
 **Maintenance**:
 Ongoing worker time required to keep structures functional. All structures degrade when not maintained, so overexpansion or cut-off worker access can cause infrastructure to weaken or collapse.
