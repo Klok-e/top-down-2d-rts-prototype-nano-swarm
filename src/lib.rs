@@ -107,8 +107,8 @@ pub const BACKGROUND_OVERLAY_Z: f32 = -100.0;
 /// paint.
 pub const ZONE_OVERLAY_Z: f32 = -99.0;
 
-/// Z-translation for gameplay sprites (minerals, processing
-/// facility, swarm children). Higher than the zone overlay so the
+/// Z-translation for gameplay sprites (resource deposits, production
+/// facilities, swarm children). Higher than the zone overlay so the
 /// swarm renders in front of the player's paint.
 pub const GAMEPLAY_SPRITE_Z: f32 = 1.0;
 
@@ -155,8 +155,8 @@ fn setup_things_startup(
 
     spawn_initial_swarm(&mut commands, &asset_server);
 
-    // minerals (deposit + visual marker)
-    let minerals_texture = asset_server.load("minerals.png");
+    // Resource Deposit (mineral-bearing deposit + visual marker)
+    let resource_deposit_texture = asset_server.load("resource_deposit.png");
     commands.spawn((
         Minerals {},
         ResourceDeposit {
@@ -166,14 +166,14 @@ fn setup_things_startup(
             radius: 64.0,
         },
         (
-            Sprite::from_image(minerals_texture.clone()),
+            Sprite::from_image(resource_deposit_texture.clone()),
             Transform::from_translation(vec3(-800., 0., GAMEPLAY_SPRITE_Z))
                 .with_scale(vec3(2., 2., 1.)),
         ),
     ));
 
-    // processing (stockpile + visual marker)
-    let processing_texture = asset_server.load("mineral processing.png");
+    // Production Facility (starting stockpile + visual marker)
+    let production_facility_texture = asset_server.load("production_facility.png");
     commands.spawn((
         ProcessingFacility {},
         Stockpile {
@@ -183,7 +183,7 @@ fn setup_things_startup(
             radius: 64.0,
         },
         (
-            Sprite::from_image(processing_texture.clone()),
+            Sprite::from_image(production_facility_texture.clone()),
             Transform::from_translation(vec3(-300., 0., GAMEPLAY_SPRITE_Z))
                 .with_scale(vec3(3., 3., 1.)),
         ),
@@ -320,8 +320,8 @@ mod overlay_transform_tests {
 
     #[test]
     fn zone_overlay_transform_sits_below_gameplay_sprite_z() {
-        // Gameplay sprites (minerals, processing facility, swarm
-        // children) all sit at `GAMEPLAY_SPRITE_Z`. The zone overlay
+        // Gameplay sprites (resource deposit, production facility,
+        // swarm children) all sit at `GAMEPLAY_SPRITE_Z`. The zone overlay
         // must stay below that so the swarm renders in front of the
         // player's paint.
         let zone = zone_overlay_transform(1024.0, 2048.0);

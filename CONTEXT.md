@@ -20,6 +20,10 @@ _Avoid_: Group zone, activity zone, command area
 An intent zone where nanobots extract resources from available deposits. Gather intent persists when local resources are depleted; workers leave when no useful work remains, and the zone can reactivate if resources appear later.
 _Avoid_: Mining zone, resource zone
 
+**Resource Deposit**:
+A map object that contains extractable resources for gather work. It is separate from the resource kind it contains, so a mineral-bearing deposit is still a resource deposit.
+_Avoid_: Mineral node, mineral patch, resource pile
+
 **Build Zone**:
 An intent zone where nanobots construct or repair player structures. Build zones include local stockpiles because production facilities and construction sites cannot store many resources at once.
 _Avoid_: Construction group, builder assignment
