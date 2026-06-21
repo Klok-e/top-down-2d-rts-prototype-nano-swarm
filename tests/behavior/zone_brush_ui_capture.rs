@@ -211,6 +211,37 @@ fn brush_paints_after_check_ui_clears_stale_over_ui_state() {
 }
 
 #[test]
+fn check_ui_interaction_keeps_capture_when_cursor_stays_over_unchanged_ui_node() {
+    // Regression for intent buttons: Bevy only changes `RelativeCursorPosition`
+    // when the cursor moves in/out. Holding the cursor still over a button
+    // must keep capture true on later frames; otherwise the world brush also
+    // consumes the click.
+    let mut app = App::new();
+    app.insert_resource(UiHandling::default());
+    app.add_systems(Update, check_ui_interaction);
+
+    app.world_mut().spawn((
+        Node::default(),
+        RelativeCursorPosition {
+            cursor_over: true,
+            normalized: None,
+        },
+    ));
+
+    app.update();
+    assert!(
+        app.world().resource::<UiHandling>().is_pointer_over_ui,
+        "first frame must capture cursor over UI"
+    );
+
+    app.update();
+    assert!(
+        app.world().resource::<UiHandling>().is_pointer_over_ui,
+        "unchanged cursor-over UI must keep capture active on later frames"
+    );
+}
+
+#[test]
 fn check_ui_interaction_ignores_no_pointer_capture_but_picks_up_other_nodes() {
     // The intent layer panel is a full-width layout anchor
     // (`left: 0`, `right: 0`). Without `NoPointerCapture` its
