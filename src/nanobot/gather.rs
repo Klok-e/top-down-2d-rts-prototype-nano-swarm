@@ -24,9 +24,15 @@
 
 use bevy::prelude::*;
 
+use crate::ai::get_world_from_zone;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::{best_candidate, Commitment, NanobotType, SoftWorkSlots};
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm, SwarmMember};
+use crate::nanobot::placement::{
+    find_source_stockpile_placement, SOURCE_STOCKPILE_FOOTPRINT_RADIUS,
+    SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PADDING, SOURCE_STOCKPILE_PLACEMENT_COUNT,
+    SOURCE_STOCKPILE_PLACEMENT_RADIUS,
+};
 use crate::nanobot::planned::{
     planned_visual_color, PlannedKind, PlannedStructure, PlannedStructureClaim,
     PlannedStructureProgress, PLANNED_STRUCTURE_FOOTPRINT,
@@ -292,6 +298,20 @@ pub(crate) fn has_any_near_source_stockpile(
 /// spawned earlier in this tick is not yet visible to the
 /// query but is still "real" for the reuse check).
 ///
+/// ## Placement (issue #24)
+///
+/// The position of a new planned structure is chosen by
+/// [`find_source_stockpile_placement`]. See that function
+/// and the `nanobot::placement` module docs for the full
+/// algorithm; in short, candidates are generated on a ring
+/// at [`SOURCE_STOCKPILE_PLACEMENT_RADIUS`] from the
+/// deposit, jittered deterministically, filtered by
+/// Gather-Zone containment and overlap (with
+/// [`SOURCE_STOCKPILE_PADDING`]), and scored by alignment
+/// with the expected haul direction. When every candidate
+/// is rejected, no planned structure is created and the
+/// demand is retried on a later tick.
+///
 /// Ownership: the planned structure is stamped with
 /// [`OwnerSwarm`] using the first [`Swarm`] in the world,
 /// matching the existing planned-structure auto-creation
@@ -307,19 +327,40 @@ pub fn source_stockpile_demand_system(
     deposits: Query<&Transform, With<ResourceDeposit>>,
     stockpiles: Query<(&Stockpile, &Transform)>,
     planned: Query<(&PlannedStructure, &Transform)>,
-    swarms: Query<Entity, With<Swarm>>,
+    swarms: Query<(Entity, &Transform), With<Swarm>>,
+    grid: Res<IntentGrid>,
 ) {
-    let first_swarm = swarms.iter().next();
+    // Single pass over the swarm query: we need both the
+    // first swarm's entity (for ownership stamping) and its
+    // transform (for the haul-direction fallback).
+    let (first_swarm, swarm_origin) = match swarms.iter().next() {
+        Some((entity, transform)) => (Some(entity), Some(transform.translation.truncate())),
+        None => (None, None),
+    };
     let mut deposits_seen: std::collections::HashSet<Entity> = std::collections::HashSet::new();
     for assignment in &gather_assignments {
         deposits_seen.insert(assignment.deposit);
     }
+    // Pre-compute the swarm-visible Gather and Build cells in
+    // world coordinates. The placement algorithm and the haul
+    // direction both consume these, so doing the grid walk
+    // once per tick is cheaper than once per deposit.
+    let mut gather_cells: Vec<IVec2> = Vec::new();
+    let mut build_worlds: Vec<Vec2> = Vec::new();
+    for (cell, intent_cell) in grid.iter_cells() {
+        if intent_cell.has(IntentKind::Gather) {
+            gather_cells.push(cell);
+        }
+        if intent_cell.has(IntentKind::Build) {
+            build_worlds.push(get_world_from_zone(cell));
+        }
+    }
     // Positions of Planned Source Stockpiles planned earlier
-    // in this tick. Passed to `has_any_near_source_stockpile`
-    // so two deposits processed in the same tick share a
-    // single planned structure (Bevy `Commands` are deferred,
-    // so the live `planned` query cannot see the in-tick
-    // spawns yet).
+    // in this tick. The placement algorithm treats them as
+    // obstacles so two deposits processed in the same tick
+    // share a single planned structure (Bevy `Commands` are
+    // deferred, so the live `planned` query cannot see the
+    // in-tick spawns yet).
     let mut newly_planned_positions: Vec<Vec2> = Vec::new();
     for deposit_entity in deposits_seen {
         let Ok(deposit_transform) = deposits.get(deposit_entity) else {
@@ -334,12 +375,46 @@ pub fn source_stockpile_demand_system(
         ) {
             continue;
         }
-        // Place the planned structure at the canonical offset
-        // from the deposit. The offset is small enough that
-        // the planned structure stays inside the deposit's
-        // intent grid cell, which keeps the "Source Stockpile
-        // inside the Gather Zone" contract honest for v1.
-        let placement_pos = deposit_pos + SOURCE_STOCKPILE_OFFSET;
+        // Build the obstacle list for this deposit: every
+        // existing Source Stockpile and every planned
+        // structure, plus any in-tick positions from this
+        // loop. Each entry carries its own center and
+        // half-footprint so the placement algorithm can
+        // generalize to mixed-size obstacles in the future.
+        let mut obstacles: Vec<(Vec2, f32)> = Vec::new();
+        obstacles.extend(
+            stockpiles
+                .iter()
+                .map(|(_, t)| (t.translation.truncate(), SOURCE_STOCKPILE_FOOTPRINT_RADIUS)),
+        );
+        obstacles.extend(
+            planned
+                .iter()
+                .map(|(_, t)| (t.translation.truncate(), SOURCE_STOCKPILE_FOOTPRINT_RADIUS)),
+        );
+        obstacles.extend(
+            newly_planned_positions
+                .iter()
+                .map(|p| (*p, SOURCE_STOCKPILE_FOOTPRINT_RADIUS)),
+        );
+        let haul_direction = compute_haul_direction(deposit_pos, &build_worlds, swarm_origin);
+        // Find a valid placement for the planned structure.
+        // `None` here means every candidate was rejected by
+        // the zone / overlap filter; the demand remains
+        // unsatisfied and is retried on a later tick.
+        let Some(placement_pos) = find_source_stockpile_placement(
+            deposit_pos,
+            &gather_cells,
+            &obstacles,
+            haul_direction,
+            SOURCE_STOCKPILE_PLACEMENT_RADIUS,
+            SOURCE_STOCKPILE_PLACEMENT_COUNT,
+            SOURCE_STOCKPILE_JITTER_AMPLITUDE,
+            SOURCE_STOCKPILE_FOOTPRINT_RADIUS,
+            SOURCE_STOCKPILE_PADDING,
+        ) else {
+            continue;
+        };
         let placement_cell = world_to_cell(placement_pos);
         newly_planned_positions.push(placement_pos);
         let mut entity_commands = commands.spawn((
@@ -355,6 +430,48 @@ pub fn source_stockpile_demand_system(
             entity_commands.insert(OwnerSwarm(swarm_entity));
         }
     }
+}
+
+/// Compute the expected haul direction from `deposit_pos`. The
+/// direction is the unit vector from the deposit to the
+/// nearest Build-painted cell's world center (in `build_worlds`),
+/// with a fallback to `swarm_origin` and a final fallback to a
+/// zero vector (no bias). The Build cell wins because the
+/// PRD's "expected haul direction should prefer a Build Zone
+/// or base/sink direction" rule treats the Build Zone as the
+/// primary sink; the swarm origin is the same destination
+/// when no Build Zone has been painted yet.
+fn compute_haul_direction(
+    deposit_pos: Vec2,
+    build_worlds: &[Vec2],
+    swarm_origin: Option<Vec2>,
+) -> Vec2 {
+    let nearest = build_worlds
+        .iter()
+        .min_by(|a, b| {
+            deposit_pos
+                .distance(**a)
+                .partial_cmp(&deposit_pos.distance(**b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .copied();
+    if let Some(target) = nearest {
+        let delta = target - deposit_pos;
+        if delta.length() > f32::EPSILON {
+            return delta.normalize();
+        }
+    }
+    if let Some(origin) = swarm_origin {
+        let delta = origin - deposit_pos;
+        if delta.length() > f32::EPSILON {
+            return delta.normalize();
+        }
+    }
+    // No Build cell, no swarm origin, or both are
+    // coincident with the deposit: the haul direction is
+    // unknown, so the placement algorithm falls back to its
+    // angle-index tie-breaker.
+    Vec2::ZERO
 }
 
 /// For each idle Worker with no in-flight gather or carry work, pick
