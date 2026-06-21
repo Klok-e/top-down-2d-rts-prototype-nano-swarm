@@ -124,7 +124,9 @@ Headless scripted playtests run in normal `cargo test`. If a playtest needs a re
 
 Screenshots are a scripted playtest technique, not a separate test category. For changes affecting shaders, UI layout, materials, cameras, render targets, or other visual appearance, agents must produce screenshot evidence in addition to any deterministic ECS assertions.
 
-Screenshot evidence must be inspected, not merely produced. The agent that produces screenshots must open/read the image artifacts, describe the relevant visual facts, and state whether they satisfy the acceptance criteria. For visual bug fixes, the verifier must independently inspect the screenshots before passing. If screenshots are ambiguous, improve the scripted setup or fail/needs-info with the exact blocker; do not pass on artifact existence alone.
+Screenshot evidence must be inspected, not merely produced. The agent that produces screenshots must open/read the image artifacts, describe the relevant visual facts, and state whether they satisfy the acceptance criteria. For visual bug fixes, the verifier must independently inspect the screenshots before passing. If screenshots are ambiguous, improve the scripted setup or fail/needs-info with the exact blocker; do not pass on artifact existence alone. Rust pixel assertions are useful deterministic checks, but they do not replace agent inspection for visual bug fixes.
+
+The preferred Bevy capture path is to spawn `bevy::render::view::screenshot::Screenshot::primary_window()`, observe `bevy::render::view::screenshot::save_to_disk(path)`, and wait for `ScreenshotCaptured` before continuing the scripted flow. Shared helpers that hide this ceremony may live in `tests/common/mod.rs` and may remain committed when they improve maintainability.
 
 Use a temporary ignored playtest for screenshot investigations:
 
