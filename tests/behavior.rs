@@ -42,6 +42,8 @@ mod source_stockpile_flow;
 mod source_stockpile_placement;
 #[path = "behavior/stockpile_and_haul.rs"]
 mod stockpile_and_haul;
+#[path = "behavior/structure_overlay.rs"]
+mod structure_overlay;
 #[path = "behavior/zone_brush_ui_capture.rs"]
 mod zone_brush_ui_capture;
 #[path = "behavior/zone_overlay_draw_order.rs"]
