@@ -4,6 +4,8 @@
 mod build_zone;
 #[path = "behavior/charger.rs"]
 mod charger;
+#[path = "behavior/charger_planned.rs"]
+mod charger_planned;
 #[path = "behavior/defend_zone.rs"]
 mod defend_zone;
 #[path = "behavior/full_source_stockpile.rs"]

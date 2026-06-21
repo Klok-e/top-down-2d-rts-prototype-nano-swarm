@@ -17,9 +17,10 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
         Charge, Charger, ChargerAssignment, ChargerProgress, DefendAssignment, DefendHold, Health,
-        Nanobot, SoftWorkSlots, CHARGE_DRAIN_PER_TICK, CHARGE_REFILL_PER_TICK,
-        DEFENDER_BASE_ATTACK, DEFENDER_BASE_DEFENSE, EMPTY_CHARGE_HEALTH_LOSS_PER_TICK,
-        LOW_CHARGE_THRESHOLD, MAX_CHARGE, NANOBOT_DEFAULT_MAX_HEALTH, WEAKENED_CHARGE_THRESHOLD,
+        Nanobot, PlannedKind, PlannedStructure, SoftWorkSlots, CHARGE_DRAIN_PER_TICK,
+        CHARGE_REFILL_PER_TICK, DEFENDER_BASE_ATTACK, DEFENDER_BASE_DEFENSE,
+        EMPTY_CHARGE_HEALTH_LOSS_PER_TICK, LOW_CHARGE_THRESHOLD, MAX_CHARGE,
+        NANOBOT_DEFAULT_MAX_HEALTH, WEAKENED_CHARGE_THRESHOLD,
     },
 };
 
@@ -27,12 +28,26 @@ use top_down_2d_rts_prototype_nano_swarm::{
 mod common;
 
 fn build_app() -> App {
-    common::sim_app_with_charge()
+    // Issue #28: Chargers emerge as Planned Structures and
+    // are built by a Worker. The behaviour tests that
+    // exercise the demand side need the planned-structure
+    // plugin loaded so the auto-creation system can spawn
+    // a plan and a Worker can build it. The
+    // `sim_app_with_charge_planned` seam bundles both
+    // plugins in the order the production code wires them.
+    common::sim_app_with_charge_planned()
 }
 
 fn charger_count(world: &mut World) -> usize {
     let mut q = world.query::<&Charger>();
     q.iter(world).count()
+}
+
+fn planned_charger_count(world: &mut World) -> usize {
+    let mut q = world.query::<&PlannedStructure>();
+    q.iter(world)
+        .filter(|p| p.kind == PlannedKind::Charger)
+        .count()
 }
 
 fn read_charge(app: &App, defender: Entity) -> Option<f32> {
@@ -52,10 +67,13 @@ fn read_health(app: &App, defender: Entity) -> Option<u32> {
 #[test]
 fn charger_auto_emerges_in_defend_cell_with_defender_load() {
     // Acceptance: "Chargers emerge from Defend Zone load..."
-    // A Defend-painted cell with a holding defender must gain
-    // a charger on the next tick. The charger lives in the
-    // cell so the player can see the support structure
-    // co-located with the defense.
+    // As of issue #28, demand creates a Planned Charger
+    // (not a completed Charger). A Defend-painted cell
+    // with a holding defender must gain a Planned Charger
+    // on the next tick. The plan lives in the cell so the
+    // player can see the support structure co-located with
+    // the defense; the completed Charger only appears
+    // after a Worker builds the plan.
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(1, 0);
@@ -71,8 +89,10 @@ fn charger_auto_emerges_in_defend_cell_with_defender_load() {
     // in the load count.
     common::spawn_defender_at(&mut app, cell_center);
 
-    // Pre-condition: zero chargers.
+    // Pre-condition: zero chargers and zero planned
+    // chargers.
     assert_eq!(charger_count(app.world_mut()), 0);
+    assert_eq!(planned_charger_count(app.world_mut()), 0);
 
     // Place a defender into hold on the same cell so the
     // auto-creation system sees load.
@@ -88,27 +108,40 @@ fn charger_auto_emerges_in_defend_cell_with_defender_load() {
 
     app.update();
 
+    // Demand created a planned charger; the completed
+    // Charger does NOT exist yet (a Worker must build the
+    // plan first).
+    assert_eq!(
+        planned_charger_count(app.world_mut()),
+        1,
+        "one planned charger must emerge from a Defend cell with a holding defender"
+    );
     assert_eq!(
         charger_count(app.world_mut()),
-        1,
-        "one charger must emerge from a Defend cell with a holding defender"
+        0,
+        "no completed charger must exist before a Worker builds the plan"
     );
-    // The charger is in the painted cell.
+    // The plan is in the painted cell and at the cell's
+    // world center.
     let world = app.world_mut();
-    let mut q = world.query::<(&Charger, &Transform)>();
-    let (c, t) = q.iter(world).next().expect("charger exists");
-    assert_eq!(c.cell, cell);
+    let mut q = world.query::<(&PlannedStructure, &Transform)>();
+    let (planned, transform) = q
+        .iter(world)
+        .find(|(p, _)| p.kind == PlannedKind::Charger)
+        .expect("Planned Charger exists");
+    assert_eq!(planned.cell, cell);
     assert!(
-        (t.translation.truncate() - cell_center).length() < 1.0,
-        "charger must be at the cell's world center"
+        (transform.translation.truncate() - cell_center).length() < 1.0,
+        "Planned Charger must be at the cell's world center"
     );
 }
 
 #[test]
 fn charger_does_not_emerge_in_cell_without_load() {
-    // Sanity: a Defend cell with no defenders must not spawn
-    // a charger. The "load" half of the emergence contract
-    // requires at least one defender committed to the cell.
+    // Sanity: a Defend cell with no defenders must not
+    // spawn a charger (planned or completed). The "load"
+    // half of the emergence contract requires at least one
+    // defender committed to the cell.
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(1, 0);
@@ -125,21 +158,34 @@ fn charger_does_not_emerge_in_cell_without_load() {
         0,
         "no charger without a holding defender"
     );
+    assert_eq!(
+        planned_charger_count(app.world_mut()),
+        0,
+        "no planned charger without a holding defender"
+    );
 }
 
 #[test]
 fn charger_emergence_respects_existing_charger_busyness() {
     // Acceptance: "Chargers emerge from Defend Zone load AND
-    // existing charger busyness." A cell with one charger and
-    // many defenders must spawn additional chargers; a cell
-    // with one charger and few defenders must not.
+    // existing charger busyness." A cell with one charger
+    // and many defenders must spawn additional chargers; a
+    // cell with one charger and few defenders must not.
     //
     // The MAX_DEFENDERS_PER_CHARGER threshold drives the
     // emergence: 1 charger covers up to 3 defenders; 4+
-    // defenders ask for a second charger. The test plants 5
-    // holding defenders in one cell, then asserts that a
-    // second charger appears and the first charger is still
-    // there (the existing one is not destroyed).
+    // defenders ask for a second charger. The test plants
+    // 5 holding defenders in one cell, then asserts that
+    // a second (planned) charger appears and the first
+    // charger is still there (the existing one is not
+    // destroyed).
+    //
+    // As of issue #28 the additional charger emerges as a
+    // Planned Charger (the demand path produces a plan, a
+    // Worker builds it, the completed Charger takes over).
+    // The busyness count includes BOTH completed Chargers
+    // AND Planned Chargers in the same cell so the
+    // auto-creation loop does not pile plans.
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(0, 0);
@@ -167,16 +213,33 @@ fn charger_emergence_respects_existing_charger_busyness() {
 
     app.update();
 
-    let count = charger_count(app.world_mut());
+    let completed = charger_count(app.world_mut());
+    let planned = planned_charger_count(app.world_mut());
+    let total = completed + planned;
     assert!(
-        count >= 2,
-        "busy cell must spawn an additional charger; got {count}"
+        total >= 2,
+        "busy cell must spawn an additional charger (completed={completed}, planned={planned})"
     );
-    // All chargers are in the same cell.
+    // The completed charger is still there (not destroyed).
+    assert_eq!(
+        completed, 1,
+        "pre-existing completed charger must not be destroyed by the demand loop"
+    );
+    // And the demand produced at least one more plan.
+    assert!(
+        planned >= 1,
+        "busy cell must plan at least one additional charger; got {planned}"
+    );
+    // All chargers (planned and completed) are in the
+    // same cell.
     let world = app.world_mut();
     let mut q = world.query::<&Charger>();
     for c in q.iter(world) {
         assert_eq!(c.cell, cell);
+    }
+    let mut qp = world.query::<&PlannedStructure>();
+    for p in qp.iter(world).filter(|p| p.kind == PlannedKind::Charger) {
+        assert_eq!(p.cell, cell);
     }
 }
 
