@@ -11,9 +11,8 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
-        MaintenanceAssignment, MaintenanceProgress, Structure, StructureKind,
-        MAINTENANCE_BUFFER_TICKS, MAINTENANCE_NEEDS_THRESHOLD, MAINTENANCE_WORK_DURATION_TICKS,
-        STRUCTURE_MAX_HEALTH,
+        MaintenanceAssignment, MaintenanceProgress, Structure, MAINTENANCE_BUFFER_TICKS,
+        MAINTENANCE_NEEDS_THRESHOLD, MAINTENANCE_WORK_DURATION_TICKS, STRUCTURE_MAX_HEALTH,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
 };
@@ -309,60 +308,5 @@ fn idle_worker_picks_maintenance_over_idling_when_structure_is_stale() {
     assert!(
         has_marker,
         "worker must receive a maintenance assignment when a stale structure is in the cell"
-    );
-}
-
-#[test]
-fn maintenance_is_skipped_when_worker_is_busy_with_build() {
-    // Sanity check: a worker already doing build work in a
-    // build cell must not also be assigned to maintenance in
-    // the same tick. The maintenance system must filter out
-    // workers with build markers, otherwise the two systems
-    // would double-book the work slot.
-    let mut app = build_app();
-    let cell = IVec2::new(0, 0);
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
-    let center = common::cell_world_center(cell);
-    // Both a build site and a stale structure exist in the
-    // same cell. The build system wins, the maintenance system
-    // must not also pick the worker.
-    use top_down_2d_rts_prototype_nano_swarm::nanobot::BuildSite;
-    app.world_mut().spawn((
-        BuildSite::new(cell, StructureKind::Basic),
-        Transform::from_translation(center.extend(0.0)),
-    ));
-    let structure = common::spawn_structure_at(&mut app, center);
-    app.world_mut()
-        .entity_mut(structure)
-        .get_mut::<Structure>()
-        .unwrap()
-        .ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
-    let worker = common::spawn_worker_at(&mut app, center);
-
-    app.update();
-
-    let world = app.world();
-    let has_build_marker = world
-        .entity(worker)
-        .get::<top_down_2d_rts_prototype_nano_swarm::nanobot::BuildAssignment>()
-        .is_some()
-        || world
-            .entity(worker)
-            .get::<top_down_2d_rts_prototype_nano_swarm::nanobot::BuildProgress>()
-            .is_some();
-    let has_maint_marker = world
-        .entity(worker)
-        .get::<MaintenanceAssignment>()
-        .is_some()
-        || world.entity(worker).get::<MaintenanceProgress>().is_some();
-    assert!(
-        has_build_marker,
-        "build system should pick the build site first"
-    );
-    assert!(
-        !has_maint_marker,
-        "maintenance system must not double-book a worker who is already on build work"
     );
 }

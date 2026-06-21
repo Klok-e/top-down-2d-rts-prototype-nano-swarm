@@ -1,7 +1,5 @@
 #![allow(clippy::duplicate_mod)]
 
-#[path = "behavior/build_zone.rs"]
-mod build_zone;
 #[path = "behavior/charger.rs"]
 mod charger;
 #[path = "behavior/charger_planned.rs"]
@@ -22,6 +20,8 @@ mod intent_brush;
 mod maintenance;
 #[path = "behavior/nanobot_autonomy.rs"]
 mod nanobot_autonomy;
+#[path = "behavior/no_instant_spawning.rs"]
+mod no_instant_spawning;
 #[path = "behavior/opponent_swarm.rs"]
 mod opponent_swarm;
 #[path = "behavior/per_swarm_intent_ownership.rs"]

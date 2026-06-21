@@ -37,10 +37,10 @@ use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
     intent::IntentGrid,
     nanobot::{
-        bot_debug_circle_system, move_velocity_system, separation_system, velocity_system,
-        BuildPlugin, Charge, ChargePlugin, Charger, CollapsePlugin, Commitment, DefendPlugin,
-        GatherPlugin, HaulPlugin, Health, MaintenancePlugin, Nanobot, NanobotBundle, NanobotType,
-        OwnerSwarm, PlannedStructure, PlannedStructurePlugin, ProductionFacility, ProductionPlugin,
+        bot_debug_circle_system, move_velocity_system, separation_system, velocity_system, Charge,
+        ChargePlugin, Charger, CollapsePlugin, Commitment, DefendPlugin, GatherPlugin, HaulPlugin,
+        Health, MaintenancePlugin, Nanobot, NanobotBundle, NanobotType, OwnerSwarm,
+        PlannedStructure, PlannedStructurePlugin, ProductionFacility, ProductionPlugin,
         SoftWorkSlots, Structure, StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile},
@@ -131,12 +131,25 @@ pub fn sim_app_with_gather_haul() -> App {
     app
 }
 
-/// `sim_app` + gather + build. The gather plugin is registered for
-/// completeness so the shared nanobot chain does not panic if a
-/// future test in this file spawns a deposit. Build is the focus.
+/// `sim_app` + gather. After issue #29 the legacy `BuildPlugin`
+/// is no longer registered, so this helper is just an alias for
+/// [`sim_app_with_gather`]. It stays as a named entry point so
+/// the maintenance test fixtures keep a stable "this app includes
+/// the gather chain" seam as the test list evolves.
 pub fn sim_app_with_build() -> App {
+    sim_app_with_gather()
+}
+
+/// `sim_app` + gather + planned structure. The issue #29
+/// regression tests use this builder to verify that Build paint
+/// routes through `PlannedStructurePlugin` without any legacy
+/// `BuildSite` auto-spawn path running. The helper intentionally
+/// does NOT include the legacy `BuildPlugin`; the regression
+/// suite asserts the planned-structure path is the only one
+/// that produces a structure.
+pub fn sim_app_with_build_planned() -> App {
     let mut app = sim_app_with_gather();
-    app.add_plugins(BuildPlugin);
+    app.add_plugins(PlannedStructurePlugin);
     app
 }
 
