@@ -92,43 +92,6 @@ fn stockpile_auto_emerges_in_gather_cell_with_demand() {
 }
 
 #[test]
-fn stockpile_auto_emerges_in_build_cell_with_demand() {
-    // Build-painted cells count as "sustained demand" too --
-    // a Build zone needs local materials on hand. Issue #23
-    // removes the Gather-cell branch of the auto-creation
-    // (Source Stockpiles go through the planned-structure
-    // flow), so a second Gather-painted cell does NOT spawn
-    // a second stockpile on its own.
-    let mut app = build_app();
-    let cell = IVec2::new(1, 1);
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
-
-    app.update();
-
-    assert_eq!(stockpile_count(app.world_mut()), 1);
-    // A Gather-painted cell no longer auto-spawns a
-    // completed stockpile (issue #23 contract). The second
-    // cell stays empty until a Worker is routed there and
-    // the demand system plans a Source Stockpile.
-    let other = IVec2::new(2, 2);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        other,
-        IntentKind::Gather,
-        PAINT_STRENGTH_CAP,
-    );
-    for _ in 0..3 {
-        app.update();
-    }
-    assert_eq!(
-        stockpile_count(app.world_mut()),
-        1,
-        "Gather paint alone does not spawn a stockpile; only the Build cell counts"
-    );
-}
-
-#[test]
 fn stockpile_not_duplicated_when_one_already_exists() {
     // Once a cell has a stockpile (auto-created or manually
     // placed), repeated ticks must not spawn another one. The

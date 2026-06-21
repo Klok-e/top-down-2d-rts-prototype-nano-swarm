@@ -161,13 +161,6 @@ pub fn hauler_corridor_waypoint_system(
     }
 }
 
-/// Default kind, capacity, and radius for an auto-created stockpile.
-/// Matches the manual stockpile spawned in `lib.rs` so the swarm
-/// cannot tell the two apart.
-pub const AUTO_STOCKPILE_KIND: ResourceKind = ResourceKind::Minerals;
-pub const AUTO_STOCKPILE_CAPACITY: u32 = 1000;
-pub const AUTO_STOCKPILE_RADIUS: f32 = 64.0;
-
 /// Find the highest-paint corridor cell on the straight line from
 /// `start` to `end` and return its world center. Returns `None` when
 /// no corridor is painted on any sampled cell on the line, or when
@@ -638,64 +631,22 @@ pub fn hauler_delivery_system(
     }
 }
 
-/// Walk the [`IntentGrid`] and spawn a new [`Stockpile`] in any
-/// Build cell that has paint but no stockpile. The acceptance
-/// criterion is "stockpiles emerge automatically from sustained
-/// build demand"; painting the cell is the player's expression
-/// of that demand.
+/// Plugin that wires the hauler systems into the Update
+/// schedule. The chain runs after `move_velocity_system` so the
+/// movement system has already pruned arrived bots (which is the
+/// trigger the arrive and delivery systems wait for).
 ///
-/// Gather cells are deliberately skipped: Source Stockpiles in
-/// Gather zones are not auto-created as completed structures.
-/// They emerge through the planned-structure lifecycle (see
-/// `source_stockpile_demand_system` in `gather.rs`): when a
-/// Worker is assigned to a Gather-overlapped deposit, a
-/// Planned Source Stockpile is created near the deposit, a
-/// Worker claims and builds it, and only then does it become a
-/// physical Stockpile. This is the issue #23 acceptance bullet
-/// "no completed Source Stockpile appears instantly from Gather
-/// paint alone".
-///
-/// The system reads the current set of stockpile positions every
-/// tick rather than caching it, so a destroyed stockpile is
-/// automatically respawned on the next tick if the demand is
-/// still painted.
-pub fn stockpile_auto_creation_system(
-    mut commands: Commands,
-    grid: Res<IntentGrid>,
-    stockpiles: Query<&Transform, With<Stockpile>>,
-) {
-    let mut cells_with_stockpile: std::collections::HashSet<IVec2> =
-        std::collections::HashSet::new();
-    for transform in &stockpiles {
-        cells_with_stockpile.insert(world_to_cell(transform.translation.truncate()));
-    }
-    for (cell, intent_cell) in grid.iter_cells() {
-        if intent_cell.is_empty() {
-            continue;
-        }
-        if !intent_cell.has(IntentKind::Build) {
-            continue;
-        }
-        if cells_with_stockpile.contains(&cell) {
-            continue;
-        }
-        commands.spawn((
-            Stockpile {
-                kind: AUTO_STOCKPILE_KIND,
-                amount: 0,
-                capacity: AUTO_STOCKPILE_CAPACITY,
-                radius: AUTO_STOCKPILE_RADIUS,
-            },
-            Transform::from_translation(get_world_from_zone(cell).extend(0.0)),
-        ));
-    }
-}
-
-/// Plugin that wires the hauler systems and the stockpile
-/// auto-creation system into the Update schedule. The chain runs
-/// after `move_velocity_system` so the movement system has already
-/// pruned arrived bots (which is the trigger the arrive and
-/// delivery systems wait for).
+/// Note: the previous "instant stockpile" auto-creation system
+/// (issue #8's `stockpile_auto_creation_system`) was removed in
+/// issue #26. Sink Stockpiles now emerge through the planned
+/// structure lifecycle in [`PlannedStructurePlugin`], where a
+/// Build-painted cell plans a `PlannedKind::SinkStockpile` that
+/// a Worker builds into a completed `Stockpile` stamped with
+/// [`crate::resources::StockpileRole::Sink`]. Source Stockpiles
+/// follow the same lifecycle but live in Gather cells (see
+/// [`crate::nanobot::gather::source_stockpile_demand_system`]).
+/// There is no longer a path that spawns a completed `Stockpile`
+/// directly from Build paint.
 pub struct HaulPlugin;
 
 impl Plugin for HaulPlugin {
@@ -708,7 +659,6 @@ impl Plugin for HaulPlugin {
                 hauler_load_system,
                 hauler_carry_assign_system,
                 hauler_delivery_system,
-                stockpile_auto_creation_system,
                 hauler_corridor_waypoint_system,
             )
                 .chain()

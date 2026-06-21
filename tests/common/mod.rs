@@ -439,13 +439,32 @@ pub fn spawn_structure_at(app: &mut App, world_pos: Vec2) -> Entity {
 /// compare colors against the same starting state the
 /// production code produces.
 pub fn spawn_planned_structure_at_cell(app: &mut App, cell: IVec2) -> Entity {
+    spawn_planned_structure_of_kind_at_cell(
+        app,
+        cell,
+        top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedKind::SourceStockpile,
+    )
+}
+
+/// Spawn a fresh [`PlannedStructure`] in `cell` of the given
+/// `kind`. Use this when a test needs to drive the
+/// build/claim flow for a kind other than the default
+/// `SourceStockpile` (e.g. issue #26's Sink Stockpile). The
+/// planned visual is included so tests that pin the visual
+/// flip can compare colors against the same starting state
+/// the production code produces.
+pub fn spawn_planned_structure_of_kind_at_cell(
+    app: &mut App,
+    cell: IVec2,
+    kind: top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedKind,
+) -> Entity {
     use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-        planned_visual_color, PlannedKind, PLANNED_STRUCTURE_FOOTPRINT,
+        planned_visual_color, PLANNED_STRUCTURE_FOOTPRINT,
     };
     let center = cell_world_center(cell);
     app.world_mut()
         .spawn((
-            PlannedStructure::new(PlannedKind::SourceStockpile, cell),
+            PlannedStructure::new(kind, cell),
             Sprite {
                 color: planned_visual_color(),
                 custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),

@@ -88,6 +88,45 @@ impl Stockpile {
     }
 }
 
+/// Distinguishes a built [`Stockpile`] by its placement role in
+/// the swarm's logistics network. The shape and behaviour of the
+/// buffer are the same (both carry `ResourceKind` + amount +
+/// capacity + radius), but the demand system that creates it
+/// and the proximity checks that consult it differ by role:
+///
+///   - `Source` stockpiles stage gathered resources near
+///     `ResourceDeposit`s. The gather worker's "any near usable
+///     Source Stockpile" check (issue #23) counts only these.
+///   - `Sink` stockpiles live in `Build` cells and feed
+///     production facilities, chargers, construction, and
+///     future base infrastructure. A hauler's transport pair
+///     can deliver into either role; a worker's tiny delivery
+///     can also land in either role when one is closer than the
+///     other, but the typical Gather flow ends at a `Source`.
+///
+/// The marker is independent of [`Stockpile`] so the existing
+/// `Stockpile` data shape stays stable: tests and gameplay
+/// code that already reason about a bare `Stockpile` continue
+/// to work, and the role is a precise filter for the
+/// Source-only checks. A `Stockpile` without the marker is
+/// treated as `Source` (the legacy default) for the proximity
+/// checks, which keeps older hand-spawned stockpiles green
+/// while the new Sink Stockpiles are stamped at the planned
+/// structure's promotion step.
+#[derive(Debug, Component, Default, Clone, Copy, PartialEq, Eq)]
+pub enum StockpileRole {
+    /// Built from a `PlannedKind::SourceStockpile` plan near a
+    /// `ResourceDeposit`. Counts as a "near usable Source
+    /// Stockpile" for the gather worker arrive / demand
+    /// systems.
+    #[default]
+    Source,
+    /// Built from a `PlannedKind::SinkStockpile` plan inside a
+    /// Build cell. Feeds the base; not a Source for the gather
+    /// flow.
+    Sink,
+}
+
 /// Swarm-wide resource totals. Inserted as a Bevy [`Resource`]
 /// so future systems (production, maintenance) can ask "how much
 /// of `kind` does the swarm have?" without scanning every entity.
@@ -218,5 +257,16 @@ mod tests {
         ledger.add(ResourceKind::Minerals, u32::MAX);
         ledger.add(ResourceKind::Minerals, 1);
         assert_eq!(ledger.total(ResourceKind::Minerals), u32::MAX);
+    }
+
+    #[test]
+    fn stockpile_role_default_is_source() {
+        // The default role is `Source` for back-compat: a
+        // hand-spawned `Stockpile` without an explicit role
+        // marker still satisfies the gather worker's
+        // "near usable Source" check, so pre-existing
+        // tests that spawn `Stockpile`s directly keep
+        // passing.
+        assert_eq!(StockpileRole::default(), StockpileRole::Source);
     }
 }

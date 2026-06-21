@@ -18,9 +18,11 @@
 //!    minerals; the only cost is worker time.
 //! 4. When `work_remaining` reaches 0, the planned structure
 //!    is replaced by the appropriate completed structure for
-//!    its kind. The foundation's demo kind is
-//!    [`PlannedKind::SourceStockpile`], which completes into
-//!    a [`crate::resources::Stockpile`].
+//!    its kind. The foundation ships two kinds:
+//!    [`PlannedKind::SourceStockpile`] and
+//!    [`PlannedKind::SinkStockpile`], both of which complete
+//!    into a [`crate::resources::Stockpile`] stamped with
+//!    the matching [`crate::resources::StockpileRole`].
 //!
 //! State machine carried on the worker by marker components:
 //!
@@ -41,21 +43,24 @@
 //!
 //! Visual distinction: planned structures render with a
 //! semi-transparent planned color ([`planned_visual_color`])
-//! and a fixed footprint size. Completed Source Stockpiles
-//! render with a different (full-opacity) color and the same
-//! footprint. Tests can pin the distinction by reading the
-//! `Sprite` `color` channel, or by reading the component
-//! (`PlannedStructure` vs `Stockpile`).
+//! and a fixed footprint size. Completed structures
+//! (Source and Sink Stockpiles) render with a different
+//! (full-opacity) color and the same footprint. Tests can
+//! pin the distinction by reading the `Sprite` `color`
+//! channel, or by reading the component (`PlannedStructure`
+//! vs `Stockpile` + `StockpileRole`).
+
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
 use crate::ai::get_world_from_zone;
 use crate::intent::{IntentGrid, IntentKind};
-use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm};
+use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm, SwarmId};
 use crate::nanobot::consts::STOP_THRESHOLD;
 use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::production::OwnerSwarm;
-use crate::resources::{ResourceKind, Stockpile};
+use crate::resources::{ResourceKind, Stockpile, StockpileRole};
 use crate::GAMEPLAY_SPRITE_Z;
 
 /// Number of worker-time ticks required to finish a planned
@@ -76,15 +81,25 @@ pub const PLANNED_STRUCTURE_FOOTPRINT: f32 = 64.0;
 ///
 /// The PRD names Source Stockpile, Sink Stockpile, Production
 /// Facility, and Charger as the eventual kinds. The
-/// foundation slice ships the lifecycle and one demo kind so
-/// the rest of the project has a stable, working example to
-/// migrate the other kinds onto.
+/// foundation slice ships the lifecycle plus the Source and
+/// Sink Stockpile kinds (issue #26 migrates Sink Stockpiles
+/// onto the planned-structure lifecycle). Production
+/// Facility and Charger are the next kinds to add when those
+/// slices land.
 #[derive(Debug, Component, Default, Clone, Copy, PartialEq, Eq)]
 pub enum PlannedKind {
     /// Completes into a [`Stockpile`] (Source Stockpile in the
     /// glossary's role). This is the foundation's demo kind.
     #[default]
     SourceStockpile,
+    /// Completes into a [`Stockpile`] marked as a Sink
+    /// Stockpile in the base logistics network. Lives in a
+    /// `Build`-painted cell (the Build Zone is the placement
+    /// constraint); the demand system plans one per Build
+    /// cell on the Build Zone owner's side, and a Worker
+    /// builds it through the same lifecycle as the Source
+    /// Stockpile.
+    SinkStockpile,
 }
 
 impl PlannedKind {
@@ -93,16 +108,18 @@ impl PlannedKind {
     pub const fn index(self) -> usize {
         match self {
             PlannedKind::SourceStockpile => 0,
+            PlannedKind::SinkStockpile => 1,
         }
     }
 
     /// Number of distinct planned kinds the foundation slice
     /// models.
-    pub const COUNT: usize = 1;
+    pub const COUNT: usize = 2;
 
     /// Every planned kind in stable declaration order. Useful
     /// for tests and future "iterate every kind" loops.
-    pub const ALL: [PlannedKind; Self::COUNT] = [PlannedKind::SourceStockpile];
+    pub const ALL: [PlannedKind; Self::COUNT] =
+        [PlannedKind::SourceStockpile, PlannedKind::SinkStockpile];
 }
 
 /// A visible, not-yet-built support structure. Lives in a
@@ -155,17 +172,18 @@ impl PlannedStructure {
 /// Color the planned-structure visual uses. Semi-transparent
 /// so the player can still see the underlying map and so the
 /// structure is clearly "not finished yet" at a glance. The
-/// completed Source Stockpile uses [`completed_visual_color`]
-/// instead, so the visual flip on completion is visible even
-/// without a sprite swap.
+/// completed structure (Source or Sink Stockpile) uses
+/// [`completed_visual_color`] instead, so the visual flip on
+/// completion is visible even without a sprite swap.
 pub const fn planned_visual_color() -> Color {
     Color::srgba(0.6, 0.6, 0.7, 0.5)
 }
 
-/// Color the completed Source Stockpile visual uses. Full
-/// opacity and a different hue from the planned visual so the
-/// promotion moment is visible. Tests can pin the distinction
-/// by reading the `Sprite` `color` field.
+/// Color the completed structure visual uses (Source and
+/// Sink Stockpiles both). Full opacity and a different hue
+/// from the planned visual so the promotion moment is
+/// visible. Tests can pin the distinction by reading the
+/// `Sprite` `color` field.
 pub const fn completed_visual_color() -> Color {
     Color::srgba(0.2, 0.6, 0.3, 1.0)
 }
@@ -192,41 +210,43 @@ pub struct PlannedStructureProgress {
 }
 
 /// Walk the [`IntentGrid`] and spawn a new
-/// [`PlannedStructure`] in any Build cell that has paint but
-/// no existing planned or completed structure. The foundation
-/// slice models only the Source Stockpile demo kind; later
-/// issues migrate the other kinds.
+/// [`PlannedStructure`] of [`PlannedKind::SinkStockpile`] in
+/// any Build cell that has paint but no existing planned or
+/// completed structure.
+///
+/// Each Build-painted cell becomes a Planned Sink Stockpile
+/// at the cell's world center; the completion path
+/// (see [`promote_planned_to_completion`]) then turns it
+/// into a real `Stockpile` after a Worker spends its build
+/// budget. Source Stockpiles follow the same lifecycle but
+/// are created by a separate demand system
+/// ([`crate::nanobot::gather::source_stockpile_demand_system`])
+/// that places plans on a ring around `ResourceDeposit`s.
 ///
 /// Cells that already hold a planned or completed structure
-/// are skipped so the swarm cannot pile multiple construction
-/// targets into a single cell. The planned structure is
-/// spawned at the cell's world center with the planned
-/// visual, so it is visible from the moment it exists.
+/// are skipped so the swarm cannot pile multiple
+/// construction targets into a single cell.
 ///
-/// Ownership: the planned structure is stamped with
-/// [`OwnerSwarm`] using the first [`Swarm`] in the world. The
-/// foundation slice only has one swarm (the player); a
-/// per-swarm filter tied to the painted cell's intent owner
-/// is a follow-up. The marker is present from day one so the
-/// data model is stable, and the promotion path preserves
-/// [`OwnerSwarm`] on the completed structure.
+/// Ownership: the plan is stamped with [`OwnerSwarm`] using
+/// the Build cell's intent owner (issue #20's per-swarm
+/// intent ownership). Unowned paint falls back to the first
+/// [`Swarm`] in the world, matching the unowned-paint
+/// contract in the rest of the simulation. The promotion
+/// path preserves [`OwnerSwarm`] on the completed
+/// structure.
 #[allow(clippy::type_complexity)]
 pub fn planned_structure_auto_creation_system(
     mut commands: Commands,
     grid: Res<IntentGrid>,
     existing_targets: Query<&Transform, Or<(With<PlannedStructure>, With<Stockpile>)>>,
-    swarms: Query<Entity, With<Swarm>>,
+    swarms: Query<(Entity, &SwarmId), With<Swarm>>,
 ) {
-    let mut cells_with_target: std::collections::HashSet<IVec2> = std::collections::HashSet::new();
+    let mut cells_with_target: HashSet<IVec2> = HashSet::new();
     for transform in &existing_targets {
         cells_with_target.insert(world_to_cell(transform.translation.truncate()));
     }
-    // First swarm in the world is the owner. The fallback
-    // (no swarm) leaves the planned structure unowned, which
-    // matches the unowned-paint contract in the rest of the
-    // simulation: an unowned structure is visible to every
-    // swarm and ignored by the per-swarm intent filter.
-    let owner = swarms.iter().next();
+    let swarm_by_id: HashMap<SwarmId, Entity> = swarms.iter().map(|(e, id)| (*id, e)).collect();
+    let fallback_owner = swarms.iter().next().map(|(e, _)| e);
     for (cell, intent_cell) in grid.iter_cells() {
         if !intent_cell.has(IntentKind::Build) {
             continue;
@@ -234,13 +254,16 @@ pub fn planned_structure_auto_creation_system(
         if cells_with_target.contains(&cell) {
             continue;
         }
+        let owner = intent_cell
+            .owner(IntentKind::Build)
+            .and_then(|id| swarm_by_id.get(&id).copied())
+            .or(fallback_owner);
         let center = get_world_from_zone(cell);
         let mut entity_commands = commands.spawn((
-            PlannedStructure::new(PlannedKind::SourceStockpile, cell),
-            // Visually distinct from completed structures:
-            // semi-transparent planned color, fixed footprint.
-            // The completed promotion replaces this Sprite with
-            // one carrying [`completed_visual_color`].
+            PlannedStructure::new(PlannedKind::SinkStockpile, cell),
+            // Semi-transparent planned color; the completion
+            // promotion swaps this Sprite for one carrying
+            // [`completed_visual_color`].
             Sprite {
                 color: planned_visual_color(),
                 custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
@@ -451,47 +474,48 @@ fn release_planned_worker(commands: &mut Commands, worker_entity: Entity) {
 /// Promote a finished [`PlannedStructure`] to the completed
 /// structure for its kind, at the planned structure's world
 /// position. The promotion removes the `PlannedStructure`
-/// component and replaces the planned visual with the
-/// completed visual; the `Transform` is preserved by
-/// Bevy's component-merge semantics.
+/// component, swaps the planned visual for the completed
+/// visual, and stamps the matching [`StockpileRole`] on the
+/// completed entity. The `Transform` is preserved by Bevy's
+/// component-merge semantics.
 ///
-/// For the foundation slice, the only kind is
-/// [`PlannedKind::SourceStockpile`], which completes into a
-/// [`Stockpile`]. Future kinds (Sink Stockpile, Production
-/// Facility, Charger) extend this function with their own
-/// completion shapes -- the lifecycle is shared, only the
-/// per-kind completion payload differs.
+/// Both shipped kinds complete into a [`Stockpile`]: a
+/// Source Stockpile carries [`StockpileRole::Source`], a
+/// Sink Stockpile carries [`StockpileRole::Sink`]. Future
+/// kinds (Production Facility, Charger) extend this
+/// function with their own completion shapes -- the
+/// lifecycle is shared, only the per-kind completion
+/// payload differs.
 fn promote_planned_to_completion(
     commands: &mut Commands,
     planned_entity: Entity,
     kind: PlannedKind,
     world_pos: Vec2,
 ) {
-    match kind {
-        PlannedKind::SourceStockpile => {
-            commands.entity(planned_entity).remove::<PlannedStructure>();
-            // The visual flip is the visible "build finished"
-            // moment. Re-insert a Sprite with the completed
-            // color so the player can read the build state
-            // from a glance. Bevy replaces the old Sprite
-            // component on `insert`, so the planned visual
-            // does not leak through.
-            commands.entity(planned_entity).insert((
-                Stockpile {
-                    kind: ResourceKind::Minerals,
-                    amount: 0,
-                    capacity: 1000,
-                    radius: 32.0,
-                },
-                Sprite {
-                    color: completed_visual_color(),
-                    custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
-                    ..default()
-                },
-                Transform::from_translation(world_pos.extend(GAMEPLAY_SPRITE_Z)),
-            ));
-        }
-    }
+    let role = match kind {
+        PlannedKind::SourceStockpile => StockpileRole::Source,
+        PlannedKind::SinkStockpile => StockpileRole::Sink,
+    };
+    commands.entity(planned_entity).remove::<PlannedStructure>();
+    // The visual flip is the visible "build finished"
+    // moment. Bevy replaces the old Sprite component on
+    // `insert`, so the planned visual does not leak
+    // through.
+    commands.entity(planned_entity).insert((
+        Stockpile {
+            kind: ResourceKind::Minerals,
+            amount: 0,
+            capacity: 1000,
+            radius: 32.0,
+        },
+        role,
+        Sprite {
+            color: completed_visual_color(),
+            custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
+            ..default()
+        },
+        Transform::from_translation(world_pos.extend(GAMEPLAY_SPRITE_Z)),
+    ));
 }
 
 /// Plugin that wires the planned-structure systems into the
@@ -522,26 +546,13 @@ mod tests {
     //! Pure-helper unit tests. The end-to-end contracts
     //! (auto-creation, claim, reservation, progress,
     //! completion, no-material-cost) are covered by
-    //! `tests/behavior/planned_structure.rs`.
+    //! `tests/behavior/planned_structure.rs`. The
+    //! `PlannedKind` enum-shape contracts (default,
+    //! `ALL`, stable indexes) live in
+    //! `tests/behavior/sink_stockpile.rs` as part of the
+    //! issue #26 acceptance suite.
 
     use super::*;
-
-    #[test]
-    fn planned_kind_default_is_source_stockpile() {
-        assert_eq!(PlannedKind::default(), PlannedKind::SourceStockpile);
-    }
-
-    #[test]
-    fn planned_kind_all_covers_demos() {
-        let kinds: Vec<PlannedKind> = PlannedKind::ALL.to_vec();
-        assert_eq!(kinds.len(), PlannedKind::COUNT);
-        assert!(kinds.contains(&PlannedKind::SourceStockpile));
-    }
-
-    #[test]
-    fn planned_kind_index_is_stable() {
-        assert_eq!(PlannedKind::SourceStockpile.index(), 0);
-    }
 
     #[test]
     fn planned_structure_starts_unclaimed_with_full_budget() {

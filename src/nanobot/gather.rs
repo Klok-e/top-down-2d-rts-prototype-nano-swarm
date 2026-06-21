@@ -38,7 +38,7 @@ use crate::nanobot::planned::{
     PlannedStructureProgress, PLANNED_STRUCTURE_FOOTPRINT,
 };
 use crate::nanobot::production::OwnerSwarm;
-use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
+use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole};
 use crate::{GAMEPLAY_SPRITE_Z, ZONE_BLOCK_SIZE};
 
 /// Maximum units a Worker can carry in a single trip. The glossary
@@ -211,13 +211,24 @@ fn find_nearest_stockpile(
 /// not count as usable here because the worker has nowhere to
 /// drop the carried load until the planned structure promotes
 /// to a completed `Stockpile`.
+///
+/// ## Issue #26: Source vs Sink filter
+///
+/// A [`Stockpile`] carrying [`StockpileRole::Sink`] lives in
+/// a Build cell (base infrastructure) and is not a valid
+/// destination for a gather worker's tiny load. A bare
+/// `Stockpile` without an explicit role marker still counts
+/// (the legacy default is `Source`); only the explicitly
+/// `Sink`-stamped ones are excluded, so pre-existing tests
+/// that spawn `Stockpile` entities directly keep passing.
 pub(crate) fn has_usable_built_source_stockpile(
     deposit_pos: Vec2,
-    stockpiles: &Query<(&Stockpile, &Transform)>,
+    stockpiles: &Query<(&Stockpile, &Transform, Option<&StockpileRole>)>,
 ) -> bool {
-    stockpiles.iter().any(|(s, t)| {
+    stockpiles.iter().any(|(s, t, role)| {
         s.kind == ResourceKind::Minerals
             && s.free_space() > 0
+            && !matches!(role, Some(StockpileRole::Sink))
             && t.translation.truncate().distance(deposit_pos) <= SOURCE_STOCKPILE_PROXIMITY_RADIUS
     })
 }
@@ -246,6 +257,20 @@ pub(crate) fn has_usable_built_source_stockpile(
 /// so a Worker carrying a load also ignores full stockpiles
 /// and waits for a usable destination.
 ///
+/// ## Issue #26: Source vs Sink filter
+///
+/// A `Sink` Stockpile in the same area does NOT count as a
+/// usable Source. The role filter is applied in
+/// [`has_usable_built_source_stockpile`] for the built check;
+/// a planned structure's `kind` is the equivalent filter for
+/// the pending check, since the planned-structure
+/// auto-creation system plans `SinkStockpile` for Build
+/// cells (not for the gather site) and the demand system
+/// plans `SourceStockpile` for Gather cells. A Sink
+/// Stockpile's planned form would never enter this query
+/// because its world position is in a Build cell, not next
+/// to a `ResourceDeposit`.
+///
 /// `newly_planned` is the set of positions where this same
 /// demand system has just spawned a planned structure on
 /// this tick. Bevy [`Commands`] are deferred, so the live
@@ -254,7 +279,7 @@ pub(crate) fn has_usable_built_source_stockpile(
 /// tick.
 pub(crate) fn has_any_near_source_stockpile(
     deposit_pos: Vec2,
-    stockpiles: &Query<(&Stockpile, &Transform)>,
+    stockpiles: &Query<(&Stockpile, &Transform, Option<&StockpileRole>)>,
     planned: &Query<(&PlannedStructure, &Transform)>,
     newly_planned: &[Vec2],
 ) -> bool {
@@ -339,7 +364,7 @@ pub fn source_stockpile_demand_system(
     mut commands: Commands,
     gather_assignments: Query<&GatherAssignment>,
     deposits: Query<&Transform, With<ResourceDeposit>>,
-    stockpiles: Query<(&Stockpile, &Transform)>,
+    stockpiles: Query<(&Stockpile, &Transform, Option<&StockpileRole>)>,
     planned: Query<(&PlannedStructure, &Transform)>,
     swarms: Query<(Entity, &Transform), With<Swarm>>,
     grid: Res<IntentGrid>,
@@ -399,7 +424,7 @@ pub fn source_stockpile_demand_system(
         obstacles.extend(
             stockpiles
                 .iter()
-                .map(|(_, t)| (t.translation.truncate(), SOURCE_STOCKPILE_FOOTPRINT_RADIUS)),
+                .map(|(_, t, _)| (t.translation.truncate(), SOURCE_STOCKPILE_FOOTPRINT_RADIUS)),
         );
         obstacles.extend(
             planned
@@ -608,7 +633,7 @@ pub fn worker_gather_arrive_system(
         ),
     >,
     deposits: Query<(&ResourceDeposit, &Transform)>,
-    stockpiles: Query<(&Stockpile, &Transform)>,
+    stockpiles: Query<(&Stockpile, &Transform, Option<&StockpileRole>)>,
 ) {
     for (entity, transform, assignment) in &workers {
         let Ok((deposit, deposit_transform)) = deposits.get(assignment.deposit) else {
