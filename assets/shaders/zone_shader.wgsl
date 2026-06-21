@@ -1,4 +1,4 @@
-#import bevy_pbr::forward_io::VertexOutput
+#import bevy_sprite::mesh2d_vertex_output::VertexOutput
 
 @group(2) @binding(2)
 var<storage> zone_map: array<ZonePointData>;
