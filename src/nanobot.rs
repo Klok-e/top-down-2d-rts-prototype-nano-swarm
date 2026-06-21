@@ -11,6 +11,7 @@ mod haul;
 mod maintenance;
 mod move_system;
 mod opponent;
+mod planned;
 mod production;
 mod sprites;
 
@@ -27,6 +28,7 @@ pub use haul::*;
 pub use maintenance::*;
 pub use move_system::*;
 pub use opponent::*;
+pub use planned::*;
 pub use production::*;
 pub use sprites::*;
 

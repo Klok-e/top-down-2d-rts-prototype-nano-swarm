@@ -1,0 +1,621 @@
+//! Planned Structure foundation for Automatic Construction.
+//!
+//! Issue #21 contract: a Planned Structure is the visible,
+//! owner-scoped, not-yet-built support structure that lives
+//! between "automatic construction picked a kind" and "the
+//! support structure is finished and usable". The slice
+//! covers the foundation plus a minimal demo completion path
+//! so the lifecycle is verifiable end-to-end:
+//!
+//! 1. A demand system creates a [`PlannedStructure`] in a
+//!    cell. It is visible from the moment it exists, with a
+//!    distinct "planned" visual (see [`planned_visual_color`]).
+//! 2. A single Worker can claim the planned structure by
+//!    becoming its `active_worker`. Other Workers see a
+//!    claimed planned structure as unavailable.
+//! 3. While the worker is at the site, build progress is
+//!    `work_remaining` ticks of worker time. V1 consumes no
+//!    minerals; the only cost is worker time.
+//! 4. When `work_remaining` reaches 0, the planned structure
+//!    is replaced by the appropriate completed structure for
+//!    its kind. The foundation's demo kind is
+//!    [`PlannedKind::SourceStockpile`], which completes into
+//!    a [`crate::resources::Stockpile`].
+//!
+//! State machine carried on the worker by marker components:
+//!
+//! ```text
+//!   Idle -> (claim system) -> Moving (PlannedStructureClaim + DMC)
+//!   Moving -> (arrive system) -> Working (PlannedStructureProgress)
+//!   Working -> (work system) -> Working (work_remaining -= 1 each tick)
+//!   Working -> (work_remaining == 0) -> Idle (planned promoted)
+//! ```
+//!
+//! The plan/complete boundary uses Bevy component-merge
+//! semantics: the planned structure's `Transform` is preserved
+//! on completion, and the `PlannedStructure` component is
+//! swapped for the completed structure's components. The
+//! `active_worker` is cleared during completion so the worker
+//! returns to the idle state without an extra system
+//! release path.
+//!
+//! Visual distinction: planned structures render with a
+//! semi-transparent planned color ([`planned_visual_color`])
+//! and a fixed footprint size. Completed Source Stockpiles
+//! render with a different (full-opacity) color and the same
+//! footprint. Tests can pin the distinction by reading the
+//! `Sprite` `color` channel, or by reading the component
+//! (`PlannedStructure` vs `Stockpile`).
+
+use bevy::prelude::*;
+
+use crate::ai::get_world_from_zone;
+use crate::intent::{IntentGrid, IntentKind};
+use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm};
+use crate::nanobot::consts::STOP_THRESHOLD;
+use crate::nanobot::gather::world_to_cell;
+use crate::nanobot::production::OwnerSwarm;
+use crate::resources::{ResourceKind, Stockpile};
+use crate::GAMEPLAY_SPRITE_Z;
+
+/// Number of worker-time ticks required to finish a planned
+/// structure. V1 consumes no minerals; the only cost is this
+/// counter decrementing each tick the worker is at the
+/// planned structure. Picked to be small enough that a single
+/// worker finishes the demo build in a handful of ticks so
+/// the test math is obvious.
+pub const DEFAULT_PLANNED_WORK_TICKS: u32 = 5;
+
+/// Footprint (world units) used for both the planned and
+/// completed visuals. A square so the structure is clearly
+/// bounded on the map and tests can compare positions without
+/// doing per-axis math.
+pub const PLANNED_STRUCTURE_FOOTPRINT: f32 = 64.0;
+
+/// Planned kind the foundation slice implements.
+///
+/// The PRD names Source Stockpile, Sink Stockpile, Production
+/// Facility, and Charger as the eventual kinds. The
+/// foundation slice ships the lifecycle and one demo kind so
+/// the rest of the project has a stable, working example to
+/// migrate the other kinds onto.
+#[derive(Debug, Component, Default, Clone, Copy, PartialEq, Eq)]
+pub enum PlannedKind {
+    /// Completes into a [`Stockpile`] (Source Stockpile in the
+    /// glossary's role). This is the foundation's demo kind.
+    #[default]
+    SourceStockpile,
+}
+
+impl PlannedKind {
+    /// Stable per-kind index in `[0, COUNT)`. Used to size
+    /// tables and to give a deterministic order to iteration.
+    pub const fn index(self) -> usize {
+        match self {
+            PlannedKind::SourceStockpile => 0,
+        }
+    }
+
+    /// Number of distinct planned kinds the foundation slice
+    /// models.
+    pub const COUNT: usize = 1;
+
+    /// Every planned kind in stable declaration order. Useful
+    /// for tests and future "iterate every kind" loops.
+    pub const ALL: [PlannedKind; Self::COUNT] = [PlannedKind::SourceStockpile];
+}
+
+/// A visible, not-yet-built support structure. Lives in a
+/// single intent cell. The `active_worker` field is the
+/// one-Worker reservation the lifecycle promises: it is
+/// `Some(worker)` while a Worker is committed to the build,
+/// and `None` while the planned structure is unclaimed.
+///
+/// `work_remaining` is the build budget in worker-time
+/// ticks. The work system decrements it by 1 each tick the
+/// assigned worker is in working state; reaching 0 triggers
+/// the promotion to the completed structure.
+#[derive(Debug, Component, Clone, Copy)]
+pub struct PlannedStructure {
+    pub kind: PlannedKind,
+    pub cell: IVec2,
+    pub work_remaining: u32,
+    pub active_worker: Option<Entity>,
+}
+
+impl PlannedStructure {
+    /// Build a fresh planned structure of `kind` in `cell` with
+    /// the default work budget and no active worker.
+    pub fn new(kind: PlannedKind, cell: IVec2) -> Self {
+        Self {
+            kind,
+            cell,
+            work_remaining: DEFAULT_PLANNED_WORK_TICKS,
+            active_worker: None,
+        }
+    }
+
+    /// True when no Worker has claimed this planned structure.
+    /// The "at most one Worker" contract is enforced by the
+    /// claim system only targeting unclaimed planned
+    /// structures, so a `true` return is the only state in
+    /// which a new claim is allowed.
+    pub fn is_unclaimed(&self) -> bool {
+        self.active_worker.is_none()
+    }
+
+    /// True when build progress has finished and the planned
+    /// structure is ready to be promoted to the completed
+    /// structure for its kind.
+    pub fn is_complete(&self) -> bool {
+        self.work_remaining == 0
+    }
+}
+
+/// Color the planned-structure visual uses. Semi-transparent
+/// so the player can still see the underlying map and so the
+/// structure is clearly "not finished yet" at a glance. The
+/// completed Source Stockpile uses [`completed_visual_color`]
+/// instead, so the visual flip on completion is visible even
+/// without a sprite swap.
+pub const fn planned_visual_color() -> Color {
+    Color::srgba(0.6, 0.6, 0.7, 0.5)
+}
+
+/// Color the completed Source Stockpile visual uses. Full
+/// opacity and a different hue from the planned visual so the
+/// promotion moment is visible. Tests can pin the distinction
+/// by reading the `Sprite` `color` field.
+pub const fn completed_visual_color() -> Color {
+    Color::srgba(0.2, 0.6, 0.3, 1.0)
+}
+
+/// Marker on a Worker that has claimed a planned structure.
+/// `target` is the [`PlannedStructure`] entity. The arrive
+/// system reads the same `target` from this component so the
+/// work system does not need to look up the original
+/// assignment.
+#[derive(Debug, Component, Clone, Copy)]
+pub struct PlannedStructureClaim {
+    pub cell: IVec2,
+    pub target: Entity,
+}
+
+/// Marker on a Worker that is at its claimed planned
+/// structure and is consuming worker time to build it. The
+/// work system decrements `work_remaining` on the planned
+/// structure each tick the worker has this marker.
+#[derive(Debug, Component, Clone, Copy)]
+pub struct PlannedStructureProgress {
+    pub cell: IVec2,
+    pub target: Entity,
+}
+
+/// Walk the [`IntentGrid`] and spawn a new
+/// [`PlannedStructure`] in any Build cell that has paint but
+/// no existing planned or completed structure. The foundation
+/// slice models only the Source Stockpile demo kind; later
+/// issues migrate the other kinds.
+///
+/// Cells that already hold a planned or completed structure
+/// are skipped so the swarm cannot pile multiple construction
+/// targets into a single cell. The planned structure is
+/// spawned at the cell's world center with the planned
+/// visual, so it is visible from the moment it exists.
+///
+/// Ownership: the planned structure is stamped with
+/// [`OwnerSwarm`] using the first [`Swarm`] in the world. The
+/// foundation slice only has one swarm (the player); a
+/// per-swarm filter tied to the painted cell's intent owner
+/// is a follow-up. The marker is present from day one so the
+/// data model is stable, and the promotion path preserves
+/// [`OwnerSwarm`] on the completed structure.
+#[allow(clippy::type_complexity)]
+pub fn planned_structure_auto_creation_system(
+    mut commands: Commands,
+    grid: Res<IntentGrid>,
+    existing_targets: Query<&Transform, Or<(With<PlannedStructure>, With<Stockpile>)>>,
+    swarms: Query<Entity, With<Swarm>>,
+) {
+    let mut cells_with_target: std::collections::HashSet<IVec2> = std::collections::HashSet::new();
+    for transform in &existing_targets {
+        cells_with_target.insert(world_to_cell(transform.translation.truncate()));
+    }
+    // First swarm in the world is the owner. The fallback
+    // (no swarm) leaves the planned structure unowned, which
+    // matches the unowned-paint contract in the rest of the
+    // simulation: an unowned structure is visible to every
+    // swarm and ignored by the per-swarm intent filter.
+    let owner = swarms.iter().next();
+    for (cell, intent_cell) in grid.iter_cells() {
+        if !intent_cell.has(IntentKind::Build) {
+            continue;
+        }
+        if cells_with_target.contains(&cell) {
+            continue;
+        }
+        let center = get_world_from_zone(cell);
+        let mut entity_commands = commands.spawn((
+            PlannedStructure::new(PlannedKind::SourceStockpile, cell),
+            // Visually distinct from completed structures:
+            // semi-transparent planned color, fixed footprint.
+            // The completed promotion replaces this Sprite with
+            // one carrying [`completed_visual_color`].
+            Sprite {
+                color: planned_visual_color(),
+                custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
+                ..default()
+            },
+            Transform::from_translation(center.extend(GAMEPLAY_SPRITE_Z)),
+        ));
+        if let Some(swarm_entity) = owner {
+            entity_commands.insert(OwnerSwarm(swarm_entity));
+        }
+    }
+}
+
+/// For each idle Worker with no in-flight planned-structure
+/// work, pick the nearest unclaimed [`PlannedStructure`] and
+/// claim it.
+///
+/// The "at most one Worker" contract is enforced two ways.
+/// The `is_unclaimed()` filter skips planned structures that
+/// are already reserved. The local `claimed` set tracks
+/// reservations written earlier in the same tick, so two
+/// workers that both see a planned structure as unclaimed
+/// on entry do not both claim it. [`Commands`] are deferred,
+/// so the live query cannot see the new reservation until
+/// the next system call -- the local set is what makes the
+/// in-tick reservation visible. The reservation lives on
+/// the planned structure itself (`active_worker = Some(worker)`)
+/// so every other system that looks at planned structures
+/// sees it without going through the worker's marker.
+#[allow(clippy::type_complexity)]
+pub fn worker_planned_structure_claim_system(
+    mut commands: Commands,
+    planned_structures: Query<(Entity, &Transform, &PlannedStructure)>,
+    workers: Query<
+        (Entity, &Transform),
+        (
+            With<Nanobot>,
+            Without<PlannedStructureClaim>,
+            Without<PlannedStructureProgress>,
+            Without<DirectMovementComponent>,
+        ),
+    >,
+) {
+    let mut claimed: std::collections::HashSet<Entity> = std::collections::HashSet::new();
+    for (worker_entity, worker_transform) in &workers {
+        let worker_pos = worker_transform.translation.truncate();
+
+        let mut best: Option<(f32, Entity, &PlannedStructure, Vec2)> = None;
+        for (planned_entity, planned_transform, planned) in &planned_structures {
+            if !planned.is_unclaimed() {
+                continue;
+            }
+            if claimed.contains(&planned_entity) {
+                continue;
+            }
+            let distance = worker_pos.distance(planned_transform.translation.truncate());
+            if best.is_none_or(|(bd, _, _, _)| distance < bd) {
+                best = Some((
+                    distance,
+                    planned_entity,
+                    planned,
+                    planned_transform.translation.truncate(),
+                ));
+            }
+        }
+        let Some((_distance, planned_entity, planned, planned_pos)) = best else {
+            continue;
+        };
+        claimed.insert(planned_entity);
+
+        commands.entity(planned_entity).insert(PlannedStructure {
+            active_worker: Some(worker_entity),
+            ..*planned
+        });
+        commands.entity(worker_entity).insert((
+            PlannedStructureClaim {
+                cell: planned.cell,
+                target: planned_entity,
+            },
+            DirectMovementComponent { xy: planned_pos },
+        ));
+    }
+}
+
+/// Detect a worker that has arrived at its claimed planned
+/// structure and start the work phase. The
+/// `Without<PlannedStructureProgress>` filter makes arrival
+/// idempotent: the same tick cannot fire twice.
+///
+/// The arrival threshold matches the gather/haul/build
+/// pattern: the movement system removes
+/// `DirectMovementComponent` when the bot is within
+/// `STOP_THRESHOLD` of its target, and that removal is the
+/// trigger this system waits for.
+#[allow(clippy::type_complexity)]
+pub fn worker_planned_structure_arrive_system(
+    mut commands: Commands,
+    workers: Query<
+        (Entity, &Transform, &PlannedStructureClaim),
+        (
+            With<Nanobot>,
+            With<PlannedStructureClaim>,
+            Without<DirectMovementComponent>,
+            Without<PlannedStructureProgress>,
+        ),
+    >,
+    planned_transforms: Query<&Transform, With<PlannedStructure>>,
+) {
+    for (worker_entity, worker_transform, claim) in &workers {
+        let Ok(planned_transform) = planned_transforms.get(claim.target) else {
+            // Target disappeared (e.g. promoted by another
+            // worker, or removed by a future cleanup system).
+            // Drop the claim; the worker idles.
+            commands
+                .entity(worker_entity)
+                .remove::<PlannedStructureClaim>();
+            continue;
+        };
+        let distance = worker_transform
+            .translation
+            .truncate()
+            .distance(planned_transform.translation.truncate());
+        if distance <= STOP_THRESHOLD {
+            commands
+                .entity(worker_entity)
+                .insert(PlannedStructureProgress {
+                    cell: claim.cell,
+                    target: claim.target,
+                });
+        }
+    }
+}
+
+/// Worker planned-structure work system. For each worker with
+/// a [`PlannedStructureProgress`], decrement the planned
+/// structure's `work_remaining` by 1 and, on the tick it
+/// reaches 0, promote the planned structure to its completed
+/// form.
+///
+/// The worker stays at the site until the build finishes or
+/// the planned structure is removed; the reservation is
+/// cleared on promotion so the worker returns to idle. V1
+/// does not consume any minerals, so the resource ledger and
+/// local stockpiles are untouched.
+#[allow(clippy::type_complexity)]
+pub fn worker_planned_structure_work_system(
+    mut commands: Commands,
+    workers: Query<
+        (Entity, &PlannedStructureProgress),
+        (With<Nanobot>, With<PlannedStructureProgress>),
+    >,
+    mut planned: Query<(Entity, &mut PlannedStructure, &Transform)>,
+) {
+    for (worker_entity, progress) in &workers {
+        let Ok((planned_entity, mut planned_state, planned_transform)) =
+            planned.get_mut(progress.target)
+        else {
+            // Target disappeared. Release the worker; the
+            // planned structure is gone so the worker has
+            // nothing to do.
+            commands
+                .entity(worker_entity)
+                .remove::<PlannedStructureClaim>()
+                .remove::<PlannedStructureProgress>();
+            continue;
+        };
+
+        if planned_state.is_complete() {
+            // Another worker (or a future system) already
+            // finished this planned structure between ticks.
+            // Promote defensively and release the worker.
+            promote_planned_to_completion(
+                &mut commands,
+                planned_entity,
+                planned_state.kind,
+                planned_transform.translation.truncate(),
+            );
+            release_planned_worker(&mut commands, worker_entity);
+            continue;
+        }
+
+        planned_state.work_remaining = planned_state.work_remaining.saturating_sub(1);
+        if planned_state.is_complete() {
+            promote_planned_to_completion(
+                &mut commands,
+                planned_entity,
+                planned_state.kind,
+                planned_transform.translation.truncate(),
+            );
+            release_planned_worker(&mut commands, worker_entity);
+        }
+    }
+}
+
+/// Release a worker that was building a planned structure:
+/// clear both the claim and the progress markers so the
+/// worker returns to the idle state. The build cell's slot is
+/// not modelled for v1 (the planned structure is consumed
+/// before the worker is free), so there is no slot to
+/// release.
+fn release_planned_worker(commands: &mut Commands, worker_entity: Entity) {
+    commands
+        .entity(worker_entity)
+        .remove::<PlannedStructureClaim>()
+        .remove::<PlannedStructureProgress>();
+}
+
+/// Promote a finished [`PlannedStructure`] to the completed
+/// structure for its kind, at the planned structure's world
+/// position. The promotion removes the `PlannedStructure`
+/// component and replaces the planned visual with the
+/// completed visual; the `Transform` is preserved by
+/// Bevy's component-merge semantics.
+///
+/// For the foundation slice, the only kind is
+/// [`PlannedKind::SourceStockpile`], which completes into a
+/// [`Stockpile`]. Future kinds (Sink Stockpile, Production
+/// Facility, Charger) extend this function with their own
+/// completion shapes -- the lifecycle is shared, only the
+/// per-kind completion payload differs.
+fn promote_planned_to_completion(
+    commands: &mut Commands,
+    planned_entity: Entity,
+    kind: PlannedKind,
+    world_pos: Vec2,
+) {
+    match kind {
+        PlannedKind::SourceStockpile => {
+            commands.entity(planned_entity).remove::<PlannedStructure>();
+            // The visual flip is the visible "build finished"
+            // moment. Re-insert a Sprite with the completed
+            // color so the player can read the build state
+            // from a glance. Bevy replaces the old Sprite
+            // component on `insert`, so the planned visual
+            // does not leak through.
+            commands.entity(planned_entity).insert((
+                Stockpile {
+                    kind: ResourceKind::Minerals,
+                    amount: 0,
+                    capacity: 1000,
+                    radius: 32.0,
+                },
+                Sprite {
+                    color: completed_visual_color(),
+                    custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
+                    ..default()
+                },
+                Transform::from_translation(world_pos.extend(GAMEPLAY_SPRITE_Z)),
+            ));
+        }
+    }
+}
+
+/// Plugin that wires the planned-structure systems into the
+/// Update schedule. The chain runs after `move_velocity_system`
+/// so the movement step has already pruned arrived bots (which
+/// is the trigger the arrive system waits for), matching the
+/// build plugin's chain order.
+pub struct PlannedStructurePlugin;
+
+impl Plugin for PlannedStructurePlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            Update,
+            (
+                planned_structure_auto_creation_system,
+                worker_planned_structure_claim_system,
+                worker_planned_structure_arrive_system,
+                worker_planned_structure_work_system,
+            )
+                .chain()
+                .after(crate::nanobot::move_velocity_system),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Pure-helper unit tests. The end-to-end contracts
+    //! (auto-creation, claim, reservation, progress,
+    //! completion, no-material-cost) are covered by
+    //! `tests/behavior/planned_structure.rs`.
+
+    use super::*;
+
+    #[test]
+    fn planned_kind_default_is_source_stockpile() {
+        assert_eq!(PlannedKind::default(), PlannedKind::SourceStockpile);
+    }
+
+    #[test]
+    fn planned_kind_all_covers_demos() {
+        let kinds: Vec<PlannedKind> = PlannedKind::ALL.to_vec();
+        assert_eq!(kinds.len(), PlannedKind::COUNT);
+        assert!(kinds.contains(&PlannedKind::SourceStockpile));
+    }
+
+    #[test]
+    fn planned_kind_index_is_stable() {
+        assert_eq!(PlannedKind::SourceStockpile.index(), 0);
+    }
+
+    #[test]
+    fn planned_structure_starts_unclaimed_with_full_budget() {
+        let cell = IVec2::new(0, 0);
+        let p = PlannedStructure::new(PlannedKind::SourceStockpile, cell);
+        assert_eq!(p.kind, PlannedKind::SourceStockpile);
+        assert_eq!(p.cell, cell);
+        assert_eq!(p.work_remaining, DEFAULT_PLANNED_WORK_TICKS);
+        assert!(p.is_unclaimed());
+        assert!(!p.is_complete());
+    }
+
+    #[test]
+    fn planned_structure_reports_unclaimed_only_when_no_worker() {
+        let mut p = PlannedStructure::new(PlannedKind::SourceStockpile, IVec2::new(1, 1));
+        assert!(p.is_unclaimed());
+        // The reservation type is a plain `Option<Entity>`; the
+        // test uses a dummy entity handle since the field's
+        // contract is "is there a worker?", not "is the worker
+        // still alive?".
+        p.active_worker = Some(Entity::PLACEHOLDER);
+        assert!(!p.is_unclaimed());
+    }
+
+    #[test]
+    fn planned_structure_completes_only_when_budget_zero() {
+        let mut p = PlannedStructure::new(PlannedKind::SourceStockpile, IVec2::new(0, 0));
+        p.work_remaining = 1;
+        assert!(!p.is_complete());
+        p.work_remaining = 0;
+        assert!(p.is_complete());
+    }
+
+    #[test]
+    fn planned_visual_color_is_distinct_from_completed() {
+        // The visual contract is "visibly distinct from
+        // completed structures". The two colors must not be
+        // identical, and the planned one must be at least
+        // partially transparent so the player can see the
+        // underlying map through the planned footprint.
+        let planned = planned_visual_color();
+        let completed = completed_visual_color();
+        assert_ne!(
+            planned, completed,
+            "planned and completed visuals must be distinct"
+        );
+        // The planned visual carries an alpha < 1.0. We check
+        // the alpha channel via the to_srgba helper, which
+        // returns the four channels in canonical order.
+        let planned_srgba = planned.to_srgba();
+        assert!(
+            planned_srgba.alpha < 1.0,
+            "planned visual must be semi-transparent; got alpha={}",
+            planned_srgba.alpha
+        );
+    }
+
+    #[test]
+    fn default_work_budget_is_small_for_fast_tests() {
+        // The demo budget must be small enough that a single
+        // worker finishes the build in a handful of ticks.
+        // Pinning the value (rather than recomputing it) keeps
+        // the test math obvious.
+        const { assert!(DEFAULT_PLANNED_WORK_TICKS > 0) };
+        const { assert!(DEFAULT_PLANNED_WORK_TICKS <= 32) };
+    }
+
+    #[test]
+    fn footprint_is_a_finite_positive_square() {
+        // The visual footprint must be positive so the planned
+        // and completed sprites have a defined size. We do not
+        // pin the value (it is a tuning parameter); the
+        // invariant is the positive, finite, non-zero size.
+        const { assert!(PLANNED_STRUCTURE_FOOTPRINT > 0.0) };
+        const { assert!(PLANNED_STRUCTURE_FOOTPRINT.is_finite()) };
+    }
+}
