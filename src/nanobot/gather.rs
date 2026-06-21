@@ -26,7 +26,7 @@ use bevy::prelude::*;
 
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::{best_candidate, Commitment, NanobotType, SoftWorkSlots};
-use crate::nanobot::components::{DirectMovementComponent, Nanobot};
+use crate::nanobot::components::{DirectMovementComponent, Nanobot, SwarmMember};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
 use crate::ZONE_BLOCK_SIZE;
 
@@ -145,7 +145,7 @@ pub fn worker_gather_assignment_system(
     grid: Res<IntentGrid>,
     mut slots: ResMut<SoftWorkSlots>,
     workers: Query<
-        (Entity, &Transform, &Commitment, &NanobotType),
+        (Entity, &Transform, &Commitment, &NanobotType, &SwarmMember),
         (
             With<Nanobot>,
             Without<GatherAssignment>,
@@ -161,7 +161,7 @@ pub fn worker_gather_assignment_system(
     // function reads a consistent view while we mutate the
     // resource below.
     let slots_snapshot = slots.clone();
-    for (entity, transform, commitment, nanobot_type) in &workers {
+    for (entity, transform, commitment, nanobot_type, swarm_member) in &workers {
         if *nanobot_type != NanobotType::Worker {
             continue;
         }
@@ -178,6 +178,7 @@ pub fn worker_gather_assignment_system(
             &slots_snapshot,
             ZONE_BLOCK_SIZE,
             &[IntentKind::Gather],
+            swarm_member.0,
         ) else {
             continue;
         };

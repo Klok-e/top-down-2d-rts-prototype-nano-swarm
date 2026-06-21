@@ -12,6 +12,8 @@ use bevy::{
     prelude::{IVec2, Res, ResMut, Resource},
 };
 
+use crate::nanobot::SwarmId;
+
 /// Upper bound on paint strength for any single layer at a cell. Repeated
 /// painting saturates at this value rather than overflowing. The cap is part
 /// of the public simulation contract: downstream systems (allocation, path
@@ -70,10 +72,21 @@ pub struct IntentLayer {
 /// [`IntentKind::bit`] flags; `strength` stores the paint strength for each
 /// kind, but the entry is only meaningful while the matching bit in `active`
 /// is set.
+///
+/// `owner` carries the [`SwarmId`] that painted each kind. A
+/// `None` slot means the layer is unowned (legacy "shared"
+/// paint) and any swarm may use it. A `Some(id)` slot means only
+/// nanobots with `SwarmMember(id)` may score this layer; the
+/// per-swarm intent ownership contract from issue #20.
+///
+/// Like `strength`, the entry is only meaningful while the
+/// matching bit in `active` is set. Removing a layer also
+/// clears its owner slot.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IntentCell {
     pub active: u8,
     pub strength: [u8; IntentKind::COUNT],
+    pub owner: [Option<SwarmId>; IntentKind::COUNT],
 }
 
 impl IntentCell {
@@ -97,16 +110,54 @@ impl IntentCell {
     }
 
     /// Activate `kind` with the given paint strength. Overwrites any previous
-    /// strength for the same kind.
+    /// strength for the same kind. Writes the owner as "unowned"
+    /// (`None`); use [`IntentCell::add_owned`] when the caller knows
+    /// which swarm painted the layer.
     pub fn add(&mut self, kind: IntentKind, strength: u8) {
         self.active |= kind.bit();
         self.strength[kind.index()] = strength;
+        self.owner[kind.index()] = None;
     }
 
-    /// Deactivate `kind` and clear its stored strength.
+    /// Activate `kind` with the given paint strength and stamp
+    /// `owner` as the swarm that painted it. Overwrites any
+    /// previous strength and owner for the same kind. Pass
+    /// `None` to mark the layer as unowned.
+    pub fn add_owned(&mut self, kind: IntentKind, strength: u8, owner: Option<SwarmId>) {
+        self.active |= kind.bit();
+        self.strength[kind.index()] = strength;
+        self.owner[kind.index()] = owner;
+    }
+
+    /// Deactivate `kind` and clear its stored strength + owner.
     pub fn remove(&mut self, kind: IntentKind) {
         self.active &= !kind.bit();
         self.strength[kind.index()] = 0;
+        self.owner[kind.index()] = None;
+    }
+
+    /// Owner of the `kind` layer at this cell, or `None` if the
+    /// layer is unowned (legacy shared paint or no layer).
+    pub fn owner(&self, kind: IntentKind) -> Option<SwarmId> {
+        if self.has(kind) {
+            self.owner[kind.index()]
+        } else {
+            None
+        }
+    }
+
+    /// True when `kind` is owned by `swarm` (either the swarm
+    /// painted it directly, or the layer is unowned and any
+    /// swarm counts as the owner). Equivalent to the
+    /// "scoring-visible" predicate the autonomy filter uses.
+    pub fn visible_to(&self, kind: IntentKind, swarm: SwarmId) -> bool {
+        if !self.has(kind) {
+            return false;
+        }
+        match self.owner[kind.index()] {
+            None => true,
+            Some(owner) => owner == swarm,
+        }
     }
 
     /// Iterate active intent layers at this cell. Order matches
@@ -176,9 +227,35 @@ impl IntentGrid {
 
     /// Add `kind` intent at `point` with the given paint strength. Returns
     /// `true` when the cell was within bounds and the layer was added.
+    ///
+    /// Writes the layer as unowned (legacy shared paint). Use
+    /// [`IntentGrid::add_owned`] when the caller knows which swarm
+    /// painted the layer; that is the entry point the
+    /// `spawn_opponent_swarm` helper and the player brush use to
+    /// stamp the per-swarm ownership.
     pub fn add(&mut self, point: IVec2, kind: IntentKind, strength: u8) -> bool {
         if let Some(cell) = self.cell_mut(point) {
             cell.add(kind, strength);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Add `kind` intent at `point` with the given paint strength,
+    /// stamping `owner` as the swarm that painted the layer.
+    /// Returns `true` when the cell was within bounds and the
+    /// layer was added. `None` marks the layer as unowned (any
+    /// swarm may score it).
+    pub fn add_owned(
+        &mut self,
+        point: IVec2,
+        kind: IntentKind,
+        strength: u8,
+        owner: Option<SwarmId>,
+    ) -> bool {
+        if let Some(cell) = self.cell_mut(point) {
+            cell.add_owned(kind, strength, owner);
             true
         } else {
             false
@@ -200,6 +277,9 @@ impl IntentGrid {
     /// [`PAINT_STRENGTH_CAP`]. If the layer is not yet active it is
     /// activated at `min(delta, PAINT_STRENGTH_CAP)`. Returns `true` when
     /// the cell was within bounds.
+    ///
+    /// Writes the layer as unowned; use [`IntentGrid::paint_owned`]
+    /// when the caller knows which swarm painted it.
     pub fn paint(&mut self, point: IVec2, kind: IntentKind, delta: u8) -> bool {
         if let Some(cell) = self.cell_mut(point) {
             // Inactive layers have a zeroed strength slot, so this single
@@ -208,6 +288,28 @@ impl IntentGrid {
                 .saturating_add(delta)
                 .min(PAINT_STRENGTH_CAP);
             cell.add(kind, next);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Add `delta` to the paint strength of `kind` at `point`,
+    /// stamping `owner` as the painting swarm. Saturates at
+    /// [`PAINT_STRENGTH_CAP`]. Returns `true` when the cell was
+    /// within bounds.
+    pub fn paint_owned(
+        &mut self,
+        point: IVec2,
+        kind: IntentKind,
+        delta: u8,
+        owner: Option<SwarmId>,
+    ) -> bool {
+        if let Some(cell) = self.cell_mut(point) {
+            let next = cell.strength[kind.index()]
+                .saturating_add(delta)
+                .min(PAINT_STRENGTH_CAP);
+            cell.add_owned(kind, next, owner);
             true
         } else {
             false

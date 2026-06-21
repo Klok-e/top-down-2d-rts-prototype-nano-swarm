@@ -14,8 +14,8 @@ use crate::{
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
         Commitment, Health, Nanobot, NanobotBundle, NanobotSprites, NanobotType, OpponentSwarm,
-        OwnerSwarm, ProductionFacility, ProductionRatio, Swarm, SwarmBundle, SwarmProduction,
-        VelocityComponent,
+        OwnerSwarm, ProductionFacility, ProductionRatio, Swarm, SwarmBundle, SwarmId, SwarmMember,
+        SwarmProduction, VelocityComponent,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile},
     GAMEPLAY_SPRITE_Z, ZONE_BLOCK_SIZE,
@@ -60,16 +60,39 @@ pub fn default_opponent_ratio() -> ProductionRatio {
 }
 
 pub fn paint_default_player_intent(grid: &mut IntentGrid) {
-    grid.paint(PLAYER_DEPOSIT_CELL, IntentKind::Gather, PAINT_STRENGTH_CAP);
+    // Stamp the player `SwarmId` on the prepainted cell so the
+    // per-swarm intent filter from issue #20 keeps the player
+    // gather cell visible only to player workers. Without the
+    // owner stamp the cell would be unowned, and opponent
+    // workers wandering into range would see it as a free
+    // gather cell and try to mine it.
+    grid.paint_owned(
+        PLAYER_DEPOSIT_CELL,
+        IntentKind::Gather,
+        PAINT_STRENGTH_CAP,
+        Some(SwarmId::PLAYER),
+    );
 }
 
-pub fn paint_default_opponent_intent(grid: &mut IntentGrid) {
-    grid.paint(
+/// Paint the default opponent intent at `OPPONENT_DEPOSIT_CELL` and
+/// `OPPONENT_CELL`, stamping the cells with `owner` so they belong
+/// to the opponent swarm rather than the player. The opponent id
+/// is whatever the caller passes (the same id stamped on the
+/// opponent Swarm entity); using `None` would mark the cells as
+/// unowned and break the per-swarm separation.
+pub fn paint_default_opponent_intent(grid: &mut IntentGrid, owner: SwarmId) {
+    grid.paint_owned(
         OPPONENT_DEPOSIT_CELL,
         IntentKind::Gather,
         PAINT_STRENGTH_CAP,
+        Some(owner),
     );
-    grid.paint(OPPONENT_CELL, IntentKind::Defend, PAINT_STRENGTH_CAP);
+    grid.paint_owned(
+        OPPONENT_CELL,
+        IntentKind::Defend,
+        PAINT_STRENGTH_CAP,
+        Some(owner),
+    );
 }
 
 pub fn spawn_default_player_scenario(
@@ -89,6 +112,7 @@ pub fn spawn_default_player_scenario(
     let swarm = commands
         .spawn(SwarmBundle {
             swarm: Swarm {},
+            swarm_id: SwarmId::PLAYER,
             transform: Transform::from_translation(player_pos.extend(0.0)),
             global_transform: GlobalTransform::default(),
             visibility: Visibility::default(),
@@ -99,6 +123,7 @@ pub fn spawn_default_player_scenario(
                 Vec2::ZERO,
                 &sprites,
                 false,
+                SwarmId::PLAYER,
                 &[
                     (NanobotType::Worker, PLAYER_START_WORKERS),
                     (NanobotType::Hauler, PLAYER_START_HAULERS),
@@ -115,8 +140,16 @@ pub fn spawn_default_opponent_scenario(
     commands: &mut Commands<'_, '_>,
     asset_server: &Res<'_, AssetServer>,
     grid: &mut IntentGrid,
+    mut id_alloc: ResMut<crate::nanobot::OpponentSwarmIdAlloc>,
 ) {
-    paint_default_opponent_intent(grid);
+    // The opponent id is allocated from the world's
+    // `OpponentSwarmIdAlloc` resource so the swarm entity, the
+    // prepainted intent, and the seed nanobots all share it.
+    // Without a shared id the per-swarm intent filter would
+    // route opponent paint to the wrong workers.
+    let opponent_swarm_id = id_alloc.allocate();
+
+    paint_default_opponent_intent(grid, opponent_swarm_id);
 
     let opponent_pos = cell_origin(OPPONENT_CELL);
     let deposit_pos = cell_origin(OPPONENT_DEPOSIT_CELL);
@@ -129,6 +162,7 @@ pub fn spawn_default_opponent_scenario(
             Swarm {},
             OpponentSwarm {},
             SwarmProduction::new(default_opponent_ratio()),
+            opponent_swarm_id,
             Transform::from_translation(opponent_pos.extend(0.0)),
             GlobalTransform::default(),
             Visibility::default(),
@@ -139,6 +173,7 @@ pub fn spawn_default_opponent_scenario(
                 Vec2::ZERO,
                 &sprites,
                 true,
+                opponent_swarm_id,
                 &[
                     (NanobotType::Worker, OPPONENT_START_WORKERS),
                     (NanobotType::Hauler, OPPONENT_START_HAULERS),
@@ -157,6 +192,7 @@ fn spawn_seed_nanobots(
     local_pos: Vec2,
     sprites: &NanobotSprites,
     is_opponent: bool,
+    swarm_id: SwarmId,
     seeds: &[(NanobotType, u32)],
 ) {
     for (kind, count) in seeds {
@@ -168,6 +204,7 @@ fn spawn_seed_nanobots(
                     velocity: VelocityComponent::default(),
                     ai_state: AiStateComponent::new(),
                     health: Health::default(),
+                    swarm_member: SwarmMember::new(swarm_id),
                 },
                 Commitment::Idle,
                 Sprite::from_image(sprites.handle(*kind, is_opponent)),
@@ -258,17 +295,43 @@ mod tests {
     }
 
     #[test]
+    fn default_player_intent_is_owned_by_player_swarm() {
+        // The default player intent is the visible end of the
+        // per-swarm ownership contract: an opponent worker
+        // wandering into range must not see this cell as a
+        // free gather cell. The owner stamp on the
+        // prepainted cell is what enforces that.
+        let mut grid = IntentGrid::new(32, 32);
+        paint_default_player_intent(&mut grid);
+
+        let cell = grid.cell(PLAYER_DEPOSIT_CELL).unwrap();
+        assert_eq!(
+            cell.owner(IntentKind::Gather),
+            Some(SwarmId::PLAYER),
+            "default player gather cell must be owned by SwarmId::PLAYER"
+        );
+        assert!(cell.visible_to(IntentKind::Gather, SwarmId::PLAYER));
+        assert!(
+            !cell.visible_to(IntentKind::Gather, SwarmId(1)),
+            "opponent workers must NOT see the default player gather cell"
+        );
+    }
+
+    #[test]
     fn default_opponent_intent_prepaints_gather_and_defend() {
         let mut grid = IntentGrid::new(32, 32);
-        paint_default_opponent_intent(&mut grid);
+        let opponent_id = SwarmId(7);
+        paint_default_opponent_intent(&mut grid, opponent_id);
 
         let gather_cell = grid.cell(OPPONENT_DEPOSIT_CELL).unwrap();
         assert!(gather_cell.has(IntentKind::Gather));
         assert_eq!(gather_cell.strength(IntentKind::Gather), PAINT_STRENGTH_CAP);
+        assert_eq!(gather_cell.owner(IntentKind::Gather), Some(opponent_id));
 
         let defend_cell = grid.cell(OPPONENT_CELL).unwrap();
         assert!(defend_cell.has(IntentKind::Defend));
         assert_eq!(defend_cell.strength(IntentKind::Defend), PAINT_STRENGTH_CAP);
+        assert_eq!(defend_cell.owner(IntentKind::Defend), Some(opponent_id));
     }
 
     #[test]

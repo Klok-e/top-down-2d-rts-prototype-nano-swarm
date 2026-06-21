@@ -16,6 +16,7 @@ use bevy::{
 
 use crate::{
     intent::{BrushSelection, IntentGrid, IntentKind},
+    nanobot::SwarmId,
     ui::UiHandling,
     ZONE_BLOCK_SIZE,
 };
@@ -197,7 +198,13 @@ pub fn zone_brush_system(
 
     let brush_kind = brush_selection.kind;
     if mouse_button_input.pressed(MouseButton::Left) {
-        intent_grid.paint(idx, brush_kind, BRUSH_PAINT_DELTA);
+        // The player brush always writes with the player
+        // `SwarmId` so the per-swarm intent filter routes
+        // player paint to player workers (and never to
+        // opponent workers). Without this stamp a player
+        // brush would write unowned paint that opponent
+        // workers could also see.
+        intent_grid.paint_owned(idx, brush_kind, BRUSH_PAINT_DELTA, Some(SwarmId::PLAYER));
     } else if mouse_button_input.pressed(MouseButton::Right) {
         intent_grid.erase(idx, brush_kind, BRUSH_PAINT_DELTA);
     }

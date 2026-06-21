@@ -19,7 +19,7 @@ use bevy::prelude::*;
 use crate::ai::AiStateComponent;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::Commitment;
-use crate::nanobot::components::{Health, Nanobot, Swarm, VelocityComponent};
+use crate::nanobot::components::{Health, Nanobot, Swarm, SwarmId, SwarmMember, VelocityComponent};
 use crate::nanobot::production::{OpponentSwarm, ProductionRatio, SwarmProduction};
 use crate::nanobot::{NanobotBundle, NanobotType};
 
@@ -82,11 +82,13 @@ pub fn spawn_opponent_swarm(
     prepainted: &[PrepaintedIntent],
     seeds: &[SeedNanobots],
 ) -> Entity {
+    let swarm_id = next_opponent_swarm_id(world);
     let swarm = world
         .spawn((
             Swarm {},
             OpponentSwarm {},
             SwarmProduction::new(ratio),
+            swarm_id,
             Transform::from_translation(world_pos.extend(0.0)),
             Visibility::default(),
         ))
@@ -95,16 +97,21 @@ pub fn spawn_opponent_swarm(
     // Cells outside the grid are silently rejected by the
     // grid itself; the helper does not gate the spawn on a
     // paint success so one out-of-bounds cell does not abort
-    // an otherwise valid opponent setup.
+    // an otherwise valid opponent setup. The paint is stamped
+    // with the opponent's `SwarmId` so the per-swarm intent
+    // filter routes the prepainted cells to opponent workers
+    // only.
     {
         let mut grid = world.resource_mut::<IntentGrid>();
         for paint in prepainted {
-            grid.paint(paint.cell, paint.kind, paint.strength);
+            grid.paint_owned(paint.cell, paint.kind, paint.strength, Some(swarm_id));
         }
     }
 
     // Seed nanobots parented to the swarm. The opponent's
-    // production systems will top them up as needed.
+    // production systems will top them up as needed. Each seed
+    // is tagged with the opponent's `SwarmId` so the per-swarm
+    // intent filter matches the prepainted cells above.
     world.entity_mut(swarm).with_children(|p| {
         for seed in seeds {
             for _ in 0..seed.count {
@@ -115,6 +122,7 @@ pub fn spawn_opponent_swarm(
                         velocity: VelocityComponent::default(),
                         ai_state: AiStateComponent::new(),
                         health: Health::default(),
+                        swarm_member: SwarmMember::new(swarm_id),
                     },
                     Commitment::Idle,
                     Transform::from_translation(world_pos.extend(0.0)),
@@ -124,6 +132,38 @@ pub fn spawn_opponent_swarm(
     });
 
     swarm
+}
+
+/// Monotonic counter resource for opponent [`SwarmId`]s. Kept on
+/// the [`World`] so multiple opponent spawns in the same process
+/// (test app, or a future scenario with several opponents) get
+/// distinct ids without colliding with the reserved player id.
+#[derive(Debug, Default, Resource)]
+pub struct OpponentSwarmIdAlloc {
+    next: u32,
+}
+
+impl OpponentSwarmIdAlloc {
+    /// Take the next opponent [`SwarmId`] and bump the counter.
+    /// The player id (`SwarmId::PLAYER`, 0) is skipped so the
+    /// returned id is never ambiguous with the player swarm.
+    pub fn allocate(&mut self) -> SwarmId {
+        // Skip SwarmId::PLAYER (0); opponent ids start at 1.
+        let candidate = self.next.max(1);
+        self.next = candidate.saturating_add(1);
+        SwarmId(candidate)
+    }
+}
+
+/// Allocate the next opponent [`SwarmId`] from the world's
+/// counter, inserting the counter resource on first use. Mirrors
+/// the `allocate_opponent_swarm_id` helper in `tests/common` so
+/// the same op produces a single id whether the caller is a test
+/// or production code.
+pub fn next_opponent_swarm_id(world: &mut World) -> SwarmId {
+    let mut alloc =
+        world.get_resource_or_insert_with::<OpponentSwarmIdAlloc>(OpponentSwarmIdAlloc::default);
+    alloc.allocate()
 }
 
 #[cfg(test)]

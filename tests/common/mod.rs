@@ -40,8 +40,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
         bot_debug_circle_system, move_velocity_system, separation_system, velocity_system,
         BuildPlugin, Charge, ChargePlugin, Charger, CollapsePlugin, Commitment, DefendPlugin,
         GatherPlugin, HaulPlugin, Health, MaintenancePlugin, Nanobot, NanobotBundle, NanobotType,
-        OpponentSwarm, OwnerSwarm, ProductionFacility, ProductionPlugin, SoftWorkSlots, Structure,
-        StructureKind, Swarm, SwarmProduction, VelocityComponent,
+        OwnerSwarm, ProductionFacility, ProductionPlugin, SoftWorkSlots, Structure, StructureKind,
+        Swarm, SwarmId, SwarmMember, VelocityComponent,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile},
 };
@@ -203,9 +203,16 @@ pub fn cell_world_center(cell: IVec2) -> Vec2 {
 /// nanobots; use [`spawn_swarm_with_nanobots`] when the test needs
 /// a populated population, or call this builder and then add
 /// children by hand.
+///
+/// The swarm is stamped with [`SwarmId::PLAYER`] so the
+/// production chain can route new nanobots to the right owner.
 pub fn spawn_swarm_at(app: &mut App, world_pos: Vec2) -> Entity {
     app.world_mut()
-        .spawn((Swarm {}, Transform::from_translation(world_pos.extend(0.0))))
+        .spawn((
+            Swarm {},
+            SwarmId::PLAYER,
+            Transform::from_translation(world_pos.extend(0.0)),
+        ))
         .id()
 }
 
@@ -234,6 +241,7 @@ pub fn spawn_swarm_with_nanobots(
                             velocity: VelocityComponent::default(),
                             ai_state: Default::default(),
                             health: Health::default(),
+                            swarm_member: SwarmMember::new(SwarmId::PLAYER),
                         },
                         Commitment::Idle,
                         Transform::from_translation(world_pos.extend(0.0)),
@@ -250,6 +258,9 @@ pub fn spawn_swarm_with_nanobots(
 /// gather and build worker fixtures in the existing tests;
 /// future tests that need additional components (Charge, etc.)
 /// should call this helper and then `entity_mut(...).insert(...)`.
+///
+/// The worker is tagged as a member of the player swarm so the
+/// per-swarm intent filter passes for any player-painted cell.
 pub fn spawn_worker_at(app: &mut App, world_pos: Vec2) -> Entity {
     app.world_mut()
         .spawn((
@@ -258,6 +269,7 @@ pub fn spawn_worker_at(app: &mut App, world_pos: Vec2) -> Entity {
             Commitment::Idle,
             VelocityComponent::default(),
             Health::default(),
+            SwarmMember::new(SwarmId::PLAYER),
             Transform::from_translation(world_pos.extend(0.0)),
         ))
         .id()
@@ -276,6 +288,7 @@ pub fn spawn_defender_at(app: &mut App, world_pos: Vec2) -> Entity {
             VelocityComponent::default(),
             Health::default(),
             Charge::default(),
+            SwarmMember::new(SwarmId::PLAYER),
             Transform::from_translation(world_pos.extend(0.0)),
         ))
         .id()
@@ -293,6 +306,7 @@ pub fn spawn_hauler_at(app: &mut App, world_pos: Vec2) -> Entity {
             Commitment::Idle,
             VelocityComponent::default(),
             Health::default(),
+            SwarmMember::new(SwarmId::PLAYER),
             Transform::from_translation(world_pos.extend(0.0)),
         ))
         .id()
@@ -380,39 +394,25 @@ pub fn spawn_structure_at(app: &mut App, world_pos: Vec2) -> Entity {
 /// opponent marker and per-swarm `SwarmProduction` are wired in
 /// so the production systems use the opponent's fixed ratio
 /// rather than the global `ProductionRatio` resource.
+///
+/// Thin wrapper over the production
+/// [`top_down_2d_rts_prototype_nano_swarm::nanobot::spawn_opponent_swarm`]
+/// helper, which already allocates a fresh non-player
+/// [`SwarmId`] and stamps every child with
+/// `SwarmMember(swarm_id)` so the per-swarm intent filter
+/// routes opponent paint to opponent workers only.
 pub fn spawn_opponent_swarm_with_nanobots(
     app: &mut App,
     world_pos: Vec2,
     ratio: top_down_2d_rts_prototype_nano_swarm::nanobot::ProductionRatio,
     counts: &[(NanobotType, u32)],
 ) -> Entity {
-    let swarm = app
-        .world_mut()
-        .spawn((
-            Swarm {},
-            OpponentSwarm {},
-            SwarmProduction::new(ratio),
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id();
-    app.world_mut().entity_mut(swarm).with_children(|p| {
-        for (kind, n) in counts {
-            for _ in 0..*n {
-                p.spawn((
-                    NanobotBundle {
-                        nanobot: Nanobot {},
-                        nanobot_type: *kind,
-                        velocity: VelocityComponent::default(),
-                        ai_state: Default::default(),
-                        health: Health::default(),
-                    },
-                    Commitment::Idle,
-                    Transform::from_translation(world_pos.extend(0.0)),
-                ));
-            }
-        }
-    });
-    swarm
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{spawn_opponent_swarm, SeedNanobots};
+    let seeds: Vec<SeedNanobots> = counts
+        .iter()
+        .map(|(kind, n)| SeedNanobots::new(*kind, *n))
+        .collect();
+    spawn_opponent_swarm(app.world_mut(), world_pos, ratio, &[], &seeds)
 }
 
 /// Spawn an idle [`ProductionFacility`] owned by `owner` at

@@ -17,7 +17,7 @@
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
-    nanobot::{best_candidate, Commitment, NanobotType, SoftWorkSlots},
+    nanobot::{best_candidate, Commitment, NanobotType, SoftWorkSlots, SwarmId},
 };
 
 #[path = "../common/mod.rs"]
@@ -114,6 +114,7 @@ fn idle_worker_responds_immediately_to_nearby_gather_paint() {
         slots,
         CELL_SIZE,
         &IntentKind::ALL,
+        SwarmId::PLAYER,
     )
     .expect("idle worker must find a candidate");
     assert_eq!(picked.cell, cell);
@@ -147,6 +148,7 @@ fn idle_worker_picks_closest_cell_when_two_have_equal_paint() {
         slots,
         CELL_SIZE,
         &IntentKind::ALL,
+        SwarmId::PLAYER,
     )
     .expect("must find a candidate");
     assert_eq!(picked.cell, near);
@@ -181,6 +183,7 @@ fn idle_worker_picks_stronger_paint_when_two_are_equidistant() {
         slots,
         CELL_SIZE,
         &IntentKind::ALL,
+        SwarmId::PLAYER,
     )
     .expect("must find a candidate");
     assert_eq!(picked.cell, strong);
@@ -223,6 +226,7 @@ fn soft_work_slot_pressure_reduces_score_but_never_rejects() {
         slots,
         CELL_SIZE,
         &IntentKind::ALL,
+        SwarmId::PLAYER,
     )
     .expect("crowded cell must still be pickable -- no hard rejection");
     // The empty cell must beat the crowded one.
@@ -263,6 +267,7 @@ fn type_fit_routes_defender_to_defend_and_worker_to_gather() {
         slots,
         CELL_SIZE,
         &IntentKind::ALL,
+        SwarmId::PLAYER,
     )
     .expect("worker must find a candidate");
     assert_eq!(worker_pick.cell, gather);
@@ -276,6 +281,7 @@ fn type_fit_routes_defender_to_defend_and_worker_to_gather() {
         slots,
         CELL_SIZE,
         &IntentKind::ALL,
+        SwarmId::PLAYER,
     )
     .expect("defender must find a candidate");
     assert_eq!(defender_pick.cell, defend);
@@ -309,6 +315,7 @@ fn commitment_ordering_idle_above_working_above_carrying() {
         slots,
         CELL_SIZE,
         &IntentKind::ALL,
+        SwarmId::PLAYER,
     )
     .expect("idle must pick");
     let working = best_candidate(
@@ -319,6 +326,7 @@ fn commitment_ordering_idle_above_working_above_carrying() {
         slots,
         CELL_SIZE,
         &IntentKind::ALL,
+        SwarmId::PLAYER,
     )
     .expect("working must pick");
     let carrying = best_candidate(
@@ -329,6 +337,7 @@ fn commitment_ordering_idle_above_working_above_carrying() {
         slots,
         CELL_SIZE,
         &IntentKind::ALL,
+        SwarmId::PLAYER,
     )
     .expect("carrying must pick");
 
@@ -374,6 +383,7 @@ fn mixed_swarm_picks_through_type_fit_and_distance_together() {
         slots,
         CELL_SIZE,
         &IntentKind::ALL,
+        SwarmId::PLAYER,
     )
     .expect("worker must pick");
     assert_eq!(worker_pick.cell, worker_gather);
@@ -387,6 +397,7 @@ fn mixed_swarm_picks_through_type_fit_and_distance_together() {
         slots,
         CELL_SIZE,
         &IntentKind::ALL,
+        SwarmId::PLAYER,
     )
     .expect("hauler must pick");
     assert_eq!(hauler_pick.cell, hauler_corridor);
@@ -400,6 +411,7 @@ fn mixed_swarm_picks_through_type_fit_and_distance_together() {
         slots,
         CELL_SIZE,
         &IntentKind::ALL,
+        SwarmId::PLAYER,
     )
     .expect("defender must pick");
     assert_eq!(defender_pick.cell, defender_defend);

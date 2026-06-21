@@ -42,7 +42,7 @@ use bevy::prelude::*;
 
 use crate::ai::AiStateComponent;
 use crate::nanobot::autonomy::{Commitment, NanobotType};
-use crate::nanobot::components::{Health, Nanobot, Swarm, VelocityComponent};
+use crate::nanobot::components::{Health, Nanobot, Swarm, SwarmId, SwarmMember, VelocityComponent};
 use crate::nanobot::{NanobotBundle, NanobotSprites};
 use crate::resources::{ResourceKind, ResourceLedger, Stockpile};
 
@@ -467,7 +467,7 @@ pub fn production_facility_pick_target_system(
 pub fn production_facility_work_system(
     mut commands: Commands,
     mut facilities: Query<(&mut ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
-    swarms: Query<(Entity, &Transform), With<Swarm>>,
+    swarms: Query<(Entity, &Transform, Option<&SwarmId>), With<Swarm>>,
     opponent_swarms: Query<(), With<OpponentSwarm>>,
     sprites: Option<Res<NanobotSprites>>,
 ) {
@@ -487,15 +487,26 @@ pub fn production_facility_work_system(
         // the systems directly).
         let parent = owner
             .map(|OwnerSwarm(e)| Some(*e))
-            .unwrap_or_else(|| swarms.iter().next().map(|(entity, _)| entity));
+            .unwrap_or_else(|| swarms.iter().next().map(|(entity, _, _)| entity));
         if let Some(swarm_entity) = parent {
             let pos = transform.translation.truncate();
             let swarm_pos = swarms
                 .get(swarm_entity)
-                .map(|(_, swarm_transform)| swarm_transform.translation.truncate())
+                .map(|(_, swarm_transform, _)| swarm_transform.translation.truncate())
                 .unwrap_or(Vec2::ZERO);
             let local_pos = pos - swarm_pos;
             let is_opponent = opponent_swarms.get(swarm_entity).is_ok();
+            // Look up the parent swarm's `SwarmId` so the new
+            // child carries the right ownership marker.
+            // Pre-multi-swarm tests that spawn a Swarm
+            // without a `SwarmId` fall back to the player id;
+            // the per-swarm filter is `None == None` for the
+            // default `swarm_member` value, so the legacy
+            // unowned-paint tests still pass.
+            let swarm_id = swarms
+                .get(swarm_entity)
+                .map(|(_, _, id)| id.copied().unwrap_or(SwarmId::PLAYER))
+                .unwrap_or(SwarmId::PLAYER);
             commands.entity(swarm_entity).with_children(|p| {
                 let mut entity = p.spawn((
                     NanobotBundle {
@@ -504,6 +515,7 @@ pub fn production_facility_work_system(
                         velocity: VelocityComponent::default(),
                         ai_state: AiStateComponent::new(),
                         health: Health::default(),
+                        swarm_member: SwarmMember::new(swarm_id),
                     },
                     Commitment::Idle,
                     Transform::from_translation(local_pos.extend(0.0)),
