@@ -92,6 +92,38 @@ pub fn world_to_cell(world: Vec2) -> IVec2 {
     )
 }
 
+/// True when the circle (`circle_center`, `circle_radius`) visually
+/// overlaps the rectangle of `cell` in the intent grid. A cell at
+/// `(i, j)` spans world coordinates
+/// `[i * ZONE_BLOCK_SIZE, (i + 1) * ZONE_BLOCK_SIZE)` on x and
+/// `[j * ZONE_BLOCK_SIZE, (j + 1) * ZONE_BLOCK_SIZE)` on y. The
+/// standard "closest point on the rect to the circle center" test
+/// gives strict overlap when the distance from the rect to the
+/// center is `< radius`, and a touch (radius == distance) also
+/// counts as overlap so a deposit circle that just reaches the
+/// cell border still makes the deposit eligible.
+///
+/// Issue #22 contract: a Resource Deposit is eligible for gather
+/// work when its circular work area intersects a painted Gather
+/// cell owned by the same swarm. Paint strength still affects
+/// scoring, but the eligibility gate is geometric overlap, not
+/// exact intent-grid cell membership.
+pub fn cell_overlaps_circle(cell: IVec2, circle_center: Vec2, circle_radius: f32) -> bool {
+    let min = Vec2::new(
+        cell.x as f32 * ZONE_BLOCK_SIZE,
+        cell.y as f32 * ZONE_BLOCK_SIZE,
+    );
+    let max = Vec2::new(
+        (cell.x + 1) as f32 * ZONE_BLOCK_SIZE,
+        (cell.y + 1) as f32 * ZONE_BLOCK_SIZE,
+    );
+    let closest_x = circle_center.x.clamp(min.x, max.x);
+    let closest_y = circle_center.y.clamp(min.y, max.y);
+    let dx = circle_center.x - closest_x;
+    let dy = circle_center.y - closest_y;
+    dx * dx + dy * dy <= circle_radius * circle_radius
+}
+
 fn find_nearest_deposit_in_cell(
     cell: IVec2,
     kind: ResourceKind,
@@ -103,10 +135,13 @@ fn find_nearest_deposit_in_cell(
         if deposit.kind != kind || deposit.amount == 0 {
             continue;
         }
-        if world_to_cell(transform.translation.truncate()) != cell {
+        // Issue #22: visual overlap with the painted cell's
+        // rectangle, not exact intent-grid cell membership.
+        let deposit_pos = transform.translation.truncate();
+        if !cell_overlaps_circle(cell, deposit_pos, deposit.radius) {
             continue;
         }
-        let d = worker_pos.distance(transform.translation.truncate());
+        let d = worker_pos.distance(deposit_pos);
         if best.is_none_or(|(bd, _)| d < bd) {
             best = Some((d, entity));
         }
@@ -472,5 +507,139 @@ mod tests {
         assert_eq!(world_to_cell(Vec2::new(512.0, 0.0)), IVec2::new(1, 0));
         assert_eq!(world_to_cell(Vec2::new(-1.0, 0.0)), IVec2::new(-1, 0));
         assert_eq!(world_to_cell(Vec2::new(100.0, -100.0)), IVec2::new(0, -1));
+    }
+
+    #[test]
+    fn cell_overlaps_circle_center_inside_cell() {
+        // Deposit center in the middle of cell (0, 0); even a
+        // tiny radius overlaps. The cell rect is (0, 0) -
+        // (512, 512), the center is (256, 256), so the distance
+        // to the rect is 0 -- strictly less than any positive
+        // radius.
+        assert!(cell_overlaps_circle(
+            IVec2::new(0, 0),
+            Vec2::new(256.0, 256.0),
+            0.001,
+        ));
+        assert!(cell_overlaps_circle(
+            IVec2::new(0, 0),
+            Vec2::new(256.0, 256.0),
+            100.0,
+        ));
+    }
+
+    #[test]
+    fn cell_overlaps_circle_center_on_cell_boundary() {
+        // A deposit center sitting exactly on the boundary
+        // between cell (0, 0) and cell (1, 0) is on the edge of
+        // both cells. The closest point on cell (0, 0)'s rect to
+        // the boundary point is the boundary point itself, so
+        // any positive radius overlaps. (This is the case the
+        // issue calls out: "even when its center is not in the
+        // same intent grid cell as the selected paint" should
+        // also cover the boundary case -- the new logic is
+        // strictly more permissive than exact cell membership.)
+        let boundary = Vec2::new(512.0, 256.0);
+        assert!(cell_overlaps_circle(IVec2::new(0, 0), boundary, 0.001));
+        assert!(cell_overlaps_circle(IVec2::new(1, 0), boundary, 0.001));
+    }
+
+    #[test]
+    fn cell_overlaps_circle_center_outside_radius_reaches_in() {
+        // Deposit center is in cell (1, 0) but its radius is
+        // large enough to reach into cell (0, 0). The closest
+        // point on cell (0, 0)'s rect to (768, 256) is (512,
+        // 256); the distance is 256. A radius of 300 makes the
+        // deposit overlap both cells.
+        let center_in_cell_one = Vec2::new(768.0, 256.0);
+        assert!(!cell_overlaps_circle(
+            IVec2::new(0, 0),
+            center_in_cell_one,
+            100.0,
+        ));
+        assert!(!cell_overlaps_circle(
+            IVec2::new(0, 0),
+            center_in_cell_one,
+            255.0,
+        ));
+        assert!(cell_overlaps_circle(
+            IVec2::new(0, 0),
+            center_in_cell_one,
+            256.0,
+        ));
+        assert!(cell_overlaps_circle(
+            IVec2::new(0, 0),
+            center_in_cell_one,
+            300.0,
+        ));
+        // And the deposit's "home" cell still overlaps too.
+        assert!(cell_overlaps_circle(
+            IVec2::new(1, 0),
+            center_in_cell_one,
+            100.0,
+        ));
+    }
+
+    #[test]
+    fn cell_overlaps_circle_far_center_does_not_overlap() {
+        // Deposit center is in cell (3, 0) with a small radius
+        // that does not reach back to cell (0, 0). The closest
+        // point on cell (0, 0)'s rect to (1792, 256) is (512,
+        // 256); the distance is 1280, well beyond any reasonable
+        // radius.
+        let far_center = Vec2::new(1792.0, 256.0);
+        assert!(!cell_overlaps_circle(IVec2::new(0, 0), far_center, 32.0));
+        assert!(!cell_overlaps_circle(IVec2::new(0, 0), far_center, 1279.0));
+        assert!(!cell_overlaps_circle(IVec2::new(0, 0), far_center, 1000.0));
+    }
+
+    #[test]
+    fn cell_overlaps_circle_works_for_negative_cells() {
+        // Same shape on the negative side of the origin. Cell
+        // (-1, 0) rect is (-512, 0) to (0, 512). A deposit
+        // center in cell (-2, 0) at (-768, 256) with a radius
+        // that just reaches back into cell (-1, 0) should
+        // overlap cell (-1, 0) but not cell (0, 0). The closest
+        // point on cell (-1, 0)'s rect to (-768, 256) is
+        // (-512, 256); the distance is 256, so radius >= 256
+        // overlaps.
+        let center = Vec2::new(-768.0, 256.0);
+        assert!(!cell_overlaps_circle(IVec2::new(-1, 0), center, 100.0));
+        assert!(cell_overlaps_circle(IVec2::new(-1, 0), center, 256.0));
+        assert!(cell_overlaps_circle(IVec2::new(-1, 0), center, 300.0));
+        // Cell (0, 0) rect is (0, 0) to (512, 512). The closest
+        // point on that rect to (-768, 256) is (0, 256); the
+        // distance is 768, so no reasonable radius reaches it.
+        assert!(!cell_overlaps_circle(IVec2::new(0, 0), center, 700.0));
+    }
+
+    #[test]
+    fn cell_overlaps_circle_zero_radius_is_point_test() {
+        // A zero radius makes the test degenerate to a point:
+        // the overlap is true only when the center is inside
+        // the cell rect. A center on the cell boundary counts
+        // as inside because the rect is half-open in the
+        // overlap helper (we use clamp, so the boundary maps
+        // to itself).
+        assert!(cell_overlaps_circle(
+            IVec2::new(0, 0),
+            Vec2::new(256.0, 256.0),
+            0.0,
+        ));
+        assert!(cell_overlaps_circle(
+            IVec2::new(0, 0),
+            Vec2::new(512.0, 256.0),
+            0.0,
+        ));
+        assert!(!cell_overlaps_circle(
+            IVec2::new(0, 0),
+            Vec2::new(513.0, 256.0),
+            0.0,
+        ));
+        assert!(!cell_overlaps_circle(
+            IVec2::new(0, 0),
+            Vec2::new(-1.0, 256.0),
+            0.0,
+        ));
     }
 }
