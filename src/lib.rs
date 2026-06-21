@@ -167,7 +167,8 @@ fn setup_things_startup(
         },
         (
             Sprite::from_image(minerals_texture.clone()),
-            Transform::from_translation(vec3(-800., 0., 1.)).with_scale(vec3(2., 2., 1.)),
+            Transform::from_translation(vec3(-800., 0., GAMEPLAY_SPRITE_Z))
+                .with_scale(vec3(2., 2., 1.)),
         ),
     ));
 
@@ -183,7 +184,8 @@ fn setup_things_startup(
         },
         (
             Sprite::from_image(processing_texture.clone()),
-            Transform::from_translation(vec3(-300., 0., 1.)).with_scale(vec3(3., 3., 1.)),
+            Transform::from_translation(vec3(-300., 0., GAMEPLAY_SPRITE_Z))
+                .with_scale(vec3(3., 3., 1.)),
         ),
     ));
 
@@ -222,14 +224,14 @@ fn spawn_initial_swarm(commands: &mut Commands<'_, '_>, asset_server: &Res<'_, A
                 p.spawn((
                     NanobotBundle::default(),
                     Sprite::from_image(texture.clone()),
-                    Transform::from_translation(vec3(0., 0., 1.)),
+                    Transform::from_translation(vec3(0., 0., GAMEPLAY_SPRITE_Z)),
                 ));
             }
             for _ in 0..100 {
                 p.spawn((
                     NanobotBundle::default(),
                     Sprite::from_image(texture.clone()),
-                    Transform::from_translation(vec3(100., 0., 1.)),
+                    Transform::from_translation(vec3(100., 0., GAMEPLAY_SPRITE_Z)),
                 ));
             }
         });
