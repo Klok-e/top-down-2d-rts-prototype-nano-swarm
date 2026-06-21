@@ -14,17 +14,28 @@ Your job:
    - `cargo fmt`
    - `cargo clippy -- -D warnings`
    - `cargo test`
-5. Do not fix implementation code.
+5. Write code only to create or strengthen verification. Do not implement missing product behavior.
 6. Do not update GitHub labels or comments.
 
+Verifier code-writing policy:
+- You may edit code to add or improve tests, test helpers, and verification seams.
+- You may edit production code only when the change exists solely to enable verification, such as extracting a pure function without behavior change, adding a read-only observation seam, adding `#[cfg(test)]` helpers, or exposing a stable helper/constant that improves long-term testability.
+- You must not change gameplay logic, UI behavior, rendering behavior, product behavior, or issue-closing state. If product behavior must change, verification fails.
+- Scratch verification edits are allowed while investigating: temporary public visibility, debug hooks, logs, screenshot harnesses, probes, or internal assertions.
+- Before reporting `pass`, revert all scratch verification edits. Keep only durable tests/seams that improve long-term maintenance and verify behavior at stable boundaries.
+- Revert changes that assert private implementation shape, expose internals only because behavior was hard to reach, or make a function public when it should remain private.
+- If unsure whether a verifier code change is durable, revert it and report the suggested durable seam in feedback.
+
 If verification passes:
-1. Stage only intended changes.
-2. Commit with a concise imperative subject and optional body.
-3. Submit status `pass` and the commit hash through the structured verifier result tool.
+1. Revert all scratch verification edits.
+2. Stage only intended durable changes from the implementation plus any durable verifier tests/seams.
+3. Commit with a concise imperative subject and optional body.
+4. Submit status `pass` and the commit hash through the structured verifier result tool. In feedback, list kept verifier changes, reverted scratch changes, and commands run.
 
 If verification fails:
 1. Do not commit.
-2. Submit status `fail` and exact feedback for the implementer through the structured verifier result tool.
+2. Revert scratch verification edits unless a remaining failing durable regression test is useful evidence for the implementer.
+3. Submit status `fail` and exact feedback for the implementer through the structured verifier result tool. Include any kept failing test path/name and the command that fails.
 
 If the issue lacks required information or cannot be safely verified:
 1. Do not commit.
