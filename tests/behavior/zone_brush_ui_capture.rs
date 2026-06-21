@@ -1,7 +1,9 @@
 //! Integration test for the UI-capture half of the zone-brush fix:
 //! the brush must see fresh `is_pointer_over_ui` state on the same
-//! frame, and the intent-layer panel's full-width layout anchor
-//! must not block the brush on its own. The tests wire a minimal
+//! frame, the intent-layer panel's full-width layout anchor must
+//! not block the brush on its own, and the `check_ui_interaction`
+//! system must skip entities tagged with `NoPointerCapture` while
+//! still picking up unmarked UI nodes. The tests wire a minimal
 //! Bevy `App` (window, camera, cursor, capture + brush systems in
 //! the production order) and assert the brush paints or skips
 //! based on the current frame's pointer state.
@@ -29,7 +31,7 @@ fn build_app() -> App {
     app
 }
 
-fn spawn_window_with_cursor(app: &mut App, cursor: Option<Vec2>) -> Entity {
+fn spawn_window_with_cursor(app: &mut App, cursor: Vec2) -> Entity {
     let entity = app
         .world_mut()
         .spawn(Window {
@@ -37,13 +39,11 @@ fn spawn_window_with_cursor(app: &mut App, cursor: Option<Vec2>) -> Entity {
             ..default()
         })
         .id();
-    if let Some(pos) = cursor {
-        let mut entity_ref = app.world_mut().entity_mut(entity);
-        let mut window = entity_ref
-            .get_mut::<Window>()
-            .expect("window entity must have a Window component");
-        window.set_cursor_position(Some(pos));
-    }
+    app.world_mut()
+        .entity_mut(entity)
+        .get_mut::<Window>()
+        .expect("window entity must have a Window component")
+        .set_cursor_position(Some(cursor));
     entity
 }
 
@@ -87,7 +87,7 @@ fn brush_paints_when_no_ui_capture_is_set_in_current_frame() {
     // holding left mouse. The brush must paint at the world cell
     // under the cursor.
     let mut app = build_app();
-    spawn_window_with_cursor(&mut app, Some(Vec2::new(640.0, 360.0)));
+    spawn_window_with_cursor(&mut app, Vec2::new(640.0, 360.0));
     spawn_camera_at_origin(&mut app);
     add_brush_chain(&mut app);
 
@@ -113,7 +113,7 @@ fn brush_skips_paint_when_ui_capture_is_set_in_current_frame() {
     // `is_pointer_over_ui = true`; the brush must then skip the
     // paint.
     let mut app = build_app();
-    spawn_window_with_cursor(&mut app, Some(Vec2::new(640.0, 360.0)));
+    spawn_window_with_cursor(&mut app, Vec2::new(640.0, 360.0));
     spawn_camera_at_origin(&mut app);
     add_brush_chain(&mut app);
 
@@ -147,7 +147,7 @@ fn brush_paints_when_only_no_pointer_capture_root_is_over() {
     // player scenario: the cursor is over the world, but the panel
     // root's broad footprint is still "under" the cursor.
     let mut app = build_app();
-    spawn_window_with_cursor(&mut app, Some(Vec2::new(640.0, 360.0)));
+    spawn_window_with_cursor(&mut app, Vec2::new(640.0, 360.0));
     spawn_camera_at_origin(&mut app);
     add_brush_chain(&mut app);
 
@@ -188,7 +188,7 @@ fn brush_paints_after_check_ui_clears_stale_over_ui_state() {
         .resource_mut::<UiHandling>()
         .is_pointer_over_ui = true;
 
-    spawn_window_with_cursor(&mut app, Some(Vec2::new(640.0, 360.0)));
+    spawn_window_with_cursor(&mut app, Vec2::new(640.0, 360.0));
     spawn_camera_at_origin(&mut app);
     add_brush_chain(&mut app);
 
@@ -207,5 +207,83 @@ fn brush_paints_after_check_ui_clears_stale_over_ui_state() {
         dirty_count > 0,
         "brush must paint after check_ui_interaction clears the stale state \
          (dirty cells: {dirty_count}, order is check_ui then zone_brush)"
+    );
+}
+
+#[test]
+fn check_ui_interaction_ignores_no_pointer_capture_but_picks_up_other_nodes() {
+    // The intent layer panel is a full-width layout anchor
+    // (`left: 0`, `right: 0`). Without `NoPointerCapture` its
+    // `RelativeCursorPosition` would mark the cursor as "over UI"
+    // for the whole viewport, blocking the world brush. The
+    // `check_ui_interaction` system filters out entities with the
+    // marker, so the root's broad footprint is ignored while the
+    // descendant buttons still capture pointer state. The control
+    // entity (no marker) is included so we can confirm
+    // `check_ui_interaction` still flips the resource for real
+    // interactive nodes.
+    let mut app = App::new();
+    app.insert_resource(UiHandling::default());
+    app.add_systems(Update, check_ui_interaction);
+
+    // Mimic the panel root: a Node with RelativeCursorPosition that
+    // says the cursor is over, and the NoPointerCapture marker the
+    // setup system now adds.
+    app.world_mut().spawn((
+        Node::default(),
+        RelativeCursorPosition {
+            cursor_over: true,
+            normalized: None,
+        },
+        IntentLayerPanelRoot,
+        NoPointerCapture,
+    ));
+
+    // Control: a real button-like UI node (no marker) that should
+    // still be picked up by `check_ui_interaction`.
+    app.world_mut().spawn((
+        Node::default(),
+        RelativeCursorPosition {
+            cursor_over: true,
+            normalized: None,
+        },
+    ));
+
+    app.update();
+
+    let handling = app.world().resource::<UiHandling>();
+    assert!(
+        handling.is_pointer_over_ui,
+        "the descendant button (no marker) must still flip the resource"
+    );
+}
+
+#[test]
+fn check_ui_interaction_keeps_resource_false_when_only_marker_nodes_are_over() {
+    // When the panel root is the only thing with cursor-over, the
+    // marker must keep `is_pointer_over_ui` false. This is the
+    // actual player scenario: cursor over the world, panel root
+    // still considers the cursor "near" because of its full-width
+    // footprint, so the brush must still paint.
+    let mut app = App::new();
+    app.insert_resource(UiHandling::default());
+    app.add_systems(Update, check_ui_interaction);
+
+    app.world_mut().spawn((
+        Node::default(),
+        RelativeCursorPosition {
+            cursor_over: true,
+            normalized: None,
+        },
+        IntentLayerPanelRoot,
+        NoPointerCapture,
+    ));
+
+    app.update();
+
+    let handling = app.world().resource::<UiHandling>();
+    assert!(
+        !handling.is_pointer_over_ui,
+        "NoPointerCapture on the panel root must let the brush through"
     );
 }
