@@ -61,12 +61,20 @@ A win or loss condition where a swarm loses the ability to recover because it ha
 _Avoid_: Population wipeout, king unit death
 
 **Automatic Construction**:
-The swarm creates needed structures from demand pressure rather than direct player placement. Production facilities, stockpiles, chargers, and similar support structures emerge inside or near matching intent paint when existing capacity is too busy for current intent.
+The swarm creates needed structures from demand pressure rather than direct player placement. Production facilities, stockpiles, chargers, and similar support structures emerge inside or near matching intent paint when existing capacity is too busy for current intent. Painting a Build Zone alone does not create a structure; there must be active demand for the resulting support structure.
 _Avoid_: Manual building placement, blueprint palette
 
+**Minimum Category Activation**:
+When an intent category has valid work and available eligible nanobots, the swarm should keep at least some work active in that category before letting normal scoring optimize the rest. This makes newly drawn valid intent visibly receive workers quickly without requiring direct unit control.
+_Avoid_: Manual assignment, hard quota, perfect allocation
+
 **Planned Structure**:
-A not-yet-built support structure selected by automatic construction and waiting for worker time. Planned structures have a kind, owner, location, and build work remaining before they become physical structures.
+A not-yet-built support structure selected by automatic construction and waiting for worker time. Planned structures have a kind, owner, location, and build work remaining before they become physical structures. Once planned, its location is stable; organic-looking placement may vary when first selected, but existing plans do not re-roll every tick.
 _Avoid_: Blueprint, ghost building, construction order
+
+**Building Footprint**:
+The occupied space of a planned or completed support structure. Building footprints do not overlap other planned structures, completed structures, or resource deposits; nanobots are ignored for footprint blocking.
+_Avoid_: Sprite overlap, unit collision
 
 **Maintenance**:
 Ongoing worker time required to keep structures functional. All structures degrade when not maintained, so overexpansion or cut-off worker access can cause infrastructure to weaken or collapse.
