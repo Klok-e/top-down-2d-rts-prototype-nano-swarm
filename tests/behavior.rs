@@ -2,6 +2,8 @@
 
 #[path = "behavior/automatic_construction_issue34.rs"]
 mod automatic_construction_issue34;
+#[path = "behavior/central_demand_allocator.rs"]
+mod central_demand_allocator;
 #[path = "behavior/charger.rs"]
 mod charger;
 #[path = "behavior/charger_planned.rs"]

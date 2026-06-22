@@ -24,7 +24,9 @@ use fly_camera::{Camera2dFlyPlugin, CameraZoom2d, FlyCamera2d};
 use game_settings::GameSettings;
 use intent::IntentGrid;
 use materials::BackgroundMaterial;
-use nanobot::{CollapsePlugin, NanobotPlugin, PlannedStructurePlugin, ProductionPlugin};
+use nanobot::{
+    CentralDemandPlugin, CollapsePlugin, NanobotPlugin, PlannedStructurePlugin, ProductionPlugin,
+};
 use resources::ResourceLedger;
 use structure_overlay::StructureOverlayPlugin;
 use structure_sprites::StructureSprites;
@@ -100,6 +102,13 @@ pub fn build_app() -> App {
         // DirectMovementComponent, the same signal the rest of
         // the per-role systems use.
         .add_plugins(nanobot::DefendPlugin)
+        // CentralDemandPlugin runs after `move_velocity_system`
+        // and before the per-category assignment systems so the
+        // first allocation of an idle nanobot flows through the
+        // central allocator's Minimum Category Activation path
+        // rather than through the per-category "steal a worker"
+        // path (issue #35).
+        .add_plugins(CentralDemandPlugin)
         // ChargePlugin chains after `move_velocity_system`
         // and after DefendPlugin so the defend hold is
         // established before the rotation system releases it.
