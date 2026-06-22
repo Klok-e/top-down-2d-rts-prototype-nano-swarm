@@ -506,11 +506,20 @@ pub fn charger_auto_creation_system(
         obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
     }
     for (planned, transform) in &planned_chargers {
-        if planned.kind != PlannedKind::Charger {
-            continue;
-        }
-        *chargers_per_cell.entry(planned.cell).or_insert(0) += 1;
+        // Every planned structure (not just Chargers) is
+        // in the obstacle list. The issue #34 "shared
+        // footprint" contract says "Charger placement
+        // rejects candidates that overlap ... Planned
+        // Structures" -- a planned Sink Stockpile or
+        // Production Facility must block a Charger
+        // candidate the same way a planned Charger
+        // would. The busyness count is still scoped to
+        // Planned Chargers, since only Chargers satisfy
+        // Defend demand.
         obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
+        if planned.kind == PlannedKind::Charger {
+            *chargers_per_cell.entry(planned.cell).or_insert(0) += 1;
+        }
     }
 
     // Count defenders per cell: holding or assigned. Defenders
