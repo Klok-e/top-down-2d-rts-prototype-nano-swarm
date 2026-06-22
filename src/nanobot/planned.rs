@@ -55,11 +55,10 @@
 //! channel, or by reading the component (`PlannedStructure`
 //! vs `Stockpile` + `StockpileRole`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use crate::ai::get_world_from_zone;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::NanobotType;
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm, SwarmId, SwarmMember};
@@ -272,67 +271,6 @@ pub struct PlannedStructureProgress {
 #[derive(Debug, Component, Clone, Copy)]
 pub struct PlannedProductionTarget(pub NanobotType);
 
-/// Walk the [`IntentGrid`] and spawn a new
-/// [`PlannedStructure`] of [`PlannedKind::SinkStockpile`] in
-/// any Build cell that has paint but no existing planned or
-/// completed structure.
-///
-/// Each Build-painted cell becomes a Planned Sink Stockpile
-/// at the cell's world center; the completion path
-/// (see [`promote_planned_to_completion`]) then turns it
-/// into a real `Stockpile` after a Worker spends its build
-/// budget. Source Stockpiles follow the same lifecycle but
-/// are created by a separate demand system
-/// ([`crate::nanobot::gather::source_stockpile_demand_system`])
-/// that places plans on a ring around `ResourceDeposit`s.
-///
-/// Cells that already hold a planned or completed structure
-/// are skipped so the swarm cannot pile multiple
-/// construction targets into a single cell.
-///
-/// Ownership: the plan is stamped with [`OwnerSwarm`] using
-/// the Build cell's intent owner (issue #20's per-swarm
-/// intent ownership). Unowned paint falls back to the first
-/// [`Swarm`] in the world, matching the unowned-paint
-/// contract in the rest of the simulation. The promotion
-/// path preserves [`OwnerSwarm`] on the completed
-/// structure.
-#[allow(clippy::type_complexity)]
-pub fn planned_structure_auto_creation_system(
-    mut commands: Commands,
-    grid: Res<IntentGrid>,
-    structure_sprites: Res<StructureSprites>,
-    existing_targets: Query<&Transform, Or<(With<PlannedStructure>, With<Stockpile>)>>,
-    swarms: Query<(Entity, &SwarmId), With<Swarm>>,
-) {
-    let mut cells_with_target: HashSet<IVec2> = HashSet::new();
-    for transform in &existing_targets {
-        cells_with_target.insert(world_to_cell(transform.translation.truncate()));
-    }
-    let swarm_by_id: HashMap<SwarmId, Entity> = swarms.iter().map(|(e, id)| (*id, e)).collect();
-    let fallback_owner = swarms.iter().next().map(|(e, _)| e);
-    for (cell, intent_cell) in grid.iter_cells() {
-        if !intent_cell.has(IntentKind::Build) {
-            continue;
-        }
-        if cells_with_target.contains(&cell) {
-            continue;
-        }
-        let owner = intent_cell
-            .owner(IntentKind::Build)
-            .and_then(|id| swarm_by_id.get(&id).copied())
-            .or(fallback_owner);
-        let center = get_world_from_zone(cell);
-        let mut entity_commands = commands.spawn((
-            PlannedStructure::new(PlannedKind::SinkStockpile, cell),
-            planned_visual_components(PlannedKind::SinkStockpile, &structure_sprites, center),
-        ));
-        if let Some(swarm_entity) = owner {
-            entity_commands.insert(OwnerSwarm(swarm_entity));
-        }
-    }
-}
-
 /// Plan Sink Stockpiles only when sink-side storage has a real
 /// nearby consumer. Raw Build paint is only a placement constraint:
 /// it does not create construction demand by itself. A pending or
@@ -364,12 +302,23 @@ pub fn sink_stockpile_demand_system(
     for (_, transform, _, _) in &stockpiles {
         obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
     }
-    for (planned_structure, transform, _) in &planned {
+    // Planned Structures of any kind are in the obstacle
+    // list so a fresh Sink Stockpile cannot overlap a
+    // pending Production Facility or Charger plan. The
+    // subset that satisfies sink-side demand (Production
+    // Facility, Charger) is also collected below as a
+    // demand site.
+    let mut demand_sites: Vec<(IVec2, Option<Entity>)> = Vec::new();
+    for (planned_structure, transform, owner) in &planned {
         obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
-        if planned_structure.kind != PlannedKind::ProductionFacility
-            && planned_structure.kind != PlannedKind::Charger
-        {
-            continue;
+        if matches!(
+            planned_structure.kind,
+            PlannedKind::ProductionFacility | PlannedKind::Charger
+        ) {
+            demand_sites.push((
+                world_to_cell(transform.translation.truncate()),
+                owner.map(|o| o.0),
+            ));
         }
     }
     for (transform, _) in &facilities {
@@ -379,17 +328,6 @@ pub fn sink_stockpile_demand_system(
         obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
     }
 
-    let mut demand_sites: Vec<(IVec2, Option<Entity>)> = Vec::new();
-    for (planned_structure, transform, owner) in &planned {
-        if planned_structure.kind == PlannedKind::ProductionFacility
-            || planned_structure.kind == PlannedKind::Charger
-        {
-            demand_sites.push((
-                world_to_cell(transform.translation.truncate()),
-                owner.map(|o| o.0),
-            ));
-        }
-    }
     for (transform, owner) in &facilities {
         demand_sites.push((
             world_to_cell(transform.translation.truncate()),

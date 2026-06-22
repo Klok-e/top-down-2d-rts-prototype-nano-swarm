@@ -738,15 +738,15 @@ fn try_consume_production_material(
 /// ones are all busy.
 ///
 /// Cross-plugin ordering: the auto-creation system runs
-/// `before(planned_structure_auto_creation_system)` so the
-/// production demand layer claims a Build cell *before* the
+/// `before(sink_stockpile_demand_system)` so the production
+/// demand layer claims a Build cell *before* the
 /// sink-stockpile demand layer fills every Build cell with
 /// a Sink Stockpile plan. Without this ordering, a swarm
 /// with high unmet demand and a single Build cell would
 /// never plan a Production Facility -- the Sink Stockpile
-/// auto-creator would claim the only cell first. The
+/// demand layer would claim the only cell first. The
 /// production facility now gets first pick of any free
-/// Build cell; the sink-stockpile auto-creator then fills
+/// Build cell; the sink-stockpile demand layer then fills
 /// the remaining cells, matching the "logistics follow
 /// production" build order in the PRD.
 pub struct ProductionPlugin;
@@ -759,7 +759,7 @@ impl Plugin for ProductionPlugin {
                 production_facility_pick_target_system,
                 production_facility_work_system,
                 production_facility_auto_creation_system
-                    .before(crate::nanobot::planned::planned_structure_auto_creation_system),
+                    .before(crate::nanobot::planned::sink_stockpile_demand_system),
             )
                 .chain()
                 .after(crate::nanobot::move_velocity_system),

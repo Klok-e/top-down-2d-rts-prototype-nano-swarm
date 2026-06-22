@@ -29,7 +29,7 @@ use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::{best_candidate, Commitment, NanobotType, SoftWorkSlots};
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm, SwarmId, SwarmMember};
 use crate::nanobot::placement::{
-    find_source_stockpile_placement, SOURCE_STOCKPILE_FOOTPRINT_RADIUS,
+    find_source_stockpile_placement, BUILDING_FOOTPRINT_RADIUS, SOURCE_STOCKPILE_FOOTPRINT_RADIUS,
     SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PADDING, SOURCE_STOCKPILE_PLACEMENT_COUNT,
     SOURCE_STOCKPILE_PLACEMENT_RADIUS,
 };
@@ -369,6 +369,8 @@ pub fn source_stockpile_demand_system(
     deposits: Query<(&ResourceDeposit, &Transform)>,
     stockpiles: Query<(&Stockpile, &Transform, Option<&StockpileRole>)>,
     planned: Query<(&PlannedStructure, &Transform)>,
+    facility_obstacles: Query<&Transform, With<crate::nanobot::production::ProductionFacility>>,
+    charger_obstacles: Query<&Transform, With<crate::nanobot::Charger>>,
     swarms: Query<(Entity, &SwarmId, &Transform), With<Swarm>>,
     grid: Res<IntentGrid>,
 ) {
@@ -409,6 +411,14 @@ pub fn source_stockpile_demand_system(
         // loop. Each entry carries its own center and
         // half-footprint so the placement algorithm can
         // generalize to mixed-size obstacles in the future.
+        // The issue #34 "shared footprint" contract widens
+        // the list to also include completed Production
+        // Facilities and Chargers: a candidate whose centre
+        // is within `BUILDING_FOOTPRINT_RADIUS +
+        // BUILDING_FOOTPRINT_PADDING + half_footprint` of
+        // any support structure is rejected, so Source
+        // Stockpiles can never overlap another support
+        // structure in any kind of cell.
         let mut obstacles: Vec<(Vec2, f32)> = Vec::new();
         obstacles.extend(
             deposits
@@ -424,6 +434,16 @@ pub fn source_stockpile_demand_system(
             planned
                 .iter()
                 .map(|(_, t)| (t.translation.truncate(), SOURCE_STOCKPILE_FOOTPRINT_RADIUS)),
+        );
+        obstacles.extend(
+            facility_obstacles
+                .iter()
+                .map(|t| (t.translation.truncate(), BUILDING_FOOTPRINT_RADIUS)),
+        );
+        obstacles.extend(
+            charger_obstacles
+                .iter()
+                .map(|t| (t.translation.truncate(), BUILDING_FOOTPRINT_RADIUS)),
         );
         obstacles.extend(
             newly_planned_positions
