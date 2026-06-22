@@ -8,6 +8,7 @@ pub mod nanobot;
 pub mod resources;
 pub mod scenario;
 pub mod structure_overlay;
+pub mod tactical_overlay;
 pub mod ui;
 pub mod zones;
 
@@ -25,6 +26,7 @@ use materials::BackgroundMaterial;
 use nanobot::{CollapsePlugin, NanobotPlugin, PlannedStructurePlugin, ProductionPlugin};
 use resources::ResourceLedger;
 use structure_overlay::StructureOverlayPlugin;
+use tactical_overlay::TacticalOverlayPlugin;
 use ui::NanoswarmUiSetupPlugin;
 use zones::{ZoneMaterial, ZoneMaterialHandleComponent, ZonesPlugin};
 
@@ -111,6 +113,12 @@ pub fn build_app() -> App {
         // to it, so the placement near the end of the
         // plugin list is purely cosmetic.
         .add_plugins(StructureOverlayPlugin)
+        // TacticalOverlayPlugin is the zoomed-out companion
+        // to StructureOverlayPlugin. The two layers share
+        // the same show / hide threshold so the structure
+        // status labels fade out exactly as the tactical
+        // overlay fades in.
+        .add_plugins(TacticalOverlayPlugin)
         .add_plugins(AiPlugin)
         .add_plugins(Camera2dFlyPlugin)
         .add_systems(Startup, setup_things_startup.pipe(error_handler));

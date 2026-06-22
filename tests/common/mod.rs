@@ -45,6 +45,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile},
     structure_overlay::StructureOverlayPlugin,
+    tactical_overlay::TacticalOverlayPlugin,
 };
 
 /// Default `GameSettings` for behaviour tests. The values match the
@@ -270,6 +271,19 @@ pub fn sim_app_with_collapse() -> App {
 pub fn sim_app_with_overlay() -> App {
     let mut app = sim_app();
     app.add_plugins(StructureOverlayPlugin);
+    app
+}
+
+/// `sim_app` + the tactical overlay plugin. The tactical
+/// overlay plugin is independent of the per-role simulation
+/// plugins; this builder is the canonical seam for any test
+/// that exercises `TacticalOverlaySettings`,
+/// `TacticalMarker`, or the gather / cluster / spawn / update
+/// / visibility systems. The plugin inserts its own settings
+/// resource on startup, so the test does not need to add it.
+pub fn sim_app_with_tactical() -> App {
+    let mut app = sim_app();
+    app.add_plugins(TacticalOverlayPlugin);
     app
 }
 
