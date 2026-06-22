@@ -9,7 +9,7 @@
 use bevy::{math::vec3, prelude::*};
 
 use crate::{
-    ai::AiStateComponent,
+    ai::{get_world_from_zone, AiStateComponent},
     building::{Minerals, ProcessingFacility},
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
@@ -18,12 +18,14 @@ use crate::{
         SwarmProduction, VelocityComponent,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile},
-    GAMEPLAY_SPRITE_Z, ZONE_BLOCK_SIZE,
+    GAMEPLAY_SPRITE_Z,
 };
 
 pub const PLAYER_CELL: IVec2 = IVec2::new(0, 0);
+pub const PLAYER_DEFEND_CELL: IVec2 = IVec2::new(1, 0);
 pub const PLAYER_DEPOSIT_CELL: IVec2 = IVec2::new(-2, 0);
 pub const OPPONENT_CELL: IVec2 = IVec2::new(12, 0);
+pub const OPPONENT_DEFEND_CELL: IVec2 = IVec2::new(9, 0);
 pub const OPPONENT_DEPOSIT_CELL: IVec2 = IVec2::new(10, 0);
 
 pub const PLAYER_START_WORKERS: u32 = 4;
@@ -37,10 +39,7 @@ pub const STARTING_STOCKPILE_CAPACITY: u32 = 1000;
 pub const STARTING_WORK_RADIUS: f32 = 64.0;
 
 pub fn cell_origin(cell: IVec2) -> Vec2 {
-    Vec2::new(
-        cell.x as f32 * ZONE_BLOCK_SIZE,
-        cell.y as f32 * ZONE_BLOCK_SIZE,
-    )
+    get_world_from_zone(cell)
 }
 
 pub fn default_player_ratio() -> ProductionRatio {
@@ -62,39 +61,34 @@ pub fn default_opponent_ratio() -> ProductionRatio {
 }
 
 pub fn paint_default_player_intent(grid: &mut IntentGrid) {
-    // Stamp the player `SwarmId` on the prepainted cell so the
+    // Stamp the player `SwarmId` on the prepainted cells so the
     // per-swarm intent filter from issue #20 keeps the player
-    // gather cell visible only to player workers. Without the
-    // owner stamp the cell would be unowned, and opponent
-    // workers wandering into range would see it as a free
-    // gather cell and try to mine it.
-    grid.paint_owned(
-        PLAYER_DEPOSIT_CELL,
-        IntentKind::Gather,
-        PAINT_STRENGTH_CAP,
-        Some(SwarmId::PLAYER),
-    );
+    // starting work visible only to player nanobots. Without the
+    // owner stamp the cells would be unowned, and opponent
+    // workers wandering into range would see them as free work.
+    for (cell, kind) in [
+        (PLAYER_DEPOSIT_CELL, IntentKind::Gather),
+        (PLAYER_CELL, IntentKind::Build),
+        (PLAYER_DEFEND_CELL, IntentKind::Defend),
+    ] {
+        grid.paint_owned(cell, kind, PAINT_STRENGTH_CAP, Some(SwarmId::PLAYER));
+    }
 }
 
-/// Paint the default opponent intent at `OPPONENT_DEPOSIT_CELL` and
-/// `OPPONENT_CELL`, stamping the cells with `owner` so they belong
-/// to the opponent swarm rather than the player. The opponent id
-/// is whatever the caller passes (the same id stamped on the
-/// opponent Swarm entity); using `None` would mark the cells as
-/// unowned and break the per-swarm separation.
+/// Paint the default opponent Gather, Build, and Defend intent,
+/// stamping the cells with `owner` so they belong to the opponent
+/// swarm rather than the player. The opponent id is whatever the
+/// caller passes (the same id stamped on the opponent Swarm
+/// entity); using `None` would mark the cells as unowned and break
+/// the per-swarm separation.
 pub fn paint_default_opponent_intent(grid: &mut IntentGrid, owner: SwarmId) {
-    grid.paint_owned(
-        OPPONENT_DEPOSIT_CELL,
-        IntentKind::Gather,
-        PAINT_STRENGTH_CAP,
-        Some(owner),
-    );
-    grid.paint_owned(
-        OPPONENT_CELL,
-        IntentKind::Defend,
-        PAINT_STRENGTH_CAP,
-        Some(owner),
-    );
+    for (cell, kind) in [
+        (OPPONENT_DEPOSIT_CELL, IntentKind::Gather),
+        (OPPONENT_CELL, IntentKind::Build),
+        (OPPONENT_DEFEND_CELL, IntentKind::Defend),
+    ] {
+        grid.paint_owned(cell, kind, PAINT_STRENGTH_CAP, Some(owner));
+    }
 }
 
 pub fn spawn_default_player_scenario(
@@ -297,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn default_player_intent_prepaints_gather_only() {
+    fn default_player_intent_prepaints_gather_build_and_defend() {
         let mut grid = IntentGrid::new(32, 32);
         paint_default_player_intent(&mut grid);
 
@@ -307,9 +301,14 @@ mod tests {
             deposit_cell.strength(IntentKind::Gather),
             PAINT_STRENGTH_CAP
         );
-        assert!(!deposit_cell.has(IntentKind::Build));
-        assert!(!deposit_cell.has(IntentKind::Defend));
         assert!(!deposit_cell.has(IntentKind::Corridor));
+
+        let start_cell = grid.cell(PLAYER_CELL).unwrap();
+        assert!(start_cell.has(IntentKind::Build));
+        assert_eq!(start_cell.strength(IntentKind::Build), PAINT_STRENGTH_CAP);
+        assert!(start_cell.has(IntentKind::Defend));
+        assert_eq!(start_cell.strength(IntentKind::Defend), PAINT_STRENGTH_CAP);
+        assert!(!start_cell.has(IntentKind::Corridor));
     }
 
     #[test]
@@ -333,10 +332,20 @@ mod tests {
             !cell.visible_to(IntentKind::Gather, SwarmId(1)),
             "opponent workers must NOT see the default player gather cell"
         );
+
+        let start_cell = grid.cell(PLAYER_CELL).unwrap();
+        for kind in [IntentKind::Build, IntentKind::Defend] {
+            assert_eq!(start_cell.owner(kind), Some(SwarmId::PLAYER));
+            assert!(start_cell.visible_to(kind, SwarmId::PLAYER));
+            assert!(
+                !start_cell.visible_to(kind, SwarmId(1)),
+                "opponent workers must NOT see default player {kind:?} intent"
+            );
+        }
     }
 
     #[test]
-    fn default_opponent_intent_prepaints_gather_and_defend() {
+    fn default_opponent_intent_prepaints_gather_build_and_defend() {
         let mut grid = IntentGrid::new(32, 32);
         let opponent_id = SwarmId(7);
         paint_default_opponent_intent(&mut grid, opponent_id);
@@ -346,17 +355,38 @@ mod tests {
         assert_eq!(gather_cell.strength(IntentKind::Gather), PAINT_STRENGTH_CAP);
         assert_eq!(gather_cell.owner(IntentKind::Gather), Some(opponent_id));
 
-        let defend_cell = grid.cell(OPPONENT_CELL).unwrap();
-        assert!(defend_cell.has(IntentKind::Defend));
-        assert_eq!(defend_cell.strength(IntentKind::Defend), PAINT_STRENGTH_CAP);
-        assert_eq!(defend_cell.owner(IntentKind::Defend), Some(opponent_id));
+        let start_cell = grid.cell(OPPONENT_CELL).unwrap();
+        assert!(start_cell.has(IntentKind::Build));
+        assert_eq!(start_cell.strength(IntentKind::Build), PAINT_STRENGTH_CAP);
+        assert_eq!(start_cell.owner(IntentKind::Build), Some(opponent_id));
+        assert!(start_cell.has(IntentKind::Defend));
+        assert_eq!(start_cell.strength(IntentKind::Defend), PAINT_STRENGTH_CAP);
+        assert_eq!(start_cell.owner(IntentKind::Defend), Some(opponent_id));
+    }
+
+    #[test]
+    fn default_scenario_positions_are_cell_centers() {
+        assert_eq!(cell_origin(PLAYER_CELL), get_world_from_zone(PLAYER_CELL));
+        assert_eq!(
+            cell_origin(PLAYER_DEPOSIT_CELL),
+            get_world_from_zone(PLAYER_DEPOSIT_CELL)
+        );
+        assert_eq!(
+            cell_origin(OPPONENT_CELL),
+            get_world_from_zone(OPPONENT_CELL)
+        );
+        assert_eq!(
+            cell_origin(OPPONENT_DEPOSIT_CELL),
+            get_world_from_zone(OPPONENT_DEPOSIT_CELL)
+        );
     }
 
     #[test]
     fn opponent_starts_far_from_player() {
         assert_eq!(OPPONENT_CELL.x - PLAYER_CELL.x, 12);
         assert!(
-            cell_origin(OPPONENT_CELL).distance(cell_origin(PLAYER_CELL)) >= 10.0 * ZONE_BLOCK_SIZE
+            cell_origin(OPPONENT_CELL).distance(cell_origin(PLAYER_CELL))
+                >= 10.0 * crate::ZONE_BLOCK_SIZE
         );
     }
 }
