@@ -50,6 +50,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile},
     structure_overlay::StructureOverlayPlugin,
+    structure_sprites::StructureSprites,
     tactical_overlay::TacticalOverlayPlugin,
 };
 
@@ -105,6 +106,7 @@ pub fn minimal_app() -> App {
     app.insert_resource(default_game_settings());
     app.init_resource::<SoftWorkSlots>();
     app.init_resource::<ResourceLedger>();
+    app.insert_resource(StructureSprites::from_single_handle(Handle::default()));
     app
 }
 
@@ -534,19 +536,21 @@ pub fn spawn_planned_structure_of_kind_at_cell(
     cell: IVec2,
     kind: top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedKind,
 ) -> Entity {
-    use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-        planned_visual_color, PLANNED_STRUCTURE_FOOTPRINT,
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{planned_visual_color, PLANNED_STRUCTURE_FOOTPRINT},
+        structure_sprites::{StructureVisual, StructureVisualState},
     };
     let center = cell_world_center(cell);
+    let structure_sprites = app.world().resource::<StructureSprites>().clone();
+    let mut sprite = structure_sprites.sprite(kind, StructureVisualState::Planned);
+    sprite.color = planned_visual_color();
+    sprite.custom_size = Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT));
     app.world_mut()
         .spawn((
             PlannedStructure::new(kind, cell),
-            Sprite {
-                color: planned_visual_color(),
-                custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
-                ..default()
-            },
+            sprite,
             Transform::from_translation(center.extend(0.0)),
+            StructureVisual::planned(kind),
         ))
         .id()
 }
@@ -566,20 +570,27 @@ pub fn spawn_planned_production_facility_at_cell(
     cell: IVec2,
     first_target: top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotType,
 ) -> Entity {
-    use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-        planned_visual_color, PlannedKind, PlannedProductionTarget, PLANNED_STRUCTURE_FOOTPRINT,
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{
+            planned_visual_color, PlannedKind, PlannedProductionTarget, PLANNED_STRUCTURE_FOOTPRINT,
+        },
+        structure_sprites::{StructureVisual, StructureVisualState},
     };
     let center = cell_world_center(cell);
+    let structure_sprites = app.world().resource::<StructureSprites>().clone();
+    let mut sprite = structure_sprites.sprite(
+        PlannedKind::ProductionFacility,
+        StructureVisualState::Planned,
+    );
+    sprite.color = planned_visual_color();
+    sprite.custom_size = Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT));
     app.world_mut()
         .spawn((
             PlannedStructure::new(PlannedKind::ProductionFacility, cell),
             PlannedProductionTarget(first_target),
-            Sprite {
-                color: planned_visual_color(),
-                custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
-                ..default()
-            },
+            sprite,
             Transform::from_translation(center.extend(0.0)),
+            StructureVisual::planned(PlannedKind::ProductionFacility),
         ))
         .id()
 }
@@ -593,19 +604,21 @@ pub fn spawn_planned_production_facility_at_cell(
 /// colors against the same starting state the
 /// charger-auto-creation system produces.
 pub fn spawn_planned_charger_at_cell(app: &mut App, cell: IVec2) -> Entity {
-    use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-        planned_visual_color, PlannedKind, PLANNED_STRUCTURE_FOOTPRINT,
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{planned_visual_color, PlannedKind, PLANNED_STRUCTURE_FOOTPRINT},
+        structure_sprites::{StructureVisual, StructureVisualState},
     };
     let center = cell_world_center(cell);
+    let structure_sprites = app.world().resource::<StructureSprites>().clone();
+    let mut sprite = structure_sprites.sprite(PlannedKind::Charger, StructureVisualState::Planned);
+    sprite.color = planned_visual_color();
+    sprite.custom_size = Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT));
     app.world_mut()
         .spawn((
             PlannedStructure::new(PlannedKind::Charger, cell),
-            Sprite {
-                color: planned_visual_color(),
-                custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
-                ..default()
-            },
+            sprite,
             Transform::from_translation(center.extend(0.0)),
+            StructureVisual::planned(PlannedKind::Charger),
         ))
         .id()
 }
