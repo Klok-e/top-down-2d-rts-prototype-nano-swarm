@@ -110,7 +110,7 @@ fn visibility_system_toggles_marker_at_threshold() {
     let mut app = build_app();
     common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
 
-    set_zoom(&mut app, 3.99);
+    set_zoom(&mut app, 7.99);
     app.update();
     let marker = app
         .world_mut()
@@ -122,10 +122,10 @@ fn visibility_system_toggles_marker_at_threshold() {
     assert_eq!(
         app.world().entity(marker).get::<Visibility>().copied(),
         Some(Visibility::Hidden),
-        "default play zoom must keep the tactical overlay hidden"
+        "just below the threshold the tactical overlay must stay hidden"
     );
 
-    set_zoom(&mut app, 4.0);
+    set_zoom(&mut app, 8.0);
     app.update();
     assert_eq!(
         app.world().entity(marker).get::<Visibility>().copied(),

@@ -7,10 +7,11 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{Charger, PlannedKind, PlannedStructure, ProductionFacility, ProductionRatio},
     resources::ResourceDeposit,
     structure_overlay::{
-        overlay_background_color, StructureOverlay, StructureOverlayKind, StructureOverlayPlugin,
-        StructureOverlaySettings, OVERLAY_LABEL_OFFSET_Y,
+        overlay_background_color, overlay_label_offset_y, StructureOverlay, StructureOverlayKind,
+        StructureOverlayPlugin, StructureOverlaySettings, STRUCTURE_FOOTPRINT_LABEL_GAP,
+        STRUCTURE_OVERLAY_Z,
     },
-    MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
+    GAMEPLAY_SPRITE_Z, MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
 };
 
 #[path = "../common/mod.rs"]
@@ -128,7 +129,18 @@ fn overlay_position_tracks_target_world_transform() {
         -(MAP_WIDTH as f32 * ZONE_BLOCK_SIZE) * 0.5 + 16.0,
         -(MAP_HEIGHT as f32 * ZONE_BLOCK_SIZE) * 0.5 + 16.0,
     );
+    // The per-kind offset helper consumes the deposit's
+    // actual radius, so the test queries it back from
+    // the entity instead of duplicating the constant.
     let deposit = common::spawn_deposit(&mut app, far_pos, 100);
+    let deposit_radius = app
+        .world()
+        .entity(deposit)
+        .get::<ResourceDeposit>()
+        .unwrap()
+        .radius;
+    let expected_offset =
+        overlay_label_offset_y(StructureOverlayKind::Deposit, Some(deposit_radius));
 
     app.update();
 
@@ -147,10 +159,178 @@ fn overlay_position_tracks_target_world_transform() {
         far_pos.x
     );
     assert!(
-        (translation.y - (far_pos.y + OVERLAY_LABEL_OFFSET_Y)).abs() < 1.0,
-        "overlay Y ({}) must equal target Y ({}) + offset ({OVERLAY_LABEL_OFFSET_Y})",
+        (translation.y - (far_pos.y + expected_offset)).abs() < 1.0,
+        "overlay Y ({}) must equal target Y ({}) + per-kind offset ({expected_offset})",
         translation.y,
         far_pos.y
+    );
+}
+
+#[test]
+fn deposit_overlay_sits_above_deposit_circle() {
+    // Issue #33: Resource Deposit labels render above
+    // the deposit circle/sprite. The Y offset must equal
+    // `deposit_radius + gap`, so a 96-unit-radius deposit
+    // pins its label 108 units above its centre.
+    let mut app = build_app();
+    let pos = Vec2::new(2048.0, 1024.0);
+    let deposit = common::spawn_deposit_with_radius(&mut app, pos, 250, 96.0);
+
+    app.update();
+
+    let overlay = find_overlay_for(&mut app, deposit);
+    let translation = app.world().entity(overlay).get::<Transform>().unwrap();
+    let expected_y = pos.y + 96.0 + STRUCTURE_FOOTPRINT_LABEL_GAP;
+    assert!(
+        (translation.translation.y - expected_y).abs() < 1.0,
+        "deposit overlay Y ({}) must equal deposit Y ({}) + radius (96) + gap ({}) = {}",
+        translation.translation.y,
+        pos.y,
+        STRUCTURE_FOOTPRINT_LABEL_GAP,
+        expected_y,
+    );
+    assert!(
+        translation.translation.y > pos.y,
+        "deposit overlay must sit above the deposit centre"
+    );
+}
+
+#[test]
+fn structure_overlay_sits_above_structure_footprint() {
+    // Issue #33: Stockpile, Production Facility,
+    // Planned Structure, and Charger labels render
+    // above the structure's footprint. The offset is
+    // `PLANNED_STRUCTURE_FOOTPRINT/2 + gap`, so every
+    // non-deposit kind uses the same per-kind offset.
+    let mut app = build_app();
+    app.world_mut().insert_resource(ProductionRatio::default());
+    let cell = IVec2::new(2, 3);
+    let center = common::cell_world_center(cell);
+    let stockpile = common::spawn_stockpile(&mut app, center, 50, 200);
+    let facility = common::spawn_idle_facility_at(&mut app, center + Vec2::new(128.0, 0.0));
+    let planned =
+        common::spawn_planned_structure_of_kind_at_cell(&mut app, cell, PlannedKind::Charger);
+    let charger = common::spawn_charger_at(&mut app, cell, 30);
+
+    app.update();
+
+    let expected_y_stockpile =
+        center.y + overlay_label_offset_y(StructureOverlayKind::Stockpile, None);
+    let expected_y_facility = (center + Vec2::new(128.0, 0.0)).y
+        + overlay_label_offset_y(StructureOverlayKind::Facility, None);
+    let expected_y_planned = center.y + overlay_label_offset_y(StructureOverlayKind::Planned, None);
+    let expected_y_charger = center.y + overlay_label_offset_y(StructureOverlayKind::Charger, None);
+
+    for (target, expected_y, label) in [
+        (stockpile, expected_y_stockpile, "stockpile"),
+        (facility, expected_y_facility, "facility"),
+        (planned, expected_y_planned, "planned"),
+        (charger, expected_y_charger, "charger"),
+    ] {
+        let overlay = find_overlay_for(&mut app, target);
+        let translation = app
+            .world()
+            .entity(overlay)
+            .get::<Transform>()
+            .unwrap()
+            .translation
+            .y;
+        assert!(
+            (translation - expected_y).abs() < 1.0,
+            "{label} overlay Y ({translation}) must equal footprint Y ({expected_y})",
+        );
+        assert!(
+            translation > center.y,
+            "{label} overlay ({translation}) must sit above the structure centre ({})",
+            center.y
+        );
+    }
+}
+
+#[test]
+fn overlay_renders_above_gameplay_sprites() {
+    // Issue #33: overlay text/background must render
+    // above gameplay sprites. The z translation of the
+    // overlay's `Transform` is the contract; it must sit
+    // strictly above `GAMEPLAY_SPRITE_Z`.
+    let mut app = build_app();
+    let deposit = common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 100);
+    let stockpile = common::spawn_stockpile(&mut app, Vec2::new(128.0, 0.0), 50, 200);
+    let facility = common::spawn_idle_facility_at(&mut app, Vec2::new(256.0, 0.0));
+    let planned = common::spawn_planned_structure_of_kind_at_cell(
+        &mut app,
+        IVec2::new(4, 0),
+        PlannedKind::Charger,
+    );
+    let charger = common::spawn_charger_at(&mut app, IVec2::new(5, 0), 30);
+
+    app.update();
+
+    let targets = [deposit, stockpile, facility, planned, charger];
+    for target in targets {
+        let overlay = find_overlay_for(&mut app, target);
+        let z = app
+            .world()
+            .entity(overlay)
+            .get::<Transform>()
+            .unwrap()
+            .translation
+            .z;
+        assert!(
+            z > GAMEPLAY_SPRITE_Z,
+            "overlay z ({z}) must sit above gameplay sprite z ({GAMEPLAY_SPRITE_Z}) \
+             so the label renders in front of the sprite"
+        );
+        assert_eq!(
+            z, STRUCTURE_OVERLAY_Z,
+            "overlay z is pinned to STRUCTURE_OVERLAY_Z"
+        );
+    }
+}
+
+#[test]
+fn default_threshold_hides_overlay_at_boundary_and_shows_below() {
+    // Issue #33: structure status overlays hide at
+    // camera zoom `>= 8.0`, not the legacy `>= 4.0`. The
+    // boundary is pinned so a future revert to `4.0`
+    // fails this test.
+    let mut app = build_app();
+    let deposit = common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 100);
+    let camera = app
+        .world_mut()
+        .spawn(CameraZoom2d {
+            zoom: 7.99,
+            ..default()
+        })
+        .id();
+
+    app.update();
+    let overlay = find_overlay_for(&mut app, deposit);
+    assert_eq!(
+        app.world()
+            .entity(overlay)
+            .get::<Visibility>()
+            .copied()
+            .unwrap(),
+        Visibility::Inherited,
+        "overlay must stay visible just below the threshold"
+    );
+
+    // Cross the boundary and confirm the overlay hides.
+    app.world_mut()
+        .entity_mut(camera)
+        .get_mut::<CameraZoom2d>()
+        .unwrap()
+        .zoom = 8.0;
+    app.update();
+    assert_eq!(
+        app.world()
+            .entity(overlay)
+            .get::<Visibility>()
+            .copied()
+            .unwrap(),
+        Visibility::Hidden,
+        "overlay must hide at the threshold boundary"
     );
 }
 
@@ -159,11 +339,10 @@ fn configured_threshold_gates_visibility() {
     let mut app = build_app();
     let deposit = common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 100);
 
-    // The default threshold (4.0) keeps the overlay
-    // visible at the default play zoom (1.0). Lowering
-    // the threshold to 0.5 hides it at the same zoom,
-    // proving the resource is what gates visibility
-    // rather than a baked-in constant.
+    // The configured threshold gates visibility, not a
+    // baked-in constant. Lowering it to 0.5 hides the
+    // overlay at the same zoom, proving the resource is
+    // what drives the gate.
     app.world_mut()
         .resource_mut::<StructureOverlaySettings>()
         .hide_zoom_threshold = 0.5;
@@ -195,7 +374,7 @@ fn overlay_visibility_does_not_touch_unrelated_entities() {
         .spawn((Transform::default(), Visibility::Inherited))
         .id();
     app.world_mut().spawn(CameraZoom2d {
-        zoom: 5.0,
+        zoom: 10.0,
         ..default()
     });
 

@@ -25,7 +25,7 @@ use crate::resources::{ResourceDeposit, Stockpile};
 /// appears. Matches
 /// [`crate::structure_overlay::DEFAULT_OVERLAY_HIDE_ZOOM_THRESHOLD`]
 /// so the two layers fade at the same boundary.
-pub const DEFAULT_TACTICAL_SHOW_ZOOM_THRESHOLD: f32 = 4.0;
+pub const DEFAULT_TACTICAL_SHOW_ZOOM_THRESHOLD: f32 = 8.0;
 
 /// World-units radius at which two same-key markers
 /// collapse into a single cluster at moderate zoom.
@@ -556,8 +556,8 @@ mod tests {
     #[test]
     fn cluster_radius_grows_linearly_between_thresholds() {
         let s = TacticalOverlaySettings::default();
-        // Midpoint between show_zoom_threshold (4) and
-        // far_merge_zoom (16) is zoom 10, which sits at
+        // Midpoint between show_zoom_threshold (8) and
+        // far_merge_zoom (16) is zoom 12, which sits at
         // t=0.5 along the ramp and produces the
         // arithmetic midpoint of the two radii.
         let mid_zoom = (s.show_zoom_threshold + s.far_merge_zoom) * 0.5;
