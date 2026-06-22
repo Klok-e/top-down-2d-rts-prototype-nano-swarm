@@ -2,6 +2,7 @@ pub mod button_bg_interaction;
 pub mod consts;
 mod fps_count;
 pub mod intent_layer_panel;
+pub mod production_ratio_panel;
 mod status_panel;
 mod ui_interaction_system;
 mod ui_setup;
@@ -23,6 +24,10 @@ use self::{
         intent_layer_button_click_system, setup_intent_layer_panel,
         update_intent_layer_panel_highlight,
     },
+    production_ratio_panel::{
+        production_ratio_slider_click_system, setup_production_ratio_panel,
+        update_production_ratio_value_texts,
+    },
     status_panel::{setup_status_panel, update_status_panel_system},
 };
 
@@ -39,6 +44,7 @@ impl Plugin for NanoswarmUiSetupPlugin {
                     setup_ui_system,
                     setup_status_panel,
                     setup_intent_layer_panel,
+                    setup_production_ratio_panel,
                 )
                     .chain(),
             )
@@ -51,6 +57,15 @@ impl Plugin for NanoswarmUiSetupPlugin {
             .add_systems(Update, update_status_panel_system)
             .add_systems(Update, button_background_system)
             .add_systems(Update, intent_layer_button_click_system)
-            .add_systems(Update, update_intent_layer_panel_highlight);
+            .add_systems(Update, update_intent_layer_panel_highlight)
+            // Issue #32: the right-side Production Ratio
+            // panel. The click system mutates the
+            // `ProductionRatio` resource; the update
+            // system re-renders the percentage labels
+            // whenever the resource changes. They run
+            // independently of each other and of the
+            // intent-layer panel.
+            .add_systems(Update, production_ratio_slider_click_system)
+            .add_systems(Update, update_production_ratio_value_texts);
     }
 }

@@ -33,8 +33,8 @@ fn player_swarm_with_working_facility_is_not_collapsed() {
     let mut app = build_app();
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 5);
-        ratio.set_target(NanobotType::Hauler, 2);
+        ratio.set_weight(NanobotType::Worker, 5);
+        ratio.set_weight(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let player = common::spawn_swarm_with_nanobots(
@@ -73,8 +73,8 @@ fn player_swarm_with_no_facility_and_recoverable_crew_is_not_collapsed() {
     let mut app = build_app();
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 5);
-        ratio.set_target(NanobotType::Hauler, 2);
+        ratio.set_weight(NanobotType::Worker, 5);
+        ratio.set_weight(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let _player = common::spawn_swarm_with_nanobots(
@@ -103,8 +103,8 @@ fn player_swarm_with_no_facility_and_no_haulers_is_collapsed() {
     let mut app = build_app();
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 5);
-        ratio.set_target(NanobotType::Hauler, 2);
+        ratio.set_weight(NanobotType::Worker, 5);
+        ratio.set_weight(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let _player = common::spawn_swarm_with_nanobots(
@@ -133,8 +133,8 @@ fn player_swarm_with_no_facility_and_no_workers_is_collapsed() {
     let mut app = build_app();
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 5);
-        ratio.set_target(NanobotType::Hauler, 2);
+        ratio.set_weight(NanobotType::Worker, 5);
+        ratio.set_weight(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let _player = common::spawn_swarm_with_nanobots(
@@ -158,8 +158,8 @@ fn opponent_swarm_with_no_facility_and_no_haulers_means_player_wins() {
     let mut app = build_app();
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 5);
-        ratio.set_target(NanobotType::Hauler, 2);
+        ratio.set_weight(NanobotType::Worker, 5);
+        ratio.set_weight(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let _player = common::spawn_swarm_with_nanobots(
@@ -170,8 +170,8 @@ fn opponent_swarm_with_no_facility_and_no_haulers_means_player_wins() {
 
     let opponent_pos = Vec2::new(2000.0, 0.0);
     let mut opponent_ratio = ProductionRatio::new();
-    opponent_ratio.set_target(NanobotType::Worker, 5);
-    opponent_ratio.set_target(NanobotType::Hauler, 2);
+    opponent_ratio.set_weight(NanobotType::Worker, 5);
+    opponent_ratio.set_weight(NanobotType::Hauler, 2);
     let _opponent = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
         opponent_pos,
@@ -203,7 +203,7 @@ fn both_swarms_collapsed_is_a_loss_not_a_win() {
     let mut app = build_app();
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 5);
+        ratio.set_weight(NanobotType::Worker, 5);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let _player =
@@ -211,7 +211,7 @@ fn both_swarms_collapsed_is_a_loss_not_a_win() {
 
     let opponent_pos = Vec2::new(2000.0, 0.0);
     let mut opponent_ratio = ProductionRatio::new();
-    opponent_ratio.set_target(NanobotType::Worker, 5);
+    opponent_ratio.set_weight(NanobotType::Worker, 5);
     let _opponent = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
         opponent_pos,
@@ -236,7 +236,7 @@ fn swarm_at_production_target_is_not_collapsed_without_a_facility() {
     let mut app = build_app();
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 2);
+        ratio.set_weight(NanobotType::Worker, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let _player =
@@ -261,8 +261,8 @@ fn collapse_state_updates_after_facility_is_destroyed() {
     let mut app = build_app();
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 5);
-        ratio.set_target(NanobotType::Hauler, 2);
+        ratio.set_weight(NanobotType::Worker, 5);
+        ratio.set_weight(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     // No nanobots; the swarm is essentially empty.
@@ -311,8 +311,8 @@ fn opponent_with_recoverable_crew_does_not_trigger_player_win() {
     let mut app = build_app();
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 5);
-        ratio.set_target(NanobotType::Hauler, 2);
+        ratio.set_weight(NanobotType::Worker, 5);
+        ratio.set_weight(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let _player = common::spawn_swarm_with_nanobots(
@@ -323,8 +323,8 @@ fn opponent_with_recoverable_crew_does_not_trigger_player_win() {
 
     let opponent_pos = Vec2::new(2000.0, 0.0);
     let mut opponent_ratio = ProductionRatio::new();
-    opponent_ratio.set_target(NanobotType::Worker, 5);
-    opponent_ratio.set_target(NanobotType::Hauler, 2);
+    opponent_ratio.set_weight(NanobotType::Worker, 5);
+    opponent_ratio.set_weight(NanobotType::Hauler, 2);
     let _opponent = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
         opponent_pos,
@@ -350,8 +350,8 @@ fn idle_facility_with_no_stockpile_is_not_working_for_collapse_check() {
     let mut app = build_app();
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 5);
-        ratio.set_target(NanobotType::Hauler, 2);
+        ratio.set_weight(NanobotType::Worker, 5);
+        ratio.set_weight(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let player =

@@ -47,15 +47,15 @@ fn production_ratio_can_be_set_for_each_type() {
     let mut app = build_app();
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 8);
-        ratio.set_target(NanobotType::Hauler, 3);
-        ratio.set_target(NanobotType::Defender, 1);
+        ratio.set_weight(NanobotType::Worker, 8);
+        ratio.set_weight(NanobotType::Hauler, 3);
+        ratio.set_weight(NanobotType::Defender, 1);
     }
     let ratio = app.world().resource::<ProductionRatio>();
-    assert_eq!(ratio.target(NanobotType::Worker), 8);
-    assert_eq!(ratio.target(NanobotType::Hauler), 3);
-    assert_eq!(ratio.target(NanobotType::Defender), 1);
-    assert_eq!(ratio.total(), 12);
+    assert_eq!(ratio.weight(NanobotType::Worker), 8);
+    assert_eq!(ratio.weight(NanobotType::Hauler), 3);
+    assert_eq!(ratio.weight(NanobotType::Defender), 1);
+    assert_eq!(ratio.total_weight(), 12);
 }
 
 #[test]
@@ -75,9 +75,9 @@ fn facility_picks_type_with_largest_deficit() {
     );
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 5);
-        ratio.set_target(NanobotType::Hauler, 10);
-        ratio.set_target(NanobotType::Defender, 5);
+        ratio.set_weight(NanobotType::Worker, 5);
+        ratio.set_weight(NanobotType::Hauler, 10);
+        ratio.set_weight(NanobotType::Defender, 5);
     }
     let stockpile_pos = Vec2::new(200.0, 100.0);
     let _stockpile =
@@ -107,8 +107,8 @@ fn facility_skips_blocked_type() {
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 5);
-        ratio.set_target(NanobotType::Hauler, 5);
+        ratio.set_weight(NanobotType::Worker, 5);
+        ratio.set_weight(NanobotType::Hauler, 5);
     }
     let pos = Vec2::new(150.0, 50.0);
     let _stockpile = common::spawn_stockpile(&mut app, pos, PRODUCTION_COST_PER_BOT * 5, 1000);
@@ -151,7 +151,7 @@ fn facility_consumes_delivered_resources() {
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 5);
+        ratio.set_weight(NanobotType::Worker, 5);
     }
     let facility_pos = Vec2::new(0.0, 0.0);
     let local = common::spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 2, 1000);
@@ -185,7 +185,7 @@ fn facility_produces_nanobot_after_full_cycle() {
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 3);
+        ratio.set_weight(NanobotType::Worker, 3);
     }
     let facility_pos = Vec2::new(0.0, 0.0);
     let _stockpile =
@@ -243,7 +243,7 @@ fn shared_early_cost_across_types() {
         let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
         {
             let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-            ratio.set_target(target, 1);
+            ratio.set_weight(target, 1);
         }
         let facility_pos = Vec2::new(0.0, 0.0);
         let stockpile_entity =
@@ -285,7 +285,7 @@ fn shared_early_ticks_across_types() {
         let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
         {
             let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-            ratio.set_target(target, 1);
+            ratio.set_weight(target, 1);
         }
         let facility_pos = Vec2::new(0.0, 0.0);
         let _stockpile =
@@ -357,9 +357,9 @@ fn additional_facility_plans_when_existing_busy_and_build_zone_free() {
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 10);
-        ratio.set_target(NanobotType::Hauler, 10);
-        ratio.set_target(NanobotType::Defender, 10);
+        ratio.set_weight(NanobotType::Worker, 10);
+        ratio.set_weight(NanobotType::Hauler, 10);
+        ratio.set_weight(NanobotType::Defender, 10);
     }
     // One facility already producing Worker (busy). The
     // deficit is high (3 * 10 = 30) so the emergence
@@ -531,7 +531,7 @@ fn no_emergence_when_existing_facility_is_idle() {
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 10);
+        ratio.set_weight(NanobotType::Worker, 10);
     }
     let facility_pos = Vec2::new(0.0, 0.0);
     let _idle = common::spawn_idle_facility_at(&mut app, facility_pos);
@@ -559,8 +559,8 @@ fn blocked_types_cleared_after_full_cycle() {
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 1);
-        ratio.set_target(NanobotType::Hauler, 1);
+        ratio.set_weight(NanobotType::Worker, 1);
+        ratio.set_weight(NanobotType::Hauler, 1);
     }
     let facility_pos = Vec2::new(0.0, 0.0);
     let facility_entity = {
@@ -603,8 +603,8 @@ fn no_production_when_all_types_blocked() {
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 5);
-        ratio.set_target(NanobotType::Hauler, 5);
+        ratio.set_weight(NanobotType::Worker, 5);
+        ratio.set_weight(NanobotType::Hauler, 5);
     }
     let facility_pos = Vec2::new(0.0, 0.0);
     let facility_entity = {
@@ -648,7 +648,7 @@ fn production_increases_population_of_picked_type() {
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Hauler, 1);
+        ratio.set_weight(NanobotType::Hauler, 1);
     }
     let facility_pos = Vec2::new(0.0, 0.0);
     let _stockpile =

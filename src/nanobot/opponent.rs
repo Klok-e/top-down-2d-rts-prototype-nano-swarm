@@ -229,14 +229,14 @@ mod tests {
         // facilities through the opponent's mix.
         let mut app = build_app();
         let mut ratio = ProductionRatio::new();
-        ratio.set_target(NanobotType::Hauler, 4);
+        ratio.set_weight(NanobotType::Hauler, 4);
         let swarm = spawn_opponent_swarm(app.world_mut(), Vec2::new(0.0, 0.0), ratio, &[], &[]);
         let world = app.world();
         let sp = world
             .entity(swarm)
             .get::<SwarmProduction>()
             .expect("SwarmProduction must be attached");
-        assert_eq!(sp.ratio.target(NanobotType::Hauler), 4);
+        assert_eq!(sp.ratio.weight(NanobotType::Hauler), 4);
     }
 
     #[test]

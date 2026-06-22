@@ -44,18 +44,20 @@ pub fn cell_origin(cell: IVec2) -> Vec2 {
 }
 
 pub fn default_player_ratio() -> ProductionRatio {
-    let mut ratio = ProductionRatio::new();
-    ratio.set_target(NanobotType::Worker, 10);
-    ratio.set_target(NanobotType::Hauler, 4);
-    ratio.set_target(NanobotType::Defender, 1);
-    ratio
+    // Named helper so the call site reads as "the default
+    // player ratio" and future tuning can override the mix
+    // without touching `nanobot::production`.
+    ProductionRatio::default()
 }
 
 pub fn default_opponent_ratio() -> ProductionRatio {
+    // Fixed authored mix (~53/27/20%), deliberately
+    // distinct from the player default so the two swarms
+    // diverge over time.
     let mut ratio = ProductionRatio::new();
-    ratio.set_target(NanobotType::Worker, 8);
-    ratio.set_target(NanobotType::Hauler, 4);
-    ratio.set_target(NanobotType::Defender, 3);
+    ratio.set_weight(NanobotType::Worker, 8);
+    ratio.set_weight(NanobotType::Hauler, 4);
+    ratio.set_weight(NanobotType::Defender, 3);
     ratio
 }
 
@@ -266,16 +268,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_ratios_match_minimal_guided_sandbox() {
+    fn default_ratios_match_60_30_10_player_and_authored_opponent() {
+        // Player default must normalize to the issue #32
+        // 60/30/10 mix. The stored weights are 6/3/1 so
+        // the slider's step-5 tick lines up cleanly with
+        // the percentage labels.
         let player = default_player_ratio();
-        assert_eq!(player.target(NanobotType::Worker), 10);
-        assert_eq!(player.target(NanobotType::Hauler), 4);
-        assert_eq!(player.target(NanobotType::Defender), 1);
+        assert!((player.normalized_share(NanobotType::Worker) - 0.60).abs() < 1e-6);
+        assert!((player.normalized_share(NanobotType::Hauler) - 0.30).abs() < 1e-6);
+        assert!((player.normalized_share(NanobotType::Defender) - 0.10).abs() < 1e-6);
+        // All three types must be set so the picker can
+        // choose between them; an unset type reads as zero
+        // share and never gets produced.
+        assert!(player.weight(NanobotType::Worker) > 0);
+        assert!(player.weight(NanobotType::Hauler) > 0);
+        assert!(player.weight(NanobotType::Defender) > 0);
 
+        // Opponent mix is a fixed authored ratio the
+        // slider must not be able to mutate.
         let opponent = default_opponent_ratio();
-        assert_eq!(opponent.target(NanobotType::Worker), 8);
-        assert_eq!(opponent.target(NanobotType::Hauler), 4);
-        assert_eq!(opponent.target(NanobotType::Defender), 3);
+        assert_eq!(opponent.weight(NanobotType::Worker), 8);
+        assert_eq!(opponent.weight(NanobotType::Hauler), 4);
+        assert_eq!(opponent.weight(NanobotType::Defender), 3);
+        assert!(
+            (opponent.normalized_share(NanobotType::Worker) - 0.60).abs() > 0.01,
+            "opponent mix must remain distinct from the player 60/30/10 default"
+        );
     }
 
     #[test]

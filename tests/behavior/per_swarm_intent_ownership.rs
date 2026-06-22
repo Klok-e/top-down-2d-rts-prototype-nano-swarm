@@ -349,7 +349,7 @@ fn opponent_production_spawns_opponent_swarm_id_nanobots() {
     let mut app = app_with_production();
     let opponent_pos = Vec2::new(2000.0, 0.0);
     let mut ratio = ProductionRatio::new();
-    ratio.set_target(NanobotType::Worker, 1);
+    ratio.set_weight(NanobotType::Worker, 1);
     let opponent = spawn_opponent_swarm(app.world_mut(), opponent_pos, ratio, &[], &[]);
     let _stockpile =
         common::spawn_stockpile(&mut app, opponent_pos, PRODUCTION_COST_PER_BOT * 5, 1000);

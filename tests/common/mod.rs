@@ -24,6 +24,11 @@
 //!   `ResourceKind::Minerals` and a `Transform` at the world
 //!   position, so tests can compare ECS state without repeating
 //!   spawn boilerplate.
+//! - [`press_button`] simulates a single click on a `Button`
+//!   entity by toggling its `Interaction` to `Pressed`, running one
+//!   `app.update()`, then resetting to `None` and running another.
+//!   UI tests that need to drive button clicks use this seam so
+//!   the press/reset dance lives in one place.
 //!
 //! The module is `pub` and consumed by nested integration tests via
 //! `#[path = "../common/mod.rs"] mod common;`. Each test file imports the
@@ -659,4 +664,29 @@ pub fn spawn_busy_facility_at(app: &mut App, world_pos: Vec2, target: NanobotTyp
     app.world_mut()
         .spawn((f, Transform::from_translation(world_pos.extend(0.0))))
         .id()
+}
+
+/// Simulate a single click on `button`. Toggles the
+/// `Interaction` to `Pressed`, runs one `app.update()`, then
+/// resets to `None` and runs another update so the system
+/// that consumed the press also runs in the cleared state.
+/// UI tests that need to drive a `Button` use this seam so
+/// the press/reset dance lives in one place.
+pub fn press_button(app: &mut App, button: Entity) {
+    {
+        let world = app.world_mut();
+        let mut interaction = world
+            .get_mut::<Interaction>(button)
+            .expect("button must have Interaction");
+        *interaction = Interaction::Pressed;
+    }
+    app.update();
+    {
+        let world = app.world_mut();
+        let mut interaction = world
+            .get_mut::<Interaction>(button)
+            .expect("button must have Interaction");
+        *interaction = Interaction::None;
+    }
+    app.update();
 }
