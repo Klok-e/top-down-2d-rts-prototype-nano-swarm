@@ -17,22 +17,71 @@ use bevy::prelude::*;
 use crate::fly_camera::CameraZoom2d;
 use crate::nanobot::{
     Charger, PlannedKind, PlannedStructure, ProductionFacility, DEFAULT_PLANNED_WORK_TICKS,
+    PLANNED_STRUCTURE_FOOTPRINT,
 };
 use crate::resources::{ResourceDeposit, Stockpile};
+use crate::GAMEPLAY_SPRITE_Z;
 
 /// Camera zoom value at or above which overlays hide. The
 /// camera's default `zoom` is `1.0`; this default sits
 /// well above that so labels stay visible at the typical
 /// play zoom and disappear only when the player zooms out
-/// deliberately. Override at runtime through
-/// [`StructureOverlaySettings`].
-pub const DEFAULT_OVERLAY_HIDE_ZOOM_THRESHOLD: f32 = 4.0;
+/// deliberately. Matches
+/// [`crate::tactical_overlay::DEFAULT_TACTICAL_SHOW_ZOOM_THRESHOLD`]
+/// so the two layers fade at the same boundary. Override
+/// at runtime through [`StructureOverlaySettings`].
+pub const DEFAULT_OVERLAY_HIDE_ZOOM_THRESHOLD: f32 = 8.0;
 
-/// World-units Y offset for the overlay label relative to
-/// the structure's world position. Negative so the label
-/// sits below the structure's centre and the structure's
-/// own sprite stays visible above it.
-pub const OVERLAY_LABEL_OFFSET_Y: f32 = -48.0;
+/// Z-translation for the overlay label and its background.
+/// Must sit above [`crate::GAMEPLAY_SPRITE_Z`] so the
+/// overlay renders in front of every gameplay sprite
+/// (deposit, stockpile, facility, planned structure,
+/// charger, swarm children). The label is the "readable
+/// above sprites" callout from issue #33, so it cannot
+/// live behind the sprites it is annotating.
+pub const STRUCTURE_OVERLAY_Z: f32 = GAMEPLAY_SPRITE_Z + 1.0;
+
+/// Default worker-reach radius used for the deposit
+/// overlay offset when the target's `ResourceDeposit`
+/// component cannot be queried (e.g. unit tests that want
+/// the pure-helper contract without a Bevy `App`). Mirrors
+/// the test-seam default in `tests/common::spawn_deposit`.
+pub const DEFAULT_DEPOSIT_OVERLAY_RADIUS: f32 = 32.0;
+
+/// Vertical gap (world units) between the top of the
+/// target's visible footprint and the centre of the
+/// overlay label. Picked to give the background panel
+/// breathing room above the sprite without leaving a
+/// visually awkward empty band.
+pub const STRUCTURE_FOOTPRINT_LABEL_GAP: f32 = 12.0;
+
+/// World-space Y offset (positive = above the target's
+/// centre) for an overlay label of `kind`. The label
+/// centres on `target_pos.y + offset`, so the bottom
+/// edge of the text ends up `STRUCTURE_FOOTPRINT_LABEL_GAP`
+/// above the target's visible top.
+///
+/// Contract per issue #33:
+///
+/// - `Deposit` uses the queried `ResourceDeposit::radius`
+///   (or [`DEFAULT_DEPOSIT_OVERLAY_RADIUS`] when the
+///   component is not observable, e.g. first-frame or
+///   pure-helper tests).
+/// - `Stockpile`, `Facility`, `Planned`, `Charger` share
+///   the same `PLANNED_STRUCTURE_FOOTPRINT / 2`
+///   half-footprint and ignore `deposit_radius`.
+///
+/// The result is always strictly positive.
+pub fn overlay_label_offset_y(kind: StructureOverlayKind, deposit_radius: Option<f32>) -> f32 {
+    let extent = match kind {
+        StructureOverlayKind::Deposit => deposit_radius.unwrap_or(DEFAULT_DEPOSIT_OVERLAY_RADIUS),
+        StructureOverlayKind::Stockpile
+        | StructureOverlayKind::Facility
+        | StructureOverlayKind::Planned
+        | StructureOverlayKind::Charger => PLANNED_STRUCTURE_FOOTPRINT / 2.0,
+    };
+    extent + STRUCTURE_FOOTPRINT_LABEL_GAP
+}
 
 /// Runtime configuration for the overlay system. Inserted
 /// as a Bevy [`Resource`] so it can be mutated by the
@@ -310,7 +359,7 @@ fn spawn_overlay_for(commands: &mut Commands, target: Entity, kind: StructureOve
         Text2d::new(""),
         TextColor(Color::WHITE),
         TextBackgroundColor(overlay_background_color(kind)),
-        Transform::from_translation(Vec3::new(0.0, OVERLAY_LABEL_OFFSET_Y, 0.5)),
+        Transform::from_translation(Vec3::new(0.0, 0.0, STRUCTURE_OVERLAY_Z)),
         Visibility::Inherited,
     ));
 }
@@ -321,7 +370,9 @@ fn spawn_overlay_for(commands: &mut Commands, target: Entity, kind: StructureOve
 /// loses material or a facility that finishes a cycle
 /// sees the new label on the next tick without any extra
 /// signal. The position is the target's translation
-/// plus the [`OVERLAY_LABEL_OFFSET_Y`] Y offset.
+/// plus a per-kind Y offset (see
+/// [`overlay_label_offset_y`]) so the label sits above
+/// the visible footprint, never inside or below it.
 #[allow(clippy::type_complexity)]
 pub fn structure_overlay_update_system(
     mut overlays: Query<(&StructureOverlay, &mut Text2d, &mut Transform)>,
@@ -342,7 +393,15 @@ pub fn structure_overlay_update_system(
         else {
             continue;
         };
-        transform.translation = (target_pos + Vec2::new(0.0, OVERLAY_LABEL_OFFSET_Y)).extend(0.5);
+        // Per-kind offset: deposit uses the actual
+        // `ResourceDeposit::radius`; every other kind uses
+        // the shared structure half-footprint. The
+        // helper returns a positive Y so the label sits
+        // above the target rather than inside or below
+        // it.
+        let deposit_radius = deposits.get(overlay.target).ok().map(|d| d.radius);
+        let offset_y = overlay_label_offset_y(overlay.kind, deposit_radius);
+        transform.translation = (target_pos + Vec2::new(0.0, offset_y)).extend(STRUCTURE_OVERLAY_Z);
         text.0 = compute_label_text(
             overlay.kind,
             &deposits,
@@ -395,7 +454,7 @@ fn compute_label_text(
 /// [`overlay_visibility_for_zoom`]: hidden when
 /// `zoom >= threshold`, visible (inherited) otherwise.
 /// A test app with no camera sees a zoom of `1.0`,
-/// which is below the default threshold of `4.0`, so
+/// which is below the default threshold of `8.0`, so
 /// the overlays stay visible.
 pub fn structure_overlay_visibility_system(
     settings: Res<StructureOverlaySettings>,
@@ -552,13 +611,13 @@ mod tests {
         // labels always visible; `f32::INFINITY` keeps
         // them always hidden -- the two extremes a
         // player toggle and a test seam both need.
-        assert_eq!(overlay_visibility_for_zoom(1.0, 4.0), Visibility::Inherited);
+        assert_eq!(overlay_visibility_for_zoom(1.0, 8.0), Visibility::Inherited);
         assert_eq!(
-            overlay_visibility_for_zoom(3.99, 4.0),
+            overlay_visibility_for_zoom(7.99, 8.0),
             Visibility::Inherited
         );
-        assert_eq!(overlay_visibility_for_zoom(4.0, 4.0), Visibility::Hidden);
-        assert_eq!(overlay_visibility_for_zoom(10.0, 4.0), Visibility::Hidden);
+        assert_eq!(overlay_visibility_for_zoom(8.0, 8.0), Visibility::Hidden);
+        assert_eq!(overlay_visibility_for_zoom(10.0, 8.0), Visibility::Hidden);
         assert_eq!(
             overlay_visibility_for_zoom(f32::INFINITY, 0.0),
             Visibility::Inherited
@@ -601,5 +660,65 @@ mod tests {
     fn default_settings_use_default_threshold() {
         let s = StructureOverlaySettings::default();
         assert_eq!(s.hide_zoom_threshold, DEFAULT_OVERLAY_HIDE_ZOOM_THRESHOLD);
+    }
+
+    #[test]
+    fn overlay_label_offset_for_deposit_uses_radius_plus_gap() {
+        // Per-kind contract: deposit labels sit above
+        // the deposit's circle, so the offset is
+        // `radius + gap`. A 64.0-radius deposit sits 76.0
+        // above its centre.
+        let offset = overlay_label_offset_y(StructureOverlayKind::Deposit, Some(64.0));
+        assert_eq!(offset, 64.0 + STRUCTURE_FOOTPRINT_LABEL_GAP);
+    }
+
+    #[test]
+    fn overlay_label_offset_for_deposit_falls_back_to_default_radius() {
+        // A `None` extent (no `ResourceDeposit` to
+        // query, or pure-helper test) still produces a
+        // positive offset that respects the gap.
+        let offset = overlay_label_offset_y(StructureOverlayKind::Deposit, None);
+        assert_eq!(
+            offset,
+            DEFAULT_DEPOSIT_OVERLAY_RADIUS + STRUCTURE_FOOTPRINT_LABEL_GAP
+        );
+    }
+
+    #[test]
+    fn overlay_label_offset_for_structures_uses_half_footprint_plus_gap() {
+        // Stockpile, facility, planned structure, and
+        // charger share the same half-footprint because
+        // their sprites are sized to the same square;
+        // the `deposit_radius` argument is ignored.
+        let expected = PLANNED_STRUCTURE_FOOTPRINT / 2.0 + STRUCTURE_FOOTPRINT_LABEL_GAP;
+        for kind in [
+            StructureOverlayKind::Stockpile,
+            StructureOverlayKind::Facility,
+            StructureOverlayKind::Planned,
+            StructureOverlayKind::Charger,
+        ] {
+            assert_eq!(
+                overlay_label_offset_y(kind, Some(9999.0)),
+                expected,
+                "{kind:?} overlay must sit half a footprint + gap above the target"
+            );
+        }
+    }
+
+    #[test]
+    fn overlay_label_offset_is_always_positive() {
+        // The label sits above the structure, so every
+        // kind / radius combination must produce a
+        // strictly positive offset -- a regression to
+        // the legacy "below the structure" placement.
+        for kind in StructureOverlayKind::ALL {
+            for radius in [None, Some(0.0), Some(16.0), Some(64.0), Some(256.0)] {
+                let offset = overlay_label_offset_y(kind, radius);
+                assert!(
+                    offset > 0.0,
+                    "overlay offset for {kind:?} with radius {radius:?} must be > 0; got {offset}"
+                );
+            }
+        }
     }
 }
