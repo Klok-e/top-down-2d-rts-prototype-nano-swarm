@@ -272,9 +272,9 @@ fn production_demand_does_not_instant_spawn_completed_facility() {
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 10);
-        ratio.set_target(NanobotType::Hauler, 10);
-        ratio.set_target(NanobotType::Defender, 10);
+        ratio.set_weight(NanobotType::Worker, 10);
+        ratio.set_weight(NanobotType::Hauler, 10);
+        ratio.set_weight(NanobotType::Defender, 10);
     }
     let cell = IVec2::new(0, 0);
     paint_owned(&mut app, cell, IntentKind::Build);
@@ -417,9 +417,9 @@ fn all_demand_sources_share_zero_completed_structures() {
     // be claimed by the production auto-creator.
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 10);
-        ratio.set_target(NanobotType::Hauler, 10);
-        ratio.set_target(NanobotType::Defender, 10);
+        ratio.set_weight(NanobotType::Worker, 10);
+        ratio.set_weight(NanobotType::Hauler, 10);
+        ratio.set_weight(NanobotType::Defender, 10);
     }
 
     for _ in 0..3 {
@@ -482,7 +482,7 @@ fn scenario_seed_facility_remains_a_completed_production_facility() {
     let _swarm = common::spawn_swarm_at(&mut app, swarm_center);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 1);
+        ratio.set_weight(NanobotType::Worker, 1);
     }
     let seed = common::spawn_facility_at(&mut app, _swarm, swarm_center);
     let _stockpile =

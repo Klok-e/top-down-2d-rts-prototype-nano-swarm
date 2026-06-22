@@ -69,9 +69,9 @@ fn demand_pressure_creates_planned_production_facility() {
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 10);
-        ratio.set_target(NanobotType::Hauler, 10);
-        ratio.set_target(NanobotType::Defender, 10);
+        ratio.set_weight(NanobotType::Worker, 10);
+        ratio.set_weight(NanobotType::Hauler, 10);
+        ratio.set_weight(NanobotType::Defender, 10);
     }
     paint_build(&mut app, IVec2::new(0, 0));
 
@@ -128,9 +128,9 @@ fn planned_production_facility_uses_planned_visual() {
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 10);
-        ratio.set_target(NanobotType::Hauler, 10);
-        ratio.set_target(NanobotType::Defender, 10);
+        ratio.set_weight(NanobotType::Worker, 10);
+        ratio.set_weight(NanobotType::Hauler, 10);
+        ratio.set_weight(NanobotType::Defender, 10);
     }
     paint_build(&mut app, IVec2::new(0, 0));
 
@@ -163,9 +163,9 @@ fn planned_production_facility_is_owned_by_swarm_that_painted_build_cell() {
     let swarm = common::spawn_swarm_at(&mut app, center);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 10);
-        ratio.set_target(NanobotType::Hauler, 10);
-        ratio.set_target(NanobotType::Defender, 10);
+        ratio.set_weight(NanobotType::Worker, 10);
+        ratio.set_weight(NanobotType::Hauler, 10);
+        ratio.set_weight(NanobotType::Defender, 10);
     }
     paint_build(&mut app, IVec2::new(0, 0));
 
@@ -196,9 +196,9 @@ fn no_planned_production_facility_without_build_zone() {
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 10);
-        ratio.set_target(NanobotType::Hauler, 10);
-        ratio.set_target(NanobotType::Defender, 10);
+        ratio.set_weight(NanobotType::Worker, 10);
+        ratio.set_weight(NanobotType::Hauler, 10);
+        ratio.set_weight(NanobotType::Defender, 10);
     }
     // No Build paint.
 
@@ -394,7 +394,7 @@ fn completed_production_facility_consumes_resources_and_produces_nanobots() {
     let swarm = common::spawn_swarm_at(&mut app, swarm_center);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 1);
+        ratio.set_weight(NanobotType::Worker, 1);
     }
     let _plan =
         common::spawn_planned_production_facility_at_cell(&mut app, cell, NanobotType::Worker);
@@ -467,7 +467,7 @@ fn existing_starting_scenario_facilities_remain_valid_seed_structures() {
     let _swarm = common::spawn_swarm_at(&mut app, swarm_center);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 1);
+        ratio.set_weight(NanobotType::Worker, 1);
     }
     // Seed facility owned by the swarm, with the same
     // shape as `scenario::spawn_production_facility`.
@@ -512,9 +512,9 @@ fn plan_does_not_pile_under_repeated_demand_ticks() {
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 10);
-        ratio.set_target(NanobotType::Hauler, 10);
-        ratio.set_target(NanobotType::Defender, 10);
+        ratio.set_weight(NanobotType::Worker, 10);
+        ratio.set_weight(NanobotType::Hauler, 10);
+        ratio.set_weight(NanobotType::Defender, 10);
     }
     paint_build(&mut app, IVec2::new(0, 0));
 

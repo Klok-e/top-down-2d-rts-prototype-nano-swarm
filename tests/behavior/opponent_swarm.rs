@@ -61,7 +61,7 @@ fn opponent_swarm_can_be_initialized_with_prepainted_intent() {
     let opponent_pos = Vec2::new(2000.0, 0.0);
     let gather_cell = IVec2::new(2, 0);
     let mut ratio = ProductionRatio::new();
-    ratio.set_target(NanobotType::Worker, 5);
+    ratio.set_weight(NanobotType::Worker, 5);
 
     let opponent = spawn_opponent_swarm(
         app.world_mut(),
@@ -82,7 +82,7 @@ fn opponent_swarm_can_be_initialized_with_prepainted_intent() {
         .entity(opponent)
         .get::<SwarmProduction>()
         .expect("opponent must carry a SwarmProduction");
-    assert_eq!(swarm_ratio.ratio.target(NanobotType::Worker), 5);
+    assert_eq!(swarm_ratio.ratio.weight(NanobotType::Worker), 5);
 
     let grid = world.resource::<IntentGrid>();
     let cell = grid.cell(gather_cell).expect("cell must be in bounds");
@@ -106,7 +106,7 @@ fn opponent_nanobot_picks_prepainted_intent_via_same_scoring() {
     let opponent_pos = Vec2::new(2000.0, 0.0);
     let gather_cell = IVec2::new(2, 0);
     let mut ratio = ProductionRatio::new();
-    ratio.set_target(NanobotType::Worker, 1);
+    ratio.set_weight(NanobotType::Worker, 1);
     let _opponent = spawn_opponent_swarm(
         app.world_mut(),
         opponent_pos,
@@ -161,9 +161,9 @@ fn opponent_swarm_uses_own_fixed_ratio_through_same_production_systems() {
     let mut app = build_app();
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Worker, 10);
-        ratio.set_target(NanobotType::Hauler, 3);
-        ratio.set_target(NanobotType::Defender, 1);
+        ratio.set_weight(NanobotType::Worker, 10);
+        ratio.set_weight(NanobotType::Hauler, 3);
+        ratio.set_weight(NanobotType::Defender, 1);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let player_swarm = app
@@ -192,7 +192,7 @@ fn opponent_swarm_uses_own_fixed_ratio_through_same_production_systems() {
 
     let opponent_pos = Vec2::new(2000.0, 0.0);
     let mut opponent_ratio = ProductionRatio::new();
-    opponent_ratio.set_target(NanobotType::Hauler, 4);
+    opponent_ratio.set_weight(NanobotType::Hauler, 4);
     let opponent = spawn_opponent_swarm(app.world_mut(), opponent_pos, opponent_ratio, &[], &[]);
 
     let _player_stock =
@@ -233,10 +233,23 @@ fn opponent_swarm_uses_own_fixed_ratio_through_same_production_systems() {
         .entity(player_facility)
         .get::<ProductionFacility>()
         .unwrap();
+    // Issue #32: production now picks the type with the
+    // largest **proportional** deficit, not the largest
+    // count gap. With the global ratio W10/H3/D1
+    // (normalized 71.4% / 21.4% / 7.1%) and one Worker
+    // in the player swarm (current share 100% / 0% / 0%),
+    // the largest positive share deficit is on Hauler
+    // (target 21.4%, current 0%). The exact *type* picked
+    // is less important than the assertion that the
+    // global ratio still drives the player's facility
+    // and the opponent's `SwarmProduction` override still
+    // drives the opponent's facility, even when they
+    // happen to agree (they agree here because both
+    // ratios call for Hauler first).
     assert_eq!(
         player_state.current_target,
-        Some(NanobotType::Worker),
-        "player facility must keep using the global ratio"
+        Some(NanobotType::Hauler),
+        "player facility must keep using the global ratio (proportional picker)"
     );
 }
 
@@ -247,7 +260,7 @@ fn opponent_production_spawns_nanobots_as_children_of_opponent_swarm() {
     let mut app = build_app();
     let opponent_pos = Vec2::new(2000.0, 0.0);
     let mut opponent_ratio = ProductionRatio::new();
-    opponent_ratio.set_target(NanobotType::Worker, 1);
+    opponent_ratio.set_weight(NanobotType::Worker, 1);
     let opponent = spawn_opponent_swarm(app.world_mut(), opponent_pos, opponent_ratio, &[], &[]);
     let _stockpile =
         common::spawn_stockpile(&mut app, opponent_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
@@ -290,7 +303,7 @@ fn opponent_uses_default_ratio_when_swarm_production_absent() {
     let mut app = build_app();
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_target(NanobotType::Defender, 5);
+        ratio.set_weight(NanobotType::Defender, 5);
     }
     let swarm_pos = Vec2::new(0.0, 0.0);
     let swarm = app

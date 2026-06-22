@@ -34,6 +34,8 @@ mod production_collapse;
 mod production_facility;
 #[path = "behavior/production_facility_planned.rs"]
 mod production_facility_planned;
+#[path = "behavior/production_ratio_panel.rs"]
+mod production_ratio_panel;
 #[path = "behavior/sink_stockpile.rs"]
 mod sink_stockpile;
 #[path = "behavior/source_stockpile_flow.rs"]
