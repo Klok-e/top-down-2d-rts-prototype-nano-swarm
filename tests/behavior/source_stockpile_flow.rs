@@ -27,12 +27,13 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
-        completed_visual_color, ExtractProgress, GatherAssignment, OwnerSwarm, PlannedKind,
-        PlannedStructure, PlannedStructureClaim, PlannedStructureProgress, SwarmId,
+        completed_visual_color, Commitment, ExtractProgress, GatherAssignment, Health, Nanobot,
+        NanobotType, OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructureClaim,
+        PlannedStructureProgress, Swarm, SwarmId, SwarmMember, VelocityComponent,
         DEFAULT_PLANNED_WORK_TICKS, SOURCE_STOCKPILE_JITTER_AMPLITUDE,
         SOURCE_STOCKPILE_PLACEMENT_RADIUS,
     },
-    resources::{ResourceKind, ResourceLedger, Stockpile},
+    resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile},
 };
 
 #[path = "../common/mod.rs"]
@@ -110,6 +111,61 @@ fn no_completed_source_stockpile_from_gather_paint_alone() {
         world.query::<&PlannedStructure>().iter(world).count(),
         0,
         "Gather paint alone must not create a PlannedStructure"
+    );
+}
+
+#[test]
+fn opponent_gather_demand_creates_opponent_owned_source_plan() {
+    let mut app = build_app();
+    let player_swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let opponent_id = SwarmId(1);
+    let opponent_swarm = app
+        .world_mut()
+        .spawn((
+            Swarm {},
+            opponent_id,
+            Transform::from_translation(Vec3::new(512.0, 0.0, 0.0)),
+        ))
+        .id();
+    assert_ne!(player_swarm, opponent_swarm);
+    let cell = IVec2::new(0, 0);
+    let deposit_pos = common::cell_world_center(cell);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Gather,
+        PAINT_STRENGTH_CAP,
+        Some(opponent_id),
+    );
+    let player_worker = common::spawn_worker_at(&mut app, deposit_pos);
+    app.world_mut().spawn((
+        Nanobot {},
+        NanobotType::Worker,
+        Commitment::Idle,
+        VelocityComponent::default(),
+        Health::default(),
+        SwarmMember(opponent_id),
+        Transform::from_translation(deposit_pos.extend(0.0)),
+    ));
+    common::spawn_deposit(&mut app, deposit_pos, 100);
+
+    app.update();
+
+    let world = app.world_mut();
+    let mut q = world.query::<(&PlannedStructure, &OwnerSwarm)>();
+    let (_planned, owner) = q
+        .iter(world)
+        .find(|(planned, _)| planned.kind == PlannedKind::SourceStockpile)
+        .expect("opponent gather demand must create a Source Stockpile plan");
+    assert_eq!(
+        owner.0, opponent_swarm,
+        "opponent gather demand must stamp opponent OwnerSwarm, not player"
+    );
+    assert!(
+        world
+            .entity(player_worker)
+            .get::<PlannedStructureClaim>()
+            .is_none(),
+        "player Worker must not claim opponent Source Stockpile plan"
     );
 }
 
@@ -450,6 +506,70 @@ fn completed_source_stockpile_keeps_swarm_ownership() {
     assert_eq!(
         owner, swarm,
         "completed Source Stockpile must be owned by the same swarm as the planned structure"
+    );
+}
+
+#[test]
+fn scenario_sized_deposit_at_authored_cell_origin_gets_source_stockpile() {
+    let mut app = build_app();
+    let cell = top_down_2d_rts_prototype_nano_swarm::scenario::PLAYER_DEPOSIT_CELL;
+    paint_gather(&mut app, cell);
+    let deposit_pos = top_down_2d_rts_prototype_nano_swarm::scenario::cell_origin(cell);
+    let (_swarm, worker) = spawn_swarm_and_worker(&mut app, Vec2::ZERO);
+    let deposit = app
+        .world_mut()
+        .spawn((
+            ResourceDeposit {
+                kind: ResourceKind::Minerals,
+                amount: 100,
+                capacity: 100,
+                radius: top_down_2d_rts_prototype_nano_swarm::scenario::STARTING_WORK_RADIUS,
+            },
+            Transform::from_translation(deposit_pos.extend(0.0)),
+        ))
+        .id();
+
+    app.update();
+
+    let world = app.world_mut();
+    let mut q = world.query::<(&PlannedStructure, &Transform)>();
+    let plan_pos = q
+        .iter(world)
+        .find_map(|(planned, transform)| {
+            (planned.kind == PlannedKind::SourceStockpile)
+                .then_some(transform.translation.truncate())
+        })
+        .expect("scenario-authored deposit must still get a Planned Source Stockpile");
+    let required_gap = top_down_2d_rts_prototype_nano_swarm::scenario::STARTING_WORK_RADIUS
+        + top_down_2d_rts_prototype_nano_swarm::nanobot::SOURCE_STOCKPILE_FOOTPRINT_RADIUS
+        + top_down_2d_rts_prototype_nano_swarm::nanobot::SOURCE_STOCKPILE_PADDING;
+    assert!(
+        plan_pos.distance(deposit_pos) >= required_gap,
+        "planned Source Stockpile must not overlap scenario-sized deposit; plan={plan_pos:?} deposit={deposit_pos:?} required_gap={required_gap}"
+    );
+    drop(q);
+
+    for _ in 0..500 {
+        app.update();
+    }
+
+    let world = app.world_mut();
+    assert!(
+        world.entity(deposit).get::<ResourceDeposit>().unwrap().amount < 100,
+        "deposit amount should decrease once extraction resumes instead of worker idling at deposit"
+    );
+    let worker_has_work = world.entity(worker).get::<ExtractProgress>().is_some()
+        || world
+            .entity(worker)
+            .get::<top_down_2d_rts_prototype_nano_swarm::nanobot::WorkerLoad>()
+            .is_some()
+        || world
+            .entity(worker)
+            .get::<top_down_2d_rts_prototype_nano_swarm::nanobot::ReturningToStockpile>()
+            .is_some();
+    assert!(
+        worker_has_work,
+        "Worker should be extracting/carrying/delivering after source stockpile is built"
     );
 }
 

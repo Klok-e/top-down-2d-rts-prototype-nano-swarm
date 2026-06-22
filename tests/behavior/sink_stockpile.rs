@@ -31,9 +31,8 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
-        completed_visual_color, planned_visual_color, HaulerAssignment, OwnerSwarm, PlannedKind,
-        PlannedStructure, PlannedStructureClaim, PlannedStructureProgress, SwarmId,
-        DEFAULT_PLANNED_WORK_TICKS,
+        completed_visual_color, HaulerAssignment, OwnerSwarm, PlannedKind, PlannedStructure,
+        PlannedStructureClaim, PlannedStructureProgress, SwarmId, DEFAULT_PLANNED_WORK_TICKS,
     },
     resources::{ResourceKind, Stockpile, StockpileRole},
 };
@@ -56,12 +55,7 @@ fn paint_build(app: &mut App, cell: IVec2) {
 }
 
 #[test]
-fn planned_sink_stockpile_emerges_in_build_painted_cell() {
-    // Acceptance: "Sink Stockpiles are represented as a
-    // Planned Structure kind before completion." A
-    // Build-painted cell must create a `PlannedStructure` of
-    // `PlannedKind::SinkStockpile` (not a completed
-    // `Stockpile`). The visual is the planned color.
+fn build_paint_alone_does_not_plan_sink_stockpile() {
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
     paint_build(&mut app, cell);
@@ -69,35 +63,15 @@ fn planned_sink_stockpile_emerges_in_build_painted_cell() {
     app.update();
 
     let world = app.world_mut();
-    let mut q = world.query::<(&PlannedStructure, &Sprite, &Transform)>();
-    let (planned, sprite, transform) = q
-        .iter(world)
-        .next()
-        .expect("Planned Sink Stockpile must spawn in a Build-painted cell");
     assert_eq!(
-        planned.kind,
-        PlannedKind::SinkStockpile,
-        "Build cell must plan a Sink Stockpile, not a Source Stockpile"
+        world.query::<&PlannedStructure>().iter(world).count(),
+        0,
+        "Build paint alone must not plan Sink Stockpile"
     );
-    assert_eq!(planned.cell, cell);
-    assert_eq!(
-        sprite.color,
-        planned_visual_color(),
-        "Planned Sink Stockpile must use the planned visual color"
-    );
-    let center = common::cell_world_center(cell);
-    assert!(
-        (transform.translation.truncate() - center).length() < 1.0,
-        "Planned Sink Stockpile must be created at the cell's world center; got {:?}",
-        transform.translation
-    );
-    // The acceptance bullet also says the Stockpile is NOT
-    // spawned as a completed object: only a planned structure
-    // exists.
     assert_eq!(
         world.query::<&Stockpile>().iter(world).count(),
         0,
-        "no completed Stockpile must exist immediately after Build paint"
+        "Build paint alone must not spawn completed Stockpile"
     );
 }
 
@@ -137,11 +111,7 @@ fn no_sink_stockpile_planned_without_build_paint() {
 }
 
 #[test]
-fn planned_sink_stockpile_not_duplicated_in_same_cell() {
-    // Acceptance: the auto-creation does not pile multiple
-    // planned structures into a single cell. Once a Build
-    // cell holds a Planned Sink Stockpile, repeated ticks
-    // do not add a second one.
+fn build_paint_alone_does_not_duplicate_sink_stockpiles() {
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
     paint_build(&mut app, cell);
@@ -156,10 +126,7 @@ fn planned_sink_stockpile_not_duplicated_in_same_cell() {
         .iter(world)
         .filter(|p| p.kind == PlannedKind::SinkStockpile)
         .count();
-    assert_eq!(
-        planned_count, 1,
-        "auto-creation must not duplicate Planned Sink Stockpiles"
-    );
+    assert_eq!(planned_count, 0, "Build paint alone must remain inert");
 }
 
 #[test]
@@ -303,8 +270,8 @@ fn build_paint_does_not_instant_spawn_completed_stockpile() {
         "Build paint must not spawn a completed Stockpile directly"
     );
     assert_eq!(
-        planned_count, 1,
-        "Build paint must spawn a Planned Sink Stockpile (not a completed one)"
+        planned_count, 0,
+        "Build paint alone must not spawn a Planned Sink Stockpile"
     );
 }
 
@@ -320,7 +287,11 @@ fn planned_sink_stockpile_is_owned_by_swarm_that_painted_cell() {
     let center = common::cell_world_center(cell);
     let swarm = common::spawn_swarm_at(&mut app, center);
     let _worker = common::spawn_worker_at(&mut app, center);
-    paint_build(&mut app, cell);
+    let planned_entity =
+        common::spawn_planned_structure_of_kind_at_cell(&mut app, cell, PlannedKind::SinkStockpile);
+    app.world_mut()
+        .entity_mut(planned_entity)
+        .insert(OwnerSwarm(swarm));
 
     app.update();
 
@@ -329,7 +300,7 @@ fn planned_sink_stockpile_is_owned_by_swarm_that_painted_cell() {
     let (planned, owner) = q
         .iter(world)
         .next()
-        .expect("Planned Sink Stockpile must exist when a swarm is present");
+        .expect("Planned Sink Stockpile fixture must exist when a swarm is present");
     assert_eq!(planned.kind, PlannedKind::SinkStockpile);
     assert_eq!(
         owner.0, swarm,
@@ -482,17 +453,21 @@ fn opponent_build_cell_creates_opponent_owned_sink_stockpile() {
         .copied()
         .expect("opponent swarm must carry a SwarmId");
 
+    let planned_entity =
+        common::spawn_planned_structure_of_kind_at_cell(&mut app, cell, PlannedKind::SinkStockpile);
+    app.world_mut()
+        .entity_mut(planned_entity)
+        .insert(OwnerSwarm(opponent));
+
     app.update();
 
     let world = app.world_mut();
-    // The opponent's Build cell produced a Planned Sink
-    // Stockpile. The owner of the plan is the opponent
-    // swarm, not any other swarm.
+    // Demand-created fixtures preserve opponent ownership.
     let mut q = world.query::<(&PlannedStructure, &OwnerSwarm)>();
     let (planned, owner) = q
         .iter(world)
         .next()
-        .expect("opponent Build cell must produce a Planned Sink Stockpile");
+        .expect("opponent-owned Planned Sink Stockpile fixture must exist");
     assert_eq!(planned.kind, PlannedKind::SinkStockpile);
     let owner_swarm_id = world
         .entity(owner.0)

@@ -40,17 +40,18 @@ use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
-use crate::ai::{get_world_from_zone, AiStateComponent};
+use crate::ai::AiStateComponent;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::{Commitment, NanobotType};
 use crate::nanobot::components::{Health, Nanobot, Swarm, SwarmId, SwarmMember, VelocityComponent};
 use crate::nanobot::gather::world_to_cell;
+use crate::nanobot::placement::{find_build_zone_placement, BUILDING_FOOTPRINT_RADIUS};
 use crate::nanobot::planned::{
     planned_visual_color, PlannedKind, PlannedProductionTarget, PlannedStructure,
     PLANNED_STRUCTURE_FOOTPRINT,
 };
 use crate::nanobot::{NanobotBundle, NanobotSprites};
-use crate::resources::{ResourceKind, ResourceLedger, Stockpile};
+use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
 use crate::GAMEPLAY_SPRITE_Z;
 
 /// Material (in `ResourceKind::Minerals`) consumed to produce one
@@ -440,8 +441,10 @@ pub fn production_facility_auto_creation_system(
             With<PlannedStructure>,
             With<ProductionFacility>,
             With<Stockpile>,
+            With<crate::nanobot::Charger>,
         )>,
     >,
+    deposits: Query<(&ResourceDeposit, &Transform)>,
     swarm_productions: Query<&SwarmProduction>,
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,
 ) {
@@ -450,8 +453,14 @@ pub fn production_facility_auto_creation_system(
     // Production Facility is in this set, so subsequent
     // ticks do not pile a second plan on the same cell.
     let mut cells_with_target: HashSet<IVec2> = HashSet::new();
+    let mut obstacles: Vec<(Vec2, f32)> = deposits
+        .iter()
+        .map(|(deposit, transform)| (transform.translation.truncate(), deposit.radius))
+        .collect();
     for transform in &existing_targets {
-        cells_with_target.insert(world_to_cell(transform.translation.truncate()));
+        let pos = transform.translation.truncate();
+        cells_with_target.insert(world_to_cell(pos));
+        obstacles.push((pos, BUILDING_FOOTPRINT_RADIUS));
     }
     // Pre-compute the list of (cell, swarm) pairs that are
     // Build-painted, owned by a swarm, and not already
@@ -518,14 +527,12 @@ pub fn production_facility_auto_creation_system(
         // own at least one free Build cell. Without it,
         // the swarm cannot plan a new facility and the
         // system is a no-op for this swarm this tick.
-        let Some(build_cell) = build_cells_by_swarm.get(swarm_id).and_then(|cells| {
-            // Stable order so test runs that compare
-            // entity ids are deterministic.
-            cells.iter().min_by_key(|c| (c.x, c.y)).copied()
-        }) else {
+        let Some((build_cell, placement_pos)) = build_cells_by_swarm
+            .get(swarm_id)
+            .and_then(|cells| find_build_zone_placement(cells, &obstacles, 27))
+        else {
             continue;
         };
-        let center = get_world_from_zone(build_cell);
         commands.spawn((
             PlannedStructure::new(PlannedKind::ProductionFacility, build_cell),
             PlannedProductionTarget(target),
@@ -535,7 +542,7 @@ pub fn production_facility_auto_creation_system(
                 custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
                 ..default()
             },
-            Transform::from_translation(center.extend(GAMEPLAY_SPRITE_Z)),
+            Transform::from_translation(placement_pos.extend(GAMEPLAY_SPRITE_Z)),
         ));
     }
 }

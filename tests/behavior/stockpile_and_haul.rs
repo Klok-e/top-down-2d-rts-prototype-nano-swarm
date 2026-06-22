@@ -7,7 +7,10 @@
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
-    nanobot::{HaulerAssignment, HaulerLoad, HAULER_CARRY_CAPACITY, WORKER_CARRY_CAPACITY},
+    nanobot::{
+        HaulerAssignment, HaulerLoad, OwnerSwarm, Swarm, SwarmId, HAULER_CARRY_CAPACITY,
+        WORKER_CARRY_CAPACITY,
+    },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile},
 };
 
@@ -142,6 +145,48 @@ fn stockpile_not_emerged_for_corridor_only_cell() {
         stockpile_count(app.world_mut()),
         0,
         "corridor-only cells do not create stockpiles"
+    );
+}
+
+#[test]
+fn hauler_ignores_enemy_owned_sink() {
+    let mut app = build_app();
+    let deposit_pos = Vec2::new(0.0, 0.0);
+    let enemy_sink_pos = Vec2::new(50.0, 0.0);
+    let player_sink_pos = Vec2::new(500.0, 0.0);
+    let deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
+    let enemy_swarm = app
+        .world_mut()
+        .spawn((
+            Swarm {},
+            SwarmId(1),
+            Transform::from_translation(Vec3::ZERO),
+        ))
+        .id();
+    let player_swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let enemy_sink = common::spawn_stockpile(&mut app, enemy_sink_pos, 0, 1000);
+    app.world_mut()
+        .entity_mut(enemy_sink)
+        .insert(OwnerSwarm(enemy_swarm));
+    let player_sink = common::spawn_stockpile(&mut app, player_sink_pos, 0, 1000);
+    app.world_mut()
+        .entity_mut(player_sink)
+        .insert(OwnerSwarm(player_swarm));
+    let hauler = common::spawn_hauler_at(&mut app, deposit_pos);
+
+    for _ in 0..3 {
+        app.update();
+    }
+
+    let assignment = app
+        .world()
+        .entity(hauler)
+        .get::<HaulerAssignment>()
+        .expect("player hauler must still find player-owned sink");
+    assert_eq!(assignment.source, deposit);
+    assert_eq!(
+        assignment.sink, player_sink,
+        "player hauler must ignore closer enemy-owned sink"
     );
 }
 

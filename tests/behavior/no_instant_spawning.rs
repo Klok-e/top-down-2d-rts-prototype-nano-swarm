@@ -25,7 +25,6 @@ use top_down_2d_rts_prototype_nano_swarm::{
         SwarmId,
     },
     resources::Stockpile,
-    ZONE_BLOCK_SIZE,
 };
 
 #[path = "../common/mod.rs"]
@@ -195,13 +194,11 @@ fn build_paint_does_not_instant_spawn_any_support_structure() {
         "{} must not spawn a completed Charger",
         DemandSource::BuildPaint.name()
     );
-    // Build paint alone (with a swarm stamp) plans a Sink
-    // Stockpile, the visible "demand noticed" signal. The
-    // completed structure comes only after a Worker builds
-    // the plan.
-    assert!(
-        plans >= 1,
-        "{} should plan a Sink Stockpile in a player-painted cell; got {plans} plans",
+    // Issue #34: Build paint alone is only a placement constraint.
+    assert_eq!(
+        plans,
+        0,
+        "{} must not plan anything without real structure demand; got {plans} plans",
         DemandSource::BuildPaint.name()
     );
 }
@@ -248,14 +245,14 @@ fn build_paint_with_swarm_does_not_spawn_legacy_buildsite() {
         build_sites, 0,
         "Build paint must not spawn a legacy BuildSite; only PlannedStructures are allowed"
     );
-    // The new plan still emerges.
+    // Issue #34: no plan emerges from Build paint alone.
     let plans = {
         let world = app.world_mut();
         planned_count(world)
     };
-    assert!(
-        plans >= 1,
-        "Build paint should still plan a Sink Stockpile; got {plans} plans"
+    assert_eq!(
+        plans, 0,
+        "Build paint alone must not plan support structures"
     );
 }
 
@@ -527,8 +524,7 @@ fn spread_cells_keep_demand_sources_separated() {
 
     let world = app.world_mut();
     // Gather alone with no deposit / worker does not plan
-    // anything (issue #23's demand-driven contract), so the
-    // only plan is the Sink Stockpile from the Build cell.
+    // anything; Build paint alone is also inert after issue #34.
     let plans: Vec<_> = world
         .query::<(&PlannedStructure, &Transform)>()
         .iter(world)
@@ -536,20 +532,7 @@ fn spread_cells_keep_demand_sources_separated() {
         .collect();
     assert_eq!(
         plans.len(),
-        1,
-        "Gather paint alone (no deposit/worker) plus Build paint must produce exactly one plan (Sink Stockpile); got {plans:?}"
-    );
-    assert_eq!(
-        plans[0].0,
-        top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedKind::SinkStockpile,
-        "Build paint must plan a Sink Stockpile, not any other kind"
-    );
-    // Sanity: the two cells are far enough apart that the
-    // placement of the plan only lives near the Build cell.
-    let build_center = common::cell_world_center(build_cell);
-    let distance = (plans[0].1 - build_center).length();
-    assert!(
-        distance < ZONE_BLOCK_SIZE,
-        "Sink Stockpile plan must live inside the Build cell; got distance={distance} from cell center"
+        0,
+        "Gather paint alone plus Build paint alone must produce no plans; got {plans:?}"
     );
 }

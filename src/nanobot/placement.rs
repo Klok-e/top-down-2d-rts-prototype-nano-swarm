@@ -63,6 +63,23 @@ pub const SOURCE_STOCKPILE_PADDING: f32 = 16.0;
 pub const SOURCE_STOCKPILE_FOOTPRINT_RADIUS: f32 =
     crate::nanobot::planned::PLANNED_STRUCTURE_FOOTPRINT / 2.0;
 
+/// Shared half-footprint for planned and completed support
+/// structures. Issue #34 makes placement use one footprint
+/// rule for Planned Structures, Stockpiles, Production
+/// Facilities, and Chargers.
+pub const BUILDING_FOOTPRINT_RADIUS: f32 =
+    crate::nanobot::planned::PLANNED_STRUCTURE_FOOTPRINT / 2.0;
+
+/// Shared padding gap between support structure footprints and
+/// between support structures and Resource Deposits.
+pub const BUILDING_FOOTPRINT_PADDING: f32 = 16.0;
+
+/// Maximum in-cell offset used when searching for a valid
+/// Build-Zone placement. `ZONE_BLOCK_SIZE / 2 - radius - padding`
+/// keeps candidates inside the painted cell with room for gap.
+pub const BUILD_ZONE_PLACEMENT_MAX_OFFSET: f32 =
+    crate::ZONE_BLOCK_SIZE / 2.0 - BUILDING_FOOTPRINT_RADIUS - BUILDING_FOOTPRINT_PADDING;
+
 /// Generate `count` evenly spaced angles in radians around
 /// the full circle. The first angle is 0 (east). The list
 /// is empty when `count == 0`. Exposed for tests that want
@@ -260,6 +277,58 @@ pub fn find_source_stockpile_placement(
         }
     }
     best.map(|(_, _, pos)| pos)
+}
+
+/// Pick a stable, non-overlapping support-structure placement
+/// inside one of `build_cells`. Candidate order is deterministic:
+/// cells sort by `(x, y)`, then each cell tries its center plus
+/// rings of offsets. `kind_seed` lets different structure kinds
+/// get different organic-looking ring phases without depending on
+/// frame/tick state.
+pub fn find_build_zone_placement(
+    build_cells: &[IVec2],
+    obstacles: &[(Vec2, f32)],
+    kind_seed: u32,
+) -> Option<(IVec2, Vec2)> {
+    let mut cells = build_cells.to_vec();
+    cells.sort_by_key(|cell| (cell.x, cell.y));
+    let radii = [0.0, 96.0, 160.0, BUILD_ZONE_PLACEMENT_MAX_OFFSET];
+    let angles = placement_angles(8);
+    for cell in cells {
+        let center = crate::ai::get_world_from_zone(cell);
+        for (radius_index, radius) in radii.iter().enumerate() {
+            if *radius <= 0.0 {
+                if !overlaps_any_obstacle(
+                    center,
+                    BUILDING_FOOTPRINT_RADIUS,
+                    BUILDING_FOOTPRINT_PADDING,
+                    obstacles,
+                ) {
+                    return Some((cell, center));
+                }
+                continue;
+            }
+            let phase = deterministic_jitter(kind_seed + radius_index as u32, cell, 1.0).x
+                * std::f32::consts::TAU;
+            for angle in &angles {
+                let pos =
+                    center + Vec2::new((angle + phase).cos(), (angle + phase).sin()) * *radius;
+                if world_to_cell(pos) != cell {
+                    continue;
+                }
+                if overlaps_any_obstacle(
+                    pos,
+                    BUILDING_FOOTPRINT_RADIUS,
+                    BUILDING_FOOTPRINT_PADDING,
+                    obstacles,
+                ) {
+                    continue;
+                }
+                return Some((cell, pos));
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

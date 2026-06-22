@@ -49,16 +49,16 @@
 
 use bevy::prelude::*;
 
-use crate::ai::get_world_from_zone;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::NanobotType;
 use crate::nanobot::autonomy::SoftWorkSlots;
 use crate::nanobot::components::{DirectMovementComponent, Health, Nanobot, Swarm, SwarmId};
 use crate::nanobot::defend::DefendHold;
 use crate::nanobot::gather::world_to_cell;
+use crate::nanobot::placement::{find_build_zone_placement, BUILDING_FOOTPRINT_RADIUS};
 use crate::nanobot::planned::{planned_visual_components, PlannedKind, PlannedStructure};
-use crate::nanobot::production::OwnerSwarm;
-use crate::resources::ResourceKind;
+use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
+use crate::resources::{ResourceDeposit, ResourceKind, Stockpile};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -471,12 +471,14 @@ pub fn defender_health_loss_when_empty_system(
 /// unowned-paint contract in the rest of the simulation.
 /// The promotion path preserves [`OwnerSwarm`] on the
 /// completed charger.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn charger_auto_creation_system(
     mut commands: Commands,
     grid: Res<IntentGrid>,
-    chargers: Query<(Entity, &Charger)>,
-    planned_chargers: Query<&PlannedStructure, With<PlannedStructure>>,
+    chargers: Query<(Entity, &Charger, &Transform)>,
+    planned_chargers: Query<(&PlannedStructure, &Transform), With<PlannedStructure>>,
+    structure_obstacles: Query<&Transform, Or<(With<Stockpile>, With<ProductionFacility>)>>,
+    deposits: Query<(&ResourceDeposit, &Transform)>,
     defenders_in_cell: Query<
         (&Transform, &NanobotType),
         Or<(
@@ -490,14 +492,23 @@ pub fn charger_auto_creation_system(
     // O(1) per cell rather than O(chargers * cells).
     let mut chargers_per_cell: std::collections::HashMap<IVec2, u32> =
         std::collections::HashMap::new();
-    for (_, charger) in &chargers {
-        *chargers_per_cell.entry(charger.cell).or_insert(0) += 1;
+    let mut obstacles: Vec<(Vec2, f32)> = deposits
+        .iter()
+        .map(|(deposit, transform)| (transform.translation.truncate(), deposit.radius))
+        .collect();
+    for transform in &structure_obstacles {
+        obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
     }
-    for planned in &planned_chargers {
+    for (_, charger, transform) in &chargers {
+        *chargers_per_cell.entry(charger.cell).or_insert(0) += 1;
+        obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
+    }
+    for (planned, transform) in &planned_chargers {
         if planned.kind != PlannedKind::Charger {
             continue;
         }
         *chargers_per_cell.entry(planned.cell).or_insert(0) += 1;
+        obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
     }
 
     // Count defenders per cell: holding or assigned. Defenders
@@ -549,14 +560,19 @@ pub fn charger_auto_creation_system(
             .owner(IntentKind::Defend)
             .and_then(|id| swarm_by_id.get(&id).copied())
             .or(fallback_owner);
-        let center = get_world_from_zone(cell);
         for _ in 0..to_spawn {
-            let (sprite, transform) = planned_visual_components(center);
+            let Some((placement_cell, placement_pos)) =
+                find_build_zone_placement(&[cell], &obstacles, 28)
+            else {
+                break;
+            };
+            let (sprite, transform) = planned_visual_components(placement_pos);
             let mut entity_commands = commands.spawn((
-                PlannedStructure::new(PlannedKind::Charger, cell),
+                PlannedStructure::new(PlannedKind::Charger, placement_cell),
                 sprite,
                 transform,
             ));
+            obstacles.push((placement_pos, BUILDING_FOOTPRINT_RADIUS));
             if let Some(swarm_entity) = owner {
                 entity_commands.insert(OwnerSwarm(swarm_entity));
             }

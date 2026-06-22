@@ -1,5 +1,7 @@
 #![allow(clippy::duplicate_mod)]
 
+#[path = "behavior/automatic_construction_issue34.rs"]
+mod automatic_construction_issue34;
 #[path = "behavior/charger.rs"]
 mod charger;
 #[path = "behavior/charger_planned.rs"]

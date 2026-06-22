@@ -11,9 +11,9 @@ use crate::ai::get_world_from_zone;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::{
     charge::Charger,
-    components::{DirectMovementComponent, Nanobot},
+    components::{DirectMovementComponent, Nanobot, SwarmId, SwarmMember},
     gather::world_to_cell,
-    NanobotType, STOP_THRESHOLD,
+    NanobotType, OwnerSwarm, STOP_THRESHOLD,
 };
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
 
@@ -226,12 +226,22 @@ pub fn find_transport_pair(
     worker_pos: Vec2,
     kind: ResourceKind,
     deposits: &Query<(Entity, &ResourceDeposit, &Transform)>,
-    stockpiles: &Query<(Entity, &Stockpile, &Transform)>,
-    chargers: &Query<(Entity, &Charger, &Transform)>,
+    stockpiles: &Query<(Entity, &Stockpile, &Transform, Option<&OwnerSwarm>)>,
+    chargers: &Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
+    swarms: &Query<&SwarmId>,
+    hauler_swarm: SwarmId,
 ) -> Option<(Entity, Entity)> {
-    let source = find_nearest_source(worker_pos, kind, deposits, stockpiles)?;
+    let source = find_nearest_source(worker_pos, kind, deposits, stockpiles, swarms, hauler_swarm)?;
     let source_pos = source_transform(source, deposits, stockpiles)?;
-    let sink = find_nearest_sink(source, source_pos, kind, stockpiles, chargers)?;
+    let sink = find_nearest_sink(
+        source,
+        source_pos,
+        kind,
+        stockpiles,
+        chargers,
+        swarms,
+        hauler_swarm,
+    )?;
     Some((source, sink))
 }
 
@@ -239,7 +249,9 @@ fn find_nearest_source(
     worker_pos: Vec2,
     kind: ResourceKind,
     deposits: &Query<(Entity, &ResourceDeposit, &Transform)>,
-    stockpiles: &Query<(Entity, &Stockpile, &Transform)>,
+    stockpiles: &Query<(Entity, &Stockpile, &Transform, Option<&OwnerSwarm>)>,
+    swarms: &Query<&SwarmId>,
+    hauler_swarm: SwarmId,
 ) -> Option<Entity> {
     let mut best_deposit: Option<(f32, Entity)> = None;
     for (entity, deposit, transform) in deposits.iter() {
@@ -252,8 +264,11 @@ fn find_nearest_source(
         }
     }
     let mut best_stockpile: Option<(f32, Entity)> = None;
-    for (entity, stockpile, transform) in stockpiles.iter() {
-        if stockpile.kind != kind || stockpile.amount == 0 {
+    for (entity, stockpile, transform, owner) in stockpiles.iter() {
+        if stockpile.kind != kind
+            || stockpile.amount == 0
+            || !owner_matches_hauler(owner, swarms, hauler_swarm)
+        {
             continue;
         }
         let d = worker_pos.distance(transform.translation.truncate());
@@ -278,11 +293,11 @@ fn find_nearest_source(
 fn source_transform(
     entity: Entity,
     deposits: &Query<(Entity, &ResourceDeposit, &Transform)>,
-    stockpiles: &Query<(Entity, &Stockpile, &Transform)>,
+    stockpiles: &Query<(Entity, &Stockpile, &Transform, Option<&OwnerSwarm>)>,
 ) -> Option<Vec2> {
     if let Ok((_, _, t)) = deposits.get(entity) {
         Some(t.translation.truncate())
-    } else if let Ok((_, _, t)) = stockpiles.get(entity) {
+    } else if let Ok((_, _, t, _)) = stockpiles.get(entity) {
         Some(t.translation.truncate())
     } else {
         None
@@ -293,12 +308,18 @@ fn find_nearest_sink(
     source: Entity,
     source_pos: Vec2,
     kind: ResourceKind,
-    stockpiles: &Query<(Entity, &Stockpile, &Transform)>,
-    chargers: &Query<(Entity, &Charger, &Transform)>,
+    stockpiles: &Query<(Entity, &Stockpile, &Transform, Option<&OwnerSwarm>)>,
+    chargers: &Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
+    swarms: &Query<&SwarmId>,
+    hauler_swarm: SwarmId,
 ) -> Option<Entity> {
     let mut best: Option<(f32, Entity)> = None;
-    for (entity, stockpile, transform) in stockpiles.iter() {
-        if stockpile.kind != kind || stockpile.free_space() == 0 || entity == source {
+    for (entity, stockpile, transform, owner) in stockpiles.iter() {
+        if stockpile.kind != kind
+            || stockpile.free_space() == 0
+            || entity == source
+            || !owner_matches_hauler(owner, swarms, hauler_swarm)
+        {
             continue;
         }
         let d = source_pos.distance(transform.translation.truncate());
@@ -312,8 +333,11 @@ fn find_nearest_sink(
     // the current model (a charger does not feed the
     // resource network -- it consumes minerals to refill
     // defenders).
-    for (entity, charger, transform) in chargers.iter() {
-        if charger.kind != kind || charger.free_space() == 0 {
+    for (entity, charger, transform, owner) in chargers.iter() {
+        if charger.kind != kind
+            || charger.free_space() == 0
+            || !owner_matches_hauler(owner, swarms, hauler_swarm)
+        {
             continue;
         }
         let d = source_pos.distance(transform.translation.truncate());
@@ -322,6 +346,19 @@ fn find_nearest_sink(
         }
     }
     best.map(|(_, e)| e)
+}
+
+fn owner_matches_hauler(
+    owner: Option<&OwnerSwarm>,
+    swarms: &Query<&SwarmId>,
+    hauler_swarm: SwarmId,
+) -> bool {
+    match owner {
+        None => true,
+        Some(OwnerSwarm(owner_entity)) => swarms
+            .get(*owner_entity)
+            .is_ok_and(|owner_id| *owner_id == hauler_swarm),
+    }
 }
 
 /// For each idle Hauler with no in-flight transport work, pick a
@@ -333,7 +370,7 @@ fn find_nearest_sink(
 pub fn hauler_assignment_system(
     mut commands: Commands,
     haulers: Query<
-        (Entity, &Transform, &NanobotType),
+        (Entity, &Transform, &NanobotType, &SwarmMember),
         (
             With<Nanobot>,
             With<NanobotType>,
@@ -344,10 +381,11 @@ pub fn hauler_assignment_system(
         ),
     >,
     deposits: Query<(Entity, &ResourceDeposit, &Transform)>,
-    stockpiles: Query<(Entity, &Stockpile, &Transform)>,
-    chargers: Query<(Entity, &Charger, &Transform)>,
+    stockpiles: Query<(Entity, &Stockpile, &Transform, Option<&OwnerSwarm>)>,
+    chargers: Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
+    swarms: Query<&SwarmId>,
 ) {
-    for (entity, transform, nanobot_type) in &haulers {
+    for (entity, transform, nanobot_type, swarm_member) in &haulers {
         if *nanobot_type != NanobotType::Hauler {
             continue;
         }
@@ -359,6 +397,8 @@ pub fn hauler_assignment_system(
             &deposits,
             &stockpiles,
             &chargers,
+            &swarms,
+            swarm_member.0,
         ) else {
             continue;
         };
