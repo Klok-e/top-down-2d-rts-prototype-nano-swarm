@@ -1,5 +1,5 @@
-//! Integration tests for issue #31: zoomed-out tactical
-//! overlay with clustering.
+//! Integration tests for issue #36: zoomed-out tactical
+//! overlay as semi-transparent clustered icons.
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
@@ -8,7 +8,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     resources::{ResourceDeposit, Stockpile},
     tactical_overlay::{
         cluster_radius_for_zoom, TacticalClusterKey, TacticalMarker, TacticalMarkerKind,
-        TacticalOverlayPlugin, TacticalOverlaySettings,
+        TacticalOverlayPlugin, TacticalOverlaySettings, TACTICAL_MARKER_ALPHA, UNOWNED_SWARM_ID,
     },
 };
 
@@ -36,26 +36,21 @@ fn set_zoom(app: &mut App, zoom: f32) {
     app.world_mut().spawn(CameraZoom2d { zoom, ..default() });
 }
 
-fn markers_with_key(
+fn for_each_marker(
     app: &mut App,
-    key: TacticalClusterKey,
-) -> Vec<(Entity, TacticalMarker, Transform, String)> {
+    mut f: impl FnMut(Entity, &TacticalClusterKey, &TacticalMarker, &Transform, &Sprite),
+) {
     let world = app.world_mut();
-    let mut q = world.query::<(Entity, &TacticalClusterKey, &TacticalMarker, &Transform)>();
-    let mut hits: Vec<(Entity, TacticalMarker, Transform, String)> = Vec::new();
-    for (e, k, m, t) in q.iter(world) {
-        if *k == key {
-            let label = world
-                .get::<Children>(e)
-                .and_then(|c| {
-                    c.iter()
-                        .find_map(|child| world.get::<Text2d>(child).map(|txt| txt.0.clone()))
-                })
-                .unwrap_or_default();
-            hits.push((e, *m, *t, label));
-        }
+    let mut q = world.query::<(
+        Entity,
+        &TacticalClusterKey,
+        &TacticalMarker,
+        &Transform,
+        &Sprite,
+    )>();
+    for (e, k, m, t, s) in q.iter(world) {
+        f(e, k, m, t, s);
     }
-    hits
 }
 
 fn count_markers(app: &mut App) -> usize {
@@ -65,10 +60,24 @@ fn count_markers(app: &mut App) -> usize {
         .count()
 }
 
-fn body_transform(app: &mut App) -> Option<Transform> {
+fn body_transforms(app: &mut App) -> Vec<Transform> {
     let world = app.world_mut();
     let mut q = world.query_filtered::<&Transform, With<TacticalMarker>>();
-    q.iter(world).next().copied()
+    q.iter(world).copied().collect()
+}
+
+fn marker_keys(app: &mut App) -> Vec<TacticalClusterKey> {
+    let world = app.world_mut();
+    let mut q = world.query::<&TacticalClusterKey>();
+    q.iter(world).copied().collect()
+}
+
+fn unowned_key(kind: TacticalMarkerKind) -> TacticalClusterKey {
+    TacticalClusterKey {
+        kind,
+        owner: UNOWNED_SWARM_ID,
+        slot: (0, 0),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -169,13 +178,9 @@ fn one_marker_per_category_per_owner() {
     // far from the others in world space, so no merging
     // happens.
     let mut kinds: Vec<TacticalMarkerKind> = Vec::new();
-    {
-        let world = app.world_mut();
-        let mut q = world.query::<&TacticalClusterKey>();
-        for key in q.iter(world) {
-            kinds.push(key.kind);
-        }
-    }
+    for_each_marker(&mut app, |_, key, _, _, _| {
+        kinds.push(key.kind);
+    });
     kinds.sort_by_key(|k| *k as u32);
     assert_eq!(
         kinds,
@@ -195,6 +200,88 @@ fn one_marker_per_category_per_owner() {
 }
 
 // ---------------------------------------------------------------------------
+// Same-kind same-owner separate clusters
+// ---------------------------------------------------------------------------
+
+#[test]
+fn multiple_separate_deposit_clusters_can_coexist() {
+    // Two player deposits 20,000 world units apart at
+    // zoom 8.0: they do not merge (max merge radius is
+    // 6000), and they land in different spatial slots
+    // (slot size is 6000), so the two clusters must
+    // both produce a marker entity.
+    let mut app = build_app();
+    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    common::spawn_deposit(&mut app, Vec2::new(20_000.0, 0.0), 1000);
+
+    set_zoom(&mut app, 8.0);
+    app.update();
+
+    // The two deposits also produce no player swarm, so
+    // we expect exactly two markers (one per deposit
+    // cluster).
+    assert_eq!(
+        count_markers(&mut app),
+        2,
+        "two same-kind same-owner clusters far apart must coexist as two markers"
+    );
+
+    // Both keys must share (Deposit, UNOWNED) and
+    // differ in slot.
+    let mut slots: Vec<(i32, i32)> = marker_keys(&mut app)
+        .into_iter()
+        .filter(|k| k.kind == TacticalMarkerKind::Deposit)
+        .map(|k| k.slot)
+        .collect();
+    slots.sort();
+    slots.dedup();
+    assert_eq!(
+        slots.len(),
+        2,
+        "the two deposit clusters must have distinct spatial slots"
+    );
+    assert_eq!(slots[0], (0, 0));
+    assert_eq!(slots[1], (3, 0));
+}
+
+#[test]
+fn close_same_kind_deposits_still_merge_into_one_cluster() {
+    // The spatial-slot keying must not break the merge
+    // step: two deposits well within the merge radius
+    // must still collapse to one cluster / one marker.
+    let mut app = build_app();
+    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    common::spawn_deposit(&mut app, Vec2::new(200.0, 0.0), 1000);
+
+    set_zoom(&mut app, 4.0);
+    app.update();
+
+    assert_eq!(count_markers(&mut app), 1);
+}
+
+#[test]
+fn marker_key_uses_spatial_slot_not_just_kind_and_owner() {
+    // The acceptance criterion "clusters are not keyed
+    // only by kind/owner" is the contract under test
+    // here: a fresh marker spawned by the system
+    // carries a non-origin slot for a cluster whose
+    // world position is far from the origin.
+    let mut app = build_app();
+    // 20,000 world units east => slot (3, 0) with the
+    // default 6,000-unit slot size.
+    common::spawn_deposit(&mut app, Vec2::new(20_000.0, 0.0), 1000);
+    set_zoom(&mut app, 8.0);
+    app.update();
+
+    let slot = marker_keys(&mut app)
+        .into_iter()
+        .find(|k| k.kind == TacticalMarkerKind::Deposit)
+        .map(|k| k.slot)
+        .expect("deposit marker must be spawned");
+    assert_eq!(slot, (3, 0));
+}
+
+// ---------------------------------------------------------------------------
 // Cluster merging by zoom
 // ---------------------------------------------------------------------------
 
@@ -203,20 +290,19 @@ fn nearby_deposits_merge_into_single_marker() {
     let mut app = build_app();
     // Two deposits 200 world units apart with a moderate
     // zoom (4.0) and a moderate merge radius (2048).
-    // They must collapse.
+    // They must collapse into a single marker whose
+    // body sits at the cluster centroid (100, 0).
     common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
     common::spawn_deposit(&mut app, Vec2::new(200.0, 0.0), 1000);
     set_zoom(&mut app, 4.0);
     app.update();
-    assert_eq!(count_markers(&mut app), 1);
-    let key = TacticalClusterKey {
-        kind: TacticalMarkerKind::Deposit,
-        owner: top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId(u32::MAX),
-    };
-    let hits = markers_with_key(&mut app, key);
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].1.count, 2);
-    assert_eq!(hits[0].3, "Deposit x2");
+    let transforms = body_transforms(&mut app);
+    assert_eq!(transforms.len(), 1);
+    assert!(
+        (transforms[0].translation.x - 100.0).abs() < 1e-3,
+        "merged cluster centroid must be (100, 0); got {:?}",
+        transforms[0].translation
+    );
 }
 
 #[test]
@@ -261,17 +347,18 @@ fn far_apart_deposits_collapse_at_far_zoom() {
     common::spawn_deposit(&mut app, Vec2::new(4_000.0, 0.0), 1000);
     set_zoom(&mut app, 16.0);
     app.update();
-    assert_eq!(count_markers(&mut app), 1);
-    let key = TacticalClusterKey {
-        kind: TacticalMarkerKind::Deposit,
-        owner: top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId(u32::MAX),
-    };
-    let hits = markers_with_key(&mut app, key);
-    assert_eq!(hits[0].1.count, 2);
+    let transforms = body_transforms(&mut app);
+    assert_eq!(transforms.len(), 1);
+    // Centroid of (0, 0) and (4_000, 0) is (2_000, 0).
+    assert!(
+        (transforms[0].translation.x - 2_000.0).abs() < 1e-3,
+        "far-zoom merged cluster centroid must be (2_000, 0); got {:?}",
+        transforms[0].translation
+    );
 }
 
 // ---------------------------------------------------------------------------
-// Screen-constant size
+// Screen-constant size and 50% alpha (issue #36 acceptance #2 + #3)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -280,13 +367,15 @@ fn marker_world_scale_shrinks_as_zoom_grows() {
     common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
     set_zoom(&mut app, 4.0);
     app.update();
-    let small_scale = body_transform(&mut app)
+    let small_scale = body_transforms(&mut app)
+        .first()
         .map(|t| t.scale.x)
         .expect("marker body must exist at zoom 4.0");
 
     set_zoom(&mut app, 16.0);
     app.update();
-    let big_zoom_scale = body_transform(&mut app)
+    let big_zoom_scale = body_transforms(&mut app)
+        .first()
         .map(|t| t.scale.x)
         .expect("marker body must exist at zoom 16.0");
 
@@ -294,15 +383,163 @@ fn marker_world_scale_shrinks_as_zoom_grows() {
         big_zoom_scale < small_scale,
         "marker world scale at zoom 16 ({big_zoom_scale}) must be smaller than at zoom 4 ({small_scale})"
     );
-    // On-screen pixel size = world_scale * zoom. At
-    // zoom 4 the screen size is 32 / 4 = 8. At zoom
-    // 16 it must be 32 / 16 = 2.
+    // The transform scale matches
+    // `marker_screen_size / zoom` so the on-screen
+    // footprint is `scale * custom_size * zoom =
+    // 32` pixels (constant).
     assert!((small_scale - 8.0).abs() < 1e-3, "zoom 4 -> 8.0");
     assert!(
         (big_zoom_scale - 2.0).abs() < 1e-3,
         "zoom 16 -> 2.0, got {big_zoom_scale}"
     );
 }
+
+/// On-screen pixel footprint of the first marker body:
+/// `custom_size.x * transform.scale.x * zoom`. The body
+/// is a unit-rectangle sprite scaled by
+/// `marker_screen_size / zoom`, so the result equals
+/// `marker_screen_size` regardless of zoom.
+fn marker_on_screen_size(app: &mut App) -> f32 {
+    let world = app.world_mut();
+    let zoom = world
+        .query::<&CameraZoom2d>()
+        .iter(world)
+        .next()
+        .map(|z| z.zoom)
+        .expect("camera must be present");
+    let mut q = world.query::<(&Transform, &Sprite)>();
+    let (transform, sprite) = q.iter(world).next().expect("marker must exist");
+    let custom = sprite
+        .custom_size
+        .expect("marker sprite must have explicit custom_size");
+    custom.x * transform.scale.x * zoom
+}
+
+#[test]
+fn marker_on_screen_size_is_constant_across_zoom() {
+    // Issue #36 acceptance #3: the on-screen pixel
+    // size of an icon stays constant across zoom. The
+    // test reads the camera's zoom through
+    // `CameraZoom2d` to compute the on-screen
+    // footprint at three zooms and asserts they all
+    // equal `marker_screen_size` (32 pixels).
+    let mut app = build_app();
+    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    set_zoom(&mut app, 8.0);
+    app.update();
+    let size_at_8 = marker_on_screen_size(&mut app);
+    set_zoom(&mut app, 16.0);
+    app.update();
+    let size_at_16 = marker_on_screen_size(&mut app);
+    set_zoom(&mut app, 32.0);
+    app.update();
+    let size_at_32 = marker_on_screen_size(&mut app);
+    let expected = 32.0;
+    assert!(
+        (size_at_8 - expected).abs() < 1e-3,
+        "on-screen size at zoom 8 must equal marker_screen_size; got {size_at_8}"
+    );
+    assert!(
+        (size_at_16 - expected).abs() < 1e-3,
+        "on-screen size at zoom 16 must equal marker_screen_size; got {size_at_16}"
+    );
+    assert!(
+        (size_at_32 - expected).abs() < 1e-3,
+        "on-screen size at zoom 32 must equal marker_screen_size; got {size_at_32}"
+    );
+}
+
+#[test]
+fn marker_sprite_is_50_percent_alpha() {
+    // Issue #36 acceptance #2: every tactical marker
+    // body is a semi-transparent icon. The sprite
+    // color's alpha must be 50%.
+    let mut app = build_app();
+    common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
+    common::spawn_deposit(&mut app, Vec2::new(10_000.0, 0.0), 1000);
+    let facility_owner = common::spawn_swarm_at(&mut app, Vec2::new(-10_000.0, 0.0));
+    common::spawn_facility_at(&mut app, facility_owner, Vec2::new(-10_000.0, 0.0));
+    set_zoom(&mut app, 8.0);
+    app.update();
+
+    let mut alphas: Vec<f32> = Vec::new();
+    for_each_marker(&mut app, |_, _, _, _, sprite| {
+        let srgba = sprite.color.to_srgba();
+        alphas.push(srgba.alpha);
+    });
+    assert!(!alphas.is_empty(), "markers must be spawned");
+    for alpha in alphas {
+        assert!(
+            (alpha - TACTICAL_MARKER_ALPHA).abs() < 1e-4,
+            "marker alpha must be 50%, got {alpha}"
+        );
+    }
+}
+
+#[test]
+fn marker_has_no_text_label_child() {
+    // Issue #36 acceptance #2: tactical markers are
+    // icons, not text. A spawned marker must have no
+    // `Text2d` child and no `Text2d` component on the
+    // marker entity itself.
+    let mut app = build_app();
+    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    set_zoom(&mut app, 8.0);
+    app.update();
+
+    let world = app.world_mut();
+    let mut q = world.query::<(Entity, &TacticalMarker)>();
+    let marker_entity = q
+        .iter(world)
+        .map(|(e, _)| e)
+        .next()
+        .expect("marker must be spawned");
+    assert!(
+        world.entity(marker_entity).get::<Text2d>().is_none(),
+        "marker entity must not carry a Text2d component"
+    );
+    let children: Vec<Entity> = world
+        .entity(marker_entity)
+        .get::<Children>()
+        .map(|c| c.to_vec())
+        .unwrap_or_default();
+    assert!(
+        children.is_empty(),
+        "marker entity must have no children (no text label child)"
+    );
+    for child in children {
+        assert!(
+            world.entity(child).get::<Text2d>().is_none(),
+            "marker must not have any Text2d child entity"
+        );
+    }
+}
+
+#[test]
+fn marker_sprite_has_unit_custom_size() {
+    // The body is a unit-rectangle sprite scaled by
+    // `marker_world_size`. The unit rectangle is the
+    // shape the transform scale multiplies to produce
+    // the on-screen footprint.
+    let mut app = build_app();
+    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    set_zoom(&mut app, 8.0);
+    app.update();
+
+    for_each_marker(&mut app, |_, _, _, _, sprite| {
+        let custom = sprite
+            .custom_size
+            .expect("marker sprite must have explicit custom_size");
+        assert!(
+            (custom.x - 1.0).abs() < 1e-4 && (custom.y - 1.0).abs() < 1e-4,
+            "marker sprite must be a unit rectangle, got {custom:?}"
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Center of mass
+// ---------------------------------------------------------------------------
 
 #[test]
 fn marker_position_tracks_cluster_centroid() {
@@ -311,7 +548,10 @@ fn marker_position_tracks_cluster_centroid() {
     common::spawn_deposit(&mut app, Vec2::new(200.0, 0.0), 1000);
     set_zoom(&mut app, 4.0);
     app.update();
-    let transform = body_transform(&mut app).expect("cluster marker must exist");
+    let transform = body_transforms(&mut app)
+        .into_iter()
+        .next()
+        .expect("cluster marker must exist");
     assert!(
         (transform.translation.x - 100.0).abs() < 1.0,
         "cluster centroid must be (100, 0), got {:?}",
@@ -320,60 +560,103 @@ fn marker_position_tracks_cluster_centroid() {
 }
 
 // ---------------------------------------------------------------------------
-// Label updates on count change
+// De-overlap (issue #36 acceptance #7)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn cluster_label_includes_count_when_several_merge() {
+fn deoverlap_pushes_co_located_clusters_apart() {
+    // Two clusters of different kinds at the origin
+    // would overlap on screen at zoom 8.0 (icon size
+    // 32 pixels, so non-overlap world distance is
+    // 4.0). The de-overlap pass must push them apart
+    // to at least 4.0 world units.
     let mut app = build_app();
     common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
-    common::spawn_deposit(&mut app, Vec2::new(100.0, 0.0), 1000);
-    common::spawn_deposit(&mut app, Vec2::new(200.0, 0.0), 1000);
-    set_zoom(&mut app, 4.0);
+    common::spawn_idle_facility_at(&mut app, Vec2::new(0.0, 0.0));
+    set_zoom(&mut app, 8.0);
     app.update();
-    let key = TacticalClusterKey {
-        kind: TacticalMarkerKind::Deposit,
-        owner: top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId(u32::MAX),
-    };
-    let hits = markers_with_key(&mut app, key);
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].1.count, 3);
-    assert_eq!(hits[0].3, "Deposit x3");
+
+    let transforms = body_transforms(&mut app);
+    assert_eq!(transforms.len(), 2);
+    let dist = (transforms[0].translation - transforms[1].translation).length();
+    assert!(
+        dist >= 4.0 - 1e-3,
+        "two co-located clusters must be de-overlapped to at least the min world distance (4.0); got {dist}"
+    );
 }
 
 #[test]
-fn base_marker_label_is_you_for_player() {
+fn deoverlap_leaves_far_apart_clusters_in_place() {
+    // Two clusters 1,000 world units apart at zoom 8.0
+    // are well above the min world distance of 4.0.
+    // The de-overlap pass must not move them.
     let mut app = build_app();
-    common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
-    set_zoom(&mut app, 5.0);
+    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    common::spawn_idle_facility_at(&mut app, Vec2::new(1000.0, 0.0));
+    set_zoom(&mut app, 8.0);
     app.update();
-    let key = TacticalClusterKey {
-        kind: TacticalMarkerKind::PlayerBase,
-        owner: SwarmId::PLAYER,
-    };
-    let hits = markers_with_key(&mut app, key);
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].3, "You");
+
+    let mut sorted_xs: Vec<f32> = body_transforms(&mut app)
+        .iter()
+        .map(|t| t.translation.x)
+        .collect();
+    sorted_xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert!(
+        (sorted_xs[0] - 0.0).abs() < 1e-3,
+        "deposit at origin must stay near origin; got x={}",
+        sorted_xs[0]
+    );
+    assert!(
+        (sorted_xs[1] - 1000.0).abs() < 1e-3,
+        "facility at (1000, 0) must stay near (1000, 0); got x={}",
+        sorted_xs[1]
+    );
 }
 
 #[test]
-fn base_marker_label_is_enemy_for_opponent() {
+fn deoverlap_separates_three_co_located_clusters() {
+    // Three clusters of three different kinds at the
+    // origin must be spread apart by the de-overlap
+    // pass: no two of them may be within the min world
+    // distance after `app.update()`.
     let mut app = build_app();
-    app.world_mut().spawn((
-        Swarm {},
-        OpponentSwarm {},
-        SwarmId(7),
-        Transform::from_translation(Vec2::new(0.0, 0.0).extend(0.0)),
-    ));
-    set_zoom(&mut app, 5.0);
+    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    common::spawn_idle_facility_at(&mut app, Vec2::new(0.0, 0.0));
+    common::spawn_charger_at(&mut app, IVec2::new(0, 0), 0);
+    set_zoom(&mut app, 8.0);
     app.update();
-    let key = TacticalClusterKey {
-        kind: TacticalMarkerKind::OpponentBase,
-        owner: SwarmId(7),
-    };
-    let hits = markers_with_key(&mut app, key);
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].3, "Enemy");
+
+    let transforms = body_transforms(&mut app);
+    assert_eq!(transforms.len(), 3);
+    let min_dist = 32.0 / 8.0;
+    for i in 0..transforms.len() {
+        for j in (i + 1)..transforms.len() {
+            let d = (transforms[i].translation - transforms[j].translation).length();
+            assert!(
+                d >= min_dist - 1e-3,
+                "pair ({i}, {j}) still overlaps after de-overlap: distance {d} < {min_dist}"
+            );
+        }
+    }
+}
+
+#[test]
+fn deoverlap_preserves_center_of_mass() {
+    // A pair that gets de-overlapped moves symmetrically
+    // around the original midpoint. (Each icon moves by
+    // half the overlap, so the midpoint is unchanged.)
+    let mut app = build_app();
+    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    common::spawn_idle_facility_at(&mut app, Vec2::new(0.0, 0.0));
+    set_zoom(&mut app, 8.0);
+    app.update();
+
+    let transforms = body_transforms(&mut app);
+    let midpoint = ((transforms[0].translation + transforms[1].translation) * 0.5).truncate();
+    assert!(
+        midpoint.length() < 1e-3,
+        "pair centroid after de-overlap must stay at the origin; got {midpoint:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -418,6 +701,28 @@ fn marker_count_is_stable_across_ticks() {
     assert_eq!(n0, 1);
 }
 
+#[test]
+fn multiple_clusters_survive_across_ticks() {
+    // After the spatial-slot keying, two separate
+    // deposit clusters must both survive a re-tick at
+    // the same zoom (the existing entity per cluster
+    // gets patched, neither is despawned).
+    let mut app = build_app();
+    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    common::spawn_deposit(&mut app, Vec2::new(20_000.0, 0.0), 1000);
+    set_zoom(&mut app, 8.0);
+    app.update();
+    let n0 = count_markers(&mut app);
+    app.update();
+    app.update();
+    let n1 = count_markers(&mut app);
+    assert_eq!(n0, 2);
+    assert_eq!(
+        n1, 2,
+        "two separate clusters must both survive across ticks"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Pure helper reachable from integration tests
 // ---------------------------------------------------------------------------
@@ -440,11 +745,8 @@ fn cluster_radius_for_zoom_helper_is_reachable() {
 #[allow(dead_code)]
 fn _exports() {
     let _: TacticalOverlayPlugin = TacticalOverlayPlugin;
-    let _: TacticalMarker = TacticalMarker { count: 1 };
-    let _: TacticalClusterKey = TacticalClusterKey {
-        kind: TacticalMarkerKind::Deposit,
-        owner: SwarmId(1),
-    };
+    let _: TacticalMarker = TacticalMarker;
+    let _: TacticalClusterKey = unowned_key(TacticalMarkerKind::Deposit);
     let _: PlannedStructure = PlannedStructure::new(PlannedKind::Charger, IVec2::ZERO);
     let _: Charger = Charger::new(IVec2::ZERO);
     let _: NanobotType = NanobotType::Worker;
