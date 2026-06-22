@@ -62,11 +62,12 @@ use bevy::prelude::*;
 use crate::ai::get_world_from_zone;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::NanobotType;
-use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm, SwarmId};
+use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm, SwarmId, SwarmMember};
 use crate::nanobot::consts::STOP_THRESHOLD;
 use crate::nanobot::gather::world_to_cell;
+use crate::nanobot::placement::{find_build_zone_placement, BUILDING_FOOTPRINT_RADIUS};
 use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
-use crate::resources::{ResourceKind, Stockpile, StockpileRole};
+use crate::resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole};
 use crate::GAMEPLAY_SPRITE_Z;
 
 /// Number of worker-time ticks required to finish a planned
@@ -338,6 +339,135 @@ pub fn planned_structure_auto_creation_system(
     }
 }
 
+/// Plan Sink Stockpiles only when sink-side storage has a real
+/// nearby consumer. Raw Build paint is only a placement constraint:
+/// it does not create construction demand by itself. A pending or
+/// completed Production Facility / Charger in a Build cell asks for
+/// one local Sink Stockpile, placed in that same owned Build cell
+/// without overlapping deposits or other support structures.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub fn sink_stockpile_demand_system(
+    mut commands: Commands,
+    grid: Res<IntentGrid>,
+    planned: Query<(&PlannedStructure, &Transform, Option<&OwnerSwarm>)>,
+    stockpiles: Query<(
+        &Stockpile,
+        &Transform,
+        Option<&StockpileRole>,
+        Option<&OwnerSwarm>,
+    )>,
+    facilities: Query<(&Transform, Option<&OwnerSwarm>), With<ProductionFacility>>,
+    chargers: Query<(&Transform, Option<&OwnerSwarm>), With<crate::nanobot::Charger>>,
+    deposits: Query<(&ResourceDeposit, &Transform)>,
+    swarms: Query<(Entity, &SwarmId), With<Swarm>>,
+) {
+    let swarm_by_id: HashMap<SwarmId, Entity> = swarms.iter().map(|(e, id)| (*id, e)).collect();
+    let mut obstacles: Vec<(Vec2, f32)> = deposits
+        .iter()
+        .map(|(deposit, transform)| (transform.translation.truncate(), deposit.radius))
+        .collect();
+    for (_, transform, _, _) in &stockpiles {
+        obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
+    }
+    for (planned_structure, transform, _) in &planned {
+        obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
+        if planned_structure.kind != PlannedKind::ProductionFacility
+            && planned_structure.kind != PlannedKind::Charger
+        {
+            continue;
+        }
+    }
+    for (transform, _) in &facilities {
+        obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
+    }
+    for (transform, _) in &chargers {
+        obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
+    }
+
+    let mut demand_sites: Vec<(IVec2, Option<Entity>)> = Vec::new();
+    for (planned_structure, transform, owner) in &planned {
+        if planned_structure.kind == PlannedKind::ProductionFacility
+            || planned_structure.kind == PlannedKind::Charger
+        {
+            demand_sites.push((
+                world_to_cell(transform.translation.truncate()),
+                owner.map(|o| o.0),
+            ));
+        }
+    }
+    for (transform, owner) in &facilities {
+        demand_sites.push((
+            world_to_cell(transform.translation.truncate()),
+            owner.map(|o| o.0),
+        ));
+    }
+    for (transform, owner) in &chargers {
+        demand_sites.push((
+            world_to_cell(transform.translation.truncate()),
+            owner.map(|o| o.0),
+        ));
+    }
+    demand_sites.sort_by_key(|(cell, _)| (cell.x, cell.y));
+    demand_sites.dedup();
+
+    let mut newly_planned: Vec<Vec2> = Vec::new();
+    for (cell, owner) in demand_sites {
+        let Some(intent_cell) = grid.cell(cell) else {
+            continue;
+        };
+        if !intent_cell.has(IntentKind::Build) {
+            continue;
+        }
+        let painted_owner = intent_cell
+            .owner(IntentKind::Build)
+            .and_then(|id| swarm_by_id.get(&id).copied());
+        if owner.is_some() && painted_owner.is_some() && owner != painted_owner {
+            continue;
+        }
+        let sink_exists = stockpiles
+            .iter()
+            .any(|(_, transform, role, stockpile_owner)| {
+                matches!(role, Some(StockpileRole::Sink))
+                    && world_to_cell(transform.translation.truncate()) == cell
+                    && (owner.is_none() || stockpile_owner.map(|o| o.0) == owner)
+            })
+            || planned
+                .iter()
+                .any(|(planned_structure, transform, plan_owner)| {
+                    planned_structure.kind == PlannedKind::SinkStockpile
+                        && world_to_cell(transform.translation.truncate()) == cell
+                        && (owner.is_none() || plan_owner.map(|o| o.0) == owner)
+                });
+        if sink_exists {
+            continue;
+        }
+        let mut local_obstacles = obstacles.clone();
+        local_obstacles.extend(
+            newly_planned
+                .iter()
+                .map(|pos| (*pos, BUILDING_FOOTPRINT_RADIUS)),
+        );
+        let Some((placement_cell, placement_pos)) =
+            find_build_zone_placement(&[cell], &local_obstacles, 26)
+        else {
+            continue;
+        };
+        newly_planned.push(placement_pos);
+        let mut entity_commands = commands.spawn((
+            PlannedStructure::new(PlannedKind::SinkStockpile, placement_cell),
+            Sprite {
+                color: planned_visual_color(),
+                custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
+                ..default()
+            },
+            Transform::from_translation(placement_pos.extend(GAMEPLAY_SPRITE_Z)),
+        ));
+        if let Some(owner) = owner.or(painted_owner) {
+            entity_commands.insert(OwnerSwarm(owner));
+        }
+    }
+}
+
 /// For each idle Worker with no in-flight planned-structure
 /// work, pick the nearest unclaimed [`PlannedStructure`] and
 /// claim it.
@@ -367,9 +497,9 @@ pub fn planned_structure_auto_creation_system(
 #[allow(clippy::type_complexity)]
 pub fn worker_planned_structure_claim_system(
     mut commands: Commands,
-    planned_structures: Query<(Entity, &Transform, &PlannedStructure)>,
+    planned_structures: Query<(Entity, &Transform, &PlannedStructure, Option<&OwnerSwarm>)>,
     workers: Query<
-        (Entity, &Transform, &NanobotType),
+        (Entity, &Transform, &NanobotType, &SwarmMember),
         (
             With<Nanobot>,
             Without<PlannedStructureClaim>,
@@ -377,9 +507,10 @@ pub fn worker_planned_structure_claim_system(
             Without<DirectMovementComponent>,
         ),
     >,
+    swarms: Query<&SwarmId>,
 ) {
     let mut claimed: std::collections::HashSet<Entity> = std::collections::HashSet::new();
-    for (worker_entity, worker_transform, nanobot_type) in &workers {
+    for (worker_entity, worker_transform, nanobot_type, swarm_member) in &workers {
         // The Planned Structure lifecycle is a Worker job:
         // only Workers carry material to a build site and
         // spend worker time on construction. Defenders and
@@ -393,11 +524,14 @@ pub fn worker_planned_structure_claim_system(
         let worker_pos = worker_transform.translation.truncate();
 
         let mut best: Option<(f32, Entity, &PlannedStructure, Vec2)> = None;
-        for (planned_entity, planned_transform, planned) in &planned_structures {
+        for (planned_entity, planned_transform, planned, owner) in &planned_structures {
             if !planned.is_unclaimed() {
                 continue;
             }
             if claimed.contains(&planned_entity) {
+                continue;
+            }
+            if !planned_owner_matches_worker(owner, &swarms, swarm_member.0) {
                 continue;
             }
             let distance = worker_pos.distance(planned_transform.translation.truncate());
@@ -426,6 +560,19 @@ pub fn worker_planned_structure_claim_system(
             },
             DirectMovementComponent { xy: planned_pos },
         ));
+    }
+}
+
+fn planned_owner_matches_worker(
+    owner: Option<&OwnerSwarm>,
+    swarms: &Query<&SwarmId>,
+    worker_swarm: SwarmId,
+) -> bool {
+    match owner {
+        None => true,
+        Some(OwnerSwarm(owner_entity)) => swarms
+            .get(*owner_entity)
+            .is_ok_and(|owner_id| *owner_id == worker_swarm),
     }
 }
 
@@ -728,7 +875,7 @@ impl Plugin for PlannedStructurePlugin {
         app.add_systems(
             Update,
             (
-                planned_structure_auto_creation_system,
+                sink_stockpile_demand_system,
                 worker_planned_structure_claim_system,
                 worker_planned_structure_arrive_system,
                 worker_planned_structure_work_system,

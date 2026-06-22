@@ -27,7 +27,7 @@ use bevy::prelude::*;
 use crate::ai::get_world_from_zone;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::{best_candidate, Commitment, NanobotType, SoftWorkSlots};
-use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm, SwarmMember};
+use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm, SwarmId, SwarmMember};
 use crate::nanobot::placement::{
     find_source_stockpile_placement, SOURCE_STOCKPILE_FOOTPRINT_RADIUS,
     SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PADDING, SOURCE_STOCKPILE_PLACEMENT_COUNT,
@@ -362,37 +362,23 @@ pub(crate) fn has_any_near_source_stockpile(
 /// has one swarm.
 pub fn source_stockpile_demand_system(
     mut commands: Commands,
-    gather_assignments: Query<&GatherAssignment>,
-    deposits: Query<&Transform, With<ResourceDeposit>>,
+    gather_assignments: Query<(&GatherAssignment, &SwarmMember)>,
+    deposits: Query<(&ResourceDeposit, &Transform)>,
     stockpiles: Query<(&Stockpile, &Transform, Option<&StockpileRole>)>,
     planned: Query<(&PlannedStructure, &Transform)>,
-    swarms: Query<(Entity, &Transform), With<Swarm>>,
+    swarms: Query<(Entity, &SwarmId, &Transform), With<Swarm>>,
     grid: Res<IntentGrid>,
 ) {
-    // Single pass over the swarm query: we need both the
-    // first swarm's entity (for ownership stamping) and its
-    // transform (for the haul-direction fallback).
-    let (first_swarm, swarm_origin) = match swarms.iter().next() {
-        Some((entity, transform)) => (Some(entity), Some(transform.translation.truncate())),
-        None => (None, None),
-    };
-    let mut deposits_seen: std::collections::HashSet<Entity> = std::collections::HashSet::new();
-    for assignment in &gather_assignments {
-        deposits_seen.insert(assignment.deposit);
-    }
-    // Pre-compute the swarm-visible Gather and Build cells in
-    // world coordinates. The placement algorithm and the haul
-    // direction both consume these, so doing the grid walk
-    // once per tick is cheaper than once per deposit.
-    let mut gather_cells: Vec<IVec2> = Vec::new();
-    let mut build_worlds: Vec<Vec2> = Vec::new();
-    for (cell, intent_cell) in grid.iter_cells() {
-        if intent_cell.has(IntentKind::Gather) {
-            gather_cells.push(cell);
-        }
-        if intent_cell.has(IntentKind::Build) {
-            build_worlds.push(get_world_from_zone(cell));
-        }
+    let swarm_by_id: std::collections::HashMap<SwarmId, (Entity, Vec2)> = swarms
+        .iter()
+        .map(|(entity, id, transform)| (*id, (entity, transform.translation.truncate())))
+        .collect();
+    let mut deposits_seen: std::collections::HashMap<Entity, SwarmId> =
+        std::collections::HashMap::new();
+    for (assignment, swarm_member) in &gather_assignments {
+        deposits_seen
+            .entry(assignment.deposit)
+            .or_insert(swarm_member.0);
     }
     // Positions of Planned Source Stockpiles planned earlier
     // in this tick. The placement algorithm treats them as
@@ -401,8 +387,8 @@ pub fn source_stockpile_demand_system(
     // deferred, so the live `planned` query cannot see the
     // in-tick spawns yet).
     let mut newly_planned_positions: Vec<Vec2> = Vec::new();
-    for deposit_entity in deposits_seen {
-        let Ok(deposit_transform) = deposits.get(deposit_entity) else {
+    for (deposit_entity, demand_swarm) in deposits_seen {
+        let Ok((deposit, deposit_transform)) = deposits.get(deposit_entity) else {
             continue;
         };
         let deposit_pos = deposit_transform.translation.truncate();
@@ -422,6 +408,11 @@ pub fn source_stockpile_demand_system(
         // generalize to mixed-size obstacles in the future.
         let mut obstacles: Vec<(Vec2, f32)> = Vec::new();
         obstacles.extend(
+            deposits
+                .iter()
+                .map(|(deposit, t)| (t.translation.truncate(), deposit.radius)),
+        );
+        obstacles.extend(
             stockpiles
                 .iter()
                 .map(|(_, t, _)| (t.translation.truncate(), SOURCE_STOCKPILE_FOOTPRINT_RADIUS)),
@@ -436,17 +427,43 @@ pub fn source_stockpile_demand_system(
                 .iter()
                 .map(|p| (*p, SOURCE_STOCKPILE_FOOTPRINT_RADIUS)),
         );
+        let mut gather_cells: Vec<IVec2> = Vec::new();
+        let mut build_worlds: Vec<Vec2> = Vec::new();
+        for (cell, intent_cell) in grid.iter_cells() {
+            if intent_cell.has(IntentKind::Gather)
+                && intent_cell
+                    .owner(IntentKind::Gather)
+                    .is_none_or(|owner| owner == demand_swarm)
+            {
+                gather_cells.push(cell);
+            }
+            if intent_cell.has(IntentKind::Build)
+                && intent_cell
+                    .owner(IntentKind::Build)
+                    .is_none_or(|owner| owner == demand_swarm)
+            {
+                build_worlds.push(get_world_from_zone(cell));
+            }
+        }
+        let swarm_origin = swarm_by_id.get(&demand_swarm).map(|(_, pos)| *pos);
         let haul_direction = compute_haul_direction(deposit_pos, &build_worlds, swarm_origin);
         // Find a valid placement for the planned structure.
         // `None` here means every candidate was rejected by
         // the zone / overlap filter; the demand remains
         // unsatisfied and is retried on a later tick.
+        let required_clearance =
+            deposit.radius + SOURCE_STOCKPILE_FOOTPRINT_RADIUS + SOURCE_STOCKPILE_PADDING;
+        let placement_radius = if required_clearance > SOURCE_STOCKPILE_PLACEMENT_RADIUS {
+            required_clearance + SOURCE_STOCKPILE_JITTER_AMPLITUDE * 2.0
+        } else {
+            SOURCE_STOCKPILE_PLACEMENT_RADIUS
+        };
         let Some(placement_pos) = find_source_stockpile_placement(
             deposit_pos,
             &gather_cells,
             &obstacles,
             haul_direction,
-            SOURCE_STOCKPILE_PLACEMENT_RADIUS,
+            placement_radius,
             SOURCE_STOCKPILE_PLACEMENT_COUNT,
             SOURCE_STOCKPILE_JITTER_AMPLITUDE,
             SOURCE_STOCKPILE_FOOTPRINT_RADIUS,
@@ -465,8 +482,8 @@ pub fn source_stockpile_demand_system(
             },
             Transform::from_translation(placement_pos.extend(GAMEPLAY_SPRITE_Z)),
         ));
-        if let Some(swarm_entity) = first_swarm {
-            entity_commands.insert(OwnerSwarm(swarm_entity));
+        if let Some((swarm_entity, _)) = swarm_by_id.get(&demand_swarm) {
+            entity_commands.insert(OwnerSwarm(*swarm_entity));
         }
     }
 }

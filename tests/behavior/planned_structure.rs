@@ -12,7 +12,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
         completed_visual_color, planned_visual_color, OwnerSwarm, PlannedStructure,
-        PlannedStructureClaim, PlannedStructureProgress, Swarm, DEFAULT_PLANNED_WORK_TICKS,
+        PlannedStructureClaim, PlannedStructureProgress, Swarm, SwarmId,
+        DEFAULT_PLANNED_WORK_TICKS,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
     ZONE_BLOCK_SIZE,
@@ -26,12 +27,9 @@ fn build_app() -> App {
 }
 
 #[test]
-fn planned_structure_emerges_in_build_painted_cell() {
-    // Acceptance: "Planned Structures are visibly distinct from
-    // completed structures" + "visible immediately". Painting a
-    // Build cell must cause a PlannedStructure to appear with
-    // the planned visual on the same tick the auto-creation
-    // system runs.
+fn planned_structure_does_not_emerge_from_build_paint_alone() {
+    // Issue #34: Build paint is now only a placement constraint.
+    // Demand systems create PlannedStructures; raw Build paint does not.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
     app.world_mut()
@@ -41,38 +39,15 @@ fn planned_structure_emerges_in_build_painted_cell() {
     app.update();
 
     let world = app.world_mut();
-    let mut q = world.query::<(&PlannedStructure, &Sprite, &Transform)>();
-    let (planned, sprite, transform) = q
-        .iter(world)
-        .next()
-        .expect("PlannedStructure must spawn in a Build-painted cell");
+    let count = world.query::<&PlannedStructure>().iter(world).count();
     assert_eq!(
-        planned.kind,
-        top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedKind::SinkStockpile,
-        "Build-painted cell must plan a Sink Stockpile (issue #26 migrates the Build Zone demand to the planned-structure lifecycle)"
-    );
-    assert_eq!(planned.cell, cell);
-    // The visual is the planned color so the player can tell
-    // the structure is not yet built.
-    assert_eq!(
-        sprite.color,
-        planned_visual_color(),
-        "PlannedStructure must use the planned visual color"
-    );
-    let center = common::cell_world_center(cell);
-    assert!(
-        (transform.translation.truncate() - center).length() < 1.0,
-        "PlannedStructure must be created at the cell's world center; got {:?}",
-        transform.translation
+        count, 0,
+        "Build paint alone must not spawn PlannedStructure"
     );
 }
 
 #[test]
-fn planned_structure_not_duplicated_when_one_already_exists() {
-    // Acceptance: "automatic construction" must not pile
-    // multiple planned structures into the same cell. Once a
-    // cell has a PlannedStructure, repeated ticks must not
-    // spawn another.
+fn build_paint_alone_stays_empty_across_repeated_ticks() {
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
     app.world_mut()
@@ -84,12 +59,8 @@ fn planned_structure_not_duplicated_when_one_already_exists() {
     }
 
     let world = app.world_mut();
-    let mut q = world.query::<&PlannedStructure>();
-    let count = q.iter(world).count();
-    assert_eq!(
-        count, 1,
-        "auto-creation must not duplicate PlannedStructures"
-    );
+    let count = world.query::<&PlannedStructure>().iter(world).count();
+    assert_eq!(count, 0, "Build paint alone must remain construction-inert");
 }
 
 #[test]
@@ -115,6 +86,42 @@ fn planned_structure_not_emerged_for_gather_only_cell() {
     assert_eq!(
         count, 0,
         "Gather-only cell must not spawn a PlannedStructure"
+    );
+}
+
+#[test]
+fn player_worker_ignores_enemy_owned_planned_structure() {
+    let mut app = build_app();
+    let cell = IVec2::new(0, 0);
+    let center = common::cell_world_center(cell);
+    let enemy_swarm = app
+        .world_mut()
+        .spawn((
+            Swarm {},
+            SwarmId(1),
+            Transform::from_translation(center.extend(0.0)),
+        ))
+        .id();
+    let planned = common::spawn_planned_structure_at_cell(&mut app, cell);
+    app.world_mut()
+        .entity_mut(planned)
+        .insert(OwnerSwarm(enemy_swarm));
+    let worker = common::spawn_worker_at(&mut app, center);
+
+    app.update();
+
+    let world = app.world_mut();
+    assert!(
+        world
+            .entity(worker)
+            .get::<PlannedStructureClaim>()
+            .is_none(),
+        "player Worker must not claim enemy-owned PlannedStructure"
+    );
+    let planned_state = world.entity(planned).get::<PlannedStructure>().unwrap();
+    assert!(
+        planned_state.active_worker.is_none(),
+        "enemy-owned PlannedStructure must remain unclaimed by player Worker"
     );
 }
 
@@ -388,39 +395,17 @@ fn idle_worker_in_build_cell_with_planned_idles_when_far() {
 }
 
 #[test]
-fn planned_structure_is_owned_by_swarm_when_one_exists() {
-    // Acceptance: "Planned Structures have a kind, owner,
-    // location, build work remaining, and optional active
-    // Worker reservation." The owner is the existing
-    // [`OwnerSwarm`] component (per the project's
-    // ownership pattern). When a swarm exists in the world
-    // the auto-creation system must stamp the planned
-    // structure with the swarm's `OwnerSwarm`, and the
-    // completed Source Stockpile must keep the same
-    // ownership after promotion.
+fn demand_spawned_planned_structure_preserves_swarm_ownership() {
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
     let center = common::cell_world_center(cell);
     let swarm = common::spawn_swarm_at(&mut app, center);
+    let planned = common::spawn_planned_structure_at_cell(&mut app, cell);
     app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
+        .entity_mut(planned)
+        .insert(OwnerSwarm(swarm));
+    let _worker = common::spawn_worker_at(&mut app, center);
 
-    app.update();
-
-    let world = app.world_mut();
-    let mut q = world.query::<(&PlannedStructure, &OwnerSwarm)>();
-    let (planned, owner) = q
-        .iter(world)
-        .next()
-        .expect("PlannedStructure must exist when a swarm is present");
-    assert_eq!(
-        owner.0, swarm,
-        "planned structure must be owned by the swarm"
-    );
-    assert_eq!(planned.cell, cell);
-
-    // Drive the build to completion and re-check ownership.
     let total_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize + 5;
     for _ in 0..total_ticks {
         app.update();
@@ -431,39 +416,20 @@ fn planned_structure_is_owned_by_swarm_when_one_exists() {
         .iter(world)
         .next()
         .expect("OwnerSwarm must be preserved on the completed structure");
-    assert_eq!(
-        owner_after.0, swarm,
-        "completed structure keeps the swarm's ownership"
-    );
+    assert_eq!(owner_after.0, swarm, "completed structure keeps ownership");
 }
 
 #[test]
-fn planned_structure_is_unowned_when_no_swarm_exists() {
-    // When no swarm exists, the planned structure must
-    // still emerge (the auto-creation is a swarm-agnostic
-    // demand system). It just has no [`OwnerSwarm`] marker,
-    // matching the unowned-paint contract in the rest of
-    // the simulation.
+fn manually_seeded_planned_structure_can_be_unowned() {
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
+    let planned_entity = common::spawn_planned_structure_at_cell(&mut app, cell);
 
     app.update();
 
     let world = app.world_mut();
-    let mut q = world.query::<(Entity, &PlannedStructure)>();
-    let (planned_entity, _planned) = q
-        .iter(world)
-        .next()
-        .expect("PlannedStructure must spawn even with no swarm");
     let has_owner = world.entity(planned_entity).get::<OwnerSwarm>().is_some();
-    assert!(
-        !has_owner,
-        "planned structure must be unowned when no swarm exists"
-    );
-    // No Swarm entity exists in the world either.
+    assert!(!has_owner, "unowned demand fixtures remain unowned");
     let swarm_count = world.query::<&Swarm>().iter(world).count();
     assert_eq!(swarm_count, 0);
 }
