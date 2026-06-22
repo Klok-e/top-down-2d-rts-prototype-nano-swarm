@@ -34,12 +34,13 @@ use crate::nanobot::placement::{
     SOURCE_STOCKPILE_PLACEMENT_RADIUS,
 };
 use crate::nanobot::planned::{
-    planned_visual_color, PlannedKind, PlannedStructure, PlannedStructureClaim,
-    PlannedStructureProgress, PLANNED_STRUCTURE_FOOTPRINT,
+    planned_visual_components, PlannedKind, PlannedStructure, PlannedStructureClaim,
+    PlannedStructureProgress,
 };
 use crate::nanobot::production::OwnerSwarm;
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole};
-use crate::{GAMEPLAY_SPRITE_Z, ZONE_BLOCK_SIZE};
+use crate::structure_sprites::StructureSprites;
+use crate::ZONE_BLOCK_SIZE;
 
 /// Maximum units a Worker can carry in a single trip. The glossary
 /// is explicit: Workers carry "small" amounts; Haulers carry more.
@@ -360,8 +361,10 @@ pub(crate) fn has_any_near_source_stockpile(
 /// holds end-to-end. A per-swarm filter tied to the painted
 /// cell's intent owner is a follow-up; the v1 simulation
 /// has one swarm.
+#[allow(clippy::too_many_arguments)]
 pub fn source_stockpile_demand_system(
     mut commands: Commands,
+    structure_sprites: Res<StructureSprites>,
     gather_assignments: Query<(&GatherAssignment, &SwarmMember)>,
     deposits: Query<(&ResourceDeposit, &Transform)>,
     stockpiles: Query<(&Stockpile, &Transform, Option<&StockpileRole>)>,
@@ -475,12 +478,11 @@ pub fn source_stockpile_demand_system(
         newly_planned_positions.push(placement_pos);
         let mut entity_commands = commands.spawn((
             PlannedStructure::new(PlannedKind::SourceStockpile, placement_cell),
-            Sprite {
-                color: planned_visual_color(),
-                custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
-                ..default()
-            },
-            Transform::from_translation(placement_pos.extend(GAMEPLAY_SPRITE_Z)),
+            planned_visual_components(
+                PlannedKind::SourceStockpile,
+                &structure_sprites,
+                placement_pos,
+            ),
         ));
         if let Some((swarm_entity, _)) = swarm_by_id.get(&demand_swarm) {
             entity_commands.insert(OwnerSwarm(*swarm_entity));

@@ -16,6 +16,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         DEFAULT_PLANNED_WORK_TICKS,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
+    structure_sprites::{StructureVisual, StructureVisualState},
     ZONE_BLOCK_SIZE,
 };
 
@@ -449,26 +450,38 @@ fn planned_structure_visual_flip_is_observable_via_sprite_color() {
 
     // Capture the planned visual before the build runs.
     app.update();
-    let pre_color = app
-        .world()
-        .entity(planned)
+    let pre_entity = app.world().entity(planned);
+    let pre_color = pre_entity
         .get::<Sprite>()
         .map(|s| s.color)
         .expect("PlannedStructure must carry a Sprite for the visual");
     assert_eq!(pre_color, planned_visual_color());
+    assert_eq!(
+        pre_entity.get::<StructureVisual>(),
+        Some(&StructureVisual {
+            kind: top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedKind::SourceStockpile,
+            state: StructureVisualState::Planned,
+        })
+    );
 
     // Drive the build to completion.
     let total_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize + 5;
     for _ in 0..total_ticks {
         app.update();
     }
-    let post_color = app
-        .world()
-        .entity(planned)
+    let post_entity = app.world().entity(planned);
+    let post_color = post_entity
         .get::<Sprite>()
         .map(|s| s.color)
         .expect("completed structure must still carry a Sprite");
     assert_eq!(post_color, completed_visual_color());
+    assert_eq!(
+        post_entity.get::<StructureVisual>(),
+        Some(&StructureVisual {
+            kind: top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedKind::SourceStockpile,
+            state: StructureVisualState::Completed,
+        })
+    );
     assert_ne!(
         pre_color, post_color,
         "the visual must flip from planned to completed on promotion"

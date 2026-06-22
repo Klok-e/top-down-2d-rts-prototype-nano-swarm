@@ -47,12 +47,11 @@ use crate::nanobot::components::{Health, Nanobot, Swarm, SwarmId, SwarmMember, V
 use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::placement::{find_build_zone_placement, BUILDING_FOOTPRINT_RADIUS};
 use crate::nanobot::planned::{
-    planned_visual_color, PlannedKind, PlannedProductionTarget, PlannedStructure,
-    PLANNED_STRUCTURE_FOOTPRINT,
+    planned_visual_components, PlannedKind, PlannedProductionTarget, PlannedStructure,
 };
 use crate::nanobot::{NanobotBundle, NanobotSprites};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
-use crate::GAMEPLAY_SPRITE_Z;
+use crate::structure_sprites::StructureSprites;
 
 /// Material (in `ResourceKind::Minerals`) consumed to produce one
 /// nanobot. Shared across all three early types per the project's
@@ -431,6 +430,7 @@ pub fn count_swarm_nanobots_by_type(
 pub fn production_facility_auto_creation_system(
     mut commands: Commands,
     grid: Res<IntentGrid>,
+    structure_sprites: Res<StructureSprites>,
     global_ratio: Res<ProductionRatio>,
     nanobots: Query<&NanobotType, With<Nanobot>>,
     children_query: Query<&Children>,
@@ -537,12 +537,11 @@ pub fn production_facility_auto_creation_system(
             PlannedStructure::new(PlannedKind::ProductionFacility, build_cell),
             PlannedProductionTarget(target),
             OwnerSwarm(swarm_entity),
-            Sprite {
-                color: planned_visual_color(),
-                custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
-                ..default()
-            },
-            Transform::from_translation(placement_pos.extend(GAMEPLAY_SPRITE_Z)),
+            planned_visual_components(
+                PlannedKind::ProductionFacility,
+                &structure_sprites,
+                placement_pos,
+            ),
         ));
     }
 }

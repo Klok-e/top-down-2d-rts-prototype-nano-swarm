@@ -59,6 +59,7 @@ use crate::nanobot::placement::{find_build_zone_placement, BUILDING_FOOTPRINT_RA
 use crate::nanobot::planned::{planned_visual_components, PlannedKind, PlannedStructure};
 use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
 use crate::resources::{ResourceDeposit, ResourceKind, Stockpile};
+use crate::structure_sprites::StructureSprites;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -475,6 +476,7 @@ pub fn defender_health_loss_when_empty_system(
 pub fn charger_auto_creation_system(
     mut commands: Commands,
     grid: Res<IntentGrid>,
+    structure_sprites: Res<StructureSprites>,
     chargers: Query<(Entity, &Charger, &Transform)>,
     planned_chargers: Query<(&PlannedStructure, &Transform), With<PlannedStructure>>,
     structure_obstacles: Query<&Transform, Or<(With<Stockpile>, With<ProductionFacility>)>>,
@@ -566,11 +568,9 @@ pub fn charger_auto_creation_system(
             else {
                 break;
             };
-            let (sprite, transform) = planned_visual_components(placement_pos);
             let mut entity_commands = commands.spawn((
                 PlannedStructure::new(PlannedKind::Charger, placement_cell),
-                sprite,
-                transform,
+                planned_visual_components(PlannedKind::Charger, &structure_sprites, placement_pos),
             ));
             obstacles.push((placement_pos, BUILDING_FOOTPRINT_RADIUS));
             if let Some(swarm_entity) = owner {

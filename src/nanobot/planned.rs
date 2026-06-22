@@ -68,6 +68,7 @@ use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::placement::{find_build_zone_placement, BUILDING_FOOTPRINT_RADIUS};
 use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
 use crate::resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole};
+use crate::structure_sprites::{StructureSprites, StructureVisual, StructureVisualState};
 use crate::GAMEPLAY_SPRITE_Z;
 
 /// Number of worker-time ticks required to finish a planned
@@ -300,6 +301,7 @@ pub struct PlannedProductionTarget(pub NanobotType);
 pub fn planned_structure_auto_creation_system(
     mut commands: Commands,
     grid: Res<IntentGrid>,
+    structure_sprites: Res<StructureSprites>,
     existing_targets: Query<&Transform, Or<(With<PlannedStructure>, With<Stockpile>)>>,
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,
 ) {
@@ -323,15 +325,7 @@ pub fn planned_structure_auto_creation_system(
         let center = get_world_from_zone(cell);
         let mut entity_commands = commands.spawn((
             PlannedStructure::new(PlannedKind::SinkStockpile, cell),
-            // Semi-transparent planned color; the completion
-            // promotion swaps this Sprite for one carrying
-            // [`completed_visual_color`].
-            Sprite {
-                color: planned_visual_color(),
-                custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
-                ..default()
-            },
-            Transform::from_translation(center.extend(GAMEPLAY_SPRITE_Z)),
+            planned_visual_components(PlannedKind::SinkStockpile, &structure_sprites, center),
         ));
         if let Some(swarm_entity) = owner {
             entity_commands.insert(OwnerSwarm(swarm_entity));
@@ -349,6 +343,7 @@ pub fn planned_structure_auto_creation_system(
 pub fn sink_stockpile_demand_system(
     mut commands: Commands,
     grid: Res<IntentGrid>,
+    structure_sprites: Res<StructureSprites>,
     planned: Query<(&PlannedStructure, &Transform, Option<&OwnerSwarm>)>,
     stockpiles: Query<(
         &Stockpile,
@@ -455,12 +450,11 @@ pub fn sink_stockpile_demand_system(
         newly_planned.push(placement_pos);
         let mut entity_commands = commands.spawn((
             PlannedStructure::new(PlannedKind::SinkStockpile, placement_cell),
-            Sprite {
-                color: planned_visual_color(),
-                custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
-                ..default()
-            },
-            Transform::from_translation(placement_pos.extend(GAMEPLAY_SPRITE_Z)),
+            planned_visual_components(
+                PlannedKind::SinkStockpile,
+                &structure_sprites,
+                placement_pos,
+            ),
         ));
         if let Some(owner) = owner.or(painted_owner) {
             entity_commands.insert(OwnerSwarm(owner));
@@ -639,6 +633,7 @@ pub fn worker_planned_structure_arrive_system(
 #[allow(clippy::type_complexity)]
 pub fn worker_planned_structure_work_system(
     mut commands: Commands,
+    structure_sprites: Res<StructureSprites>,
     workers: Query<
         (Entity, &PlannedStructureProgress),
         (With<Nanobot>, With<PlannedStructureProgress>),
@@ -676,6 +671,7 @@ pub fn worker_planned_structure_work_system(
                 planned_transform.translation.truncate(),
                 planned_state.cell,
                 first_target,
+                &structure_sprites,
             );
             release_planned_worker(&mut commands, worker_entity);
             continue;
@@ -690,6 +686,7 @@ pub fn worker_planned_structure_work_system(
                 planned_transform.translation.truncate(),
                 planned_state.cell,
                 first_target,
+                &structure_sprites,
             );
             release_planned_worker(&mut commands, worker_entity);
         }
@@ -758,8 +755,9 @@ fn promote_planned_to_completion(
     world_pos: Vec2,
     cell: IVec2,
     first_target: Option<NanobotType>,
+    structure_sprites: &StructureSprites,
 ) {
-    let visual = completed_visual_bundle(world_pos);
+    let visual = completed_visual_bundle(kind, structure_sprites, world_pos);
     match kind {
         PlannedKind::SourceStockpile => {
             commands.entity(planned_entity).remove::<PlannedStructure>();
@@ -822,14 +820,18 @@ fn promote_planned_to_completion(
 /// [`completed_visual_bundle`] on promotion. Bevy replaces
 /// the planned `Sprite` on `insert`, so the planned visual
 /// does not leak through to the completed entity.
-pub(crate) fn planned_visual_components(world_pos: Vec2) -> (Sprite, Transform) {
+pub(crate) fn planned_visual_components(
+    kind: PlannedKind,
+    structure_sprites: &StructureSprites,
+    world_pos: Vec2,
+) -> (Sprite, Transform, StructureVisual) {
+    let mut sprite = structure_sprites.sprite(kind, StructureVisualState::Planned);
+    sprite.color = planned_visual_color();
+    sprite.custom_size = Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT));
     (
-        Sprite {
-            color: planned_visual_color(),
-            custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
-            ..default()
-        },
+        sprite,
         Transform::from_translation(world_pos.extend(GAMEPLAY_SPRITE_Z)),
+        StructureVisual::planned(kind),
     )
 }
 
@@ -837,14 +839,18 @@ pub(crate) fn planned_visual_components(world_pos: Vec2) -> (Sprite, Transform) 
 /// planned-structure kind. Bevy replaces the planned
 /// `Sprite` on `insert`, so the planned visual does not
 /// leak through to the completed entity.
-fn completed_visual_bundle(world_pos: Vec2) -> (Sprite, Transform) {
+fn completed_visual_bundle(
+    kind: PlannedKind,
+    structure_sprites: &StructureSprites,
+    world_pos: Vec2,
+) -> (Sprite, Transform, StructureVisual) {
+    let mut sprite = structure_sprites.sprite(kind, StructureVisualState::Completed);
+    sprite.color = completed_visual_color();
+    sprite.custom_size = Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT));
     (
-        Sprite {
-            color: completed_visual_color(),
-            custom_size: Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT)),
-            ..default()
-        },
+        sprite,
         Transform::from_translation(world_pos.extend(GAMEPLAY_SPRITE_Z)),
+        StructureVisual::completed(kind),
     )
 }
 

@@ -8,6 +8,7 @@ pub mod nanobot;
 pub mod resources;
 pub mod scenario;
 pub mod structure_overlay;
+pub mod structure_sprites;
 pub mod tactical_overlay;
 pub mod ui;
 pub mod zones;
@@ -26,6 +27,7 @@ use materials::BackgroundMaterial;
 use nanobot::{CollapsePlugin, NanobotPlugin, PlannedStructurePlugin, ProductionPlugin};
 use resources::ResourceLedger;
 use structure_overlay::StructureOverlayPlugin;
+use structure_sprites::StructureSprites;
 use tactical_overlay::TacticalOverlayPlugin;
 use ui::NanoswarmUiSetupPlugin;
 use zones::{ZoneMaterial, ZoneMaterialHandleComponent, ZonesPlugin};
@@ -192,6 +194,7 @@ fn setup_things_startup(
         });
 
     commands.insert_resource(GameSettings::from_file_ron("config/game_settings.ron")?);
+    commands.insert_resource(StructureSprites::load(&asset_server));
 
     scenario::spawn_default_player_scenario(&mut commands, &asset_server, &mut grid);
     scenario::spawn_default_opponent_scenario(
