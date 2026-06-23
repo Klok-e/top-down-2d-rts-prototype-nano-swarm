@@ -654,6 +654,18 @@ pub fn defender_rotation_to_charger_system(
         else {
             continue;
         };
+        // Issue #38 / ADR-0004: stop on the
+        // charger's physical edge so the defender
+        // lands at the charger centre, matching the
+        // arrive guard's `charger.radius` check.
+        // The lookup here is a defensive second pass
+        // after `find_nearest_working_charger` so
+        // the DMC carries the same extent the
+        // arrive guard reads.
+        let charger_radius = chargers
+            .get(charger_entity)
+            .map(|(_, c, _)| c.radius)
+            .unwrap_or(0.0);
         // Release the soft work slot for the held Defend cell
         // before inserting the rotation marker. Without this
         // release a fresh defender would see the cell as
@@ -666,7 +678,10 @@ pub fn defender_rotation_to_charger_system(
             ChargerAssignment {
                 charger: charger_entity,
             },
-            DirectMovementComponent { xy: charger_pos },
+            DirectMovementComponent {
+                xy: charger_pos,
+                stop_radius: charger_radius,
+            },
         ));
     }
 }

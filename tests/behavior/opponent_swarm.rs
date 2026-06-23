@@ -41,10 +41,6 @@ fn children_of(world: &World, parent: Entity) -> Vec<Entity> {
         .unwrap_or_default()
 }
 
-fn nanobot_type_of(world: &World, entity: Entity) -> Option<NanobotType> {
-    world.entity(entity).get::<NanobotType>().copied()
-}
-
 /// Bot position one cell away from `(cell_x, cell_y)` on the
 /// same row, so the distance penalty in the scoring function
 /// does not bury the prepainted cell's score.
@@ -90,11 +86,43 @@ fn opponent_swarm_can_be_initialized_with_prepainted_intent() {
     assert!(cell.has(IntentKind::Gather));
 
     let children = children_of(world, opponent);
-    let worker_children = children
-        .iter()
-        .filter(|c| nanobot_type_of(world, **c) == Some(NanobotType::Worker))
-        .count();
-    assert_eq!(worker_children, 2, "opponent must seed 2 Worker children");
+    // Issue #38 / ADR-0004: the seed nanobots are
+    // top-level entities, not children. The swarm is
+    // a spawn-origin / ownership marker; the seed
+    // bot's `SwarmMember(swarm_id)` is what the
+    // per-swarm intent filter matches. Count Workers
+    // owned by this swarm rather than children.
+    let swarm_id = world
+        .entity(opponent)
+        .get::<SwarmId>()
+        .copied()
+        .expect("opponent swarm must carry a SwarmId");
+    let mut worker_seeded = 0;
+    {
+        let world_mut = app.world_mut();
+        let mut query = world_mut.query::<(
+            &top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmMember,
+            &NanobotType,
+        )>();
+        for (member, nanobot_type) in query.iter(world_mut) {
+            if member.0 != swarm_id {
+                continue;
+            }
+            if *nanobot_type == NanobotType::Worker {
+                worker_seeded += 1;
+            }
+        }
+    }
+    assert_eq!(
+        worker_seeded, 2,
+        "opponent must seed 2 Workers owned by SwarmId {swarm_id:?}"
+    );
+    // `children` is now expected to be empty:
+    // nanobots are top-level, not children.
+    assert!(
+        children.is_empty(),
+        "issue #38 / ADR-0004: seed nanobots are top-level, not children"
+    );
 }
 
 #[test]
@@ -277,11 +305,33 @@ fn opponent_production_spawns_nanobots_as_children_of_opponent_swarm() {
         app.update();
     }
 
-    let world = app.world();
-    let child_count = children_of(world, opponent).len();
+    // Issue #38 / ADR-0004: production-spawned nanobots
+    // are top-level entities whose `SwarmMember` matches
+    // the opponent's `SwarmId`. The swarm no longer
+    // parents the produced bots. Count the new bot by
+    // matching `SwarmMember == opponent.SwarmId`.
+    let opponent_swarm_id = app
+        .world()
+        .entity(opponent)
+        .get::<SwarmId>()
+        .copied()
+        .expect("opponent swarm must carry a SwarmId");
+    let mut produced_bots = 0;
+    {
+        let world = app.world_mut();
+        let mut query = world.query::<(
+            Entity,
+            &top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmMember,
+        )>();
+        for (_entity, member) in query.iter(world) {
+            if member.0 == opponent_swarm_id {
+                produced_bots += 1;
+            }
+        }
+    }
     assert!(
-        child_count >= 1,
-        "opponent swarm must receive the production-spawned nanobot as a child"
+        produced_bots >= 1,
+        "opponent swarm must receive the production-spawned nanobot owned by SwarmId {opponent_swarm_id:?}"
     );
     // No non-opponent swarm exists in this test, so the
     // production chain did not invent a player swarm.

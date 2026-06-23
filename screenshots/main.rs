@@ -28,6 +28,7 @@ use libtest_mimic::{Arguments, Conclusion, Failed, Trial};
 
 mod harness;
 mod smoke;
+mod world_space_nanobots;
 
 use harness::{run_screenshot_test, TestContext, TestFlow};
 
@@ -52,7 +53,13 @@ fn main() -> std::process::ExitCode {
     // Each test is marked ignored so the default run skips it (no
     // display). `--ignored` runs only ignored tests, exactly matching
     // the standard `cargo test` convention.
-    let tests = vec![Trial::test("smoke", || run(smoke::smoke)).with_ignored_flag(true)];
+    let tests = vec![
+        Trial::test("smoke", || run(smoke::smoke)).with_ignored_flag(true),
+        Trial::test("world_space_nanobots", || {
+            run(world_space_nanobots::world_space_nanobots)
+        })
+        .with_ignored_flag(true),
+    ];
 
     let conclusion: Conclusion = libtest_mimic::run(&args, tests);
     conclusion.exit_code()

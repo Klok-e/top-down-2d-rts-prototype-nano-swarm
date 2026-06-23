@@ -39,8 +39,8 @@ use crate::ai::get_world_from_zone;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::{best_candidate, Commitment, NanobotType, SoftWorkSlots};
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, SwarmMember};
-use crate::nanobot::consts::STOP_THRESHOLD;
 use crate::nanobot::gather::world_to_cell;
+use crate::nanobot::placement::BUILDING_FOOTPRINT_RADIUS;
 use crate::resources::{ResourceKind, ResourceLedger, Stockpile};
 use crate::ZONE_BLOCK_SIZE;
 
@@ -302,7 +302,16 @@ pub fn worker_build_assignment_system(
                 cell: candidate.cell,
                 target,
             },
-            DirectMovementComponent { xy: target_pos },
+            DirectMovementComponent {
+                xy: target_pos,
+                // Stop on the building footprint's
+                // physical edge so the worker lands at
+                // the structure's centre, not at
+                // `centre + STOP_THRESHOLD`. Issue #38 /
+                // ADR-0004: same extent as the arrive
+                // guard in `worker_build_arrive_system`.
+                stop_radius: BUILDING_FOOTPRINT_RADIUS,
+            },
         ));
     }
 }
@@ -349,10 +358,15 @@ fn find_nearest_build_target(
 /// and start the work phase. The `Without<BuildProgress>` filter
 /// makes arrival idempotent: the same tick cannot fire twice.
 ///
-/// The arrival threshold matches the gather/haul pattern: the
-/// movement system removes `DirectMovementComponent` when the
-/// bot is within `STOP_THRESHOLD` of its target, and that
-/// removal is the trigger this system waits for.
+/// The arrival threshold matches the building footprint so the
+/// worker lands at the structure's centre, not at
+/// `centre + STOP_THRESHOLD`. The guard mirrors the
+/// `DirectMovementComponent::stop_radius` the assignment system
+/// passes; a bot nudged past the edge by separation force is
+/// re-routed by the resume branch below, and a bot whose
+/// `DirectMovementComponent` was stripped elsewhere (e.g. the
+/// `ProgressChecker` stuck-timeout) cannot produce a false
+/// arrival past the physical extent. Issue #38 / ADR-0004.
 #[allow(clippy::type_complexity)]
 pub fn worker_build_arrive_system(
     mut commands: Commands,
@@ -384,10 +398,26 @@ pub fn worker_build_arrive_system(
             .translation
             .truncate()
             .distance(target_transform.translation.truncate());
-        if distance <= STOP_THRESHOLD {
+        if distance <= BUILDING_FOOTPRINT_RADIUS {
+            // Arrived on the structure's footprint. Promote
+            // to working state.
             commands.entity(entity).insert(BuildProgress {
                 cell: assignment.cell,
                 target: assignment.target,
+            });
+        } else {
+            // Resume branch (issue #38 / ADR-0004):
+            // a worker nudged past the footprint by
+            // separation force still has a
+            // `BuildAssignment` but no
+            // `DirectMovementComponent` (the
+            // `Without<DirectMovementComponent>` filter
+            // guarantees that). Re-issue the command with
+            // the same extent the assignment path uses so
+            // a brief overshoot is self-correcting.
+            commands.entity(entity).insert(DirectMovementComponent {
+                xy: target_transform.translation.truncate(),
+                stop_radius: BUILDING_FOOTPRINT_RADIUS,
             });
         }
     }

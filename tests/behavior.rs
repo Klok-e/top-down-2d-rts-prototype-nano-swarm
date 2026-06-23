@@ -52,6 +52,8 @@ mod stockpile_and_haul;
 mod structure_overlay;
 #[path = "behavior/tactical_overlay.rs"]
 mod tactical_overlay;
+#[path = "behavior/world_space_nanobots.rs"]
+mod world_space_nanobots;
 #[path = "behavior/zone_brush_ui_capture.rs"]
 mod zone_brush_ui_capture;
 #[path = "behavior/zone_overlay_draw_order.rs"]

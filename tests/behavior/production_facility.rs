@@ -9,7 +9,7 @@
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
-        NanobotType, ProductionFacility, ProductionRatio, PRODUCTION_COST_PER_BOT,
+        NanobotType, ProductionFacility, ProductionRatio, SwarmId, PRODUCTION_COST_PER_BOT,
         PRODUCTION_TICKS_PER_BOT,
     },
     resources::Stockpile,
@@ -200,30 +200,41 @@ fn facility_produces_nanobot_after_full_cycle() {
         app.update();
     }
 
-    // A new Worker child of the swarm must exist.
-    let world = app.world_mut();
-    let children: Vec<Entity> = world
-        .get::<Children>(swarm)
-        .map(|c| c.iter().collect())
-        .unwrap_or_default();
-    let mut worker_children = 0;
-    for child in children {
-        if let Some(ty) = world.entity(child).get::<NanobotType>() {
-            if *ty == NanobotType::Worker {
-                worker_children += 1;
+    // A new Worker owned by the swarm must exist.
+    // Issue #38 / ADR-0004: production-spawned
+    // nanobots are top-level entities, not children
+    // of the swarm. Count Workers whose `SwarmMember`
+    // matches the swarm's `SwarmId`.
+    let swarm_id = app
+        .world()
+        .entity(swarm)
+        .get::<SwarmId>()
+        .copied()
+        .expect("swarm must carry a SwarmId");
+    let mut owned_workers = 0;
+    {
+        let world = app.world_mut();
+        let mut query = world.query::<(
+            &top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotType,
+            &top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmMember,
+        )>();
+        for (ty, member) in query.iter(world) {
+            if member.0 == swarm_id && *ty == NanobotType::Worker {
+                owned_workers += 1;
             }
         }
     }
     assert_eq!(
-        worker_children, 1,
+        owned_workers, 1,
         "facility must spawn exactly one Worker after a full cycle"
     );
     // The facility has either just finished the first cycle
     // and reset, or already started a second cycle. Both
     // states are valid post-conditions; the spawn count is
     // the load-bearing assertion.
-    let _facility = world
-        .query::<&ProductionFacility>()
+    let world = app.world_mut();
+    let mut facilities_query = world.query::<&ProductionFacility>();
+    let _facility = facilities_query
         .iter(world)
         .next()
         .expect("facility must still exist");
@@ -300,15 +311,26 @@ fn shared_early_ticks_across_types() {
         for _ in 0..total_ticks {
             app.update();
         }
-        let world = app.world();
-        let children: Vec<Entity> = world
-            .get::<Children>(swarm)
-            .map(|c| c.iter().collect())
-            .unwrap_or_default();
+        // Issue #38 / ADR-0004: production-spawned
+        // nanobots are top-level entities, not children
+        // of the swarm. Count top-level entities whose
+        // `SwarmMember` matches the swarm's `SwarmId`
+        // and whose type is `target`.
+        let swarm_id = app
+            .world()
+            .entity(swarm)
+            .get::<SwarmId>()
+            .copied()
+            .expect("swarm must carry a SwarmId");
         let mut count = 0;
-        for child in children {
-            if let Some(ty) = world.entity(child).get::<NanobotType>() {
-                if *ty == target {
+        {
+            let world = app.world_mut();
+            let mut query = world.query::<(
+                &top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotType,
+                &top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmMember,
+            )>();
+            for (ty, member) in query.iter(world) {
+                if member.0 == swarm_id && *ty == target {
                     count += 1;
                 }
             }

@@ -56,9 +56,27 @@ impl SwarmMember {
     }
 }
 
+/// In-flight movement command. The bot steers toward `xy` and the
+/// movement system removes the component when the bot is close
+/// enough. "Close enough" is `max(stop_radius, STOP_THRESHOLD)`
+/// when `stop_radius > 0.0`, or `STOP_THRESHOLD` when
+/// `stop_radius == 0.0` (the "extent-less" sentinel for
+/// destinations that have no physical footprint, such as
+/// corridor waypoints and a Defend cell's world center).
+///
+/// `stop_radius` carries the destination's extent: deposits
+/// pass `deposit.radius`, buildings pass
+/// `BUILDING_FOOTPRINT_RADIUS`, chargers pass `charger.radius`,
+/// and so on. The arrival-guard in each work system reads the
+/// same extent so the two checks stay in lock-step -- a bot
+/// cannot trigger arrival from a separation nudge that put it
+/// past the physical extent, and the `ProgressChecker`
+/// stuck-timeout cannot strip the component "anywhere" and
+/// leave a false arrival behind.
 #[derive(Debug, Component)]
 pub struct DirectMovementComponent {
     pub xy: Vec2,
+    pub stop_radius: f32,
 }
 
 #[derive(Debug, Component, Clone, Copy, Default)]

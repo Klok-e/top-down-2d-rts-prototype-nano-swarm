@@ -48,8 +48,8 @@ use crate::nanobot::components::SwarmMember;
 #[allow(unused_imports)]
 use crate::nanobot::build::{Structure, StructureKind};
 use crate::nanobot::components::{DirectMovementComponent, Nanobot};
-use crate::nanobot::consts::STOP_THRESHOLD;
 use crate::nanobot::gather::world_to_cell;
+use crate::nanobot::placement::BUILDING_FOOTPRINT_RADIUS;
 use crate::ZONE_BLOCK_SIZE;
 
 /// How many ticks a structure stays stable after a maintenance
@@ -239,7 +239,15 @@ pub fn worker_maintenance_assignment_system(
                 cell: candidate.cell,
                 target: target_entity,
             },
-            DirectMovementComponent { xy: target_pos },
+            // Issue #38 / ADR-0004: stop on the
+            // building footprint's physical edge
+            // so the worker lands at the
+            // structure's centre, matching the
+            // arrive guard.
+            DirectMovementComponent {
+                xy: target_pos,
+                stop_radius: BUILDING_FOOTPRINT_RADIUS,
+            },
         ));
     }
 }
@@ -271,7 +279,12 @@ fn find_nearest_needy_structure(
 /// filter makes arrival idempotent: the same tick cannot fire
 /// twice. The trigger is the same as the build chain: the
 /// movement system removes `DirectMovementComponent` when the
-/// bot is within `STOP_THRESHOLD` of its target.
+/// bot is close enough to its target. The arrival threshold
+/// matches the building footprint (issue #38 / ADR-0004) so
+/// the worker lands at the structure's centre, not at
+/// `centre + STOP_THRESHOLD`. The guard mirrors the
+/// `DirectMovementComponent::stop_radius` the assignment
+/// system passes.
 #[allow(clippy::type_complexity)]
 pub fn worker_maintenance_arrive_system(
     mut commands: Commands,
@@ -298,11 +311,25 @@ pub fn worker_maintenance_arrive_system(
             .translation
             .truncate()
             .distance(target_transform.translation.truncate());
-        if distance <= STOP_THRESHOLD {
+        if distance <= BUILDING_FOOTPRINT_RADIUS {
             commands.entity(entity).insert(MaintenanceProgress {
                 cell: assignment.cell,
                 target: assignment.target,
                 ticks_worked: 0,
+            });
+        } else {
+            // Resume branch (issue #38 / ADR-0004):
+            // the `Without<DirectMovementComponent>`
+            // filter guarantees the worker has no
+            // DMC, so re-issue one with the same
+            // extent the assignment path uses. A
+            // bot nudged past the footprint by
+            // separation force walks back instead
+            // of stalling without a movement
+            // command.
+            commands.entity(entity).insert(DirectMovementComponent {
+                xy: target_transform.translation.truncate(),
+                stop_radius: BUILDING_FOOTPRINT_RADIUS,
             });
         }
     }

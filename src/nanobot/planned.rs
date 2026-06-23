@@ -62,7 +62,6 @@ use bevy::prelude::*;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::NanobotType;
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm, SwarmId, SwarmMember};
-use crate::nanobot::consts::STOP_THRESHOLD;
 use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::placement::{find_build_zone_placement, BUILDING_FOOTPRINT_RADIUS};
 use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
@@ -490,7 +489,15 @@ pub fn worker_planned_structure_claim_system(
                 cell: planned.cell,
                 target: planned_entity,
             },
-            DirectMovementComponent { xy: planned_pos },
+            // Issue #38 / ADR-0004: stop on the building
+            // footprint's physical edge so the worker
+            // lands at the planned structure's centre,
+            // matching the arrive guard's radius-based
+            // check below.
+            DirectMovementComponent {
+                xy: planned_pos,
+                stop_radius: BUILDING_FOOTPRINT_RADIUS,
+            },
         ));
     }
 }
@@ -513,11 +520,17 @@ fn planned_owner_matches_worker(
 /// `Without<PlannedStructureProgress>` filter makes arrival
 /// idempotent: the same tick cannot fire twice.
 ///
-/// The arrival threshold matches the gather/haul/build
-/// pattern: the movement system removes
-/// `DirectMovementComponent` when the bot is within
-/// `STOP_THRESHOLD` of its target, and that removal is the
-/// trigger this system waits for.
+/// The arrival threshold matches the building footprint
+/// (issue #38 / ADR-0004): the same extent the
+/// `DirectMovementComponent::stop_radius` the claim system
+/// passes, and the same extent the build chain's arrive
+/// guard uses. The guard is not redundant: a bot whose
+/// `DirectMovementComponent` was stripped elsewhere (e.g.
+/// the `ProgressChecker` stuck-timeout in `move_system`)
+/// cannot produce a false arrival past the physical
+/// extent, and the resume branch below re-issues a DMC
+/// when a bot is between the building edge and a tight
+/// arrival threshold.
 #[allow(clippy::type_complexity)]
 pub fn worker_planned_structure_arrive_system(
     mut commands: Commands,
@@ -546,12 +559,27 @@ pub fn worker_planned_structure_arrive_system(
             .translation
             .truncate()
             .distance(planned_transform.translation.truncate());
-        if distance <= STOP_THRESHOLD {
+        if distance <= BUILDING_FOOTPRINT_RADIUS {
             commands
                 .entity(worker_entity)
                 .insert(PlannedStructureProgress {
                     cell: claim.cell,
                     target: claim.target,
+                });
+        } else {
+            // Resume branch (issue #38 / ADR-0004): the
+            // `Without<DirectMovementComponent>` filter
+            // guarantees the worker has no DMC, so
+            // re-issue one with the same extent the
+            // claim path uses. A bot nudged past the
+            // footprint by separation force walks
+            // back instead of stalling without a
+            // movement command.
+            commands
+                .entity(worker_entity)
+                .insert(DirectMovementComponent {
+                    xy: planned_transform.translation.truncate(),
+                    stop_radius: BUILDING_FOOTPRINT_RADIUS,
                 });
         }
     }

@@ -32,9 +32,24 @@ pub fn move_velocity_system(
         let translation = transform.translation;
         let direction = dest - translation;
 
+        // The single stop authority: when the destination
+        // carries an extent (`stop_radius > 0.0`), stop on
+        // contact with the destination's physical edge
+        // (clamped to the global `STOP_THRESHOLD` so very
+        // small extents still resolve cleanly). When the
+        // destination is extent-less (corridor waypoint,
+        // legacy `Move` action, Defend cell center) the
+        // `0.0` sentinel falls through to `STOP_THRESHOLD`,
+        // matching the pre-issue behaviour for those paths.
+        let stop_threshold = if bot_destination.stop_radius > 0.0 {
+            bot_destination.stop_radius.max(STOP_THRESHOLD)
+        } else {
+            STOP_THRESHOLD
+        };
+
         // Check if the distance is less than the threshold
         let distance = dest.distance(translation);
-        if distance > STOP_THRESHOLD {
+        if distance > stop_threshold {
             let new_velocity = direction.normalize() * speed.min(distance);
             velocity.value += new_velocity.truncate();
 

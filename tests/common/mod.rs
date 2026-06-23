@@ -364,11 +364,17 @@ pub fn spawn_swarm_at(app: &mut App, world_pos: Vec2) -> Entity {
 }
 
 /// Spawn a [`Swarm`] at `world_pos` with `counts` of each
-/// [`NanobotType`] as children. Each child is a fresh
+/// [`NanobotType`] as top-level children. Issue #38 / ADR-0004:
+/// nanobots are top-level entities whose `Transform.translation`
+/// is the world position the simulation reads, not a local
+/// position parented to the swarm. The swarm entity itself is
+/// kept as a spawn-origin / ownership marker; the bot systems
+/// read the per-bot `SwarmMember` for ownership and the per-bot
+/// `Transform` for world position. Each bot is a fresh
 /// [`NanobotBundle`] with `Commitment::Idle` and a `Transform` at
-/// the swarm's position, so it is immediately eligible for the
-/// autonomy scoring path. Use for production and collapse tests
-/// that need a known starting population.
+/// `world_pos`, so it is immediately eligible for the autonomy
+/// scoring path. Use for production and collapse tests that
+/// need a known starting population.
 pub fn spawn_swarm_with_nanobots(
     app: &mut App,
     world_pos: Vec2,
@@ -377,25 +383,22 @@ pub fn spawn_swarm_with_nanobots(
     let swarm = spawn_swarm_at(app, world_pos);
     {
         let world = app.world_mut();
-        let mut entity = world.entity_mut(swarm);
-        entity.with_children(|p| {
-            for (kind, n) in counts {
-                for _ in 0..*n {
-                    p.spawn((
-                        NanobotBundle {
-                            nanobot: Nanobot {},
-                            nanobot_type: *kind,
-                            velocity: VelocityComponent::default(),
-                            ai_state: Default::default(),
-                            health: Health::default(),
-                            swarm_member: SwarmMember::new(SwarmId::PLAYER),
-                        },
-                        Commitment::Idle,
-                        Transform::from_translation(world_pos.extend(0.0)),
-                    ));
-                }
+        for (kind, n) in counts {
+            for _ in 0..*n {
+                world.spawn((
+                    NanobotBundle {
+                        nanobot: Nanobot {},
+                        nanobot_type: *kind,
+                        velocity: VelocityComponent::default(),
+                        ai_state: Default::default(),
+                        health: Health::default(),
+                        swarm_member: SwarmMember::new(SwarmId::PLAYER),
+                    },
+                    Commitment::Idle,
+                    Transform::from_translation(world_pos.extend(0.0)),
+                ));
             }
-        });
+        }
     }
     swarm
 }

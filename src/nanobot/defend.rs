@@ -197,11 +197,24 @@ pub fn defender_assignment_system(
             (candidate.cell.y as f32 + 0.5) * ZONE_BLOCK_SIZE,
         );
         slots.occupy(candidate.cell, IntentKind::Defend);
+        // Issue #38 / ADR-0004: the Defend cell centre
+        // is an extent-less destination (the cell is
+        // a 1x1 zone, not a physical entity). The
+        // `0.0` sentinel falls through to
+        // `STOP_THRESHOLD` in the movement system,
+        // matching the pre-issue behaviour for the
+        // defend path. The Defend arrival extent
+        // question is a separate design decision
+        // (issue #37) and is explicitly out of scope
+        // for this fix.
         commands.entity(entity).insert((
             DefendAssignment {
                 cell: candidate.cell,
             },
-            DirectMovementComponent { xy: cell_world },
+            DirectMovementComponent {
+                xy: cell_world,
+                stop_radius: 0.0,
+            },
         ));
     }
 }
@@ -295,9 +308,13 @@ pub fn defender_hold_system(
         );
         let current = transform.translation.truncate();
         if current.distance(cell_center) > STOP_THRESHOLD {
-            commands
-                .entity(entity)
-                .insert(DirectMovementComponent { xy: cell_center });
+            // Issue #38 / ADR-0004: extent-less
+            // destination (the cell is a 1x1 zone,
+            // not a physical entity).
+            commands.entity(entity).insert(DirectMovementComponent {
+                xy: cell_center,
+                stop_radius: 0.0,
+            });
         }
     }
 }
