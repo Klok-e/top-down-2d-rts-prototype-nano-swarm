@@ -325,9 +325,14 @@ mod tests {
         let start_cell = grid.cell(PLAYER_CELL).unwrap();
         assert!(start_cell.has(IntentKind::Build));
         assert_eq!(start_cell.strength(IntentKind::Build), PAINT_STRENGTH_CAP);
-        assert!(start_cell.has(IntentKind::Defend));
-        assert_eq!(start_cell.strength(IntentKind::Defend), PAINT_STRENGTH_CAP);
         assert!(!start_cell.has(IntentKind::Corridor));
+
+        // Defend is prepainted on its own cell, distinct from
+        // the Build / start cell (see PLAYER_DEFEND_CELL).
+        let defend_cell = grid.cell(PLAYER_DEFEND_CELL).unwrap();
+        assert!(defend_cell.has(IntentKind::Defend));
+        assert_eq!(defend_cell.strength(IntentKind::Defend), PAINT_STRENGTH_CAP);
+        assert!(!defend_cell.has(IntentKind::Corridor));
     }
 
     #[test]
@@ -353,14 +358,20 @@ mod tests {
         );
 
         let start_cell = grid.cell(PLAYER_CELL).unwrap();
-        for kind in [IntentKind::Build, IntentKind::Defend] {
-            assert_eq!(start_cell.owner(kind), Some(SwarmId::PLAYER));
-            assert!(start_cell.visible_to(kind, SwarmId::PLAYER));
-            assert!(
-                !start_cell.visible_to(kind, SwarmId(1)),
-                "opponent workers must NOT see default player {kind:?} intent"
-            );
-        }
+        assert_eq!(start_cell.owner(IntentKind::Build), Some(SwarmId::PLAYER));
+        assert!(start_cell.visible_to(IntentKind::Build, SwarmId::PLAYER));
+        assert!(
+            !start_cell.visible_to(IntentKind::Build, SwarmId(1)),
+            "opponent workers must NOT see default player Build intent"
+        );
+
+        let defend_cell = grid.cell(PLAYER_DEFEND_CELL).unwrap();
+        assert_eq!(defend_cell.owner(IntentKind::Defend), Some(SwarmId::PLAYER));
+        assert!(defend_cell.visible_to(IntentKind::Defend, SwarmId::PLAYER));
+        assert!(
+            !defend_cell.visible_to(IntentKind::Defend, SwarmId(1)),
+            "opponent workers must NOT see default player Defend intent"
+        );
     }
 
     #[test]
@@ -378,9 +389,11 @@ mod tests {
         assert!(start_cell.has(IntentKind::Build));
         assert_eq!(start_cell.strength(IntentKind::Build), PAINT_STRENGTH_CAP);
         assert_eq!(start_cell.owner(IntentKind::Build), Some(opponent_id));
-        assert!(start_cell.has(IntentKind::Defend));
-        assert_eq!(start_cell.strength(IntentKind::Defend), PAINT_STRENGTH_CAP);
-        assert_eq!(start_cell.owner(IntentKind::Defend), Some(opponent_id));
+
+        let defend_cell = grid.cell(OPPONENT_DEFEND_CELL).unwrap();
+        assert!(defend_cell.has(IntentKind::Defend));
+        assert_eq!(defend_cell.strength(IntentKind::Defend), PAINT_STRENGTH_CAP);
+        assert_eq!(defend_cell.owner(IntentKind::Defend), Some(opponent_id));
     }
 
     #[test]
