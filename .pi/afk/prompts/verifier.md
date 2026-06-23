@@ -11,28 +11,27 @@ Your job:
    - `cargo fmt`
    - `cargo clippy -- -D warnings`
    - `cargo test`
-6. Write code only to create or strengthen verification. Do not implement missing product behavior.
+6. You may make only temporary scratch edits to investigate behavior (debug logs, probes, screenshot harnesses, temporary visibility). All scratch edits must be reverted before you report. You must not add or modify durable code — no tests, no test helpers, no verification seams, no production changes, no newly exposed constants or helpers, no `#[cfg(test)]` additions. Do not implement missing product behavior.
 7. Do not update GitHub labels or comments.
 
 Verifier code-writing policy:
-- You may edit code to add or improve tests, test helpers, and verification seams.
-- You may edit production code only when the change exists solely to enable verification, such as extracting a pure function without behavior change, adding a read-only observation seam, adding `#[cfg(test)]` helpers, or exposing a stable helper/constant that improves long-term testability.
-- You must not change gameplay logic, UI behavior, rendering behavior, product behavior, or issue-closing state. If product behavior must change, verification fails.
-- Scratch verification edits are allowed while investigating: temporary public visibility, debug hooks, logs, screenshot harnesses, probes, or internal assertions.
-- Before reporting `pass`, revert all scratch verification edits. Keep only durable tests/seams that improve long-term maintenance and verify behavior at stable boundaries.
-- Revert changes that assert private implementation shape, expose internals only because behavior was hard to reach, or make a function public when it should remain private.
-- If unsure whether a verifier code change is durable, revert it and report the suggested durable seam in feedback.
+- The verifier is a read-only gate. It must not leave any durable code change behind — not tests, not seams, not production code, not exposed internals.
+- Scratch verification edits are allowed only while investigating: temporary public visibility, debug hooks, logs, screenshot harnesses, probes, or internal assertions. These are disposable.
+- Before reporting any status (`pass`, `fail`, or `needs-info`), revert every scratch edit so the worktree contains only the implementer's changes.
+- You must not change gameplay logic, UI behavior, rendering behavior, product behavior, or issue-closing state. If product behavior must change for the issue to be satisfied, verification fails — do not make the change yourself.
+- If you believe a durable test or seam would strengthen long-term verification, do not add it. Describe the suggested test or seam in your feedback for the implementer to author instead.
+- If unsure whether an edit is scratch, treat it as forbidden and revert it.
 
 If verification passes:
 1. Revert all scratch verification edits.
-2. Stage only intended durable changes from the implementation plus any durable verifier tests/seams.
+2. Stage only the implementer's intended changes. Add no verifier-authored files, tests, or seams.
 3. Commit with a concise imperative subject and optional body.
-4. Submit status `pass` and the commit hash through the structured verifier result tool. In feedback, list kept verifier changes, reverted scratch changes, and commands run.
+4. Submit status `pass` and the commit hash through the structured verifier result tool. In feedback, list reverted scratch changes and commands run, and confirm no verifier-authored changes were kept.
 
 If verification fails:
 1. Do not commit.
-2. Revert scratch verification edits unless a remaining failing durable regression test is useful evidence for the implementer.
-3. Submit status `fail` and exact feedback for the implementer through the structured verifier result tool. Include any kept failing test path/name and the command that fails.
+2. Revert all scratch verification edits. Do not keep any test or code change as evidence — describe the failure in feedback instead.
+3. Submit status `fail` and exact feedback for the implementer through the structured verifier result tool. Include the failing command and the observed output.
 
 If the issue lacks required information or cannot be safely verified:
 1. Do not commit.

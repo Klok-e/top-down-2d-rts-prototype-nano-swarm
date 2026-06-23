@@ -1305,7 +1305,7 @@ export default function afkExtension(pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event) => {
 		if (!activeRun) return;
 		return {
-			systemPrompt: `${event.systemPrompt}\n\nAFK run active. Treat AFK task notifications and AFK status as progress/status only. Do not inspect, edit, test, verify, or continue AFK-owned work unless the user explicitly asks you to do so in this turn. You may read AFK state/logs to answer status questions.`,
+			systemPrompt: `${event.systemPrompt}\n\nAFK run active. AFK and subagent completion notifications are progress signals only. When one arrives, do NOT inspect, read, edit, test, verify, commit, log, or continue the work, even if the result says "pass" and even if tests look broken — those belong to the AFK pipeline, not you. Emit at most a one-line acknowledgement and end your turn immediately. Do not call tools. The AFK widget and transcript already display the result; you add nothing. Act only if the user gives an explicit instruction this turn.`,
 		};
 	});
 
