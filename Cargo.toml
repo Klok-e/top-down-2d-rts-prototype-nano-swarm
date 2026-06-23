@@ -31,3 +31,16 @@ debug = true
 
 [profile.bench]
 lto = "thin"
+
+# Window-creating (screenshot) tests run on the main thread via a
+# custom `main()` driven by libtest-mimic, so they cannot use cargo's
+# default harness. They are marked ignored and skipped by default;
+# run them with: cargo test --test screenshots -- --ignored
+# (filter: cargo test --test screenshots -- --ignored smoke)
+[[test]]
+name = "screenshots"
+path = "screenshots/main.rs"
+harness = false
+
+[dev-dependencies]
+libtest-mimic = "0.8.2"
