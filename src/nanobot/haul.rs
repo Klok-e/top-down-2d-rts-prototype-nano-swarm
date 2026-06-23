@@ -133,7 +133,17 @@ pub fn hauler_corridor_waypoint_system(
                 waypoint,
                 target: dmc.xy,
             },
-            DirectMovementComponent { xy: waypoint },
+            // Corridor waypoints are extent-less
+            // destinations (issue #38 / ADR-0004): the
+            // waypoint sits at a cell center, not on a
+            // physical entity. The `0.0` sentinel falls
+            // through to `STOP_THRESHOLD` in the movement
+            // system, matching the pre-issue behaviour
+            // for the corridor path.
+            DirectMovementComponent {
+                xy: waypoint,
+                stop_radius: 0.0,
+            },
         ));
     }
 
@@ -148,8 +158,19 @@ pub fn hauler_corridor_waypoint_system(
             // it until arrival, so there is nothing to do here.
         } else if to_target > STOP_THRESHOLD {
             // At the waypoint, head to the original target.
+            // The second leg's extent depends on whether
+            // the hauler is going to the source or the
+            // sink, so the assignment chain re-issues
+            // the DMC with the right radius through the
+            // carry-assign / hauler arrive systems. We
+            // pass `0.0` (extent-less) here only as a
+            // "keep moving" signal so the hauler reaches
+            // the waypoint's neighbourhood; the
+            // source/sink transition then sets the real
+            // extent.
             commands.entity(entity).insert(DirectMovementComponent {
                 xy: waypoint.target,
+                stop_radius: 0.0,
             });
         } else {
             // At the target. The arrival hauler systems (arrive
@@ -406,10 +427,46 @@ pub fn hauler_assignment_system(
             continue;
         };
 
+        // Source-side stop radius: the source's own
+        // physical extent (deposit.radius or
+        // stockpile.radius). Chargers are never a
+        // source; the matcher above already filters
+        // them out. Issue #38 / ADR-0004: same extent
+        // as the hauler-arrive-source guard so the
+        // movement system and the arrive system stop
+        // on the same edge.
+        let source_radius = source_radius_of(source, &deposits, &stockpiles, &chargers);
+
         commands.entity(entity).insert((
             HaulerAssignment { source, sink },
-            DirectMovementComponent { xy: source_pos },
+            DirectMovementComponent {
+                xy: source_pos,
+                stop_radius: source_radius,
+            },
         ));
+    }
+}
+
+/// Look up the physical extent of `entity` as a hauler source.
+/// Returns `0.0` (extent-less) when the entity is not a deposit,
+/// stockpile, or charger. Chargers are not valid sources, so the
+/// `0.0` fallback only fires for unknown kinds; the hauler
+/// assignment filter above already excludes chargers from the
+/// candidate set, so this is defensive coverage.
+fn source_radius_of(
+    entity: Entity,
+    deposits: &Query<(Entity, &ResourceDeposit, &Transform)>,
+    stockpiles: &Query<(Entity, &Stockpile, &Transform, Option<&OwnerSwarm>)>,
+    chargers: &Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
+) -> f32 {
+    if let Ok((_, d, _)) = deposits.get(entity) {
+        d.radius
+    } else if let Ok((_, s, _, _)) = stockpiles.get(entity) {
+        s.radius
+    } else if let Ok((_, c, _, _)) = chargers.get(entity) {
+        c.radius
+    } else {
+        0.0
     }
 }
 
@@ -555,14 +612,14 @@ pub fn hauler_carry_assign_system(
             Without<DirectMovementComponent>,
         ),
     >,
-    stockpiles: Query<&Transform, With<Stockpile>>,
-    chargers: Query<&Transform, With<Charger>>,
+    stockpiles: Query<(&Stockpile, &Transform)>,
+    chargers: Query<(&Charger, &Transform)>,
 ) {
     for (entity, transform, _load, assignment) in &haulers {
-        let sink_transform = if let Ok(t) = stockpiles.get(assignment.sink) {
-            t
-        } else if let Ok(t) = chargers.get(assignment.sink) {
-            t
+        let sink_pos = if let Ok((_, t)) = stockpiles.get(assignment.sink) {
+            t.translation.truncate()
+        } else if let Ok((_, t)) = chargers.get(assignment.sink) {
+            t.translation.truncate()
         } else {
             // Sink entity disappeared between assignment and
             // the carry phase. Drop the assignment so a later
@@ -572,22 +629,63 @@ pub fn hauler_carry_assign_system(
             commands.entity(entity).remove::<HaulerAssignment>();
             continue;
         };
+        // Issue #38 / ADR-0004: look up the sink's
+        // physical extent so the DMC carries the
+        // same value the delivery system's
+        // radius-based guard reads. Default `0.0`
+        // (extent-less) covers the "sink entity
+        // disappeared" branch above, which
+        // already continues.
+        let sink_radius = sink_radius_of(assignment.sink, &stockpiles, &chargers);
         // If the hauler is already at the sink, the delivery
         // system must fire before we re-target. Inserting a
         // fresh DirectMovementComponent here would clear the
         // arrival signal and starve the delivery system, leaving
         // the hauler stuck in an infinite carry/loop cycle.
-        if transform
-            .translation
-            .truncate()
-            .distance(sink_transform.translation.truncate())
-            <= STOP_THRESHOLD
-        {
+        //
+        // Issue #38 / ADR-0004: the proximity check now
+        // matches the DMC's `stop_radius` (the sink's own
+        // radius). Using `STOP_THRESHOLD` here would race
+        // with the movement system: the movement system
+        // stops at `max(stop_radius, STOP_THRESHOLD)`, then
+        // the carry-assign re-inserts a DMC because the
+        // hauler is between `STOP_THRESHOLD` and
+        // `stop_radius`, then delivery's
+        // `Without<DirectMovementComponent>` filter rejects
+        // the arrival. Using the same radius the movement
+        // system uses breaks the loop.
+        if transform.translation.truncate().distance(sink_pos) <= sink_radius {
             continue;
         }
+        // Issue #38 / ADR-0004: the sink-leg DMC carries
+        // the sink's physical extent so the movement
+        // system stops on the sink's edge, matching the
+        // delivery system's radius-based guard. Chargers
+        // and stockpiles both have a `radius` field, so
+        // the matcher above already gives us the right
+        // value.
         commands.entity(entity).insert(DirectMovementComponent {
-            xy: sink_transform.translation.truncate(),
+            xy: sink_pos,
+            stop_radius: sink_radius,
         });
+    }
+}
+
+/// Look up the physical extent of a sink entity (stockpile or
+/// charger). Returns `0.0` for unknown kinds; the carry-assign
+/// system filters out non-stockpile / non-charger assignments
+/// above, so this is defensive coverage.
+fn sink_radius_of(
+    entity: Entity,
+    stockpiles: &Query<(&Stockpile, &Transform)>,
+    chargers: &Query<(&Charger, &Transform)>,
+) -> f32 {
+    if let Ok((s, _)) = stockpiles.get(entity) {
+        s.radius
+    } else if let Ok((c, _)) = chargers.get(entity) {
+        c.radius
+    } else {
+        0.0
     }
 }
 

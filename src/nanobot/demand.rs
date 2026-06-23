@@ -560,10 +560,21 @@ pub fn central_demand_allocation_system(
         match claim.category {
             DemandCategory::Gather => {
                 slots.occupy(claim.cell, IntentKind::Gather);
+                // Issue #38 / ADR-0004: the DMC carries
+                // the deposit's physical extent so the
+                // movement system stops on contact
+                // instead of `STOP_THRESHOLD` past the
+                // centre, matching the gather arrive
+                // guard.
+                let stop_radius = deposits
+                    .get(claim.target)
+                    .map(|(_, d, _)| d.radius)
+                    .unwrap_or(0.0);
                 commands.entity(claim.worker).insert((
                     GatherAssignment::new(claim.cell, claim.target),
                     DirectMovementComponent {
                         xy: claim.world_position,
+                        stop_radius,
                     },
                 ));
             }
@@ -571,6 +582,12 @@ pub fn central_demand_allocation_system(
                 if let Ok((_, mut planned_state, _, _)) = planned_q.get_mut(claim.target) {
                     planned_state.active_worker = Some(claim.worker);
                 }
+                // Planned structure footprint is the
+                // shared building half-footprint
+                // (issue #34 "shared footprint"
+                // contract). Issue #38 / ADR-0004: same
+                // extent as the planned-structure arrive
+                // guard.
                 commands.entity(claim.worker).insert((
                     PlannedStructureClaim {
                         cell: claim.cell,
@@ -578,6 +595,7 @@ pub fn central_demand_allocation_system(
                     },
                     DirectMovementComponent {
                         xy: claim.world_position,
+                        stop_radius: crate::nanobot::BUILDING_FOOTPRINT_RADIUS,
                     },
                 ));
             }

@@ -113,20 +113,28 @@ pub fn spawn_default_player_scenario(
             global_transform: GlobalTransform::default(),
             visibility: Visibility::default(),
         })
-        .with_children(|p| {
-            spawn_seed_nanobots(
-                p,
-                Vec2::ZERO,
-                &sprites,
-                false,
-                SwarmId::PLAYER,
-                &[
-                    (NanobotType::Worker, PLAYER_START_WORKERS),
-                    (NanobotType::Hauler, PLAYER_START_HAULERS),
-                ],
-            );
-        })
         .id();
+
+    // Nanobots are top-level entities (issue #38 /
+    // ADR-0004). The swarm's `Transform` is purely an
+    // ownership / spawn-origin marker; nothing moves it
+    // after spawn, and the bot systems read world
+    // `Transform.translation` directly. Parented bots
+    // would land at `local_destination + swarm_pos` --
+    // the cell center + (256, 256) offset that drove
+    // the original "top-right corner / bottom-left
+    // structure" bug.
+    spawn_seed_nanobots(
+        commands,
+        player_pos,
+        &sprites,
+        false,
+        SwarmId::PLAYER,
+        &[
+            (NanobotType::Worker, PLAYER_START_WORKERS),
+            (NanobotType::Hauler, PLAYER_START_HAULERS),
+        ],
+    );
 
     spawn_deposit(commands, swarm, deposit_pos, &deposit_texture);
     spawn_production_facility(commands, swarm, player_pos, &facility_texture);
@@ -163,29 +171,40 @@ pub fn spawn_default_opponent_scenario(
             GlobalTransform::default(),
             Visibility::default(),
         ))
-        .with_children(|p| {
-            spawn_seed_nanobots(
-                p,
-                Vec2::ZERO,
-                &sprites,
-                true,
-                opponent_swarm_id,
-                &[
-                    (NanobotType::Worker, OPPONENT_START_WORKERS),
-                    (NanobotType::Hauler, OPPONENT_START_HAULERS),
-                    (NanobotType::Defender, OPPONENT_START_DEFENDERS),
-                ],
-            );
-        })
         .id();
+
+    // Opponent seed nanobots are top-level (issue #38 /
+    // ADR-0004); see the player seed comment for the
+    // rationale. The same half-cell offset broke the
+    // opponent economy in `cargo run` while the test
+    // helper, which spawns top-level, hid the bug.
+    spawn_seed_nanobots(
+        commands,
+        opponent_pos,
+        &sprites,
+        true,
+        opponent_swarm_id,
+        &[
+            (NanobotType::Worker, OPPONENT_START_WORKERS),
+            (NanobotType::Hauler, OPPONENT_START_HAULERS),
+            (NanobotType::Defender, OPPONENT_START_DEFENDERS),
+        ],
+    );
 
     spawn_deposit(commands, opponent, deposit_pos, &deposit_texture);
     spawn_production_facility(commands, opponent, opponent_pos, &facility_texture);
 }
 
+/// Spawn the seed nanobots described by `seeds` as top-level
+/// entities at `world_pos`. Each bot carries a `Transform` whose
+/// `translation` is the world position the rest of the simulation
+/// reads (issue #38 / ADR-0004). The owning swarm is recorded on
+/// each bot via `SwarmMember(swarm_id)`; the swarm's own
+/// `Transform` is kept as a spawn-origin / ownership marker and is
+/// not moved after this call.
 fn spawn_seed_nanobots(
-    parent: &mut ChildSpawnerCommands<'_>,
-    local_pos: Vec2,
+    commands: &mut Commands<'_, '_>,
+    world_pos: Vec2,
     sprites: &NanobotSprites,
     is_opponent: bool,
     swarm_id: SwarmId,
@@ -193,7 +212,7 @@ fn spawn_seed_nanobots(
 ) {
     for (kind, count) in seeds {
         for _ in 0..*count {
-            parent.spawn((
+            commands.spawn((
                 NanobotBundle {
                     nanobot: Nanobot {},
                     nanobot_type: *kind,
@@ -204,7 +223,7 @@ fn spawn_seed_nanobots(
                 },
                 Commitment::Idle,
                 Sprite::from_image(sprites.handle(*kind, is_opponent)),
-                Transform::from_translation(local_pos.extend(GAMEPLAY_SPRITE_Z)),
+                Transform::from_translation(world_pos.extend(GAMEPLAY_SPRITE_Z)),
             ));
         }
     }

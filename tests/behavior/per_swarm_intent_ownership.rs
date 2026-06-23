@@ -368,33 +368,37 @@ fn opponent_production_spawns_opponent_swarm_id_nanobots() {
         .get::<SwarmId>()
         .copied()
         .expect("opponent must carry a SwarmId");
-    // Snapshot the existing children so we can detect the
-    // new spawn after the cycle.
-    let initial_children: Vec<Entity> = app
-        .world()
-        .get::<bevy::prelude::Children>(opponent)
-        .map(|c| c.iter().collect())
-        .unwrap_or_default();
-
+    // Issue #38 / ADR-0004: production-spawned
+    // nanobots are top-level entities whose
+    // `SwarmMember` matches the opponent's `SwarmId`.
+    // The swarm no longer parents the produced bots.
+    // Count the new bot by matching `SwarmMember ==
+    // opponent.SwarmId`; the count increases from 0
+    // (no seed bots) to 1 (one production cycle) over
+    // the test.
     for _ in 0..(1 + PRODUCTION_TICKS_PER_BOT as usize) {
         app.update();
     }
 
+    let mut owned_bots: Vec<Entity> = Vec::new();
+    {
+        let world = app.world_mut();
+        let mut query = world.query::<(
+            Entity,
+            &top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmMember,
+        )>();
+        for (entity, member) in query.iter(world) {
+            if member.0 == opponent_id {
+                owned_bots.push(entity);
+            }
+        }
+    }
     let world = app.world();
-    let final_children: Vec<Entity> = world
-        .get::<bevy::prelude::Children>(opponent)
-        .map(|c| c.iter().collect())
-        .unwrap_or_default();
-    let new_children: Vec<Entity> = final_children
-        .iter()
-        .copied()
-        .filter(|e| !initial_children.contains(e))
-        .collect();
     assert!(
-        !new_children.is_empty(),
+        !owned_bots.is_empty(),
         "opponent facility must spawn at least one new nanobot over the cycle"
     );
-    for new_child in &new_children {
+    for new_child in &owned_bots {
         let member = world
             .entity(*new_child)
             .get::<SwarmMember>()

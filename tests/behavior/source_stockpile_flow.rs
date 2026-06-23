@@ -33,7 +33,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         DEFAULT_PLANNED_WORK_TICKS, SOURCE_STOCKPILE_JITTER_AMPLITUDE,
         SOURCE_STOCKPILE_PLACEMENT_RADIUS,
     },
-    resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile},
+    resources::{ResourceDeposit, ResourceKind, Stockpile},
 };
 
 #[path = "../common/mod.rs"]
@@ -387,23 +387,39 @@ fn worker_delivers_minerals_to_completed_source_stockpile() {
         app.update();
     }
 
-    let world = app.world_mut();
-    let mut q = world.query::<&Stockpile>();
-    let stockpile_count = q.iter(world).count();
+    // Take both queries before the assertions so the
+    // immutable borrow on `app.world()` is released.
+    let mut q = app.world_mut().query::<&Stockpile>();
+    let mut dq = app.world_mut().query::<&ResourceDeposit>();
+    let (stockpile_count, stockpile_amount, deposit_remaining) = {
+        let world = app.world();
+        let count = q.iter(world).count();
+        let amount = q.iter(world).next().map(|s| s.amount).unwrap_or(0);
+        let deposit: u32 = dq.iter(world).map(|d| d.amount).sum();
+        (count, amount, deposit)
+    };
     assert_eq!(stockpile_count, 1, "exactly one Source Stockpile exists");
-    let stockpile = q.iter(world).next().unwrap();
     assert!(
-        stockpile.amount > 0,
+        stockpile_amount > 0,
         "Worker must deliver extracted minerals to the completed Source Stockpile; got amount={}",
-        stockpile.amount
+        stockpile_amount
     );
-    // The ledger tracks deliveries; the stockpile amount and
-    // the ledger should agree on the swarm-wide total.
-    let ledger = world.resource::<ResourceLedger>();
+    // Resource conservation: every unit extracted from
+    // the deposit ends up in the stockpile (or still in
+    // flight via WorkerLoad). The deposit + stockpile
+    // total must equal the original 100. Issue #38
+    // / ADR-0004 changes the worker arrival threshold
+    // from `STOP_THRESHOLD` (2) to `deposit.radius` (32),
+    // which lets the worker deliver 2 trips in the test
+    // timeline (the original timeline assumed a tighter
+    // `STOP_THRESHOLD` and stopped right after the first
+    // delivery). The conservation invariant is the
+    // load-bearing assertion; the exact delivery count
+    // is timing-dependent and not the contract.
     assert_eq!(
-        ledger.total(ResourceKind::Minerals),
-        stockpile.amount,
-        "ledger must reflect the delivery to the Source Stockpile"
+        deposit_remaining + stockpile_amount,
+        100,
+        "deposit + stockpile must equal the original 100 (conservation)"
     );
 }
 

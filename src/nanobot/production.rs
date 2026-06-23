@@ -358,32 +358,43 @@ pub fn production_progress_percent(facility: &ProductionFacility) -> u32 {
 /// The first implementation counts every nanobot with a
 /// `NanobotType` component globally; later issues can scope this
 /// to a specific swarm once multi-swarm production lands.
+///
+/// Issue #38 / ADR-0004: the query matches
+/// `(&NanobotType, &SwarmMember)` so the count math is
+/// consistent with the per-swarm variant; this function
+/// counts all nanobots regardless of swarm, which is the
+/// pre-multi-swarm fallback for unowned facilities.
 pub fn count_nanobots_by_type(
-    nanobots: &Query<&NanobotType, With<Nanobot>>,
+    nanobots: &Query<(&NanobotType, &crate::nanobot::components::SwarmMember), With<Nanobot>>,
 ) -> HashMap<NanobotType, u32> {
     let mut counts = HashMap::new();
-    for ty in nanobots.iter() {
+    for (ty, _) in nanobots.iter() {
         *counts.entry(*ty).or_insert(0) += 1;
     }
     counts
 }
 
-/// Count nanobots that are children of `swarm_entity`, keyed by
+/// Count nanobots that belong to `swarm_id`'s swarm, keyed by
 /// type. Used by the per-swarm production systems to measure
 /// only the population that the swarm owns, so an opponent
 /// swarm's deficit is not muddied by the player swarm's
 /// nanobots.
+///
+/// Issue #38 / ADR-0004: nanobots are top-level entities,
+/// not children of the swarm. The function looks up every
+/// `Nanobot` whose `SwarmMember` matches the supplied
+/// `SwarmId`. The previous `Entity` + `Children` based
+/// signature is replaced with a `SwarmId` based signature
+/// so the function does not need to re-query the swarm's
+/// own components on every call. Callers already have the
+/// `SwarmId` from the swarm-iteration query.
 pub fn count_swarm_nanobots_by_type(
-    swarm_entity: Entity,
-    children_query: &Query<&Children>,
-    nanobots: &Query<&NanobotType, With<Nanobot>>,
+    swarm_id: SwarmId,
+    nanobots: &Query<(&NanobotType, &crate::nanobot::components::SwarmMember), With<Nanobot>>,
 ) -> HashMap<NanobotType, u32> {
     let mut counts = HashMap::new();
-    let Ok(children) = children_query.get(swarm_entity) else {
-        return counts;
-    };
-    for child in children.iter() {
-        if let Ok(ty) = nanobots.get(child) {
+    for (ty, member) in nanobots.iter() {
+        if member.0 == swarm_id {
             *counts.entry(*ty).or_insert(0) += 1;
         }
     }
@@ -432,8 +443,7 @@ pub fn production_facility_auto_creation_system(
     grid: Res<IntentGrid>,
     structure_sprites: Res<StructureSprites>,
     global_ratio: Res<ProductionRatio>,
-    nanobots: Query<&NanobotType, With<Nanobot>>,
-    children_query: Query<&Children>,
+    nanobots: Query<(&NanobotType, &crate::nanobot::components::SwarmMember), With<Nanobot>>,
     facilities: Query<(Entity, &ProductionFacility, Option<&OwnerSwarm>)>,
     existing_targets: Query<
         &Transform,
@@ -493,7 +503,7 @@ pub fn production_facility_auto_creation_system(
             .get(swarm_entity)
             .map(|sp| &sp.ratio)
             .unwrap_or(&*global_ratio);
-        let counts = count_swarm_nanobots_by_type(swarm_entity, &children_query, &nanobots);
+        let counts = count_swarm_nanobots_by_type(*swarm_id, &nanobots);
         if total_deficit(ratio, &counts) < FACILITY_EMERGE_DEFICIT_THRESHOLD {
             continue;
         }
@@ -560,12 +570,16 @@ pub fn production_facility_auto_creation_system(
 /// global [`ProductionRatio`] resource. Counts are scoped to
 /// the owner's children so opponent and player populations
 /// cannot leak into each other's deficit math.
+///
+/// Issue #38 / ADR-0004: counts now match the per-swarm
+/// `SwarmId` rather than walking the swarm's `Children`,
+/// because nanobots are top-level entities.
 #[allow(clippy::type_complexity)]
 pub fn production_facility_pick_target_system(
     global_ratio: Res<ProductionRatio>,
-    nanobots: Query<&NanobotType, With<Nanobot>>,
-    children_query: Query<&Children>,
+    nanobots: Query<(&NanobotType, &crate::nanobot::components::SwarmMember), With<Nanobot>>,
     swarm_productions: Query<&SwarmProduction>,
+    swarms: Query<&SwarmId, With<Swarm>>,
     mut facilities: Query<(&Transform, &mut ProductionFacility, Option<&OwnerSwarm>)>,
     mut stockpiles: Query<(Entity, &mut Stockpile, &Transform)>,
     mut ledger: ResMut<ResourceLedger>,
@@ -579,13 +593,19 @@ pub fn production_facility_pick_target_system(
         // counts. Unowned facility: global ratio and global
         // population. The unowned branch is the fallback that
         // keeps the pre-multi-swarm tests green.
+        //
+        // Issue #38 / ADR-0004: the per-swarm count uses
+        // the owner's `SwarmId` rather than walking
+        // children, because nanobots are top-level
+        // entities.
         let (ratio, counts): (&ProductionRatio, HashMap<NanobotType, u32>) = match owner {
             Some(OwnerSwarm(swarm)) => {
                 let ratio = swarm_productions
                     .get(*swarm)
                     .map(|sp| &sp.ratio)
                     .unwrap_or(&*global_ratio);
-                let counts = count_swarm_nanobots_by_type(*swarm, &children_query, &nanobots);
+                let swarm_id = swarms.get(*swarm).copied().unwrap_or(SwarmId::PLAYER);
+                let counts = count_swarm_nanobots_by_type(swarm_id, &nanobots);
                 (ratio, counts)
             }
             None => (&*global_ratio, count_nanobots_by_type(&nanobots)),
@@ -627,7 +647,7 @@ pub fn production_facility_pick_target_system(
 pub fn production_facility_work_system(
     mut commands: Commands,
     mut facilities: Query<(&mut ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
-    swarms: Query<(Entity, &Transform, Option<&SwarmId>), With<Swarm>>,
+    swarms: Query<(Entity, Option<&SwarmId>), With<Swarm>>,
     opponent_swarms: Query<(), With<OpponentSwarm>>,
     sprites: Option<Res<NanobotSprites>>,
 ) {
@@ -645,16 +665,27 @@ pub fn production_facility_work_system(
         // world for unowned facilities. If no swarm exists
         // the spawn is dropped (tests with no swarm drive
         // the systems directly).
+        //
+        // Issue #38 / ADR-0004: produced nanobots are
+        // top-level entities with world `Transform`s, not
+        // children of the swarm. The previous
+        // `local_pos = pos - swarm_pos` math ended up with
+        // the bot at the right world position only when
+        // nothing ever re-read the swarm's `Transform`;
+        // every other system reads `transform.translation`
+        // as a world coordinate, so parented bots walked to
+        // `local_destination + swarm_pos` -- the cell
+        // center + half-cell offset that drove the
+        // "top-right corner / bottom-left structure" bug.
+        // The swarm's own `Transform` is preserved here
+        // only as a spawn-origin / ownership marker; the
+        // bot ends up at `pos` (the facility's world
+        // position) directly.
         let parent = owner
             .map(|OwnerSwarm(e)| Some(*e))
-            .unwrap_or_else(|| swarms.iter().next().map(|(entity, _, _)| entity));
+            .unwrap_or_else(|| swarms.iter().next().map(|(entity, _)| entity));
         if let Some(swarm_entity) = parent {
             let pos = transform.translation.truncate();
-            let swarm_pos = swarms
-                .get(swarm_entity)
-                .map(|(_, swarm_transform, _)| swarm_transform.translation.truncate())
-                .unwrap_or(Vec2::ZERO);
-            let local_pos = pos - swarm_pos;
             let is_opponent = opponent_swarms.get(swarm_entity).is_ok();
             // Look up the parent swarm's `SwarmId` so the new
             // child carries the right ownership marker.
@@ -665,25 +696,23 @@ pub fn production_facility_work_system(
             // unowned-paint tests still pass.
             let swarm_id = swarms
                 .get(swarm_entity)
-                .map(|(_, _, id)| id.copied().unwrap_or(SwarmId::PLAYER))
+                .map(|(_, id)| id.copied().unwrap_or(SwarmId::PLAYER))
                 .unwrap_or(SwarmId::PLAYER);
-            commands.entity(swarm_entity).with_children(|p| {
-                let mut entity = p.spawn((
-                    NanobotBundle {
-                        nanobot: Nanobot {},
-                        nanobot_type: target,
-                        velocity: VelocityComponent::default(),
-                        ai_state: AiStateComponent::new(),
-                        health: Health::default(),
-                        swarm_member: SwarmMember::new(swarm_id),
-                    },
-                    Commitment::Idle,
-                    Transform::from_translation(local_pos.extend(0.0)),
-                ));
-                if let Some(sprites) = sprites.as_deref() {
-                    entity.insert(Sprite::from_image(sprites.handle(target, is_opponent)));
-                }
-            });
+            let mut entity = commands.spawn((
+                NanobotBundle {
+                    nanobot: Nanobot {},
+                    nanobot_type: target,
+                    velocity: VelocityComponent::default(),
+                    ai_state: AiStateComponent::new(),
+                    health: Health::default(),
+                    swarm_member: SwarmMember::new(swarm_id),
+                },
+                Commitment::Idle,
+                Transform::from_translation(pos.extend(0.0)),
+            ));
+            if let Some(sprites) = sprites.as_deref() {
+                entity.insert(Sprite::from_image(sprites.handle(target, is_opponent)));
+            }
         }
         // Reset for the next cycle. Clearing the blocked set
         // is the "blocked types are skipped temporarily"

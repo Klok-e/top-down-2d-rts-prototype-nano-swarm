@@ -190,7 +190,13 @@ fn already_active_category_is_not_re_activated() {
     let first_worker = common::spawn_worker_at(&mut app, center);
     app.world_mut().entity_mut(first_worker).insert((
         GatherAssignment::new(cell, deposit),
-        top_down_2d_rts_prototype_nano_swarm::nanobot::DirectMovementComponent { xy: center },
+        top_down_2d_rts_prototype_nano_swarm::nanobot::DirectMovementComponent {
+            xy: center,
+            // Extent-less destination for the
+            // pre-claim path the test fixtures
+            // build by hand.
+            stop_radius: 0.0,
+        },
     ));
     let second_worker = common::spawn_worker_at(&mut app, center);
 

@@ -108,28 +108,34 @@ pub fn spawn_opponent_swarm(
         }
     }
 
-    // Seed nanobots parented to the swarm. The opponent's
-    // production systems will top them up as needed. Each seed
-    // is tagged with the opponent's `SwarmId` so the per-swarm
-    // intent filter matches the prepainted cells above.
-    world.entity_mut(swarm).with_children(|p| {
-        for seed in seeds {
-            for _ in 0..seed.count {
-                p.spawn((
-                    NanobotBundle {
-                        nanobot: Nanobot {},
-                        nanobot_type: seed.kind,
-                        velocity: VelocityComponent::default(),
-                        ai_state: AiStateComponent::new(),
-                        health: Health::default(),
-                        swarm_member: SwarmMember::new(swarm_id),
-                    },
-                    Commitment::Idle,
-                    Transform::from_translation(world_pos.extend(0.0)),
-                ));
-            }
+    // Seed nanobots are top-level entities (issue #38 /
+    // ADR-0004) so their `Transform.translation` is the
+    // world position the simulation reads. Parented bots
+    // would navigate to the world destination + the
+    // swarm's `Transform`, which for the default opponent
+    // spawn at `(6400, 256)` is a half-cell offset that
+    // drove the same "top-right corner" gather bug the
+    // player swarm exhibited. The opponent's
+    // `SwarmId` is stamped on every seed via
+    // `SwarmMember(swarm_id)` so the per-swarm intent
+    // filter still routes the prepainted cells to the
+    // opponent workers.
+    for seed in seeds {
+        for _ in 0..seed.count {
+            world.spawn((
+                NanobotBundle {
+                    nanobot: Nanobot {},
+                    nanobot_type: seed.kind,
+                    velocity: VelocityComponent::default(),
+                    ai_state: AiStateComponent::new(),
+                    health: Health::default(),
+                    swarm_member: SwarmMember::new(swarm_id),
+                },
+                Commitment::Idle,
+                Transform::from_translation(world_pos.extend(0.0)),
+            ));
         }
-    });
+    }
 
     swarm
 }
@@ -242,12 +248,17 @@ mod tests {
     #[test]
     fn spawn_opponent_swarm_seeds_requested_nanobots() {
         // The helper must spawn the requested nanobots as
-        // children of the new swarm so the same scoring
-        // systems drive them.
+        // top-level entities (issue #38 / ADR-0004).
+        // They are no longer children of the swarm; the
+        // swarm is purely a spawn-origin / ownership
+        // marker. The simulation reads the per-bot
+        // `Transform` and `SwarmMember` directly, so
+        // parentage is no longer part of the contract.
         let mut app = build_app();
+        let opponent_pos = Vec2::new(0.0, 0.0);
         let swarm = spawn_opponent_swarm(
             app.world_mut(),
-            Vec2::new(0.0, 0.0),
+            opponent_pos,
             ProductionRatio::new(),
             &[],
             &[
@@ -255,24 +266,32 @@ mod tests {
                 SeedNanobots::new(NanobotType::Hauler, 2),
             ],
         );
-        let world = app.world();
-        let children: Vec<Entity> = world
-            .get::<Children>(swarm)
-            .map(|c| c.iter().collect())
-            .unwrap_or_default();
-        assert_eq!(children.len(), 5, "all seed nanobots must be children");
-        let workers = children
-            .iter()
-            .filter(|c| {
-                world.entity(**c).get::<NanobotType>().copied() == Some(NanobotType::Worker)
-            })
-            .count();
-        let haulers = children
-            .iter()
-            .filter(|c| {
-                world.entity(**c).get::<NanobotType>().copied() == Some(NanobotType::Hauler)
-            })
-            .count();
+        let mut workers = 0;
+        let mut haulers = 0;
+        {
+            // The swarm is no longer a parent; count
+            // `Nanobot` entities with `SwarmMember`
+            // pointing at the swarm instead.
+            let mut entities_query = app
+                .world_mut()
+                .query::<(Entity, &SwarmMember, &NanobotType)>();
+            let world = app.world();
+            let swarm_id = world
+                .entity(swarm)
+                .get::<SwarmId>()
+                .copied()
+                .unwrap_or(SwarmId::PLAYER);
+            for (_entity, member, nanobot_type) in entities_query.iter(world) {
+                if member.0 != swarm_id {
+                    continue;
+                }
+                match nanobot_type {
+                    NanobotType::Worker => workers += 1,
+                    NanobotType::Hauler => haulers += 1,
+                    _ => {}
+                }
+            }
+        }
         assert_eq!(workers, 3);
         assert_eq!(haulers, 2);
     }

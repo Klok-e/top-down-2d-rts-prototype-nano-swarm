@@ -34,7 +34,7 @@
 use bevy::prelude::*;
 
 use crate::nanobot::autonomy::NanobotType;
-use crate::nanobot::components::{Nanobot, Swarm};
+use crate::nanobot::components::Swarm;
 use crate::nanobot::production::{
     count_swarm_nanobots_by_type, total_deficit, OwnerSwarm, ProductionFacility, ProductionRatio,
     SwarmProduction,
@@ -160,7 +160,8 @@ impl ProductionCollapseState {
 /// Bevy system: evaluate collapse for every swarm in the
 /// world, then write the player / opponent flags into
 /// [`ProductionCollapseState`]. Runs every tick; cheap
-/// because it only counts children and facilities.
+/// because it only counts owned nanobots and busy
+/// facilities.
 ///
 /// The chain sits after the production work system so the
 /// "is a facility busy?" check sees the post-work state
@@ -168,20 +169,43 @@ impl ProductionCollapseState {
 /// has not yet been picked again). Running before the work
 /// system would report the facility as busy for one extra
 /// tick after it should be re-evaluating.
+///
+/// Issue #38 / ADR-0004: the per-swarm count uses the
+/// swarm's `SwarmId` rather than walking `Children`,
+/// because nanobots are top-level entities. A swarm
+/// without an explicit `SwarmId` falls back to
+/// `SwarmId::PLAYER` for the count match, matching the
+/// pre-multi-swarm behaviour where every nanobot's
+/// `SwarmMember` defaulted to the player id.
 #[allow(clippy::type_complexity)]
 pub fn production_collapse_detection_system(
-    swarms: Query<(Entity, Option<&OpponentSwarm>), With<Swarm>>,
+    swarms: Query<
+        (
+            Entity,
+            Option<&crate::nanobot::components::SwarmId>,
+            Option<&OpponentSwarm>,
+        ),
+        With<Swarm>,
+    >,
     facilities: Query<(&ProductionFacility, &OwnerSwarm)>,
-    children_query: Query<&Children>,
-    nanobots: Query<&NanobotType, With<Nanobot>>,
+    nanobots: Query<
+        (
+            &crate::nanobot::NanobotType,
+            &crate::nanobot::components::SwarmMember,
+        ),
+        With<crate::nanobot::components::Nanobot>,
+    >,
     global_ratio: Res<ProductionRatio>,
     swarm_productions: Query<&SwarmProduction>,
     mut state: ResMut<ProductionCollapseState>,
 ) {
     state.player_collapsed = false;
     state.opponent_collapsed = false;
-    for (swarm_entity, opponent) in &swarms {
-        let counts = count_swarm_nanobots_by_type(swarm_entity, &children_query, &nanobots);
+    for (swarm_entity, swarm_id, opponent) in &swarms {
+        let swarm_id = swarm_id
+            .copied()
+            .unwrap_or(crate::nanobot::components::SwarmId::PLAYER);
+        let counts = count_swarm_nanobots_by_type(swarm_id, &nanobots);
         let workers = *counts.get(&NanobotType::Worker).unwrap_or(&0);
         let haulers = *counts.get(&NanobotType::Hauler).unwrap_or(&0);
 

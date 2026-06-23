@@ -616,7 +616,7 @@ pub fn worker_gather_assignment_system(
             continue;
         };
 
-        let Ok((_, _, deposit_transform)) = deposits.get(deposit_entity) else {
+        let Ok((_, deposit, deposit_transform)) = deposits.get(deposit_entity) else {
             continue;
         };
 
@@ -625,6 +625,12 @@ pub fn worker_gather_assignment_system(
             GatherAssignment::new(candidate.cell, deposit_entity),
             DirectMovementComponent {
                 xy: deposit_transform.translation.truncate(),
+                // Stop on the deposit's physical edge so the
+                // bot lands at the deposit center, not at
+                // `center + STOP_THRESHOLD`. Issue #38 /
+                // ADR-0004: paired with the arrive guard that
+                // compares against the same `deposit.radius`.
+                stop_radius: deposit.radius,
             },
         ));
     }
@@ -701,9 +707,15 @@ pub fn worker_gather_arrive_system(
             // idempotent on a stale `DirectMovementComponent`
             // because the system that already pruned the
             // component only runs on arrival, not every tick.
-            commands
-                .entity(entity)
-                .insert(DirectMovementComponent { xy: deposit_pos });
+            //
+            // Issue #38 / ADR-0004: the resume branch carries
+            // the deposit's radius so a worker nudged past the
+            // edge by separation force re-targets the same
+            // physical extent, not a different stop threshold.
+            commands.entity(entity).insert(DirectMovementComponent {
+                xy: deposit_pos,
+                stop_radius: deposit.radius,
+            });
             continue;
         }
         if !has_usable_built_source_stockpile(deposit_pos, &stockpiles) {
@@ -824,7 +836,7 @@ pub fn worker_gather_carry_assign_system(
             // it up.
             continue;
         };
-        let Ok((_, _, stockpile_transform)) = stockpiles.get(stockpile_entity) else {
+        let Ok((_, stockpile, stockpile_transform)) = stockpiles.get(stockpile_entity) else {
             continue;
         };
         commands.entity(entity).insert((
@@ -833,6 +845,11 @@ pub fn worker_gather_carry_assign_system(
             },
             DirectMovementComponent {
                 xy: stockpile_transform.translation.truncate(),
+                // Stop on the stockpile's physical edge so the
+                // delivery system fires on contact. Issue #38
+                // / ADR-0004: same extent as the work-side
+                // gather DMCs (deposit.radius / radius here).
+                stop_radius: stockpile.radius,
             },
         ));
     }

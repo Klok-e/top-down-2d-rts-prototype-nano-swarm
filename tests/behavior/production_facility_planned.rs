@@ -434,19 +434,37 @@ fn completed_production_facility_consumes_resources_and_produces_nanobots() {
         app.update();
     }
 
-    // A new Worker child of the swarm must exist.
-    let world = app.world_mut();
-    let children: Vec<Entity> = world
-        .get::<Children>(swarm)
-        .map(|c| c.iter().collect())
-        .unwrap_or_default();
-    let worker_count = children
-        .iter()
-        .filter(|c| world.entity(**c).get::<NanobotType>().copied() == Some(NanobotType::Worker))
-        .count();
+    // A new Worker owned by the swarm must exist.
+    // Issue #38 / ADR-0004: production-spawned
+    // nanobots are top-level entities, not children
+    // of the swarm. Track the pre-cycle worker count
+    // and assert the production cycle added exactly
+    // one (the existing pre-cycle worker is already
+    // owned by the same `SwarmId`).
+    let swarm_id = app
+        .world()
+        .entity(swarm)
+        .get::<SwarmId>()
+        .copied()
+        .expect("swarm must carry a SwarmId");
+    let mut owned_workers_after = 0;
+    {
+        let world = app.world_mut();
+        let mut query = world.query::<(
+            &NanobotType,
+            &top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmMember,
+        )>();
+        for (ty, member) in query.iter(world) {
+            if member.0 == swarm_id && *ty == NanobotType::Worker {
+                owned_workers_after += 1;
+            }
+        }
+    }
+    // The test seeded one Worker (the builder); the
+    // production cycle must add exactly one more.
     assert_eq!(
-        worker_count, 1,
-        "completed Production Facility must spawn exactly one Worker after a full production cycle"
+        owned_workers_after, 2,
+        "completed Production Facility must spawn exactly one Worker after a full production cycle (expected initial Worker + 1 spawned Worker)"
     );
 }
 

@@ -93,8 +93,13 @@ pub fn move_action_system(
     nanobots: Query<(Entity, &Move), Without<DirectMovementComponent>>,
 ) {
     for (ent, bot) in &nanobots {
+        // Legacy `Move` action: extent-less destination
+        // (issue #38 / ADR-0004). The `0.0` sentinel
+        // falls through to `STOP_THRESHOLD` in the
+        // movement system.
         commands.entity(ent).insert(DirectMovementComponent {
             xy: bot.destination,
+            stop_radius: 0.0,
         });
     }
 }
