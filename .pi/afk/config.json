@@ -3,7 +3,7 @@
   "roles": {
     "implementer": {
       "agentType": "general-purpose",
-      "model": "opencode-go/minimax-m3",
+      "model": "opencode-go/glm-5.2",
       "description": "AFK implementer"
     },
     "quality": {
