@@ -17,6 +17,14 @@ cargo test --test behavior
 cargo test --test playtest
 ```
 
+Run the screenshot (window-creating) target — ignored by default, run with `--ignored`:
+
+```bash
+cargo test --test screenshots -- --ignored          # all
+cargo test --test screenshots -- --ignored smoke     # filter by name
+cargo test --test screenshots -- --list             # list
+```
+
 Before handoff, run:
 
 ```bash
@@ -44,6 +52,10 @@ tests/
   playtest.rs         # aggregate integration target
   playtest/
     *.rs              # scripted player/runtime flows
+screenshots/            # window-creating visual tests (harness = false)
+  main.rs             # libtest-mimic entry point + TESTS list
+  harness.rs          # callback driver (TestFlow, app.run() loop)
+  *.rs                # screenshot test callbacks
 ```
 
 Nested integration files import the shared seam explicitly:
@@ -118,29 +130,19 @@ Script input through Bevy state, not OS automation:
 - Set UI `Interaction` components for UI controls.
 - Run `app.update()` and assert deterministic ECS state.
 
-Headless scripted playtests run in normal `cargo test`. If a playtest needs a real window, GPU, or screenshot, keep it under `tests/playtest/`, mark it ignored, and explain how to run it.
+Headless scripted playtests run in normal `cargo test`. If a playtest needs a real window, GPU, or screenshot, do not put it under `tests/playtest/` — `#[test]` runs on a cargo worker thread, but winit requires the main thread and a real `app.run()` event loop. Use the `screenshots/` harness instead; see "Screenshot evidence" below.
 
 ### Screenshot evidence
 
-Screenshots are a scripted playtest technique, not a separate test category. For changes affecting any visual appearance, agents must produce screenshot evidence in addition to any deterministic ECS assertions.
+For any change, the agent must produce screenshot evidence in addition to deterministic ECS assertions: open the app in a real window, capture a frame, read the image back, and describe the visual facts that satisfy the acceptance criteria. The screenshot exists to force the agent to look at the rendered result — deterministic assertions do not catch rendering, UI, camera, or scene-setup breakage, and "cargo test passed" alone is not sufficient evidence.
 
-Screenshot evidence must be inspected, not merely produced. The agent that produces screenshots must open/read the image artifacts, describe the relevant visual facts, and state whether they satisfy the acceptance criteria. For visual bug fixes, the verifier must independently inspect the screenshots before passing. If screenshots are ambiguous, improve the scripted setup or fail/needs-info with the exact blocker; do not pass on artifact existence alone. Rust pixel assertions are useful deterministic checks, but they do not replace agent inspection for visual bug fixes.
+Window-creating tests live in `screenshots/`, a `harness = false` cargo target driven by `libtest-mimic`, kept separate from the headless `tests/` because winit requires the main thread and a real `app.run()` event loop. They are marked ignored so the default `cargo test` skips them (`test foo ... ignored`); run them with `cargo test --test screenshots -- --ignored` (filter: `-- --ignored <name>`). The harness forces `--test-threads=1` so each `app.run()` stays on the main thread.
 
-The preferred Bevy capture path is to spawn `bevy::render::view::screenshot::Screenshot::primary_window()`, observe `bevy::render::view::screenshot::save_to_disk(path)`, and wait for `ScreenshotCaptured` before continuing the scripted flow. Shared helpers that hide this ceremony may live in `tests/common/mod.rs` and may remain committed when they improve maintainability.
+Each screenshot test is a `fn(&mut TestContext) -> TestFlow` callback called once per frame inside `app.run()`, built on `top_down_2d_rts_prototype_nano_swarm::build_app()` (real window + render pipeline; the `sim_app_with_*` builders are headless and cannot capture). The callback drives game state through `ctx.world: &mut World`, asserts on ECS state, and requests captures by returning `TestFlow::Screenshot(name)`. There is no script language — the callback is Rust using the same seams the headless tests use. Capture timing is signal-driven: a `ScreenshotCaptured` observer must fire before the next callback frame, so the PNG is guaranteed on disk before the callback resumes. Register new tests in the `TESTS` list in `screenshots/main.rs`; artifacts land under `target/playtest-screenshots/` (gitignored with `/target`) and are never committed.
 
-Use a temporary ignored playtest for screenshot investigations:
+Screenshot evidence must be inspected, not merely produced. The producing agent must open/read the image artifact, describe the relevant visual facts, and state whether they satisfy the acceptance criteria. For visual bug fixes, the verifier must independently inspect the screenshots before passing. If a screenshot is ambiguous, improve the scripted setup or fail/needs-info with the exact blocker; do not pass on artifact existence alone. Rust pixel assertions are useful deterministic checks but do not replace agent inspection for visual bug fixes.
 
-```txt
-tests/playtest/temp_<thing>.rs
-```
-
-The temporary playtest should write artifacts under:
-
-```txt
-target/playtest-screenshots/
-```
-
-Remove temporary screenshot playtests before handoff unless the user explicitly asks to keep them or the rendering regression cannot be covered through ECS/state assertions. Durable screenshot-producing playtests may live under `tests/playtest/` only with a clear comment explaining why screenshot evidence is required. Do not commit screenshot image artifacts unless the user explicitly asks for committed baselines. If the environment lacks a usable window/GPU, report the exact blocker instead of treating it as a normal test failure.
+If the environment cannot create a window or render a frame, the run fails with the exact blocker; it is not a normal test failure and not a skipped check. The screenshot harness reports the failure rather than silently passing on artifact existence alone.
 
 ## Test data
 
