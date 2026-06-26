@@ -303,17 +303,14 @@ pub fn sink_stockpile_demand_system(
     }
     // Planned Structures of any kind are in the obstacle
     // list so a fresh Sink Stockpile cannot overlap a
-    // pending Production Facility or Charger plan. The
-    // subset that satisfies sink-side demand (Production
-    // Facility, Charger) is also collected below as a
-    // demand site.
+    // pending Production Facility or Charger plan. Only
+    // Production Facility plans satisfy sink-side demand:
+    // chargers are direct-delivery terminals and do not
+    // auto-plan Sink Stockpiles (ADR-0005).
     let mut demand_sites: Vec<(IVec2, Option<Entity>)> = Vec::new();
     for (planned_structure, transform, owner) in &planned {
         obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
-        if matches!(
-            planned_structure.kind,
-            PlannedKind::ProductionFacility | PlannedKind::Charger
-        ) {
+        if planned_structure.kind == PlannedKind::ProductionFacility {
             demand_sites.push((
                 world_to_cell(transform.translation.truncate()),
                 owner.map(|o| o.0),
@@ -333,12 +330,10 @@ pub fn sink_stockpile_demand_system(
             owner.map(|o| o.0),
         ));
     }
-    for (transform, owner) in &chargers {
-        demand_sites.push((
-            world_to_cell(transform.translation.truncate()),
-            owner.map(|o| o.0),
-        ));
-    }
+    // Chargers are direct-delivery terminals fed by haulers;
+    // they deliberately do not create Sink Stockpile demand.
+    // They stay in the obstacle list above so facility-side
+    // sink plans cannot overlap them.
     demand_sites.sort_by_key(|(cell, _)| (cell.x, cell.y));
     demand_sites.dedup();
 
@@ -356,18 +351,51 @@ pub fn sink_stockpile_demand_system(
         if owner.is_some() && painted_owner.is_some() && owner != painted_owner {
             continue;
         }
+        // Build the local Build Zone: the facility's own cell plus
+        // its build-painted, same-owner neighbours (a 3x3 block).
+        // The sink stockpile may land in any of these cells -- it
+        // does not need the facility's exact cell, just the painted
+        // zone near it (ADR-0005: dense-base starvation fix). The
+        // non-overlap rule is still enforced by the placer; the
+        // wider cell set just gives it more room to find a free
+        // spot instead of silently starving a packed facility.
+        let mut zone_cells: Vec<IVec2> = Vec::new();
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                let nc = IVec2::new(cell.x + dx, cell.y + dy);
+                let Some(nc_intent) = grid.cell(nc) else {
+                    continue;
+                };
+                if !nc_intent.has(IntentKind::Build) {
+                    continue;
+                }
+                let nc_owner = nc_intent
+                    .owner(IntentKind::Build)
+                    .and_then(|id| swarm_by_id.get(&id).copied());
+                if owner.is_some() && nc_owner.is_some() && nc_owner != owner {
+                    continue;
+                }
+                zone_cells.push(nc);
+            }
+        }
+        if zone_cells.is_empty() {
+            // No build-painted zone around this facility: skip
+            // rather than force placement outside a Build Zone.
+            continue;
+        }
+        let in_zone = |c: IVec2| zone_cells.contains(&c);
         let sink_exists = stockpiles
             .iter()
             .any(|(_, transform, role, stockpile_owner)| {
                 matches!(role, Some(StockpileRole::Sink))
-                    && world_to_cell(transform.translation.truncate()) == cell
+                    && in_zone(world_to_cell(transform.translation.truncate()))
                     && (owner.is_none() || stockpile_owner.map(|o| o.0) == owner)
             })
             || planned
                 .iter()
                 .any(|(planned_structure, transform, plan_owner)| {
                     planned_structure.kind == PlannedKind::SinkStockpile
-                        && world_to_cell(transform.translation.truncate()) == cell
+                        && in_zone(world_to_cell(transform.translation.truncate()))
                         && (owner.is_none() || plan_owner.map(|o| o.0) == owner)
                 });
         if sink_exists {
@@ -380,7 +408,7 @@ pub fn sink_stockpile_demand_system(
                 .map(|pos| (*pos, BUILDING_FOOTPRINT_RADIUS)),
         );
         let Some((placement_cell, placement_pos)) =
-            find_build_zone_placement(&[cell], &local_obstacles, 26)
+            find_build_zone_placement(&zone_cells, &local_obstacles, 26)
         else {
             continue;
         };
@@ -753,17 +781,18 @@ fn promote_planned_to_completion(
                 .entity(planned_entity)
                 .remove::<PlannedStructure>()
                 .remove::<PlannedProductionTarget>();
-            // ProductionFacility + local Stockpile buffer.
-            // The buffer matches the seed facility shape
-            // (see `scenario::spawn_production_facility`) so
-            // the production chain's "scan for the closest
-            // stockpile with material" picks a sink
-            // stockpile first, then falls through to the
-            // facility's own buffer if a hauler delivers
-            // directly.
-            commands
-                .entity(planned_entity)
-                .insert((facility, empty_mineral_stockpile(), visual));
+            // A completed facility is a terminal consumer:
+            // it owns its own input hopper (on
+            // `ProductionFacility`) and is NOT a `Stockpile`.
+            // Haulers fill the hopper via logistics leg 3
+            // (sink stockpile -> facility); production
+            // consumes exclusively from it. Keeping the
+            // `Stockpile` component off the facility means
+            // it never enters stockpile queries, so a
+            // gather worker cannot dump a gather load into
+            // it and a hauler cannot pick it as a
+            // stockpile source/sink.
+            commands.entity(planned_entity).insert((facility, visual));
         }
         PlannedKind::Charger => {
             // Promote to a real `Charger` with the default

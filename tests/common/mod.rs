@@ -49,7 +49,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         PlannedStructurePlugin, ProductionFacility, ProductionPlugin, SoftWorkSlots, Structure,
         StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent,
     },
-    resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile},
+    resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole},
     structure_overlay::StructureOverlayPlugin,
     structure_sprites::StructureSprites,
     tactical_overlay::TacticalOverlayPlugin,
@@ -513,6 +513,25 @@ pub fn spawn_stockpile(app: &mut App, world_pos: Vec2, amount: u32, capacity: u3
         .id()
 }
 
+/// Spawn a [`Stockpile`] stamped [`StockpileRole::Sink`] at
+/// `world_pos` -- the build-zone buffer a hauler fills in leg 2 and
+/// drains in leg 3. Mirrors [`spawn_stockpile`] for the data shape;
+/// only the role marker differs.
+pub fn spawn_sink_stockpile(app: &mut App, world_pos: Vec2, amount: u32, capacity: u32) -> Entity {
+    app.world_mut()
+        .spawn((
+            Stockpile {
+                kind: ResourceKind::Minerals,
+                amount,
+                capacity,
+                radius: 32.0,
+            },
+            StockpileRole::Sink,
+            Transform::from_translation(world_pos.extend(0.0)),
+        ))
+        .id()
+}
+
 /// Spawn a [`Charger`] in `cell` with the given `amount` of
 /// minerals. The charger lives at the cell's world centre, so
 /// tests that assert "the charger is in the cell" can compare the
@@ -532,14 +551,21 @@ pub fn spawn_charger_at(app: &mut App, cell: IVec2, amount: u32) -> Entity {
 /// facility has no `OwnerSwarm`, so it falls back to the global
 /// `ProductionRatio` resource and the first swarm in the world
 /// when the work system spawns a new nanobot -- the same fallback
-/// the pre-multi-swarm production tests rely on.
+/// the pre-multi-swarm production tests rely on. The input hopper
+/// is pre-filled (see [`fill_facility_input`]) so the facility can
+/// run production cycles without standing up the full hauler
+/// chain; the real game starts a facility empty and lets leg 3
+/// fill it.
 pub fn spawn_idle_facility_at(app: &mut App, world_pos: Vec2) -> Entity {
-    app.world_mut()
+    let entity = app
+        .world_mut()
         .spawn((
             ProductionFacility::new(),
             Transform::from_translation(world_pos.extend(0.0)),
         ))
-        .id()
+        .id();
+    fill_facility_input(app, entity);
+    entity
 }
 
 /// Spawn a fresh [`Structure`] of kind `StructureKind::Basic` at
@@ -698,15 +724,19 @@ pub fn spawn_opponent_swarm_with_nanobots(
 /// `pos`. The owner marker is what tells the production
 /// systems to use the owner's ratio and children for the
 /// deficit math; without it, the facility falls back to the
-/// global `ProductionRatio` resource.
+/// global `ProductionRatio` resource. The input hopper is
+/// pre-filled (see [`fill_facility_input`]).
 pub fn spawn_facility_at(app: &mut App, owner: Entity, pos: Vec2) -> Entity {
-    app.world_mut()
+    let entity = app
+        .world_mut()
         .spawn((
             ProductionFacility::new(),
             OwnerSwarm(owner),
             Transform::from_translation(pos.extend(0.0)),
         ))
-        .id()
+        .id();
+    fill_facility_input(app, entity);
+    entity
 }
 
 /// Spawn a busy [`ProductionFacility`] at `world_pos` with the
@@ -714,14 +744,42 @@ pub fn spawn_facility_at(app: &mut App, owner: Entity, pos: Vec2) -> Entity {
 /// is the "production is currently working" half of the collapse
 /// contract, so production and collapse tests can use this helper
 /// to skip the pick/work setup and assert collapse-related
-/// behaviour directly.
+/// behaviour directly. The input hopper is pre-filled (see
+/// [`fill_facility_input`]) so the next pick cycle can fire.
 pub fn spawn_busy_facility_at(app: &mut App, world_pos: Vec2, target: NanobotType) -> Entity {
     let mut f = ProductionFacility::new();
     f.current_target = Some(target);
     f.progress = 1;
-    app.world_mut()
+    let entity = app
+        .world_mut()
         .spawn((f, Transform::from_translation(world_pos.extend(0.0))))
-        .id()
+        .id();
+    fill_facility_input(app, entity);
+    entity
+}
+
+/// Fill a facility's input hopper to capacity with minerals and
+/// record the material in the [`ResourceLedger`]. This mirrors
+/// what hauler delivery (logistics leg 3) does in the real game,
+/// so a freshly-spawned facility can run production cycles in a
+/// test without standing up the full hauler chain. Returns the
+/// amount actually added (capacity minus whatever was already
+/// in the hopper).
+pub fn fill_facility_input(app: &mut App, facility: Entity) -> u32 {
+    let added = {
+        let world = app.world_mut();
+        let mut entity = world.entity_mut(facility);
+        let mut f = entity
+            .get_mut::<ProductionFacility>()
+            .expect("fill_facility_input target must be a ProductionFacility");
+        let room = f.input_free_space();
+        f.input_amount = f.input_capacity;
+        room
+    };
+    app.world_mut()
+        .resource_mut::<ResourceLedger>()
+        .add(ResourceKind::Minerals, added);
+    added
 }
 
 /// Simulate a single click on `button`. Toggles the

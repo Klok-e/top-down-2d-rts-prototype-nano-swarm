@@ -1,9 +1,10 @@
 //! Hauler behaviour and automatic stockpile creation.
 //!
-//! Issue #8 contract: haulers move large physical loads between sources
-//! (deposits and non-empty stockpiles) and sinks (stockpiles with free
-//! space). Stockpiles emerge automatically from sustained Gather / Build
-//! demand so the swarm always has a drop-off point near work.
+//! Haulers move large physical loads between logistics buffers:
+//! source stockpiles, sink stockpiles, and terminal consumers
+//! (production facilities / chargers). Deposits are worker-only
+//! sources under the tiered logistics model; legacy manual hauler
+//! assignments can still drain them defensively for tests.
 
 use bevy::prelude::*;
 
@@ -13,9 +14,11 @@ use crate::nanobot::{
     charge::Charger,
     components::{DirectMovementComponent, Nanobot, SwarmId, SwarmMember},
     gather::world_to_cell,
-    NanobotType, OwnerSwarm, STOP_THRESHOLD,
+    logistics_leg::{pick_logistics_leg, HaulerContext, StockpileCandidate, TerminalCandidate},
+    placement::BUILDING_FOOTPRINT_RADIUS,
+    NanobotType, OwnerSwarm, ProductionFacility, STOP_THRESHOLD,
 };
-use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
+use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole};
 
 /// Maximum units a Hauler can carry in a single trip. The glossary is
 /// explicit that Haulers carry "much more" than Workers; 40 is
@@ -41,11 +44,12 @@ pub struct HaulerLoad {
 }
 
 /// Marks a Hauler as committed to a specific `(source, sink)` pair.
-/// `source` is the deposit or non-empty stockpile the hauler will pull
-/// from; `sink` is the non-full stockpile the hauler will drop the
-/// load into. Both are kept on the same component because the hauler
-/// commits to the whole trip in the assignment system rather than
-/// picking the sink at delivery time.
+/// In normal tiered logistics, `source` is a non-empty stockpile and
+/// `sink` is a sink stockpile or terminal consumer. Defensive legacy
+/// paths still tolerate deposit sources for hand-seeded assignments.
+/// Both are kept on the same component because the hauler commits to
+/// the whole trip in the assignment system rather than picking the
+/// sink at delivery time.
 #[derive(Debug, Component, Clone, Copy)]
 pub struct HaulerAssignment {
     pub source: Entity,
@@ -226,160 +230,58 @@ pub fn corridor_waypoint_between(start: Vec2, end: Vec2, grid: &IntentGrid) -> O
     best.map(|(_, cell)| get_world_from_zone(cell))
 }
 
-/// Find the (source, sink) pair a hauler should commit to.
-///
-/// The selection heuristic is the simple greedy version: pick the
-/// nearest source with matching kind and free resources, then pick
-/// the nearest sink with matching kind and free space relative to
-/// that source. The greedy choice is good enough for the first
-/// implementation and keeps the system predictable for tests.
-///
-/// `worker_pos` is the world position of the hauler. `kind` is the
-/// resource kind the hauler currently wants to transport (only
-/// [`ResourceKind::Minerals`] is supported for now; multi-kind
-/// support is a follow-up issue).
-///
-/// Sinks include any [`Charger`] with matching kind and free space
-/// in addition to [`Stockpile`]s so haulers can deliver minerals
-/// to a defender-support charger (issue #14's "logistics support"
-/// half of the contract).
-pub fn find_transport_pair(
-    worker_pos: Vec2,
-    kind: ResourceKind,
-    deposits: &Query<(Entity, &ResourceDeposit, &Transform)>,
-    stockpiles: &Query<(Entity, &Stockpile, &Transform, Option<&OwnerSwarm>)>,
-    chargers: &Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
-    swarms: &Query<&SwarmId>,
-    hauler_swarm: SwarmId,
-) -> Option<(Entity, Entity)> {
-    let source = find_nearest_source(worker_pos, kind, deposits, stockpiles, swarms, hauler_swarm)?;
-    let source_pos = source_transform(source, deposits, stockpiles)?;
-    let sink = find_nearest_sink(
-        source,
-        source_pos,
-        kind,
-        stockpiles,
-        chargers,
-        swarms,
-        hauler_swarm,
-    )?;
-    Some((source, sink))
-}
-
-fn find_nearest_source(
-    worker_pos: Vec2,
-    kind: ResourceKind,
-    deposits: &Query<(Entity, &ResourceDeposit, &Transform)>,
-    stockpiles: &Query<(Entity, &Stockpile, &Transform, Option<&OwnerSwarm>)>,
-    swarms: &Query<&SwarmId>,
-    hauler_swarm: SwarmId,
-) -> Option<Entity> {
-    let mut best_deposit: Option<(f32, Entity)> = None;
-    for (entity, deposit, transform) in deposits.iter() {
-        if deposit.kind != kind || deposit.amount == 0 {
-            continue;
-        }
-        let d = worker_pos.distance(transform.translation.truncate());
-        if best_deposit.is_none_or(|(bd, _)| d < bd) {
-            best_deposit = Some((d, entity));
-        }
-    }
-    let mut best_stockpile: Option<(f32, Entity)> = None;
-    for (entity, stockpile, transform, owner) in stockpiles.iter() {
-        if stockpile.kind != kind
-            || stockpile.amount == 0
-            || !owner_matches_hauler(owner, swarms, hauler_swarm)
-        {
-            continue;
-        }
-        let d = worker_pos.distance(transform.translation.truncate());
-        if best_stockpile.is_none_or(|(bd, _)| d < bd) {
-            best_stockpile = Some((d, entity));
-        }
-    }
-    match (best_deposit, best_stockpile) {
-        (Some((d1, e1)), Some((d2, e2))) => {
-            if d1 <= d2 {
-                Some(e1)
-            } else {
-                Some(e2)
-            }
-        }
-        (Some((_, e)), None) => Some(e),
-        (None, Some((_, e))) => Some(e),
-        (None, None) => None,
-    }
-}
-
-fn source_transform(
-    entity: Entity,
-    deposits: &Query<(Entity, &ResourceDeposit, &Transform)>,
-    stockpiles: &Query<(Entity, &Stockpile, &Transform, Option<&OwnerSwarm>)>,
-) -> Option<Vec2> {
-    if let Ok((_, _, t)) = deposits.get(entity) {
-        Some(t.translation.truncate())
-    } else if let Ok((_, _, t, _)) = stockpiles.get(entity) {
-        Some(t.translation.truncate())
-    } else {
-        None
-    }
-}
-
-fn find_nearest_sink(
-    source: Entity,
-    source_pos: Vec2,
-    kind: ResourceKind,
-    stockpiles: &Query<(Entity, &Stockpile, &Transform, Option<&OwnerSwarm>)>,
-    chargers: &Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
-    swarms: &Query<&SwarmId>,
-    hauler_swarm: SwarmId,
-) -> Option<Entity> {
-    let mut best: Option<(f32, Entity)> = None;
-    for (entity, stockpile, transform, owner) in stockpiles.iter() {
-        if stockpile.kind != kind
-            || stockpile.free_space() == 0
-            || entity == source
-            || !owner_matches_hauler(owner, swarms, hauler_swarm)
-        {
-            continue;
-        }
-        let d = source_pos.distance(transform.translation.truncate());
-        if best.is_none_or(|(bd, _)| d < bd) {
-            best = Some((d, entity));
-        }
-    }
-    // Chargers with free space are also valid sinks; the
-    // closest one wins. The same `entity == source` guard
-    // is unnecessary because a charger is never a source in
-    // the current model (a charger does not feed the
-    // resource network -- it consumes minerals to refill
-    // defenders).
-    for (entity, charger, transform, owner) in chargers.iter() {
-        if charger.kind != kind
-            || charger.free_space() == 0
-            || !owner_matches_hauler(owner, swarms, hauler_swarm)
-        {
-            continue;
-        }
-        let d = source_pos.distance(transform.translation.truncate());
-        if best.is_none_or(|(bd, _)| d < bd) {
-            best = Some((d, entity));
-        }
-    }
-    best.map(|(_, e)| e)
-}
-
-fn owner_matches_hauler(
+/// Convert an optional [`OwnerSwarm`] marker into the concrete [`SwarmId`]
+/// used by the pure Logistics Leg picker. A broken owner reference
+/// makes the candidate unusable, matching the old `owner_matches`
+/// behaviour.
+fn candidate_owner(
     owner: Option<&OwnerSwarm>,
     swarms: &Query<&SwarmId>,
-    hauler_swarm: SwarmId,
-) -> bool {
+) -> Option<Option<SwarmId>> {
     match owner {
-        None => true,
-        Some(OwnerSwarm(owner_entity)) => swarms
-            .get(*owner_entity)
-            .is_ok_and(|owner_id| *owner_id == hauler_swarm),
+        None => Some(None),
+        Some(OwnerSwarm(owner_entity)) => swarms.get(*owner_entity).ok().copied().map(Some),
     }
+}
+
+/// World position of a hauler source stockpile. A hauler source
+/// is always a stockpile under the tiered model, so this is a
+/// plain component lookup.
+#[allow(clippy::type_complexity)]
+fn stockpile_pos(
+    entity: Entity,
+    stockpiles: &Query<(
+        Entity,
+        &Stockpile,
+        &Transform,
+        Option<&StockpileRole>,
+        Option<&OwnerSwarm>,
+    )>,
+) -> Option<Vec2> {
+    stockpiles
+        .get(entity)
+        .ok()
+        .map(|(_, _, t, _, _)| t.translation.truncate())
+}
+
+/// Physical extent of a hauler source stockpile, used as the
+/// arrival stop radius so the movement system halts on the
+/// stockpile's edge (matching the arrive-source guard).
+#[allow(clippy::type_complexity)]
+fn stockpile_radius_of(
+    entity: Entity,
+    stockpiles: &Query<(
+        Entity,
+        &Stockpile,
+        &Transform,
+        Option<&StockpileRole>,
+        Option<&OwnerSwarm>,
+    )>,
+) -> f32 {
+    stockpiles
+        .get(entity)
+        .map(|(_, s, _, _, _)| s.radius)
+        .unwrap_or(0.0)
 }
 
 /// For each idle Hauler with no in-flight transport work, pick a
@@ -401,41 +303,87 @@ pub fn hauler_assignment_system(
             Without<DirectMovementComponent>,
         ),
     >,
-    deposits: Query<(Entity, &ResourceDeposit, &Transform)>,
-    stockpiles: Query<(Entity, &Stockpile, &Transform, Option<&OwnerSwarm>)>,
+    stockpiles: Query<(
+        Entity,
+        &Stockpile,
+        &Transform,
+        Option<&StockpileRole>,
+        Option<&OwnerSwarm>,
+    )>,
+    facilities: Query<(Entity, &ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
     chargers: Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
     swarms: Query<&SwarmId>,
 ) {
+    let stockpile_candidates: Vec<StockpileCandidate> = stockpiles
+        .iter()
+        .filter_map(|(entity, stockpile, transform, role, owner)| {
+            let owner = candidate_owner(owner, &swarms)?;
+            Some(StockpileCandidate {
+                entity,
+                pos: transform.translation.truncate(),
+                kind: stockpile.kind,
+                role: role.copied().unwrap_or(StockpileRole::Source),
+                amount: stockpile.amount,
+                free_space: stockpile.free_space(),
+                owner,
+            })
+        })
+        .collect();
+    let mut terminal_candidates: Vec<TerminalCandidate> = facilities
+        .iter()
+        .filter_map(|(entity, facility, transform, owner)| {
+            let owner = candidate_owner(owner, &swarms)?;
+            Some(TerminalCandidate::Facility {
+                entity,
+                pos: transform.translation.truncate(),
+                kind: facility.input_kind,
+                free_space: facility.input_free_space(),
+                owner,
+            })
+        })
+        .collect();
+    terminal_candidates.extend(chargers.iter().filter_map(
+        |(entity, charger, transform, owner)| {
+            let owner = candidate_owner(owner, &swarms)?;
+            Some(TerminalCandidate::Charger {
+                entity,
+                pos: transform.translation.truncate(),
+                kind: charger.kind,
+                free_space: charger.free_space(),
+                owner,
+            })
+        },
+    ));
+
     for (entity, transform, nanobot_type, swarm_member) in &haulers {
         if *nanobot_type != NanobotType::Hauler {
             continue;
         }
-        let worker_pos = transform.translation.truncate();
-
-        let Some((source, sink)) = find_transport_pair(
-            worker_pos,
-            ResourceKind::Minerals,
-            &deposits,
-            &stockpiles,
-            &chargers,
-            &swarms,
-            swarm_member.0,
+        let Some(leg) = pick_logistics_leg(
+            HaulerContext {
+                pos: transform.translation.truncate(),
+                swarm: swarm_member.0,
+                kind: ResourceKind::Minerals,
+            },
+            &stockpile_candidates,
+            &terminal_candidates,
         ) else {
             continue;
         };
-        let Some(source_pos) = source_transform(source, &deposits, &stockpiles) else {
+        let source = leg.source;
+        let sink = leg.sink;
+        let Some(source_pos) = stockpile_pos(source, &stockpiles) else {
             continue;
         };
 
-        // Source-side stop radius: the source's own
-        // physical extent (deposit.radius or
-        // stockpile.radius). Chargers are never a
-        // source; the matcher above already filters
-        // them out. Issue #38 / ADR-0004: same extent
-        // as the hauler-arrive-source guard so the
-        // movement system and the arrive system stop
-        // on the same edge.
-        let source_radius = source_radius_of(source, &deposits, &stockpiles, &chargers);
+        // Source-side stop radius: the source stockpile's own
+        // physical extent. A hauler source is always a stockpile
+        // under the tiered model (deposits are a worker-only
+        // source), so the lookup never falls through. Issue #38
+        // / ADR-0004: same extent as the hauler-arrive-source
+        // guard so the movement system and the arrive system
+        // stop on the same edge.
+        let source_radius = stockpile_radius_of(source, &stockpiles);
 
         commands.entity(entity).insert((
             HaulerAssignment { source, sink },
@@ -444,29 +392,6 @@ pub fn hauler_assignment_system(
                 stop_radius: source_radius,
             },
         ));
-    }
-}
-
-/// Look up the physical extent of `entity` as a hauler source.
-/// Returns `0.0` (extent-less) when the entity is not a deposit,
-/// stockpile, or charger. Chargers are not valid sources, so the
-/// `0.0` fallback only fires for unknown kinds; the hauler
-/// assignment filter above already excludes chargers from the
-/// candidate set, so this is defensive coverage.
-fn source_radius_of(
-    entity: Entity,
-    deposits: &Query<(Entity, &ResourceDeposit, &Transform)>,
-    stockpiles: &Query<(Entity, &Stockpile, &Transform, Option<&OwnerSwarm>)>,
-    chargers: &Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
-) -> f32 {
-    if let Ok((_, d, _)) = deposits.get(entity) {
-        d.radius
-    } else if let Ok((_, s, _, _)) = stockpiles.get(entity) {
-        s.radius
-    } else if let Ok((_, c, _, _)) = chargers.get(entity) {
-        c.radius
-    } else {
-        0.0
     }
 }
 
@@ -597,6 +522,45 @@ fn transition_to_carrying(commands: &mut Commands, entity: Entity, amount: u32) 
     }
 }
 
+/// Snapshot of a resource sink endpoint for the carry leg.
+/// Stockpiles, production facilities, and chargers expose
+/// different component shapes, but the movement system only needs
+/// the world position and physical reach of the chosen sink.
+#[derive(Debug, Clone, Copy)]
+struct SinkEndpointSnapshot {
+    pos: Vec2,
+    radius: f32,
+}
+
+/// Adapt a sink entity into the common endpoint shape used by the
+/// hauler carry leg. Facilities do not carry their own radius field,
+/// so their endpoint extent is the building footprint.
+fn sink_endpoint_snapshot(
+    entity: Entity,
+    stockpiles: &Query<(&Stockpile, &Transform)>,
+    facilities: &Query<(&ProductionFacility, &Transform)>,
+    chargers: &Query<(&Charger, &Transform)>,
+) -> Option<SinkEndpointSnapshot> {
+    if let Ok((stockpile, transform)) = stockpiles.get(entity) {
+        Some(SinkEndpointSnapshot {
+            pos: transform.translation.truncate(),
+            radius: stockpile.radius,
+        })
+    } else if let Ok((_, transform)) = facilities.get(entity) {
+        Some(SinkEndpointSnapshot {
+            pos: transform.translation.truncate(),
+            radius: BUILDING_FOOTPRINT_RADIUS,
+        })
+    } else if let Ok((charger, transform)) = chargers.get(entity) {
+        Some(SinkEndpointSnapshot {
+            pos: transform.translation.truncate(),
+            radius: charger.radius,
+        })
+    } else {
+        None
+    }
+}
+
 /// For each Hauler that has a [`HaulerLoad`] but no destination yet,
 /// head to the sink recorded on the [`HaulerAssignment`]. The sink
 /// was chosen at assignment time so the hauler does not need to
@@ -613,14 +577,13 @@ pub fn hauler_carry_assign_system(
         ),
     >,
     stockpiles: Query<(&Stockpile, &Transform)>,
+    facilities: Query<(&ProductionFacility, &Transform)>,
     chargers: Query<(&Charger, &Transform)>,
 ) {
     for (entity, transform, _load, assignment) in &haulers {
-        let sink_pos = if let Ok((_, t)) = stockpiles.get(assignment.sink) {
-            t.translation.truncate()
-        } else if let Ok((_, t)) = chargers.get(assignment.sink) {
-            t.translation.truncate()
-        } else {
+        let Some(sink) =
+            sink_endpoint_snapshot(assignment.sink, &stockpiles, &facilities, &chargers)
+        else {
             // Sink entity disappeared between assignment and
             // the carry phase. Drop the assignment so a later
             // tick re-evaluates; the load is kept so the hauler
@@ -629,14 +592,6 @@ pub fn hauler_carry_assign_system(
             commands.entity(entity).remove::<HaulerAssignment>();
             continue;
         };
-        // Issue #38 / ADR-0004: look up the sink's
-        // physical extent so the DMC carries the
-        // same value the delivery system's
-        // radius-based guard reads. Default `0.0`
-        // (extent-less) covers the "sink entity
-        // disappeared" branch above, which
-        // already continues.
-        let sink_radius = sink_radius_of(assignment.sink, &stockpiles, &chargers);
         // If the hauler is already at the sink, the delivery
         // system must fire before we re-target. Inserting a
         // fresh DirectMovementComponent here would clear the
@@ -654,38 +609,72 @@ pub fn hauler_carry_assign_system(
         // `Without<DirectMovementComponent>` filter rejects
         // the arrival. Using the same radius the movement
         // system uses breaks the loop.
-        if transform.translation.truncate().distance(sink_pos) <= sink_radius {
+        if transform.translation.truncate().distance(sink.pos) <= sink.radius {
             continue;
         }
         // Issue #38 / ADR-0004: the sink-leg DMC carries
         // the sink's physical extent so the movement
         // system stops on the sink's edge, matching the
-        // delivery system's radius-based guard. Chargers
-        // and stockpiles both have a `radius` field, so
-        // the matcher above already gives us the right
-        // value.
+        // delivery system's radius-based guard.
         commands.entity(entity).insert(DirectMovementComponent {
-            xy: sink_pos,
-            stop_radius: sink_radius,
+            xy: sink.pos,
+            stop_radius: sink.radius,
         });
     }
 }
 
-/// Look up the physical extent of a sink entity (stockpile or
-/// charger). Returns `0.0` for unknown kinds; the carry-assign
-/// system filters out non-stockpile / non-charger assignments
-/// above, so this is defensive coverage.
-fn sink_radius_of(
-    entity: Entity,
-    stockpiles: &Query<(&Stockpile, &Transform)>,
-    chargers: &Query<(&Charger, &Transform)>,
-) -> f32 {
-    if let Ok((s, _)) = stockpiles.get(entity) {
-        s.radius
-    } else if let Ok((c, _)) = chargers.get(entity) {
-        c.radius
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeliveryResult {
+    Delivered,
+    TooFar,
+    Full,
+    Missing,
+}
+
+fn deliver_to_sink(
+    sink: Entity,
+    hauler_pos: Vec2,
+    amount: u32,
+    stockpiles: &mut Query<(&mut Stockpile, &Transform)>,
+    facilities: &mut Query<(&mut ProductionFacility, &Transform)>,
+    chargers: &mut Query<(&mut Charger, &Transform)>,
+    ledger: &mut ResourceLedger,
+) -> DeliveryResult {
+    if let Ok((mut stockpile, transform)) = stockpiles.get_mut(sink) {
+        if hauler_pos.distance(transform.translation.truncate()) > stockpile.radius {
+            return DeliveryResult::TooFar;
+        }
+        if stockpile.free_space() < amount {
+            return DeliveryResult::Full;
+        }
+        stockpile.amount += amount;
+        ledger.add(stockpile.kind, amount);
+        DeliveryResult::Delivered
+    } else if let Ok((mut facility, transform)) = facilities.get_mut(sink) {
+        // Leg 3 delivery into a facility's own input hopper. The
+        // hopper is the only buffer production consumes from, so
+        // this is the moment material actually reaches production.
+        if hauler_pos.distance(transform.translation.truncate()) > BUILDING_FOOTPRINT_RADIUS {
+            return DeliveryResult::TooFar;
+        }
+        if facility.input_free_space() < amount {
+            return DeliveryResult::Full;
+        }
+        facility.input_amount += amount;
+        ledger.add(facility.input_kind, amount);
+        DeliveryResult::Delivered
+    } else if let Ok((mut charger, transform)) = chargers.get_mut(sink) {
+        if hauler_pos.distance(transform.translation.truncate()) > charger.radius {
+            return DeliveryResult::TooFar;
+        }
+        if charger.free_space() < amount {
+            return DeliveryResult::Full;
+        }
+        charger.amount += amount;
+        ledger.add(charger.kind, amount);
+        DeliveryResult::Delivered
     } else {
-        0.0
+        DeliveryResult::Missing
     }
 }
 
@@ -706,66 +695,44 @@ pub fn hauler_delivery_system(
         ),
     >,
     mut stockpiles: Query<(&mut Stockpile, &Transform)>,
+    mut facilities: Query<(&mut ProductionFacility, &Transform)>,
     mut chargers: Query<(&mut Charger, &Transform)>,
     mut ledger: ResMut<ResourceLedger>,
 ) {
     for (entity, transform, mut load, assignment) in &mut haulers {
-        let delivery = if let Ok((mut sink, sink_transform)) = stockpiles.get_mut(assignment.sink) {
-            if transform
-                .translation
-                .truncate()
-                .distance(sink_transform.translation.truncate())
-                > sink.radius
-            {
-                continue;
+        match deliver_to_sink(
+            assignment.sink,
+            transform.translation.truncate(),
+            load.amount,
+            &mut stockpiles,
+            &mut facilities,
+            &mut chargers,
+            &mut ledger,
+        ) {
+            DeliveryResult::Delivered => {
+                load.amount = 0;
+                commands
+                    .entity(entity)
+                    .remove::<HaulerAssignment>()
+                    .remove::<HaulerLoad>();
             }
-            if sink.free_space() < load.amount {
-                continue;
+            DeliveryResult::TooFar | DeliveryResult::Full => {
+                // Too far: wait for movement/assignment to restore
+                // the arrival path. Full: keep waiting at the sink;
+                // redirecting is a known first-implementation
+                // limitation.
             }
-            let delivered = load.amount;
-            sink.amount += delivered;
-            ledger.add(sink.kind, delivered);
-            Some(delivered)
-        } else if let Ok((mut charger, charger_transform)) = chargers.get_mut(assignment.sink) {
-            if transform
-                .translation
-                .truncate()
-                .distance(charger_transform.translation.truncate())
-                > charger.radius
-            {
-                continue;
+            DeliveryResult::Missing => {
+                // Assigned sink is gone. Drop the load so the hauler
+                // can pick new work; the assignment is removed too so
+                // the assignment system can re-evaluate on the next
+                // tick.
+                commands
+                    .entity(entity)
+                    .remove::<HaulerAssignment>()
+                    .remove::<HaulerLoad>();
             }
-            if charger.free_space() < load.amount {
-                continue;
-            }
-            let delivered = load.amount;
-            charger.amount += delivered;
-            ledger.add(charger.kind, delivered);
-            Some(delivered)
-        } else {
-            // Assigned sink is gone. Drop the load so the hauler
-            // can pick new work; the assignment is removed too so
-            // the assignment system can re-evaluate on the next
-            // tick.
-            commands
-                .entity(entity)
-                .remove::<HaulerAssignment>()
-                .remove::<HaulerLoad>();
-            continue;
-        };
-        if delivery.is_none() {
-            // Sink too full. The carry-assign system reuses the
-            // same assignment.sink, so the hauler cannot redirect
-            // to a different sink. The hauler waits at the sink
-            // until it is freed -- a known limitation for the
-            // first implementation, addressed in a follow-up.
-            continue;
         }
-        load.amount = 0;
-        commands
-            .entity(entity)
-            .remove::<HaulerAssignment>()
-            .remove::<HaulerLoad>();
     }
 }
 

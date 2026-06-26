@@ -33,7 +33,7 @@ An intent zone where nanobots hold and protect an area. Painting defend intent i
 _Avoid_: Fighter group, combat squad, attack zone
 
 **Stockpile**:
-A local resource buffer automatically created where sustained material flow is needed. Source stockpiles stage gathered resources near deposits; sink stockpiles in build zones feed production facilities, chargers, and future infrastructure.
+A local resource buffer automatically created where sustained material flow is needed. Source stockpiles stage gathered resources near deposits; sink stockpiles in build zones feed production facilities and future base infrastructure. Chargers have their own terminal buffer and are fed by direct hauler delivery.
 _Avoid_: Deposit zone, global storage
 
 **Source Stockpile**:
@@ -41,16 +41,20 @@ A stockpile placed near a resource deposit to receive resources extracted by wor
 _Avoid_: Mining depot, deposit storage
 
 **Sink Stockpile**:
-A stockpile placed in a build zone or base area to feed production facilities, chargers, construction, and other infrastructure needs.
-_Avoid_: Global storage, base inventory
+A stockpile placed in a build zone near a production facility that stages material between hauler legs: it receives material from source stockpiles and is the hauler source that feeds the facility's own input buffer. It is not the facility itself.
+_Avoid_: Global storage, base inventory, production facility hopper
 
-**Charger**:
-A local support structure automatically created where defenders need resupply. Defender effectiveness depends on regularly visiting chargers; defenders that go too long without charging lose health and attack/defense strength. Charger creation responds to defend-zone load and existing charger busyness, and chargers require logistics support so isolated defenses degrade when haulers cannot reach them.
-_Avoid_: Ammo crate, healing station
+**Logistics Leg**:
+One directed hauler movement along the material chain: source stockpile to sink stockpile, or sink stockpile to a terminal. Legs are ranked downstream-first so terminals are fed before buffers are filled.
+_Avoid_: Transport step, conveyor segment
 
 **Charge**:
 A defender sustain resource restored by visiting chargers. Only defenders use charge. Low charge weakens defender attack and defense, then causes health loss if ignored too long. Defenders automatically rotate to working chargers when charge runs low; fresh defenders can replace them at the front.
 _Avoid_: Ammo, mana, stamina
+
+**Terminal Consumer**:
+An end-of-chain structure that only receives material and never serves as a hauler source. Production facilities and chargers are terminals; stockpiles are not, even when a sink stockpile is the source for the next leg.
+_Avoid_: Sink, consumer building, final destination
 
 **Opponent Swarm**:
 A non-player swarm governed by the same intent, production, logistics, maintenance, and charge rules as the player swarm. Early opponents use prepainted bases and fixed production ratios instead of active AI.

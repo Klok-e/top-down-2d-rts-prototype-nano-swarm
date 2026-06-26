@@ -236,6 +236,7 @@ fn opponent_swarm_uses_own_fixed_ratio_through_same_production_systems() {
             Transform::from_translation(player_pos.extend(0.0)),
         ))
         .id();
+    common::fill_facility_input(&mut app, player_facility);
     let opponent_facility = app
         .world_mut()
         .spawn((
@@ -244,6 +245,7 @@ fn opponent_swarm_uses_own_fixed_ratio_through_same_production_systems() {
             Transform::from_translation(opponent_pos.extend(0.0)),
         ))
         .id();
+    common::fill_facility_input(&mut app, opponent_facility);
 
     app.update();
 
@@ -300,6 +302,7 @@ fn opponent_production_spawns_nanobots_as_children_of_opponent_swarm() {
             Transform::from_translation(opponent_pos.extend(0.0)),
         ))
         .id();
+    common::fill_facility_input(&mut app, _facility);
 
     for _ in 0..(1 + PRODUCTION_TICKS_PER_BOT as usize) {
         app.update();
@@ -370,6 +373,7 @@ fn opponent_uses_default_ratio_when_swarm_production_absent() {
             Transform::from_translation(swarm_pos.extend(0.0)),
         ))
         .id();
+    common::fill_facility_input(&mut app, facility);
 
     app.update();
 

@@ -10,7 +10,7 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-    NanobotType, ProductionCollapseState, ProductionFacility, ProductionRatio, Swarm,
+    NanobotType, OwnerSwarm, ProductionCollapseState, ProductionFacility, ProductionRatio, Swarm,
     PRODUCTION_COST_PER_BOT,
 };
 
@@ -356,8 +356,18 @@ fn idle_facility_with_no_stockpile_is_not_working_for_collapse_check() {
     let player_pos = Vec2::new(0.0, 0.0);
     let player =
         common::spawn_swarm_with_nanobots(&mut app, player_pos, &[(NanobotType::Defender, 2)]);
-    let _facility = common::spawn_facility_at(&mut app, player, player_pos);
-    // No stockpile; facility stays idle.
+    // Spawn the facility directly (not via the filling helper)
+    // so its input hopper is empty: without material the facility
+    // cannot start a cycle and must not count as working
+    // production.
+    let _facility = app
+        .world_mut()
+        .spawn((
+            ProductionFacility::new(),
+            OwnerSwarm(player),
+            Transform::from_translation(player_pos.extend(0.0)),
+        ))
+        .id();
 
     app.update();
 

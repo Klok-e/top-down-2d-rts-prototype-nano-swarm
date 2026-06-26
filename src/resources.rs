@@ -15,8 +15,8 @@
 //!   - [`ResourceLedger`] tracks the swarm-wide total for each
 //!     [`ResourceKind`] so future systems (e.g. production) can ask
 //!     "how many minerals does the swarm have?" without scanning
-//!     every entity. It is updated whenever a deposit loses
-//!     resources or a stockpile gains them.
+//!     every entity. It is updated whenever material enters or leaves
+//!     a physical buffer (stockpile, terminal hopper, or charger).
 
 use std::collections::HashMap;
 
@@ -97,12 +97,12 @@ impl Stockpile {
 ///   - `Source` stockpiles stage gathered resources near
 ///     `ResourceDeposit`s. The gather worker's "any near usable
 ///     Source Stockpile" check (issue #23) counts only these.
-///   - `Sink` stockpiles live in `Build` cells and feed
-///     production facilities, chargers, construction, and
-///     future base infrastructure. A hauler's transport pair
-///     can deliver into either role; a worker's tiny delivery
-///     can also land in either role when one is closer than the
-///     other, but the typical Gather flow ends at a `Source`.
+///   - `Sink` stockpiles live in `Build` cells and stage material
+///     for production facilities and future base infrastructure. A
+///     hauler can deliver into a sink stockpile (leg 2) and later
+///     draw from it to feed a terminal (leg 3). Worker gather
+///     delivery targets only source stockpiles so deposit-side flow
+///     cannot bypass the tiered logistics chain.
 ///
 /// The marker is independent of [`Stockpile`] so the existing
 /// `Stockpile` data shape stays stable: tests and gameplay
@@ -131,9 +131,9 @@ pub enum StockpileRole {
 /// so future systems (production, maintenance) can ask "how much
 /// of `kind` does the swarm have?" without scanning every entity.
 ///
-/// Maintained by the gather systems: deposits going down and
-/// stockpiles going up both flow through the ledger so the totals
-/// stay consistent with what is physically in the world.
+/// Maintained by gather, hauler, and production systems: physical
+/// pickup/delivery and terminal consumption flow through the ledger
+/// so totals stay consistent with what is physically in the world.
 #[derive(Debug, Default, Resource, Clone)]
 pub struct ResourceLedger {
     pub totals: HashMap<ResourceKind, u32>,

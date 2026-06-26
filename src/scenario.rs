@@ -17,7 +17,7 @@ use crate::{
         OwnerSwarm, ProductionFacility, ProductionRatio, Swarm, SwarmBundle, SwarmId, SwarmMember,
         SwarmProduction, VelocityComponent,
     },
-    resources::{ResourceDeposit, ResourceKind, Stockpile},
+    resources::{ResourceDeposit, ResourceKind},
     GAMEPLAY_SPRITE_Z,
 };
 
@@ -35,7 +35,6 @@ pub const OPPONENT_START_HAULERS: u32 = 2;
 pub const OPPONENT_START_DEFENDERS: u32 = 1;
 
 pub const STARTING_DEPOSIT_AMOUNT: u32 = 1000;
-pub const STARTING_STOCKPILE_CAPACITY: u32 = 1000;
 pub const STARTING_WORK_RADIUS: f32 = 64.0;
 
 pub fn cell_origin(cell: IVec2) -> Vec2 {
@@ -262,12 +261,6 @@ fn spawn_production_facility(
         ProductionFacility::new(),
         ProcessingFacility {},
         OwnerSwarm(owner),
-        Stockpile {
-            kind: ResourceKind::Minerals,
-            amount: 0,
-            capacity: STARTING_STOCKPILE_CAPACITY,
-            radius: STARTING_WORK_RADIUS,
-        },
         (
             Sprite::from_image(texture.clone()),
             Transform::from_translation(vec3(world_pos.x, world_pos.y, GAMEPLAY_SPRITE_Z))

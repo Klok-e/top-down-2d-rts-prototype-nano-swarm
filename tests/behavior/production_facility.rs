@@ -119,6 +119,7 @@ fn facility_skips_blocked_type() {
             .spawn((f, Transform::from_translation(pos.extend(0.0))))
             .id()
     };
+    common::fill_facility_input(&mut app, facility_entity);
 
     app.update();
 
@@ -142,11 +143,14 @@ fn facility_skips_blocked_type() {
 #[test]
 fn facility_consumes_delivered_resources() {
     // Acceptance: "Production Facilities consume physically
-    // delivered resources." A facility at a local stockpile
-    // drains exactly PRODUCTION_COST_PER_BOT when it starts
-    // a production cycle. A second stockpile far away is
-    // untouched, matching the "physically delivered" half
-    // of the contract.
+    // delivered resources." Under the tiered logistics flow
+    // (ADR-0005) production consumes exclusively from the
+    // facility's own input hopper -- the buffer haulers fill
+    // in leg 3. Starting from a full hopper, one pick cycle
+    // drains exactly PRODUCTION_COST_PER_BOT. A stockpile
+    // sitting right next to the facility is NOT touched,
+    // because production no longer scans stockpiles; this is
+    // what makes leg 3 non-bypassable.
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
@@ -154,24 +158,35 @@ fn facility_consumes_delivered_resources() {
         ratio.set_weight(NanobotType::Worker, 5);
     }
     let facility_pos = Vec2::new(0.0, 0.0);
-    let local = common::spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 2, 1000);
-    let distant_pos = Vec2::new(5000.0, 0.0);
-    let distant = common::spawn_stockpile(&mut app, distant_pos, 10_000, 20_000);
-    let _facility = common::spawn_idle_facility_at(&mut app, facility_pos);
+    let facility = common::spawn_idle_facility_at(&mut app, facility_pos);
+    // A source stockpile right next to the facility must NOT
+    // be drained: production reads only the facility input.
+    let nearby = common::spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 2, 1000);
+    let before = app
+        .world()
+        .entity(facility)
+        .get::<ProductionFacility>()
+        .unwrap()
+        .input_amount;
 
     app.update();
 
     let world = app.world_mut();
-    let local_state = world.entity(local).get::<Stockpile>().unwrap();
-    let distant_state = world.entity(distant).get::<Stockpile>().unwrap();
+    let after = world
+        .entity(facility)
+        .get::<ProductionFacility>()
+        .unwrap()
+        .input_amount;
     assert_eq!(
-        local_state.amount, PRODUCTION_COST_PER_BOT,
-        "local stockpile must lose exactly the production cost; got {}",
-        local_state.amount
+        before - after,
+        PRODUCTION_COST_PER_BOT,
+        "facility input hopper must lose exactly the production cost; before={before} after={after}"
     );
+    let nearby_state = world.entity(nearby).get::<Stockpile>().unwrap();
     assert_eq!(
-        distant_state.amount, 10_000,
-        "distant stockpile must not be drained by local production"
+        nearby_state.amount,
+        PRODUCTION_COST_PER_BOT * 2,
+        "nearby stockpile must not be drained; production reads only the facility input"
     );
 }
 
@@ -257,31 +272,50 @@ fn shared_early_cost_across_types() {
             ratio.set_weight(target, 1);
         }
         let facility_pos = Vec2::new(0.0, 0.0);
-        let stockpile_entity =
-            common::spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 3, 1000);
-        let _facility = common::spawn_idle_facility_at(&mut app, facility_pos);
-        app.update();
-        app.world()
-            .entity(stockpile_entity)
-            .get::<Stockpile>()
+        let facility = common::spawn_idle_facility_at(&mut app, facility_pos);
+        // Production consumes from the facility's own input
+        // hopper, not from a stockpile. Capture the hopper
+        // level before and after one pick cycle and return
+        // the delta so the three types can be compared on
+        // equal footing.
+        let before = app
+            .world()
+            .entity(facility)
+            .get::<ProductionFacility>()
             .unwrap()
-            .amount
+            .input_amount;
+        app.update();
+        let after = app
+            .world()
+            .entity(facility)
+            .get::<ProductionFacility>()
+            .unwrap()
+            .input_amount;
+        before - after
     }
 
-    let worker_remaining = run_scenario(NanobotType::Worker);
-    let hauler_remaining = run_scenario(NanobotType::Hauler);
-    let defender_remaining = run_scenario(NanobotType::Defender);
+    let worker_consumed = run_scenario(NanobotType::Worker);
+    let hauler_consumed = run_scenario(NanobotType::Hauler);
+    let defender_consumed = run_scenario(NanobotType::Defender);
 
     // All three must have consumed exactly the production
-    // cost, leaving the same amount in the stockpile.
-    let expected = PRODUCTION_COST_PER_BOT * 3 - PRODUCTION_COST_PER_BOT;
-    assert_eq!(worker_remaining, expected, "Worker cycle cost");
-    assert_eq!(hauler_remaining, expected, "Hauler cycle cost");
-    assert_eq!(defender_remaining, expected, "Defender cycle cost");
-    // And explicitly: the three remaining amounts are equal
+    // cost from their input hopper.
+    assert_eq!(
+        worker_consumed, PRODUCTION_COST_PER_BOT,
+        "Worker cycle cost"
+    );
+    assert_eq!(
+        hauler_consumed, PRODUCTION_COST_PER_BOT,
+        "Hauler cycle cost"
+    );
+    assert_eq!(
+        defender_consumed, PRODUCTION_COST_PER_BOT,
+        "Defender cycle cost"
+    );
+    // And explicitly: the three consumed amounts are equal
     // -- the cost is shared.
-    assert_eq!(worker_remaining, hauler_remaining);
-    assert_eq!(hauler_remaining, defender_remaining);
+    assert_eq!(worker_consumed, hauler_consumed);
+    assert_eq!(hauler_consumed, defender_consumed);
 }
 
 #[test]
@@ -592,6 +626,7 @@ fn blocked_types_cleared_after_full_cycle() {
             .spawn((f, Transform::from_translation(facility_pos.extend(0.0))))
             .id()
     };
+    common::fill_facility_input(&mut app, facility_entity);
     let _stockpile =
         common::spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
 

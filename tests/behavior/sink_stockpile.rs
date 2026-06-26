@@ -386,6 +386,34 @@ fn source_stockpile_demand_ignores_sink_stockpile_in_same_cell() {
 }
 
 #[test]
+fn charger_in_build_cell_does_not_plan_sink_stockpile() {
+    // ADR-0005 treats chargers asymmetrically from production
+    // facilities: a charger is a direct-delivery terminal, so even
+    // if it happens to sit in Build paint it must not create Sink
+    // Stockpile demand. This keeps Defend-zone logistics pressure
+    // local to haulers feeding the charger itself.
+    let mut app = build_app();
+    let cell = IVec2::new(0, 0);
+    paint_build(&mut app, cell);
+    let _charger = common::spawn_charger_at(&mut app, cell, 0);
+
+    for _ in 0..5 {
+        app.update();
+    }
+
+    let world = app.world_mut();
+    let planned_count = world
+        .query::<&PlannedStructure>()
+        .iter(world)
+        .filter(|p| p.kind == PlannedKind::SinkStockpile)
+        .count();
+    assert_eq!(
+        planned_count, 0,
+        "charger demand must not plan a Sink Stockpile; chargers are direct-delivery terminals"
+    );
+}
+
+#[test]
 fn no_sink_stockpile_planned_in_unpainted_cell_even_with_swarm() {
     // The "no plan without a Build Zone" half of the
     // contract, even with a swarm in the world: a swarm

@@ -8,8 +8,8 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
-        HaulerAssignment, HaulerLoad, OwnerSwarm, Swarm, SwarmId, HAULER_CARRY_CAPACITY,
-        WORKER_CARRY_CAPACITY,
+        HaulerAssignment, HaulerLoad, OwnerSwarm, ProductionFacility, Swarm, SwarmId,
+        HAULER_CARRY_CAPACITY, WORKER_CARRY_CAPACITY,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile},
 };
@@ -151,10 +151,9 @@ fn stockpile_not_emerged_for_corridor_only_cell() {
 #[test]
 fn hauler_ignores_enemy_owned_sink() {
     let mut app = build_app();
-    let deposit_pos = Vec2::new(0.0, 0.0);
+    let source_pos = Vec2::new(0.0, 0.0);
     let enemy_sink_pos = Vec2::new(50.0, 0.0);
     let player_sink_pos = Vec2::new(500.0, 0.0);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
     let enemy_swarm = app
         .world_mut()
         .spawn((
@@ -164,15 +163,22 @@ fn hauler_ignores_enemy_owned_sink() {
         ))
         .id();
     let player_swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    let enemy_sink = common::spawn_stockpile(&mut app, enemy_sink_pos, 0, 1000);
+    // Leg-2 source: a source-role stockpile the player hauler
+    // pulls from. Deposits are worker-only under the tiered
+    // logistics model (ADR-0005).
+    let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
+    app.world_mut()
+        .entity_mut(source)
+        .insert(OwnerSwarm(player_swarm));
+    let enemy_sink = common::spawn_sink_stockpile(&mut app, enemy_sink_pos, 0, 1000);
     app.world_mut()
         .entity_mut(enemy_sink)
         .insert(OwnerSwarm(enemy_swarm));
-    let player_sink = common::spawn_stockpile(&mut app, player_sink_pos, 0, 1000);
+    let player_sink = common::spawn_sink_stockpile(&mut app, player_sink_pos, 0, 1000);
     app.world_mut()
         .entity_mut(player_sink)
         .insert(OwnerSwarm(player_swarm));
-    let hauler = common::spawn_hauler_at(&mut app, deposit_pos);
+    let hauler = common::spawn_hauler_at(&mut app, source_pos);
 
     for _ in 0..3 {
         app.update();
@@ -183,7 +189,7 @@ fn hauler_ignores_enemy_owned_sink() {
         .entity(hauler)
         .get::<HaulerAssignment>()
         .expect("player hauler must still find player-owned sink");
-    assert_eq!(assignment.source, deposit);
+    assert_eq!(assignment.source, source);
     assert_eq!(
         assignment.sink, player_sink,
         "player hauler must ignore closer enemy-owned sink"
@@ -192,15 +198,17 @@ fn hauler_ignores_enemy_owned_sink() {
 
 #[test]
 fn hauler_assigns_to_source_and_sink() {
-    // An idle hauler with a nearby deposit (source) and a
-    // matching stockpile (sink) must commit to a transport trip
-    // by getting a HaulerAssignment that points at both.
+    // An idle hauler with a nearby source stockpile (leg-2
+    // source) and a matching sink stockpile must commit to a
+    // transport trip by getting a HaulerAssignment that points
+    // at both. Deposits are worker-only under the tiered model,
+    // so the hauler's source is a source-role stockpile.
     let mut app = build_app();
-    let deposit_pos = Vec2::new(100.0, 0.0);
-    let stockpile_pos = Vec2::new(400.0, 0.0);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
-    let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
-    let hauler = common::spawn_hauler_at(&mut app, deposit_pos);
+    let source_pos = Vec2::new(100.0, 0.0);
+    let sink_pos = Vec2::new(400.0, 0.0);
+    let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
+    let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
+    let hauler = common::spawn_hauler_at(&mut app, source_pos);
 
     for _ in 0..3 {
         app.update();
@@ -210,9 +218,9 @@ fn hauler_assigns_to_source_and_sink() {
         .world()
         .entity(hauler)
         .get::<HaulerAssignment>()
-        .expect("idle hauler near deposit + stockpile must receive a HaulerAssignment");
-    assert_eq!(assignment.source, deposit);
-    assert_eq!(assignment.sink, stockpile);
+        .expect("idle hauler near source + sink stockpile must receive a HaulerAssignment");
+    assert_eq!(assignment.source, source);
+    assert_eq!(assignment.sink, sink);
 }
 
 #[test]
@@ -334,65 +342,54 @@ fn hauler_delivers_full_load_to_sink() {
 }
 
 #[test]
-fn hauler_transports_deposit_to_sink_end_to_end() {
+fn hauler_transports_source_to_sink_end_to_end() {
     // Acceptance: "Resources move physically between deposits,
     // stockpiles, facilities, chargers, and needs". This test
-    // pins the deposit -> stockpile leg. The hauler is the
-    // primary transport, and the ledger must stay consistent
-    // throughout (resources just move from one physical location
-    // to another).
+    // pins the source-stockpile -> sink-stockpile hauler leg
+    // (leg 2 of the tiered chain). The hauler is the transport,
+    // and material is conserved across the move (it just moves
+    // from one physical buffer to another). Deposits are
+    // worker-only under ADR-0005, so the hauler source here is a
+    // source-role stockpile, not a deposit.
     let mut app = build_app();
-    let deposit_pos = Vec2::new(100.0, 0.0);
-    let stockpile_pos = Vec2::new(200.0, 0.0);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
-    let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
-    let hauler = common::spawn_hauler_at(&mut app, deposit_pos);
-    // Initial total physical resources in the world: the deposit
-    // holds 1000 minerals. The ResourceLedger starts at 0 because
-    // pre-existing deposits are not yet in the ledger (only
-    // physical movements are). The conservation check therefore
-    // pins "deposit + sink = initial" and ignores the ledger.
+    let source_pos = Vec2::new(100.0, 0.0);
+    let sink_pos = Vec2::new(200.0, 0.0);
+    let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
+    let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
+    let hauler = common::spawn_hauler_at(&mut app, source_pos);
+    // Initial total physical resources in the world: the source
+    // stockpile holds 1000 minerals. The ResourceLedger is
+    // updated on every pickup and delivery, so the conservation
+    // check pins "source + sink = initial".
     let initial_total = 1000u32;
-
-    // Record the ledger total at the start so we can sanity-check
-    // it after the trip. The ledger is updated on every pickup
-    // and delivery, so the post-trip total reflects the net
-    // physical transport since the start.
-    let _initial_ledger = app
-        .world()
-        .resource::<ResourceLedger>()
-        .total(ResourceKind::Minerals);
 
     for _ in 0..40 {
         app.update();
     }
 
     let world = app.world();
-    let deposit_after = world.entity(deposit).get::<ResourceDeposit>().unwrap();
-    let sink_after = world.entity(stockpile).get::<Stockpile>().unwrap();
+    let source_after = world.entity(source).get::<Stockpile>().unwrap();
+    let sink_after = world.entity(sink).get::<Stockpile>().unwrap();
+    // The hauler reassigns on the same tick it delivers (the
+    // assignment system runs in the same chain), so it may be
+    // mid-trip when we read state. The true conservation
+    // invariant therefore includes any load currently in
+    // flight: source + sink + carried = initial.
+    let carried = world
+        .entity(hauler)
+        .get::<HaulerLoad>()
+        .map(|l| l.amount)
+        .unwrap_or(0);
 
-    // Resources only moved between physical locations; the
-    // deposit + sink total is conserved. The ResourceLedger is
-    // updated on every pickup and delivery, so it equals
-    // deposit + sink + hauler load; we do not pin it here.
     assert_eq!(
-        deposit_after.amount + sink_after.amount,
+        source_after.amount + sink_after.amount + carried,
         initial_total,
-        "resources are conserved: deposit + sink = initial total"
+        "resources are conserved: source + sink + carried = initial total"
     );
     assert!(
         sink_after.amount > 0,
-        "sink received resources from the deposit; got {}",
+        "sink received resources from the source stockpile; got {}",
         sink_after.amount
-    );
-    // The hauler is idle and ready for the next trip.
-    assert!(
-        world.entity(hauler).get::<HaulerLoad>().is_none(),
-        "hauler has no load after delivery"
-    );
-    assert!(
-        world.entity(hauler).get::<HaulerAssignment>().is_none(),
-        "hauler has no assignment after delivery"
     );
 }
 
@@ -483,5 +480,106 @@ fn resource_ledger_stays_consistent_through_transport() {
     assert!(
         deposit_amount + stockpile_amount <= 200,
         "physical resources never exceed the initial total"
+    );
+}
+
+#[test]
+fn hauler_routes_to_facility_from_sink_stockpile_leg3() {
+    // Leg 3 + downstream-first + role filter (ADR-0005). With a
+    // facility (terminal), a sink stockpile, and a source stockpile
+    // all present, the hauler must route to the FACILITY and draw
+    // from the SINK stockpile -- the only legal leg-3 source -- and
+    // never from the source stockpile. This single setup pins three
+    // contracts at once: terminals beat buffers, a facility's source
+    // is a sink stockpile, and a source stockpile is never a leg-3
+    // source (the triple that prevents ping-pong).
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::ProductionRatio;
+    let mut app = build_app();
+    // Empty ratio so production never fires and the hauler is the
+    // only actor touching the facility's hopper.
+    app.insert_resource(ProductionRatio::new());
+    let hauler_pos = Vec2::new(0.0, 0.0);
+    let source_pos = Vec2::new(50.0, 0.0); // source-role, closer to hauler
+    let sink_pos = Vec2::new(100.0, 0.0); // sink-role
+    let facility_pos = Vec2::new(140.0, 0.0);
+    let _source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
+    let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 1000, 1000);
+    // Facility with an EMPTY input hopper: it has demand, so it is a
+    // tier-0 sink.
+    let facility = app
+        .world_mut()
+        .spawn((
+            ProductionFacility::new(),
+            Transform::from_translation(facility_pos.extend(0.0)),
+        ))
+        .id();
+    let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
+
+    app.update();
+
+    let assignment = app
+        .world()
+        .entity(hauler)
+        .get::<HaulerAssignment>()
+        .expect("hauler must commit to a leg-3 pair when a facility has demand");
+    assert_eq!(
+        assignment.sink, facility,
+        "downstream-first must route the hauler to the facility terminal, not a stockpile buffer"
+    );
+    assert_eq!(
+        assignment.source, sink,
+        "leg-3 source must be the sink stockpile; a source-role stockpile is never a facility source"
+    );
+
+    // Drive the trip and confirm material physically reaches the
+    // hopper (production is off, so the hopper only grows).
+    for _ in 0..60 {
+        app.update();
+    }
+    let input = app
+        .world()
+        .entity(facility)
+        .get::<ProductionFacility>()
+        .unwrap()
+        .input_amount;
+    assert!(
+        input > 0,
+        "hauler must deliver leg-3 material into the facility input hopper; got {input}"
+    );
+    let sink_after = app.world().entity(sink).get::<Stockpile>().unwrap().amount;
+    assert!(
+        sink_after < 1000,
+        "sink stockpile must have lost material to the leg-3 hauler; got {sink_after}"
+    );
+}
+
+#[test]
+fn hauler_never_picks_source_stockpile_as_sink() {
+    // Ping-pong guard (ADR-0005): a source-role stockpile is never
+    // a hauler sink, so leg 2 cannot reverse (sink -> source). With
+    // a source stockpile full of material and a sink stockpile with
+    // free space, the hauler commits source=source, sink=sink --
+    // never the other way around.
+    let mut app = build_app();
+    let source_pos = Vec2::new(100.0, 0.0);
+    let sink_pos = Vec2::new(400.0, 0.0);
+    let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
+    let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
+    let hauler = common::spawn_hauler_at(&mut app, source_pos);
+
+    app.update();
+
+    let assignment = app
+        .world()
+        .entity(hauler)
+        .get::<HaulerAssignment>()
+        .expect("hauler must commit to a leg-2 pair");
+    assert_eq!(
+        assignment.source, source,
+        "leg-2 source is the source stockpile"
+    );
+    assert_eq!(
+        assignment.sink, sink,
+        "leg-2 sink is the sink stockpile; a source-role stockpile is never a sink (no reversal)"
     );
 }
