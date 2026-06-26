@@ -3,17 +3,17 @@
   "roles": {
     "implementer": {
       "agentType": "general-purpose",
-      "model": "opencode-go/minimax-m3",
+      "model": "zai/glm-5.2",
       "description": "AFK implementer"
     },
     "quality": {
       "agentType": "general-purpose",
-      "model": "opencode-go/glm-5.2",
+      "model": "zai/glm-5.2",
       "description": "AFK quality pass"
     },
     "verifier": {
       "agentType": "general-purpose",
-      "model": "opencode-go/minimax-m3",
+      "model": "zai/glm-5.2",
       "description": "AFK verifier"
     }
   }
