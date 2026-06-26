@@ -361,6 +361,7 @@ fn opponent_production_spawns_opponent_swarm_id_nanobots() {
             Transform::from_translation(opponent_pos.extend(0.0)),
         ))
         .id();
+    common::fill_facility_input(&mut app, _facility);
 
     let opponent_id = app
         .world()

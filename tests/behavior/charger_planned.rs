@@ -479,13 +479,13 @@ fn hauler_delivers_to_completed_planned_charger() {
     let cell_center = common::cell_world_center(cell);
     let _plan = common::spawn_planned_charger_at_cell(&mut app, cell);
     let _worker = common::spawn_worker_at(&mut app, cell_center);
-    // A deposit close to the charger so the hauler can
-    // make the round trip in a reasonable number of
-    // ticks. The deposit must be in the same cell the
-    // hauler can reach.
-    let deposit_pos = Vec2::new(120.0, 0.0);
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
-    let _hauler = common::spawn_hauler_at(&mut app, deposit_pos);
+    // Leg source: a source-role stockpile close to the charger
+    // (deposits are worker-only under ADR-0005). The charger is
+    // the terminal sink; its source may be any stockpile with
+    // material.
+    let source_pos = Vec2::new(120.0, 0.0);
+    let _source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
+    let _hauler = common::spawn_hauler_at(&mut app, source_pos);
 
     // Build the plan first.
     let build_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize + 1;

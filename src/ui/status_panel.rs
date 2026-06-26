@@ -2,7 +2,10 @@ use bevy::prelude::*;
 use bevy::ui::{AlignItems, BorderRadius, FlexDirection, UiRect};
 
 use crate::{
-    nanobot::{Nanobot, NanobotType, OpponentSwarm, OwnerSwarm, ProductionFacility, Swarm},
+    nanobot::{
+        Nanobot, NanobotType, OpponentSwarm, OwnerSwarm, ProductionFacility, Swarm, SwarmId,
+        SwarmMember,
+    },
     resources::{ResourceDeposit, ResourceKind, Stockpile},
 };
 
@@ -94,8 +97,8 @@ pub fn setup_status_panel(mut commands: Commands, fonts: Res<FontsResource>) {
 
 #[allow(clippy::type_complexity)]
 pub fn update_status_panel_system(
-    player_swarms: Query<(Entity, &Children), (With<Swarm>, Without<OpponentSwarm>)>,
-    nanobots: Query<&NanobotType, With<Nanobot>>,
+    player_swarms: Query<(Entity, &SwarmId), (With<Swarm>, Without<OpponentSwarm>)>,
+    nanobots: Query<(&NanobotType, &SwarmMember), With<Nanobot>>,
     stockpiles: Query<(&Stockpile, Option<&OwnerSwarm>)>,
     deposits: Query<(&ResourceDeposit, Option<&OwnerSwarm>)>,
     facilities: Query<(&ProductionFacility, Option<&OwnerSwarm>)>,
@@ -105,7 +108,7 @@ pub fn update_status_panel_system(
         return;
     };
 
-    let Some((player_swarm, children)) = player_swarms.iter().next() else {
+    let Some((player_swarm, swarm_id)) = player_swarms.iter().next() else {
         *text = Text::new(format_status_panel(PlayerHudState::default()));
         return;
     };
@@ -113,8 +116,8 @@ pub fn update_status_panel_system(
     let mut workers = 0;
     let mut haulers = 0;
     let mut defenders = 0;
-    for child in children.iter() {
-        if let Ok(kind) = nanobots.get(child) {
+    for (kind, member) in &nanobots {
+        if member.0 == *swarm_id {
             match *kind {
                 NanobotType::Worker => workers += 1,
                 NanobotType::Hauler => haulers += 1,

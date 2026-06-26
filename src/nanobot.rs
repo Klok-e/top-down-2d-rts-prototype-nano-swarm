@@ -9,6 +9,7 @@ mod defend;
 mod demand;
 mod gather;
 mod haul;
+mod logistics_leg;
 mod maintenance;
 mod move_system;
 mod opponent;

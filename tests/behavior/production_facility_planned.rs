@@ -366,13 +366,24 @@ fn worker_builds_planned_production_facility_to_completion() {
         completed_visual_color(),
         "completed visual must use the completed color"
     );
-    // The completed facility carries a local Stockpile
-    // buffer matching the seed shape.
-    let local_buffer = world
+    // The completed facility is a terminal consumer: it owns its
+    // input hopper on the ProductionFacility component and carries
+    // NO Stockpile, so it never enters stockpile queries (a gather
+    // worker cannot dump into it, a hauler cannot pick it as a
+    // stockpile source/sink). The hopper starts empty -- leg 3
+    // haulers deliver into it.
+    assert!(
+        world.entity(plan).get::<Stockpile>().is_none(),
+        "completed Production Facility must NOT carry a Stockpile; it owns an input hopper instead"
+    );
+    let completed_facility = world
         .entity(plan)
-        .get::<Stockpile>()
-        .expect("completed Production Facility must carry a local Stockpile buffer");
-    assert_eq!(local_buffer.amount, 0, "local buffer starts empty");
+        .get::<ProductionFacility>()
+        .expect("completed Production Facility must carry a ProductionFacility");
+    assert_eq!(
+        completed_facility.input_amount, 0,
+        "input hopper starts empty; leg 3 haulers deliver into it"
+    );
 }
 
 #[test]

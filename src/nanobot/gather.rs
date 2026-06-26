@@ -186,14 +186,17 @@ fn find_nearest_deposit_in_cell(
 fn find_nearest_stockpile(
     kind: ResourceKind,
     worker_pos: Vec2,
-    stockpiles: &Query<(Entity, &Stockpile, &Transform)>,
+    stockpiles: &Query<(Entity, &Stockpile, &Transform, Option<&StockpileRole>)>,
 ) -> Option<Entity> {
     let mut best: Option<(f32, Entity)> = None;
-    for (entity, stockpile, transform) in stockpiles.iter() {
+    for (entity, stockpile, transform, role) in stockpiles.iter() {
         if stockpile.kind != kind {
             continue;
         }
         if stockpile.free_space() == 0 {
+            continue;
+        }
+        if matches!(role, Some(StockpileRole::Sink)) {
             continue;
         }
         let d = worker_pos.distance(transform.translation.truncate());
@@ -825,7 +828,7 @@ pub fn worker_gather_carry_assign_system(
             Without<ReturningToStockpile>,
         ),
     >,
-    stockpiles: Query<(Entity, &Stockpile, &Transform)>,
+    stockpiles: Query<(Entity, &Stockpile, &Transform, Option<&StockpileRole>)>,
 ) {
     for (entity, transform, load) in &workers {
         let Some(stockpile_entity) =
@@ -836,7 +839,7 @@ pub fn worker_gather_carry_assign_system(
             // it up.
             continue;
         };
-        let Ok((_, stockpile, stockpile_transform)) = stockpiles.get(stockpile_entity) else {
+        let Ok((_, stockpile, stockpile_transform, _)) = stockpiles.get(stockpile_entity) else {
             continue;
         };
         commands.entity(entity).insert((

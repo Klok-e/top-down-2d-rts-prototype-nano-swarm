@@ -721,11 +721,14 @@ fn hauler_delivers_minerals_to_a_charger_with_free_space() {
     // charger with zero amount, then asserts the hauler
     // routes to the charger and the charger's amount grows.
     let mut app = build_app();
-    let deposit_pos = Vec2::new(100.0, 0.0);
+    let source_pos = Vec2::new(100.0, 0.0);
     let cell = IVec2::new(2, 0);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
+    // Leg source: a source-role stockpile (deposits are
+    // worker-only under ADR-0005). The charger is the terminal
+    // sink; its source may be any stockpile with material.
+    let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
     let charger = common::spawn_charger_at(&mut app, cell, 0);
-    let _hauler = common::spawn_hauler_at(&mut app, deposit_pos);
+    let _hauler = common::spawn_hauler_at(&mut app, source_pos);
     // Paint a Defend cell so the charger auto-creation
     // system would not also create one (we have a manual
     // charger). The system only creates chargers in cells
@@ -745,20 +748,20 @@ fn hauler_delivers_minerals_to_a_charger_with_free_space() {
     }
 
     let c = app.world().entity(charger).get::<Charger>().unwrap();
-    let d = app
-        .world()
-        .entity(deposit)
-        .get::<top_down_2d_rts_prototype_nano_swarm::resources::ResourceDeposit>()
-        .unwrap();
     assert!(
         c.amount > 0,
         "hauler must have delivered minerals to the charger; charger.amount = {}",
         c.amount
     );
+    let s = app
+        .world()
+        .entity(source)
+        .get::<top_down_2d_rts_prototype_nano_swarm::resources::Stockpile>()
+        .unwrap();
     assert!(
-        d.amount < 1000,
-        "deposit must have lost material to the hauler; deposit.amount = {}",
-        d.amount
+        s.amount < 1000,
+        "source stockpile must have lost material to the hauler; amount = {}",
+        s.amount
     );
 }
 

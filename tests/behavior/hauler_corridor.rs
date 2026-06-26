@@ -38,10 +38,13 @@ fn hauler_has_no_waypoint_without_corridor() {
     // a few ticks of movement instead of being removed on the
     // arrival check.
     let hauler_pos = Vec2::new(0.0, 0.0);
-    let deposit_pos = Vec2::new(2_000.0, 0.0);
-    let stockpile_pos = Vec2::new(3_000.0, 0.0);
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
-    let _stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
+    let source_pos = Vec2::new(2_000.0, 0.0);
+    let sink_pos = Vec2::new(3_000.0, 0.0);
+    // Leg-2 source: a source-role stockpile (deposits are
+    // worker-only under ADR-0005). Leg-2 sink: a sink-role
+    // stockpile.
+    let _source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
+    let _sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
     let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
 
     for _ in 0..3 {
@@ -61,7 +64,7 @@ fn hauler_has_no_waypoint_without_corridor() {
         .get::<DirectMovementComponent>()
         .expect("hauler has a DMC after assignment");
     assert!(
-        (dmc.xy - deposit_pos).length() < 1.0,
+        (dmc.xy - source_pos).length() < 1.0,
         "hauler DMC must point at the source when no corridor is painted; got {:?}",
         dmc.xy
     );
@@ -76,14 +79,14 @@ fn hauler_picks_corridor_waypoint_when_painted_on_route() {
     // straight to the source.
     let mut app = build_app();
     let hauler_pos = Vec2::new(0.0, 0.0);
-    let deposit_pos = Vec2::new(2_000.0, 0.0);
-    let stockpile_pos = Vec2::new(3_000.0, 0.0);
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
-    let _stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
+    let source_pos = Vec2::new(2_000.0, 0.0);
+    let sink_pos = Vec2::new(3_000.0, 0.0);
+    let _source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
+    let _sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
     let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
 
     // Cell (2, 0) is on the line from (0, 0) to (2000, 0) and
-    // sits between the hauler and the deposit. Painting it
+    // sits between the hauler and the source. Painting it
     // gives a guaranteed-on-line waypoint.
     let painted = IVec2::new(2, 0);
     paint_corridor(&mut app, painted, PAINT_STRENGTH_CAP);
@@ -105,7 +108,7 @@ fn hauler_picks_corridor_waypoint_when_painted_on_route() {
         waypoint.waypoint
     );
     assert!(
-        (waypoint.target - deposit_pos).length() < 1.0,
+        (waypoint.target - source_pos).length() < 1.0,
         "waypoint target must be the source; got {:?}",
         waypoint.target
     );
@@ -129,10 +132,10 @@ fn hauler_picks_higher_paint_corridor_cell() {
     // preference (acceptance criterion).
     let mut app = build_app();
     let hauler_pos = Vec2::new(0.0, 0.0);
-    let deposit_pos = Vec2::new(2_000.0, 0.0);
-    let stockpile_pos = Vec2::new(3_000.0, 0.0);
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
-    let _stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
+    let source_pos = Vec2::new(2_000.0, 0.0);
+    let sink_pos = Vec2::new(3_000.0, 0.0);
+    let _source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
+    let _sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
     let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
 
     let weak = IVec2::new(1, 0);

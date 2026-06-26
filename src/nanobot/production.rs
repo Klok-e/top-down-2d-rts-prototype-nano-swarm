@@ -65,6 +65,14 @@ pub const PRODUCTION_COST_PER_BOT: u32 = 20;
 /// the simulation with a handful of `app.update()` calls.
 pub const PRODUCTION_TICKS_PER_BOT: u32 = 5;
 
+/// Capacity of a [`ProductionFacility`]'s own input hopper. Haulers
+/// (logistics leg 3) deliver minerals into this buffer; production
+/// consumes exclusively from it. Sized to hold several production
+/// cycles' worth so a hauler trip does not stall the facility after
+/// one bot, while staying small enough that a cut-off facility
+/// drains and goes idle (the maintenance / collapse pressure).
+pub const PRODUCTION_INPUT_CAPACITY: u32 = 200;
+
 /// Sum of positive deficits that triggers a new facility to
 /// emerge. A small value means a single missing nanobot is
 /// already enough to ask for more production capacity, so
@@ -227,20 +235,43 @@ pub struct ProductionFacility {
     /// is idle and waiting to pick its next target.
     pub current_target: Option<NanobotType>,
     /// Types the facility could not start producing this cycle
-    /// (e.g. because no stockpile has the material). The system
-    /// clears this set at the end of a cycle so blocked types
-    /// get re-tried in the next one.
+    /// (e.g. because its input hopper is too low for the cost).
+    /// The system clears this set at the end of a cycle so
+    /// blocked types get re-tried in the next one.
     pub blocked_types: HashSet<NanobotType>,
+    /// Resource kind the input hopper accepts. Always
+    /// [`ResourceKind::Minerals`] in the first implementation;
+    /// kept as a field so the hauler sink matcher can pair it
+    /// against the hauler's carried kind without a hardcoded
+    /// assumption.
+    pub input_kind: ResourceKind,
+    /// Material currently sitting in the facility's input hopper.
+    /// Haulers (logistics leg 3) deliver into this buffer;
+    /// production pulls [`PRODUCTION_COST_PER_BOT`] from it at
+    /// the start of each cycle. This is the ONLY buffer
+    /// production consumes from -- a sink stockpile no longer
+    /// feeds production directly, so the three-leg chain is
+    /// real and the hauler cannot be bypassed.
+    pub input_amount: u32,
+    /// Maximum material the input hopper can hold. A full hopper
+    /// reports zero free space, so the hauler sink matcher skips
+    /// it until production drains some.
+    pub input_capacity: u32,
 }
 
 impl ProductionFacility {
-    /// New idle facility. Used by the auto-creation system and
-    /// by tests.
+    /// New idle facility with an empty input hopper, used by the
+    /// auto-creation promotion path and by tests. A facility
+    /// starts idle and stays idle until a hauler delivers enough
+    /// material for at least one production cycle.
     pub fn new() -> Self {
         Self {
             progress: 0,
             current_target: None,
             blocked_types: HashSet::new(),
+            input_kind: ResourceKind::Minerals,
+            input_amount: 0,
+            input_capacity: PRODUCTION_INPUT_CAPACITY,
         }
     }
 
@@ -254,6 +285,15 @@ impl ProductionFacility {
     /// True when `kind` is currently in the blocked set.
     pub fn is_blocked(&self, kind: NanobotType) -> bool {
         self.blocked_types.contains(&kind)
+    }
+
+    /// Free capacity in the input hopper for hauler delivery.
+    /// Mirrors [`crate::resources::Stockpile::free_space`] and
+    /// [`crate::nanobot::Charger::free_space`] so the hauler
+    /// sink selection treats all three terminal/buffer kinds
+    /// through the same shape.
+    pub fn input_free_space(&self) -> u32 {
+        self.input_capacity.saturating_sub(self.input_amount)
     }
 }
 
@@ -557,13 +597,17 @@ pub fn production_facility_auto_creation_system(
 }
 
 /// Pick the next production target for every idle facility and
-/// try to consume the material up-front. If material cannot be
-/// pulled for a candidate type, the type is added to the
-/// facility's blocked set and the picker tries the next one.
+/// consume the material up-front from the facility's own input
+/// hopper. If the hopper does not hold a full
+/// [`PRODUCTION_COST_PER_BOT`], the candidate type is added to
+/// the facility's blocked set and the picker tries the next one.
 ///
 /// A facility whose blocked set covers every type stays idle
-/// (it has nothing to produce) until material arrives and a
-/// future pick run can break the deadlock.
+/// (it has nothing to produce) until a hauler delivers material
+/// via logistics leg 3 and a future pick run can break the
+/// deadlock. Production never scans stockpiles: the input hopper
+/// is the only buffer it consumes from, so the three-leg chain
+/// cannot be bypassed.
 ///
 /// Each facility reads its ratio from the [`SwarmProduction`]
 /// of its [`OwnerSwarm`] (if present) or falls back to the
@@ -580,11 +624,10 @@ pub fn production_facility_pick_target_system(
     nanobots: Query<(&NanobotType, &crate::nanobot::components::SwarmMember), With<Nanobot>>,
     swarm_productions: Query<&SwarmProduction>,
     swarms: Query<&SwarmId, With<Swarm>>,
-    mut facilities: Query<(&Transform, &mut ProductionFacility, Option<&OwnerSwarm>)>,
-    mut stockpiles: Query<(Entity, &mut Stockpile, &Transform)>,
+    mut facilities: Query<(&mut ProductionFacility, Option<&OwnerSwarm>)>,
     mut ledger: ResMut<ResourceLedger>,
 ) {
-    for (transform, mut facility, owner) in &mut facilities {
+    for (mut facility, owner) in &mut facilities {
         if facility.is_busy() {
             continue;
         }
@@ -611,16 +654,18 @@ pub fn production_facility_pick_target_system(
             None => (&*global_ratio, count_nanobots_by_type(&nanobots)),
         };
 
-        // Try the deficit priority; if material cannot be
-        // pulled, block the type and try the next. We loop
-        // because blocking one type changes the ranking for
-        // the next attempt.
+        // Try the deficit priority; if the input hopper does
+        // not hold a full production cost, block the type and
+        // try the next. We loop because blocking one type
+        // changes the ranking for the next attempt. The hopper
+        // is the facility's own buffer -- a sink stockpile no
+        // longer feeds production directly, so leg 3 of the
+        // logistics chain (hauler: sink stockpile -> facility)
+        // is the only way material reaches this point.
         while let Some(kind) = pick_deficit_type(ratio, &counts, &facility.blocked_types) {
-            if try_consume_production_material(
-                transform.translation.truncate(),
-                &mut stockpiles,
-                &mut ledger,
-            ) {
+            if facility.input_amount >= PRODUCTION_COST_PER_BOT {
+                facility.input_amount -= PRODUCTION_COST_PER_BOT;
+                ledger.remove(facility.input_kind, PRODUCTION_COST_PER_BOT);
                 facility.current_target = Some(kind);
                 facility.progress = 0;
                 // The blocked set is preserved for the
@@ -722,40 +767,6 @@ pub fn production_facility_work_system(
         facility.progress = 0;
         facility.blocked_types.clear();
     }
-}
-
-/// Try to consume [`PRODUCTION_COST_PER_BOT`] units of
-/// `ResourceKind::Minerals` from the stockpile closest to
-/// `facility_pos` that has at least that much. Returns true on
-/// success.
-///
-/// Same scan-then-mutate pattern as the build work helper in
-/// `nanobot/build.rs` to keep the system in line with the rest
-/// of the resource-economy code.
-fn try_consume_production_material(
-    facility_pos: Vec2,
-    stockpiles: &mut Query<(Entity, &mut Stockpile, &Transform)>,
-    ledger: &mut ResMut<ResourceLedger>,
-) -> bool {
-    let Some(target) = stockpiles
-        .iter()
-        .filter(|(_, s, _)| s.kind == ResourceKind::Minerals && s.amount >= PRODUCTION_COST_PER_BOT)
-        .min_by(|(_, _, ta), (_, _, tb)| {
-            facility_pos
-                .distance(ta.translation.truncate())
-                .partial_cmp(&facility_pos.distance(tb.translation.truncate()))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|(e, _, _)| e)
-    else {
-        return false;
-    };
-    let Ok((_, mut stockpile, _)) = stockpiles.get_mut(target) else {
-        return false;
-    };
-    stockpile.amount -= PRODUCTION_COST_PER_BOT;
-    ledger.remove(stockpile.kind, PRODUCTION_COST_PER_BOT);
-    true
 }
 
 /// Plugin that wires the production systems into the Update
