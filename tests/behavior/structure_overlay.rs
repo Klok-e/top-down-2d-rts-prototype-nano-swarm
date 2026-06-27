@@ -7,7 +7,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         Charger, HaulerLoad, PlannedKind, PlannedStructure, ProductionFacility,
         HAULER_CARRY_CAPACITY,
     },
-    resources::{ResourceDeposit, ResourceKind},
+    resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole},
     structure_overlay::{
         fill_fraction, overlay_bar_size, overlay_fill_color, overlay_label_offset_y,
         StructureOverlay, StructureOverlayFill, StructureOverlayKind, StructureOverlayPlugin,
@@ -435,6 +435,65 @@ fn fill_colors_are_pairwise_distinct() {
             assert_ne!(colors[i], colors[j]);
         }
     }
+}
+
+// Regression: when a PlannedStructure is promoted in place to
+// a Stockpile (the production code path), the stale Planned
+// overlay must be replaced by a Stockpile overlay whose fill
+// tracks the stockpile's amount/capacity. Before the fix the
+// Planned overlay was left attached, kept reading the removed
+// PlannedStructure component, and rendered a permanently empty
+// bar even as the stockpile filled.
+#[test]
+fn overlay_kind_refreshes_when_planned_structure_is_promoted() {
+    let mut app = build_app();
+    let planned = common::spawn_planned_structure_of_kind_at_cell(
+        &mut app,
+        IVec2::ZERO,
+        PlannedKind::SinkStockpile,
+    );
+
+    app.update();
+    let planned_overlay = find_overlay_for(&mut app, planned);
+    assert_eq!(
+        kind_of(&app, planned_overlay),
+        StructureOverlayKind::Planned
+    );
+
+    // Promote in place: drop PlannedStructure, stamp the
+    // completed Stockpile payload. Mirrors
+    // promote_planned_to_completion in src/nanobot/planned.rs.
+    app.world_mut()
+        .entity_mut(planned)
+        .remove::<PlannedStructure>()
+        .insert((
+            Stockpile {
+                kind: ResourceKind::Minerals,
+                amount: 30,
+                capacity: 100,
+                radius: 32.0,
+            },
+            StockpileRole::Sink,
+        ));
+
+    app.update();
+
+    // The stale Planned overlay must be gone; a fresh Stockpile
+    // overlay must point at the same target and render the
+    // stockpile's fill fraction.
+    assert!(app.world().get_entity(planned_overlay).is_err());
+    let overlay = find_overlay_for(&mut app, planned);
+    assert_eq!(kind_of(&app, overlay), StructureOverlayKind::Stockpile);
+    assert_fill_fraction(&app, overlay, StructureOverlayKind::Stockpile, 0.3);
+
+    // And it must keep tracking as the stockpile fills further.
+    app.world_mut()
+        .entity_mut(planned)
+        .get_mut::<Stockpile>()
+        .unwrap()
+        .amount = 80;
+    app.update();
+    assert_fill_fraction(&app, overlay, StructureOverlayKind::Stockpile, 0.8);
 }
 
 // ---------------------------------------------------------------------------

@@ -14,6 +14,8 @@ mod defend_zone;
 mod full_source_stockpile;
 #[path = "behavior/gather_overlap.rs"]
 mod gather_overlap;
+#[path = "behavior/gather_owner_filter.rs"]
+mod gather_owner_filter;
 #[path = "behavior/gather_zone.rs"]
 mod gather_zone;
 #[path = "behavior/hauler_corridor.rs"]

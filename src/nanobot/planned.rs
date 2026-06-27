@@ -859,7 +859,7 @@ fn empty_mineral_stockpile() -> Stockpile {
     Stockpile {
         kind: ResourceKind::Minerals,
         amount: 0,
-        capacity: 1000,
+        capacity: 100,
         radius: 32.0,
     }
 }
