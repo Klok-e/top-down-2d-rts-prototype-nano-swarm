@@ -19,6 +19,9 @@ use bevy::{
     prelude::*,
     render::storage::ShaderStorageBuffer,
     sprite_render::{Material2dPlugin, MeshMaterial2d},
+    window::{
+        Window, WindowLevel, WindowMode, WindowPlugin, WindowResizeConstraints, WindowResolution,
+    },
 };
 use fly_camera::{Camera2dFlyPlugin, CameraZoom2d, FlyCamera2d};
 use game_settings::GameSettings;
@@ -34,6 +37,40 @@ use tactical_overlay::TacticalOverlayPlugin;
 use ui::NanoswarmUiSetupPlugin;
 use zones::{ZoneMaterial, ZoneMaterialHandleComponent, ZonesPlugin};
 
+/// Logical window size used for the primary window.
+///
+/// Kept fixed (min == max) so tiling Wayland compositors such as sway
+/// float the window on map instead of tiling it. sway's `wants_floating`
+/// predicate floats a view when `min_width > 0 && min_height > 0 &&
+/// (min_width == max_width || min_height == max_height)`, evaluated from the
+/// xdg-shell `set_min_size`/`set_max_size` hints (Wayland native) or the X11
+/// `WM_NORMAL_HINTS` size hints (XWayland). Bevy's winit backend forwards
+/// `WindowResizeConstraints` to both, so pinning the size triggers floating
+/// on either path. See sway `sway/desktop/xdg_shell.c::wants_floating` and
+/// `sway/desktop/xwayland.c::wants_floating`.
+const PRIMARY_WINDOW_WIDTH: f32 = 1280.0;
+const PRIMARY_WINDOW_HEIGHT: f32 = 720.0;
+
+fn primary_window_config() -> Window {
+    let size_constraints = WindowResizeConstraints {
+        min_width: PRIMARY_WINDOW_WIDTH,
+        min_height: PRIMARY_WINDOW_HEIGHT,
+        max_width: PRIMARY_WINDOW_WIDTH,
+        max_height: PRIMARY_WINDOW_HEIGHT,
+    };
+    Window {
+        name: Some("nano-swarm".into()),
+        mode: WindowMode::Windowed,
+        resolution: WindowResolution::new(
+            PRIMARY_WINDOW_WIDTH as u32,
+            PRIMARY_WINDOW_HEIGHT as u32,
+        ),
+        resize_constraints: size_constraints,
+        window_level: WindowLevel::AlwaysOnTop,
+        ..default()
+    }
+}
+
 pub fn build_app() -> App {
     let mut app = App::new();
     app.insert_resource(IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32))
@@ -41,7 +78,10 @@ pub fn build_app() -> App {
         .insert_resource(scenario::default_player_ratio())
         .init_resource::<nanobot::SoftWorkSlots>()
         .init_resource::<nanobot::OpponentSwarmIdAlloc>()
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(primary_window_config()),
+            ..default()
+        }))
         .add_plugins(Material2dPlugin::<BackgroundMaterial>::default())
         // must be before NanobotPlugin because otherwise it receives events with despawned entities
         .add_plugins(NanoswarmUiSetupPlugin)
@@ -249,6 +289,27 @@ mod overlay_transform_tests {
     //! front of the background and behind the gameplay sprites.
 
     use super::*;
+
+    #[test]
+    fn primary_window_starts_windowed_and_always_on_top() {
+        let window = primary_window_config();
+        assert_eq!(window.mode, WindowMode::Windowed);
+        assert_eq!(window.window_level, WindowLevel::AlwaysOnTop);
+    }
+
+    #[test]
+    fn primary_window_pins_size_so_sway_floats_it() {
+        // sway floats a view when min_width > 0 && min_height > 0 &&
+        // (min_width == max_width || min_height == max_height). Pinning the
+        // window size satisfies that on both Wayland native (xdg-shell size
+        // hints) and XWayland (WM_NORMAL_HINTS).
+        let window = primary_window_config();
+        let c = window.resize_constraints;
+        assert!(c.min_width > 0.0 && c.min_height > 0.0);
+        assert_eq!(c.min_width, c.max_width);
+        assert_eq!(c.min_height, c.max_height);
+        assert_eq!(window.name.as_deref(), Some("nano-swarm"));
+    }
 
     #[test]
     fn background_overlay_transform_uses_translation_z_not_scale_z() {
