@@ -26,6 +26,7 @@
 
 use libtest_mimic::{Arguments, Conclusion, Failed, Trial};
 
+mod fill_indicators;
 mod harness;
 mod smoke;
 mod world_space_nanobots;
@@ -54,6 +55,8 @@ fn main() -> std::process::ExitCode {
     // display). `--ignored` runs only ignored tests, exactly matching
     // the standard `cargo test` convention.
     let tests = vec![
+        Trial::test("fill_indicators", || run(fill_indicators::fill_indicators))
+            .with_ignored_flag(true),
         Trial::test("smoke", || run(smoke::smoke)).with_ignored_flag(true),
         Trial::test("world_space_nanobots", || {
             run(world_space_nanobots::world_space_nanobots)

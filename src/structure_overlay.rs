@@ -1,98 +1,39 @@
-//! Zoom-aware structure status overlays (issue #30).
+//! Zoom-aware world-space fill bars for structures and loaded haulers.
 //!
-//! Every support structure carries an always-visible,
-//! world-attached status label that summarises its current
-//! state. Deposits show remaining resources, stockpiles
-//! show load, production facilities show idle/working
-//! state with progress and target, planned structures
-//! show build progress, and chargers show current/total
-//! supply. Labels sit in world space (so they respect
-//! camera zoom automatically) and disappear once the
-//! camera zoom value meets or exceeds
-//! [`StructureOverlaySettings::hide_zoom_threshold`] so the
-//! player can declutter the view when zoomed out far.
+//! Structures always get a small horizontal bar above their sprite. The bar
+//! shows buffer fullness for deposits, stockpiles, facilities, chargers, and
+//! build progress for planned structures. Haulers get the same treatment only
+//! while carrying a [`HaulerLoad`]. Bars live in world space and use the same
+//! zoom threshold that the previous structure labels used.
 
-use bevy::prelude::*;
+use bevy::{ecs::query::QueryFilter, prelude::*};
 
 use crate::fly_camera::CameraZoom2d;
 use crate::nanobot::{
-    Charger, PlannedKind, PlannedStructure, ProductionFacility, DEFAULT_PLANNED_WORK_TICKS,
-    PLANNED_STRUCTURE_FOOTPRINT,
+    Charger, HaulerLoad, Nanobot, PlannedStructure, ProductionFacility, BOT_RADIUS,
+    DEFAULT_PLANNED_WORK_TICKS, HAULER_CARRY_CAPACITY, PLANNED_STRUCTURE_FOOTPRINT,
 };
 use crate::resources::{ResourceDeposit, Stockpile};
 use crate::GAMEPLAY_SPRITE_Z;
 
-/// Camera zoom value at or above which overlays hide. The
-/// camera's default `zoom` is `1.0`; this default sits
-/// well above that so labels stay visible at the typical
-/// play zoom and disappear only when the player zooms out
-/// deliberately. Matches
-/// [`crate::tactical_overlay::DEFAULT_TACTICAL_SHOW_ZOOM_THRESHOLD`]
-/// so the two layers fade at the same boundary. Override
-/// at runtime through [`StructureOverlaySettings`].
+/// Camera zoom value at or above which overlays hide.
 pub const DEFAULT_OVERLAY_HIDE_ZOOM_THRESHOLD: f32 = 8.0;
 
-/// Z-translation for the overlay label and its background.
-/// Must sit above [`crate::GAMEPLAY_SPRITE_Z`] so the
-/// overlay renders in front of every gameplay sprite
-/// (deposit, stockpile, facility, planned structure,
-/// charger, swarm children). The label is the "readable
-/// above sprites" callout from issue #33, so it cannot
-/// live behind the sprites it is annotating.
+/// Z-translation for overlay backgrounds. Fill children sit slightly above it.
 pub const STRUCTURE_OVERLAY_Z: f32 = GAMEPLAY_SPRITE_Z + 1.0;
 
-/// Default worker-reach radius used for the deposit
-/// overlay offset when the target's `ResourceDeposit`
-/// component cannot be queried (e.g. unit tests that want
-/// the pure-helper contract without a Bevy `App`). Mirrors
-/// the test-seam default in `tests/common::spawn_deposit`.
+/// Default deposit radius used by pure offset tests when no component is known.
 pub const DEFAULT_DEPOSIT_OVERLAY_RADIUS: f32 = 32.0;
 
-/// Vertical gap (world units) between the top of the
-/// target's visible footprint and the centre of the
-/// overlay label. Picked to give the background panel
-/// breathing room above the sprite without leaving a
-/// visually awkward empty band.
+/// Vertical gap between target footprint top and bar centre.
 pub const STRUCTURE_FOOTPRINT_LABEL_GAP: f32 = 12.0;
 
-/// World-space Y offset (positive = above the target's
-/// centre) for an overlay label of `kind`. The label
-/// centres on `target_pos.y + offset`, so the bottom
-/// edge of the text ends up `STRUCTURE_FOOTPRINT_LABEL_GAP`
-/// above the target's visible top.
-///
-/// Contract per issue #33:
-///
-/// - `Deposit` uses the queried `ResourceDeposit::radius`
-///   (or [`DEFAULT_DEPOSIT_OVERLAY_RADIUS`] when the
-///   component is not observable, e.g. first-frame or
-///   pure-helper tests).
-/// - `Stockpile`, `Facility`, `Planned`, `Charger` share
-///   the same `PLANNED_STRUCTURE_FOOTPRINT / 2`
-///   half-footprint and ignore `deposit_radius`.
-///
-/// The result is always strictly positive.
-pub fn overlay_label_offset_y(kind: StructureOverlayKind, deposit_radius: Option<f32>) -> f32 {
-    let extent = match kind {
-        StructureOverlayKind::Deposit => deposit_radius.unwrap_or(DEFAULT_DEPOSIT_OVERLAY_RADIUS),
-        StructureOverlayKind::Stockpile
-        | StructureOverlayKind::Facility
-        | StructureOverlayKind::Planned
-        | StructureOverlayKind::Charger => PLANNED_STRUCTURE_FOOTPRINT / 2.0,
-    };
-    extent + STRUCTURE_FOOTPRINT_LABEL_GAP
-}
+const STRUCTURE_BAR_SIZE: Vec2 = Vec2::new(48.0, 6.0);
+const HAULER_BAR_SIZE: Vec2 = Vec2::new(32.0, 4.0);
+const HAULER_OVERLAY_GAP: f32 = 8.0;
+const FILL_CHILD_Z: f32 = 0.01;
 
-/// Runtime configuration for the overlay system. Inserted
-/// as a Bevy [`Resource`] so it can be mutated by the
-/// player (e.g. a future "labels off" toggle) or by tests.
-///
-/// `hide_zoom_threshold` is the camera zoom value at or
-/// above which overlays hide. The default
-/// ([`DEFAULT_OVERLAY_HIDE_ZOOM_THRESHOLD`]) keeps labels
-/// visible at the default play zoom. Setting it to `0.0`
-/// or below forces every overlay visible; setting it to
-/// `f32::INFINITY` hides every overlay.
+/// Runtime configuration for the overlay system.
 #[derive(Debug, Resource, Clone, Copy, PartialEq)]
 pub struct StructureOverlaySettings {
     pub hide_zoom_threshold: f32,
@@ -106,12 +47,7 @@ impl Default for StructureOverlaySettings {
     }
 }
 
-/// The five structure kinds an overlay can summarise. The
-/// spawn / update / cleanup systems switch on this to
-/// pick the right query and the right formatter. No
-/// structure-side marker is required: the overlay is its
-/// own entity and stores its target, so the gameplay
-/// systems never need to know about the overlay layer.
+/// Every fill bar kind the overlay layer knows how to render.
 #[derive(Debug, Component, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StructureOverlayKind {
     Deposit,
@@ -119,13 +55,21 @@ pub enum StructureOverlayKind {
     Facility,
     Planned,
     Charger,
+    Hauler,
 }
 
 impl StructureOverlayKind {
-    /// Every kind in stable declaration order. Used by the
-    /// spawn system to iterate kinds and by tests that
-    /// pin the full set.
-    pub const ALL: [StructureOverlayKind; 5] = [
+    /// All kinds in stable declaration order.
+    pub const ALL: [StructureOverlayKind; 6] = [
+        StructureOverlayKind::Deposit,
+        StructureOverlayKind::Stockpile,
+        StructureOverlayKind::Facility,
+        StructureOverlayKind::Planned,
+        StructureOverlayKind::Charger,
+        StructureOverlayKind::Hauler,
+    ];
+
+    pub const STRUCTURES: [StructureOverlayKind; 5] = [
         StructureOverlayKind::Deposit,
         StructureOverlayKind::Stockpile,
         StructureOverlayKind::Facility,
@@ -134,120 +78,88 @@ impl StructureOverlayKind {
     ];
 }
 
-/// Marker on the overlay entity. `target` is the structure
-/// the overlay tracks. The cleanup system despawns the
-/// overlay when `target` is gone; the update system reads
-/// from `target` every tick.
+/// Marker on the bar background entity. `fill` is the child entity whose width
+/// is updated to match the target's current fullness.
 #[derive(Debug, Component, Clone, Copy)]
 pub struct StructureOverlay {
     pub target: Entity,
     pub kind: StructureOverlayKind,
+    pub fill: Entity,
 }
 
-/// Background color of the overlay panel for `kind`. Each
-/// kind gets a distinct hue so the player can tell kinds
-/// apart at a glance.
-pub fn overlay_background_color(kind: StructureOverlayKind) -> Color {
-    match kind {
-        StructureOverlayKind::Deposit => Color::srgba(0.65, 0.45, 0.10, 0.85),
-        StructureOverlayKind::Stockpile => Color::srgba(0.20, 0.50, 0.20, 0.85),
-        StructureOverlayKind::Facility => Color::srgba(0.20, 0.40, 0.70, 0.85),
-        StructureOverlayKind::Planned => Color::srgba(0.45, 0.45, 0.45, 0.85),
-        StructureOverlayKind::Charger => Color::srgba(0.55, 0.30, 0.70, 0.85),
-    }
-}
+/// Marker for overlay background sprites.
+#[derive(Debug, Component, Clone, Copy)]
+pub struct StructureOverlayBackground;
 
-/// "Deposit 840"-style label for a [`ResourceDeposit`].
-/// The amount is the only state the deposit carries that
-/// belongs in the label; capacity and radius are
-/// simulation-internal and would only add noise.
-pub fn format_deposit_label(amount: u32) -> String {
-    format!("Deposit {amount}")
-}
+/// Marker for overlay fill sprites.
+#[derive(Debug, Component, Clone, Copy)]
+pub struct StructureOverlayFill;
 
-/// "Stockpile 120/1000"-style label for a [`Stockpile`].
-/// Both `amount` and `capacity` belong in the label so the
-/// player can see how full the buffer is at a glance.
-pub fn format_stockpile_label(amount: u32, capacity: u32) -> String {
-    format!("Stockpile {amount}/{capacity}")
-}
+/// Backwards-compatible alias for callers that name the generic fill overlay.
+pub type FillOverlay = StructureOverlay;
+pub type FillOverlayKind = StructureOverlayKind;
+pub type FillOverlayBackground = StructureOverlayBackground;
+pub type FillOverlayFill = StructureOverlayFill;
 
-/// "Facility: idle" / "Facility: Worker 40%" label for a
-/// [`ProductionFacility`]. Idle facilities show
-/// "Facility: idle" with no target; working facilities
-/// show the type and the current cycle's progress as a
-/// percent. The percent is rounded down to keep the label
-/// stable across ticks.
-pub fn format_facility_label(facility: &ProductionFacility) -> String {
-    match facility.current_target {
-        None => "Facility: idle".to_string(),
-        Some(kind) => {
-            let percent = crate::nanobot::production_progress_percent(facility);
-            format!("Facility: {kind:?} {percent}%")
-        }
-    }
-}
-
-/// "Building Stockpile 40%"-style label for a
-/// [`PlannedStructure`]. The "kind" string is the
-/// short tag the issue's acceptance list uses (e.g.
-/// "Stockpile", "Facility", "Charger"). The percent is
-/// computed from `work_remaining` and the default work
-/// budget so the player sees the build advancing.
-pub fn format_planned_label(planned: &PlannedStructure) -> String {
-    let kind_str = match planned.kind {
-        PlannedKind::SourceStockpile | PlannedKind::SinkStockpile => "Stockpile",
-        PlannedKind::ProductionFacility => "Facility",
-        PlannedKind::Charger => "Charger",
+/// World-space Y offset (positive = above target centre) for a bar of `kind`.
+pub fn overlay_label_offset_y(kind: StructureOverlayKind, deposit_radius: Option<f32>) -> f32 {
+    let extent = match kind {
+        StructureOverlayKind::Deposit => deposit_radius.unwrap_or(DEFAULT_DEPOSIT_OVERLAY_RADIUS),
+        StructureOverlayKind::Stockpile
+        | StructureOverlayKind::Facility
+        | StructureOverlayKind::Planned
+        | StructureOverlayKind::Charger => PLANNED_STRUCTURE_FOOTPRINT / 2.0,
+        StructureOverlayKind::Hauler => BOT_RADIUS,
     };
-    let percent = planned_build_percent(planned);
-    format!("Building {kind_str} {percent}%")
+    let gap = match kind {
+        StructureOverlayKind::Hauler => HAULER_OVERLAY_GAP,
+        _ => STRUCTURE_FOOTPRINT_LABEL_GAP,
+    };
+    extent + gap
 }
 
-/// "Charger 60/100"-style label for a [`Charger`]. Both
-/// `amount` and `capacity` belong in the label so the
-/// player can see the buffer's fill level.
-pub fn format_charger_label(amount: u32, capacity: u32) -> String {
-    format!("Charger {amount}/{capacity}")
-}
-
-/// Build progress for a [`PlannedStructure`] as a
-/// `0..=100` integer percent. The percent is computed
-/// from `work_remaining` and the total work budget
-/// ([`DEFAULT_PLANNED_WORK_TICKS`]) so a freshly planned
-/// structure with the full budget shows 0% and a plan
-/// that has spent all but the last tick shows 80%
-/// (assuming a 5-tick budget). Floors at 0 and caps at
-/// 100 so an over-spend or over-budget plan does not
-/// produce a confusing label.
-pub fn planned_build_percent(planned: &PlannedStructure) -> u32 {
-    let work_budget = DEFAULT_PLANNED_WORK_TICKS;
-    if work_budget == 0 {
-        return 100;
+/// Fraction helper for amount/capacity-style buffers.
+pub fn fill_fraction(amount: u32, capacity: u32) -> f32 {
+    if capacity == 0 {
+        return 0.0;
     }
-    let spent = work_budget.saturating_sub(planned.work_remaining);
-    let percent = (spent as u64 * 100 / work_budget as u64) as u32;
-    percent.min(100)
+    (amount as f32 / capacity as f32).clamp(0.0, 1.0)
 }
 
-/// Decide the visibility for an overlay given the current
-/// camera zoom and the configured threshold. The contract
-/// is "hide when zoomed out beyond the threshold" -- the
-/// math is `zoom >= threshold`. Using `>=` rather than `>`
-/// so the boundary value itself is hidden (one zoom unit
-/// of hysteresis would be over-engineering for a visual
-/// declutter toggle).
-///
-/// Two threshold extremes are special-cased so tests and
-/// "always on / always off" toggles have a clean knob:
-///
-/// - `threshold == f32::INFINITY` always hides, even at
-///   `zoom = 0.0`. A future "labels off" UI toggle can
-///   set the threshold to `f32::INFINITY` to disable the
-///   layer without removing the system.
-/// - `threshold <= 0.0` always shows, even at the largest
-///   possible zoom. Useful for tests that want the
-///   overlays visible no matter what the camera reports.
+/// Planned-structure build progress as a `0.0..=1.0` fraction.
+pub fn planned_fill_fraction(planned: &PlannedStructure) -> f32 {
+    fill_fraction(
+        DEFAULT_PLANNED_WORK_TICKS.saturating_sub(planned.work_remaining),
+        DEFAULT_PLANNED_WORK_TICKS,
+    )
+}
+
+/// World-space bar size for each overlay kind.
+pub fn overlay_bar_size(kind: StructureOverlayKind) -> Vec2 {
+    match kind {
+        StructureOverlayKind::Hauler => HAULER_BAR_SIZE,
+        _ => STRUCTURE_BAR_SIZE,
+    }
+}
+
+/// Dark backing panel shared by every bar.
+pub fn overlay_background_color(_kind: StructureOverlayKind) -> Color {
+    Color::srgba(0.0, 0.0, 0.0, 0.65)
+}
+
+/// Fill color for each kind.
+pub fn overlay_fill_color(kind: StructureOverlayKind) -> Color {
+    match kind {
+        StructureOverlayKind::Deposit => Color::srgb(1.0, 0.68, 0.20),
+        StructureOverlayKind::Stockpile => Color::srgb(0.25, 0.85, 0.35),
+        StructureOverlayKind::Facility => Color::srgb(0.25, 0.55, 1.0),
+        StructureOverlayKind::Planned => Color::srgb(0.85, 0.85, 0.90),
+        StructureOverlayKind::Charger => Color::srgb(0.75, 0.35, 1.0),
+        StructureOverlayKind::Hauler => Color::srgb(0.25, 0.90, 1.0),
+    }
+}
+
+/// Decide overlay visibility for a camera zoom and configured threshold.
 pub fn overlay_visibility_for_zoom(zoom: f32, threshold: f32) -> Visibility {
     if threshold == f32::INFINITY {
         return Visibility::Hidden;
@@ -262,11 +174,7 @@ pub fn overlay_visibility_for_zoom(zoom: f32, threshold: f32) -> Visibility {
     }
 }
 
-/// Effective zoom for the visibility check. Returns the
-/// first camera's zoom, or `fallback_zoom` if the world
-/// has no camera. The fallback is `1.0` so a test app
-/// without a camera treats the world as the default
-/// play zoom and the overlays stay visible.
+/// First camera zoom, or fallback when no camera exists.
 pub fn effective_zoom<'a, I>(zoom_iter: I, fallback_zoom: f32) -> f32
 where
     I: IntoIterator<Item = &'a CameraZoom2d>,
@@ -278,11 +186,7 @@ where
         .unwrap_or(fallback_zoom)
 }
 
-/// Plugin that wires the structure overlay systems into
-/// the `Update` schedule. The chain runs spawn -> update
-/// -> visibility -> cleanup, so a structure spawned and
-/// then despawned in the same tick leaves no orphan
-/// overlay alive.
+/// Plugin wiring for fill bars.
 pub struct StructureOverlayPlugin;
 
 impl Plugin for StructureOverlayPlugin {
@@ -303,14 +207,7 @@ impl Plugin for StructureOverlayPlugin {
     }
 }
 
-/// Spawn one [`StructureOverlay`] for every structure
-/// entity that does not yet have one. The set of
-/// "already has an overlay" is built once per tick from
-/// the overlay query, then the structure queries run a
-/// "not in set" check. The text starts as an empty
-/// string; the update system overwrites it on the same
-/// tick's next system run.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn structure_overlay_spawn_system(
     mut commands: Commands,
     deposits: Query<Entity, With<ResourceDeposit>>,
@@ -318,144 +215,196 @@ pub fn structure_overlay_spawn_system(
     facilities: Query<Entity, With<ProductionFacility>>,
     planned: Query<Entity, With<PlannedStructure>>,
     chargers: Query<Entity, With<Charger>>,
+    loaded_haulers: Query<Entity, (With<Nanobot>, With<HaulerLoad>)>,
     existing: Query<&StructureOverlay>,
 ) {
     let covered: std::collections::HashSet<Entity> = existing.iter().map(|o| o.target).collect();
-    for entity in &deposits {
-        if covered.contains(&entity) {
-            continue;
+    spawn_missing(
+        &mut commands,
+        &covered,
+        &deposits,
+        StructureOverlayKind::Deposit,
+    );
+    spawn_missing(
+        &mut commands,
+        &covered,
+        &stockpiles,
+        StructureOverlayKind::Stockpile,
+    );
+    spawn_missing(
+        &mut commands,
+        &covered,
+        &facilities,
+        StructureOverlayKind::Facility,
+    );
+    spawn_missing(
+        &mut commands,
+        &covered,
+        &planned,
+        StructureOverlayKind::Planned,
+    );
+    spawn_missing(
+        &mut commands,
+        &covered,
+        &chargers,
+        StructureOverlayKind::Charger,
+    );
+    spawn_missing(
+        &mut commands,
+        &covered,
+        &loaded_haulers,
+        StructureOverlayKind::Hauler,
+    );
+}
+
+fn spawn_missing(
+    commands: &mut Commands,
+    covered: &std::collections::HashSet<Entity>,
+    targets: &Query<Entity, impl QueryFilter>,
+    kind: StructureOverlayKind,
+) {
+    for entity in targets {
+        if !covered.contains(&entity) {
+            spawn_overlay_for(commands, entity, kind);
         }
-        spawn_overlay_for(&mut commands, entity, StructureOverlayKind::Deposit);
-    }
-    for entity in &stockpiles {
-        if covered.contains(&entity) {
-            continue;
-        }
-        spawn_overlay_for(&mut commands, entity, StructureOverlayKind::Stockpile);
-    }
-    for entity in &facilities {
-        if covered.contains(&entity) {
-            continue;
-        }
-        spawn_overlay_for(&mut commands, entity, StructureOverlayKind::Facility);
-    }
-    for entity in &planned {
-        if covered.contains(&entity) {
-            continue;
-        }
-        spawn_overlay_for(&mut commands, entity, StructureOverlayKind::Planned);
-    }
-    for entity in &chargers {
-        if covered.contains(&entity) {
-            continue;
-        }
-        spawn_overlay_for(&mut commands, entity, StructureOverlayKind::Charger);
     }
 }
 
 fn spawn_overlay_for(commands: &mut Commands, target: Entity, kind: StructureOverlayKind) {
-    commands.spawn((
-        StructureOverlay { target, kind },
-        Text2d::new(""),
-        TextColor(Color::WHITE),
-        TextBackgroundColor(overlay_background_color(kind)),
-        Transform::from_translation(Vec3::new(0.0, 0.0, STRUCTURE_OVERLAY_Z)),
-        Visibility::Inherited,
-    ));
+    let size = overlay_bar_size(kind);
+    let fill = commands
+        .spawn((
+            StructureOverlayFill,
+            Sprite {
+                color: overlay_fill_color(kind),
+                custom_size: Some(Vec2::new(0.0, size.y)),
+                ..default()
+            },
+            Transform::from_translation(Vec3::new(-size.x / 2.0, 0.0, FILL_CHILD_Z)),
+            Visibility::Inherited,
+        ))
+        .id();
+
+    let background = commands
+        .spawn((
+            StructureOverlay { target, kind, fill },
+            StructureOverlayBackground,
+            Sprite {
+                color: overlay_background_color(kind),
+                custom_size: Some(size),
+                ..default()
+            },
+            Transform::from_translation(Vec3::new(0.0, 0.0, STRUCTURE_OVERLAY_Z)),
+            Visibility::Inherited,
+        ))
+        .id();
+
+    commands.entity(background).add_child(fill);
 }
 
-/// Update the label text and world position of every
-/// existing overlay. The text is recomputed from the
-/// target's current state every tick, so a deposit that
-/// loses material or a facility that finishes a cycle
-/// sees the new label on the next tick without any extra
-/// signal. The position is the target's translation
-/// plus a per-kind Y offset (see
-/// [`overlay_label_offset_y`]) so the label sits above
-/// the visible footprint, never inside or below it.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn structure_overlay_update_system(
-    mut overlays: Query<(&StructureOverlay, &mut Text2d, &mut Transform)>,
+    mut overlays: Query<(&StructureOverlay, &mut Transform), Without<StructureOverlayFill>>,
+    mut fills: Query<
+        (&mut Sprite, &mut Transform),
+        (With<StructureOverlayFill>, Without<StructureOverlay>),
+    >,
     deposits: Query<&ResourceDeposit, Without<StructureOverlay>>,
     stockpiles: Query<&Stockpile, Without<StructureOverlay>>,
     facilities: Query<&ProductionFacility, Without<StructureOverlay>>,
     planned: Query<&PlannedStructure, Without<StructureOverlay>>,
     chargers: Query<&Charger, Without<StructureOverlay>>,
-    target_transforms: Query<&Transform, Without<StructureOverlay>>,
+    haulers: Query<&HaulerLoad, Without<StructureOverlay>>,
+    target_transforms: Query<
+        &Transform,
+        (Without<StructureOverlay>, Without<StructureOverlayFill>),
+    >,
 ) {
-    for (overlay, mut text, mut transform) in &mut overlays {
-        // If the target is gone the cleanup system will
-        // despawn the overlay on this tick's last pass;
-        // skip the update rather than crash.
+    for (overlay, mut transform) in &mut overlays {
         let Ok(target_pos) = target_transforms
             .get(overlay.target)
             .map(|t| t.translation.truncate())
         else {
             continue;
         };
-        // Per-kind offset: deposit uses the actual
-        // `ResourceDeposit::radius`; every other kind uses
-        // the shared structure half-footprint. The
-        // helper returns a positive Y so the label sits
-        // above the target rather than inside or below
-        // it.
+
         let deposit_radius = deposits.get(overlay.target).ok().map(|d| d.radius);
         let offset_y = overlay_label_offset_y(overlay.kind, deposit_radius);
         transform.translation = (target_pos + Vec2::new(0.0, offset_y)).extend(STRUCTURE_OVERLAY_Z);
-        text.0 = compute_label_text(
+
+        let fraction = compute_fill_fraction(
             overlay.kind,
             &deposits,
             &stockpiles,
             &facilities,
             &planned,
             &chargers,
+            &haulers,
             overlay.target,
         );
+        update_fill_sprite(overlay.kind, fraction, overlay.fill, &mut fills);
     }
 }
 
-#[allow(clippy::type_complexity)]
-fn compute_label_text(
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn compute_fill_fraction(
     kind: StructureOverlayKind,
     deposits: &Query<&ResourceDeposit, Without<StructureOverlay>>,
     stockpiles: &Query<&Stockpile, Without<StructureOverlay>>,
     facilities: &Query<&ProductionFacility, Without<StructureOverlay>>,
     planned: &Query<&PlannedStructure, Without<StructureOverlay>>,
     chargers: &Query<&Charger, Without<StructureOverlay>>,
+    haulers: &Query<&HaulerLoad, Without<StructureOverlay>>,
     target: Entity,
-) -> String {
+) -> f32 {
     match kind {
         StructureOverlayKind::Deposit => deposits
             .get(target)
-            .map(|d| format_deposit_label(d.amount))
-            .unwrap_or_default(),
+            .map(|d| fill_fraction(d.amount, d.capacity))
+            .unwrap_or(0.0),
         StructureOverlayKind::Stockpile => stockpiles
             .get(target)
-            .map(|s| format_stockpile_label(s.amount, s.capacity))
-            .unwrap_or_default(),
+            .map(|s| fill_fraction(s.amount, s.capacity))
+            .unwrap_or(0.0),
         StructureOverlayKind::Facility => facilities
             .get(target)
-            .map(format_facility_label)
-            .unwrap_or_default(),
+            .map(|f| fill_fraction(f.input_amount, f.input_capacity))
+            .unwrap_or(0.0),
         StructureOverlayKind::Planned => planned
             .get(target)
-            .map(format_planned_label)
-            .unwrap_or_default(),
+            .map(planned_fill_fraction)
+            .unwrap_or(0.0),
         StructureOverlayKind::Charger => chargers
             .get(target)
-            .map(|c| format_charger_label(c.amount, c.capacity))
-            .unwrap_or_default(),
+            .map(|c| fill_fraction(c.amount, c.capacity))
+            .unwrap_or(0.0),
+        StructureOverlayKind::Hauler => haulers
+            .get(target)
+            .map(|l| fill_fraction(l.amount, HAULER_CARRY_CAPACITY))
+            .unwrap_or(0.0),
     }
 }
 
-/// Toggle each overlay's [`Visibility`] based on the
-/// current camera zoom and the configured threshold.
-/// The visibility contract is in
-/// [`overlay_visibility_for_zoom`]: hidden when
-/// `zoom >= threshold`, visible (inherited) otherwise.
-/// A test app with no camera sees a zoom of `1.0`,
-/// which is below the default threshold of `8.0`, so
-/// the overlays stay visible.
+#[allow(clippy::type_complexity)]
+fn update_fill_sprite(
+    kind: StructureOverlayKind,
+    fraction: f32,
+    fill: Entity,
+    fills: &mut Query<
+        (&mut Sprite, &mut Transform),
+        (With<StructureOverlayFill>, Without<StructureOverlay>),
+    >,
+) {
+    let Ok((mut sprite, mut transform)) = fills.get_mut(fill) else {
+        return;
+    };
+    let size = overlay_bar_size(kind);
+    let fill_width = size.x * fraction.clamp(0.0, 1.0);
+    sprite.custom_size = Some(Vec2::new(fill_width, size.y));
+    sprite.color = overlay_fill_color(kind);
+    transform.translation = Vec3::new(-(size.x - fill_width) / 2.0, 0.0, FILL_CHILD_Z);
+}
+
 pub fn structure_overlay_visibility_system(
     settings: Res<StructureOverlaySettings>,
     zoom_query: Query<&CameraZoom2d>,
@@ -470,147 +419,73 @@ pub fn structure_overlay_visibility_system(
     }
 }
 
-/// Despawn every overlay whose target entity is gone.
-/// Runs last in the chain so a freshly despawned
-/// structure (e.g. a planned structure that just
-/// promoted to a stockpile) does not leave an
-/// orphan alive in the same tick. The new entity
-/// (the completed stockpile) gets its own fresh
-/// overlay from the spawn system on the same tick.
 pub fn structure_overlay_cleanup_system(
     mut commands: Commands,
     overlays: Query<(Entity, &StructureOverlay)>,
     targets: Query<Entity>,
+    loaded_haulers: Query<(), With<HaulerLoad>>,
 ) {
     for (overlay_entity, overlay) in &overlays {
-        if targets.get(overlay.target).is_err() {
+        let target_gone = targets.get(overlay.target).is_err();
+        let empty_hauler = overlay.kind == StructureOverlayKind::Hauler
+            && loaded_haulers.get(overlay.target).is_err();
+        if target_gone || empty_hauler {
             commands.entity(overlay_entity).despawn();
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Unit tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
-    //! Pure-helper unit tests. The end-to-end contracts
-    //! (spawn, update, visibility, cleanup) live in
-    //! `tests/behavior/structure_overlay.rs`.
-
     use super::*;
+    use crate::nanobot::{PlannedKind, DEFAULT_PLANNED_WORK_TICKS};
 
     #[test]
-    fn format_deposit_label_includes_remaining_amount() {
-        assert_eq!(format_deposit_label(0), "Deposit 0");
-        assert_eq!(format_deposit_label(840), "Deposit 840");
-        assert_eq!(format_deposit_label(u32::MAX), "Deposit 4294967295");
+    fn fill_fraction_clamps_and_handles_zero_capacity() {
+        assert_eq!(fill_fraction(0, 100), 0.0);
+        assert_eq!(fill_fraction(50, 100), 0.5);
+        assert_eq!(fill_fraction(150, 100), 1.0);
+        assert_eq!(fill_fraction(10, 0), 0.0);
     }
 
     #[test]
-    fn format_stockpile_label_includes_amount_and_capacity() {
-        assert_eq!(format_stockpile_label(0, 1000), "Stockpile 0/1000");
-        assert_eq!(format_stockpile_label(120, 1000), "Stockpile 120/1000");
-        assert_eq!(format_stockpile_label(1000, 1000), "Stockpile 1000/1000");
+    fn planned_fill_fraction_uses_spent_work_budget() {
+        let mut planned = PlannedStructure::new(PlannedKind::SinkStockpile, IVec2::ZERO);
+        planned.work_remaining = DEFAULT_PLANNED_WORK_TICKS;
+        assert_eq!(planned_fill_fraction(&planned), 0.0);
+        planned.work_remaining = DEFAULT_PLANNED_WORK_TICKS / 2;
+        assert!(planned_fill_fraction(&planned) > 0.0);
+        planned.work_remaining = 0;
+        assert_eq!(planned_fill_fraction(&planned), 1.0);
     }
 
     #[test]
-    fn format_charger_label_includes_amount_and_capacity() {
-        assert_eq!(format_charger_label(0, 100), "Charger 0/100");
-        assert_eq!(format_charger_label(60, 100), "Charger 60/100");
-        assert_eq!(format_charger_label(100, 100), "Charger 100/100");
-    }
-
-    #[test]
-    fn format_facility_label_idle_when_no_target() {
-        let f = ProductionFacility::new();
-        assert_eq!(format_facility_label(&f), "Facility: idle");
-    }
-
-    #[test]
-    fn format_facility_label_working_shows_type_and_progress() {
-        let mut f = ProductionFacility::new();
-        f.current_target = Some(crate::nanobot::NanobotType::Worker);
-        f.progress = 2;
-        let label = format_facility_label(&f);
-        assert!(
-            label.starts_with("Facility: Worker "),
-            "working facility label must show the type; got {label}"
-        );
-        assert!(
-            label.ends_with('%'),
-            "working facility label must end with a percent sign; got {label}"
-        );
-    }
-
-    #[test]
-    fn format_planned_label_uses_kind_name_and_percent() {
-        let cell = IVec2::new(0, 0);
-        // work_remaining / DEFAULT_PLANNED_WORK_TICKS
-        // (5) drives the percent. 3/5 remaining =
-        // 40% spent; 1/5 = 80%; 5/5 = 0%; 0/5 = 100%.
-        let mut sink = PlannedStructure::new(PlannedKind::SinkStockpile, cell);
-        sink.work_remaining = 3;
-        assert_eq!(format_planned_label(&sink), "Building Stockpile 40%");
-
-        let mut fac = PlannedStructure::new(PlannedKind::ProductionFacility, cell);
-        fac.work_remaining = 1;
-        assert_eq!(format_planned_label(&fac), "Building Facility 80%");
-
-        let mut chg = PlannedStructure::new(PlannedKind::Charger, cell);
-        chg.work_remaining = 5;
-        assert_eq!(format_planned_label(&chg), "Building Charger 0%");
-        chg.work_remaining = 0;
-        assert_eq!(format_planned_label(&chg), "Building Charger 100%");
-
-        // Source and Sink stockpiles share the short
-        // label so the player only learns one name.
-        let mut source = PlannedStructure::new(PlannedKind::SourceStockpile, cell);
-        source.work_remaining = sink.work_remaining;
+    fn overlay_bar_size_is_smaller_for_haulers() {
         assert_eq!(
-            format_planned_label(&source),
-            format_planned_label(&sink),
-            "source and sink stockpiles must share the label"
+            overlay_bar_size(StructureOverlayKind::Stockpile),
+            STRUCTURE_BAR_SIZE
+        );
+        assert_eq!(
+            overlay_bar_size(StructureOverlayKind::Hauler),
+            HAULER_BAR_SIZE
         );
     }
 
     #[test]
-    fn planned_build_percent_floors_at_zero_and_caps_at_hundred() {
-        let cell = IVec2::new(0, 0);
-        let mut p = PlannedStructure::new(PlannedKind::SourceStockpile, cell);
-        p.work_remaining = DEFAULT_PLANNED_WORK_TICKS;
-        assert_eq!(planned_build_percent(&p), 0);
-        p.work_remaining = 0;
-        assert_eq!(planned_build_percent(&p), 100);
-    }
-
-    #[test]
-    fn overlay_background_colors_are_distinct_per_kind() {
+    fn fill_colors_are_distinct_per_kind() {
         let colors: Vec<Color> = StructureOverlayKind::ALL
             .iter()
-            .map(|k| overlay_background_color(*k))
+            .map(|k| overlay_fill_color(*k))
             .collect();
         for i in 0..colors.len() {
             for j in (i + 1)..colors.len() {
-                assert_ne!(
-                    colors[i],
-                    colors[j],
-                    "overlay background color for {:?} must differ from {:?}",
-                    StructureOverlayKind::ALL[i],
-                    StructureOverlayKind::ALL[j]
-                );
+                assert_ne!(colors[i], colors[j]);
             }
         }
     }
 
     #[test]
     fn overlay_visibility_hides_only_at_or_above_threshold() {
-        // Just below the threshold still shows; at or
-        // above hides. A threshold of zero keeps the
-        // labels always visible; `f32::INFINITY` keeps
-        // them always hidden -- the two extremes a
-        // player toggle and a test seam both need.
         assert_eq!(overlay_visibility_for_zoom(1.0, 8.0), Visibility::Inherited);
         assert_eq!(
             overlay_visibility_for_zoom(7.99, 8.0),
@@ -629,19 +504,11 @@ mod tests {
     }
 
     #[test]
-    fn effective_zoom_falls_back_when_no_camera() {
-        // No camera in the iterator => the supplied
-        // fallback wins. Test apps that do not spawn a
-        // camera rely on this so the visibility system
-        // still works.
-        let zoom = effective_zoom(std::iter::empty::<&CameraZoom2d>(), 1.0);
-        assert_eq!(zoom, 1.0);
-    }
-
-    #[test]
-    fn effective_zoom_reads_first_camera_zoom() {
-        // The first camera's zoom wins so multi-camera
-        // setups are deterministic.
+    fn effective_zoom_falls_back_or_reads_first_camera_zoom() {
+        assert_eq!(
+            effective_zoom(std::iter::empty::<&CameraZoom2d>(), 1.0),
+            1.0
+        );
         let cameras = [
             CameraZoom2d {
                 zoom: 2.5,
@@ -652,73 +519,38 @@ mod tests {
                 ..default()
             },
         ];
-        let zoom = effective_zoom(cameras.iter(), 1.0);
-        assert_eq!(zoom, 2.5);
+        assert_eq!(effective_zoom(cameras.iter(), 1.0), 2.5);
     }
 
     #[test]
     fn default_settings_use_default_threshold() {
-        let s = StructureOverlaySettings::default();
-        assert_eq!(s.hide_zoom_threshold, DEFAULT_OVERLAY_HIDE_ZOOM_THRESHOLD);
-    }
-
-    #[test]
-    fn overlay_label_offset_for_deposit_uses_radius_plus_gap() {
-        // Per-kind contract: deposit labels sit above
-        // the deposit's circle, so the offset is
-        // `radius + gap`. A 64.0-radius deposit sits 76.0
-        // above its centre.
-        let offset = overlay_label_offset_y(StructureOverlayKind::Deposit, Some(64.0));
-        assert_eq!(offset, 64.0 + STRUCTURE_FOOTPRINT_LABEL_GAP);
-    }
-
-    #[test]
-    fn overlay_label_offset_for_deposit_falls_back_to_default_radius() {
-        // A `None` extent (no `ResourceDeposit` to
-        // query, or pure-helper test) still produces a
-        // positive offset that respects the gap.
-        let offset = overlay_label_offset_y(StructureOverlayKind::Deposit, None);
         assert_eq!(
-            offset,
-            DEFAULT_DEPOSIT_OVERLAY_RADIUS + STRUCTURE_FOOTPRINT_LABEL_GAP
+            StructureOverlaySettings::default().hide_zoom_threshold,
+            DEFAULT_OVERLAY_HIDE_ZOOM_THRESHOLD
         );
     }
 
     #[test]
-    fn overlay_label_offset_for_structures_uses_half_footprint_plus_gap() {
-        // Stockpile, facility, planned structure, and
-        // charger share the same half-footprint because
-        // their sprites are sized to the same square;
-        // the `deposit_radius` argument is ignored.
-        let expected = PLANNED_STRUCTURE_FOOTPRINT / 2.0 + STRUCTURE_FOOTPRINT_LABEL_GAP;
-        for kind in [
-            StructureOverlayKind::Stockpile,
-            StructureOverlayKind::Facility,
-            StructureOverlayKind::Planned,
-            StructureOverlayKind::Charger,
-        ] {
-            assert_eq!(
-                overlay_label_offset_y(kind, Some(9999.0)),
-                expected,
-                "{kind:?} overlay must sit half a footprint + gap above the target"
-            );
-        }
-    }
-
-    #[test]
-    fn overlay_label_offset_is_always_positive() {
-        // The label sits above the structure, so every
-        // kind / radius combination must produce a
-        // strictly positive offset -- a regression to
-        // the legacy "below the structure" placement.
-        for kind in StructureOverlayKind::ALL {
-            for radius in [None, Some(0.0), Some(16.0), Some(64.0), Some(256.0)] {
-                let offset = overlay_label_offset_y(kind, radius);
-                assert!(
-                    offset > 0.0,
-                    "overlay offset for {kind:?} with radius {radius:?} must be > 0; got {offset}"
-                );
+    fn overlay_offsets_are_above_targets() {
+        assert_eq!(
+            overlay_label_offset_y(StructureOverlayKind::Deposit, Some(64.0)),
+            64.0 + STRUCTURE_FOOTPRINT_LABEL_GAP
+        );
+        assert_eq!(
+            overlay_label_offset_y(StructureOverlayKind::Deposit, None),
+            DEFAULT_DEPOSIT_OVERLAY_RADIUS + STRUCTURE_FOOTPRINT_LABEL_GAP
+        );
+        let structure_offset = PLANNED_STRUCTURE_FOOTPRINT / 2.0 + STRUCTURE_FOOTPRINT_LABEL_GAP;
+        for kind in StructureOverlayKind::STRUCTURES {
+            let offset = overlay_label_offset_y(kind, Some(9999.0));
+            assert!(offset > 0.0);
+            if kind != StructureOverlayKind::Deposit {
+                assert_eq!(offset, structure_offset);
             }
         }
+        assert_eq!(
+            overlay_label_offset_y(StructureOverlayKind::Hauler, None),
+            BOT_RADIUS + HAULER_OVERLAY_GAP
+        );
     }
 }
