@@ -20,8 +20,8 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
-        best_candidate, Commitment, ExtractProgress, GatherAssignment, NanobotType,
-        ReturningToStockpile, SoftWorkSlots, SwarmId, WorkerLoad, EXTRACT_PER_TICK,
+        best_candidate, Commitment, DirectMovementComponent, ExtractProgress, GatherAssignment,
+        NanobotType, ReturningToStockpile, SoftWorkSlots, SwarmId, WorkerLoad, EXTRACT_PER_TICK,
         WORKER_CARRY_CAPACITY,
     },
     resources::{ResourceDeposit, Stockpile},
@@ -189,6 +189,49 @@ fn worker_delivers_carry_to_nearest_stockpile() {
     assert!(
         world.entity(worker).get::<ReturningToStockpile>().is_none(),
         "ReturningToStockpile should be removed after delivery"
+    );
+}
+
+#[test]
+fn worker_delivery_reissues_movement_when_timeout_strips_dmc_before_arrival() {
+    // Regression: `ProgressChecker` can remove `DirectMovementComponent`
+    // when congestion leaves a worker with too little progress for long
+    // enough. Delivery must not interpret that as arrival unless the
+    // worker is actually on the stockpile footprint. If still outside,
+    // it must re-issue movement instead of leaving the worker carrying
+    // forever with no movement command.
+    let mut app = build_app();
+    let worker_pos = Vec2::new(100.0, 0.0);
+    let stockpile_pos = Vec2::new(300.0, 0.0);
+    let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 100);
+    let worker = common::spawn_worker_at(&mut app, worker_pos);
+
+    app.world_mut().entity_mut(worker).insert((
+        WorkerLoad {
+            kind: top_down_2d_rts_prototype_nano_swarm::resources::ResourceKind::Minerals,
+            amount: WORKER_CARRY_CAPACITY,
+        },
+        ReturningToStockpile { stockpile },
+    ));
+
+    app.update();
+
+    let dmc = app
+        .world()
+        .entity(worker)
+        .get::<DirectMovementComponent>()
+        .expect("worker still outside stockpile should resume movement after DMC timeout");
+    assert_eq!(dmc.xy, stockpile_pos);
+    assert!(
+        app.world().entity(worker).get::<WorkerLoad>().is_some(),
+        "worker keeps load while resuming delivery"
+    );
+    assert!(
+        app.world()
+            .entity(worker)
+            .get::<ReturningToStockpile>()
+            .is_some(),
+        "worker keeps delivery target while resuming movement"
     );
 }
 

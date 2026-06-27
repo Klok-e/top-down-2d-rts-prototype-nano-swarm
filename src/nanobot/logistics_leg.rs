@@ -16,6 +16,7 @@ pub struct HaulerContext {
     pub pos: Vec2,
     pub swarm: SwarmId,
     pub kind: ResourceKind,
+    pub carry_capacity: u32,
 }
 
 /// Stockpile snapshot used as both a possible source and a
@@ -143,9 +144,13 @@ fn best_terminal_leg(
         {
             continue;
         }
-        let Some((source, trip)) =
-            best_source_for_sink(hauler, terminal.pos(), stockpiles, terminal.source_filter())
-        else {
+        let Some((source, trip)) = best_source_for_sink(
+            hauler,
+            terminal.pos(),
+            terminal.free_space(),
+            stockpiles,
+            terminal.source_filter(),
+        ) else {
             continue;
         };
         let leg = LogisticsLeg {
@@ -172,9 +177,13 @@ fn best_buffer_leg(
         {
             continue;
         }
-        let Some((source, trip)) =
-            best_source_for_sink(hauler, sink.pos, stockpiles, StockpileSourceFilter::Source)
-        else {
+        let Some((source, trip)) = best_source_for_sink(
+            hauler,
+            sink.pos,
+            sink.free_space,
+            stockpiles,
+            StockpileSourceFilter::Source,
+        ) else {
             continue;
         };
         let leg = LogisticsLeg {
@@ -191,6 +200,7 @@ fn best_buffer_leg(
 fn best_source_for_sink(
     hauler: HaulerContext,
     sink_pos: Vec2,
+    sink_free_space: u32,
     stockpiles: &[StockpileCandidate],
     filter: StockpileSourceFilter,
 ) -> Option<(Entity, f32)> {
@@ -201,6 +211,10 @@ fn best_source_for_sink(
             || !role_matches_filter(source.role, filter)
             || !owner_matches_hauler(source.owner, hauler.swarm)
         {
+            continue;
+        }
+        let carried_amount = source.amount.min(hauler.carry_capacity);
+        if carried_amount == 0 || carried_amount > sink_free_space {
             continue;
         }
         let trip = hauler.pos.distance(source.pos) + source.pos.distance(sink_pos);
@@ -260,6 +274,7 @@ mod tests {
             pos,
             swarm: SwarmId::PLAYER,
             kind: ResourceKind::Minerals,
+            carry_capacity: 40,
         }
     }
 
@@ -326,6 +341,37 @@ mod tests {
             pos: Vec2::new(10.0, 0.0),
             kind: ResourceKind::Minerals,
             free_space: 100,
+            owner: None,
+        }];
+
+        let leg = pick_logistics_leg(hauler(Vec2::ZERO), &stockpiles, &terminals).unwrap();
+
+        assert_eq!(leg.source, e(1));
+        assert_eq!(leg.sink, e(2));
+    }
+
+    #[test]
+    fn terminal_leg_requires_enough_free_space_for_expected_load() {
+        let stockpiles = [sink(1, Vec2::new(1.0, 0.0), 100, 0)];
+        let terminals = [TerminalCandidate::Facility {
+            entity: e(2),
+            pos: Vec2::new(10.0, 0.0),
+            kind: ResourceKind::Minerals,
+            free_space: 39,
+            owner: None,
+        }];
+
+        assert!(pick_logistics_leg(hauler(Vec2::ZERO), &stockpiles, &terminals).is_none());
+    }
+
+    #[test]
+    fn terminal_leg_allows_partial_source_that_fits_free_space() {
+        let stockpiles = [sink(1, Vec2::new(1.0, 0.0), 20, 0)];
+        let terminals = [TerminalCandidate::Facility {
+            entity: e(2),
+            pos: Vec2::new(10.0, 0.0),
+            kind: ResourceKind::Minerals,
+            free_space: 20,
             owner: None,
         }];
 

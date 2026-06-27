@@ -890,6 +890,16 @@ pub fn worker_gather_delivery_system(
             .truncate()
             .distance(stockpile_transform.translation.truncate());
         if distance > stockpile.radius {
+            // `ProgressChecker` may strip `DirectMovementComponent`
+            // before actual arrival when congestion or separation
+            // leaves the worker below the progress threshold. Keep
+            // the delivery commitment alive and re-issue the same
+            // movement command instead of marooning the worker with
+            // `WorkerLoad + ReturningToStockpile` and no velocity.
+            commands.entity(entity).insert(DirectMovementComponent {
+                xy: stockpile_transform.translation.truncate(),
+                stop_radius: stockpile.radius,
+            });
             continue;
         }
         if stockpile.free_space() < load.amount {

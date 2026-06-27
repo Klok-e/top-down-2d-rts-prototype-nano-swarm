@@ -8,8 +8,8 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
-        HaulerAssignment, HaulerLoad, OwnerSwarm, ProductionFacility, Swarm, SwarmId,
-        HAULER_CARRY_CAPACITY, WORKER_CARRY_CAPACITY,
+        DirectMovementComponent, HaulerAssignment, HaulerLoad, OwnerSwarm, ProductionFacility,
+        Swarm, SwarmId, HAULER_CARRY_CAPACITY, WORKER_CARRY_CAPACITY,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile},
 };
@@ -221,6 +221,41 @@ fn hauler_assigns_to_source_and_sink() {
         .expect("idle hauler near source + sink stockpile must receive a HaulerAssignment");
     assert_eq!(assignment.source, source);
     assert_eq!(assignment.sink, sink);
+}
+
+#[test]
+fn hauler_source_arrival_reissues_movement_when_timeout_strips_dmc_before_arrival() {
+    // Regression: a hauler assigned to a source can lose its
+    // `DirectMovementComponent` through the progress timeout before
+    // reaching the source. Arrival must not silently ignore that
+    // state; it must restore movement so loading can eventually start.
+    let mut app = build_app();
+    let hauler_pos = Vec2::new(100.0, 0.0);
+    let source_pos = Vec2::new(300.0, 0.0);
+    let sink_pos = Vec2::new(500.0, 0.0);
+    let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
+    let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
+    let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
+
+    app.world_mut()
+        .entity_mut(hauler)
+        .insert(HaulerAssignment { source, sink });
+
+    app.update();
+
+    let dmc = app
+        .world()
+        .entity(hauler)
+        .get::<DirectMovementComponent>()
+        .expect("hauler still outside source should resume movement after DMC timeout");
+    assert_eq!(dmc.xy, source_pos);
+    assert!(
+        app.world()
+            .entity(hauler)
+            .get::<HaulerAssignment>()
+            .is_some(),
+        "hauler keeps source/sink assignment while resuming source leg"
+    );
 }
 
 #[test]
@@ -550,6 +585,41 @@ fn hauler_routes_to_facility_from_sink_stockpile_leg3() {
     assert!(
         sink_after < 1000,
         "sink stockpile must have lost material to the leg-3 hauler; got {sink_after}"
+    );
+}
+
+#[test]
+fn hauler_does_not_start_facility_leg_when_hopper_has_less_space_than_load() {
+    // Regression for a later-trip stuck hauler: facility free
+    // space was checked as `> 0`, so a hauler could pick a
+    // sink-stockpile -> facility leg, load 40 minerals, arrive at
+    // a hopper with only a few free slots, then wait forever if
+    // production did not drain enough space. The leg picker should
+    // skip terminal legs that cannot accept the load it is about to
+    // pull from the source.
+    let mut app = build_app();
+    let sink_pos = Vec2::new(100.0, 0.0);
+    let facility_pos = Vec2::new(140.0, 0.0);
+    let _sink = common::spawn_sink_stockpile(&mut app, sink_pos, 1000, 1000);
+    let mut facility = ProductionFacility::new();
+    facility.input_amount = facility.input_capacity - 10;
+    let _facility = app
+        .world_mut()
+        .spawn((
+            facility,
+            Transform::from_translation(facility_pos.extend(0.0)),
+        ))
+        .id();
+    let hauler = common::spawn_hauler_at(&mut app, sink_pos);
+
+    app.update();
+
+    assert!(
+        app.world()
+            .entity(hauler)
+            .get::<HaulerAssignment>()
+            .is_none(),
+        "hauler must not start a facility leg when hopper free space cannot accept its load"
     );
 }
 

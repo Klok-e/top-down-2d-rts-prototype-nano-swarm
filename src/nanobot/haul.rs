@@ -157,9 +157,14 @@ pub fn hauler_corridor_waypoint_system(
         let to_target = pos.distance(waypoint.target);
 
         if to_waypoint > STOP_THRESHOLD {
-            // Still on the waypoint leg. The DMC was set when the
-            // waypoint was first assigned and the move system keeps
-            // it until arrival, so there is nothing to do here.
+            // Still on the waypoint leg. If congestion caused the
+            // movement progress timeout to strip the DMC, restore
+            // it so the hauler does not sit forever with only the
+            // waypoint marker.
+            commands.entity(entity).insert(DirectMovementComponent {
+                xy: waypoint.waypoint,
+                stop_radius: 0.0,
+            });
         } else if to_target > STOP_THRESHOLD {
             // At the waypoint, head to the original target.
             // The second leg's extent depends on whether
@@ -364,6 +369,7 @@ pub fn hauler_assignment_system(
                 pos: transform.translation.truncate(),
                 swarm: swarm_member.0,
                 kind: ResourceKind::Minerals,
+                carry_capacity: HAULER_CARRY_CAPACITY,
             },
             &stockpile_candidates,
             &terminal_candidates,
@@ -435,6 +441,17 @@ pub fn hauler_arrive_source_system(
             commands
                 .entity(entity)
                 .insert(HaulerLoading { collected: 0 });
+        } else {
+            // `ProgressChecker` can remove `DirectMovementComponent`
+            // before true arrival when congestion leaves the hauler
+            // below the progress threshold. Keep the source-side
+            // commitment alive and restore movement instead of
+            // marooning the hauler with `HaulerAssignment` and no
+            // velocity.
+            commands.entity(entity).insert(DirectMovementComponent {
+                xy: source_pos,
+                stop_radius: source_radius,
+            });
         }
     }
 }
