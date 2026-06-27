@@ -125,6 +125,32 @@ fn hauler_picks_corridor_waypoint_when_painted_on_route() {
 }
 
 #[test]
+fn corridor_waypoint_reissues_movement_when_timeout_strips_dmc_before_waypoint() {
+    // Regression: a corridor-routed hauler can lose its DMC before
+    // reaching the waypoint. The waypoint marker must restore the
+    // waypoint-leg movement instead of leaving the hauler parked with
+    // a stale route marker.
+    let mut app = build_app();
+    let hauler_pos = Vec2::new(0.0, 0.0);
+    let waypoint = Vec2::new(512.0, 0.0);
+    let target = Vec2::new(1_024.0, 0.0);
+    let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
+
+    app.world_mut()
+        .entity_mut(hauler)
+        .insert(HaulerCorridorWaypoint { waypoint, target });
+
+    app.update();
+
+    let dmc = app
+        .world()
+        .entity(hauler)
+        .get::<DirectMovementComponent>()
+        .expect("hauler still outside corridor waypoint should resume waypoint movement");
+    assert_eq!(dmc.xy, waypoint);
+}
+
+#[test]
 fn hauler_picks_higher_paint_corridor_cell() {
     // Two corridor cells on the same line, one with high paint
     // and one with low paint. The hauler system must prefer the
