@@ -236,7 +236,7 @@ fn setup_things_startup(
         .insert(CameraZoom2d {
             zoom_speed: 10.,
             zoom_min_max: (1., 100.),
-            zoom: 1.,
+            zoom: 2.,
         })
         .insert(ZoneMaterialHandleComponent {
             handle: handle.clone(),

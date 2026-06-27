@@ -183,13 +183,22 @@ fn find_nearest_deposit_in_cell(
     best.map(|(_, e)| e)
 }
 
+#[allow(clippy::type_complexity)]
 fn find_nearest_stockpile(
     kind: ResourceKind,
     worker_pos: Vec2,
-    stockpiles: &Query<(Entity, &Stockpile, &Transform, Option<&StockpileRole>)>,
+    worker_swarm: SwarmId,
+    stockpiles: &Query<(
+        Entity,
+        &Stockpile,
+        &Transform,
+        Option<&StockpileRole>,
+        Option<&OwnerSwarm>,
+    )>,
+    swarms: &Query<&SwarmId, With<Swarm>>,
 ) -> Option<Entity> {
     let mut best: Option<(f32, Entity)> = None;
-    for (entity, stockpile, transform, role) in stockpiles.iter() {
+    for (entity, stockpile, transform, role, owner) in stockpiles.iter() {
         if stockpile.kind != kind {
             continue;
         }
@@ -199,12 +208,35 @@ fn find_nearest_stockpile(
         if matches!(role, Some(StockpileRole::Sink)) {
             continue;
         }
+        if !stockpile_owned_by(owner, worker_swarm, swarms) {
+            continue;
+        }
         let d = worker_pos.distance(transform.translation.truncate());
         if best.is_none_or(|(bd, _)| d < bd) {
             best = Some((d, entity));
         }
     }
     best.map(|(_, e)| e)
+}
+
+/// True when a stockpile (built or planned) is usable by
+/// `swarm`. The per-swarm ownership contract: a stockpile with
+/// no [`OwnerSwarm`] marker is the legacy default and stays
+/// usable by any swarm (keeps pre-existing fixtures green);
+/// a stockpile whose owner is a different swarm is not.
+/// A broken owner reference (the owner swarm entity has been
+/// despawned) makes the stockpile unusable, matching the
+/// hauler leg's `candidate_owner` contract so an orphaned
+/// enemy stockpile cannot silently absorb deliveries.
+fn stockpile_owned_by(
+    owner: Option<&OwnerSwarm>,
+    swarm: SwarmId,
+    swarms: &Query<&SwarmId, With<Swarm>>,
+) -> bool {
+    match owner {
+        None => true,
+        Some(OwnerSwarm(owner_entity)) => swarms.get(*owner_entity).is_ok_and(|id| *id == swarm),
+    }
 }
 
 /// True when a built [`Stockpile`] of `kind` with free space
@@ -227,12 +259,20 @@ fn find_nearest_stockpile(
 /// that spawn `Stockpile` entities directly keep passing.
 pub(crate) fn has_usable_built_source_stockpile(
     deposit_pos: Vec2,
-    stockpiles: &Query<(&Stockpile, &Transform, Option<&StockpileRole>)>,
+    demand_swarm: SwarmId,
+    stockpiles: &Query<(
+        &Stockpile,
+        &Transform,
+        Option<&StockpileRole>,
+        Option<&OwnerSwarm>,
+    )>,
+    swarms: &Query<&SwarmId, With<Swarm>>,
 ) -> bool {
-    stockpiles.iter().any(|(s, t, role)| {
+    stockpiles.iter().any(|(s, t, role, owner)| {
         s.kind == ResourceKind::Minerals
             && s.free_space() > 0
             && !matches!(role, Some(StockpileRole::Sink))
+            && stockpile_owned_by(owner, demand_swarm, swarms)
             && t.translation.truncate().distance(deposit_pos) <= SOURCE_STOCKPILE_PROXIMITY_RADIUS
     })
 }
@@ -283,15 +323,23 @@ pub(crate) fn has_usable_built_source_stockpile(
 /// tick.
 pub(crate) fn has_any_near_source_stockpile(
     deposit_pos: Vec2,
-    stockpiles: &Query<(&Stockpile, &Transform, Option<&StockpileRole>)>,
-    planned: &Query<(&PlannedStructure, &Transform)>,
+    demand_swarm: SwarmId,
+    stockpiles: &Query<(
+        &Stockpile,
+        &Transform,
+        Option<&StockpileRole>,
+        Option<&OwnerSwarm>,
+    )>,
+    planned: &Query<(&PlannedStructure, &Transform, Option<&OwnerSwarm>)>,
     newly_planned: &[Vec2],
+    swarms: &Query<&SwarmId, With<Swarm>>,
 ) -> bool {
-    if has_usable_built_source_stockpile(deposit_pos, stockpiles) {
+    if has_usable_built_source_stockpile(deposit_pos, demand_swarm, stockpiles, swarms) {
         return true;
     }
-    if planned.iter().any(|(p, t)| {
+    if planned.iter().any(|(p, t, owner)| {
         p.kind == PlannedKind::SourceStockpile
+            && stockpile_owned_by(owner, demand_swarm, swarms)
             && t.translation.truncate().distance(deposit_pos) <= SOURCE_STOCKPILE_PROXIMITY_RADIUS
     }) {
         return true;
@@ -370,11 +418,17 @@ pub fn source_stockpile_demand_system(
     structure_sprites: Res<StructureSprites>,
     gather_assignments: Query<(&GatherAssignment, &SwarmMember)>,
     deposits: Query<(&ResourceDeposit, &Transform)>,
-    stockpiles: Query<(&Stockpile, &Transform, Option<&StockpileRole>)>,
-    planned: Query<(&PlannedStructure, &Transform)>,
+    stockpiles: Query<(
+        &Stockpile,
+        &Transform,
+        Option<&StockpileRole>,
+        Option<&OwnerSwarm>,
+    )>,
+    planned: Query<(&PlannedStructure, &Transform, Option<&OwnerSwarm>)>,
     facility_obstacles: Query<&Transform, With<crate::nanobot::production::ProductionFacility>>,
     charger_obstacles: Query<&Transform, With<crate::nanobot::Charger>>,
     swarms: Query<(Entity, &SwarmId, &Transform), With<Swarm>>,
+    swarm_ids: Query<&SwarmId, With<Swarm>>,
     grid: Res<IntentGrid>,
 ) {
     let swarm_by_id: std::collections::HashMap<SwarmId, (Entity, Vec2)> = swarms
@@ -402,9 +456,11 @@ pub fn source_stockpile_demand_system(
         let deposit_pos = deposit_transform.translation.truncate();
         if has_any_near_source_stockpile(
             deposit_pos,
+            demand_swarm,
             &stockpiles,
             &planned,
             &newly_planned_positions,
+            &swarm_ids,
         ) {
             continue;
         }
@@ -431,12 +487,12 @@ pub fn source_stockpile_demand_system(
         obstacles.extend(
             stockpiles
                 .iter()
-                .map(|(_, t, _)| (t.translation.truncate(), SOURCE_STOCKPILE_FOOTPRINT_RADIUS)),
+                .map(|(_, t, _, _)| (t.translation.truncate(), SOURCE_STOCKPILE_FOOTPRINT_RADIUS)),
         );
         obstacles.extend(
             planned
                 .iter()
-                .map(|(_, t)| (t.translation.truncate(), SOURCE_STOCKPILE_FOOTPRINT_RADIUS)),
+                .map(|(_, t, _)| (t.translation.truncate(), SOURCE_STOCKPILE_FOOTPRINT_RADIUS)),
         );
         obstacles.extend(
             facility_obstacles
@@ -670,7 +726,7 @@ pub fn worker_gather_arrive_system(
     mut commands: Commands,
     mut slots: ResMut<SoftWorkSlots>,
     workers: Query<
-        (Entity, &Transform, &GatherAssignment),
+        (Entity, &Transform, &GatherAssignment, &SwarmMember),
         (
             With<Nanobot>,
             With<GatherAssignment>,
@@ -681,9 +737,15 @@ pub fn worker_gather_arrive_system(
         ),
     >,
     deposits: Query<(&ResourceDeposit, &Transform)>,
-    stockpiles: Query<(&Stockpile, &Transform, Option<&StockpileRole>)>,
+    stockpiles: Query<(
+        &Stockpile,
+        &Transform,
+        Option<&StockpileRole>,
+        Option<&OwnerSwarm>,
+    )>,
+    swarms: Query<&SwarmId, With<Swarm>>,
 ) {
-    for (entity, transform, assignment) in &workers {
+    for (entity, transform, assignment, swarm_member) in &workers {
         let Ok((deposit, deposit_transform)) = deposits.get(assignment.deposit) else {
             // Deposit is gone (e.g. consumed by a future system).
             // Release the slot and drop the assignment; the
@@ -721,7 +783,7 @@ pub fn worker_gather_arrive_system(
             });
             continue;
         }
-        if !has_usable_built_source_stockpile(deposit_pos, &stockpiles) {
+        if !has_usable_built_source_stockpile(deposit_pos, swarm_member.0, &stockpiles, &swarms) {
             // No usable built Source Stockpile. The demand
             // system has already (or will) plan one. The
             // planned structure's claim system will route a
@@ -821,25 +883,36 @@ fn transition_to_carrying(
 pub fn worker_gather_carry_assign_system(
     mut commands: Commands,
     workers: Query<
-        (Entity, &Transform, &WorkerLoad),
+        (Entity, &Transform, &WorkerLoad, &SwarmMember),
         (
             With<Nanobot>,
             With<WorkerLoad>,
             Without<ReturningToStockpile>,
         ),
     >,
-    stockpiles: Query<(Entity, &Stockpile, &Transform, Option<&StockpileRole>)>,
+    stockpiles: Query<(
+        Entity,
+        &Stockpile,
+        &Transform,
+        Option<&StockpileRole>,
+        Option<&OwnerSwarm>,
+    )>,
+    swarms: Query<&SwarmId, With<Swarm>>,
 ) {
-    for (entity, transform, load) in &workers {
-        let Some(stockpile_entity) =
-            find_nearest_stockpile(load.kind, transform.translation.truncate(), &stockpiles)
-        else {
+    for (entity, transform, load, swarm_member) in &workers {
+        let Some(stockpile_entity) = find_nearest_stockpile(
+            load.kind,
+            transform.translation.truncate(),
+            swarm_member.0,
+            &stockpiles,
+            &swarms,
+        ) else {
             // No stockpile exists yet. The worker waits with the
             // load; a later tick that adds a stockpile will pick
             // it up.
             continue;
         };
-        let Ok((_, stockpile, stockpile_transform, _)) = stockpiles.get(stockpile_entity) else {
+        let Ok((_, stockpile, stockpile_transform, _, _)) = stockpiles.get(stockpile_entity) else {
             continue;
         };
         commands.entity(entity).insert((

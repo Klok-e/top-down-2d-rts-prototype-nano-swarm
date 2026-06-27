@@ -216,9 +216,34 @@ pub fn structure_overlay_spawn_system(
     planned: Query<Entity, With<PlannedStructure>>,
     chargers: Query<Entity, With<Charger>>,
     loaded_haulers: Query<Entity, (With<Nanobot>, With<HaulerLoad>)>,
-    existing: Query<&StructureOverlay>,
+    existing: Query<(Entity, &StructureOverlay)>,
 ) {
-    let covered: std::collections::HashSet<Entity> = existing.iter().map(|o| o.target).collect();
+    // Detect overlays that are stale because their target's
+    // structure kind changed underneath them — most commonly a
+    // `Planned` overlay left behind when a `PlannedStructure`
+    // is promoted in place to a `Stockpile`, `Charger`, or
+    // `ProductionFacility`. Such an overlay would otherwise keep
+    // reading the (now removed) `PlannedStructure` component and
+    // render a permanently empty bar. Despawn it so the
+    // per-kind spawn pass below re-creates the correct overlay.
+    let mut covered: std::collections::HashSet<Entity> = std::collections::HashSet::new();
+    for (overlay_entity, overlay) in &existing {
+        let actual = actual_overlay_kind(
+            overlay.target,
+            &deposits,
+            &stockpiles,
+            &facilities,
+            &planned,
+            &chargers,
+            &loaded_haulers,
+        );
+        if actual == Some(overlay.kind) {
+            covered.insert(overlay.target);
+        } else {
+            // `despawn` recursively removes the fill child too.
+            commands.entity(overlay_entity).despawn();
+        }
+    }
     spawn_missing(
         &mut commands,
         &covered,
@@ -255,6 +280,37 @@ pub fn structure_overlay_spawn_system(
         &loaded_haulers,
         StructureOverlayKind::Hauler,
     );
+}
+
+/// Resolve an entity's current overlay kind by probing each
+/// structure component in turn. Returns `None` when the entity
+/// carries none of the tracked structures (it has been promoted
+/// to something the overlay layer does not render, or despawned).
+#[allow(clippy::type_complexity)]
+fn actual_overlay_kind(
+    target: Entity,
+    deposits: &Query<Entity, With<ResourceDeposit>>,
+    stockpiles: &Query<Entity, With<Stockpile>>,
+    facilities: &Query<Entity, With<ProductionFacility>>,
+    planned: &Query<Entity, With<PlannedStructure>>,
+    chargers: &Query<Entity, With<Charger>>,
+    loaded_haulers: &Query<Entity, (With<Nanobot>, With<HaulerLoad>)>,
+) -> Option<StructureOverlayKind> {
+    if deposits.get(target).is_ok() {
+        Some(StructureOverlayKind::Deposit)
+    } else if stockpiles.get(target).is_ok() {
+        Some(StructureOverlayKind::Stockpile)
+    } else if facilities.get(target).is_ok() {
+        Some(StructureOverlayKind::Facility)
+    } else if planned.get(target).is_ok() {
+        Some(StructureOverlayKind::Planned)
+    } else if chargers.get(target).is_ok() {
+        Some(StructureOverlayKind::Charger)
+    } else if loaded_haulers.get(target).is_ok() {
+        Some(StructureOverlayKind::Hauler)
+    } else {
+        None
+    }
 }
 
 fn spawn_missing(
