@@ -200,6 +200,9 @@ pub const ZONE_OVERLAY_Z: f32 = -99.0;
 /// swarm renders in front of the player's paint.
 pub const GAMEPLAY_SPRITE_Z: f32 = 1.0;
 
+/// Startup camera zoom shared by [`CameraZoom2d`] and the orthographic projection.
+pub const DEFAULT_CAMERA_ZOOM: f32 = 2.0;
+
 /// Build the [`Transform`] for the full-map background mesh. The
 /// draw-order z lives on the translation (the field Bevy 2D reads
 /// for draw order); the mesh scale keeps `z = 1.0` so the unit
@@ -231,12 +234,18 @@ fn setup_things_startup(
 ) -> Result<()> {
     let handle = zone_mats.add(ZoneMaterial::new(MAP_WIDTH, MAP_HEIGHT, &mut buffers));
     commands
-        .spawn(Camera2d)
+        .spawn((
+            Camera2d,
+            Projection::Orthographic(OrthographicProjection {
+                scale: DEFAULT_CAMERA_ZOOM,
+                ..OrthographicProjection::default_2d()
+            }),
+        ))
         .insert(FlyCamera2d::default())
         .insert(CameraZoom2d {
             zoom_speed: 10.,
             zoom_min_max: (1., 100.),
-            zoom: 2.,
+            zoom: DEFAULT_CAMERA_ZOOM,
         })
         .insert(ZoneMaterialHandleComponent {
             handle: handle.clone(),

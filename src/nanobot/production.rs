@@ -67,11 +67,10 @@ pub const PRODUCTION_TICKS_PER_BOT: u32 = 5;
 
 /// Capacity of a [`ProductionFacility`]'s own input hopper. Haulers
 /// (logistics leg 3) deliver minerals into this buffer; production
-/// consumes exclusively from it. Sized to hold several production
-/// cycles' worth so a hauler trip does not stall the facility after
-/// one bot, while staying small enough that a cut-off facility
-/// drains and goes idle (the maintenance / collapse pressure).
-pub const PRODUCTION_INPUT_CAPACITY: u32 = 200;
+/// consumes exclusively from it. Sized to hold two production cycles
+/// so a facility can buffer short delivery gaps without hoarding at
+/// stockpile scale.
+pub const PRODUCTION_INPUT_CAPACITY: u32 = 40;
 
 /// Sum of positive deficits that triggers a new facility to
 /// emerge. A small value means a single missing nanobot is

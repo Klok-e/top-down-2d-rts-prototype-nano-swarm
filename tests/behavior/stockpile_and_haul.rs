@@ -9,7 +9,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
         DirectMovementComponent, HaulerAssignment, HaulerLoad, OwnerSwarm, ProductionFacility,
-        Swarm, SwarmId, HAULER_CARRY_CAPACITY, WORKER_CARRY_CAPACITY,
+        Swarm, SwarmId, DEFAULT_STOCKPILE_CAPACITY, HAULER_CARRY_CAPACITY, WORKER_CARRY_CAPACITY,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile},
 };
@@ -34,14 +34,14 @@ fn stockpile_can_hold_local_resource_amounts() {
     // exposes free_space so delivery systems can reason about it.
     let mut app = build_app();
     let stockpile_pos = Vec2::new(200.0, 0.0);
-    let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 100);
+    let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, DEFAULT_STOCKPILE_CAPACITY);
 
     // Empty stockpile: free_space == capacity.
     {
         let s = app.world().entity(stockpile).get::<Stockpile>().unwrap();
         assert_eq!(s.amount, 0);
-        assert_eq!(s.capacity, 100);
-        assert_eq!(s.free_space(), 100);
+        assert_eq!(s.capacity, DEFAULT_STOCKPILE_CAPACITY);
+        assert_eq!(s.free_space(), DEFAULT_STOCKPILE_CAPACITY);
     }
 
     // Adding resources changes the buffer amount.
@@ -53,7 +53,11 @@ fn stockpile_can_hold_local_resource_amounts() {
     {
         let s = app.world().entity(stockpile).get::<Stockpile>().unwrap();
         assert_eq!(s.amount, 37);
-        assert_eq!(s.free_space(), 63, "free space shrinks as the buffer fills");
+        assert_eq!(
+            s.free_space(),
+            DEFAULT_STOCKPILE_CAPACITY - 37,
+            "free space shrinks as the buffer fills"
+        );
     }
 }
 
@@ -537,7 +541,7 @@ fn hauler_routes_to_facility_from_sink_stockpile_leg3() {
     let source_pos = Vec2::new(50.0, 0.0); // source-role, closer to hauler
     let sink_pos = Vec2::new(100.0, 0.0); // sink-role
     let facility_pos = Vec2::new(140.0, 0.0);
-    let _source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
+    let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
     let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 1000, 1000);
     // Facility with an EMPTY input hopper: it has demand, so it is a
     // tier-0 sink.
@@ -565,6 +569,10 @@ fn hauler_routes_to_facility_from_sink_stockpile_leg3() {
         assignment.source, sink,
         "leg-3 source must be the sink stockpile; a source-role stockpile is never a facility source"
     );
+    // Isolate the committed leg for the travel/delivery half of
+    // the test: the first assertion already proves a source-role
+    // stockpile is not chosen as a facility source.
+    app.world_mut().despawn(source);
 
     // Drive the trip and confirm material physically reaches the
     // hopper (production is off, so the hopper only grows).
@@ -592,8 +600,8 @@ fn hauler_routes_to_facility_from_sink_stockpile_leg3() {
 fn hauler_does_not_start_facility_leg_when_hopper_has_less_space_than_load() {
     // Regression for a later-trip stuck hauler: facility free
     // space was checked as `> 0`, so a hauler could pick a
-    // sink-stockpile -> facility leg, load 40 minerals, arrive at
-    // a hopper with only a few free slots, then wait forever if
+    // sink-stockpile -> facility leg, load `HAULER_CARRY_CAPACITY`
+    // minerals, arrive at a hopper with only a few free slots, then wait forever if
     // production did not drain enough space. The leg picker should
     // skip terminal legs that cannot accept the load it is about to
     // pull from the source.

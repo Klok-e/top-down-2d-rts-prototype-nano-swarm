@@ -849,17 +849,19 @@ fn completed_visual_bundle(
     )
 }
 
-/// Empty mineral buffer used by every completed planned
-/// kind that needs a local `Stockpile` (Sink Stockpile,
-/// Production Facility). The `Source` kind is satisfied by
-/// the same buffer shape. Kept as a single source of truth
-/// so future planned kinds (Charger) can drop in without
-/// re-stating the literal.
+/// Default capacity for completed Source and Sink Stockpiles.
+/// One full hauler load is one tenth of this buffer.
+pub const DEFAULT_STOCKPILE_CAPACITY: u32 = 200;
+
+/// Empty mineral buffer used by every completed planned kind
+/// that needs a local `Stockpile`. Source and Sink Stockpiles
+/// share capacity; their role marks logistics position, not
+/// size.
 fn empty_mineral_stockpile() -> Stockpile {
     Stockpile {
         kind: ResourceKind::Minerals,
         amount: 0,
-        capacity: 100,
+        capacity: DEFAULT_STOCKPILE_CAPACITY,
         radius: 32.0,
     }
 }
