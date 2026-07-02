@@ -11,7 +11,8 @@
 
 use bevy::prelude::*;
 use bevy::ui::{
-    AlignItems, BorderRadius, FlexDirection, JustifyContent, PositionType, UiRect, Val,
+    AlignItems, BorderRadius, FlexDirection, JustifyContent, PositionType, RelativeCursorPosition,
+    UiRect, Val,
 };
 
 use crate::nanobot::{NanobotType, ProductionRatio};
@@ -112,6 +113,13 @@ fn slider_button_bundle(
         slider,
         BackgroundColor(Color::srgb(0.20, 0.20, 0.22)),
         BorderColor::all(Color::srgb(0.30, 0.30, 0.30)),
+        // `check_ui_interaction` (the brush's UI-capture gate)
+        // queries `RelativeCursorPosition`; without it a slider
+        // button under the cursor is invisible to that system, so
+        // `is_pointer_over_ui` stays false and the world brush
+        // paints through the panel on a `+` / `-` click. Mirrors
+        // the intent-layer button wiring.
+        RelativeCursorPosition::default(),
         slider_button_node(),
         Text::new(glyph),
         TextFont {

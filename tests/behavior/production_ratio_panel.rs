@@ -6,7 +6,7 @@
 //! pure math lives in `src/ui/production_ratio_panel.rs` and
 //! `src/nanobot/production.rs`.
 
-use bevy::prelude::*;
+use bevy::{prelude::*, ui::RelativeCursorPosition};
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{spawn_opponent_swarm, NanobotType, ProductionRatio, SwarmProduction},
     ui::{
@@ -282,4 +282,31 @@ fn value_text_reflects_ratio_change() {
         .get::<Text>()
         .expect("value text still carries Text");
     assert!(text.0.contains("0%"), "got {:?}", text.0);
+}
+
+#[test]
+fn slider_buttons_participate_in_pointer_capture() {
+    // Regression: `check_ui_interaction` (the brush's
+    // UI-capture gate) queries `RelativeCursorPosition`, so a
+    // slider button under the cursor must expose it. Without
+    // it the world brush would paint through the panel on a
+    // `+` / `-` click because `is_pointer_over_ui` would
+    // stay false. Mirrors the intent-layer button invariant.
+    let mut app = build_app();
+    let sliders: Vec<_> = app
+        .world_mut()
+        .query::<(Entity, &ProductionRatioSlider)>()
+        .iter(app.world())
+        .map(|(e, _)| e)
+        .collect();
+    assert_eq!(sliders.len(), 6, "setup must spawn 3 types x 2 buttons");
+    for entity in sliders {
+        assert!(
+            app.world()
+                .entity(entity)
+                .get::<RelativeCursorPosition>()
+                .is_some(),
+            "slider button {entity:?} must expose RelativeCursorPosition so UI capture blocks the world brush"
+        );
+    }
 }
