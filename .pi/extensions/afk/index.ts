@@ -3,28 +3,36 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Box, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import {
+	consumeStructuredResult,
+	registerAfkResultTools,
+	registerResultToken,
+	removeResultToken,
+	validateRoleResult,
+	validateVerifyResult,
+	type ActiveResultToken,
+	type AfkResultKind,
+	type Phase,
+	type Role,
+	type RoleResult,
+	type VerifyResult,
+} from "./result-tools.ts";
+import { startRoleSession, type RoleSessionRun } from "./role-session-runner.ts";
+import { appendTranscriptEvent } from "./transcript.ts";
 
 const AFK_DIR = ".pi/afk";
 const STATE_REL = `${AFK_DIR}/state.json`;
 const HISTORY_REL = `${AFK_DIR}/history.json`;
 const CONFIG_REL = `${AFK_DIR}/config.json`;
 const PROMPTS_REL = `${AFK_DIR}/prompts`;
-const ACTIVE_RESULTS_REL = `${AFK_DIR}/active-results.json`;
-const RESULTS_REL = `${AFK_DIR}/results`;
 const READY_LABEL = "ready-for-agent";
 const NEEDS_INFO_LABEL = "needs-info";
 const EXCLUDED_LABELS = new Set([NEEDS_INFO_LABEL, "ready-for-human", "wontfix"]);
 
-type Phase = "implement" | "quality" | "verify";
-type Role = "implementer" | "quality" | "verifier";
-
 type AfkConfig = {
 	maxCycles: number;
 	roles: Record<Role, {
-		agentType: string;
 		model?: string;
-		description: string;
-		maxTurns?: number;
 	}>;
 };
 
@@ -43,7 +51,8 @@ type AfkState = {
 	issue: number;
 	phase: Phase;
 	cycle: number;
-	activeAgentId?: string;
+	activeRoleSessionId?: string;
+	activeTranscriptPath?: string;
 	feedback: string;
 	lastResult?: AfkLastResult;
 	startedAt: string;
@@ -66,60 +75,10 @@ type Issue = {
 	updatedAt?: string;
 };
 
-type RoleResult = {
-	status: "pass" | "needs-info";
-	summary: string;
-	reason?: string;
-};
-
-type VerifyResult = {
-	status: "pass" | "fail" | "needs-info";
-	summary: string;
-	feedback: string;
-	commands_run: string[];
-	commit: string;
-};
-
-type AfkResultKind = "role" | "verify";
-
-type ActiveResultToken = {
-	kind: AfkResultKind;
-	issue: number;
-	role: Role;
-	phase: Phase;
-	cycle: number;
-	createdAt: string;
-};
-
-type ActiveResults = {
-	tokens: Record<string, ActiveResultToken>;
-};
-
-type WrappedResult<T> = ActiveResultToken & {
-	token: string;
-	completedAt: string;
-	result: T;
-};
-
-type RpcReply<T = unknown> = { success: true; data?: T } | { success: false; error: string };
-
-type SubagentDoneEvent = {
-	id: string;
-	type: string;
-	description: string;
-	result?: string;
-	error?: string;
-	status?: string;
-	tokens?: { input: number; output: number; total: number };
-	toolUses?: number;
-	durationMs?: number;
-};
-
 type ActiveRun = {
 	promise: Promise<void>;
 	stopRequested: boolean;
-	abortController: AbortController;
-	activeAgentId?: string;
+	activeRoleSession?: RoleSessionRun;
 };
 
 type AfkLiveActivity = {
@@ -184,30 +143,6 @@ async function exists(filePath: string) {
 	}
 }
 
-async function unlinkIfExists(filePath: string) {
-	try {
-		await fs.unlink(filePath);
-	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-	}
-}
-
-async function writeJsonAtomicNoOverwrite(filePath: string, value: unknown) {
-	await fs.mkdir(path.dirname(filePath), { recursive: true });
-	const tmpPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
-	await fs.writeFile(tmpPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-	try {
-		await fs.link(tmpPath, filePath);
-	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code === "EEXIST") {
-			throw new Error(`AFK result already exists for token: ${path.basename(filePath, ".json")}`);
-		}
-		throw err;
-	} finally {
-		await unlinkIfExists(tmpPath);
-	}
-}
-
 async function loadConfig(cwd: string): Promise<AfkConfig> {
 	const configPath = path.join(cwd, CONFIG_REL);
 	return readJson<AfkConfig>(configPath);
@@ -216,8 +151,13 @@ async function loadConfig(cwd: string): Promise<AfkConfig> {
 async function loadState(cwd: string): Promise<AfkState | null> {
 	const statePath = path.join(cwd, STATE_REL);
 	if (!(await exists(statePath))) return null;
-	const state = await readJson<AfkState>(statePath);
-	return { ...state, status: state.status ?? "paused" };
+	const state = await readJson<AfkState & { activeAgentId?: string }>(statePath);
+	const { activeAgentId, ...rest } = state;
+	return {
+		...rest,
+		status: state.status ?? "paused",
+		activeRoleSessionId: state.activeRoleSessionId ?? activeAgentId,
+	};
 }
 
 async function loadHistory(cwd: string): Promise<AfkHistoryEntry[]> {
@@ -239,33 +179,6 @@ async function saveState(cwd: string, state: AfkState) {
 async function clearState(cwd: string) {
 	const statePath = path.join(cwd, STATE_REL);
 	if (await exists(statePath)) await fs.unlink(statePath);
-}
-
-async function loadActiveResults(cwd: string): Promise<ActiveResults> {
-	const registryPath = path.join(cwd, ACTIVE_RESULTS_REL);
-	if (!(await exists(registryPath))) return { tokens: {} };
-	const parsed = await readJson<Partial<ActiveResults>>(registryPath);
-	return { tokens: parsed.tokens ?? {} };
-}
-
-async function saveActiveResults(cwd: string, registry: ActiveResults) {
-	await writeJson(path.join(cwd, ACTIVE_RESULTS_REL), registry);
-}
-
-async function registerResultToken(cwd: string, token: string, meta: ActiveResultToken) {
-	const registry = await loadActiveResults(cwd);
-	registry.tokens[token] = meta;
-	await saveActiveResults(cwd, registry);
-}
-
-async function removeResultToken(cwd: string, token: string) {
-	const registry = await loadActiveResults(cwd);
-	delete registry.tokens[token];
-	await saveActiveResults(cwd, registry);
-}
-
-function resultFilePath(cwd: string, token: string) {
-	return path.join(cwd, RESULTS_REL, `${token}.json`);
 }
 
 async function readPrompt(cwd: string, role: Role): Promise<string> {
@@ -386,80 +299,6 @@ async function ensurePassCommit(pi: ExtensionAPI, cwd: string, commit: string) {
 	if (dirty.length > 0) throw new Error(`Verifier pass left dirty worktree:\n${dirty.join("\n")}`);
 }
 
-function assertObject(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object.`);
-	return value as Record<string, unknown>;
-}
-
-function nonEmptyString(value: unknown, label: string): string {
-	if (typeof value !== "string" || value.trim().length === 0) throw new Error(`${label} must be a non-empty string.`);
-	return value;
-}
-
-function optionalString(value: unknown, label: string): string | undefined {
-	if (value === undefined) return undefined;
-	if (typeof value !== "string") throw new Error(`${label} must be a string when present.`);
-	return value;
-}
-
-function validateWrappedResult<T>(value: unknown, expected: ActiveResultToken & { token: string }): WrappedResult<T> {
-	const wrapper = assertObject(value, "AFK result wrapper") as Partial<WrappedResult<T>>;
-	if (wrapper.token !== expected.token) throw new Error("AFK result token mismatch.");
-	if (wrapper.kind !== expected.kind) throw new Error("AFK result kind mismatch.");
-	if (wrapper.issue !== expected.issue) throw new Error("AFK result issue mismatch.");
-	if (wrapper.role !== expected.role) throw new Error("AFK result role mismatch.");
-	if (wrapper.phase !== expected.phase) throw new Error("AFK result phase mismatch.");
-	if (wrapper.cycle !== expected.cycle) throw new Error("AFK result cycle mismatch.");
-	if (typeof wrapper.completedAt !== "string") throw new Error("AFK result missing completedAt.");
-	if (wrapper.result === undefined) throw new Error("AFK result missing result payload.");
-	return wrapper as WrappedResult<T>;
-}
-
-function validateRoleResult(value: unknown): RoleResult {
-	const parsed = assertObject(value, "AFK role result") as Partial<RoleResult>;
-	if (parsed.status !== "pass" && parsed.status !== "needs-info") throw new Error(`Invalid role status: ${String(parsed.status)}`);
-	return {
-		status: parsed.status,
-		summary: nonEmptyString(parsed.summary, "Role summary"),
-		reason: optionalString(parsed.reason, "Role reason"),
-	};
-}
-
-function validateVerifyResult(value: unknown): VerifyResult {
-	const parsed = assertObject(value, "AFK verifier result") as Partial<VerifyResult>;
-	if (parsed.status !== "pass" && parsed.status !== "fail" && parsed.status !== "needs-info") {
-		throw new Error(`Invalid verifier status: ${String(parsed.status)}`);
-	}
-	if (!Array.isArray(parsed.commands_run)) throw new Error("Verifier commands_run must be an array.");
-	const commit = typeof parsed.commit === "string" ? parsed.commit : "";
-	if (parsed.status === "pass" && !/^[0-9a-f]{7,40}$/i.test(commit)) throw new Error(`Verifier pass requires a commit hash: ${commit}`);
-	if (parsed.status !== "pass" && commit !== "") throw new Error("Verifier commit must be empty unless status is pass.");
-	if (typeof parsed.feedback !== "string") throw new Error("Verifier feedback must be a string.");
-	return {
-		status: parsed.status,
-		summary: nonEmptyString(parsed.summary, "Verifier summary"),
-		feedback: parsed.feedback,
-		commands_run: parsed.commands_run.map(String),
-		commit,
-	};
-}
-
-async function consumeStructuredResult<T>(cwd: string, token: string, expected: ActiveResultToken, validate: (value: unknown) => T): Promise<T> {
-	const filePath = resultFilePath(cwd, token);
-	if (!(await exists(filePath))) {
-		throw new Error(`AFK ${expected.role} did not submit structured result via ${expected.kind === "role" ? "afk_role_result" : "afk_verify_result"} token ${token.slice(0, 8)}.`);
-	}
-	let wrapper: WrappedResult<T>;
-	try {
-		wrapper = validateWrappedResult<T>(await readJson<unknown>(filePath), { ...expected, token });
-		const result = validate(wrapper.result);
-		await unlinkIfExists(filePath);
-		return result;
-	} catch (err) {
-		throw new Error(`Invalid AFK structured result at ${path.relative(cwd, filePath)}: ${err instanceof Error ? err.message : String(err)}`);
-	}
-}
-
 function nextPhase(phase: Phase): Phase {
 	if (phase === "implement") return "quality";
 	if (phase === "quality") return "verify";
@@ -502,7 +341,7 @@ function truncateLine(text: string, width: number) {
 }
 
 function phaseStatus(state: AfkState) {
-	if (!state.activeAgentId) return "transitioning…";
+	if (!state.activeRoleSessionId) return "transitioning…";
 	return "Working…";
 }
 
@@ -520,7 +359,7 @@ function toolLabel(toolName: string) {
 }
 
 function currentActivity(state: AfkState) {
-	if (!state.activeAgentId) return `starting ${state.phase}…`;
+	if (!state.activeRoleSessionId) return `starting ${state.phase}…`;
 	if (liveActivity.activeTool) return liveActivity.activeTool;
 	return "thinking…";
 }
@@ -529,7 +368,8 @@ function lastOutput(state: AfkState) {
 	return liveActivity.lastText
 		|| state.lastResult?.summary
 		|| state.feedback
-		|| "open /agents for transcript";
+		|| state.activeTranscriptPath
+		|| "waiting for role session output";
 }
 
 function renderAfkPanel(tui: any, theme: Theme): string[] {
@@ -540,19 +380,19 @@ function renderAfkPanel(tui: any, theme: Theme): string[] {
 
 	const width = Math.max(20, tui?.terminal?.columns ?? 100);
 	const spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][liveActivity.spinnerIndex % 10];
-	const icon = state.activeAgentId ? theme.fg("accent", spinner) : theme.fg("dim", "•");
-	const status = state.activeAgentId ? theme.fg("accent", phaseStatus(state)) : theme.fg("dim", phaseStatus(state));
+	const icon = state.activeRoleSessionId ? theme.fg("accent", spinner) : theme.fg("dim", "•");
+	const status = state.activeRoleSessionId ? theme.fg("accent", phaseStatus(state)) : theme.fg("dim", phaseStatus(state));
 	const stats: string[] = [];
 	if (liveActivity.turnCount) stats.push(`↻${liveActivity.turnCount}`);
 	if (liveActivity.toolUses) stats.push(`${liveActivity.toolUses} tools`);
 	if (liveActivity.tokenTotal) stats.push(`${(liveActivity.tokenTotal / 1000).toFixed(1)}k tok`);
 	const statSuffix = stats.length ? ` ${theme.fg("dim", `· ${stats.join(" · ")}`)}` : "";
-	const agent = state.activeAgentId ? `${state.activeAgentId.slice(0, 8)}…` : "none";
+	const roleSession = state.activeRoleSessionId ? `${state.activeRoleSessionId.slice(0, 8)}…` : "none";
 
 	return [
 		`${icon} ${theme.bold(`AFK #${issue.number}`)} ${theme.fg("dim", "·")} ${state.phase} ${state.cycle}/${config.maxCycles} ${theme.fg("dim", "·")} ${status}${statSuffix}`,
 		`${theme.fg("dim", "issue:")} ${issue.title}`,
-		`${theme.fg("dim", "agent:")} ${agent}`,
+		`${theme.fg("dim", "role session:")} ${roleSession}`,
 		`${theme.fg("dim", "activity:")} ${currentActivity(state)}`,
 		`${theme.fg("dim", "last:")} ${oneLine(lastOutput(state), 220)}`,
 	].map((line) => truncateLine(line, width));
@@ -627,7 +467,7 @@ function renderAfkWidgetNow() {
 function startAfkWidgetTimer() {
 	if (widgetTimer) return;
 	widgetTimer = setInterval(() => {
-		if (currentWidgetState?.activeAgentId) liveActivity.spinnerIndex++;
+		if (currentWidgetState?.activeRoleSessionId) liveActivity.spinnerIndex++;
 		renderAfkWidgetNow();
 	}, 160);
 	widgetTimer.unref?.();
@@ -662,73 +502,90 @@ async function pauseState(cwd: string, summary?: string) {
 	const state = await loadState(cwd);
 	if (!state) return;
 	state.status = "paused";
-	state.activeAgentId = undefined;
+	state.activeRoleSessionId = undefined;
 	if (summary) state.feedback = summary;
 	await saveState(cwd, state);
 }
 
-async function stopActiveSubagent(pi: ExtensionAPI, cwd: string) {
-	activeRun?.abortController.abort();
-	const state = await loadState(cwd);
-	const agentId = state?.activeAgentId ?? activeRun?.activeAgentId;
-	if (agentId) {
+async function stopActiveRoleSession(cwd: string) {
+	const roleSession = activeRun?.activeRoleSession;
+	if (roleSession) {
 		try {
-			await rpc(pi, "subagents:rpc:stop", { agentId }, 10_000);
+			await roleSession.abort();
 		} catch {
-			// Best effort: the agent may already have completed or the RPC layer may be gone.
-			// The AFK AbortController above is the primary stop path for running agents.
+			// Best effort: the role session may already have completed.
 		}
 	}
+	const state = await loadState(cwd);
 	if (state) {
-		state.activeAgentId = undefined;
+		state.activeRoleSessionId = undefined;
 		await saveState(cwd, state);
 	}
-	if (agentId && activeRun?.activeAgentId === agentId) activeRun.activeAgentId = undefined;
+	if (activeRun?.activeRoleSession === roleSession) activeRun.activeRoleSession = undefined;
 }
 
-async function rpc<T>(pi: ExtensionAPI, channel: string, payload: Record<string, unknown>, timeoutMs = 30_000): Promise<T> {
-	const requestId = randomUUID();
-	const replyChannel = `${channel}:reply:${requestId}`;
-	return new Promise<T>((resolve, reject) => {
-		const timer = setTimeout(() => {
-			unsub();
-			reject(new Error(`Timed out waiting for ${channel} reply.`));
-		}, timeoutMs);
-		const unsub = pi.events.on(replyChannel, (reply: unknown) => {
-			clearTimeout(timer);
-			unsub();
-			const envelope = reply as RpcReply<T>;
-			if (!envelope.success) reject(new Error(envelope.error));
-			else resolve(envelope.data as T);
-		});
-		pi.events.emit(channel, { requestId, ...payload });
-	});
+function structuredResultInstructions(kind: AfkResultKind, token: string) {
+	if (kind === "role") {
+		return `
+
+# AFK structured result protocol
+
+When your work is complete, do not write a final prose response and do not print JSON manually. As your final action, call the \`afk_role_result\` tool with this token: \`${token}\`.
+
+Use status \`pass\` when the phase is complete. Use status \`needs-info\` only when you cannot proceed safely. Put the human-readable completion summary in \`summary\`; for \`needs-info\`, also put the blocking reason in \`reason\`.`;
+	}
+	return `
+
+# AFK structured result protocol
+
+When verification is complete, do not write a final prose response and do not print JSON manually. As your final action, call the \`afk_verify_result\` tool with this token: \`${token}\`.
+
+Include status, summary, feedback, commands_run, and commit. Use status \`pass\` only after committing the verified changes and put that commit hash in \`commit\`. For \`fail\` or \`needs-info\`, do not commit and set \`commit\` to an empty string.`;
 }
 
-async function requireSubagents(pi: ExtensionAPI) {
-	const pong = await rpc<{ version: number }>(pi, "subagents:rpc:ping", {});
-	if (!pong?.version) throw new Error("@tintinweb/pi-subagents RPC did not report protocol version.");
-}
+async function runStructuredRole<T>(
+	ctx: any,
+	cwd: string,
+	config: AfkConfig,
+	state: AfkState,
+	issue: Issue,
+	role: Role,
+	kind: AfkResultKind,
+	validate: (value: unknown) => T,
+): Promise<T> {
+	const token = randomUUID();
+	const meta: ActiveResultToken = {
+		kind,
+		issue: issue.number,
+		role,
+		phase: state.phase,
+		cycle: state.cycle,
+		createdAt: nowIso(),
+	};
+	await registerResultToken(cwd, token, meta);
+	let roleSession: RoleSessionRun | undefined;
+	try {
+		const promptTemplate = await readPrompt(cwd, role);
+		const prompt = fillTemplate(promptTemplate, {
+			issueNumber: issue.number,
+			issueTitle: issue.title,
+			issueBody: issue.body ?? "",
+			feedback: state.feedback || "(none)",
+			cycle: state.cycle,
+		}) + structuredResultInstructions(kind, token);
 
-async function spawnSubagent(pi: ExtensionAPI, cwd: string, config: AfkConfig, role: Role, prompt: string, issue: Issue, state: AfkState): Promise<string> {
-	const roleConfig = config.roles[role];
-	const description = `${roleConfig.description} #${issue.number}`;
-	liveActivity = freshLiveActivity();
-	liveActivity.lastText = state.lastResult?.summary || state.feedback || undefined;
-	const data = await rpc<{ id: string }>(pi, "subagents:rpc:spawn", {
-		type: roleConfig.agentType,
-		prompt,
-		options: {
-			description,
-			model: roleConfig.model,
-			maxTurns: roleConfig.maxTurns,
-			isBackground: true,
-			run_in_background: true,
+		liveActivity = freshLiveActivity();
+		liveActivity.lastText = state.lastResult?.summary || state.feedback || undefined;
+		const roleConfig = config.roles[role];
+		roleSession = await startRoleSession({
 			cwd,
-			signal: activeRun?.abortController.signal,
-			// Best effort: pi-subagents RPC currently runs in-process and forwards
-			// options to AgentManager, which supports these callbacks. If a future
-			// RPC layer serializes payloads, the panel falls back to /agents hints.
+			ctx,
+			issue: issue.number,
+			role,
+			phase: state.phase,
+			cycle: state.cycle,
+			prompt,
+			model: roleConfig.model,
 			onTextDelta: (_delta: string, fullText: string) => {
 				const line = lastTextLine(fullText);
 				if (line) liveActivity.lastText = line;
@@ -755,189 +612,47 @@ async function spawnSubagent(pi: ExtensionAPI, cwd: string, config: AfkConfig, r
 				liveActivity.updatedAt = nowIso();
 				renderAfkWidgetNow();
 			},
-		},
-	});
-	if (!data?.id) throw new Error("Subagent spawn did not return an id.");
-	state.activeAgentId = data.id;
-	if (activeRun) activeRun.activeAgentId = data.id;
-	currentWidgetState = { ...state };
-	renderAfkWidgetNow();
-	await saveState(cwd, state);
-	if (activeRun?.stopRequested) await stopActiveSubagent(pi, cwd);
-	return data.id;
-}
-
-async function waitForSubagent(pi: ExtensionAPI, id: string): Promise<SubagentDoneEvent> {
-	return new Promise((resolve, reject) => {
-		const cleanup = () => {
-			unsubCompleted();
-			unsubFailed();
-		};
-		const unsubCompleted = pi.events.on("subagents:completed", (event: unknown) => {
-			const done = event as SubagentDoneEvent;
-			if (done.id !== id) return;
-			cleanup();
-			resolve(done);
 		});
-		const unsubFailed = pi.events.on("subagents:failed", (event: unknown) => {
-			const done = event as SubagentDoneEvent;
-			if (done.id !== id) return;
-			cleanup();
-			reject(new Error(done.error || done.result || done.status || `Subagent ${id} failed.`));
-		});
-	});
-}
-
-function structuredResultInstructions(kind: AfkResultKind, token: string) {
-	if (kind === "role") {
-		return `
-
-# AFK structured result protocol
-
-When your work is complete, do not write a final prose response and do not print JSON manually. As your final action, call the \`afk_role_result\` tool with this token: \`${token}\`.
-
-Use status \`pass\` when the phase is complete. Use status \`needs-info\` only when you cannot proceed safely. Put the human-readable completion summary in \`summary\`; for \`needs-info\`, also put the blocking reason in \`reason\`.`;
-	}
-	return `
-
-# AFK structured result protocol
-
-When verification is complete, do not write a final prose response and do not print JSON manually. As your final action, call the \`afk_verify_result\` tool with this token: \`${token}\`.
-
-Include status, summary, feedback, commands_run, and commit. Use status \`pass\` only after committing the verified changes and put that commit hash in \`commit\`. For \`fail\` or \`needs-info\`, do not commit and set \`commit\` to an empty string.`;
-}
-
-async function runStructuredRole<T>(
-	pi: ExtensionAPI,
-	cwd: string,
-	config: AfkConfig,
-	state: AfkState,
-	issue: Issue,
-	role: Role,
-	kind: AfkResultKind,
-	validate: (value: unknown) => T,
-): Promise<T> {
-	const token = randomUUID();
-	const meta: ActiveResultToken = {
-		kind,
-		issue: issue.number,
-		role,
-		phase: state.phase,
-		cycle: state.cycle,
-		createdAt: nowIso(),
-	};
-	await registerResultToken(cwd, token, meta);
-	try {
-		const promptTemplate = await readPrompt(cwd, role);
-		const prompt = fillTemplate(promptTemplate, {
-			issueNumber: issue.number,
-			issueTitle: issue.title,
-			issueBody: issue.body ?? "",
-			feedback: state.feedback || "(none)",
-			cycle: state.cycle,
-		}) + structuredResultInstructions(kind, token);
-		const id = await spawnSubagent(pi, cwd, config, role, prompt, issue, state);
-		await waitForSubagent(pi, id);
+		state.activeRoleSessionId = roleSession.id;
+		state.activeTranscriptPath = roleSession.transcriptPath;
+		if (activeRun) activeRun.activeRoleSession = roleSession;
+		currentWidgetState = { ...state };
+		renderAfkWidgetNow();
+		await saveState(cwd, state);
+		if (activeRun?.stopRequested) await stopActiveRoleSession(cwd);
+		await roleSession.done;
 	} finally {
 		await removeResultToken(cwd, token);
-		state.activeAgentId = undefined;
+		state.activeRoleSessionId = undefined;
+		if (activeRun?.activeRoleSession === roleSession) activeRun.activeRoleSession = undefined;
 		currentWidgetState = { ...state };
 		renderAfkWidgetNow();
 		await saveState(cwd, state);
 	}
-	return consumeStructuredResult(cwd, token, meta, validate);
-}
-
-async function runRoleResult(pi: ExtensionAPI, cwd: string, config: AfkConfig, state: AfkState, issue: Issue, role: "implementer" | "quality") {
-	return runStructuredRole(pi, cwd, config, state, issue, role, "role", validateRoleResult);
-}
-
-async function runVerifyResult(pi: ExtensionAPI, cwd: string, config: AfkConfig, state: AfkState, issue: Issue) {
-	return runStructuredRole(pi, cwd, config, state, issue, "verifier", "verify", validateVerifyResult);
-}
-
-async function submitAfkResult<T>(cwd: string, token: string, kind: AfkResultKind, result: T) {
-	const registry = await loadActiveResults(cwd);
-	const meta = registry.tokens[token];
-	if (!meta) throw new Error("Unknown or inactive AFK result token.");
-	if (meta.kind !== kind) throw new Error(`AFK token expects ${meta.kind} result, not ${kind}.`);
-	const wrapped: WrappedResult<T> = {
-		...meta,
-		token,
-		completedAt: nowIso(),
-		result,
-	};
-	await writeJsonAtomicNoOverwrite(resultFilePath(cwd, token), wrapped);
-}
-
-function registerAfkResultTools(pi: ExtensionAPI) {
-	pi.registerTool({
-		name: "afk_role_result",
-		label: "AFK Role Result",
-		description: "AFK internal result submission. Only use when an AFK prompt gives you a valid token.",
-		promptSnippet: "AFK internal result submission for implementer/quality roles with a valid token",
-		parameters: {
-			type: "object",
-			additionalProperties: false,
-			required: ["token", "status", "summary"],
-			properties: {
-				token: { type: "string", description: "AFK result token provided in the role prompt" },
-				status: { type: "string", enum: ["pass", "needs-info"] },
-				summary: { type: "string", description: "Human-readable phase completion summary" },
-				reason: { type: "string", description: "Required when status is needs-info" },
-			},
-		},
-		async execute(_toolCallId: string, params: Record<string, unknown>, _signal: unknown, _onUpdate: unknown, ctx: any) {
-			const token = nonEmptyString(params.token, "AFK result token");
-			const result = validateRoleResult({
-				status: params.status,
-				summary: params.summary,
-				reason: params.reason,
+	const result = await consumeStructuredResult(cwd, token, meta, validate);
+	if (roleSession) {
+		try {
+			await appendTranscriptEvent(roleSession.transcriptPath, {
+				type: "afk_result",
+				status: (result as any).status,
+				summary: (result as any).summary,
+				feedback: (result as any).feedback,
+				reason: (result as any).reason,
+				commit: (result as any).commit,
 			});
-			await submitAfkResult(ctx.cwd, token, "role", result);
-			return {
-				content: [{ type: "text", text: "AFK role result received." }],
-				details: result,
-				terminate: true,
-			};
-		},
-	});
+		} catch {
+			// Transcript writes must not affect AFK phase outcomes.
+		}
+	}
+	return result;
+}
 
-	pi.registerTool({
-		name: "afk_verify_result",
-		label: "AFK Verify Result",
-		description: "AFK internal verifier result submission. Only use when an AFK prompt gives you a valid token.",
-		promptSnippet: "AFK internal result submission for verifier roles with a valid token",
-		parameters: {
-			type: "object",
-			additionalProperties: false,
-			required: ["token", "status", "summary", "feedback", "commands_run", "commit"],
-			properties: {
-				token: { type: "string", description: "AFK result token provided in the verifier prompt" },
-				status: { type: "string", enum: ["pass", "fail", "needs-info"] },
-				summary: { type: "string", description: "Human-readable verification summary" },
-				feedback: { type: "string", description: "Exact implementer feedback for fail/needs-info, or pass notes" },
-				commands_run: { type: "array", items: { type: "string" } },
-				commit: { type: "string", description: "Commit hash on pass, empty string otherwise" },
-			},
-		},
-		async execute(_toolCallId: string, params: Record<string, unknown>, _signal: unknown, _onUpdate: unknown, ctx: any) {
-			const token = nonEmptyString(params.token, "AFK result token");
-			const result = validateVerifyResult({
-				status: params.status,
-				summary: params.summary,
-				feedback: params.feedback,
-				commands_run: params.commands_run,
-				commit: params.commit,
-			});
-			await submitAfkResult(ctx.cwd, token, "verify", result);
-			return {
-				content: [{ type: "text", text: "AFK verifier result received." }],
-				details: result,
-				terminate: true,
-			};
-		},
-	});
+async function runRoleResult(ctx: any, cwd: string, config: AfkConfig, state: AfkState, issue: Issue, role: "implementer" | "quality") {
+	return runStructuredRole(ctx, cwd, config, state, issue, role, "role", validateRoleResult);
+}
+
+async function runVerifyResult(ctx: any, cwd: string, config: AfkConfig, state: AfkState, issue: Issue) {
+	return runStructuredRole(ctx, cwd, config, state, issue, "verifier", "verify", validateVerifyResult);
 }
 
 async function commentIssue(pi: ExtensionAPI, cwd: string, issue: number, body: string) {
@@ -984,7 +699,7 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 	while (true) {
 		if (activeRun?.stopRequested) {
 			state.status = "paused";
-			state.activeAgentId = undefined;
+			state.activeRoleSessionId = undefined;
 			await saveState(cwd, state);
 			await appendHistory(cwd, {
 				issue: issue.number,
@@ -999,11 +714,11 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 		if (state.phase === "implement") {
 			let parsed: RoleResult;
 			try {
-				parsed = await runRoleResult(pi, cwd, config, state, issue, "implementer");
+				parsed = await runRoleResult(ctx, cwd, config, state, issue, "implementer");
 				sendAfkResultMessage(pi, issue, state, "implementer", parsed);
 			} catch (err) {
 				state.status = "paused";
-				state.activeAgentId = undefined;
+				state.activeRoleSessionId = undefined;
 				state.feedback = err instanceof Error ? err.message : String(err);
 				await saveState(cwd, state);
 				await appendHistory(cwd, { issue: issue.number, result: "paused", summary: state.feedback, at: nowIso() });
@@ -1032,11 +747,11 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 		if (state.phase === "quality") {
 			let parsed: RoleResult;
 			try {
-				parsed = await runRoleResult(pi, cwd, config, state, issue, "quality");
+				parsed = await runRoleResult(ctx, cwd, config, state, issue, "quality");
 				sendAfkResultMessage(pi, issue, state, "quality", parsed);
 			} catch (err) {
 				state.status = "paused";
-				state.activeAgentId = undefined;
+				state.activeRoleSessionId = undefined;
 				state.feedback = err instanceof Error ? err.message : String(err);
 				await saveState(cwd, state);
 				await appendHistory(cwd, { issue: issue.number, result: "paused", summary: state.feedback, at: nowIso() });
@@ -1063,11 +778,11 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 
 		let verify: VerifyResult;
 		try {
-			verify = await runVerifyResult(pi, cwd, config, state, issue);
+			verify = await runVerifyResult(ctx, cwd, config, state, issue);
 			sendAfkResultMessage(pi, issue, state, "verifier", verify);
 		} catch (err) {
 			state.status = "paused";
-			state.activeAgentId = undefined;
+			state.activeRoleSessionId = undefined;
 			state.feedback = err instanceof Error ? err.message : String(err);
 			await saveState(cwd, state);
 			await appendHistory(cwd, { issue: issue.number, result: "paused", summary: state.feedback, at: nowIso() });
@@ -1119,7 +834,7 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 			phase: "implement",
 			cycle: state.cycle + 1,
 			feedback: verify.feedback || verify.summary,
-			activeAgentId: undefined,
+			activeRoleSessionId: undefined,
 		};
 		await saveState(cwd, state);
 	}
@@ -1133,7 +848,6 @@ function startDetachedRun(ctx: any, run: () => Promise<void>) {
 	ensureNoActiveRun();
 	const handle: ActiveRun = {
 		stopRequested: false,
-		abortController: new AbortController(),
 		promise: Promise.resolve(),
 	};
 	activeRun = handle;
@@ -1194,33 +908,31 @@ async function handleRun(pi: ExtensionAPI, ctx: any, argv: string[]) {
 	ensureNoActiveRun();
 	if (await loadState(ctx.cwd)) throw new Error(`AFK state already exists. Use /afk resume or /afk stop. State: ${STATE_REL}`);
 	await ensureCleanForStart(pi, ctx.cwd);
-	await requireSubagents(pi);
 	const config = await loadConfig(ctx.cwd);
 	startDetachedRun(ctx, () => runIssueLoop(pi, ctx, config, runAll, issueNumber));
-	ctx.ui.notify("AFK started. Live output: /agents. Control: /afk status | /afk stop.", "info");
+	ctx.ui.notify("AFK started. Live output: /afk status shows transcript path. Control: /afk status | /afk stop.", "info");
 }
 
 async function handleResume(pi: ExtensionAPI, ctx: any) {
 	ensureNoActiveRun();
 	const state = await loadState(ctx.cwd);
 	if (!state) throw new Error(`No AFK state found at ${STATE_REL}.`);
-	await requireSubagents(pi);
 	const config = await loadConfig(ctx.cwd);
 	state.status = "running";
-	state.activeAgentId = undefined;
+	state.activeRoleSessionId = undefined;
 	await saveState(ctx.cwd, state);
 	startDetachedRun(ctx, async () => {
 		const issue = await viewIssue(pi, ctx.cwd, state.issue);
 		await runOne(pi, ctx, config, issue, state);
 		clearAfkWidget(ctx);
 	});
-	ctx.ui.notify("AFK resumed. Live output: /agents. Control: /afk status | /afk stop.", "info");
+	ctx.ui.notify("AFK resumed. Live output: /afk status shows transcript path. Control: /afk status | /afk stop.", "info");
 }
 
 async function handleStatus(ctx: any) {
 	const state = await loadState(ctx.cwd);
 	if (!state && activeRun) {
-		ctx.ui.notify("AFK active; selecting or starting issue. Live output: /agents.", "info");
+		ctx.ui.notify("AFK active; selecting or starting issue.", "info");
 		return;
 	}
 	if (!state) {
@@ -1240,28 +952,25 @@ async function handleStatus(ctx: any) {
 			`status: ${activeRun ? activeRun.stopRequested ? "stopping" : "active" : state.status}`,
 			`phase: ${state.phase}`,
 			`cycle: ${state.cycle}`,
-			`activeAgentId: ${state.activeAgentId ?? "none"}`,
+			`activeRoleSessionId: ${state.activeRoleSessionId ?? "none"}`,
+			`transcript: ${state.activeTranscriptPath ?? "none"}`,
 			`activity: ${currentActivity(state)}`,
 			`last: ${oneLine(lastOutput(state))}`,
 			state.feedback ? `feedback: ${oneLine(state.feedback)}` : "feedback: none",
 			`state: ${STATE_REL}`,
-			"live output: /agents",
 		].join("\n"),
 		"info",
 	);
 }
 
-async function handleStop(pi: ExtensionAPI, ctx: any) {
+async function handleStop(ctx: any) {
 	const state = await loadState(ctx.cwd);
 	if (!state && !activeRun) {
 		ctx.ui.notify("AFK idle.", "info");
 		return;
 	}
-	if (activeRun) {
-		activeRun.stopRequested = true;
-		activeRun.abortController.abort();
-	}
-	await stopActiveSubagent(pi, ctx.cwd);
+	if (activeRun) activeRun.stopRequested = true;
+	await stopActiveRoleSession(ctx.cwd);
 	await pauseState(ctx.cwd, "Stopped by user. Resume restarts the current phase.");
 	clearAfkWidget(ctx);
 	ctx.ui.notify(`AFK stopped locally. Resume with /afk resume. State kept at ${STATE_REL}.`, "warning");
@@ -1296,7 +1005,7 @@ export default function afkExtension(pi: ExtensionAPI) {
 		const state = await loadState(ctx.cwd);
 		if (state?.status === "running") {
 			state.status = "paused";
-			state.activeAgentId = undefined;
+			state.activeRoleSessionId = undefined;
 			state.feedback = state.feedback || "Paused because Pi restarted or reloaded while AFK was running.";
 			await saveState(ctx.cwd, state);
 		}
@@ -1305,14 +1014,14 @@ export default function afkExtension(pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event) => {
 		if (!activeRun) return;
 		return {
-			systemPrompt: `${event.systemPrompt}\n\nAFK run active. AFK and subagent completion notifications are progress signals only. When one arrives, do NOT inspect, read, edit, test, verify, commit, log, or continue the work, even if the result says "pass" and even if tests look broken — those belong to the AFK pipeline, not you. Emit at most a one-line acknowledgement and end your turn immediately. Do not call tools. The AFK widget and transcript already display the result; you add nothing. Act only if the user gives an explicit instruction this turn.`,
+			systemPrompt: `${event.systemPrompt}\n\nAFK run active. AFK and role-session completion notifications are progress signals only. When one arrives, do NOT inspect, read, edit, test, verify, commit, log, or continue the work, even if the result says "pass" and even if tests look broken — those belong to the AFK pipeline, not you. Emit at most a one-line acknowledgement and end your turn immediately. Do not call tools. The AFK widget and transcript already display the result; you add nothing. Act only if the user gives an explicit instruction this turn.`,
 		};
 	});
 
 	pi.on("session_shutdown", async (_event, ctx: any) => {
 		if (!activeRun) return;
 		activeRun.stopRequested = true;
-		await stopActiveSubagent(pi, ctx.cwd);
+		await stopActiveRoleSession(ctx.cwd);
 		await pauseState(ctx.cwd, "Paused because Pi session shut down while AFK was running.");
 		clearAfkWidget(ctx);
 	});
@@ -1331,7 +1040,7 @@ export default function afkExtension(pi: ExtensionAPI) {
 				if (command === "run") await handleRun(pi, ctx, argv);
 				else if (command === "resume") await handleResume(pi, ctx);
 				else if (command === "status") await handleStatus(ctx);
-				else if (command === "stop") await handleStop(pi, ctx);
+				else if (command === "stop") await handleStop(ctx);
 				else throw new Error(usage());
 			} catch (err) {
 				ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");

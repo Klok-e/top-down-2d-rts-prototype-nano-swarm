@@ -1,6 +1,8 @@
 # Detached in-process AFK orchestration
 
-AFK issue runs will start from `/afk run` or `/afk resume` and then continue as an in-process detached orchestrator so normal Pi commands such as `/agents` remain usable while the run progresses. We are keeping the first fix lightweight by continuing to use `@tintinweb/pi-subagents` and its existing `/agents` live output rather than owning an external runner process; this means AFK pauses on Pi reload or shutdown instead of surviving independently.
+Superseded in part by [ADR 0006](./0006-run-afk-roles-as-sdk-role-sessions.md) for AFK role execution and live transcript ownership.
+
+AFK issue runs will start from `/afk run` or `/afk resume` and then continue as an in-process detached orchestrator so normal Pi commands remain usable while the run progresses. AFK pauses on Pi reload or shutdown instead of surviving independently.
 
 ## Considered Options
 
