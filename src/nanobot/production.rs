@@ -661,21 +661,35 @@ pub fn production_facility_pick_target_system(
         // longer feeds production directly, so leg 3 of the
         // logistics chain (hauler: sink stockpile -> facility)
         // is the only way material reaches this point.
+        //
+        // `picked` tracks whether a cycle started this tick.
+        // When it did, the blocked set is preserved for the
+        // rest of that cycle (it is the running list of types
+        // the picker walked past); the work system clears it
+        // on spawn. When it did NOT, the blocked set is
+        // dropped here so every deficit type is re-tried
+        // fresh next tick. Without this drop a cold-start
+        // facility deadlocks: it blocks its only
+        // positive-deficit type on an empty hopper, the
+        // blocked set is otherwise only cleared at the end
+        // of a cycle, and a cycle can never start while that
+        // sole type stays blocked. This is the "blocked
+        // types are skipped temporarily instead of stalling
+        // all production" half of the contract.
+        let mut picked = false;
         while let Some(kind) = pick_deficit_type(ratio, &counts, &facility.blocked_types) {
             if facility.input_amount >= PRODUCTION_COST_PER_BOT {
                 facility.input_amount -= PRODUCTION_COST_PER_BOT;
                 ledger.remove(facility.input_kind, PRODUCTION_COST_PER_BOT);
                 facility.current_target = Some(kind);
                 facility.progress = 0;
-                // The blocked set is preserved for the
-                // current cycle: the picker is working
-                // through the deficit order, blocking types
-                // as it goes. The set clears at the end of
-                // the cycle so the next cycle re-tries
-                // everything from scratch.
+                picked = true;
                 break;
             }
             facility.blocked_types.insert(kind);
+        }
+        if !picked {
+            facility.blocked_types.clear();
         }
     }
 }

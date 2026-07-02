@@ -729,3 +729,91 @@ fn production_increases_population_of_picked_type() {
         "exactly one Hauler must be produced after one full cycle"
     );
 }
+
+#[test]
+fn cold_start_facility_recovers_after_hopper_fills() {
+    // Regression: a facility that starts with an empty hopper
+    // and only one positive-deficit type used to deadlock. The
+    // pick system blocked the sole deficit type (Defender)
+    // because the hopper was below the production cost, and the
+    // blocked set was only cleared at the end of a production
+    // cycle -- which can never start while that type stays
+    // blocked. Once haulers fill the hopper, production must
+    // recover and produce the deficit type.
+    //
+    // This is the default scenario's exact cold-start shape:
+    // seed swarm 4 W / 2 H / 0 D against the 60/30/10 default
+    // ratio. Only Defender has a positive proportional deficit,
+    // so it is the type that gets blocked and must later be
+    // unblocked. Existing tests never hit this path because
+    // `spawn_idle_facility_at` pre-fills the hopper; this test
+    // spawns a bare `ProductionFacility::new()` (empty hopper),
+    // runs empty-hopper ticks, then fills it.
+    let mut app = build_app();
+    let _swarm = common::spawn_swarm_with_nanobots(
+        &mut app,
+        Vec2::ZERO,
+        &[(NanobotType::Worker, 4), (NanobotType::Hauler, 2)],
+    );
+    {
+        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
+        // 60/30/10 default mix: against 4 W / 2 H / 0 D only
+        // Defender has a positive proportional deficit.
+        ratio.set_weight(NanobotType::Worker, 6);
+        ratio.set_weight(NanobotType::Hauler, 3);
+        ratio.set_weight(NanobotType::Defender, 1);
+    }
+    // Facility with an EMPTY hopper, exactly as the default
+    // scenario spawns it (ProductionFacility::new()).
+    let facility = app
+        .world_mut()
+        .spawn((
+            ProductionFacility::new(),
+            Transform::from_translation(Vec2::new(0.0, 0.0).extend(0.0)),
+        ))
+        .id();
+
+    // Drive several ticks with an empty hopper. Each tick the
+    // pick system blocks Defender and -- with the fix -- drops
+    // the blocked set again so it never deadlocks. With the
+    // bug present, the blocked set would grow sticky here.
+    for _ in 0..10 {
+        app.update();
+    }
+
+    // The facility is still idle: no cycle can start with an
+    // empty hopper. The load-bearing assertion is that the
+    // blocked set is empty, not stuck on Defender.
+    let facility_state = app
+        .world()
+        .entity(facility)
+        .get::<ProductionFacility>()
+        .expect("facility must exist");
+    assert_eq!(
+        facility_state.current_target, None,
+        "facility with an empty hopper must stay idle"
+    );
+    assert!(
+        facility_state.blocked_types.is_empty(),
+        "blocked set must not persist across empty-hopper ticks; otherwise the cold-start facility deadlocks"
+    );
+
+    // Haulers (logistics leg 3) now fill the hopper. This is
+    // the moment the deadlock used to bite: Defender was stuck
+    // in the blocked set from the empty-hopper ticks, so the
+    // now-full hopper never produced anything.
+    common::fill_facility_input(&mut app, facility);
+
+    // 1 pick tick + PRODUCTION_TICKS_PER_BOT work ticks to
+    // complete a cycle. The facility must pick Defender (the
+    // sole positive-deficit type) and spawn one.
+    for _ in 0..(1 + PRODUCTION_TICKS_PER_BOT as usize) {
+        app.update();
+    }
+
+    assert_eq!(
+        nanobot_count_by_type(app.world_mut(), NanobotType::Defender),
+        1,
+        "cold-start facility must recover once the hopper fills and produce the deficit Defender"
+    );
+}
