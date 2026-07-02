@@ -21,17 +21,17 @@ use crate::nanobot::{
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole};
 
 /// Maximum units a Hauler can carry in a single trip. The glossary is
-/// explicit that Haulers carry "much more" than Workers; 40 is
-/// deliberately ten times the worker cap so the gap is visible in the
+/// explicit that Haulers carry "much more" than Workers; this cap is
+/// deliberately five times the worker cap so the gap is visible in the
 /// swarm output and obvious in the test math.
-pub const HAULER_CARRY_CAPACITY: u32 = 40;
+pub const HAULER_CARRY_CAPACITY: u32 = 20;
 
 /// Units a Hauler pulls from its source per `app.update()` tick.
-/// 8 units/tick means a hauler fills the 40-unit load in 5 ticks;
+/// Four units/tick means a hauler fills the 20-unit load in 5 ticks;
 /// large enough that the trip is short relative to the load but
 /// small enough that the test can drive the simulation forward with
 /// a handful of updates.
-pub const HAULER_EXTRACT_PER_TICK: u32 = 8;
+pub const HAULER_EXTRACT_PER_TICK: u32 = 4;
 
 /// What a Hauler is currently carrying. Inserted when the hauler
 /// finishes loading at the source, removed when the load is dropped
@@ -797,16 +797,23 @@ mod tests {
 
     use super::*;
     use crate::intent::PAINT_STRENGTH_CAP;
-    use crate::nanobot::gather::WORKER_CARRY_CAPACITY;
+    use crate::nanobot::{gather::WORKER_CARRY_CAPACITY, planned::DEFAULT_STOCKPILE_CAPACITY};
 
     #[test]
     fn hauler_carry_capacity_is_much_larger_than_worker_capacity() {
         // The glossary says haulers carry "much more" than
-        // workers. 5x is the floor; 10x makes the gap obvious in
+        // workers. 5x is the floor that keeps the gap visible in
         // test math and swarm behaviour. A const block turns the
         // compile-time check into a real invariant and dodges
         // clippy's "assertion on a constant" lint.
         const { assert!(HAULER_CARRY_CAPACITY >= 5 * WORKER_CARRY_CAPACITY) };
+    }
+
+    #[test]
+    fn hauler_carry_capacity_is_one_tenth_of_stockpile_capacity() {
+        // One full hauler load is one tenth of a completed
+        // Source or Sink Stockpile buffer.
+        const { assert!(HAULER_CARRY_CAPACITY * 10 == DEFAULT_STOCKPILE_CAPACITY) };
     }
 
     #[test]

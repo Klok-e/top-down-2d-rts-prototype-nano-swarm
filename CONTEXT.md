@@ -36,6 +36,10 @@ _Avoid_: Fighter group, combat squad, attack zone
 A local resource buffer automatically created where sustained material flow is needed. Source stockpiles stage gathered resources near deposits; sink stockpiles in build zones feed production facilities and future base infrastructure. Chargers have their own terminal buffer and are fed by direct hauler delivery.
 _Avoid_: Deposit zone, global storage
 
+**Stockpile Capacity**:
+The maximum material a stockpile can hold. It is a local buffer limit, not a global storage cap.
+_Avoid_: Stockpile size, global cap
+
 **Source Stockpile**:
 A stockpile placed near a resource deposit to receive resources extracted by workers before haulers move them onward.
 _Avoid_: Mining depot, deposit storage

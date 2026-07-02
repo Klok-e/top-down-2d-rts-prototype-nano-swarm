@@ -2,7 +2,7 @@
 
 ## Change Verification
 
-- Review the diff for correctness, scope, and code quality.
+- Review the diff for correctness and code quality.
 - Run `cargo fmt`.
 - Run `cargo clippy`.
 - Run `cargo test`.
@@ -10,6 +10,10 @@
 ## Testing
 
 For coding-agent implementation work, follow `docs/agents/testing.md`. Don't edit this doc autonomously: human approval always required.
+
+## Comments
+
+All comments must be written in a timeless manner.
 
 ## Agent skills
 
