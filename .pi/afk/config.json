@@ -2,19 +2,13 @@
   "maxCycles": 5,
   "roles": {
     "implementer": {
-      "agentType": "general-purpose",
-      "model": "zai/glm-5.2",
-      "description": "AFK implementer"
+      "model": "zai/glm-5.2"
     },
     "quality": {
-      "agentType": "general-purpose",
-      "model": "zai/glm-5.2",
-      "description": "AFK quality pass"
+      "model": "zai/glm-5.2"
     },
     "verifier": {
-      "agentType": "general-purpose",
-      "model": "zai/glm-5.2",
-      "description": "AFK verifier"
+      "model": "zai/glm-5.2"
     }
   }
 }
