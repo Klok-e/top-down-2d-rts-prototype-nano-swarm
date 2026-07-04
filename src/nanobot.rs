@@ -17,6 +17,7 @@ mod placement;
 mod planned;
 mod production;
 mod spatial_pressure;
+mod spread;
 mod sprites;
 
 pub use autonomy::*;
@@ -37,6 +38,7 @@ pub use placement::*;
 pub use planned::*;
 pub use production::*;
 pub use spatial_pressure::*;
+pub use spread::*;
 pub use sprites::*;
 
 use bevy::prelude::*;
@@ -100,9 +102,20 @@ pub struct NanobotPlugin {}
 
 impl Plugin for NanobotPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, separation_system)
-            .add_systems(Update, velocity_system)
-            .add_systems(Update, move_velocity_system)
-            .add_systems(Update, bot_debug_circle_system);
+        // `idle_spread_system` runs before `velocity_system` so its
+        // cosmetic nudge composes with `separation_system` and is
+        // consumed the same frame (issue #39). Separation handles
+        // physical overlap; spread handles region fill. Both write
+        // `VelocityComponent` before `velocity_system` zeroes it, so
+        // they are chained for deterministic composition.
+        app.add_systems(
+            Update,
+            (separation_system, idle_spread_system)
+                .chain()
+                .before(velocity_system),
+        )
+        .add_systems(Update, velocity_system)
+        .add_systems(Update, move_velocity_system)
+        .add_systems(Update, bot_debug_circle_system);
     }
 }

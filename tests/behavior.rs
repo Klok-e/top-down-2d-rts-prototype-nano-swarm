@@ -20,6 +20,8 @@ mod gather_owner_filter;
 mod gather_zone;
 #[path = "behavior/hauler_corridor.rs"]
 mod hauler_corridor;
+#[path = "behavior/idle_spread.rs"]
+mod idle_spread;
 #[path = "behavior/intent_brush.rs"]
 mod intent_brush;
 #[path = "behavior/maintenance.rs"]

@@ -42,9 +42,9 @@ use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
     intent::IntentGrid,
     nanobot::{
-        bot_debug_circle_system, move_velocity_system, separation_system, velocity_system,
-        ActiveWorkerCounts, CentralDemandPlugin, Charge, ChargePlugin, Charger, CollapsePlugin,
-        Commitment, DefendPlugin, DemandSnapshot, GatherPlugin, HaulPlugin, Health,
+        bot_debug_circle_system, idle_spread_system, move_velocity_system, separation_system,
+        velocity_system, ActiveWorkerCounts, CentralDemandPlugin, Charge, ChargePlugin, Charger,
+        CollapsePlugin, Commitment, DefendPlugin, DemandSnapshot, GatherPlugin, HaulPlugin, Health,
         MaintenancePlugin, Nanobot, NanobotBundle, NanobotType, OwnerSwarm, PlannedStructure,
         PlannedStructurePlugin, ProductionFacility, ProductionPlugin, SoftWorkSlots, Structure,
         StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent,
@@ -86,6 +86,7 @@ fn register_movement_systems(app: &mut App) {
         Update,
         (
             separation_system,
+            idle_spread_system,
             velocity_system,
             move_velocity_system,
             bot_debug_circle_system,
