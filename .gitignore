@@ -5,4 +5,5 @@
 /.pi/afk/logs/
 /.pi/afk/active-results.json
 /.pi/afk/transcripts/
+/.pi/afk/results/
 /.pi/tasks/tasks-*.json
