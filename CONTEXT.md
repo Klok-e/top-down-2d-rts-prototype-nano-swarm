@@ -29,7 +29,7 @@ An intent zone that marks free base space where automatic construction may place
 _Avoid_: Construction group, builder assignment, manual building placement
 
 **Defend Zone**:
-An intent zone where nanobots hold and protect an area. Painting defend intent into enemy territory functions as an attack or advance order; no separate attack zone is needed initially. Defend zones include chargers that resupply defenders, making cut-off or surrounded defenders weaker over time.
+An intent zone where nanobots hold and protect an area. Defenders spread across defend intent according to paint strength, local crowding, and threats rather than clustering on a single command point. Painting defend intent into enemy territory functions as an attack or advance order; no separate attack zone is needed initially. Defend zones include chargers that resupply defenders, making cut-off or surrounded defenders weaker over time.
 _Avoid_: Fighter group, combat squad, attack zone
 
 **Stockpile**:
@@ -113,7 +113,7 @@ A nanobot's tendency to finish its current short task before reconsidering playe
 _Avoid_: Instant retargeting, hard lock-in
 
 **Paint Strength**:
-The intensity of a painted intent zone at a location. Higher paint strength attracts more eligible nanobots and can override weak commitments, but does not make work happen faster by itself. Overpainting can overcommit the swarm, causing congestion, waiting, or starvation elsewhere. Repeated painting increases strength; erasing reduces or removes it. Player-painted intent persists until changed.
+The intensity of a painted intent zone at a location. Higher paint strength attracts more eligible nanobots, can support more useful nanobot presence before a cell feels crowded, and can override weak commitments, but does not make work happen faster by itself. Overpainting can overcommit the swarm, causing congestion, waiting, or starvation elsewhere. Repeated painting increases strength; erasing reduces or removes it. Player-painted intent persists until changed.
 _Avoid_: Priority slider, command level
 
 **Nanobot Type**:
@@ -133,7 +133,7 @@ Resources move physically through nanobots carrying them. Workers can move small
 _Avoid_: Global stockpile, teleporting resources
 
 **Logistics Corridor**:
-A player-painted movement intent for haulers that encourages resource transport along a path between stockpiles, facilities, chargers, or other resource needs. Corridors bias hauler path choice but do not create resource tasks by themselves; haulers still choose jobs from source and sink need. Corridors are special hauler guidance, not general direct movement commands.
+A player-painted movement intent for haulers that encourages resource transport along a path between stockpiles, facilities, chargers, or other resource needs. Corridors bias hauler path choice and logistics travel preference, with stronger paint making a route more attractive, but do not create resource tasks by themselves. Corridors are special hauler guidance, not general direct movement commands.
 _Avoid_: Road, waypoint chain, manual route
 
 **Defender**:
