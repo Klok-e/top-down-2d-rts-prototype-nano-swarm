@@ -29,6 +29,7 @@ use libtest_mimic::{Arguments, Conclusion, Failed, Trial};
 mod defender_spread;
 mod fill_indicators;
 mod harness;
+mod idle_spread;
 mod smoke;
 mod world_space_nanobots;
 
@@ -58,6 +59,7 @@ fn main() -> std::process::ExitCode {
     let tests = vec![
         Trial::test("defender_spread", || run(defender_spread::defender_spread))
             .with_ignored_flag(true),
+        Trial::test("idle_spread", || run(idle_spread::idle_spread)).with_ignored_flag(true),
         Trial::test("fill_indicators", || run(fill_indicators::fill_indicators))
             .with_ignored_flag(true),
         Trial::test("smoke", || run(smoke::smoke)).with_ignored_flag(true),
