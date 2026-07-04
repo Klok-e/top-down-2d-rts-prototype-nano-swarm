@@ -83,6 +83,7 @@ type ActiveRun = {
 
 type AfkLiveActivity = {
 	spinnerIndex: number;
+	model: string | undefined;
 	activeTool?: string;
 	lastTool?: string;
 	lastText?: string;
@@ -308,6 +309,7 @@ function nextPhase(phase: Phase): Phase {
 function freshLiveActivity(): AfkLiveActivity {
 	return {
 		spinnerIndex: 0,
+		model: undefined,
 		tokenTotal: 0,
 		toolUses: 0,
 		updatedAt: nowIso(),
@@ -317,6 +319,15 @@ function freshLiveActivity(): AfkLiveActivity {
 function oneLine(text: string, max = 160) {
 	const line = text.replace(/\s+/g, " ").trim();
 	return line.length > max ? `${line.slice(0, max)}…` : line;
+}
+
+function modelLabel(model: any) {
+	if (!model?.provider || !model?.id) return undefined;
+	return `${model.provider}/${model.id}`;
+}
+
+function roleModelLabel(ctx: any, modelSpec?: string) {
+	return modelSpec || modelLabel(ctx.model);
 }
 
 function sanitizeAgentText(text: string) {
@@ -393,6 +404,7 @@ function renderAfkPanel(tui: any, theme: Theme): string[] {
 		`${icon} ${theme.bold(`AFK #${issue.number}`)} ${theme.fg("dim", "·")} ${state.phase} ${state.cycle}/${config.maxCycles} ${theme.fg("dim", "·")} ${status}${statSuffix}`,
 		`${theme.fg("dim", "issue:")} ${issue.title}`,
 		`${theme.fg("dim", "role session:")} ${roleSession}`,
+		`${theme.fg("dim", "model:")} ${liveActivity.model ?? "unknown"}`,
 		`${theme.fg("dim", "activity:")} ${currentActivity(state)}`,
 		`${theme.fg("dim", "last:")} ${oneLine(lastOutput(state), 220)}`,
 	].map((line) => truncateLine(line, width));
@@ -445,8 +457,19 @@ function sendAfkResultMessage(pi: ExtensionAPI, issue: Issue, state: AfkState, r
 	}
 }
 
+function afkStatusText(issue: Issue, state: AfkState, config: AfkConfig) {
+	const modelSuffix = liveActivity.model ? ` · ${liveActivity.model}` : "";
+	return `#${issue.number} ${state.phase} ${state.cycle}/${config.maxCycles}${modelSuffix}`;
+}
+
+function updateAfkStatus() {
+	if (!currentWidgetCtx || !currentWidgetIssue || !currentWidgetState || !currentWidgetConfig) return;
+	currentWidgetCtx.ui.setStatus("afk", afkStatusText(currentWidgetIssue, currentWidgetState, currentWidgetConfig));
+}
+
 function renderAfkWidgetNow() {
 	if (!currentWidgetCtx) return;
+	updateAfkStatus();
 	if (widgetRegistered) {
 		widgetTui?.requestRender?.();
 		return;
@@ -478,7 +501,7 @@ function setAfkWidget(ctx: any, issue: Issue, state: AfkState, config: AfkConfig
 	currentWidgetIssue = issue;
 	currentWidgetState = { ...state };
 	currentWidgetConfig = config;
-	ctx.ui.setStatus("afk", `#${issue.number} ${state.phase} ${state.cycle}/${config.maxCycles}`);
+	updateAfkStatus();
 	startAfkWidgetTimer();
 	renderAfkWidgetNow();
 }
@@ -577,6 +600,8 @@ async function runStructuredRole<T>(
 		liveActivity = freshLiveActivity();
 		liveActivity.lastText = state.lastResult?.summary || state.feedback || undefined;
 		const roleConfig = config.roles[role];
+		liveActivity.model = roleModelLabel(ctx, roleConfig.model);
+		renderAfkWidgetNow();
 		roleSession = await startRoleSession({
 			cwd,
 			ctx,
@@ -615,6 +640,7 @@ async function runStructuredRole<T>(
 		});
 		state.activeRoleSessionId = roleSession.id;
 		state.activeTranscriptPath = roleSession.transcriptPath;
+		liveActivity.model = roleSession.model ?? liveActivity.model;
 		if (activeRun) activeRun.activeRoleSession = roleSession;
 		currentWidgetState = { ...state };
 		renderAfkWidgetNow();
@@ -952,6 +978,7 @@ async function handleStatus(ctx: any) {
 			`status: ${activeRun ? activeRun.stopRequested ? "stopping" : "active" : state.status}`,
 			`phase: ${state.phase}`,
 			`cycle: ${state.cycle}`,
+			`model: ${liveActivity.model ?? "unknown"}`,
 			`activeRoleSessionId: ${state.activeRoleSessionId ?? "none"}`,
 			`transcript: ${state.activeTranscriptPath ?? "none"}`,
 			`activity: ${currentActivity(state)}`,

@@ -36,6 +36,7 @@ export type StartRoleSessionOptions = RoleSessionCallbacks & {
 export type RoleSessionRun = {
 	id: string;
 	transcriptPath: string;
+	model: string | undefined;
 	done: Promise<void>;
 	abort(): Promise<void>;
 };
@@ -173,6 +174,7 @@ export async function startRoleSession(options: StartRoleSessionOptions): Promis
 	await loader.reload();
 
 	const model = resolveRoleModel(ctx, modelSpec);
+	const modelLabel = model ? `${model.provider}/${model.id}` : undefined;
 	const tools = collectAllToolNames(loader, cwd);
 	const { session } = await createAgentSession({
 		cwd,
@@ -199,7 +201,7 @@ export async function startRoleSession(options: StartRoleSessionOptions): Promis
 		phase,
 		cycle,
 		sessionId: id,
-		model: model ? `${model.provider}/${model.id}` : undefined,
+		model: modelLabel,
 		toolCount: tools.length,
 		excludedExtensions: discoveredNames.filter((name) => isFullAfkExtension(name, cwd)),
 	});
@@ -294,6 +296,7 @@ export async function startRoleSession(options: StartRoleSessionOptions): Promis
 	return {
 		id,
 		transcriptPath: writer.path,
+		model: modelLabel,
 		done,
 		async abort() {
 			if (completed) return;
