@@ -274,16 +274,16 @@ export async function startRoleSession(options: StartRoleSessionOptions): Promis
 		try {
 			await session.prompt(prompt);
 			completed = true;
-			write({ type: "end", status: "completed", turns: turnCount, toolUses, tokensTotal, completedAt: nowIso() });
+			write({ type: "end", status: "completed", turns: turnCount, toolUses, tokensTotal: tokenTotal, completedAt: nowIso() });
 		} catch (err) {
 			write({
 				type: "error",
 				message: err instanceof Error ? err.message : String(err),
 				turns: turnCount,
 				toolUses,
-				tokensTotal,
+				tokensTotal: tokenTotal,
 			});
-			write({ type: "end", status: "error", turns: turnCount, toolUses, tokensTotal, completedAt: nowIso() });
+			write({ type: "end", status: "error", turns: turnCount, toolUses, tokensTotal: tokenTotal, completedAt: nowIso() });
 			throw err;
 		} finally {
 			unsubscribe();
