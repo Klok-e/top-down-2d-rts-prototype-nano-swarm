@@ -16,6 +16,7 @@ mod opponent;
 mod placement;
 mod planned;
 mod production;
+mod spatial_pressure;
 mod sprites;
 
 pub use autonomy::*;
@@ -35,6 +36,7 @@ pub use opponent::*;
 pub use placement::*;
 pub use planned::*;
 pub use production::*;
+pub use spatial_pressure::*;
 pub use sprites::*;
 
 use bevy::prelude::*;
