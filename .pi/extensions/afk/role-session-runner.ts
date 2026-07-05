@@ -22,6 +22,12 @@ type RoleSessionCallbacks = {
 	onAssistantUsage?: (usage: { input?: number; output?: number; cacheWrite?: number }) => void;
 };
 
+export type RoleSessionDiagnostics = {
+	assistantMessages: number;
+	assistantTextSeen: boolean;
+	assistantError?: string;
+};
+
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export type StartRoleSessionOptions = RoleSessionCallbacks & {
@@ -42,6 +48,7 @@ export type RoleSessionRun = {
 	model: string;
 	thinkingLevel: ThinkingLevel;
 	done: Promise<void>;
+	diagnostics(): RoleSessionDiagnostics;
 	abort(): Promise<void>;
 };
 
@@ -117,6 +124,18 @@ function messageText(message: any) {
 		.filter((part: any) => part?.type === "text" && typeof part.text === "string")
 		.map((part: any) => part.text)
 		.join("\n");
+}
+
+function assistantErrorText(message: any) {
+	const parts: string[] = [];
+	if (typeof message?.errorMessage === "string") parts.push(message.errorMessage);
+	for (const diagnostic of Array.isArray(message?.diagnostics) ? message.diagnostics : []) {
+		if (typeof diagnostic?.error?.message === "string") parts.push(diagnostic.error.message);
+		if (diagnostic?.error?.code !== undefined) parts.push(String(diagnostic.error.code));
+	}
+	const text = messageText(message);
+	if (text) parts.push(text);
+	return [...new Set(parts.map((part) => part.trim()).filter(Boolean))].join("\n");
 }
 
 function usageFromMessage(message: any) {
@@ -202,6 +221,9 @@ export async function startRoleSession(options: StartRoleSessionOptions): Promis
 	let tokenTotal = 0;
 	let streamedText = "";
 	let completed = false;
+	let assistantMessages = 0;
+	let assistantTextSeen = false;
+	let assistantError: string | undefined;
 
 	write({
 		type: "start",
@@ -250,8 +272,16 @@ export async function startRoleSession(options: StartRoleSessionOptions): Promis
 			if (event.type === "message_end") {
 				const message = event.message;
 				if (message?.role === "assistant") {
+					assistantMessages++;
 					const text = messageText(message);
-					if (text) write({ type: "assistant_text", text });
+					if (text) {
+						assistantTextSeen = true;
+						write({ type: "assistant_text", text });
+					}
+					if (message.stopReason === "error") {
+						assistantError = assistantErrorText(message) || "assistant message ended with error";
+						write({ type: "assistant_error", message: assistantError, stopReason: message.stopReason });
+					}
 					const usage = usageFromMessage(message);
 					if (usage) {
 						tokenTotal += usageTotal(usage);
@@ -310,6 +340,9 @@ export async function startRoleSession(options: StartRoleSessionOptions): Promis
 		model: displayModelLabel,
 		thinkingLevel,
 		done,
+		diagnostics() {
+			return { assistantMessages, assistantTextSeen, assistantError };
+		},
 		async abort() {
 			if (completed) return;
 			await session.abort();

@@ -18,7 +18,7 @@ import {
 	type RoleResult,
 	type VerifyResult,
 } from "./result-tools.ts";
-import { startRoleSession, type RoleSessionRun, type ThinkingLevel } from "./role-session-runner.ts";
+import { startRoleSession, type RoleSessionDiagnostics, type RoleSessionRun, type ThinkingLevel } from "./role-session-runner.ts";
 import { appendTranscriptEvent } from "./transcript.ts";
 
 const AFK_DIR = ".pi/afk";
@@ -60,6 +60,7 @@ type AfkState = {
 	activeRoleSessionId?: string;
 	activeTranscriptPath?: string;
 	feedback: string;
+	feedbackDetail?: string;
 	lastResult?: AfkLastResult;
 	startedAt: string;
 	updatedAt: string;
@@ -103,6 +104,13 @@ type ToolActivity = {
 	type: "start" | "end";
 	toolName: string;
 };
+
+class AfkPhaseError extends Error {
+	constructor(message: string, readonly detail?: string) {
+		super(message);
+		this.name = "AfkPhaseError";
+	}
+}
 
 type Theme = {
 	fg(color: string, text: string): string;
@@ -380,6 +388,41 @@ function freshLiveActivity(): AfkLiveActivity {
 function oneLine(text: string, max = 160) {
 	const line = text.replace(/\s+/g, " ").trim();
 	return line.length > max ? `${line.slice(0, max)}…` : line;
+}
+
+function errorMessage(err: unknown) {
+	return err instanceof Error ? err.message : String(err);
+}
+
+function errorDetail(err: unknown) {
+	return err instanceof AfkPhaseError ? err.detail : undefined;
+}
+
+function roleFailureMessage(role: Role, diagnostics?: RoleSessionDiagnostics) {
+	if (diagnostics?.assistantError) return `${role} failed: ${diagnostics.assistantError}`;
+	if (!diagnostics || diagnostics.assistantMessages === 0 || !diagnostics.assistantTextSeen) {
+		return `${role} ended without result: empty assistant response`;
+	}
+	return `${role} ended without result`;
+}
+
+async function appendRoleFailure(roleSession: RoleSessionRun | undefined, error: string, detail?: string) {
+	if (!roleSession) return;
+	try {
+		await appendTranscriptEvent(roleSession.transcriptPath, { type: "role_failure", error, detail });
+	} catch {
+		// Transcript writes must not affect AFK phase outcomes.
+	}
+}
+
+async function pauseIssue(ctx: any, cwd: string, state: AfkState, issue: Issue, err: unknown, notifyMessage?: string) {
+	state.status = "paused";
+	state.activeRoleSessionId = undefined;
+	state.feedback = errorMessage(err);
+	state.feedbackDetail = errorDetail(err);
+	await saveState(cwd, state);
+	await appendHistory(cwd, { issue: issue.number, result: "paused", summary: state.feedback, at: nowIso() });
+	ctx.ui.notify(notifyMessage ?? `AFK paused: ${state.feedback}`, "error");
 }
 
 function modelWithThinkingLabel(model: string, thinkingLevel: ThinkingLevel) {
@@ -721,7 +764,13 @@ async function runStructuredRole<T>(
 		renderAfkWidgetNow();
 		await saveState(cwd, state);
 		if (activeRun?.stopRequested) await stopActiveRoleSession(cwd);
-		await roleSession.done;
+		try {
+			await roleSession.done;
+		} catch (err) {
+			const primary = `${role} failed: ${errorMessage(err)}`;
+			await appendRoleFailure(roleSession, primary);
+			throw new AfkPhaseError(primary);
+		}
 	} finally {
 		await removeResultToken(cwd, token);
 		state.activeRoleSessionId = undefined;
@@ -730,7 +779,16 @@ async function runStructuredRole<T>(
 		renderAfkWidgetNow();
 		await saveState(cwd, state);
 	}
-	const result = await consumeStructuredResult(cwd, token, meta, validate);
+	let result: T;
+	try {
+		result = await consumeStructuredResult(cwd, token, meta, validate);
+	} catch (err) {
+		const detail = errorMessage(err);
+		const missingResult = detail.includes("did not submit structured result");
+		const primary = missingResult ? roleFailureMessage(role, roleSession?.diagnostics()) : detail;
+		await appendRoleFailure(roleSession, primary, missingResult ? detail : undefined);
+		throw new AfkPhaseError(primary, missingResult ? detail : undefined);
+	}
 	if (roleSession) {
 		try {
 			await appendTranscriptEvent(roleSession.transcriptPath, {
@@ -795,6 +853,7 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 		updatedAt: nowIso(),
 	};
 	state.status = "running";
+	state.feedbackDetail = undefined;
 	await saveState(cwd, state);
 
 	while (true) {
@@ -818,12 +877,7 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 				parsed = await runRoleResult(ctx, cwd, config, state, issue, "implementer");
 				sendAfkResultMessage(pi, issue, state, "implementer", parsed);
 			} catch (err) {
-				state.status = "paused";
-				state.activeRoleSessionId = undefined;
-				state.feedback = err instanceof Error ? err.message : String(err);
-				await saveState(cwd, state);
-				await appendHistory(cwd, { issue: issue.number, result: "paused", summary: state.feedback, at: nowIso() });
-				ctx.ui.notify(`AFK paused: ${state.feedback}`, "error");
+				await pauseIssue(ctx, cwd, state, issue, err);
 				return "paused";
 			}
 			state.lastResult = {
@@ -841,6 +895,7 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 			}
 			state.phase = nextPhase(state.phase);
 			state.feedback = "";
+			state.feedbackDetail = undefined;
 			await saveState(cwd, state);
 			continue;
 		}
@@ -851,12 +906,7 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 				parsed = await runRoleResult(ctx, cwd, config, state, issue, "quality");
 				sendAfkResultMessage(pi, issue, state, "quality", parsed);
 			} catch (err) {
-				state.status = "paused";
-				state.activeRoleSessionId = undefined;
-				state.feedback = err instanceof Error ? err.message : String(err);
-				await saveState(cwd, state);
-				await appendHistory(cwd, { issue: issue.number, result: "paused", summary: state.feedback, at: nowIso() });
-				ctx.ui.notify(`AFK paused: ${state.feedback}`, "error");
+				await pauseIssue(ctx, cwd, state, issue, err);
 				return "paused";
 			}
 			state.lastResult = {
@@ -873,6 +923,7 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 				return "needs-info";
 			}
 			state.phase = nextPhase(state.phase);
+			state.feedbackDetail = undefined;
 			await saveState(cwd, state);
 			continue;
 		}
@@ -882,12 +933,7 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 			verify = await runVerifyResult(ctx, cwd, config, state, issue);
 			sendAfkResultMessage(pi, issue, state, "verifier", verify);
 		} catch (err) {
-			state.status = "paused";
-			state.activeRoleSessionId = undefined;
-			state.feedback = err instanceof Error ? err.message : String(err);
-			await saveState(cwd, state);
-			await appendHistory(cwd, { issue: issue.number, result: "paused", summary: state.feedback, at: nowIso() });
-			ctx.ui.notify(`AFK paused: ${state.feedback}`, "error");
+			await pauseIssue(ctx, cwd, state, issue, err);
 			return "paused";
 		}
 		state.lastResult = {
@@ -901,11 +947,7 @@ async function runOne(pi: ExtensionAPI, ctx: any, config: AfkConfig, initialIssu
 			try {
 				await ensurePassCommit(pi, cwd, verify.commit);
 			} catch (err) {
-				state.status = "paused";
-				state.feedback = `Verifier reported pass but commit validation failed: ${err instanceof Error ? err.message : String(err)}`;
-				await saveState(cwd, state);
-				await appendHistory(cwd, { issue: issue.number, result: "paused", summary: state.feedback, at: nowIso() });
-				ctx.ui.notify("AFK paused: verifier pass failed commit validation.", "error");
+				await pauseIssue(ctx, cwd, state, issue, new Error(`verifier pass failed commit validation: ${errorMessage(err)}`));
 				return "paused";
 			}
 			await markCompleted(pi, cwd, issue, verify);
@@ -1063,8 +1105,9 @@ async function handleStatus(ctx: any) {
 			`activity: ${currentActivity(state)}`,
 			`last: ${oneLine(lastOutput(state))}`,
 			state.feedback ? `feedback: ${oneLine(state.feedback)}` : "feedback: none",
+			state.feedbackDetail ? `detail: ${oneLine(state.feedbackDetail)}` : undefined,
 			`state: ${STATE_REL}`,
-		].join("\n"),
+		].filter(Boolean).join("\n"),
 		"info",
 	);
 }
