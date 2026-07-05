@@ -1,14 +1,9 @@
-//! Integration tests for issue #9: Logistics Corridors bias hauler paths.
-//!
-//! Each test isolates one behaviour so a failure points at a single
-//! contract: corridor routing on the leg from idle to source, no
-//! job creation without source/sink demand, paint-strength
-//! preference, and the same routing on the leg from source to sink.
+//! Behavior tests for Logistics Corridor route-cost bias.
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
-    nanobot::{DirectMovementComponent, HaulerCorridorWaypoint},
+    nanobot::{DirectMovementComponent, HaulerAssignment, HaulerRoute},
     ZONE_BLOCK_SIZE,
 };
 
@@ -27,173 +22,41 @@ fn paint_corridor(app: &mut App, cell: IVec2, strength: u8) {
     ));
 }
 
-#[test]
-fn hauler_has_no_waypoint_without_corridor() {
-    // Baseline: with no corridor painted, the hauler's
-    // DirectMovementComponent must point straight at the
-    // source. The corridor system must not invent a waypoint
-    // for an empty corridor.
-    let mut app = build_app();
-    // Spawn the hauler far from the source so the DMC survives
-    // a few ticks of movement instead of being removed on the
-    // arrival check.
-    let hauler_pos = Vec2::new(0.0, 0.0);
-    let source_pos = Vec2::new(2_000.0, 0.0);
-    let sink_pos = Vec2::new(3_000.0, 0.0);
-    // Leg-2 source: a source-role stockpile (deposits are
-    // worker-only under ADR-0005). Leg-2 sink: a sink-role
-    // stockpile.
-    let _source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
-    let _sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
-    let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
-
-    for _ in 0..3 {
-        app.update();
-    }
-
-    assert!(
-        app.world()
-            .entity(hauler)
-            .get::<HaulerCorridorWaypoint>()
-            .is_none(),
-        "hauler must not gain a corridor waypoint when no corridor is painted"
-    );
-    let dmc = app
-        .world()
-        .entity(hauler)
-        .get::<DirectMovementComponent>()
-        .expect("hauler has a DMC after assignment");
-    assert!(
-        (dmc.xy - source_pos).length() < 1.0,
-        "hauler DMC must point at the source when no corridor is painted; got {:?}",
-        dmc.xy
-    );
+fn route_visits_row(route: &HaulerRoute, y: i32) -> bool {
+    route
+        .waypoints
+        .iter()
+        .any(|point| top_down_2d_rts_prototype_nano_swarm::nanobot::world_to_cell(*point).y == y)
 }
 
 #[test]
-fn hauler_picks_corridor_waypoint_when_painted_on_route() {
-    // Painted corridor cell on the line from the hauler to the
-    // source must become the hauler's waypoint. The DMC is
-    // redirected through the corridor cell, so the hauler's
-    // first leg bends toward the corridor instead of going
-    // straight to the source.
+fn hauler_uses_route_system_without_corridor_paint() {
     let mut app = build_app();
     let hauler_pos = Vec2::new(0.0, 0.0);
-    let source_pos = Vec2::new(2_000.0, 0.0);
-    let sink_pos = Vec2::new(3_000.0, 0.0);
+    let source_pos = Vec2::new(3.0 * ZONE_BLOCK_SIZE, 0.0);
+    let sink_pos = Vec2::new(3.5 * ZONE_BLOCK_SIZE, 0.0);
     let _source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
     let _sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
     let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
-
-    // Cell (2, 0) is on the line from (0, 0) to (2000, 0) and
-    // sits between the hauler and the source. Painting it
-    // gives a guaranteed-on-line waypoint.
-    let painted = IVec2::new(2, 0);
-    paint_corridor(&mut app, painted, PAINT_STRENGTH_CAP);
-
-    for _ in 0..3 {
-        app.update();
-    }
-
-    let waypoint = app
-        .world()
-        .entity(hauler)
-        .get::<HaulerCorridorWaypoint>()
-        .copied()
-        .expect("hauler must gain a corridor waypoint when a corridor is painted on the route");
-    let painted_center = common::cell_world_center(painted);
-    assert!(
-        (waypoint.waypoint - painted_center).length() < 1.0,
-        "waypoint must be the painted cell's world center; got {:?}",
-        waypoint.waypoint
-    );
-    assert!(
-        (waypoint.target - source_pos).length() < 1.0,
-        "waypoint target must be the source; got {:?}",
-        waypoint.target
-    );
-    let dmc = app
-        .world()
-        .entity(hauler)
-        .get::<DirectMovementComponent>()
-        .expect("hauler has a DMC after the corridor system fires");
-    assert!(
-        (dmc.xy - painted_center).length() < 1.0,
-        "DMC must point at the corridor waypoint, not the source; got {:?}",
-        dmc.xy
-    );
-}
-
-#[test]
-fn corridor_waypoint_reissues_movement_when_timeout_strips_dmc_before_waypoint() {
-    // Regression: a corridor-routed hauler can lose its DMC before
-    // reaching the waypoint. The waypoint marker must restore the
-    // waypoint-leg movement instead of leaving the hauler parked with
-    // a stale route marker.
-    let mut app = build_app();
-    let hauler_pos = Vec2::new(0.0, 0.0);
-    let waypoint = Vec2::new(512.0, 0.0);
-    let target = Vec2::new(1_024.0, 0.0);
-    let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
-
-    app.world_mut()
-        .entity_mut(hauler)
-        .insert(HaulerCorridorWaypoint { waypoint, target });
 
     app.update();
 
-    let dmc = app
+    let route = app
         .world()
         .entity(hauler)
-        .get::<DirectMovementComponent>()
-        .expect("hauler still outside corridor waypoint should resume waypoint movement");
-    assert_eq!(dmc.xy, waypoint);
-}
-
-#[test]
-fn hauler_picks_higher_paint_corridor_cell() {
-    // Two corridor cells on the same line, one with high paint
-    // and one with low paint. The hauler system must prefer the
-    // high-paint cell so Paint Strength can increase path
-    // preference (acceptance criterion).
-    let mut app = build_app();
-    let hauler_pos = Vec2::new(0.0, 0.0);
-    let source_pos = Vec2::new(2_000.0, 0.0);
-    let sink_pos = Vec2::new(3_000.0, 0.0);
-    let _source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
-    let _sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
-    let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
-
-    let weak = IVec2::new(1, 0);
-    let strong = IVec2::new(2, 0);
-    paint_corridor(&mut app, weak, 1);
-    paint_corridor(&mut app, strong, PAINT_STRENGTH_CAP);
-
-    for _ in 0..3 {
-        app.update();
-    }
-
-    let waypoint = app
-        .world()
-        .entity(hauler)
-        .get::<HaulerCorridorWaypoint>()
-        .copied()
-        .expect("hauler must gain a waypoint with multiple painted cells");
-    let strong_center = common::cell_world_center(strong);
+        .get::<HaulerRoute>()
+        .expect("hauler source leg should use a route even without corridor paint");
     assert!(
-        (waypoint.waypoint - strong_center).length() < 1.0,
-        "hauler must prefer the high-paint cell; got waypoint {:?}, expected {:?}",
-        waypoint.waypoint,
-        strong_center
+        route.waypoints.iter().all(|point| {
+            top_down_2d_rts_prototype_nano_swarm::nanobot::world_to_cell(*point).y == 0
+        }),
+        "unpainted route should follow the shortest row; got {:?}",
+        route.waypoints
     );
 }
 
 #[test]
 fn corridor_only_intent_does_not_create_hauling_job() {
-    // The acceptance criterion is explicit: a corridor cell
-    // alone must not produce a HaulerAssignment. A hauler with
-    // no source and no sink nearby stays idle even when a
-    // corridor is painted at its feet.
     let mut app = build_app();
     let hauler = common::spawn_hauler_at(&mut app, Vec2::new(0.0, 0.0));
     paint_corridor(&mut app, IVec2::new(0, 0), PAINT_STRENGTH_CAP);
@@ -205,7 +68,7 @@ fn corridor_only_intent_does_not_create_hauling_job() {
     assert!(
         app.world()
             .entity(hauler)
-            .get::<top_down_2d_rts_prototype_nano_swarm::nanobot::HaulerAssignment>()
+            .get::<HaulerAssignment>()
             .is_none(),
         "corridor must not create a HaulerAssignment"
     );
@@ -217,93 +80,172 @@ fn corridor_only_intent_does_not_create_hauling_job() {
         "corridor must not give the hauler a destination"
     );
     assert!(
-        app.world()
-            .entity(hauler)
-            .get::<HaulerCorridorWaypoint>()
-            .is_none(),
-        "corridor must not give the hauler a waypoint without an active trip"
+        app.world().entity(hauler).get::<HaulerRoute>().is_none(),
+        "corridor must not create a route without a logistics leg"
     );
 }
 
 #[test]
-fn hauler_routes_through_corridor_to_sink_after_loading() {
-    // Acceptance bullet: "Haulers prefer corridor-influenced
-    // paths when transporting resources." The carry leg (from
-    // source to sink) is the visible part of the trip. Painting
-    // a corridor between the source and the sink must make the
-    // hauler's DMC point at the corridor cell on the carry
-    // leg, not straight at the sink.
+fn route_follower_reissues_current_waypoint_when_timeout_strips_dmc() {
     let mut app = build_app();
-    // Two cells apart on the x-axis keeps the deposit and
-    // stockpile easy to identify while staying on a single
-    // line of cells for the corridor.
-    let deposit_pos = Vec2::new(0.0, 0.0);
-    let stockpile_pos = Vec2::new(3.0 * ZONE_BLOCK_SIZE, 0.0);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
-    let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
-    let hauler = common::spawn_hauler_at(&mut app, deposit_pos);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(0.0, 0.0));
+    let waypoint = Vec2::new(ZONE_BLOCK_SIZE, 0.0);
+    app.world_mut()
+        .entity_mut(hauler)
+        .insert(HaulerRoute::new(vec![waypoint], 0.0));
 
-    // Paint a corridor cell on the line between source and sink.
-    // Cell (1, 0) is between (0, 0) and (3, 0) on the x-axis.
-    let painted = IVec2::new(1, 0);
-    paint_corridor(&mut app, painted, PAINT_STRENGTH_CAP);
+    app.update();
 
-    // Pre-seed the assignment so the test isolates the corridor
-    // effect from the assignment selection.
-    app.world_mut().entity_mut(hauler).insert(
-        top_down_2d_rts_prototype_nano_swarm::nanobot::HaulerAssignment {
-            source: deposit,
-            sink: stockpile,
-        },
+    let dmc = app
+        .world()
+        .entity(hauler)
+        .get::<DirectMovementComponent>()
+        .expect("route follower should restore movement to the active waypoint");
+    assert_eq!(dmc.xy, waypoint);
+}
+
+#[test]
+fn leg_selection_uses_corridor_biased_route_cost() {
+    let mut app = build_app();
+    let hauler_pos = Vec2::new(0.0, 0.0);
+    let near_sink_pos = Vec2::new(0.0, 2.0 * ZONE_BLOCK_SIZE);
+    let corridor_sink_pos = Vec2::new(3.0 * ZONE_BLOCK_SIZE, 0.0);
+    let source = common::spawn_stockpile(&mut app, hauler_pos, 1000, 1000);
+    let near_sink = common::spawn_sink_stockpile(&mut app, near_sink_pos, 0, 1000);
+    let corridor_sink = common::spawn_sink_stockpile(&mut app, corridor_sink_pos, 0, 1000);
+    let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
+    paint_corridor(&mut app, IVec2::new(2, 0), PAINT_STRENGTH_CAP);
+    paint_corridor(&mut app, IVec2::new(3, 0), PAINT_STRENGTH_CAP);
+
+    app.update();
+
+    let assignment = app
+        .world()
+        .entity(hauler)
+        .get::<HaulerAssignment>()
+        .expect("hauler should choose a valid logistics leg");
+    assert_eq!(assignment.source, source);
+    assert_eq!(
+        assignment.sink, corridor_sink,
+        "route cost should beat plain physical distance when corridor discount outweighs detour"
     );
+    assert_ne!(assignment.sink, near_sink);
+}
 
-    // Drive ticks until the corridor waypoint first appears on
-    // the carry leg, then capture the waypoint + DMC snapshot.
-    // 5 load ticks (HAULER_EXTRACT_PER_TICK into
-    // HAULER_CARRY_CAPACITY) + 1 carry-assign tick is enough.
-    let mut waypoint_at_appearance: Option<HaulerCorridorWaypoint> = None;
-    let mut dmc_xy_at_appearance: Option<Vec2> = None;
-    for _ in 0..10 {
-        app.update();
-        if waypoint_at_appearance.is_none()
-            && app
-                .world()
-                .entity(hauler)
-                .get::<HaulerCorridorWaypoint>()
-                .is_some()
-        {
-            waypoint_at_appearance = app
-                .world()
-                .entity(hauler)
-                .get::<HaulerCorridorWaypoint>()
-                .copied();
-            dmc_xy_at_appearance = app
-                .world()
-                .entity(hauler)
-                .get::<DirectMovementComponent>()
-                .map(|dmc| dmc.xy);
-        }
+#[test]
+fn source_leg_route_can_take_physically_longer_corridor_detour() {
+    let mut app = build_app();
+    let hauler_pos = Vec2::new(0.0, 0.0);
+    let source_pos = Vec2::new(3.0 * ZONE_BLOCK_SIZE, 0.0);
+    let sink_pos = Vec2::new(3.5 * ZONE_BLOCK_SIZE, 0.0);
+    let _source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
+    let _sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
+    let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
+
+    for cell in [
+        IVec2::new(0, 1),
+        IVec2::new(1, 1),
+        IVec2::new(2, 1),
+        IVec2::new(3, 1),
+    ] {
+        paint_corridor(&mut app, cell, PAINT_STRENGTH_CAP);
     }
 
-    let waypoint = waypoint_at_appearance
-        .expect("hauler must gain a corridor waypoint on the carry leg when a corridor is painted between source and sink");
-    let dmc_xy =
-        dmc_xy_at_appearance.expect("hauler must keep a DMC while the corridor waypoint is active");
+    app.update();
 
-    let painted_center = common::cell_world_center(painted);
+    let route = app
+        .world()
+        .entity(hauler)
+        .get::<HaulerRoute>()
+        .expect("hauler should have a source-leg route");
     assert!(
-        (waypoint.waypoint - painted_center).length() < 1.0,
-        "waypoint must be the painted cell's world center; got {:?}",
-        waypoint.waypoint
+        route_visits_row(route, 1),
+        "strong corridor detour should bias route; got {:?}",
+        route.waypoints
     );
+}
+
+#[test]
+fn route_stays_stable_after_corridor_paint_changes() {
+    let mut app = build_app();
+    let hauler_pos = Vec2::new(0.0, 0.0);
+    let source_pos = Vec2::new(3.0 * ZONE_BLOCK_SIZE, 0.0);
+    let sink_pos = Vec2::new(3.5 * ZONE_BLOCK_SIZE, 0.0);
+    let _source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
+    let _sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
+    let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
+
+    let cells = [
+        IVec2::new(0, 1),
+        IVec2::new(1, 1),
+        IVec2::new(2, 1),
+        IVec2::new(3, 1),
+    ];
+    for cell in cells {
+        paint_corridor(&mut app, cell, PAINT_STRENGTH_CAP);
+    }
+
+    app.update();
+    let before = app
+        .world()
+        .entity(hauler)
+        .get::<HaulerRoute>()
+        .expect("hauler should have a route")
+        .waypoints
+        .clone();
+
+    for cell in cells {
+        assert!(app.world_mut().resource_mut::<IntentGrid>().erase(
+            cell,
+            IntentKind::Corridor,
+            PAINT_STRENGTH_CAP
+        ));
+    }
+    app.update();
+
+    let after = app
+        .world()
+        .entity(hauler)
+        .get::<HaulerRoute>()
+        .expect("active logistics leg should keep its route")
+        .waypoints
+        .clone();
+    assert_eq!(after, before);
+}
+
+#[test]
+fn carry_leg_uses_corridor_biased_route_to_sink() {
+    let mut app = build_app();
+    let source_pos = Vec2::new(0.0, 0.0);
+    let sink_pos = Vec2::new(3.0 * ZONE_BLOCK_SIZE, 0.0);
+    let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
+    let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
+    let hauler = common::spawn_hauler_at(&mut app, source_pos);
+
+    for cell in [
+        IVec2::new(0, 1),
+        IVec2::new(1, 1),
+        IVec2::new(2, 1),
+        IVec2::new(3, 1),
+    ] {
+        paint_corridor(&mut app, cell, PAINT_STRENGTH_CAP);
+    }
+    app.world_mut()
+        .entity_mut(hauler)
+        .insert(HaulerAssignment { source, sink });
+
+    for _ in 0..8 {
+        app.update();
+    }
+
+    let route = app
+        .world()
+        .entity(hauler)
+        .get::<HaulerRoute>()
+        .expect("loaded hauler should have a carry-leg route");
     assert!(
-        (waypoint.target - stockpile_pos).length() < 1.0,
-        "waypoint target must be the sink; got {:?}",
-        waypoint.target
-    );
-    assert!(
-        (dmc_xy - painted_center).length() < 1.0,
-        "DMC must point at the corridor waypoint, not the sink; got {:?}",
-        dmc_xy
+        route_visits_row(route, 1),
+        "carry leg should follow corridor-biased route; got {:?}",
+        route.waypoints
     );
 }

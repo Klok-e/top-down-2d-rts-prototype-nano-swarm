@@ -120,21 +120,33 @@ enum StockpileSourceFilter {
 /// Facilities draw only from Sink Stockpiles, chargers draw from
 /// any stockpile, and Sink Stockpiles draw only from Source
 /// Stockpiles.
+#[cfg(test)]
 pub fn pick_logistics_leg(
     hauler: HaulerContext,
     stockpiles: &[StockpileCandidate],
     terminals: &[TerminalCandidate],
 ) -> Option<LogisticsLeg> {
-    if let Some(leg) = best_terminal_leg(hauler, stockpiles, terminals) {
+    pick_logistics_leg_with_cost(hauler, stockpiles, terminals, |a, b| a.distance(b))
+}
+
+/// Pick the best Logistics Leg using caller-supplied route costs.
+pub fn pick_logistics_leg_with_cost(
+    hauler: HaulerContext,
+    stockpiles: &[StockpileCandidate],
+    terminals: &[TerminalCandidate],
+    travel_cost: impl Fn(Vec2, Vec2) -> f32,
+) -> Option<LogisticsLeg> {
+    if let Some(leg) = best_terminal_leg(hauler, stockpiles, terminals, &travel_cost) {
         return Some(leg);
     }
-    best_buffer_leg(hauler, stockpiles)
+    best_buffer_leg(hauler, stockpiles, &travel_cost)
 }
 
 fn best_terminal_leg(
     hauler: HaulerContext,
     stockpiles: &[StockpileCandidate],
     terminals: &[TerminalCandidate],
+    travel_cost: &impl Fn(Vec2, Vec2) -> f32,
 ) -> Option<LogisticsLeg> {
     let mut best: Option<(f32, LogisticsLeg)> = None;
     for terminal in terminals.iter().copied() {
@@ -150,6 +162,7 @@ fn best_terminal_leg(
             terminal.free_space(),
             stockpiles,
             terminal.source_filter(),
+            travel_cost,
         ) else {
             continue;
         };
@@ -167,6 +180,7 @@ fn best_terminal_leg(
 fn best_buffer_leg(
     hauler: HaulerContext,
     stockpiles: &[StockpileCandidate],
+    travel_cost: &impl Fn(Vec2, Vec2) -> f32,
 ) -> Option<LogisticsLeg> {
     let mut best: Option<(f32, LogisticsLeg)> = None;
     for sink in stockpiles.iter().copied() {
@@ -183,6 +197,7 @@ fn best_buffer_leg(
             sink.free_space,
             stockpiles,
             StockpileSourceFilter::Source,
+            travel_cost,
         ) else {
             continue;
         };
@@ -203,6 +218,7 @@ fn best_source_for_sink(
     sink_free_space: u32,
     stockpiles: &[StockpileCandidate],
     filter: StockpileSourceFilter,
+    travel_cost: &impl Fn(Vec2, Vec2) -> f32,
 ) -> Option<(Entity, f32)> {
     let mut best: Option<(f32, Entity)> = None;
     for source in stockpiles.iter().copied() {
@@ -217,7 +233,7 @@ fn best_source_for_sink(
         if carried_amount == 0 || carried_amount > sink_free_space {
             continue;
         }
-        let trip = hauler.pos.distance(source.pos) + source.pos.distance(sink_pos);
+        let trip = travel_cost(hauler.pos, source.pos) + travel_cost(source.pos, sink_pos);
         if best.is_none_or(|(best_trip, _)| trip < best_trip) {
             best = Some((trip, source.entity));
         }
@@ -396,5 +412,33 @@ mod tests {
         }];
 
         assert!(pick_logistics_leg(hauler(Vec2::ZERO), &stockpiles, &terminals).is_none());
+    }
+
+    #[test]
+    fn route_cost_ranking_includes_hauler_to_source_and_source_to_sink() {
+        let stockpiles = [
+            source(1, Vec2::new(10.0, 0.0), 100),
+            source(2, Vec2::new(100.0, 0.0), 100),
+            sink(3, Vec2::new(200.0, 0.0), 0, 100),
+        ];
+        let travel_cost = |from: Vec2, to: Vec2| {
+            if from == Vec2::ZERO && to == Vec2::new(10.0, 0.0) {
+                1.0
+            } else if from == Vec2::new(10.0, 0.0) && to == Vec2::new(200.0, 0.0) {
+                1_000.0
+            } else if from == Vec2::ZERO && to == Vec2::new(100.0, 0.0) {
+                100.0
+            } else if from == Vec2::new(100.0, 0.0) && to == Vec2::new(200.0, 0.0) {
+                100.0
+            } else {
+                from.distance(to)
+            }
+        };
+
+        let leg = pick_logistics_leg_with_cost(hauler(Vec2::ZERO), &stockpiles, &[], travel_cost)
+            .expect("route-cost leg must be picked");
+
+        assert_eq!(leg.source, e(2));
+        assert_eq!(leg.sink, e(3));
     }
 }
