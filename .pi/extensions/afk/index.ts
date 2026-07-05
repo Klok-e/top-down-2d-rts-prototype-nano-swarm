@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { parse as parseJsonc, printParseErrorCode, type ParseError } from "jsonc-parser";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Box, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import {
@@ -23,7 +24,7 @@ import { appendTranscriptEvent } from "./transcript.ts";
 const AFK_DIR = ".pi/afk";
 const STATE_REL = `${AFK_DIR}/state.json`;
 const HISTORY_REL = `${AFK_DIR}/history.json`;
-const CONFIG_REL = `${AFK_DIR}/config.json`;
+const CONFIG_REL = `${AFK_DIR}/config.jsonc`;
 const PROMPTS_REL = `${AFK_DIR}/prompts`;
 const READY_LABEL = "ready-for-agent";
 const NEEDS_INFO_LABEL = "needs-info";
@@ -135,6 +136,16 @@ async function readJson<T>(filePath: string): Promise<T> {
 	return JSON.parse(await fs.readFile(filePath, "utf8")) as T;
 }
 
+async function readJsonc<T>(filePath: string): Promise<T> {
+	const errors: ParseError[] = [];
+	const parsed = parseJsonc(await fs.readFile(filePath, "utf8"), errors, { allowTrailingComma: true });
+	if (errors.length > 0) {
+		const first = errors[0];
+		throw new Error(`${filePath} is invalid JSONC: ${printParseErrorCode(first.error)} at offset ${first.offset}.`);
+	}
+	return parsed as T;
+}
+
 async function writeJson(filePath: string, value: unknown) {
 	await fs.mkdir(path.dirname(filePath), { recursive: true });
 	await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
@@ -183,7 +194,7 @@ function validateConfig(value: unknown): AfkConfig {
 
 async function loadConfig(cwd: string): Promise<AfkConfig> {
 	const configPath = path.join(cwd, CONFIG_REL);
-	return validateConfig(await readJson<unknown>(configPath));
+	return validateConfig(await readJsonc<unknown>(configPath));
 }
 
 async function loadState(cwd: string): Promise<AfkState | null> {

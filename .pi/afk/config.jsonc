@@ -2,15 +2,18 @@
   "maxCycles": 5,
   "roles": {
     "implementer": {
-      "model": "zai/glm-5.2",
+      // "model": "zai/glm-5.2",
+      "model": "openai/gpt-5.5",
       "thinkingLevel": "high"
     },
     "quality": {
-      "model": "zai/glm-5.2",
+      // "model": "zai/glm-5.2",
+      "model": "openai/gpt-5.5",
       "thinkingLevel": "high"
     },
     "verifier": {
-      "model": "zai/glm-5.2",
+      // "model": "zai/glm-5.2",
+      "model": "openai/gpt-5.5",
       "thinkingLevel": "high"
     }
   }
