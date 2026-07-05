@@ -17,7 +17,7 @@ import {
 	type RoleResult,
 	type VerifyResult,
 } from "./result-tools.ts";
-import { startRoleSession, type RoleSessionRun } from "./role-session-runner.ts";
+import { startRoleSession, type RoleSessionRun, type ThinkingLevel } from "./role-session-runner.ts";
 import { appendTranscriptEvent } from "./transcript.ts";
 
 const AFK_DIR = ".pi/afk";
@@ -28,12 +28,17 @@ const PROMPTS_REL = `${AFK_DIR}/prompts`;
 const READY_LABEL = "ready-for-agent";
 const NEEDS_INFO_LABEL = "needs-info";
 const EXCLUDED_LABELS = new Set([NEEDS_INFO_LABEL, "ready-for-human", "wontfix"]);
+const ROLES: Role[] = ["implementer", "quality", "verifier"];
+const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh"]);
+
+type AfkRoleConfig = {
+	model?: string;
+	thinkingLevel?: ThinkingLevel;
+};
 
 type AfkConfig = {
 	maxCycles: number;
-	roles: Record<Role, {
-		model?: string;
-	}>;
+	roles: Record<Role, AfkRoleConfig>;
 };
 
 type AfkRunStatus = "running" | "paused";
@@ -144,9 +149,41 @@ async function exists(filePath: string) {
 	}
 }
 
+function assertObject(value: unknown, name: string): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object.`);
+	return value as Record<string, unknown>;
+}
+
+function validateThinkingLevel(value: unknown, name: string): ThinkingLevel | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "string" || !THINKING_LEVELS.has(value as ThinkingLevel)) {
+		throw new Error(`${name} must be one of: ${Array.from(THINKING_LEVELS).join(", ")}.`);
+	}
+	return value as ThinkingLevel;
+}
+
+function validateConfig(value: unknown): AfkConfig {
+	const config = assertObject(value, CONFIG_REL);
+	if (typeof config.maxCycles !== "number") throw new Error(`${CONFIG_REL}.maxCycles must be a number.`);
+	const roles = assertObject(config.roles, `${CONFIG_REL}.roles`);
+	const validatedRoles = {} as Record<Role, AfkRoleConfig>;
+	for (const role of ROLES) {
+		const roleConfig = assertObject(roles[role], `${CONFIG_REL}.roles.${role}`);
+		if (roleConfig.model !== undefined && typeof roleConfig.model !== "string") throw new Error(`${CONFIG_REL}.roles.${role}.model must be a string.`);
+		validatedRoles[role] = {
+			model: roleConfig.model,
+			thinkingLevel: validateThinkingLevel(roleConfig.thinkingLevel, `${CONFIG_REL}.roles.${role}.thinkingLevel`),
+		};
+	}
+	return {
+		maxCycles: config.maxCycles,
+		roles: validatedRoles,
+	};
+}
+
 async function loadConfig(cwd: string): Promise<AfkConfig> {
 	const configPath = path.join(cwd, CONFIG_REL);
-	return readJson<AfkConfig>(configPath);
+	return validateConfig(await readJson<unknown>(configPath));
 }
 
 async function loadState(cwd: string): Promise<AfkState | null> {
@@ -326,8 +363,13 @@ function modelLabel(model: any) {
 	return `${model.provider}/${model.id}`;
 }
 
-function roleModelLabel(ctx: any, modelSpec?: string) {
-	return modelSpec || modelLabel(ctx.model);
+function modelWithThinkingLabel(model: string | undefined, thinkingLevel: ThinkingLevel | undefined) {
+	if (!model || !thinkingLevel) return model;
+	return `${model}:${thinkingLevel}`;
+}
+
+function roleModelLabel(ctx: any, roleConfig: AfkRoleConfig) {
+	return modelWithThinkingLabel(roleConfig.model || modelLabel(ctx.model), roleConfig.thinkingLevel);
 }
 
 function sanitizeAgentText(text: string) {
@@ -600,7 +642,7 @@ async function runStructuredRole<T>(
 		liveActivity = freshLiveActivity();
 		liveActivity.lastText = state.lastResult?.summary || state.feedback || undefined;
 		const roleConfig = config.roles[role];
-		liveActivity.model = roleModelLabel(ctx, roleConfig.model);
+		liveActivity.model = roleModelLabel(ctx, roleConfig);
 		renderAfkWidgetNow();
 		roleSession = await startRoleSession({
 			cwd,
@@ -611,6 +653,7 @@ async function runStructuredRole<T>(
 			cycle: state.cycle,
 			prompt,
 			model: roleConfig.model,
+			thinkingLevel: roleConfig.thinkingLevel,
 			onTextDelta: (_delta: string, fullText: string) => {
 				const line = lastTextLine(fullText);
 				if (line) liveActivity.lastText = line;

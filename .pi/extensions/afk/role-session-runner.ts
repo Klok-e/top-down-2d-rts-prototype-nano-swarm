@@ -22,6 +22,8 @@ type RoleSessionCallbacks = {
 	onAssistantUsage?: (usage: { input?: number; output?: number; cacheWrite?: number }) => void;
 };
 
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
 export type StartRoleSessionOptions = RoleSessionCallbacks & {
 	cwd: string;
 	ctx: any;
@@ -31,12 +33,14 @@ export type StartRoleSessionOptions = RoleSessionCallbacks & {
 	cycle: number;
 	prompt: string;
 	model?: string;
+	thinkingLevel?: ThinkingLevel;
 };
 
 export type RoleSessionRun = {
 	id: string;
 	transcriptPath: string;
 	model: string | undefined;
+	thinkingLevel: ThinkingLevel | undefined;
 	done: Promise<void>;
 	abort(): Promise<void>;
 };
@@ -70,6 +74,11 @@ function resolveRoleModel(ctx: any, modelSpec?: string) {
 	const model = ctx.modelRegistry?.find?.(provider, modelId);
 	if (!model) throw new Error(`AFK role model not found: ${modelSpec}`);
 	return model;
+}
+
+function modelWithThinkingLabel(modelLabel: string | undefined, thinkingLevel: ThinkingLevel | undefined) {
+	if (!modelLabel || !thinkingLevel) return modelLabel;
+	return `${modelLabel}:${thinkingLevel}`;
 }
 
 function collectAllToolNames(loader: DefaultResourceLoader, cwd: string) {
@@ -153,7 +162,7 @@ function enqueueWriter(writer: TranscriptWriter) {
 }
 
 export async function startRoleSession(options: StartRoleSessionOptions): Promise<RoleSessionRun> {
-	const { cwd, ctx, issue, role, phase, cycle, prompt, model: modelSpec } = options;
+	const { cwd, ctx, issue, role, phase, cycle, prompt, model: modelSpec, thinkingLevel } = options;
 	const agentDir = getAgentDir();
 	const writer = await createTranscriptWriter(cwd, { issue, role, phase, cycle });
 	const { write, flush } = enqueueWriter(writer);
@@ -175,6 +184,7 @@ export async function startRoleSession(options: StartRoleSessionOptions): Promis
 
 	const model = resolveRoleModel(ctx, modelSpec);
 	const modelLabel = model ? `${model.provider}/${model.id}` : undefined;
+	const displayModelLabel = modelWithThinkingLabel(modelLabel, thinkingLevel);
 	const tools = collectAllToolNames(loader, cwd);
 	const { session } = await createAgentSession({
 		cwd,
@@ -184,6 +194,7 @@ export async function startRoleSession(options: StartRoleSessionOptions): Promis
 		settingsManager: ctx.settingsManager,
 		modelRegistry: ctx.modelRegistry,
 		model,
+		thinkingLevel,
 		tools,
 	});
 
@@ -202,6 +213,8 @@ export async function startRoleSession(options: StartRoleSessionOptions): Promis
 		cycle,
 		sessionId: id,
 		model: modelLabel,
+		thinkingLevel,
+		displayModel: displayModelLabel,
 		toolCount: tools.length,
 		excludedExtensions: discoveredNames.filter((name) => isFullAfkExtension(name, cwd)),
 	});
@@ -296,7 +309,8 @@ export async function startRoleSession(options: StartRoleSessionOptions): Promis
 	return {
 		id,
 		transcriptPath: writer.path,
-		model: modelLabel,
+		model: displayModelLabel,
+		thinkingLevel,
 		done,
 		async abort() {
 			if (completed) return;
