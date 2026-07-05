@@ -32,15 +32,15 @@ export type StartRoleSessionOptions = RoleSessionCallbacks & {
 	phase: Phase;
 	cycle: number;
 	prompt: string;
-	model?: string;
-	thinkingLevel?: ThinkingLevel;
+	model: string;
+	thinkingLevel: ThinkingLevel;
 };
 
 export type RoleSessionRun = {
 	id: string;
 	transcriptPath: string;
-	model: string | undefined;
-	thinkingLevel: ThinkingLevel | undefined;
+	model: string;
+	thinkingLevel: ThinkingLevel;
 	done: Promise<void>;
 	abort(): Promise<void>;
 };
@@ -63,8 +63,7 @@ function isFullAfkExtension(extPath: string, cwd: string) {
 	return extensionCanonicalName(resolved) === "afk" && (resolved === path.join(afkDir, "index.ts") || resolved.startsWith(`${afkDir}${path.sep}`));
 }
 
-function resolveRoleModel(ctx: any, modelSpec?: string) {
-	if (!modelSpec) return ctx.model;
+function resolveRoleModel(ctx: any, modelSpec: string) {
 	const slash = modelSpec.indexOf("/");
 	if (slash <= 0 || slash === modelSpec.length - 1) {
 		throw new Error(`AFK role model must be exact provider/modelId, got: ${modelSpec}`);
@@ -76,8 +75,7 @@ function resolveRoleModel(ctx: any, modelSpec?: string) {
 	return model;
 }
 
-function modelWithThinkingLabel(modelLabel: string | undefined, thinkingLevel: ThinkingLevel | undefined) {
-	if (!modelLabel || !thinkingLevel) return modelLabel;
+function modelWithThinkingLabel(modelLabel: string, thinkingLevel: ThinkingLevel) {
 	return `${modelLabel}:${thinkingLevel}`;
 }
 
@@ -183,7 +181,7 @@ export async function startRoleSession(options: StartRoleSessionOptions): Promis
 	await loader.reload();
 
 	const model = resolveRoleModel(ctx, modelSpec);
-	const modelLabel = model ? `${model.provider}/${model.id}` : undefined;
+	const modelLabel = `${model.provider}/${model.id}`;
 	const displayModelLabel = modelWithThinkingLabel(modelLabel, thinkingLevel);
 	const tools = collectAllToolNames(loader, cwd);
 	const { session } = await createAgentSession({

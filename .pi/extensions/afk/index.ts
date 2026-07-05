@@ -33,8 +33,8 @@ const ROLES: Role[] = ["implementer", "quality", "verifier"];
 const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh"]);
 
 type AfkRoleConfig = {
-	model?: string;
-	thinkingLevel?: ThinkingLevel;
+	model: string;
+	thinkingLevel: ThinkingLevel;
 };
 
 type AfkConfig = {
@@ -165,12 +165,28 @@ function assertObject(value: unknown, name: string): Record<string, unknown> {
 	return value as Record<string, unknown>;
 }
 
-function validateThinkingLevel(value: unknown, name: string): ThinkingLevel | undefined {
-	if (value === undefined) return undefined;
+function validateThinkingLevel(value: unknown, name: string): ThinkingLevel {
 	if (typeof value !== "string" || !THINKING_LEVELS.has(value as ThinkingLevel)) {
 		throw new Error(`${name} must be one of: ${Array.from(THINKING_LEVELS).join(", ")}.`);
 	}
 	return value as ThinkingLevel;
+}
+
+function validateRoleModel(value: unknown, name: string): string {
+	if (typeof value !== "string" || !value.trim()) throw new Error(`${name} must be a non-empty string.`);
+	const slash = value.indexOf("/");
+	if (slash <= 0 || slash === value.length - 1) throw new Error(`${name} must be exact provider/modelId.`);
+	return value;
+}
+
+function assertConfiguredModelsExist(ctx: any, config: AfkConfig) {
+	for (const role of ROLES) {
+		const modelSpec = config.roles[role].model;
+		const slash = modelSpec.indexOf("/");
+		const provider = modelSpec.slice(0, slash);
+		const modelId = modelSpec.slice(slash + 1);
+		if (!ctx.modelRegistry?.find?.(provider, modelId)) throw new Error(`${CONFIG_REL}.roles.${role}.model not found: ${modelSpec}`);
+	}
 }
 
 function validateConfig(value: unknown): AfkConfig {
@@ -180,9 +196,8 @@ function validateConfig(value: unknown): AfkConfig {
 	const validatedRoles = {} as Record<Role, AfkRoleConfig>;
 	for (const role of ROLES) {
 		const roleConfig = assertObject(roles[role], `${CONFIG_REL}.roles.${role}`);
-		if (roleConfig.model !== undefined && typeof roleConfig.model !== "string") throw new Error(`${CONFIG_REL}.roles.${role}.model must be a string.`);
 		validatedRoles[role] = {
-			model: roleConfig.model,
+			model: validateRoleModel(roleConfig.model, `${CONFIG_REL}.roles.${role}.model`),
 			thinkingLevel: validateThinkingLevel(roleConfig.thinkingLevel, `${CONFIG_REL}.roles.${role}.thinkingLevel`),
 		};
 	}
@@ -200,12 +215,10 @@ async function loadConfig(cwd: string): Promise<AfkConfig> {
 async function loadState(cwd: string): Promise<AfkState | null> {
 	const statePath = path.join(cwd, STATE_REL);
 	if (!(await exists(statePath))) return null;
-	const state = await readJson<AfkState & { activeAgentId?: string }>(statePath);
-	const { activeAgentId, ...rest } = state;
+	const state = await readJson<AfkState>(statePath);
 	return {
-		...rest,
+		...state,
 		status: state.status ?? "paused",
-		activeRoleSessionId: state.activeRoleSessionId ?? activeAgentId,
 	};
 }
 
@@ -369,18 +382,26 @@ function oneLine(text: string, max = 160) {
 	return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
-function modelLabel(model: any) {
-	if (!model?.provider || !model?.id) return undefined;
-	return `${model.provider}/${model.id}`;
-}
-
-function modelWithThinkingLabel(model: string | undefined, thinkingLevel: ThinkingLevel | undefined) {
-	if (!model || !thinkingLevel) return model;
+function modelWithThinkingLabel(model: string, thinkingLevel: ThinkingLevel) {
 	return `${model}:${thinkingLevel}`;
 }
 
-function roleModelLabel(ctx: any, roleConfig: AfkRoleConfig) {
-	return modelWithThinkingLabel(roleConfig.model || modelLabel(ctx.model), roleConfig.thinkingLevel);
+function roleModelLabel(roleConfig: AfkRoleConfig) {
+	return modelWithThinkingLabel(roleConfig.model, roleConfig.thinkingLevel);
+}
+
+function phaseRole(phase: Phase): Role {
+	if (phase === "implement") return "implementer";
+	if (phase === "quality") return "quality";
+	return "verifier";
+}
+
+function configuredModelLabel(config: AfkConfig, state: AfkState) {
+	return roleModelLabel(config.roles[phaseRole(state.phase)]);
+}
+
+function displayModelLabel(config: AfkConfig, state: AfkState) {
+	return state.activeRoleSessionId ? liveActivity.model ?? configuredModelLabel(config, state) : configuredModelLabel(config, state);
 }
 
 function sanitizeAgentText(text: string) {
@@ -457,7 +478,7 @@ function renderAfkPanel(tui: any, theme: Theme): string[] {
 		`${icon} ${theme.bold(`AFK #${issue.number}`)} ${theme.fg("dim", "·")} ${state.phase} ${state.cycle}/${config.maxCycles} ${theme.fg("dim", "·")} ${status}${statSuffix}`,
 		`${theme.fg("dim", "issue:")} ${issue.title}`,
 		`${theme.fg("dim", "role session:")} ${roleSession}`,
-		`${theme.fg("dim", "model:")} ${liveActivity.model ?? "unknown"}`,
+		`${theme.fg("dim", "model:")} ${displayModelLabel(config, state)}`,
 		`${theme.fg("dim", "activity:")} ${currentActivity(state)}`,
 		`${theme.fg("dim", "last:")} ${oneLine(lastOutput(state), 220)}`,
 	].map((line) => truncateLine(line, width));
@@ -511,7 +532,7 @@ function sendAfkResultMessage(pi: ExtensionAPI, issue: Issue, state: AfkState, r
 }
 
 function afkStatusText(issue: Issue, state: AfkState, config: AfkConfig) {
-	const modelSuffix = liveActivity.model ? ` · ${liveActivity.model}` : "";
+	const modelSuffix = ` · ${displayModelLabel(config, state)}`;
 	return `#${issue.number} ${state.phase} ${state.cycle}/${config.maxCycles}${modelSuffix}`;
 }
 
@@ -653,7 +674,7 @@ async function runStructuredRole<T>(
 		liveActivity = freshLiveActivity();
 		liveActivity.lastText = state.lastResult?.summary || state.feedback || undefined;
 		const roleConfig = config.roles[role];
-		liveActivity.model = roleModelLabel(ctx, roleConfig);
+		liveActivity.model = roleModelLabel(roleConfig);
 		renderAfkWidgetNow();
 		roleSession = await startRoleSession({
 			cwd,
@@ -989,6 +1010,7 @@ async function handleRun(pi: ExtensionAPI, ctx: any, argv: string[]) {
 	if (await loadState(ctx.cwd)) throw new Error(`AFK state already exists. Use /afk resume or /afk stop. State: ${STATE_REL}`);
 	await ensureCleanForStart(pi, ctx.cwd);
 	const config = await loadConfig(ctx.cwd);
+	assertConfiguredModelsExist(ctx, config);
 	startDetachedRun(ctx, () => runIssueLoop(pi, ctx, config, runAll, issueNumber));
 	ctx.ui.notify("AFK started. Live output: /afk status shows transcript path. Control: /afk status | /afk stop.", "info");
 }
@@ -998,8 +1020,10 @@ async function handleResume(pi: ExtensionAPI, ctx: any) {
 	const state = await loadState(ctx.cwd);
 	if (!state) throw new Error(`No AFK state found at ${STATE_REL}.`);
 	const config = await loadConfig(ctx.cwd);
+	assertConfiguredModelsExist(ctx, config);
 	state.status = "running";
 	state.activeRoleSessionId = undefined;
+	state.activeTranscriptPath = undefined;
 	await saveState(ctx.cwd, state);
 	startDetachedRun(ctx, async () => {
 		const issue = await viewIssue(pi, ctx.cwd, state.issue);
@@ -1026,13 +1050,14 @@ async function handleStatus(ctx: any) {
 		);
 		return;
 	}
+	const config = await loadConfig(ctx.cwd);
 	ctx.ui.notify(
 		[
 			`AFK #${state.issue}`,
 			`status: ${activeRun ? activeRun.stopRequested ? "stopping" : "active" : state.status}`,
 			`phase: ${state.phase}`,
 			`cycle: ${state.cycle}`,
-			`model: ${liveActivity.model ?? "unknown"}`,
+			`model: ${displayModelLabel(config, state)}`,
 			`activeRoleSessionId: ${state.activeRoleSessionId ?? "none"}`,
 			`transcript: ${state.activeTranscriptPath ?? "none"}`,
 			`activity: ${currentActivity(state)}`,
