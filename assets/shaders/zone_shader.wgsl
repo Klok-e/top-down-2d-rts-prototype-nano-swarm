@@ -6,28 +6,36 @@ var<storage> zone_map: array<ZonePointData>;
 var<uniform> width: u32;
 @group(2) @binding(4)
 var<uniform> height: u32;
-@group(2) @binding(1)
-var<uniform> highlight_zone_id: u32;
 
 struct ZonePointData {
-    /// First 4 bits are zone color indicators, rest are zone id (14 bits for each)
-    zones: u32,
-    /// 2 zone id indicators 16 bits each
-    bits: u32,
+    // Packed paint strength for each kind. Slot i occupies bits [5*i, 5*i+5)
+    // and stores the strength in [0, PAINT_STRENGTH_CAP]. Slot 0 = Gather,
+    // 1 = Build, 2 = Defend, 3 = Corridor. A slot value of 0 means the kind
+    // is absent at this cell.
+    strength: u32,
 }
+
+// Linear alpha ramp endpoints. Every active zone stays visible (floor), and a
+// zone painted to the strength cap reads solid (ceiling). Keep STRENGTH_CAP in
+// sync with the simulation contract in `src/intent.rs` (PAINT_STRENGTH_CAP = 16).
+const ALPHA_FLOOR: f32 = 0.15;
+const ALPHA_CEILING: f32 = 0.8;
+const STRENGTH_CAP: f32 = 16.0;
+const SLOT_BITS: u32 = 5u;
+const SLOT_MASK: u32 = 0x1Fu;
 
 @fragment
 fn fragment(
     in: VertexOutput
 ) -> @location(0) vec4<f32> {
 
-    // TODO: check performance implications of this constant array
-    // Define colors for each zone
+    // Per-kind base colours. Red = Gather, Magenta = Build, Blue = Defend,
+    // Yellow = Corridor. Strength controls alpha, not colour.
     var zone_colors = array(
-        vec4<f32>(1.0, 0.0, 0.0, 0.6),  // Zone 0: Red
-        vec4<f32>(1.0, 0.0, 1.0, 0.6),  // Zone 1: Magenta
-        vec4<f32>(0.0, 0.0, 1.0, 0.6),  // Zone 2: Blue
-        vec4<f32>(1.0, 1.0, 0.0, 0.6),  // Zone 3: Yellow
+        vec3<f32>(1.0, 0.0, 0.0),  // Zone 0: Red (Gather)
+        vec3<f32>(1.0, 0.0, 1.0),  // Zone 1: Magenta (Build)
+        vec3<f32>(0.0, 0.0, 1.0),  // Zone 2: Blue (Defend)
+        vec3<f32>(1.0, 1.0, 0.0),  // Zone 3: Yellow (Corridor)
     );
 
     let x: u32 = u32(in.uv.x * f32(width));
@@ -35,38 +43,25 @@ fn fragment(
     let idx: u32 = y * width + x;
     let zone_data: ZonePointData = zone_map[idx];
 
-    var color_sum = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    // Overlapping active kinds blend by averaging their premultiplied colour
+    // and their alpha. A kind contributes only when its 5-bit slot is > 0;
+    // a 0 slot means the kind is absent at this cell.
+    var color_sum = vec3<f32>(0.0, 0.0, 0.0);
     var alpha_sum = 0.0;
     var count = 0.0;
-    var highlighted = 0.0;
-    for(var i = 0u; i < 4u; i = i + 1u) {
-        var bit_zone_id: u32;
-        if(i < 2u) {
-            bit_zone_id = (zone_data.zones >> (4u + 14u * i)) & 0x3FFFu;
-        } else {
-            bit_zone_id = (zone_data.bits >> (14u * (i - 2u))) & 0x3FFFu;
+    for (var i = 0u; i < 4u; i = i + 1u) {
+        let strength = (zone_data.strength >> (SLOT_BITS * i)) & SLOT_MASK;
+        if (strength == 0u) {
+            continue;
         }
-        if((zone_data.zones & (1u << i)) != 0u) {
-            var src_color = zone_colors[i];
-            if (bit_zone_id == highlight_zone_id) {
-                src_color.a = 0.8;
-                highlighted += 1.0;
-            }
-            color_sum += src_color * src_color.a;
-            alpha_sum += src_color.a;
-            count += 1.0;
-        }
+        let alpha = ALPHA_FLOOR + (f32(strength) / STRENGTH_CAP) * (ALPHA_CEILING - ALPHA_FLOOR);
+        color_sum += zone_colors[i] * alpha;
+        alpha_sum += alpha;
+        count += 1.0;
     }
 
-    // if there were any colors, divide by the total alpha
-    if(count > 0.0) {
-        color_sum /= count;
-        if (highlighted > 0.0){
-            color_sum.a = 0.8;
-        } else {
-            color_sum.a = 0.6;
-        }
+    if (count > 0.0) {
+        return vec4<f32>(color_sum / count, alpha_sum / count);
     }
-
-    return color_sum;
+    return vec4<f32>(0.0, 0.0, 0.0, 0.0);
 }
