@@ -32,6 +32,7 @@ mod harness;
 mod idle_spread;
 mod smoke;
 mod world_space_nanobots;
+mod zone_strength_ramp;
 
 use harness::{run_screenshot_test, TestContext, TestFlow};
 
@@ -65,6 +66,10 @@ fn main() -> std::process::ExitCode {
         Trial::test("smoke", || run(smoke::smoke)).with_ignored_flag(true),
         Trial::test("world_space_nanobots", || {
             run(world_space_nanobots::world_space_nanobots)
+        })
+        .with_ignored_flag(true),
+        Trial::test("zone_strength_ramp", || {
+            run(zone_strength_ramp::zone_strength_ramp)
         })
         .with_ignored_flag(true),
     ];

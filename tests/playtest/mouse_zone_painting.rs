@@ -203,20 +203,20 @@ fn scripted_mouse_paint_writes_visible_zone_overlay_at_cursor() {
         }
     }
 
-    let gather_zone = ZonePointData::id_to_zone(IntentKind::Gather.index() as u32);
     let cell = zone_cell(&app, material_entity, cursor_cell);
-    assert!(
-        cell.is_zone_active(gather_zone),
-        "ZoneMaterial at the cursor cell must have the Gather bit set after a paint"
+    assert_eq!(
+        cell.strength(IntentKind::Gather.index() as u32),
+        1,
+        "ZoneMaterial at the cursor cell must mirror the Gather strength after a paint"
     );
     for kind in IntentKind::ALL {
         if kind == IntentKind::Gather {
             continue;
         }
-        let zone = ZonePointData::id_to_zone(kind.index() as u32);
-        assert!(
-            !cell.is_zone_active(zone),
-            "non-painted layer {kind:?} must not be visible in the ZoneMaterial"
+        assert_eq!(
+            cell.strength(kind.index() as u32),
+            0,
+            "non-painted layer {kind:?} must read strength 0 in the ZoneMaterial"
         );
     }
 }
@@ -244,15 +244,12 @@ fn scripted_mouse_paint_off_world_does_not_touch_zone_overlay() {
         "off-world mouse paint must not dirty any grid cell"
     );
 
-    // The brush writes one cell, so dirty_count == 0 is enough to
-    // prove nothing was painted; spot-check the cursor cell on the
-    // visible side too.
     let cell = zone_cell(&app, material_entity, IVec2::new(0, 0));
     for kind in IntentKind::ALL {
-        let zone = ZonePointData::id_to_zone(kind.index() as u32);
-        assert!(
-            !cell.is_zone_active(zone),
-            "no ZoneMaterial cell may have {kind:?} active after an off-world paint"
+        assert_eq!(
+            cell.strength(kind.index() as u32),
+            0,
+            "no ZoneMaterial cell may carry {kind:?} strength after an off-world paint"
         );
     }
 }
@@ -296,27 +293,26 @@ fn scripted_layer_switch_then_paint_writes_second_layer_at_same_cell() {
     assert_eq!(cell.strength(IntentKind::Gather), 1);
     assert_eq!(cell.strength(IntentKind::Defend), 1);
 
-    let gather_zone = ZonePointData::id_to_zone(IntentKind::Gather.index() as u32);
-    let defend_zone = ZonePointData::id_to_zone(IntentKind::Defend.index() as u32);
-    let build_zone = ZonePointData::id_to_zone(IntentKind::Build.index() as u32);
-    let corridor_zone = ZonePointData::id_to_zone(IntentKind::Corridor.index() as u32);
-
     let cell = zone_cell(&app, material_entity, IVec2::new(0, 0));
-    assert!(
-        cell.is_zone_active(gather_zone),
-        "Gather bit must stay set after the second paint"
+    assert_eq!(
+        cell.strength(IntentKind::Gather.index() as u32),
+        1,
+        "Gather strength must stay mirrored after the second paint"
     );
-    assert!(
-        cell.is_zone_active(defend_zone),
-        "Defend bit must be set after the second paint"
+    assert_eq!(
+        cell.strength(IntentKind::Defend.index() as u32),
+        1,
+        "Defend strength must be mirrored after the second paint"
     );
-    assert!(
-        !cell.is_zone_active(build_zone),
-        "Build bit must stay clear; the player only painted Gather and Defend"
+    assert_eq!(
+        cell.strength(IntentKind::Build.index() as u32),
+        0,
+        "Build strength must stay 0; the player only painted Gather and Defend"
     );
-    assert!(
-        !cell.is_zone_active(corridor_zone),
-        "Corridor bit must stay clear; the player only painted Gather and Defend"
+    assert_eq!(
+        cell.strength(IntentKind::Corridor.index() as u32),
+        0,
+        "Corridor strength must stay 0; the player only painted Gather and Defend"
     );
 }
 
@@ -350,17 +346,17 @@ fn scripted_right_mouse_erase_clears_visible_bit_at_cursor() {
         "Gather must be removed from the cell after a one-frame right-click"
     );
 
-    let gather_zone = ZonePointData::id_to_zone(IntentKind::Gather.index() as u32);
     let cell = zone_cell(&app, material_entity, IVec2::new(0, 0));
-    assert!(
-        !cell.is_zone_active(gather_zone),
-        "Gather bit must clear from the ZoneMaterial after the right-click erase"
+    assert_eq!(
+        cell.strength(IntentKind::Gather.index() as u32),
+        0,
+        "Gather strength must clear from the ZoneMaterial after the right-click erase"
     );
     for kind in IntentKind::ALL {
-        let zone = ZonePointData::id_to_zone(kind.index() as u32);
-        assert!(
-            !cell.is_zone_active(zone),
-            "no {kind:?} bit may remain visible after a complete erase"
+        assert_eq!(
+            cell.strength(kind.index() as u32),
+            0,
+            "no {kind:?} strength may remain mirrored after a complete erase"
         );
     }
 }
@@ -382,11 +378,10 @@ fn scripted_paint_at_world_corner_lands_in_corner_cell() {
     app.update();
 
     let cell = zone_cell(&app, material_entity, corner_cell);
-    let gather_zone = ZonePointData::id_to_zone(IntentKind::Gather.index() as u32);
-    assert!(
-        cell.is_zone_active(gather_zone),
-        "world-corner paint must write the Gather bit into the corner cell of the \
-         ZoneMaterial, not into a centred cell"
+    assert_eq!(
+        cell.strength(IntentKind::Gather.index() as u32),
+        1,
+        "world-corner paint must mirror Gather strength 1 into the corner cell of the ZoneMaterial, not into a centred cell"
     );
 
     let grid = app.world().resource::<IntentGrid>();

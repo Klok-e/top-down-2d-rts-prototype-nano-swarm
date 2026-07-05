@@ -20,9 +20,8 @@ use crate::nanobot::SwarmId;
 /// preference, scoring) read strengths in `[0, PAINT_STRENGTH_CAP]`.
 pub const PAINT_STRENGTH_CAP: u8 = 16;
 
-/// Player intent kinds. The order matches the four zone colour slots used by the
-/// existing zone shader, so the bit index of each kind lines up with the shader's
-/// per-cell bit layout until a future issue replaces that mirror.
+/// Player intent kinds. Declaration order matches the zone overlay's colour and
+/// strength slots, so [`IntentKind::index`] is the stable cross-module layer key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IntentKind {
     Gather,
@@ -110,20 +109,25 @@ impl IntentCell {
     }
 
     /// Activate `kind` with the given paint strength. Overwrites any previous
-    /// strength for the same kind. Writes the owner as "unowned"
-    /// (`None`); use [`IntentCell::add_owned`] when the caller knows
-    /// which swarm painted the layer.
+    /// strength for the same kind. A zero strength removes the layer so
+    /// presence stays equivalent to `strength > 0`. Writes the owner as
+    /// "unowned" (`None`); use [`IntentCell::add_owned`] when the caller
+    /// knows which swarm painted the layer.
     pub fn add(&mut self, kind: IntentKind, strength: u8) {
-        self.active |= kind.bit();
-        self.strength[kind.index()] = strength;
-        self.owner[kind.index()] = None;
+        self.add_owned(kind, strength, None);
     }
 
     /// Activate `kind` with the given paint strength and stamp
     /// `owner` as the swarm that painted it. Overwrites any
-    /// previous strength and owner for the same kind. Pass
-    /// `None` to mark the layer as unowned.
+    /// previous strength and owner for the same kind. A zero strength
+    /// removes the layer so presence stays equivalent to `strength > 0`.
+    /// Pass `None` to mark the layer as unowned.
     pub fn add_owned(&mut self, kind: IntentKind, strength: u8, owner: Option<SwarmId>) {
+        let strength = strength.min(PAINT_STRENGTH_CAP);
+        if strength == 0 {
+            self.remove(kind);
+            return;
+        }
         self.active |= kind.bit();
         self.strength[kind.index()] = strength;
         self.owner[kind.index()] = owner;
@@ -455,6 +459,32 @@ mod tests {
         assert!(cell.has(IntentKind::Build));
         assert_eq!(cell.strength(IntentKind::Build), 6);
         assert!(!cell.is_empty());
+    }
+
+    #[test]
+    fn add_zero_strength_keeps_layer_absent() {
+        let mut grid = IntentGrid::new(4, 4);
+        let point = IVec2::new(1, 1);
+        grid.add(point, IntentKind::Gather, 5);
+
+        assert!(grid.add(point, IntentKind::Gather, 0));
+
+        let cell = grid.cell(point).unwrap();
+        assert!(!cell.has(IntentKind::Gather));
+        assert_eq!(cell.strength(IntentKind::Gather), 0);
+        assert_eq!(cell.iter_layers().count(), 0);
+    }
+
+    #[test]
+    fn add_clamps_above_strength_cap() {
+        let mut grid = IntentGrid::new(4, 4);
+        let point = IVec2::new(1, 1);
+
+        assert!(grid.add(point, IntentKind::Build, 250));
+
+        let cell = grid.cell(point).unwrap();
+        assert!(cell.has(IntentKind::Build));
+        assert_eq!(cell.strength(IntentKind::Build), PAINT_STRENGTH_CAP);
     }
 
     #[test]

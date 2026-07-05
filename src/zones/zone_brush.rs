@@ -15,15 +15,18 @@ use bevy::{
 };
 
 use crate::{
-    intent::{BrushSelection, IntentGrid, IntentKind},
+    intent::{BrushSelection, IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::SwarmId,
     ui::UiHandling,
     ZONE_BLOCK_SIZE,
 };
 
-/// Per-cell data uploaded to the zone shader storage buffer. The shader still
-/// uses a 4-bit colour mask + 14-bit id layout; the id bits are written as
-/// zero because the swarm-owned intent resource has no per-cell ids.
+/// Per-cell data uploaded to the zone shader storage buffer. Each cell packs
+/// four 5-bit paint-strength slots (one per [`IntentKind`]) into a single
+/// `u32`. A slot value of `0` means the kind is absent; a non-zero value is
+/// the paint strength in `[1, PAINT_STRENGTH_CAP]`. The mirror system copies
+/// [`IntentCell::strength`] into these slots and the zone shader maps each
+/// strength to an overlay alpha.
 #[derive(AsBindGroup, Asset, TypePath, Debug, Clone)]
 pub struct ZoneMaterial {
     #[storage(2, read_only)]
@@ -33,8 +36,6 @@ pub struct ZoneMaterial {
     pub width: u32,
     #[uniform(4)]
     pub height: u32,
-    #[uniform(1)]
-    pub highlight_zone_id: u32,
 }
 
 impl ZoneMaterial {
@@ -45,7 +46,6 @@ impl ZoneMaterial {
             zone_data,
             width,
             height,
-            highlight_zone_id: 0,
         }
     }
 
@@ -58,12 +58,26 @@ impl ZoneMaterial {
     }
 }
 
+/// Number of strength slots packed into [`ZonePointData`]. Slot order matches
+/// [`IntentKind::index`], but the packed render data stays index-based.
+const ZONE_STRENGTH_SLOT_COUNT: u32 = 4;
+
+/// Number of bits used to store one kind's paint strength in [`ZonePointData`].
+/// A strength in `[0, PAINT_STRENGTH_CAP]` (`PAINT_STRENGTH_CAP = 16`) fits in
+/// 5 bits with headroom to spare, so the four slots occupy 20 of the 32 bits.
+const ZONE_STRENGTH_SLOT_BITS: u32 = 5;
+
+/// Bit mask covering a single 5-bit strength slot.
+const ZONE_STRENGTH_SLOT_MASK: u32 = (1u32 << ZONE_STRENGTH_SLOT_BITS) - 1;
+
 #[derive(Debug, Clone, Copy, ShaderType)]
 pub struct ZonePointData {
-    /// First 4 bits are zone color indicators, rest are zone id (14 bits for each)
-    zones: u32,
-    /// 2 zone id indicators 14 bits each, last 4 bits are unused
-    bits: u32,
+    /// Packed paint strength for each kind. Slot `i` occupies bits
+    /// `[5*i, 5*i+5)` and stores the strength in
+    /// `[0, PAINT_STRENGTH_CAP]`. Slot order matches [`IntentKind::index`]:
+    /// 0 = Gather, 1 = Build, 2 = Defend, 3 = Corridor. The top 12 bits are
+    /// spare.
+    pub strength: u32,
 }
 
 impl Default for ZonePointData {
@@ -73,66 +87,35 @@ impl Default for ZonePointData {
 }
 
 impl ZonePointData {
-    // Definitions
-    pub const ZONE1: u32 = 1 << 0;
-    pub const ZONE2: u32 = 1 << 1;
-    pub const ZONE3: u32 = 1 << 2;
-    pub const ZONE4: u32 = 1 << 3;
-
-    pub const ZONE_ID_MASK: u32 = (1 << 14) - 1;
-
-    pub fn id_to_zone(id: u32) -> u32 {
-        1 << (id % 4)
-    }
-
     pub fn new() -> Self {
-        ZonePointData { zones: 0, bits: 0 }
+        ZonePointData { strength: 0 }
     }
 
-    pub fn set_zone(&mut self, zone: u32, active: bool) {
-        if active {
-            self.zones |= zone;
-        } else {
-            self.zones &= !zone;
-        }
+    /// Write the paint strength of kind `kind_index` into its 5-bit slot.
+    /// `kind_index` is `IntentKind::index()` (`0..4`); out-of-range indices
+    /// panic. Strengths above `PAINT_STRENGTH_CAP` are clamped to it so the
+    /// slot can never exceed the shader's alpha ramp ceiling.
+    pub fn set_strength(&mut self, kind_index: u32, strength: u8) {
+        assert!(
+            kind_index < ZONE_STRENGTH_SLOT_COUNT,
+            "kind_index out of range"
+        );
+        let clamped = (strength as u32).min(PAINT_STRENGTH_CAP as u32);
+        let shift = kind_index * ZONE_STRENGTH_SLOT_BITS;
+        self.strength &= !(ZONE_STRENGTH_SLOT_MASK << shift);
+        self.strength |= clamped << shift;
     }
 
-    pub fn is_zone_active(&self, zone: u32) -> bool {
-        (self.zones & zone) != 0
-    }
-
-    pub fn get_zone_id(&self, zone: u32) -> u32 {
-        match zone {
-            Self::ZONE1 => (self.zones >> 4) & Self::ZONE_ID_MASK,
-            Self::ZONE2 => (self.zones >> 18) & Self::ZONE_ID_MASK,
-            Self::ZONE3 => self.bits & Self::ZONE_ID_MASK,
-            Self::ZONE4 => (self.bits >> 14) & Self::ZONE_ID_MASK,
-            _ => panic!("Invalid zone"),
-        }
-    }
-
-    pub fn set_zone_id(&mut self, zone: u32, id: u32) {
-        assert!(id <= Self::ZONE_ID_MASK, "ID too large for 14 bits");
-        let id = id & Self::ZONE_ID_MASK;
-        match zone {
-            Self::ZONE1 => {
-                self.zones &= !(Self::ZONE_ID_MASK << 4);
-                self.zones |= id << 4;
-            }
-            Self::ZONE2 => {
-                self.zones &= !(Self::ZONE_ID_MASK << 18);
-                self.zones |= id << 18;
-            }
-            Self::ZONE3 => {
-                self.bits &= !Self::ZONE_ID_MASK;
-                self.bits |= id;
-            }
-            Self::ZONE4 => {
-                self.bits &= !(Self::ZONE_ID_MASK << 14);
-                self.bits |= id << 14;
-            }
-            _ => panic!("Invalid zone"),
-        }
+    /// Read the paint strength stored for kind `kind_index`, or `0` if the
+    /// kind is absent at this cell. `kind_index` is `IntentKind::index()`
+    /// (`0..4`); out-of-range indices panic.
+    pub fn strength(&self, kind_index: u32) -> u8 {
+        assert!(
+            kind_index < ZONE_STRENGTH_SLOT_COUNT,
+            "kind_index out of range"
+        );
+        let shift = kind_index * ZONE_STRENGTH_SLOT_BITS;
+        ((self.strength >> shift) & ZONE_STRENGTH_SLOT_MASK) as u8
     }
 }
 
@@ -244,11 +227,11 @@ pub fn mirror_intent_to_zone_material_system(
 
         if let Some(zone_data) = mat.at_zone_mut(idx.x as u32, idx.y as u32) {
             for kind in IntentKind::ALL {
-                let zone_color = ZonePointData::id_to_zone(kind.index() as u32);
-                zone_data.set_zone(zone_color, cell.has(kind));
-                // The render mirror never assigns id bits; clear them so any
-                // stale value from prior frames is not shown.
-                zone_data.set_zone_id(zone_color, 0);
+                // `IntentCell::strength` returns 0 for an inactive kind, so a
+                // single write per kind both clears absent layers (slot 0)
+                // and mirrors the active strength. The setter clamps to
+                // PAINT_STRENGTH_CAP as a defensive ceiling.
+                zone_data.set_strength(kind.index() as u32, cell.strength(kind));
             }
         }
     }
@@ -280,21 +263,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zone_ids_do_not_corrupt_each_other() {
+    fn strength_slots_do_not_corrupt_each_other() {
+        // Each of the four 5-bit slots is independent: writing one must
+        // never disturb another. Cover the full kind range with distinct
+        // values including the paint-strength cap, then read every slot
+        // back. This pins the packed layout the zone shader reads.
         let mut point = ZonePointData::new();
 
-        point.set_zone_id(ZonePointData::ZONE1, 17);
-        point.set_zone_id(ZonePointData::ZONE2, 42);
-        point.set_zone_id(ZonePointData::ZONE3, 99);
-        point.set_zone_id(ZonePointData::ZONE4, ZonePointData::ZONE_ID_MASK);
+        point.set_strength(0, 1);
+        point.set_strength(1, 4);
+        point.set_strength(2, 8);
+        point.set_strength(3, PAINT_STRENGTH_CAP);
 
-        assert_eq!(point.get_zone_id(ZonePointData::ZONE1), 17);
-        assert_eq!(point.get_zone_id(ZonePointData::ZONE2), 42);
-        assert_eq!(point.get_zone_id(ZonePointData::ZONE3), 99);
-        assert_eq!(
-            point.get_zone_id(ZonePointData::ZONE4),
-            ZonePointData::ZONE_ID_MASK
-        );
+        assert_eq!(point.strength(0), 1);
+        assert_eq!(point.strength(1), 4);
+        assert_eq!(point.strength(2), 8);
+        assert_eq!(point.strength(3), PAINT_STRENGTH_CAP);
+    }
+
+    #[test]
+    fn empty_point_reports_zero_strength_for_every_kind() {
+        let point = ZonePointData::new();
+        for kind_index in 0..IntentKind::COUNT as u32 {
+            assert_eq!(
+                point.strength(kind_index),
+                0,
+                "freshly-created point must report strength 0 for every kind"
+            );
+        }
+    }
+
+    #[test]
+    fn set_strength_clamps_above_cap_so_slot_never_overflows() {
+        // The 5-bit slot could hold up to 31, but the paint contract caps
+        // strength at PAINT_STRENGTH_CAP. The setter must enforce that cap
+        // so a stray caller cannot push the alpha ramp past its ceiling.
+        let mut point = ZonePointData::new();
+        point.set_strength(2, 250);
+        assert_eq!(point.strength(2), PAINT_STRENGTH_CAP);
     }
 
     #[test]
