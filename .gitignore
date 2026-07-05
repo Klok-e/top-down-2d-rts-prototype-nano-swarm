@@ -7,3 +7,4 @@
 /.pi/afk/transcripts/
 /.pi/afk/results/
 /.pi/tasks/tasks-*.json
+/.pi/extensions/afk/node_modules/
