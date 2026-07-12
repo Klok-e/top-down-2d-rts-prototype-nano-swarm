@@ -37,17 +37,19 @@
 
 #![allow(dead_code)]
 
-use bevy::{math::Vec2, prelude::*};
+use std::time::Duration;
+
+use bevy::{math::Vec2, prelude::*, time::TimeUpdateStrategy};
 use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
     intent::IntentGrid,
     nanobot::{
         bot_debug_circle_system, idle_spread_system, move_velocity_system, separation_system,
-        velocity_system, ActiveWorkerCounts, CentralDemandPlugin, Charge, ChargePlugin, Charger,
-        CollapsePlugin, Commitment, DefendPlugin, DemandSnapshot, GatherPlugin, HaulPlugin, Health,
-        MaintenancePlugin, Nanobot, NanobotBundle, NanobotType, OwnerSwarm, PlannedStructure,
-        PlannedStructurePlugin, ProductionFacility, ProductionPlugin, SoftWorkSlots, Structure,
-        StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent,
+        velocity_system, Charge, ChargePlugin, Charger, CollapsePlugin, Commitment, DefendPlugin,
+        GatherPlugin, HaulPlugin, Health, MaintenancePlugin, Nanobot, NanobotBundle, NanobotType,
+        OwnerSwarm, PlannedStructure, PlannedStructurePlugin, ProductionFacility, ProductionPlugin,
+        RegionalAllocationPlugin, SoftWorkSlots, Structure, StructureKind, Swarm, SwarmId,
+        SwarmMember, VelocityComponent,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole},
     structure_overlay::StructureOverlayPlugin,
@@ -109,6 +111,9 @@ pub fn minimal_app() -> App {
     app.init_resource::<SoftWorkSlots>();
     app.init_resource::<ResourceLedger>();
     app.insert_resource(StructureSprites::from_single_handle(Handle::default()));
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+        100,
+    )));
     app
 }
 
@@ -120,6 +125,7 @@ pub fn minimal_app() -> App {
 pub fn sim_app() -> App {
     let mut app = minimal_app();
     register_movement_systems(&mut app);
+    app.add_plugins(RegionalAllocationPlugin);
     app
 }
 
@@ -241,47 +247,6 @@ pub fn sim_app_with_production_planned() -> App {
     app.add_plugins(ProductionPlugin);
     app.add_plugins(PlannedStructurePlugin);
     app
-}
-
-/// `sim_app` + the central demand allocator alone. Tests
-/// that exercise the central allocator's publication and
-/// minimum-activation logic in isolation use this
-/// builder: there is no per-category plugin, so the
-/// central allocator's claims are the only assignment
-/// path. Tests can read the `DemandSnapshot` and
-/// `ActiveWorkerCounts` resources directly to observe
-/// the allocator's decisions without any downstream
-/// system mutating the same state.
-pub fn sim_app_with_central_demand() -> App {
-    let mut app = sim_app();
-    app.add_plugins(CentralDemandPlugin);
-    app
-}
-
-/// `sim_app` + gather + central demand. The
-/// min-activation path runs before the gather
-/// assignment system; tests assert that a freshly
-/// painted Gather Zone produces a Worker response
-/// through the central allocator, not through the
-/// gather system.
-pub fn sim_app_with_central_demand_gather() -> App {
-    let mut app = sim_app_with_central_demand();
-    app.add_plugins(GatherPlugin);
-    app
-}
-
-/// Read the central allocator's demand snapshot.
-/// Thin wrapper so behavior tests do not have to
-/// spell out the resource path.
-pub fn read_demand_snapshot(app: &App) -> DemandSnapshot {
-    app.world().resource::<DemandSnapshot>().clone()
-}
-
-/// Read the central allocator's active worker
-/// counts. Thin wrapper so behavior tests do not
-/// have to spell out the resource path.
-pub fn read_active_worker_counts(app: &App) -> ActiveWorkerCounts {
-    app.world().resource::<ActiveWorkerCounts>().clone()
 }
 
 /// `sim_app` + charge + planned structure. The issue #28

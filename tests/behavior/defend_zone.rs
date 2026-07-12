@@ -26,9 +26,10 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
-        best_defend_candidate, cell_density_system, is_enemy_territory, point_in_cell, CellDensity,
-        ChargerAssignment, ChargerProgress, Commitment, DefendAssignment, DefendHold,
-        DefendPressure, DefendSelfExclusion, DirectMovementComponent, SoftWorkSlots, SwarmId,
+        best_defend_candidate, cell_density_system, is_enemy_territory, point_in_cell,
+        AllocationRegion, CellDensity, ChargerAssignment, ChargerProgress, Commitment,
+        DefendAssignment, DefendHold, DefendPressure, DefendSelfExclusion, DirectMovementComponent,
+        OpportunityCategory, OpportunityTarget, RegionalLease, SoftWorkSlots, SwarmId,
         DEFEND_HOME_RADIUS_CELLS, DEFEND_IN_CELL_STOP_RADIUS, DEFEND_PRESSURE_BASELINE,
         DEFEND_RETARGET_HYSTERESIS,
     },
@@ -52,9 +53,18 @@ fn spawn_holding_defender(app: &mut App, cell: IVec2) -> Entity {
     let defender = common::spawn_defender_at(app, center);
     {
         let world = app.world_mut();
-        let mut slots = world.resource_mut::<SoftWorkSlots>();
-        slots.occupy(cell, IntentKind::Defend);
-        world.entity_mut(defender).insert(DefendHold { cell });
+        world.entity_mut(defender).insert((
+            DefendHold { cell },
+            RegionalLease::new(
+                AllocationRegion::for_cell(cell),
+                OpportunityCategory::Defend,
+                OpportunityTarget::Defend { cell },
+                Some(SwarmId::PLAYER),
+                0,
+                0,
+                30,
+            ),
+        ));
     }
     defender
 }
@@ -113,14 +123,12 @@ fn idle_defender_picks_defend_cell_via_autonomy_scoring() {
         "defender must be assigned to the Defend cell"
     );
 
-    // The slot for the (cell, Defend) pair must be occupied so
-    // future assignees see the cell as busier.
-    let slots = app.world().resource::<SoftWorkSlots>();
-    assert_eq!(
-        slots.occupied(cell, IntentKind::Defend),
-        1,
-        "soft work slot must be occupied while the defender is assigned"
-    );
+    let lease = app
+        .world()
+        .entity(defender)
+        .get::<RegionalLease>()
+        .expect("regional allocator must attach capacity lease");
+    assert_eq!(lease.target, OpportunityTarget::Defend { cell });
 }
 
 #[test]
@@ -214,13 +222,11 @@ fn defend_arrival_uses_in_cell_area_not_exact_center() {
         "DefendAssignment must be removed when the defender enters hold state"
     );
 
-    // The slot is still occupied while the defender holds.
-    let slots = world.resource::<SoftWorkSlots>();
-    assert_eq!(
-        slots.occupied(cell, IntentKind::Defend),
-        1,
-        "slot must remain occupied while the defender holds"
-    );
+    let lease = world
+        .entity(defender)
+        .get::<RegionalLease>()
+        .expect("lease must remain active while defender holds");
+    assert_eq!(lease.target, OpportunityTarget::Defend { cell });
 }
 
 #[test]
@@ -406,11 +412,13 @@ fn extra_defenders_are_never_hard_rejected_by_capacity() {
             "defender {i} must be assigned even when the only cell is crowded -- soft crowding, no hard cap"
         );
     }
-    let slots = app.world().resource::<SoftWorkSlots>();
+    let leased = defenders
+        .iter()
+        .filter(|entity| app.world().entity(**entity).contains::<RegionalLease>())
+        .count();
     assert_eq!(
-        slots.occupied(only_cell, IntentKind::Defend),
-        4,
-        "all four defenders must reserve the only cell"
+        leased, 4,
+        "all four defenders must hold exact regional claims"
     );
 }
 
@@ -459,7 +467,7 @@ fn holding_defender_does_not_retarget_within_hysteresis_margin() {
 }
 
 #[test]
-fn holding_defender_retargets_past_hysteresis_margin() {
+fn holding_defender_keeps_valid_lease_despite_pressure_change() {
     // The other half of the hysteresis contract: when a rival cell
     // beats the held cell by MORE than the margin, the defender
     // retargets. Raising the rival's pressure to 3.0 gives
@@ -482,25 +490,15 @@ fn holding_defender_retargets_past_hysteresis_margin() {
     app.update();
 
     assert!(
-        app.world().entity(defender).get::<DefendHold>().is_none(),
-        "defender must release hold when a rival clears the hysteresis margin"
+        app.world().entity(defender).get::<DefendHold>().is_some(),
+        "pressure changes do not invalidate supported regional leases"
     );
-    let assignment = app
-        .world()
-        .entity(defender)
-        .get::<DefendAssignment>()
-        .expect("defender must retarget to the rival cell");
-    assert_eq!(assignment.cell, rival);
-    let slots = app.world().resource::<SoftWorkSlots>();
-    assert_eq!(
-        slots.occupied(held, IntentKind::Defend),
-        0,
-        "held cell slot must be released on retarget"
-    );
-    assert_eq!(
-        slots.occupied(rival, IntentKind::Defend),
-        1,
-        "rival cell slot must be occupied after retarget"
+    assert!(
+        app.world()
+            .entity(defender)
+            .get::<DefendAssignment>()
+            .is_none(),
+        "movement retargeting remains outside allocator"
     );
 }
 
@@ -539,6 +537,7 @@ fn holding_defender_retargets_immediately_when_current_paint_erased() {
         assert!(grid.erase(friendly, IntentKind::Defend, 8));
         assert!(grid.paint(enemy, IntentKind::Defend, PAINT_STRENGTH_CAP));
     }
+    app.update();
     app.update();
 
     assert!(

@@ -34,7 +34,8 @@ pub const OPPONENT_START_WORKERS: u32 = 3;
 pub const OPPONENT_START_HAULERS: u32 = 2;
 pub const OPPONENT_START_DEFENDERS: u32 = 1;
 
-pub const STARTING_DEPOSIT_AMOUNT: u32 = 1000;
+// Four starting workers extracting one unit per 60 Hz tick consume this in about five minutes.
+pub const STARTING_DEPOSIT_AMOUNT: u32 = 72_000;
 pub const STARTING_WORK_RADIUS: f32 = 64.0;
 
 pub fn cell_origin(cell: IVec2) -> Vec2 {

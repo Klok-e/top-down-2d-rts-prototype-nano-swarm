@@ -2,11 +2,11 @@ use bevy::{
     prelude::{Commands, Entity, Quat, Query, Res, Transform, Vec2, Vec3, With},
     time::Time,
 };
-use rand::RngExt;
 
 use crate::{
     game_settings::GameSettings,
     nanobot::consts::{BOT_RADIUS, BOT_SEPARATION_FORCE},
+    spatial::FixedSpatialBuckets,
 };
 
 use super::{
@@ -87,44 +87,79 @@ pub fn move_velocity_system(
     }
 }
 
-// let path = bfs(
-//     &tile_pos,
-//     |IVec2 { x, y }| {
-//         [
-//             ivec2(*x + 1, *y),
-//             ivec2(*x - 1, *y),
-//             ivec2(*x, *y + 1),
-//             ivec2(*x, *y - 1),
-//         ]
-//     },
-//     |p| !curr_zone.zone_points.contains(&get_zone_from_block(*p)),
-// );
+#[derive(Clone, Copy)]
+struct SeparationEntry {
+    entity: Entity,
+    position: Vec2,
+}
 
-pub fn separation_system(mut query: Query<(&Transform, &mut VelocityComponent), With<Nanobot>>) {
-    let mut combinations = query.iter_combinations_mut();
-    let mut rng = rand::rng();
-    const EPSILON: f32 = 1e-3;
+fn coincident_pair_direction(first: Entity, second: Entity) -> Vec2 {
+    let mixed =
+        first.to_bits().wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ second.to_bits().rotate_left(32);
+    let angle = (mixed as f64 / u64::MAX as f64 * std::f64::consts::TAU) as f32;
+    Vec2::new(angle.cos(), angle.sin())
+}
 
-    while let Some([(transform1, mut velocity1), (transform2, mut velocity2)]) =
-        combinations.fetch_next()
-    {
-        let distance = transform1.translation.distance(transform2.translation);
-        let close_enough = BOT_RADIUS * 2.;
-        if distance < close_enough {
-            // Compute the vector that separates the two bots
-            let mut separation = transform1.translation - transform2.translation;
+fn separation_deltas(entries: &[SeparationEntry]) -> Vec<(Entity, Vec2)> {
+    let mut sorted = entries.to_vec();
+    sorted.sort_by_key(|entry| entry.entity.to_bits());
 
-            // If separation vector is nearly zero (with the given threshold), apply a random perturbation
-            if separation.length() < EPSILON {
-                let angle: f32 = rng.random_range(0.0..2.0 * std::f32::consts::PI);
-                separation = Vec3::new(angle.cos(), angle.sin(), 0.0);
+    let mut buckets = FixedSpatialBuckets::new(BOT_RADIUS * 2.0);
+    for entry in &sorted {
+        buckets.insert(entry.position, *entry);
+    }
+    buckets.sort_entries_by(|left, right| left.entity.to_bits().cmp(&right.entity.to_bits()));
+
+    let mut deltas: Vec<(Entity, Vec2)> = sorted
+        .iter()
+        .map(|entry| (entry.entity, Vec2::ZERO))
+        .collect();
+    for entry in &sorted {
+        let bucket = buckets.bucket_for_position(entry.position);
+        for (_, neighbours) in buckets.neighbourhood(bucket, 1) {
+            for other in neighbours {
+                if other.entity.to_bits() <= entry.entity.to_bits() {
+                    continue;
+                }
+                let offset = entry.position - other.position;
+                if offset.length_squared() >= (BOT_RADIUS * 2.0).powi(2) {
+                    continue;
+                }
+                let direction = if offset.length_squared() < 1e-6 {
+                    coincident_pair_direction(entry.entity, other.entity)
+                } else {
+                    offset.normalize()
+                };
+                let force = direction * BOT_SEPARATION_FORCE;
+                let first = deltas
+                    .binary_search_by_key(&entry.entity.to_bits(), |(entity, _)| entity.to_bits())
+                    .expect("snapshot entity must have a delta");
+                let second = deltas
+                    .binary_search_by_key(&other.entity.to_bits(), |(entity, _)| entity.to_bits())
+                    .expect("neighbour entity must have a delta");
+                deltas[first].1 += force;
+                deltas[second].1 -= force;
             }
+        }
+    }
+    deltas
+}
 
-            // Normalize the vector and scale it by the separation force
-            let force = separation.normalize() * BOT_SEPARATION_FORCE;
-            // Apply the separation force (this will move the bot away from its neighbor)
-            velocity1.value += force.truncate();
-            velocity2.value -= force.truncate();
+pub fn separation_system(
+    snapshots: Query<(Entity, &Transform), With<Nanobot>>,
+    mut velocities: Query<&mut VelocityComponent, With<Nanobot>>,
+) {
+    let entries: Vec<_> = snapshots
+        .iter()
+        .map(|(entity, transform)| SeparationEntry {
+            entity,
+            position: transform.translation.truncate(),
+        })
+        .collect();
+
+    for (entity, delta) in separation_deltas(&entries) {
+        if let Ok(mut velocity) = velocities.get_mut(entity) {
+            velocity.value += delta;
         }
     }
 }
@@ -188,5 +223,57 @@ mod tests {
     #[test]
     fn facing_rotation_ignores_near_zero_motion() {
         assert!(rotation_for_direction(Vec2::ZERO).is_none());
+    }
+
+    fn entity(bits: u64) -> Entity {
+        Entity::from_bits(bits)
+    }
+
+    #[test]
+    fn separation_only_pushes_nearby_pairs_once() {
+        let first = entity(1);
+        let second = entity(2);
+        let distant = entity(3);
+        let deltas = separation_deltas(&[
+            SeparationEntry {
+                entity: first,
+                position: Vec2::ZERO,
+            },
+            SeparationEntry {
+                entity: second,
+                position: Vec2::X,
+            },
+            SeparationEntry {
+                entity: distant,
+                position: Vec2::splat(BOT_RADIUS * 10.0),
+            },
+        ]);
+
+        let first_delta = deltas.iter().find(|(id, _)| *id == first).unwrap().1;
+        let second_delta = deltas.iter().find(|(id, _)| *id == second).unwrap().1;
+        let distant_delta = deltas.iter().find(|(id, _)| *id == distant).unwrap().1;
+        assert_eq!(first_delta, -Vec2::X * BOT_SEPARATION_FORCE);
+        assert_eq!(second_delta, Vec2::X * BOT_SEPARATION_FORCE);
+        assert_eq!(distant_delta, Vec2::ZERO);
+    }
+
+    #[test]
+    fn coincident_pair_separation_is_deterministic_and_finite() {
+        let entries = [
+            SeparationEntry {
+                entity: entity(1),
+                position: Vec2::ZERO,
+            },
+            SeparationEntry {
+                entity: entity(2),
+                position: Vec2::ZERO,
+            },
+        ];
+        let first = separation_deltas(&entries);
+        let second = separation_deltas(&entries);
+
+        assert_eq!(first, second);
+        assert!(first.iter().all(|(_, delta)| delta.is_finite()));
+        assert!((first[0].1 + first[1].1).length_squared() < 1e-6);
     }
 }

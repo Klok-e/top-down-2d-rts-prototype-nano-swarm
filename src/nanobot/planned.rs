@@ -879,11 +879,11 @@ impl Plugin for PlannedStructurePlugin {
             Update,
             (
                 sink_stockpile_demand_system,
-                worker_planned_structure_claim_system,
                 worker_planned_structure_arrive_system,
                 worker_planned_structure_work_system,
             )
                 .chain()
+                .after(crate::nanobot::RegionalAllocationSet::Acquire)
                 .after(crate::nanobot::move_velocity_system),
         );
     }

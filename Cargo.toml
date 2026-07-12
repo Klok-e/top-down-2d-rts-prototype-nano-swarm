@@ -32,6 +32,10 @@ debug = true
 [profile.bench]
 lto = "thin"
 
+[[bench]]
+name = "swarm_acceptance"
+harness = false
+
 # Window-creating (screenshot) tests run on the main thread via a
 # custom `main()` driven by libtest-mimic, so they cannot use cargo's
 # default harness. They are marked ignored and skipped by default;
@@ -44,3 +48,4 @@ harness = false
 
 [dev-dependencies]
 libtest-mimic = "0.8.2"
+criterion = { version = "0.8", features = ["html_reports"] }

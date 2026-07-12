@@ -356,7 +356,6 @@ pub fn worker_maintenance_arrive_system(
 #[allow(clippy::type_complexity)]
 pub fn worker_maintenance_work_system(
     mut commands: Commands,
-    mut slots: ResMut<SoftWorkSlots>,
     mut workers: Query<(Entity, &mut MaintenanceProgress), With<Nanobot>>,
     mut structures: Query<&mut Structure>,
 ) {
@@ -366,7 +365,7 @@ pub fn worker_maintenance_work_system(
             // a previous test or a future system despawned it).
             // Release the worker; the cell becomes a valid
             // build site again on the next auto-creation tick.
-            release_maintenance_worker(&mut commands, &mut slots, entity, progress.cell);
+            release_maintenance_worker(&mut commands, entity);
             continue;
         };
 
@@ -379,21 +378,13 @@ pub fn worker_maintenance_work_system(
 
         progress.ticks_worked += 1;
         if progress.ticks_worked >= MAINTENANCE_WORK_DURATION_TICKS {
-            release_maintenance_worker(&mut commands, &mut slots, entity, progress.cell);
+            release_maintenance_worker(&mut commands, entity);
         }
     }
 }
 
-/// Release the build cell's soft work slot and clear the
-/// worker's maintenance markers. Used at every transition out
-/// of working state so the cleanup logic lives in one place.
-fn release_maintenance_worker(
-    commands: &mut Commands,
-    slots: &mut ResMut<SoftWorkSlots>,
-    entity: Entity,
-    cell: IVec2,
-) {
-    slots.release(cell, IntentKind::Build);
+/// Clear maintenance lifecycle markers.
+fn release_maintenance_worker(commands: &mut Commands, entity: Entity) {
     commands
         .entity(entity)
         .remove::<MaintenanceAssignment>()
@@ -416,12 +407,12 @@ impl Plugin for MaintenancePlugin {
         app.add_systems(
             Update,
             (
-                worker_maintenance_assignment_system,
                 worker_maintenance_arrive_system,
                 worker_maintenance_work_system,
                 structure_degradation_system,
             )
                 .chain()
+                .after(crate::nanobot::RegionalAllocationSet::Acquire)
                 .after(crate::nanobot::move_velocity_system)
                 .after(super::build::worker_build_work_system),
         );

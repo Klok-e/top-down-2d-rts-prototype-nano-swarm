@@ -184,9 +184,10 @@ pub struct IntentGrid {
     width: i32,
     height: i32,
     cells: Vec<IntentCell>,
-    /// Cells touched since the last [`IntentGrid::drain_dirty`] call. Mirror
-    /// systems can use this to push only changed cells to the GPU buffer.
-    dirty: HashSet<IVec2>,
+    /// Cells awaiting render-mirror consumption.
+    render_dirty: HashSet<IVec2>,
+    /// Cells awaiting actionable-projection consumption.
+    projection_dirty: HashSet<IVec2>,
 }
 
 impl IntentGrid {
@@ -197,7 +198,8 @@ impl IntentGrid {
             width: width.max(0),
             height: height.max(0),
             cells: vec![IntentCell::default(); size],
-            dirty: HashSet::new(),
+            render_dirty: HashSet::new(),
+            projection_dirty: HashSet::new(),
         }
     }
 
@@ -342,18 +344,34 @@ impl IntentGrid {
         }
     }
 
-    /// Number of cells that have been mutated since the last drain. Mirror
-    /// systems use this for cheap "anything to push" checks.
-    pub fn dirty_count(&self) -> usize {
-        self.dirty.len()
+    /// Number of changed cells awaiting the render mirror.
+    pub fn render_dirty_count(&self) -> usize {
+        self.render_dirty.len()
     }
 
-    /// Take the set of dirty cells, sorted by `(y, x)` for deterministic
-    /// iteration order.
+    /// Number of changed cells awaiting actionable projection.
+    pub fn projection_dirty_count(&self) -> usize {
+        self.projection_dirty.len()
+    }
+
+    /// Drain changed cells for the render mirror in deterministic `(y, x)` order.
+    pub fn drain_render_dirty(&mut self) -> Vec<IVec2> {
+        drain_sorted(&mut self.render_dirty)
+    }
+
+    /// Drain changed cells for actionable projection in deterministic `(y, x)` order.
+    pub fn drain_projection_dirty(&mut self) -> Vec<IVec2> {
+        drain_sorted(&mut self.projection_dirty)
+    }
+
+    /// Compatibility alias for render-mirror dirty count.
+    pub fn dirty_count(&self) -> usize {
+        self.render_dirty_count()
+    }
+
+    /// Compatibility alias for draining render-mirror changes.
     pub fn drain_dirty(&mut self) -> Vec<IVec2> {
-        let mut points: Vec<IVec2> = self.dirty.drain().collect();
-        points.sort_by_key(|p| (p.y, p.x));
-        points
+        self.drain_render_dirty()
     }
 
     /// Iterate every cell in row-major order. Useful for systems that need to
@@ -373,7 +391,8 @@ impl IntentGrid {
             return None;
         }
         let idx = self.index(point);
-        self.dirty.insert(point);
+        self.render_dirty.insert(point);
+        self.projection_dirty.insert(point);
         Some(&mut self.cells[idx])
     }
 
@@ -386,6 +405,12 @@ impl IntentGrid {
     fn origin_min(&self) -> IVec2 {
         IVec2::new(-(self.width / 2), -(self.height / 2))
     }
+}
+
+fn drain_sorted(dirty: &mut HashSet<IVec2>) -> Vec<IVec2> {
+    let mut points: Vec<IVec2> = dirty.drain().collect();
+    points.sort_by_key(|point| (point.y, point.x));
+    points
 }
 
 #[cfg(test)]
@@ -506,20 +531,25 @@ mod tests {
     }
 
     #[test]
-    fn dirty_cells_are_tracked_and_drainable() {
+    fn render_and_projection_dirty_cells_drain_independently() {
         let mut grid = IntentGrid::new(4, 4);
         grid.add(IVec2::new(-2, -2), IntentKind::Gather, 1);
         grid.add(IVec2::new(0, -1), IntentKind::Build, 2);
-        // re-touching the same cell does not double-count
         grid.add(IVec2::new(-2, -2), IntentKind::Gather, 1);
-        assert_eq!(grid.dirty_count(), 2);
 
-        let drained = grid.drain_dirty();
-        assert_eq!(drained.len(), 2);
-        // deterministic order: by y then x
-        assert_eq!(drained[0], IVec2::new(-2, -2));
-        assert_eq!(drained[1], IVec2::new(0, -1));
-        assert_eq!(grid.dirty_count(), 0);
+        assert_eq!(grid.render_dirty_count(), 2);
+        assert_eq!(grid.projection_dirty_count(), 2);
+        assert_eq!(
+            grid.drain_render_dirty(),
+            vec![IVec2::new(-2, -2), IVec2::new(0, -1)]
+        );
+        assert_eq!(grid.render_dirty_count(), 0);
+        assert_eq!(grid.projection_dirty_count(), 2);
+        assert_eq!(
+            grid.drain_projection_dirty(),
+            vec![IVec2::new(-2, -2), IVec2::new(0, -1)]
+        );
+        assert_eq!(grid.projection_dirty_count(), 0);
     }
 
     #[test]

@@ -50,8 +50,8 @@
 use bevy::prelude::*;
 
 use crate::intent::{IntentGrid, IntentKind};
+use crate::nanobot::allocation::RegionalLease;
 use crate::nanobot::autonomy::NanobotType;
-use crate::nanobot::autonomy::SoftWorkSlots;
 use crate::nanobot::components::{DirectMovementComponent, Health, Nanobot, Swarm, SwarmId};
 use crate::nanobot::defend::DefendHold;
 use crate::nanobot::gather::world_to_cell;
@@ -628,9 +628,15 @@ pub fn find_nearest_working_charger(
 #[allow(clippy::type_complexity)]
 pub fn defender_rotation_to_charger_system(
     mut commands: Commands,
-    mut slots: ResMut<SoftWorkSlots>,
-    defenders: Query<
-        (Entity, &DefendHold, &Transform, &Charge, &NanobotType),
+    mut defenders: Query<
+        (
+            Entity,
+            &DefendHold,
+            &Transform,
+            &Charge,
+            &NanobotType,
+            Option<&mut RegionalLease>,
+        ),
         (
             With<Nanobot>,
             With<NanobotType>,
@@ -642,7 +648,7 @@ pub fn defender_rotation_to_charger_system(
     >,
     chargers: Query<(Entity, &Charger, &Transform)>,
 ) {
-    for (entity, hold, transform, charge, nanobot_type) in &defenders {
+    for (entity, _hold, transform, charge, nanobot_type, lease) in &mut defenders {
         if *nanobot_type != NanobotType::Defender {
             continue;
         }
@@ -666,13 +672,9 @@ pub fn defender_rotation_to_charger_system(
             .get(charger_entity)
             .map(|(_, c, _)| c.radius)
             .unwrap_or(0.0);
-        // Release the soft work slot for the held Defend cell
-        // before inserting the rotation marker. Without this
-        // release a fresh defender would see the cell as
-        // still busy and the held cell would not be
-        // available for re-assignment after the rotating
-        // defender returns from the charger.
-        slots.release(hold.cell, IntentKind::Defend);
+        if let Some(mut lease) = lease {
+            lease.suspend_for_charge();
+        }
         commands.entity(entity).remove::<DefendHold>();
         commands.entity(entity).insert((
             ChargerAssignment {
@@ -750,17 +752,25 @@ pub fn defender_charger_arrive_system(
 pub fn defender_charger_work_system(
     mut commands: Commands,
     mut defenders: Query<
-        (Entity, &mut Charge, &ChargerAssignment),
+        (
+            Entity,
+            &mut Charge,
+            &ChargerAssignment,
+            Option<&mut RegionalLease>,
+        ),
         (With<Nanobot>, With<ChargerProgress>),
     >,
     mut chargers: Query<&mut Charger>,
 ) {
-    for (entity, mut charge, assignment) in &mut defenders {
+    for (entity, mut charge, assignment, lease) in &mut defenders {
         let Ok(mut charger) = chargers.get_mut(assignment.charger) else {
             // Charger disappeared mid-charge. Drop both
             // markers and let the defender be re-assigned.
             commands.entity(entity).remove::<ChargerAssignment>();
             commands.entity(entity).remove::<ChargerProgress>();
+            if let Some(mut lease) = lease {
+                lease.request_resume();
+            }
             continue;
         };
         if !charger.has_supply() {
@@ -772,6 +782,9 @@ pub fn defender_charger_work_system(
             // starts to fire.
             commands.entity(entity).remove::<ChargerAssignment>();
             commands.entity(entity).remove::<ChargerProgress>();
+            if let Some(mut lease) = lease {
+                lease.request_resume();
+            }
             continue;
         }
         // Refill charge and drain charger material FIRST, then
@@ -795,6 +808,9 @@ pub fn defender_charger_work_system(
             // defend pool on the next tick.
             commands.entity(entity).remove::<ChargerAssignment>();
             commands.entity(entity).remove::<ChargerProgress>();
+            if let Some(mut lease) = lease {
+                lease.request_resume();
+            }
         }
     }
 }

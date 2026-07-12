@@ -1,9 +1,9 @@
 #![allow(clippy::duplicate_mod)]
 
+#[path = "behavior/actionable_projection.rs"]
+mod actionable_projection;
 #[path = "behavior/automatic_construction_issue34.rs"]
 mod automatic_construction_issue34;
-#[path = "behavior/central_demand_allocator.rs"]
-mod central_demand_allocator;
 #[path = "behavior/charger.rs"]
 mod charger;
 #[path = "behavior/charger_planned.rs"]
@@ -44,6 +44,8 @@ mod production_facility;
 mod production_facility_planned;
 #[path = "behavior/production_ratio_panel.rs"]
 mod production_ratio_panel;
+#[path = "behavior/regional_allocation.rs"]
+mod regional_allocation;
 #[path = "behavior/sink_stockpile.rs"]
 mod sink_stockpile;
 #[path = "behavior/source_stockpile_flow.rs"]
