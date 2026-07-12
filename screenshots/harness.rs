@@ -95,7 +95,9 @@ pub fn run_screenshot_test(cb: fn(&mut TestContext) -> TestFlow) -> Result<PathB
         state: DriverState::Running,
         frame: 0,
     });
-    app.add_systems(Update, test_driver_system);
+    // Run world-mutating callbacks before gameplay systems can queue deferred
+    // commands for entities the callback may replace or despawn.
+    app.add_systems(First, test_driver_system);
 
     // `build_app` registers scene/camera setup on `Startup`; the winit
     // runner drives Startup on the first loop iteration. A panic
@@ -132,12 +134,13 @@ pub fn run_screenshot_test(cb: fn(&mut TestContext) -> TestFlow) -> Result<PathB
     }
 }
 
-/// Exclusive driver system: called once per frame with full `&mut
-/// World`. The [`TestDriver`] resource is borrowed out of the world so
-/// the callback can borrow the world mutably. When the callback
-/// requests a screenshot, a `Screenshot` entity is spawned whose
-/// `ScreenshotCaptured` observer flips the driver back to `Running`,
-/// guaranteeing the PNG is on disk before the next callback frame.
+/// Exclusive driver system: called once per frame in `First` with full `&mut
+/// World`, before gameplay systems can retain deferred commands for entities a
+/// callback mutates. The [`TestDriver`] resource is borrowed out of the world
+/// so the callback can borrow the world mutably. When the callback requests a
+/// screenshot, a `Screenshot` entity is spawned whose `ScreenshotCaptured`
+/// observer flips the driver back to `Running`, guaranteeing the PNG is on disk
+/// before the next callback frame.
 fn test_driver_system(world: &mut World) {
     // Borrow the driver out of the world so the callback can borrow
     // the world mutably without a double-borrow of the resource.

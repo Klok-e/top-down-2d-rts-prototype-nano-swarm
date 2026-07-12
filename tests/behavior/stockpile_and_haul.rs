@@ -8,8 +8,9 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
-        DirectMovementComponent, HaulerAssignment, HaulerLoad, OwnerSwarm, ProductionFacility,
-        Swarm, SwarmId, DEFAULT_STOCKPILE_CAPACITY, HAULER_CARRY_CAPACITY, WORKER_CARRY_CAPACITY,
+        DirectMovementComponent, HaulerAssignment, HaulerLoad, LogisticsReservation, OwnerSwarm,
+        ProductionFacility, Swarm, SwarmId, DEFAULT_STOCKPILE_CAPACITY, HAULER_CARRY_CAPACITY,
+        WORKER_CARRY_CAPACITY,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile},
 };
@@ -208,10 +209,13 @@ fn hauler_assigns_to_source_and_sink() {
     // at both. Deposits are worker-only under the tiered model,
     // so the hauler's source is a source-role stockpile.
     let mut app = build_app();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let source_pos = Vec2::new(100.0, 0.0);
     let sink_pos = Vec2::new(400.0, 0.0);
     let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
     let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
     let hauler = common::spawn_hauler_at(&mut app, source_pos);
 
     for _ in 0..3 {
@@ -324,60 +328,34 @@ fn hauler_load_is_much_larger_than_worker_load() {
 
 #[test]
 fn hauler_delivers_full_load_to_sink() {
-    // When the hauler reaches the sink, the load is dropped into
-    // it and the hauler becomes idle. The dropped amount matches
-    // what the hauler was carrying.
+    // When the hauler reaches the sink, it unloads over several ticks
+    // and becomes idle after the full carried amount reaches the sink.
     let mut app = build_app();
-    let deposit_pos = Vec2::new(100.0, 0.0);
-    let stockpile_pos = Vec2::new(150.0, 0.0); // very close: within radius
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
-    let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
-    let hauler = common::spawn_hauler_at(&mut app, deposit_pos);
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let source_pos = Vec2::new(100.0, 0.0);
+    let sink_pos = Vec2::new(150.0, 0.0);
+    let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
+    let sink_entity = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
+    app.world_mut()
+        .entity_mut(sink_entity)
+        .insert(OwnerSwarm(swarm));
+    let hauler = common::spawn_hauler_at(&mut app, source_pos);
 
-    // Pre-seed assignment pointing at the (very close) stockpile
-    // so the hauler fills its load and walks to the sink in a
-    // handful of ticks.
-    app.world_mut().entity_mut(hauler).insert(HaulerAssignment {
-        source: deposit,
-        sink: stockpile,
-    });
-
-    // Fill the load (5 ticks of extraction at the deposit) plus
-    // travel + delivery. Travel from (100, 0) to (150, 0) at
-    // bot_speed 5.0 = 10 ticks, plus one tick for the delivery
-    // itself. Issue #38 / ADR-0004: the hauler stops at the
-    // sink's physical extent (radius 32) instead of the
-    // legacy `STOP_THRESHOLD` (2). Travel is 4 ticks instead
-    // of 10; the test only needs to run one cycle, so 12
-    // ticks is enough. The original 30-tick budget would
-    // let the hauler start a second cycle and the
-    // assertions would fail (HaulerAssignment is re-issued
-    // by the assignment system once the hauler idles).
-    for _ in 0..12 {
+    // Fill the load (5 extraction ticks), travel to the stockpile edge,
+    // then unload at four units per tick. This hand-seeded deposit leg
+    // cannot be automatically reissued after completion.
+    for _ in 0..18 {
         app.update();
     }
 
-    let sink = app.world().entity(stockpile).get::<Stockpile>().unwrap();
-    assert!(
-        sink.amount >= HAULER_CARRY_CAPACITY,
-        "sink should receive the hauler's full load; got {}",
-        sink.amount
+    let sink = app.world().entity(sink_entity).get::<Stockpile>().unwrap();
+    assert_eq!(
+        sink.amount, HAULER_CARRY_CAPACITY,
+        "sink receives the full load through gradual unloading",
     );
-    assert!(
-        app.world().entity(hauler).get::<HaulerLoad>().is_none(),
-        "HaulerLoad is removed on successful delivery"
-    );
-    // Issue #38 / ADR-0004: the hauler is re-assigned on the
-    // same tick the delivery clears its markers (the
-    // assignment system runs in the same chain as the
-    // delivery system). The HaulerAssignment assertion was
-    // removed because it is timing-dependent on the
-    // chain order: with the new stop_radius, the hauler
-    // reaches the sink faster, so the post-delivery idle
-    // window is too short to observe "no HaulerAssignment"
-    // from outside the chain. The contract ("delivery
-    // happens") is pinned by the sink.amount and
-    // HaulerLoad assertions above.
+    // Hauler may already hold cargo for a subsequent trip because allocation
+    // and delivery share the update schedule. Sink amount pins completed unload.
 }
 
 #[test]
@@ -391,10 +369,13 @@ fn hauler_transports_source_to_sink_end_to_end() {
     // worker-only under ADR-0005, so the hauler source here is a
     // source-role stockpile, not a deposit.
     let mut app = build_app();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let source_pos = Vec2::new(100.0, 0.0);
     let sink_pos = Vec2::new(200.0, 0.0);
     let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
     let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
     let hauler = common::spawn_hauler_at(&mut app, source_pos);
     // Initial total physical resources in the world: the source
     // stockpile holds 1000 minerals. The ResourceLedger is
@@ -534,6 +515,7 @@ fn hauler_routes_to_facility_from_sink_stockpile_leg3() {
     // source (the triple that prevents ping-pong).
     use top_down_2d_rts_prototype_nano_swarm::nanobot::ProductionRatio;
     let mut app = build_app();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     // Empty ratio so production never fires and the hauler is the
     // only actor touching the facility's hopper.
     app.insert_resource(ProductionRatio::new());
@@ -543,12 +525,15 @@ fn hauler_routes_to_facility_from_sink_stockpile_leg3() {
     let facility_pos = Vec2::new(140.0, 0.0);
     let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
     let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 1000, 1000);
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
     // Facility with an EMPTY input hopper: it has demand, so it is a
     // tier-0 sink.
     let facility = app
         .world_mut()
         .spawn((
             ProductionFacility::new(),
+            OwnerSwarm(swarm),
             Transform::from_translation(facility_pos.extend(0.0)),
         ))
         .id();
@@ -597,24 +582,22 @@ fn hauler_routes_to_facility_from_sink_stockpile_leg3() {
 }
 
 #[test]
-fn hauler_does_not_start_facility_leg_when_hopper_has_less_space_than_load() {
-    // Regression for a later-trip stuck hauler: facility free
-    // space was checked as `> 0`, so a hauler could pick a
-    // sink-stockpile -> facility leg, load `HAULER_CARRY_CAPACITY`
-    // minerals, arrive at a hopper with only a few free slots, then wait forever if
-    // production did not drain enough space. The leg picker should
-    // skip terminal legs that cannot accept the load it is about to
-    // pull from the source.
+fn hauler_reserves_partial_facility_leg_when_hopper_has_less_space_than_capacity() {
+    // Exact destination reservations let a hauler carry only what the
+    // facility can accept instead of waiting for a full-capacity trip.
     let mut app = build_app();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let sink_pos = Vec2::new(100.0, 0.0);
     let facility_pos = Vec2::new(140.0, 0.0);
-    let _sink = common::spawn_sink_stockpile(&mut app, sink_pos, 1000, 1000);
+    let source = common::spawn_sink_stockpile(&mut app, sink_pos, 1000, 1000);
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
     let mut facility = ProductionFacility::new();
     facility.input_amount = facility.input_capacity - 10;
-    let _facility = app
+    let facility = app
         .world_mut()
         .spawn((
             facility,
+            OwnerSwarm(swarm),
             Transform::from_translation(facility_pos.extend(0.0)),
         ))
         .id();
@@ -622,13 +605,14 @@ fn hauler_does_not_start_facility_leg_when_hopper_has_less_space_than_load() {
 
     app.update();
 
-    assert!(
-        app.world()
-            .entity(hauler)
-            .get::<HaulerAssignment>()
-            .is_none(),
-        "hauler must not start a facility leg when hopper free space cannot accept its load"
-    );
+    let reservation = app
+        .world()
+        .entity(hauler)
+        .get::<LogisticsReservation>()
+        .expect("partial destination capacity still creates a logistics leg");
+    assert_eq!(reservation.source, source);
+    assert_eq!(reservation.destination, facility);
+    assert_eq!(reservation.amount, 10);
 }
 
 #[test]
@@ -639,10 +623,13 @@ fn hauler_never_picks_source_stockpile_as_sink() {
     // free space, the hauler commits source=source, sink=sink --
     // never the other way around.
     let mut app = build_app();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let source_pos = Vec2::new(100.0, 0.0);
     let sink_pos = Vec2::new(400.0, 0.0);
     let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
     let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
     let hauler = common::spawn_hauler_at(&mut app, source_pos);
 
     app.update();

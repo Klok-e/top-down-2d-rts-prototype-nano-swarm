@@ -127,16 +127,14 @@ pub enum StockpileRole {
     Sink,
 }
 
-/// Swarm-wide resource totals. Inserted as a Bevy [`Resource`]
-/// so future systems (production, maintenance) can ask "how much
-/// of `kind` does the swarm have?" without scanning every entity.
+/// Resource totals partitioned by owning swarm.
 ///
-/// Maintained by gather, hauler, and production systems: physical
-/// pickup/delivery and terminal consumption flow through the ledger
-/// so totals stay consistent with what is physically in the world.
+/// `total` and legacy `add`/`remove` expose aggregate/player-compatible
+/// behavior while ownership-aware gameplay uses `*_for` methods.
 #[derive(Debug, Default, Resource, Clone)]
 pub struct ResourceLedger {
     pub totals: HashMap<ResourceKind, u32>,
+    swarm_totals: HashMap<crate::nanobot::SwarmId, HashMap<ResourceKind, u32>>,
 }
 
 impl ResourceLedger {
@@ -145,30 +143,61 @@ impl ResourceLedger {
         Self::default()
     }
 
-    /// Current total for `kind`, or `0` when the kind has no
-    /// entry yet.
+    /// Aggregate total across all swarms.
     pub fn total(&self, kind: ResourceKind) -> u32 {
         self.totals.get(&kind).copied().unwrap_or(0)
     }
 
-    /// Add `amount` units of `kind` to the ledger. Saturates at
-    /// `u32::MAX` so a runaway source cannot overflow.
-    pub fn add(&mut self, kind: ResourceKind, amount: u32) {
-        let entry = self.totals.entry(kind).or_insert(0);
-        *entry = entry.saturating_add(amount);
+    /// Total owned by one swarm, including buffers and in-transit cargo.
+    pub fn total_for(&self, swarm: crate::nanobot::SwarmId, kind: ResourceKind) -> u32 {
+        self.swarm_totals
+            .get(&swarm)
+            .and_then(|totals| totals.get(&kind))
+            .copied()
+            .unwrap_or(0)
     }
 
-    /// Subtract `amount` units of `kind` from the ledger.
-    /// Floored at zero so a delivery that empties the entry does
-    /// not underflow.
+    /// Legacy player-owned addition.
+    pub fn add(&mut self, kind: ResourceKind, amount: u32) {
+        self.add_for(crate::nanobot::SwarmId::PLAYER, kind, amount);
+    }
+
+    /// Add newly acquired physical resources to one swarm.
+    pub fn add_for(&mut self, swarm: crate::nanobot::SwarmId, kind: ResourceKind, amount: u32) {
+        let aggregate = self.totals.entry(kind).or_insert(0);
+        *aggregate = aggregate.saturating_add(amount);
+        let owned = self
+            .swarm_totals
+            .entry(swarm)
+            .or_default()
+            .entry(kind)
+            .or_insert(0);
+        *owned = owned.saturating_add(amount);
+    }
+
+    /// Legacy player-owned subtraction.
     pub fn remove(&mut self, kind: ResourceKind, amount: u32) {
-        if let Some(total) = self.totals.get_mut(&kind) {
-            *total = total.saturating_sub(amount);
+        self.remove_for(crate::nanobot::SwarmId::PLAYER, kind, amount);
+    }
+
+    /// Remove consumed or destroyed resources from one swarm.
+    pub fn remove_for(&mut self, swarm: crate::nanobot::SwarmId, kind: ResourceKind, amount: u32) {
+        let removed = self
+            .swarm_totals
+            .get_mut(&swarm)
+            .and_then(|totals| totals.get_mut(&kind))
+            .map(|owned| {
+                let removed = amount.min(*owned);
+                *owned -= removed;
+                removed
+            })
+            .unwrap_or(0);
+        if let Some(aggregate) = self.totals.get_mut(&kind) {
+            *aggregate = aggregate.saturating_sub(removed);
         }
     }
 
-    /// Number of distinct resource kinds tracked. Useful for tests
-    /// and debug overlays.
+    /// Number of distinct resource kinds tracked.
     pub fn len(&self) -> usize {
         self.totals.len()
     }

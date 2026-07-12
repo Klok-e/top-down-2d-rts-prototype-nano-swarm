@@ -3,7 +3,7 @@
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
-    nanobot::{DirectMovementComponent, HaulerAssignment, HaulerRoute},
+    nanobot::{DirectMovementComponent, HaulerAssignment, HaulerRoute, OwnerSwarm},
     ZONE_BLOCK_SIZE,
 };
 
@@ -12,6 +12,15 @@ mod common;
 
 fn build_app() -> App {
     common::sim_app_with_gather_haul()
+}
+
+fn own_for_player(app: &mut App, entities: &[Entity]) {
+    let swarm = common::spawn_swarm_at(app, Vec2::ZERO);
+    for entity in entities {
+        app.world_mut()
+            .entity_mut(*entity)
+            .insert(OwnerSwarm(swarm));
+    }
 }
 
 fn paint_corridor(app: &mut App, cell: IVec2, strength: u8) {
@@ -37,6 +46,7 @@ fn hauler_uses_route_system_without_corridor_paint() {
     let sink_pos = Vec2::new(3.5 * ZONE_BLOCK_SIZE, 0.0);
     let _source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
     let _sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
+    own_for_player(&mut app, &[_source, _sink]);
     let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
 
     app.update();
@@ -113,6 +123,7 @@ fn leg_selection_uses_corridor_biased_route_cost() {
     let source = common::spawn_stockpile(&mut app, hauler_pos, 1000, 1000);
     let near_sink = common::spawn_sink_stockpile(&mut app, near_sink_pos, 0, 1000);
     let corridor_sink = common::spawn_sink_stockpile(&mut app, corridor_sink_pos, 0, 1000);
+    own_for_player(&mut app, &[source, near_sink, corridor_sink]);
     let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
     paint_corridor(&mut app, IVec2::new(2, 0), PAINT_STRENGTH_CAP);
     paint_corridor(&mut app, IVec2::new(3, 0), PAINT_STRENGTH_CAP);
@@ -140,6 +151,7 @@ fn source_leg_route_can_take_physically_longer_corridor_detour() {
     let sink_pos = Vec2::new(3.5 * ZONE_BLOCK_SIZE, 0.0);
     let _source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
     let _sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
+    own_for_player(&mut app, &[_source, _sink]);
     let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
 
     for cell in [
@@ -173,6 +185,7 @@ fn route_stays_stable_after_corridor_paint_changes() {
     let sink_pos = Vec2::new(3.5 * ZONE_BLOCK_SIZE, 0.0);
     let _source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
     let _sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
+    own_for_player(&mut app, &[_source, _sink]);
     let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
 
     let cells = [
@@ -220,6 +233,7 @@ fn carry_leg_uses_corridor_biased_route_to_sink() {
     let sink_pos = Vec2::new(3.0 * ZONE_BLOCK_SIZE, 0.0);
     let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
     let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
+    own_for_player(&mut app, &[source, sink]);
     let hauler = common::spawn_hauler_at(&mut app, source_pos);
 
     for cell in [

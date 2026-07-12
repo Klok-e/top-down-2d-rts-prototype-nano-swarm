@@ -30,6 +30,8 @@ mod defender_spread;
 mod fill_indicators;
 mod harness;
 mod idle_spread;
+mod physical_logistics;
+mod production_ratio_panel;
 mod regional_allocation;
 mod smoke;
 mod world_space_nanobots;
@@ -65,6 +67,14 @@ fn main() -> std::process::ExitCode {
         Trial::test("fill_indicators", || run(fill_indicators::fill_indicators))
             .with_ignored_flag(true),
         Trial::test("smoke", || run(smoke::smoke)).with_ignored_flag(true),
+        Trial::test("physical_logistics", || {
+            run(physical_logistics::physical_logistics)
+        })
+        .with_ignored_flag(true),
+        Trial::test("production_ratio_panel", || {
+            run(production_ratio_panel::production_ratio_panel)
+        })
+        .with_ignored_flag(true),
         Trial::test("regional_allocation", || {
             run(regional_allocation::regional_allocation)
         })

@@ -9,10 +9,10 @@
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
-        NanobotType, ProductionFacility, ProductionRatio, SwarmId, PRODUCTION_COST_PER_BOT,
-        PRODUCTION_TICKS_PER_BOT,
+        production_facility_pick_target_system, NanobotType, OwnerSwarm, ProductionFacility,
+        ProductionRatio, SwarmBundle, SwarmId, PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT,
     },
-    resources::Stockpile,
+    resources::{ResourceKind, ResourceLedger, Stockpile},
 };
 
 #[path = "../common/mod.rs"]
@@ -162,6 +162,10 @@ fn facility_consumes_delivered_resources() {
     // A source stockpile right next to the facility must NOT
     // be drained: production reads only the facility input.
     let nearby = common::spawn_stockpile(&mut app, facility_pos, PRODUCTION_COST_PER_BOT * 2, 1000);
+    let ledger_before = app
+        .world()
+        .resource::<ResourceLedger>()
+        .total_for(SwarmId::PLAYER, ResourceKind::Minerals);
     let before = app
         .world()
         .entity(facility)
@@ -187,6 +191,13 @@ fn facility_consumes_delivered_resources() {
         nearby_state.amount,
         PRODUCTION_COST_PER_BOT * 2,
         "nearby stockpile must not be drained; production reads only the facility input"
+    );
+    assert_eq!(
+        world
+            .resource::<ResourceLedger>()
+            .total_for(SwarmId::PLAYER, ResourceKind::Minerals),
+        ledger_before - PRODUCTION_COST_PER_BOT,
+        "production removes consumed hopper material from owning swarm",
     );
 }
 
@@ -829,5 +840,53 @@ fn cold_start_facility_recovers_after_hopper_fills() {
         nanobot_count_by_type(app.world_mut(), NanobotType::Defender),
         1,
         "cold-start facility must recover once the hopper fills and produce the deficit Defender"
+    );
+}
+
+#[test]
+fn production_consumption_is_isolated_between_opponent_and_player_ledgers() {
+    let mut app = App::new();
+    let mut ratio = ProductionRatio::new();
+    ratio.set_weight(NanobotType::Worker, 1);
+    app.insert_resource(ratio)
+        .init_resource::<ResourceLedger>()
+        .add_systems(Update, production_facility_pick_target_system);
+    let player = app.world_mut().spawn(SwarmBundle::default()).id();
+    let opponent_id = SwarmId(2);
+    let opponent = app
+        .world_mut()
+        .spawn(SwarmBundle {
+            swarm_id: opponent_id,
+            ..default()
+        })
+        .id();
+    for owner in [player, opponent] {
+        let mut facility = ProductionFacility::new();
+        facility.input_amount = PRODUCTION_COST_PER_BOT;
+        app.world_mut().spawn((facility, OwnerSwarm(owner)));
+    }
+    app.world_mut().resource_mut::<ResourceLedger>().add_for(
+        SwarmId::PLAYER,
+        ResourceKind::Minerals,
+        PRODUCTION_COST_PER_BOT,
+    );
+    app.world_mut().resource_mut::<ResourceLedger>().add_for(
+        opponent_id,
+        ResourceKind::Minerals,
+        PRODUCTION_COST_PER_BOT,
+    );
+
+    app.update();
+
+    let ledger = app.world().resource::<ResourceLedger>();
+    assert_eq!(
+        ledger.total_for(SwarmId::PLAYER, ResourceKind::Minerals),
+        0,
+        "player cycle consumes only player material",
+    );
+    assert_eq!(
+        ledger.total_for(opponent_id, ResourceKind::Minerals),
+        0,
+        "opponent cycle consumes only opponent material",
     );
 }

@@ -79,7 +79,6 @@ struct SinkSnapshot {
 enum SourceRole {
     Source,
     Sink,
-    Any,
 }
 
 /// Consume independent projection dirtiness, include changed ECS work, then
@@ -101,11 +100,11 @@ pub fn project_actionable_opportunities_system(
         Entity,
         Ref<Stockpile>,
         Ref<Transform>,
-        Option<&StockpileRole>,
-        Option<&OwnerSwarm>,
+        Option<Ref<StockpileRole>>,
+        Option<Ref<OwnerSwarm>>,
     )>,
-    facilities: Query<(Entity, Ref<ProductionFacility>, Option<&OwnerSwarm>)>,
-    chargers: Query<(Entity, Ref<Charger>, Option<&OwnerSwarm>)>,
+    facilities: Query<(Entity, Ref<ProductionFacility>, Option<Ref<OwnerSwarm>>)>,
+    chargers: Query<(Entity, Ref<Charger>, Option<Ref<OwnerSwarm>>)>,
     swarms: Query<&SwarmId>,
     entities: Query<Entity>,
 ) {
@@ -161,18 +160,24 @@ pub fn project_actionable_opportunities_system(
     }
 
     let mut haul_sinks_changed = false;
-    for (_, stockpile, transform, _, _) in &stockpiles {
-        if stockpile.is_changed() || transform.is_changed() {
+    for (_, stockpile, transform, role, owner) in &stockpiles {
+        if stockpile.is_changed()
+            || transform.is_changed()
+            || role.as_ref().is_some_and(|role| role.is_changed())
+            || owner.as_ref().is_some_and(|owner| owner.is_changed())
+        {
             projection.invalidate_cell(crate::nanobot::world_to_cell(
                 transform.translation.truncate(),
             ));
             haul_sinks_changed = true;
         }
     }
-    haul_sinks_changed |= facilities
-        .iter()
-        .any(|(_, facility, _)| facility.is_changed());
-    haul_sinks_changed |= chargers.iter().any(|(_, charger, _)| charger.is_changed());
+    haul_sinks_changed |= facilities.iter().any(|(_, facility, owner)| {
+        facility.is_changed() || owner.as_ref().is_some_and(|owner| owner.is_changed())
+    });
+    haul_sinks_changed |= chargers.iter().any(|(_, charger, owner)| {
+        charger.is_changed() || owner.as_ref().is_some_and(|owner| owner.is_changed())
+    });
     if haul_sinks_changed {
         for (_, stockpile, transform, _, _) in &stockpiles {
             if stockpile.amount > 0 {
@@ -190,10 +195,10 @@ pub fn project_actionable_opportunities_system(
                 entity,
                 cell: crate::nanobot::world_to_cell(transform.translation.truncate()),
                 kind: stockpile.kind,
-                role: role.copied().unwrap_or_default(),
+                role: role.as_deref().copied().unwrap_or_default(),
                 amount: stockpile.amount,
                 free_space: stockpile.free_space(),
-                owner: resolve_owner(owner, &swarms)?,
+                owner: resolve_owner(owner.as_deref(), &swarms)?,
             })
         })
         .collect::<Vec<_>>();
@@ -213,7 +218,7 @@ pub fn project_actionable_opportunities_system(
             entity,
             kind: facility.input_kind,
             free_space: facility.input_free_space(),
-            owner: resolve_owner(owner, &swarms)?,
+            owner: resolve_owner(owner.as_deref(), &swarms)?,
             source_role: SourceRole::Sink,
         })
     }));
@@ -222,8 +227,8 @@ pub fn project_actionable_opportunities_system(
             entity,
             kind: charger.kind,
             free_space: charger.free_space(),
-            owner: resolve_owner(owner, &swarms)?,
-            source_role: SourceRole::Any,
+            owner: resolve_owner(owner.as_deref(), &swarms)?,
+            source_role: SourceRole::Sink,
         })
     }));
 
@@ -381,7 +386,8 @@ fn project_haul_work(
                 || source.kind != sink.kind
                 || sink.free_space == 0
                 || !source_role_matches(source.role, sink.source_role)
-                || !owners_compatible(source.owner, sink.owner)
+                || source.owner.is_none()
+                || source.owner != sink.owner
             {
                 continue;
             }
@@ -394,7 +400,7 @@ fn project_haul_work(
                     kind: source.kind,
                 },
                 cell: source.cell,
-                owner: source.owner.or(sink.owner),
+                owner: source.owner,
                 paint_strength: 0,
                 available_work: source.amount.min(sink.free_space),
             });
@@ -427,7 +433,6 @@ fn source_role_matches(role: StockpileRole, required: SourceRole) -> bool {
     match required {
         SourceRole::Source => role == StockpileRole::Source,
         SourceRole::Sink => role == StockpileRole::Sink,
-        SourceRole::Any => true,
     }
 }
 

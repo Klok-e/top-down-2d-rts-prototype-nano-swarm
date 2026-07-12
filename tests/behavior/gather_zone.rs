@@ -65,7 +65,8 @@ fn worker_extracts_one_unit_per_tick_when_at_deposit() {
         .entity_mut(worker)
         .insert(GatherAssignment::new(IVec2::new(0, 0), deposit));
 
-    app.update();
+    app.update(); // reserve exact deposit minerals and destination capacity
+    app.update(); // transfer first physical unit into Cargo
 
     let world = app.world();
     let deposit = world.entity(deposit).get::<ResourceDeposit>().unwrap();

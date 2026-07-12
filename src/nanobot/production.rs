@@ -640,18 +640,23 @@ pub fn production_facility_pick_target_system(
         // the owner's `SwarmId` rather than walking
         // children, because nanobots are top-level
         // entities.
-        let (ratio, counts): (&ProductionRatio, HashMap<NanobotType, u32>) = match owner {
-            Some(OwnerSwarm(swarm)) => {
-                let ratio = swarm_productions
-                    .get(*swarm)
-                    .map(|sp| &sp.ratio)
-                    .unwrap_or(&*global_ratio);
-                let swarm_id = swarms.get(*swarm).copied().unwrap_or(SwarmId::PLAYER);
-                let counts = count_swarm_nanobots_by_type(swarm_id, &nanobots);
-                (ratio, counts)
-            }
-            None => (&*global_ratio, count_nanobots_by_type(&nanobots)),
-        };
+        let (ratio, counts, owner_id): (&ProductionRatio, HashMap<NanobotType, u32>, SwarmId) =
+            match owner {
+                Some(OwnerSwarm(swarm)) => {
+                    let ratio = swarm_productions
+                        .get(*swarm)
+                        .map(|sp| &sp.ratio)
+                        .unwrap_or(&*global_ratio);
+                    let swarm_id = swarms.get(*swarm).copied().unwrap_or(SwarmId::PLAYER);
+                    let counts = count_swarm_nanobots_by_type(swarm_id, &nanobots);
+                    (ratio, counts, swarm_id)
+                }
+                None => (
+                    &*global_ratio,
+                    count_nanobots_by_type(&nanobots),
+                    SwarmId::PLAYER,
+                ),
+            };
 
         // Try the deficit priority; if the input hopper does
         // not hold a full production cost, block the type and
@@ -680,7 +685,7 @@ pub fn production_facility_pick_target_system(
         while let Some(kind) = pick_deficit_type(ratio, &counts, &facility.blocked_types) {
             if facility.input_amount >= PRODUCTION_COST_PER_BOT {
                 facility.input_amount -= PRODUCTION_COST_PER_BOT;
-                ledger.remove(facility.input_kind, PRODUCTION_COST_PER_BOT);
+                ledger.remove_for(owner_id, facility.input_kind, PRODUCTION_COST_PER_BOT);
                 facility.current_target = Some(kind);
                 facility.progress = 0;
                 picked = true;

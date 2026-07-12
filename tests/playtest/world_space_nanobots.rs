@@ -66,32 +66,26 @@ fn scripted_gather_bot_lands_at_deposit_world_position() {
     let _swarm = common::spawn_swarm_at(&mut app, player_pos);
     let _deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
     let _stockpile = common::spawn_stockpile(&mut app, deposit_pos + Vec2::new(96.0, 0.0), 0, 1000);
-    let _worker = common::spawn_worker_at(&mut app, player_pos);
+    let worker = common::spawn_worker_at(&mut app, player_pos);
     paint_gather(&mut app, deposit_cell);
 
-    // Drive the simulation long enough for the worker
-    // to walk to the deposit and start extracting.
-    // bot_speed = 5.0; the worker must walk 1024 units
-    // (from 256 to -768). At 5 units/tick, that's 205
-    // ticks. The deposit's physical radius is 32, so
-    // the worker stops at distance <= 32. The playtest
-    // uses 500 ticks to be robust against tiny tuning
-    // shifts.
+    // Drive until physical arrival starts extraction. Stop before worker
+    // begins its later Cargo trip toward Source Stockpile.
+    let mut arrived = false;
     for _ in 0..500 {
         app.update();
+        if app
+            .world()
+            .entity(worker)
+            .get::<top_down_2d_rts_prototype_nano_swarm::nanobot::ExtractProgress>()
+            .is_some()
+        {
+            arrived = true;
+            break;
+        }
     }
-
-    // Find the worker by type.
+    assert!(arrived, "worker must reach deposit and begin extraction");
     let world_mut = app.world_mut();
-    let worker = world_mut
-        .query::<(
-            Entity,
-            &top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotType,
-        )>()
-        .iter(world_mut)
-        .find(|(_, t)| **t == top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotType::Worker)
-        .map(|(e, _)| e)
-        .expect("worker must exist");
     let bot_pos = world_mut
         .entity(worker)
         .get::<Transform>()

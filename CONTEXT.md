@@ -33,7 +33,7 @@ An intent zone where nanobots hold and protect an area. Defenders spread across 
 _Avoid_: Fighter group, combat squad, attack zone
 
 **Stockpile**:
-A local resource buffer automatically created where sustained material flow is needed. Source stockpiles stage gathered resources near deposits; sink stockpiles in build zones feed production facilities and future base infrastructure. Chargers have their own terminal buffer and are fed by direct hauler delivery.
+A local resource buffer automatically created where sustained material flow is needed. Source stockpiles stage gathered resources near deposits; sink stockpiles stage minerals for terminal consumers. Terminal buffers receive minerals only through physical hauler delivery.
 _Avoid_: Deposit zone, global storage
 
 **Stockpile Capacity**:
@@ -45,16 +45,24 @@ A stockpile placed near a resource deposit to receive resources extracted by wor
 _Avoid_: Mining depot, deposit storage
 
 **Sink Stockpile**:
-A stockpile placed in a build zone near a production facility that stages material between hauler legs: it receives material from source stockpiles and is the hauler source that feeds the facility's own input buffer. It is not the facility itself.
+A shared stockpile placed in a build zone that stages material between hauler legs: it receives material from source stockpiles and may supply both production facilities and chargers through physical hauler transport. It is not a terminal buffer.
 _Avoid_: Global storage, base inventory, production facility hopper
 
 **Logistics Leg**:
 One directed hauler movement along the material chain: source stockpile to sink stockpile, or sink stockpile to a terminal. Legs are ranked downstream-first so terminals are fed before buffers are filled.
 _Avoid_: Transport step, conveyor segment
 
+**Logistics Reservation**:
+A carrying nanobot's temporary claim on source minerals and destination capacity for one resource movement. A reservation prevents competing assignments but never changes mineral custody, location, or quantity.
+_Avoid_: Resource transfer, inventory deduction, delivery
+
 **Charge**:
 A defender sustain resource restored by visiting chargers. Only defenders use charge. Low charge weakens defender attack and defense, then causes health loss if ignored too long. Defenders automatically rotate to working chargers when charge runs low; fresh defenders can replace them at the front.
 _Avoid_: Ammo, mana, stamina
+
+**Charger**:
+A terminal consumer resupplied from sink stockpiles with minerals physically carried by haulers. Its local mineral buffer restores defender charge; minerals remain in one visible custody state throughout stockpile loading, transit, delivery, and use.
+_Avoid_: Charge stockpile, instant resupply, resource sink
 
 **Terminal Consumer**:
 An end-of-chain structure that only receives material and never serves as a hauler source. Production facilities and chargers are terminals; stockpiles are not, even when a sink stockpile is the source for the next leg.
@@ -109,7 +117,7 @@ All valid player-painted intent can eventually attract eligible nanobots, even w
 _Avoid_: Local-only awareness, hidden command radius
 
 **Commitment**:
-A nanobot's tendency to finish its current short task before reconsidering player intent. Idle nanobots respond immediately, carrying nanobots usually finish delivery, and active workers usually finish a short work chunk before reassessing.
+A nanobot's tendency to finish its current short task before reconsidering player intent. Carrying nanobots complete a valid delivery, reroute when a destination becomes invalid, or physically return cargo to a compatible stockpile when no destination can receive it.
 _Avoid_: Instant retargeting, hard lock-in
 
 **Paint Strength**:
@@ -129,7 +137,7 @@ A nanobot type specialized for transporting resources between places where resou
 _Avoid_: Carrier, transporter
 
 **Resource Logistics**:
-Resources move physically through nanobots carrying them. Workers can move small amounts; haulers are primary transport capacity.
+Resources move physically through nanobots carrying them. Minerals remain swarm-owned while in cargo, so transport changes custody and location but not total quantity; consumption or destruction of a loaded nanobot removes minerals from the swarm.
 _Avoid_: Global stockpile, teleporting resources
 
 **Logistics Corridor**:

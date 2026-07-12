@@ -14,14 +14,18 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
+    ai::AiPlugin,
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
-        Charge, Charger, ChargerAssignment, ChargerProgress, DefendAssignment, DefendHold, Health,
-        Nanobot, PlannedKind, PlannedStructure, SoftWorkSlots, CHARGE_DRAIN_PER_TICK,
-        CHARGE_REFILL_PER_TICK, DEFENDER_BASE_ATTACK, DEFENDER_BASE_DEFENSE,
-        EMPTY_CHARGE_HEALTH_LOSS_PER_TICK, LOW_CHARGE_THRESHOLD, MAX_CHARGE,
-        NANOBOT_DEFAULT_MAX_HEALTH, WEAKENED_CHARGE_THRESHOLD,
+        defender_charger_work_system, nanobot_death_cleanup_system, Cargo, Charge, Charger,
+        ChargerAssignment, ChargerProgress, DefendAssignment, DefendHold, Health,
+        LogisticsReservation, Nanobot, NanobotBundle, NanobotPlugin, NanobotType, OwnerSwarm,
+        PlannedKind, PlannedStructure, SoftWorkSlots, SwarmBundle, SwarmId,
+        CHARGER_MATERIAL_DRAIN_PER_TICK, CHARGE_DRAIN_PER_TICK, CHARGE_REFILL_PER_TICK,
+        DEFENDER_BASE_ATTACK, DEFENDER_BASE_DEFENSE, EMPTY_CHARGE_HEALTH_LOSS_PER_TICK,
+        LOW_CHARGE_THRESHOLD, MAX_CHARGE, NANOBOT_DEFAULT_MAX_HEALTH, WEAKENED_CHARGE_THRESHOLD,
     },
+    resources::{ResourceKind, ResourceLedger},
 };
 
 #[path = "../common/mod.rs"]
@@ -721,13 +725,17 @@ fn hauler_delivers_minerals_to_a_charger_with_free_space() {
     // charger with zero amount, then asserts the hauler
     // routes to the charger and the charger's amount grows.
     let mut app = build_app();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let source_pos = Vec2::new(100.0, 0.0);
     let cell = IVec2::new(2, 0);
-    // Leg source: a source-role stockpile (deposits are
-    // worker-only under ADR-0005). The charger is the terminal
-    // sink; its source may be any stockpile with material.
-    let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
+    // Terminal leg source: a sink stockpile. Chargers cannot
+    // bypass shared staging by drawing from source stockpiles.
+    let source = common::spawn_sink_stockpile(&mut app, source_pos, 1000, 1000);
     let charger = common::spawn_charger_at(&mut app, cell, 0);
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
     let _hauler = common::spawn_hauler_at(&mut app, source_pos);
     // Paint a Defend cell so the charger auto-creation
     // system would not also create one (we have a manual
@@ -931,5 +939,140 @@ fn defender_charger_assignment_does_not_block_defend_reassignment() {
     assert!(
         world.entity(defender).get::<DefendHold>().is_none(),
         "defender with ChargerAssignment must not enter DefendHold"
+    );
+}
+
+#[test]
+fn charger_work_consumes_owning_swarm_resources() {
+    let mut app = App::new();
+    app.init_resource::<ResourceLedger>()
+        .add_systems(Update, defender_charger_work_system);
+    let swarm = app.world_mut().spawn(SwarmBundle::default()).id();
+    let mut charger_component = Charger::new(IVec2::ZERO);
+    charger_component.amount = 10;
+    let charger = app
+        .world_mut()
+        .spawn((charger_component, OwnerSwarm(swarm)))
+        .id();
+    app.world_mut().resource_mut::<ResourceLedger>().add_for(
+        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
+        ResourceKind::Minerals,
+        10,
+    );
+    let defender = app
+        .world_mut()
+        .spawn((
+            NanobotBundle {
+                nanobot_type: NanobotType::Defender,
+                ..default()
+            },
+            Charge {
+                current: 0.5,
+                max: MAX_CHARGE,
+            },
+            ChargerAssignment { charger },
+            ChargerProgress { charger },
+        ))
+        .id();
+
+    app.update();
+
+    assert_eq!(
+        app.world().entity(charger).get::<Charger>().unwrap().amount,
+        9
+    );
+    assert_eq!(
+        app.world().resource::<ResourceLedger>().total_for(
+            top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
+            ResourceKind::Minerals,
+        ),
+        10 - CHARGER_MATERIAL_DRAIN_PER_TICK,
+        "charger work removes consumed material from owning swarm",
+    );
+    assert!(app.world().get_entity(defender).is_ok());
+}
+
+#[test]
+fn loaded_nanobot_death_loses_exact_cargo_and_releases_reservation() {
+    let mut app = App::new();
+    app.init_resource::<ResourceLedger>()
+        .add_systems(Update, nanobot_death_cleanup_system);
+    let source = app.world_mut().spawn_empty().id();
+    let sink = app.world_mut().spawn_empty().id();
+    let cargo_amount = 7;
+    app.world_mut().resource_mut::<ResourceLedger>().add_for(
+        SwarmId::PLAYER,
+        ResourceKind::Minerals,
+        cargo_amount + 5,
+    );
+    let nanobot = app
+        .world_mut()
+        .spawn((
+            NanobotBundle {
+                nanobot_type: NanobotType::Hauler,
+                health: Health {
+                    current: 0,
+                    max: 100,
+                },
+                ..default()
+            },
+            Cargo {
+                kind: ResourceKind::Minerals,
+                amount: cargo_amount,
+            },
+            LogisticsReservation::new(source, sink, ResourceKind::Minerals, cargo_amount),
+        ))
+        .id();
+
+    app.update();
+
+    assert!(app.world().get_entity(nanobot).is_err());
+    assert_eq!(
+        app.world()
+            .resource::<ResourceLedger>()
+            .total_for(SwarmId::PLAYER, ResourceKind::Minerals),
+        5,
+        "death removes exact remaining cargo, not original reservation amount",
+    );
+    let mut reservations = app.world_mut().query::<&LogisticsReservation>();
+    assert_eq!(
+        reservations.iter(app.world()).count(),
+        0,
+        "death releases reservation before entity removal",
+    );
+}
+
+#[test]
+fn nanobot_plugin_cleans_dead_bot_after_ai_deferred_commands() {
+    let mut app = common::minimal_app();
+    app.add_plugins((NanobotPlugin::default(), AiPlugin));
+    let cargo_amount = 7;
+    app.world_mut().resource_mut::<ResourceLedger>().add_for(
+        SwarmId::PLAYER,
+        ResourceKind::Minerals,
+        cargo_amount,
+    );
+    let mut bundle = NanobotBundle::default();
+    bundle.health.current = 0;
+    let nanobot = app
+        .world_mut()
+        .spawn((
+            bundle,
+            Cargo {
+                kind: ResourceKind::Minerals,
+                amount: cargo_amount,
+            },
+            Transform::default(),
+        ))
+        .id();
+
+    app.update();
+
+    assert!(app.world().get_entity(nanobot).is_err());
+    assert_eq!(
+        app.world()
+            .resource::<ResourceLedger>()
+            .total_for(SwarmId::PLAYER, ResourceKind::Minerals),
+        0,
     );
 }

@@ -1,7 +1,8 @@
 //! Production ECS adapter for deterministic regional allocation.
 
-use std::collections::BTreeMap;
+use std::{cmp::Ordering, collections::BTreeMap};
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use super::{
@@ -13,12 +14,17 @@ use super::{
 use crate::{
     intent::IntentGrid,
     nanobot::{
-        planned_route_movement, ChargerAssignment, ChargerProgress, Commitment, DefendAssignment,
-        DefendHold, DirectMovementComponent, ExtractProgress, GatherAssignment, HaulerAssignment,
-        HaulerLoad, HaulerLoading, MaintenanceAssignment, MaintenanceProgress, Nanobot,
-        NanobotType, PlannedStructure, PlannedStructureClaim, PlannedStructureProgress,
-        ReturningToStockpile, SwarmId, SwarmMember, WorkerLoad, BUILDING_FOOTPRINT_RADIUS,
-        DEFEND_IN_CELL_STOP_RADIUS, HAULER_CARRY_CAPACITY, WORKER_CARRY_CAPACITY,
+        charge::{
+            minerals_to_fully_charge, Charge, Charger, ChargerAssignment, ChargerProgress,
+            LOW_CHARGE_THRESHOLD, WEAKENED_CHARGE_THRESHOLD,
+        },
+        hauler_route_cost, planned_route_movement, Commitment, DefendAssignment, DefendHold,
+        DirectMovementComponent, ExtractProgress, GatherAssignment, HaulerAssignment, HaulerLoad,
+        HaulerLoading, Health, LogisticsReservation, MaintenanceAssignment, MaintenanceProgress,
+        Nanobot, NanobotType, PlannedStructure, PlannedStructureClaim, PlannedStructureProgress,
+        ProductionFacility, ReturningToStockpile, SwarmId, SwarmMember, WorkerLoad,
+        BUILDING_FOOTPRINT_RADIUS, DEFEND_IN_CELL_STOP_RADIUS, HAULER_CARRY_CAPACITY,
+        PRODUCTION_COST_PER_BOT, WORKER_CARRY_CAPACITY,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile},
     ZONE_BLOCK_SIZE,
@@ -28,6 +34,21 @@ use crate::{
 pub const RUNTIME_MAX_CANDIDATE_REGIONS: usize = 16;
 /// Maximum exact opportunities examined for one nanobot acquisition.
 pub const RUNTIME_MAX_CANDIDATES: usize = 128;
+
+/// Allocation ticks waited before fairness promotes terminal urgency one tier.
+pub const TERMINAL_FAIRNESS_PROMOTION_TICKS: u32 = 8;
+
+/// Waiting age for terminal consumers with actionable Logistics Legs.
+#[derive(Debug, Default, Resource)]
+pub struct TerminalDemandAges {
+    waiting: BTreeMap<Entity, u32>,
+}
+
+impl TerminalDemandAges {
+    pub fn waiting_ticks(&self, terminal: Entity) -> u32 {
+        self.waiting.get(&terminal).copied().unwrap_or_default()
+    }
+}
 
 /// Runtime ordering points exposed to category lifecycle plugins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, SystemSet)]
@@ -62,6 +83,7 @@ impl Plugin for RegionalAllocationPlugin {
             .init_resource::<AllocationClock>()
             .init_resource::<RegionalLeaseConfig>()
             .init_resource::<AllocationTickDue>()
+            .init_resource::<TerminalDemandAges>()
             .configure_sets(
                 Update,
                 (
@@ -121,6 +143,24 @@ struct BotSnapshot {
     resume_pending: bool,
 }
 
+#[allow(clippy::type_complexity)]
+#[derive(SystemParam)]
+pub struct TerminalLogisticsParams<'w, 's> {
+    facilities: Query<'w, 's, (&'static ProductionFacility, &'static Transform)>,
+    chargers: Query<'w, 's, (&'static Charger, &'static Transform)>,
+    defenders: Query<
+        'w,
+        's,
+        (
+            &'static Charge,
+            Option<&'static Health>,
+            Option<&'static ChargerAssignment>,
+            Option<&'static ChargerProgress>,
+        ),
+    >,
+    ages: ResMut<'w, TerminalDemandAges>,
+}
+
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn regional_allocation_acquisition_system(
     mut commands: Commands,
@@ -139,6 +179,7 @@ pub fn regional_allocation_acquisition_system(
         With<Nanobot>,
     >,
     active_leases: Query<&RegionalLease>,
+    reservations: Query<&LogisticsReservation>,
     busy: Query<
         (),
         Or<(
@@ -163,13 +204,70 @@ pub fn regional_allocation_acquisition_system(
     mut planned: Query<(Entity, &mut PlannedStructure, &Transform)>,
     structures: Query<&Transform>,
     stockpiles: Query<(&Stockpile, &Transform)>,
+    mut terminal: TerminalLogisticsParams,
 ) {
+    let facilities = &terminal.facilities;
+    let chargers = &terminal.chargers;
+
     let mut claim_counts = BTreeMap::new();
     for lease in active_leases
         .iter()
         .filter(|lease| lease.counts_toward_capacity())
     {
         *claim_counts.entry(claim_key(lease.target)).or_insert(0) += 1;
+    }
+    let mut reserved_source = BTreeMap::<Entity, u32>::new();
+    let mut reserved_destination = BTreeMap::<Entity, u32>::new();
+    for reservation in &reservations {
+        *reserved_source.entry(reservation.source).or_default() += reservation.source_remaining;
+        *reserved_destination
+            .entry(reservation.destination)
+            .or_default() += reservation.destination_remaining;
+    }
+
+    let mut charger_demand = BTreeMap::<Entity, (u8, u32)>::new();
+    for (charge, health, assignment, progress) in &terminal.defenders {
+        let charger = progress
+            .map(|progress| progress.charger)
+            .or_else(|| assignment.map(|assignment| assignment.charger));
+        let Some(charger) = charger else {
+            continue;
+        };
+        let urgency =
+            if charge.is_empty() || health.is_some_and(|health| health.current < health.max) {
+                0
+            } else if charge.current < WEAKENED_CHARGE_THRESHOLD {
+                1
+            } else if charge.current <= LOW_CHARGE_THRESHOLD {
+                2
+            } else {
+                4
+            };
+        let entry = charger_demand.entry(charger).or_insert((urgency, 0));
+        entry.0 = entry.0.min(urgency);
+        entry.1 = entry
+            .1
+            .saturating_add(minerals_to_fully_charge(charge.current, charge.max));
+    }
+
+    let mut active_terminals = BTreeMap::new();
+    for (_, opportunities) in projection.iter_regions() {
+        for opportunity in opportunities {
+            let OpportunityTarget::Haul { sink, .. } = opportunity.target else {
+                continue;
+            };
+            if facilities.get(sink).is_ok() || chargers.get(sink).is_ok() {
+                active_terminals.insert(sink, ());
+            }
+        }
+    }
+    terminal
+        .ages
+        .waiting
+        .retain(|terminal, _| active_terminals.contains_key(terminal));
+    for terminal_entity in active_terminals.keys().copied() {
+        let age = terminal.ages.waiting.entry(terminal_entity).or_default();
+        *age = age.saturating_add(1);
     }
 
     let planned_workers = planned
@@ -277,30 +375,52 @@ pub fn regional_allocation_acquisition_system(
         let Some(ordered) = ordered_regions.get(&bot_key) else {
             continue;
         };
-        let decision = choose_bounded_candidate_from_ordered_regions_with_claims(
-            allocation_candidate(bot),
-            pull,
-            ordered.iter().copied(),
-            bounds,
-            |work| {
-                let claims = claim_counts
-                    .get(&claim_key(work.target))
-                    .copied()
-                    .unwrap_or(0);
-                if !target_available(
-                    bot,
-                    work,
-                    claims,
-                    &planned_workers,
-                    &deposits,
-                    &structures,
-                    &stockpiles,
-                ) {
-                    return None;
-                }
-                Some(claims)
-            },
-        );
+        let decision = if bot.kind == NanobotType::Hauler {
+            choose_terminal_logistics_work(
+                bot,
+                pull,
+                ordered,
+                bounds,
+                &stockpiles,
+                facilities,
+                chargers,
+                &grid,
+                &reserved_source,
+                &reserved_destination,
+                &charger_demand,
+                &terminal.ages,
+            )
+            .map(|opportunity| super::CandidateDecision {
+                opportunity,
+                regions_examined: 0,
+                candidates_examined: 0,
+            })
+        } else {
+            choose_bounded_candidate_from_ordered_regions_with_claims(
+                allocation_candidate(bot),
+                pull,
+                ordered.iter().copied(),
+                bounds,
+                |work| {
+                    let claims = claim_counts
+                        .get(&claim_key(work.target))
+                        .copied()
+                        .unwrap_or(0);
+                    if !target_available(
+                        bot,
+                        work,
+                        claims,
+                        &planned_workers,
+                        &deposits,
+                        &structures,
+                        &stockpiles,
+                    ) {
+                        return None;
+                    }
+                    Some(claims)
+                },
+            )
+        };
         let Some(work) = decision.map(|decision| decision.opportunity) else {
             if bot.resume_pending {
                 commands.entity(bot.entity).remove::<RegionalLease>();
@@ -317,8 +437,18 @@ pub fn regional_allocation_acquisition_system(
             &mut planned,
             &structures,
             &stockpiles,
+            facilities,
+            chargers,
+            &mut reserved_source,
+            &mut reserved_destination,
+            &charger_demand,
         ) {
             continue;
+        }
+        if let OpportunityTarget::Haul { sink, .. } = work.target {
+            if facilities.get(sink).is_ok() || chargers.get(sink).is_ok() {
+                terminal.ages.waiting.insert(sink, 0);
+            }
         }
         let lease = RegionalLease::new(
             work.region,
@@ -336,6 +466,146 @@ pub fn regional_allocation_acquisition_system(
             pull.categories.set(work.category, remaining);
         }
     }
+}
+
+#[derive(Clone, Copy)]
+struct TerminalLogisticsScore {
+    urgency: u8,
+    age_key: u32,
+    deficit_key: u64,
+    route_cost: f32,
+    terminal: u64,
+    source: u64,
+}
+
+impl TerminalLogisticsScore {
+    fn cmp(self, other: Self) -> Ordering {
+        self.urgency
+            .cmp(&other.urgency)
+            .then_with(|| self.age_key.cmp(&other.age_key))
+            .then_with(|| self.deficit_key.cmp(&other.deficit_key))
+            .then_with(|| self.route_cost.total_cmp(&other.route_cost))
+            .then_with(|| self.terminal.cmp(&other.terminal))
+            .then_with(|| self.source.cmp(&other.source))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn choose_terminal_logistics_work(
+    bot: BotSnapshot,
+    pull: super::RegionalPullBudget,
+    ordered: &[(AllocationRegion, &[ActionableOpportunity])],
+    bounds: CandidateBounds,
+    stockpiles: &Query<(&Stockpile, &Transform)>,
+    facilities: &Query<(&ProductionFacility, &Transform)>,
+    chargers: &Query<(&Charger, &Transform)>,
+    grid: &IntentGrid,
+    reserved_source: &BTreeMap<Entity, u32>,
+    reserved_destination: &BTreeMap<Entity, u32>,
+    charger_demand: &BTreeMap<Entity, (u8, u32)>,
+    ages: &TerminalDemandAges,
+) -> Option<ActionableOpportunity> {
+    if pull.categories.get(OpportunityCategory::Haul) == 0 {
+        return None;
+    }
+    let mut examined = 0;
+    let mut best: Option<(TerminalLogisticsScore, ActionableOpportunity)> = None;
+    for (_, opportunities) in ordered.iter().take(bounds.max_regions) {
+        for work in *opportunities {
+            if examined == bounds.max_candidates {
+                break;
+            }
+            examined += 1;
+            let OpportunityTarget::Haul { source, sink, .. } = work.target else {
+                continue;
+            };
+            if work.owner.is_some_and(|owner| owner != bot.swarm) {
+                continue;
+            }
+            let Ok((source_state, source_transform)) = stockpiles.get(source) else {
+                continue;
+            };
+            let source_available = source_state
+                .amount
+                .saturating_sub(reserved_source.get(&source).copied().unwrap_or_default());
+            let incoming = reserved_destination.get(&sink).copied().unwrap_or_default();
+            let (base_urgency, destination_available, deficit, capacity, sink_pos) =
+                if let Ok((facility, transform)) = facilities.get(sink) {
+                    let available = facility.input_free_space().saturating_sub(incoming);
+                    let amount = HAULER_CARRY_CAPACITY.min(source_available).min(available);
+                    let reaches_cycle = facility
+                        .input_amount
+                        .saturating_add(incoming)
+                        .saturating_add(amount)
+                        >= PRODUCTION_COST_PER_BOT;
+                    (
+                        if reaches_cycle { 3 } else { 4 },
+                        available,
+                        available,
+                        facility.input_capacity,
+                        transform.translation.truncate(),
+                    )
+                } else if let Ok((charger, transform)) = chargers.get(sink) {
+                    let available = charger.free_space().saturating_sub(incoming);
+                    let (emergency_urgency, total_need) =
+                        charger_demand.get(&sink).copied().unwrap_or((4, 0));
+                    let emergency_remaining = total_need
+                        .saturating_sub(charger.amount)
+                        .saturating_sub(incoming);
+                    let emergency = emergency_urgency < 4 && emergency_remaining > 0;
+                    (
+                        if emergency { emergency_urgency } else { 4 },
+                        if emergency {
+                            available.min(emergency_remaining)
+                        } else {
+                            available
+                        },
+                        available,
+                        charger.capacity,
+                        transform.translation.truncate(),
+                    )
+                } else if let Ok((stockpile, transform)) = stockpiles.get(sink) {
+                    let available = stockpile.free_space().saturating_sub(incoming);
+                    (
+                        5,
+                        available,
+                        available,
+                        stockpile.capacity,
+                        transform.translation.truncate(),
+                    )
+                } else {
+                    continue;
+                };
+            let amount = HAULER_CARRY_CAPACITY
+                .min(source_available)
+                .min(destination_available);
+            if amount == 0 {
+                continue;
+            }
+            let age = ages.waiting_ticks(sink);
+            let urgency =
+                base_urgency.saturating_sub((age / TERMINAL_FAIRNESS_PROMOTION_TICKS) as u8);
+            let deficit_ratio =
+                u64::from(deficit).saturating_mul(1_000_000) / u64::from(capacity.max(1));
+            let source_pos = source_transform.translation.truncate();
+            let score = TerminalLogisticsScore {
+                urgency,
+                age_key: u32::MAX - age,
+                deficit_key: u64::MAX - deficit_ratio,
+                route_cost: hauler_route_cost(bot.position, source_pos, grid, bot.swarm)
+                    + hauler_route_cost(source_pos, sink_pos, grid, bot.swarm),
+                terminal: sink.to_bits(),
+                source: source.to_bits(),
+            };
+            if best
+                .as_ref()
+                .is_none_or(|(current, _)| score.cmp(*current).is_lt())
+            {
+                best = Some((score, *work));
+            }
+        }
+    }
+    best.map(|(_, work)| work)
 }
 
 fn kind_index(kind: NanobotType) -> usize {
@@ -391,9 +661,9 @@ fn target_available(
             .is_some_and(|worker| worker.is_none() || *worker == Some(bot.entity.to_bits())),
         OpportunityTarget::Maintenance { structure } => structures.get(structure).is_ok(),
         OpportunityTarget::Defend { .. } => true,
-        OpportunityTarget::Haul { source, .. } => {
-            work.available_work >= HAULER_CARRY_CAPACITY && stockpiles.get(source).is_ok()
-        }
+        OpportunityTarget::Haul { source, .. } => stockpiles
+            .get(source)
+            .is_ok_and(|(stockpile, _)| stockpile.amount > 0 && work.available_work > 0),
     }
 }
 
@@ -417,6 +687,11 @@ fn adapt_decision(
     planned: &mut Query<(Entity, &mut PlannedStructure, &Transform)>,
     structures: &Query<&Transform>,
     stockpiles: &Query<(&Stockpile, &Transform)>,
+    facilities: &Query<(&ProductionFacility, &Transform)>,
+    chargers: &Query<(&Charger, &Transform)>,
+    reserved_source: &mut BTreeMap<Entity, u32>,
+    reserved_destination: &mut BTreeMap<Entity, u32>,
+    charger_demand: &BTreeMap<Entity, (u8, u32)>,
 ) -> bool {
     match work.target {
         OpportunityTarget::Gather { deposit, cell } => {
@@ -488,6 +763,36 @@ fn adapt_decision(
             let Ok((source_state, transform)) = stockpiles.get(source) else {
                 return false;
             };
+            let sink_free_space = stockpiles
+                .get(sink)
+                .map(|(stockpile, _)| stockpile.free_space())
+                .or_else(|_| {
+                    facilities
+                        .get(sink)
+                        .map(|(facility, _)| facility.input_free_space())
+                })
+                .or_else(|_| chargers.get(sink).map(|(charger, _)| charger.free_space()))
+                .unwrap_or(0);
+            let source_available = source_state
+                .amount
+                .saturating_sub(reserved_source.get(&source).copied().unwrap_or_default());
+            let incoming = reserved_destination.get(&sink).copied().unwrap_or_default();
+            let mut destination_available = sink_free_space.saturating_sub(incoming);
+            if let Ok((charger, _)) = chargers.get(sink) {
+                let (urgency, total_need) = charger_demand.get(&sink).copied().unwrap_or((4, 0));
+                let emergency_remaining = total_need
+                    .saturating_sub(charger.amount)
+                    .saturating_sub(incoming);
+                if urgency < 4 && emergency_remaining > 0 {
+                    destination_available = destination_available.min(emergency_remaining);
+                }
+            }
+            let amount = HAULER_CARRY_CAPACITY
+                .min(source_available)
+                .min(destination_available);
+            if amount == 0 {
+                return false;
+            }
             let (route, movement) = planned_route_movement(
                 bot.position,
                 transform.translation.truncate(),
@@ -497,9 +802,12 @@ fn adapt_decision(
             );
             commands.entity(bot.entity).insert((
                 HaulerAssignment { source, sink },
+                LogisticsReservation::new(source, sink, ResourceKind::Minerals, amount),
                 route,
                 movement,
             ));
+            *reserved_source.entry(source).or_default() += amount;
+            *reserved_destination.entry(sink).or_default() += amount;
         }
     }
     true
