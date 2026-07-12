@@ -105,7 +105,7 @@ Nanobots are aware of player-painted intent globally, but execute it through sim
 _Avoid_: Perfect allocator, smart commander AI
 
 **Global Intent Awareness**:
-All eligible nanobots can consider all player-painted intent zones. Response is weighted by paint strength, need, distance, type fit, and current commitments, so nearby or idle nanobots usually respond first.
+All valid player-painted intent can eventually attract eligible nanobots, even when no nanobot currently searches it directly. Awareness may be mediated through regional demand and bounded local decisions rather than every nanobot evaluating every intent cell. Response is weighted by paint strength, useful work, distance, type fit, and current commitments, so nearby or idle nanobots usually respond first.
 _Avoid_: Local-only awareness, hidden command radius
 
 **Commitment**:

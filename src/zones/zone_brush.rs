@@ -193,9 +193,9 @@ pub fn zone_brush_system(
     }
 }
 
-/// Drains dirty cells from [`IntentGrid`] and mirrors them into the
-/// [`ZoneMaterial`] GPU buffer. Pure data flow: the resource is the source of
-/// truth, the GPU buffer is a read-only render view.
+/// Drains render-dirty cells from [`IntentGrid`] and mirrors them into the
+/// [`ZoneMaterial`] GPU buffer. Projection dirty state remains available to
+/// simulation consumers.
 pub fn mirror_intent_to_zone_material_system(
     mut zone_mats: ResMut<Assets<ZoneMaterial>>,
     mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
@@ -205,7 +205,7 @@ pub fn mirror_intent_to_zone_material_system(
     let Ok(handle) = zone_handle.single() else {
         return;
     };
-    let dirty = intent_grid.drain_dirty();
+    let dirty = intent_grid.drain_render_dirty();
     if dirty.is_empty() {
         return;
     }

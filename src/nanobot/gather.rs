@@ -724,7 +724,6 @@ pub fn worker_gather_assignment_system(
 #[allow(clippy::type_complexity)]
 pub fn worker_gather_arrive_system(
     mut commands: Commands,
-    mut slots: ResMut<SoftWorkSlots>,
     workers: Query<
         (Entity, &Transform, &GatherAssignment, &SwarmMember),
         (
@@ -744,20 +743,19 @@ pub fn worker_gather_arrive_system(
         Option<&OwnerSwarm>,
     )>,
     swarms: Query<&SwarmId, With<Swarm>>,
+    planned_structures: Query<&PlannedStructure>,
 ) {
     for (entity, transform, assignment, swarm_member) in &workers {
         let Ok((deposit, deposit_transform)) = deposits.get(assignment.deposit) else {
             // Deposit is gone (e.g. consumed by a future system).
             // Release the slot and drop the assignment; the
             // Gather Zone stays painted.
-            slots.release(assignment.cell, IntentKind::Gather);
             commands.entity(entity).remove::<GatherAssignment>();
             continue;
         };
         if deposit.amount == 0 {
             // Deposit drained between assignment and arrival.
             // The Gather Zone stays painted; the worker idles.
-            slots.release(assignment.cell, IntentKind::Gather);
             commands.entity(entity).remove::<GatherAssignment>();
             continue;
         }
@@ -784,13 +782,16 @@ pub fn worker_gather_arrive_system(
             continue;
         }
         if !has_usable_built_source_stockpile(deposit_pos, swarm_member.0, &stockpiles, &swarms) {
-            // No usable built Source Stockpile. The demand
-            // system has already (or will) plan one. The
-            // planned structure's claim system will route a
-            // worker to build it; this worker stays put until
-            // the planned structure promotes to a real
-            // stockpile and the next tick's arrive check
-            // passes.
+            let support_plan_exists = planned_structures.iter().any(|planned| {
+                planned.cell == assignment.cell && planned.kind == PlannedKind::SourceStockpile
+            });
+            if support_plan_exists {
+                // Release Gather capacity so this Worker can build demanded support.
+                commands
+                    .entity(entity)
+                    .remove::<GatherAssignment>()
+                    .remove::<crate::nanobot::RegionalLease>();
+            }
             continue;
         }
         commands.entity(entity).insert(ExtractProgress::default());
@@ -804,44 +805,25 @@ pub fn worker_gather_arrive_system(
 #[allow(clippy::type_complexity)]
 pub fn worker_gather_extract_system(
     mut commands: Commands,
-    mut slots: ResMut<SoftWorkSlots>,
     mut workers: Query<(Entity, &mut ExtractProgress, &GatherAssignment), With<Nanobot>>,
     mut deposits: Query<&mut ResourceDeposit>,
     mut ledger: ResMut<ResourceLedger>,
 ) {
     for (entity, mut progress, assignment) in &mut workers {
         let Ok(mut deposit) = deposits.get_mut(assignment.deposit) else {
-            transition_to_carrying(
-                &mut commands,
-                entity,
-                assignment.cell,
-                progress.collected,
-                &mut slots,
-            );
+            transition_to_carrying(&mut commands, entity, progress.collected);
             continue;
         };
         if deposit.amount == 0 {
             // A partial load is still useful; carry it to a
             // stockpile rather than abandoning it.
-            transition_to_carrying(
-                &mut commands,
-                entity,
-                assignment.cell,
-                progress.collected,
-                &mut slots,
-            );
+            transition_to_carrying(&mut commands, entity, progress.collected);
             continue;
         }
         if progress.collected >= WORKER_CARRY_CAPACITY {
             // Small load cap; transition even if the deposit
             // still has resources.
-            transition_to_carrying(
-                &mut commands,
-                entity,
-                assignment.cell,
-                progress.collected,
-                &mut slots,
-            );
+            transition_to_carrying(&mut commands, entity, progress.collected);
             continue;
         }
 
@@ -853,14 +835,7 @@ pub fn worker_gather_extract_system(
     }
 }
 
-fn transition_to_carrying(
-    commands: &mut Commands,
-    entity: Entity,
-    cell: IVec2,
-    amount: u32,
-    slots: &mut ResMut<SoftWorkSlots>,
-) {
-    slots.release(cell, IntentKind::Gather);
+fn transition_to_carrying(commands: &mut Commands, entity: Entity, amount: u32) {
     commands
         .entity(entity)
         .remove::<ExtractProgress>()
@@ -1013,7 +988,6 @@ impl Plugin for GatherPlugin {
         app.add_systems(
             Update,
             (
-                worker_gather_assignment_system,
                 source_stockpile_demand_system,
                 worker_gather_arrive_system,
                 worker_gather_extract_system,
@@ -1021,6 +995,7 @@ impl Plugin for GatherPlugin {
                 worker_gather_delivery_system,
             )
                 .chain()
+                .after(crate::nanobot::RegionalAllocationSet::Acquire)
                 .after(crate::nanobot::move_velocity_system),
         );
     }

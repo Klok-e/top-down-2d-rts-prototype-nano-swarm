@@ -1,3 +1,4 @@
+pub mod allocation;
 mod autonomy;
 mod build;
 mod charge;
@@ -6,7 +7,6 @@ mod components;
 mod consts;
 mod debug;
 mod defend;
-mod demand;
 mod gather;
 mod haul;
 mod logistics_leg;
@@ -21,6 +21,7 @@ mod spatial_pressure;
 mod spread;
 mod sprites;
 
+pub use allocation::*;
 pub use autonomy::*;
 pub use build::*;
 pub use charge::*;
@@ -29,7 +30,6 @@ pub use components::*;
 pub use consts::*;
 pub use debug::*;
 pub use defend::*;
-pub use demand::*;
 pub use gather::*;
 pub use haul::*;
 pub use maintenance::*;

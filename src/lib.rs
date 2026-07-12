@@ -7,6 +7,7 @@ pub mod materials;
 pub mod nanobot;
 pub mod resources;
 pub mod scenario;
+pub mod spatial;
 pub mod structure_overlay;
 pub mod structure_sprites;
 pub mod tactical_overlay;
@@ -28,7 +29,8 @@ use game_settings::GameSettings;
 use intent::IntentGrid;
 use materials::BackgroundMaterial;
 use nanobot::{
-    CentralDemandPlugin, CollapsePlugin, NanobotPlugin, PlannedStructurePlugin, ProductionPlugin,
+    CollapsePlugin, NanobotPlugin, PlannedStructurePlugin, ProductionPlugin,
+    RegionalAllocationPlugin,
 };
 use resources::ResourceLedger;
 use structure_overlay::StructureOverlayPlugin;
@@ -76,7 +78,6 @@ pub fn build_app() -> App {
     app.insert_resource(IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32))
         .init_resource::<ResourceLedger>()
         .insert_resource(scenario::default_player_ratio())
-        .init_resource::<nanobot::SoftWorkSlots>()
         .init_resource::<nanobot::OpponentSwarmIdAlloc>()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(primary_window_config()),
@@ -142,13 +143,6 @@ pub fn build_app() -> App {
         // DirectMovementComponent, the same signal the rest of
         // the per-role systems use.
         .add_plugins(nanobot::DefendPlugin)
-        // CentralDemandPlugin runs after `move_velocity_system`
-        // and before the per-category assignment systems so the
-        // first allocation of an idle nanobot flows through the
-        // central allocator's Minimum Category Activation path
-        // rather than through the per-category "steal a worker"
-        // path (issue #35).
-        .add_plugins(CentralDemandPlugin)
         // ChargePlugin chains after `move_velocity_system`
         // and after DefendPlugin so the defend hold is
         // established before the rotation system releases it.
@@ -156,6 +150,8 @@ pub fn build_app() -> App {
         // auto-creation -> rotation -> arrive -> work) keeps
         // the charge loop self-consistent per tick.
         .add_plugins(nanobot::ChargePlugin)
+        // Single allocator for Gather, Planned Build, Maintenance, Defend, and Haul.
+        .add_plugins(RegionalAllocationPlugin)
         // StructureOverlayPlugin is a consumer of the
         // simulation's per-structure state. It registers
         // its spawn/update/visibility/cleanup systems on

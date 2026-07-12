@@ -4,6 +4,8 @@
 mod intent_layer_flow;
 #[path = "playtest/mouse_zone_painting.rs"]
 mod mouse_zone_painting;
+#[path = "playtest/regional_allocation.rs"]
+mod regional_allocation;
 #[path = "playtest/world_space_nanobots.rs"]
 mod world_space_nanobots;
 #[path = "playtest/zone_shader_compiles.rs"]

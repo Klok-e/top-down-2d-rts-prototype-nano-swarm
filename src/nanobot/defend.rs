@@ -639,7 +639,6 @@ pub fn defender_arrive_system(
 #[allow(clippy::type_complexity)]
 pub fn defender_hold_system(
     mut commands: Commands,
-    mut slots: ResMut<SoftWorkSlots>,
     grid: Res<IntentGrid>,
     defenders: Query<
         (Entity, &DefendHold, &Transform, &NanobotType),
@@ -664,7 +663,6 @@ pub fn defender_hold_system(
             .cell(hold.cell)
             .is_some_and(|cell| cell.has(IntentKind::Defend));
         if !still_painted {
-            slots.release(hold.cell, IntentKind::Defend);
             commands.entity(entity).remove::<DefendHold>();
             continue;
         }
@@ -701,11 +699,11 @@ impl Plugin for DefendPlugin {
             Update,
             (
                 cell_density_system,
-                defender_assignment_system,
                 defender_arrive_system,
                 defender_hold_system,
             )
                 .chain()
+                .after(crate::nanobot::RegionalAllocationSet::Acquire)
                 .after(crate::nanobot::move_velocity_system),
         );
     }

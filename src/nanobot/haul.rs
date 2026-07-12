@@ -160,7 +160,7 @@ fn route_waypoints_or_direct(
         .unwrap_or_else(|| vec![end])
 }
 
-fn planned_route_movement(
+pub(crate) fn planned_route_movement(
     start: Vec2,
     end: Vec2,
     grid: &IntentGrid,
@@ -738,7 +738,6 @@ impl Plugin for HaulPlugin {
         app.add_systems(
             Update,
             (
-                hauler_assignment_system,
                 hauler_arrive_source_system,
                 hauler_load_system,
                 hauler_carry_assign_system,
@@ -746,6 +745,7 @@ impl Plugin for HaulPlugin {
                 hauler_route_follow_system,
             )
                 .chain()
+                .after(crate::nanobot::RegionalAllocationSet::Acquire)
                 .after(crate::nanobot::move_velocity_system),
         );
     }

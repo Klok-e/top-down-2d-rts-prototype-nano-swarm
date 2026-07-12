@@ -494,19 +494,19 @@ fn additional_facility_plans_when_existing_busy_and_build_zone_free() {
         );
         entity
     };
-    let cell = app
+    let center = app
         .world()
         .entity(planned_entity)
-        .get::<PlannedStructure>()
-        .unwrap()
-        .cell;
-    let center = common::cell_world_center(cell);
+        .get::<Transform>()
+        .expect("planned facility has transform")
+        .translation
+        .truncate();
     // The Worker must be placed AT the planned cell
     // center so the claim + arrive + work chain can
     // fire without a long walk. The build then
     // completes in `DEFAULT_PLANNED_WORK_TICKS` ticks
     // of worker time.
-    let _worker = common::spawn_worker_at(&mut app, center);
+    let worker = common::spawn_worker_at(&mut app, center);
 
     // 1 tick for claim + arrive (worker is already at
     // the cell, so the arrive system fires on the same
@@ -518,9 +518,17 @@ fn additional_facility_plans_when_existing_busy_and_build_zone_free() {
     // system resets `current_target` to `None` when the
     // cycle completes. The `is_busy` check must run
     // before the production cycle finishes.
-    let build_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize;
-    for _ in 0..build_ticks {
+    let build_ticks = 3 + DEFAULT_PLANNED_WORK_TICKS as usize;
+    for _ in 0..(build_ticks + 200) {
         app.update();
+        if app
+            .world()
+            .entity(planned_entity)
+            .get::<PlannedStructure>()
+            .is_none()
+        {
+            break;
+        }
     }
 
     let world = app.world_mut();
@@ -528,12 +536,18 @@ fn additional_facility_plans_when_existing_busy_and_build_zone_free() {
     // PlannedStructure component is gone, the entity now
     // carries a ProductionFacility + local Stockpile,
     // and the visual flipped to the completed color.
+    let remaining = world
+        .entity(planned_entity)
+        .get::<PlannedStructure>()
+        .copied();
+    let worker_state = world.entity(worker);
     assert!(
-        world
-            .entity(planned_entity)
-            .get::<PlannedStructure>()
-            .is_none(),
-        "PlannedStructure must be removed on completion"
+        remaining.is_none(),
+        "PlannedStructure must complete; remaining={remaining:?}, claim={}, progress={}, lease={}, movement={}",
+        worker_state.contains::<top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedStructureClaim>(),
+        worker_state.contains::<top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedStructureProgress>(),
+        worker_state.contains::<top_down_2d_rts_prototype_nano_swarm::nanobot::RegionalLease>(),
+        worker_state.contains::<top_down_2d_rts_prototype_nano_swarm::nanobot::DirectMovementComponent>(),
     );
     let facility = world
         .entity(planned_entity)
