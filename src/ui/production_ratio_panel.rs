@@ -1,13 +1,8 @@
-//! Right-side Production Ratio UI (issue #32).
+//! Right-side production-ratio UI.
 //!
-//! Three independent `+` / `-` sliders (Worker / Hauler /
-//! Defender) on a panel that is always visible during
-//! gameplay. Clicks mutate the global [`ProductionRatio`]
-//! resource; the displayed percentages are `weight /
-//! total_weight * 100`, rounded. The "total cannot become
-//! zero" invariant is enforced by
-//! [`ProductionRatio::try_change_weight`], so a rejected
-//! change is silent in the UI.
+//! Worker, Hauler, and Defender occupy one fixed 100% bar. Two handles edit
+//! cumulative boundaries in 5% steps; target labels and player composition
+//! ticks keep desired and observed mixes visible together.
 
 use bevy::prelude::*;
 use bevy::ui::{
@@ -15,53 +10,51 @@ use bevy::ui::{
     UiRect, Val,
 };
 
-use crate::nanobot::{NanobotType, ProductionRatio};
+use crate::nanobot::{Nanobot, NanobotType, ProductionRatio, SwarmId, SwarmMember};
 
 use super::ui_setup::FontsResource;
 
-/// Marker for the panel root entity. Click and update
-/// systems only touch descendants of this root, so a stray
-/// button in another system cannot drive the global
-/// [`ProductionRatio`].
 #[derive(Debug, Component)]
 pub struct ProductionRatioPanelRoot;
 
+#[derive(Debug, Component)]
+pub struct ProductionRatioTrack;
+
 #[derive(Debug, Component, Clone, Copy, PartialEq, Eq)]
-pub enum SliderDirection {
-    Increase,
-    Decrease,
-}
+pub struct ProductionRatioHandle(pub HandleBoundary);
 
-/// Marker for a single `+` / `-` button.
 #[derive(Debug, Component, Clone, Copy)]
-pub struct ProductionRatioSlider {
-    pub kind: NanobotType,
-    pub direction: SliderDirection,
-}
+pub struct ProductionRatioSegment(pub NanobotType);
 
-/// Marker for the value-text label of one row.
 #[derive(Debug, Component, Clone, Copy)]
-pub struct ProductionRatioValueText {
-    pub kind: NanobotType,
+pub struct ProductionRatioValueText(pub NanobotType);
+
+#[derive(Debug, Component, Clone, Copy)]
+pub struct ActualCompositionTick(pub HandleBoundary);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandleBoundary {
+    WorkerEnd,
+    HaulerEnd,
 }
 
-/// Slider step in weight units. Issue #32 acceptance:
-/// "Slider step size is 5."
-pub const SLIDER_STEP: i32 = 5;
+#[derive(Debug, Default, Resource)]
+pub struct ProductionRatioDragState {
+    active: Option<HandleBoundary>,
+}
 
-/// Panel layout constants. Public so the layout can be
-/// asserted from tests / screenshot scripts.
+pub const SNAP_STEP: u32 = 5;
 pub const PANEL_TOP: f32 = 8.0;
 pub const PANEL_RIGHT: f32 = 8.0;
-pub const PANEL_WIDTH: f32 = 220.0;
+pub const PANEL_WIDTH: f32 = 240.0;
 pub const PANEL_PADDING: f32 = 10.0;
-pub const PANEL_FONT_SIZE: f32 = 16.0;
+pub const PANEL_FONT_SIZE: f32 = 14.0;
 pub const PANEL_TITLE_FONT_SIZE: f32 = 18.0;
-pub const PANEL_GAP: f32 = 6.0;
-pub const BUTTON_PADDING_X: f32 = 10.0;
-pub const BUTTON_PADDING_Y: f32 = 4.0;
+pub const PANEL_GAP: f32 = 7.0;
+pub const TRACK_HEIGHT: f32 = 22.0;
+pub const HANDLE_WIDTH: f32 = 8.0;
 
-fn type_label_color(kind: NanobotType) -> Color {
+fn type_color(kind: NanobotType) -> Color {
     match kind {
         NanobotType::Worker => Color::srgb(0.85, 0.65, 0.30),
         NanobotType::Hauler => Color::srgb(0.30, 0.75, 0.85),
@@ -77,85 +70,65 @@ fn type_label(kind: NanobotType) -> &'static str {
     }
 }
 
-fn row_node() -> Node {
-    Node {
-        flex_direction: FlexDirection::Row,
-        align_items: AlignItems::Center,
-        column_gap: Val::Px(PANEL_GAP),
-        ..default()
+fn snap_percent(value: f32) -> u32 {
+    ((value.clamp(0.0, 100.0) / SNAP_STEP as f32).round() as u32 * SNAP_STEP).min(100)
+}
+
+fn track_percent_from_normalized_x(normalized_x: f32) -> f32 {
+    // Bevy reports node-relative coordinates from -0.5 at the left edge to
+    // 0.5 at the right edge.
+    (normalized_x + 0.5).clamp(0.0, 1.0) * 100.0
+}
+
+fn clamp_boundary(
+    boundary: HandleBoundary,
+    proposed: u32,
+    worker_end: u32,
+    hauler_end: u32,
+) -> u32 {
+    match boundary {
+        HandleBoundary::WorkerEnd => proposed.min(hauler_end),
+        HandleBoundary::HaulerEnd => proposed.max(worker_end).min(100),
     }
 }
 
-fn slider_button_node() -> Node {
-    Node {
-        padding: UiRect {
-            left: Val::Px(BUTTON_PADDING_X),
-            right: Val::Px(BUTTON_PADDING_X),
-            top: Val::Px(BUTTON_PADDING_Y),
-            bottom: Val::Px(BUTTON_PADDING_Y),
-        },
-        border: UiRect::all(Val::Px(1.0)),
-        border_radius: BorderRadius::all(Val::Px(4.0)),
-        justify_content: JustifyContent::Center,
-        align_items: AlignItems::Center,
-        min_width: Val::Px(24.0),
-        ..default()
+fn boundaries_from_ratio(ratio: &ProductionRatio) -> (u32, u32) {
+    let total = ratio.total_weight();
+    if total == 0 {
+        return (0, 0);
+    }
+    let worker = snap_percent(ratio.weight(NanobotType::Worker) as f32 * 100.0 / total as f32);
+    let hauler_end = snap_percent(
+        (ratio.weight(NanobotType::Worker) + ratio.weight(NanobotType::Hauler)) as f32 * 100.0
+            / total as f32,
+    );
+    (worker.min(hauler_end), hauler_end)
+}
+
+fn write_boundaries(ratio: &mut ProductionRatio, worker_end: u32, hauler_end: u32) {
+    ratio.set_weight(NanobotType::Worker, worker_end);
+    ratio.set_weight(NanobotType::Hauler, hauler_end - worker_end);
+    ratio.set_weight(NanobotType::Defender, 100 - hauler_end);
+}
+
+fn handle_offset(boundary: HandleBoundary, coincident: bool) -> f32 {
+    if coincident {
+        match boundary {
+            HandleBoundary::WorkerEnd => -HANDLE_WIDTH,
+            HandleBoundary::HaulerEnd => 0.0,
+        }
+    } else {
+        -HANDLE_WIDTH / 2.0
     }
 }
 
-fn slider_button_bundle(
-    slider: ProductionRatioSlider,
-    glyph: &str,
-    font: Handle<Font>,
-) -> impl Bundle {
-    (
-        Button,
-        slider,
-        BackgroundColor(Color::srgb(0.20, 0.20, 0.22)),
-        BorderColor::all(Color::srgb(0.30, 0.30, 0.30)),
-        // `check_ui_interaction` (the brush's UI-capture gate)
-        // queries `RelativeCursorPosition`; without it a slider
-        // button under the cursor is invisible to that system, so
-        // `is_pointer_over_ui` stays false and the world brush
-        // paints through the panel on a `+` / `-` click. Mirrors
-        // the intent-layer button wiring.
-        RelativeCursorPosition::default(),
-        slider_button_node(),
-        Text::new(glyph),
-        TextFont {
-            font,
-            font_size: PANEL_FONT_SIZE,
-            ..default()
-        },
-        TextColor(Color::WHITE),
-    )
-}
-
-fn value_text_bundle(kind: NanobotType, percent: u32, font: Handle<Font>) -> impl Bundle {
-    (
-        Text::new(format!("{percent}%")),
-        TextFont {
-            font,
-            font_size: PANEL_FONT_SIZE,
-            ..default()
-        },
-        TextColor(Color::WHITE),
-        ProductionRatioValueText { kind },
-        Node {
-            min_width: Val::Px(48.0),
-            justify_content: JustifyContent::Center,
-            ..default()
-        },
-    )
-}
-
-/// Spawn the right-side Production Ratio panel. Always
-/// visible during gameplay, anchored top-right so it does
-/// not conflict with the top intent-layer panel or the
-/// left status panel.
-pub fn setup_production_ratio_panel(mut commands: Commands, fonts: Res<FontsResource>) {
+pub fn setup_production_ratio_panel(
+    mut commands: Commands,
+    fonts: Res<FontsResource>,
+    ratio: Res<ProductionRatio>,
+) {
     let font = fonts.font.clone();
-    let initial = ProductionRatio::default();
+    let (worker_end, hauler_end) = boundaries_from_ratio(&ratio);
 
     commands
         .spawn((
@@ -174,8 +147,8 @@ pub fn setup_production_ratio_panel(mut commands: Commands, fonts: Res<FontsReso
             BackgroundColor(Color::srgba(0.03, 0.04, 0.05, 0.78)),
             ProductionRatioPanelRoot,
         ))
-        .with_children(|parent| {
-            parent.spawn((
+        .with_children(|panel| {
+            panel.spawn((
                 Text::new("Production Ratio"),
                 TextFont {
                     font: font.clone(),
@@ -183,106 +156,210 @@ pub fn setup_production_ratio_panel(mut commands: Commands, fonts: Res<FontsReso
                     ..default()
                 },
                 TextColor(Color::WHITE),
-                Node {
-                    margin: UiRect::bottom(Val::Px(2.0)),
-                    ..default()
-                },
             ));
-            // Order is the stable glossary order so the
-            // panel always reads Worker / Hauler / Defender
-            // top to bottom.
-            for kind in NanobotType::ALL {
-                parent.spawn(row_node()).with_children(|row| {
-                    row.spawn((
-                        Text::new(type_label(kind)),
-                        TextFont {
-                            font: font.clone(),
-                            font_size: PANEL_FONT_SIZE,
-                            ..default()
-                        },
-                        TextColor(type_label_color(kind)),
-                        Node {
-                            flex_grow: 1.0,
-                            ..default()
-                        },
-                    ));
-                    row.spawn(slider_button_bundle(
-                        ProductionRatioSlider {
-                            kind,
-                            direction: SliderDirection::Decrease,
-                        },
-                        "-",
-                        font.clone(),
-                    ));
-                    row.spawn(value_text_bundle(
-                        kind,
-                        initial.percentage(kind),
-                        font.clone(),
-                    ));
-                    row.spawn(slider_button_bundle(
-                        ProductionRatioSlider {
-                            kind,
-                            direction: SliderDirection::Increase,
-                        },
-                        "+",
-                        font.clone(),
-                    ));
+
+            panel
+                .spawn((
+                    ProductionRatioTrack,
+                    RelativeCursorPosition::default(),
+                    Node {
+                        position_type: PositionType::Relative,
+                        width: Val::Percent(100.0),
+                        height: Val::Px(TRACK_HEIGHT),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.12, 0.12, 0.14)),
+                ))
+                .with_children(|track| {
+                    let starts = [0, worker_end, hauler_end];
+                    let ends = [worker_end, hauler_end, 100];
+                    for ((kind, start), end) in NanobotType::ALL.into_iter().zip(starts).zip(ends) {
+                        track.spawn((
+                            ProductionRatioSegment(kind),
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: Val::Percent(start as f32),
+                                width: Val::Percent((end - start) as f32),
+                                height: Val::Percent(100.0),
+                                ..default()
+                            },
+                            BackgroundColor(type_color(kind)),
+                        ));
+                    }
+                    for (boundary, percent) in [
+                        (HandleBoundary::WorkerEnd, worker_end),
+                        (HandleBoundary::HaulerEnd, hauler_end),
+                    ] {
+                        track.spawn((
+                            ProductionRatioHandle(boundary),
+                            RelativeCursorPosition::default(),
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: Val::Percent(percent as f32),
+                                width: Val::Px(HANDLE_WIDTH),
+                                height: Val::Px(TRACK_HEIGHT),
+                                margin: UiRect::left(Val::Px(handle_offset(
+                                    boundary,
+                                    worker_end == hauler_end,
+                                ))),
+                                border: UiRect::all(Val::Px(1.0)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::WHITE),
+                            BorderColor::all(Color::BLACK),
+                        ));
+                    }
+                    for boundary in [HandleBoundary::WorkerEnd, HandleBoundary::HaulerEnd] {
+                        track.spawn((
+                            ActualCompositionTick(boundary),
+                            Visibility::Hidden,
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: Val::Percent(0.0),
+                                bottom: Val::Px(-4.0),
+                                width: Val::Px(2.0),
+                                height: Val::Px(TRACK_HEIGHT + 8.0),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgb(1.0, 0.25, 0.25)),
+                        ));
+                    }
                 });
-            }
+
+            panel
+                .spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    justify_content: JustifyContent::SpaceBetween,
+                    align_items: AlignItems::Center,
+                    ..default()
+                })
+                .with_children(|labels| {
+                    for kind in NanobotType::ALL {
+                        labels.spawn((
+                            ProductionRatioValueText(kind),
+                            Text::new(format!("{} {}%", type_label(kind), ratio.percentage(kind))),
+                            TextFont {
+                                font: font.clone(),
+                                font_size: PANEL_FONT_SIZE,
+                                ..default()
+                            },
+                            TextColor(type_color(kind)),
+                        ));
+                    }
+                });
         });
 }
 
-/// On `Interaction::Pressed` for a slider button, mutate
-/// the global [`ProductionRatio`] by [`SLIDER_STEP`] in the
-/// button's direction. Only buttons that are descendants
-/// of the panel root can drive the ratio.
-///
-/// Uses the same `Changed<Interaction>` filter as the
-/// layer-panel click system, so each press drives one
-/// change and a held button does not auto-repeat.
-#[allow(clippy::type_complexity)]
-pub fn production_ratio_slider_click_system(
+pub fn production_ratio_drag_system(
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut drag: ResMut<ProductionRatioDragState>,
+    track: Single<&RelativeCursorPosition, With<ProductionRatioTrack>>,
+    handles: Query<(&ProductionRatioHandle, &RelativeCursorPosition)>,
     mut ratio: ResMut<ProductionRatio>,
-    panel_root_query: Query<Entity, With<ProductionRatioPanelRoot>>,
-    children_query: Query<&Children>,
-    buttons: Query<
-        (Entity, &Interaction, &ProductionRatioSlider),
-        (Changed<Interaction>, With<Button>),
-    >,
 ) {
-    let Ok(panel_root) = panel_root_query.single() else {
+    if mouse.just_released(MouseButton::Left) || !mouse.pressed(MouseButton::Left) {
+        drag.active = None;
+        return;
+    }
+    if mouse.just_pressed(MouseButton::Left) {
+        drag.active = handles
+            .iter()
+            .filter(|(_, cursor)| cursor.cursor_over())
+            .map(|(handle, _)| handle.0)
+            .next();
+    }
+    let Some(active) = drag.active else {
         return;
     };
-    let panel_descendants: std::collections::HashSet<Entity> =
-        children_query.iter_descendants(panel_root).collect();
-
-    for (entity, interaction, slider) in &buttons {
-        if *interaction != Interaction::Pressed {
-            continue;
-        }
-        if !panel_descendants.contains(&entity) {
-            continue;
-        }
-        let delta = match slider.direction {
-            SliderDirection::Increase => SLIDER_STEP,
-            SliderDirection::Decrease => -SLIDER_STEP,
-        };
-        ratio.try_change_weight(slider.kind, delta);
-    }
+    let Some(position) = track.normalized else {
+        return;
+    };
+    let (worker_end, hauler_end) = boundaries_from_ratio(&ratio);
+    let snapped = snap_percent(track_percent_from_normalized_x(position.x));
+    let value = clamp_boundary(active, snapped, worker_end, hauler_end);
+    let (new_worker, new_hauler) = match active {
+        HandleBoundary::WorkerEnd => (value, hauler_end),
+        HandleBoundary::HaulerEnd => (worker_end, value),
+    };
+    write_boundaries(&mut ratio, new_worker, new_hauler);
 }
 
-/// Refresh the percentage labels whenever [`ProductionRatio`]
-/// changes. The `is_changed` gate means the system is a
-/// no-op on ticks where the player did not move a slider.
-pub fn update_production_ratio_value_texts(
+#[allow(clippy::type_complexity)]
+pub fn update_production_ratio_panel(
     ratio: Res<ProductionRatio>,
-    mut value_texts: Query<(&ProductionRatioValueText, &mut Text)>,
+    nanobots: Query<(&NanobotType, &SwarmMember), With<Nanobot>>,
+    mut segments: Query<
+        (&ProductionRatioSegment, &mut Node),
+        (
+            Without<ProductionRatioHandle>,
+            Without<ActualCompositionTick>,
+        ),
+    >,
+    mut handles: Query<
+        (&ProductionRatioHandle, &mut Node),
+        (
+            Without<ProductionRatioSegment>,
+            Without<ActualCompositionTick>,
+        ),
+    >,
+    mut labels: Query<(&ProductionRatioValueText, &mut Text)>,
+    mut ticks: Query<
+        (&ActualCompositionTick, &mut Node, &mut Visibility),
+        (
+            Without<ProductionRatioSegment>,
+            Without<ProductionRatioHandle>,
+        ),
+    >,
 ) {
-    if !ratio.is_changed() {
-        return;
+    let (worker_end, hauler_end) = boundaries_from_ratio(&ratio);
+    for (segment, mut node) in &mut segments {
+        let (start, width) = match segment.0 {
+            NanobotType::Worker => (0, worker_end),
+            NanobotType::Hauler => (worker_end, hauler_end - worker_end),
+            NanobotType::Defender => (hauler_end, 100 - hauler_end),
+        };
+        node.left = Val::Percent(start as f32);
+        node.width = Val::Percent(width as f32);
     }
-    for (marker, mut text) in &mut value_texts {
-        *text = Text::new(format!("{}%", ratio.percentage(marker.kind)));
+    for (handle, mut node) in &mut handles {
+        node.left = Val::Percent(match handle.0 {
+            HandleBoundary::WorkerEnd => worker_end,
+            HandleBoundary::HaulerEnd => hauler_end,
+        } as f32);
+        node.margin.left = Val::Px(handle_offset(handle.0, worker_end == hauler_end));
+    }
+    for (label, mut text) in &mut labels {
+        *text = Text::new(format!(
+            "{} {}%",
+            type_label(label.0),
+            ratio.percentage(label.0)
+        ));
+    }
+
+    let mut counts = [0_u32; 3];
+    for (kind, member) in &nanobots {
+        if member.0 != SwarmId::PLAYER {
+            continue;
+        }
+        let index = match kind {
+            NanobotType::Worker => 0,
+            NanobotType::Hauler => 1,
+            NanobotType::Defender => 2,
+        };
+        counts[index] += 1;
+    }
+    let total: u32 = counts.iter().sum();
+    for (tick, mut node, mut visibility) in &mut ticks {
+        if total == 0 {
+            *visibility = Visibility::Hidden;
+            continue;
+        }
+        let cumulative = match tick.0 {
+            HandleBoundary::WorkerEnd => counts[0],
+            HandleBoundary::HaulerEnd => counts[0] + counts[1],
+        };
+        node.left = Val::Percent(cumulative as f32 * 100.0 / total as f32);
+        *visibility = Visibility::Visible;
     }
 }
 
@@ -291,51 +368,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn production_ratio_percentage_default_60_30_10() {
-        let r = ProductionRatio::default();
-        assert_eq!(r.percentage(NanobotType::Worker), 60);
-        assert_eq!(r.percentage(NanobotType::Hauler), 30);
-        assert_eq!(r.percentage(NanobotType::Defender), 10);
+    fn snap_clamps_and_rounds_to_five_percent() {
+        assert_eq!(snap_percent(-2.0), 0);
+        assert_eq!(snap_percent(52.4), 50);
+        assert_eq!(snap_percent(52.5), 55);
+        assert_eq!(snap_percent(103.0), 100);
     }
 
     #[test]
-    fn production_ratio_percentage_arbitrary_weights() {
-        let mut r = ProductionRatio::new();
-        r.set_weight(NanobotType::Worker, 7);
-        r.set_weight(NanobotType::Hauler, 3);
-        assert_eq!(r.percentage(NanobotType::Worker), 70);
-        assert_eq!(r.percentage(NanobotType::Hauler), 30);
-        assert_eq!(r.percentage(NanobotType::Defender), 0);
+    fn bevy_relative_cursor_coordinates_map_across_full_track() {
+        assert_eq!(track_percent_from_normalized_x(-0.5), 0.0);
+        assert_eq!(track_percent_from_normalized_x(0.0), 50.0);
+        assert_eq!(track_percent_from_normalized_x(0.5), 100.0);
     }
 
     #[test]
-    fn production_ratio_percentage_empty_is_all_zero() {
-        let r = ProductionRatio::new();
-        assert_eq!(r.percentage(NanobotType::Worker), 0);
-        assert_eq!(r.percentage(NanobotType::Hauler), 0);
-        assert_eq!(r.percentage(NanobotType::Defender), 0);
+    fn worker_boundary_cannot_cross_hauler_boundary() {
+        assert_eq!(clamp_boundary(HandleBoundary::WorkerEnd, 80, 40, 65), 65);
+        assert_eq!(clamp_boundary(HandleBoundary::WorkerEnd, 0, 40, 65), 0);
     }
 
     #[test]
-    fn production_ratio_percentage_rounds_to_nearest_integer() {
-        // 1/1/1 -> 33.33%, rounds to 33.
-        let mut r = ProductionRatio::new();
-        r.set_weight(NanobotType::Worker, 1);
-        r.set_weight(NanobotType::Hauler, 1);
-        r.set_weight(NanobotType::Defender, 1);
-        assert_eq!(r.percentage(NanobotType::Worker), 33);
-        assert_eq!(r.percentage(NanobotType::Hauler), 33);
-        assert_eq!(r.percentage(NanobotType::Defender), 33);
+    fn hauler_boundary_cannot_cross_worker_or_hundred() {
+        assert_eq!(clamp_boundary(HandleBoundary::HaulerEnd, 20, 40, 65), 40);
+        assert_eq!(clamp_boundary(HandleBoundary::HaulerEnd, 105, 40, 65), 100);
     }
 
     #[test]
-    fn production_ratio_percentage_dropping_a_type_zeros_its_share() {
-        // 6/3/0 -> 67/33/0.
-        let mut r = ProductionRatio::new();
-        r.set_weight(NanobotType::Worker, 6);
-        r.set_weight(NanobotType::Hauler, 3);
-        assert_eq!(r.percentage(NanobotType::Worker), 67);
-        assert_eq!(r.percentage(NanobotType::Hauler), 33);
-        assert_eq!(r.percentage(NanobotType::Defender), 0);
+    fn coincident_boundaries_allow_zero_middle_segment() {
+        assert_eq!(clamp_boundary(HandleBoundary::WorkerEnd, 60, 40, 60), 60);
+        assert_eq!(clamp_boundary(HandleBoundary::HaulerEnd, 40, 40, 60), 40);
     }
 }

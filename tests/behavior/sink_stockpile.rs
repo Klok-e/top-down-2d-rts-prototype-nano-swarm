@@ -194,6 +194,7 @@ fn completed_sink_stockpile_receives_hauled_resources() {
     // Stockpile, and the Sink Stockpile's `amount` rises
     // accordingly.
     let mut app = common::sim_app_with_gather_haul();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::new(0, 0);
     let center = common::cell_world_center(cell);
     // Place a fully built Sink Stockpile at the cell
@@ -211,22 +212,18 @@ fn completed_sink_stockpile_receives_hauled_resources() {
                 radius: 64.0,
             },
             StockpileRole::Sink,
+            OwnerSwarm(swarm),
             Transform::from_translation(center.extend(0.0)),
         ))
         .id();
-    // A nearby deposit and a hauler at the deposit so the
-    // transport pair (deposit -> Sink Stockpile) is
-    // obvious.
-    let deposit_pos = center + Vec2::new(-200.0, 0.0);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 200);
-    let hauler = common::spawn_hauler_at(&mut app, deposit_pos);
-    // Pre-assign the hauler to the explicit
-    // (deposit, Sink Stockpile) pair so the test isolates
-    // the delivery leg.
-    app.world_mut().entity_mut(hauler).insert(HaulerAssignment {
-        source: deposit,
-        sink,
-    });
+    // A nearby same-swarm Source Stockpile supplies the tier-2 leg.
+    let source_pos = center + Vec2::new(-200.0, 0.0);
+    let source = common::spawn_stockpile(&mut app, source_pos, 200, 200);
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
+    let hauler = common::spawn_hauler_at(&mut app, source_pos);
+    app.world_mut()
+        .entity_mut(hauler)
+        .insert(HaulerAssignment { source, sink });
 
     // 1 arrive + 5 load + travel + delivery + buffer.
     for _ in 0..60 {

@@ -17,7 +17,8 @@ use crate::nanobot::{
         pick_logistics_leg_with_cost, HaulerContext, StockpileCandidate, TerminalCandidate,
     },
     placement::BUILDING_FOOTPRINT_RADIUS,
-    plan_hauler_route, NanobotType, OwnerSwarm, ProductionFacility, STOP_THRESHOLD,
+    plan_hauler_route, Cargo, LogisticsReservation, NanobotType, OwnerSwarm, ProductionFacility,
+    STOP_THRESHOLD,
 };
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole};
 
@@ -34,15 +35,12 @@ pub const HAULER_CARRY_CAPACITY: u32 = 20;
 /// a handful of updates.
 pub const HAULER_EXTRACT_PER_TICK: u32 = 4;
 
-/// What a Hauler is currently carrying. Inserted when the hauler
-/// finishes loading at the source, removed when the load is dropped
-/// at the sink. Absence means the hauler is idle or doing other
-/// work.
-#[derive(Debug, Component, Clone, Copy)]
-pub struct HaulerLoad {
-    pub kind: ResourceKind,
-    pub amount: u32,
-}
+/// Units a Hauler transfers into a destination per simulation tick.
+pub const HAULER_TRANSFER_PER_TICK: u32 = HAULER_EXTRACT_PER_TICK;
+
+/// Backwards-compatible name for the shared cargo carried by a Hauler.
+/// Cargo exists during gradual loading and remains after loading completes.
+pub type HaulerLoad = Cargo;
 
 /// Marks a Hauler as committed to a specific `(source, sink)` pair.
 /// In normal tiered logistics, `source` is a non-empty stockpile and
@@ -57,15 +55,9 @@ pub struct HaulerAssignment {
     pub sink: Entity,
 }
 
-/// Marker for a Hauler that is standing at its assigned source and
-/// pulling resources. The `Without<HaulerLoad>` filter in
-/// `hauler_load_system` makes the loading phase idempotent -- a
-/// hauler only loads once per assignment, regardless of how many
-/// ticks the load_system fires.
+/// Marks a Hauler as standing at its assigned source and loading cargo.
 #[derive(Debug, Component, Default, Clone, Copy)]
-pub struct HaulerLoading {
-    pub collected: u32,
-}
+pub struct HaulerLoading;
 
 /// Stable route for one hauler Logistics Leg.
 #[derive(Debug, Component, Clone)]
@@ -341,9 +333,12 @@ pub fn hauler_assignment_system(
         let (route, movement) =
             planned_route_movement(hauler_pos, source_pos, &grid, swarm, source_radius);
 
-        commands
-            .entity(entity)
-            .insert((HaulerAssignment { source, sink }, route, movement));
+        commands.entity(entity).insert((
+            HaulerAssignment { source, sink },
+            LogisticsReservation::new(source, sink, ResourceKind::Minerals, leg.amount),
+            route,
+            movement,
+        ));
     }
 }
 
@@ -357,7 +352,13 @@ pub fn hauler_assignment_system(
 pub fn hauler_arrive_source_system(
     mut commands: Commands,
     haulers: Query<
-        (Entity, &Transform, &HaulerAssignment, Option<&HaulerRoute>),
+        (
+            Entity,
+            &Transform,
+            &HaulerAssignment,
+            Option<&HaulerRoute>,
+            Option<&LogisticsReservation>,
+        ),
         (
             With<Nanobot>,
             With<HaulerAssignment>,
@@ -370,7 +371,7 @@ pub fn hauler_arrive_source_system(
     stockpiles: Query<(&Stockpile, &Transform)>,
     chargers: Query<(&Charger, &Transform)>,
 ) {
-    for (entity, transform, assignment, route) in &haulers {
+    for (entity, transform, assignment, route, reservation) in &haulers {
         let (source_pos, source_radius) = if let Ok((d, t)) = deposits.get(assignment.source) {
             (t.translation.truncate(), d.radius)
         } else if let Ok((s, t)) = stockpiles.get(assignment.source) {
@@ -383,13 +384,17 @@ pub fn hauler_arrive_source_system(
             commands
                 .entity(entity)
                 .remove::<HaulerAssignment>()
+                .remove::<LogisticsReservation>()
                 .remove::<HaulerRoute>();
             continue;
         };
         if transform.translation.truncate().distance(source_pos) <= source_radius {
+            let kind = reservation
+                .map(|reservation| reservation.kind)
+                .unwrap_or(ResourceKind::Minerals);
             commands
                 .entity(entity)
-                .insert(HaulerLoading { collected: 0 })
+                .insert((HaulerLoading, Cargo::empty(kind)))
                 .remove::<HaulerRoute>();
         } else if route.is_some() {
             // The route follower owns movement restoration while a
@@ -417,7 +422,13 @@ pub fn hauler_arrive_source_system(
 pub fn hauler_load_system(
     mut commands: Commands,
     mut haulers: Query<
-        (Entity, &mut HaulerLoading, &HaulerAssignment),
+        (
+            Entity,
+            &mut Cargo,
+            &HaulerAssignment,
+            Option<&mut LogisticsReservation>,
+            &SwarmMember,
+        ),
         (With<Nanobot>, With<HaulerLoading>),
     >,
     mut deposits: Query<&mut ResourceDeposit>,
@@ -425,171 +436,497 @@ pub fn hauler_load_system(
     source_chargers: Query<&mut Charger>,
     mut ledger: ResMut<ResourceLedger>,
 ) {
-    for (entity, mut loading, assignment) in &mut haulers {
-        if loading.collected >= HAULER_CARRY_CAPACITY {
-            transition_to_carrying(&mut commands, entity, loading.collected);
+    for (entity, mut cargo, assignment, mut reservation, swarm) in &mut haulers {
+        let target_amount = reservation
+            .as_ref()
+            .map(|reservation| reservation.amount)
+            .unwrap_or(HAULER_CARRY_CAPACITY);
+        let finish_reservation = |reservation: Option<&mut LogisticsReservation>, carried| {
+            if let Some(reservation) = reservation {
+                reservation.source_remaining = 0;
+                reservation.destination_remaining = carried;
+            }
+        };
+        if cargo.amount >= target_amount {
+            finish_reservation(reservation.as_deref_mut(), cargo.amount);
+            transition_to_carrying(&mut commands, entity, cargo.amount);
             continue;
         }
 
         if let Ok(mut deposit) = deposits.get_mut(assignment.source) {
             if deposit.amount == 0 {
-                transition_to_carrying(&mut commands, entity, loading.collected);
+                finish_reservation(reservation.as_deref_mut(), cargo.amount);
+                transition_to_carrying(&mut commands, entity, cargo.amount);
                 continue;
             }
-            let can_still_carry = HAULER_CARRY_CAPACITY - loading.collected;
+            let can_still_carry = target_amount - cargo.amount;
             let actual = HAULER_EXTRACT_PER_TICK
                 .min(deposit.amount)
                 .min(can_still_carry);
-            loading.collected += actual;
+            cargo.amount += actual;
             deposit.amount -= actual;
-            ledger.remove(deposit.kind, actual);
+            ledger.add_for(swarm.0, deposit.kind, actual);
+            if let Some(reservation) = reservation.as_deref_mut() {
+                reservation.source_remaining = reservation.source_remaining.saturating_sub(actual);
+            }
             continue;
         }
 
         if let Ok(mut stockpile) = source_stockpiles.get_mut(assignment.source) {
             if stockpile.amount == 0 {
-                transition_to_carrying(&mut commands, entity, loading.collected);
+                finish_reservation(reservation.as_deref_mut(), cargo.amount);
+                transition_to_carrying(&mut commands, entity, cargo.amount);
                 continue;
             }
-            let can_still_carry = HAULER_CARRY_CAPACITY - loading.collected;
+            let can_still_carry = target_amount - cargo.amount;
             let actual = HAULER_EXTRACT_PER_TICK
                 .min(stockpile.amount)
                 .min(can_still_carry);
-            loading.collected += actual;
+            cargo.amount += actual;
             stockpile.amount -= actual;
-            ledger.remove(stockpile.kind, actual);
+            if let Some(reservation) = reservation.as_deref_mut() {
+                reservation.source_remaining = reservation.source_remaining.saturating_sub(actual);
+            }
             continue;
         }
 
         if source_chargers.get(assignment.source).is_ok() {
-            // Chargers are not a hauler source: the logistics
-            // contract is "haulers bring material TO the
-            // charger", not "haulers extract FROM the charger".
-            // If a future assignment points at a charger as a
-            // source, drop the assignment with no load so the
-            // hauler re-picks work on the next tick.
+            finish_reservation(reservation.as_deref_mut(), cargo.amount);
             transition_to_carrying(&mut commands, entity, 0);
             continue;
         }
 
-        // Source entity disappeared; the partial load is still
-        // useful so we still transition to Carrying.
-        transition_to_carrying(&mut commands, entity, loading.collected);
+        finish_reservation(reservation.as_deref_mut(), cargo.amount);
+        transition_to_carrying(&mut commands, entity, cargo.amount);
     }
 }
 
 fn transition_to_carrying(commands: &mut Commands, entity: Entity, amount: u32) {
     commands.entity(entity).remove::<HaulerLoading>();
-    if amount > 0 {
-        commands.entity(entity).insert(HaulerLoad {
-            kind: ResourceKind::Minerals,
-            amount,
-        });
-    } else {
-        // Nothing to carry; drop the assignment and let the
-        // hauler pick new work next tick.
-        commands.entity(entity).remove::<HaulerAssignment>();
+    if amount == 0 {
+        commands
+            .entity(entity)
+            .remove::<Cargo>()
+            .remove::<HaulerAssignment>()
+            .remove::<LogisticsReservation>();
     }
 }
 
-/// Snapshot of a resource sink endpoint for the carry leg.
-/// Stockpiles, production facilities, and chargers expose
-/// different component shapes, but the movement system only needs
-/// the world position and physical reach of the chosen sink.
+/// Snapshot of a validated destination endpoint.
 #[derive(Debug, Clone, Copy)]
 struct SinkEndpointSnapshot {
     pos: Vec2,
     radius: f32,
 }
 
-/// Adapt a sink entity into the common endpoint shape used by the
-/// hauler carry leg. Facilities do not carry their own radius field,
-/// so their endpoint extent is the building footprint.
-fn sink_endpoint_snapshot(
-    entity: Entity,
-    stockpiles: &Query<(&Stockpile, &Transform)>,
-    facilities: &Query<(&ProductionFacility, &Transform)>,
-    chargers: &Query<(&Charger, &Transform)>,
-) -> Option<SinkEndpointSnapshot> {
-    if let Ok((stockpile, transform)) = stockpiles.get(entity) {
-        Some(SinkEndpointSnapshot {
-            pos: transform.translation.truncate(),
-            radius: stockpile.radius,
-        })
-    } else if let Ok((_, transform)) = facilities.get(entity) {
-        Some(SinkEndpointSnapshot {
-            pos: transform.translation.truncate(),
-            radius: BUILDING_FOOTPRINT_RADIUS,
-        })
-    } else if let Ok((charger, transform)) = chargers.get(entity) {
-        Some(SinkEndpointSnapshot {
-            pos: transform.translation.truncate(),
-            radius: charger.radius,
-        })
-    } else {
-        None
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HaulSourceTier {
+    Source,
+    Sink,
+}
+
+fn owner_is_swarm(owner: Option<&OwnerSwarm>, swarms: &Query<&SwarmId>, swarm: SwarmId) -> bool {
+    owner
+        .and_then(|owner| swarms.get(owner.0).ok())
+        .is_some_and(|owner| *owner == swarm)
+}
+
+#[allow(clippy::type_complexity)]
+fn source_tier(
+    source: Entity,
+    kind: ResourceKind,
+    swarm: SwarmId,
+    stockpiles: &Query<(
+        Entity,
+        &Stockpile,
+        &Transform,
+        Option<&StockpileRole>,
+        Option<&OwnerSwarm>,
+    )>,
+    swarms: &Query<&SwarmId>,
+) -> Option<HaulSourceTier> {
+    let (_, stockpile, _, role, owner) = stockpiles.get(source).ok()?;
+    if stockpile.kind != kind || !owner_is_swarm(owner, swarms, swarm) {
+        return None;
+    }
+    match role.copied().unwrap_or(StockpileRole::Source) {
+        StockpileRole::Source => Some(HaulSourceTier::Source),
+        StockpileRole::Sink => Some(HaulSourceTier::Sink),
     }
 }
 
-/// For each Hauler that has a [`HaulerLoad`] but no destination yet,
-/// head to the sink recorded on the [`HaulerAssignment`]. The sink
-/// was chosen at assignment time so the hauler does not need to
-/// re-evaluate.
-#[allow(clippy::type_complexity)]
+fn reserved_destination_capacity(
+    reservations: &Query<(Entity, &LogisticsReservation)>,
+    destination: Entity,
+    excluded: Option<Entity>,
+) -> u32 {
+    reservations
+        .iter()
+        .filter(|(entity, reservation)| {
+            Some(*entity) != excluded && reservation.destination == destination
+        })
+        .map(|(_, reservation)| reservation.destination_remaining)
+        .sum()
+}
+
+fn reservation_covers_destination(
+    reservation: Option<&LogisticsReservation>,
+    destination: Entity,
+    amount: u32,
+) -> bool {
+    reservation.is_none_or(|reservation| {
+        reservation.destination == destination && reservation.destination_remaining >= amount
+    })
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn valid_destination_snapshot(
+    destination: Entity,
+    tier: HaulSourceTier,
+    kind: ResourceKind,
+    amount: u32,
+    swarm: SwarmId,
+    incoming_claims: u32,
+    stockpiles: &Query<(
+        Entity,
+        &Stockpile,
+        &Transform,
+        Option<&StockpileRole>,
+        Option<&OwnerSwarm>,
+    )>,
+    facilities: &Query<(Entity, &ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
+    chargers: &Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
+    swarms: &Query<&SwarmId>,
+) -> Option<SinkEndpointSnapshot> {
+    if let Ok((_, stockpile, transform, role, owner)) = stockpiles.get(destination) {
+        return (stockpile.kind == kind
+            && role.copied().unwrap_or(StockpileRole::Source) == StockpileRole::Sink
+            && owner_is_swarm(owner, swarms, swarm)
+            && stockpile.free_space().saturating_sub(incoming_claims) >= amount)
+            .then_some(SinkEndpointSnapshot {
+                pos: transform.translation.truncate(),
+                radius: stockpile.radius,
+            });
+    }
+    if tier != HaulSourceTier::Sink {
+        return None;
+    }
+    if let Ok((_, facility, transform, owner)) = facilities.get(destination) {
+        return (facility.input_kind == kind
+            && owner_is_swarm(owner, swarms, swarm)
+            && facility.input_free_space().saturating_sub(incoming_claims) >= amount)
+            .then_some(SinkEndpointSnapshot {
+                pos: transform.translation.truncate(),
+                radius: BUILDING_FOOTPRINT_RADIUS,
+            });
+    }
+    if let Ok((_, charger, transform, owner)) = chargers.get(destination) {
+        return (charger.kind == kind
+            && owner_is_swarm(owner, swarms, swarm)
+            && charger.free_space().saturating_sub(incoming_claims) >= amount)
+            .then_some(SinkEndpointSnapshot {
+                pos: transform.translation.truncate(),
+                radius: charger.radius,
+            });
+    }
+    None
+}
+
+/// Redirect loaded cargo when its destination is no longer valid.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub fn hauler_reroute_system(
+    mut commands: Commands,
+    mut haulers: Query<
+        (
+            Entity,
+            &Transform,
+            &Cargo,
+            &mut HaulerAssignment,
+            &SwarmMember,
+            Option<&LogisticsReservation>,
+        ),
+        (With<Nanobot>, Without<HaulerLoading>),
+    >,
+    stockpiles: Query<(
+        Entity,
+        &Stockpile,
+        &Transform,
+        Option<&StockpileRole>,
+        Option<&OwnerSwarm>,
+    )>,
+    facilities: Query<(Entity, &ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
+    chargers: Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
+    swarms: Query<&SwarmId>,
+    reservations: Query<(Entity, &LogisticsReservation)>,
+    grid: Res<IntentGrid>,
+) {
+    let mut same_tick_claims = std::collections::HashMap::<Entity, u32>::new();
+    for (entity, transform, cargo, mut assignment, swarm_member, reservation) in &mut haulers {
+        if cargo.amount == 0 {
+            continue;
+        }
+        let Some(tier) = source_tier(
+            assignment.source,
+            cargo.kind,
+            swarm_member.0,
+            &stockpiles,
+            &swarms,
+        ) else {
+            release_destination_claim(&mut commands, entity, reservation);
+            continue;
+        };
+        let current_incoming =
+            reserved_destination_capacity(&reservations, assignment.sink, Some(entity))
+                .saturating_add(
+                    same_tick_claims
+                        .get(&assignment.sink)
+                        .copied()
+                        .unwrap_or_default(),
+                );
+        let current_claim_valid =
+            reservation_covers_destination(reservation, assignment.sink, cargo.amount);
+        if current_claim_valid
+            && valid_destination_snapshot(
+                assignment.sink,
+                tier,
+                cargo.kind,
+                cargo.amount,
+                swarm_member.0,
+                current_incoming,
+                &stockpiles,
+                &facilities,
+                &chargers,
+                &swarms,
+            )
+            .is_some()
+        {
+            continue;
+        }
+        let keep_away_from_old_destination = reservation.is_some_and(|reservation| {
+            reservation.destination == assignment.sink && reservation.destination_remaining > 0
+        });
+
+        let hauler_pos = transform.translation.truncate();
+        let terminal = (tier == HaulSourceTier::Sink)
+            .then(|| {
+                facilities
+                    .iter()
+                    .filter_map(|(candidate, _, transform, _)| {
+                        if candidate == assignment.sink && keep_away_from_old_destination {
+                            return None;
+                        }
+                        let incoming =
+                            reserved_destination_capacity(&reservations, candidate, Some(entity))
+                                .saturating_add(
+                                    same_tick_claims
+                                        .get(&candidate)
+                                        .copied()
+                                        .unwrap_or_default(),
+                                );
+                        let endpoint = valid_destination_snapshot(
+                            candidate,
+                            tier,
+                            cargo.kind,
+                            cargo.amount,
+                            swarm_member.0,
+                            incoming,
+                            &stockpiles,
+                            &facilities,
+                            &chargers,
+                            &swarms,
+                        )?;
+                        Some((
+                            hauler_pos.distance(transform.translation.truncate()),
+                            candidate,
+                            endpoint,
+                        ))
+                    })
+                    .chain(chargers.iter().filter_map(|(candidate, _, transform, _)| {
+                        if candidate == assignment.sink && keep_away_from_old_destination {
+                            return None;
+                        }
+                        let incoming =
+                            reserved_destination_capacity(&reservations, candidate, Some(entity))
+                                .saturating_add(
+                                    same_tick_claims
+                                        .get(&candidate)
+                                        .copied()
+                                        .unwrap_or_default(),
+                                );
+                        let endpoint = valid_destination_snapshot(
+                            candidate,
+                            tier,
+                            cargo.kind,
+                            cargo.amount,
+                            swarm_member.0,
+                            incoming,
+                            &stockpiles,
+                            &facilities,
+                            &chargers,
+                            &swarms,
+                        )?;
+                        Some((
+                            hauler_pos.distance(transform.translation.truncate()),
+                            candidate,
+                            endpoint,
+                        ))
+                    }))
+                    .min_by(|left, right| {
+                        left.0
+                            .total_cmp(&right.0)
+                            .then_with(|| left.1.to_bits().cmp(&right.1.to_bits()))
+                    })
+            })
+            .flatten();
+        let fallback = stockpiles
+            .iter()
+            .filter_map(|(candidate, _, transform, _, _)| {
+                if candidate == assignment.sink && keep_away_from_old_destination {
+                    return None;
+                }
+                let incoming =
+                    reserved_destination_capacity(&reservations, candidate, Some(entity))
+                        .saturating_add(
+                            same_tick_claims
+                                .get(&candidate)
+                                .copied()
+                                .unwrap_or_default(),
+                        );
+                let endpoint = valid_destination_snapshot(
+                    candidate,
+                    tier,
+                    cargo.kind,
+                    cargo.amount,
+                    swarm_member.0,
+                    incoming,
+                    &stockpiles,
+                    &facilities,
+                    &chargers,
+                    &swarms,
+                )?;
+                Some((
+                    candidate != assignment.source,
+                    hauler_pos.distance(transform.translation.truncate()),
+                    candidate,
+                    endpoint,
+                ))
+            })
+            .min_by(|left, right| {
+                left.0
+                    .cmp(&right.0)
+                    .then_with(|| left.1.total_cmp(&right.1))
+                    .then_with(|| left.2.to_bits().cmp(&right.2.to_bits()))
+            })
+            .map(|(_, distance, candidate, endpoint)| (distance, candidate, endpoint));
+
+        let Some((_, destination, endpoint)) = terminal.or(fallback) else {
+            release_destination_claim(&mut commands, entity, reservation);
+            continue;
+        };
+        *same_tick_claims.entry(destination).or_default() += cargo.amount;
+        assignment.sink = destination;
+        let mut redirected = reservation.copied().unwrap_or_else(|| {
+            LogisticsReservation::new(assignment.source, destination, cargo.kind, cargo.amount)
+        });
+        redirected.destination = destination;
+        redirected.destination_remaining = cargo.amount;
+        let (route, movement) = planned_route_movement(
+            hauler_pos,
+            endpoint.pos,
+            &grid,
+            swarm_member.0,
+            endpoint.radius,
+        );
+        commands
+            .entity(entity)
+            .insert((redirected, route, movement));
+    }
+}
+
+fn release_destination_claim(
+    commands: &mut Commands,
+    entity: Entity,
+    reservation: Option<&LogisticsReservation>,
+) {
+    if let Some(reservation) = reservation {
+        let mut released = *reservation;
+        released.destination_remaining = 0;
+        commands.entity(entity).insert(released);
+    }
+    commands
+        .entity(entity)
+        .remove::<DirectMovementComponent>()
+        .remove::<HaulerRoute>();
+}
+
+/// Route loaded haulers only after revalidating the committed destination.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn hauler_carry_assign_system(
     mut commands: Commands,
     haulers: Query<
         (
             Entity,
             &Transform,
-            &HaulerLoad,
+            &Cargo,
             &HaulerAssignment,
             &SwarmMember,
             Option<&HaulerRoute>,
         ),
         (
             With<Nanobot>,
-            With<HaulerLoad>,
+            With<Cargo>,
             Without<DirectMovementComponent>,
+            Without<HaulerLoading>,
         ),
     >,
-    stockpiles: Query<(&Stockpile, &Transform)>,
-    facilities: Query<(&ProductionFacility, &Transform)>,
-    chargers: Query<(&Charger, &Transform)>,
+    stockpiles: Query<(
+        Entity,
+        &Stockpile,
+        &Transform,
+        Option<&StockpileRole>,
+        Option<&OwnerSwarm>,
+    )>,
+    facilities: Query<(Entity, &ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
+    chargers: Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
+    swarms: Query<&SwarmId>,
+    reservations: Query<(Entity, &LogisticsReservation)>,
     grid: Res<IntentGrid>,
 ) {
-    for (entity, transform, _load, assignment, swarm_member, route) in &haulers {
-        let Some(sink) =
-            sink_endpoint_snapshot(assignment.sink, &stockpiles, &facilities, &chargers)
-        else {
-            // Sink entity disappeared between assignment and
-            // the carry phase. Drop the assignment so a later
-            // tick re-evaluates; the load is kept so the hauler
-            // can finish the trip if a future assignment points
-            // back at the same kind of sink.
-            commands
-                .entity(entity)
-                .remove::<HaulerAssignment>()
-                .remove::<HaulerRoute>();
+    for (entity, transform, cargo, assignment, swarm_member, route) in &haulers {
+        let Some(tier) = source_tier(
+            assignment.source,
+            cargo.kind,
+            swarm_member.0,
+            &stockpiles,
+            &swarms,
+        ) else {
             continue;
         };
-        // If the hauler is already at the sink, the delivery
-        // system must fire before we re-target. Inserting a
-        // fresh DirectMovementComponent here would clear the
-        // arrival signal and starve the delivery system, leaving
-        // the hauler stuck in an infinite carry/loop cycle.
-        //
-        // Issue #38 / ADR-0004: the proximity check now
-        // matches the DMC's `stop_radius` (the sink's own
-        // radius). Using `STOP_THRESHOLD` here would race
-        // with the movement system: the movement system
-        // stops at `max(stop_radius, STOP_THRESHOLD)`, then
-        // the carry-assign re-inserts a DMC because the
-        // hauler is between `STOP_THRESHOLD` and
-        // `stop_radius`, then delivery's
-        // `Without<DirectMovementComponent>` filter rejects
-        // the arrival. Using the same radius the movement
-        // system uses breaks the loop.
+        if !reservation_covers_destination(
+            reservations
+                .get(entity)
+                .ok()
+                .map(|(_, reservation)| reservation),
+            assignment.sink,
+            cargo.amount,
+        ) {
+            continue;
+        }
+        let incoming = reserved_destination_capacity(&reservations, assignment.sink, Some(entity));
+        let Some(sink) = valid_destination_snapshot(
+            assignment.sink,
+            tier,
+            cargo.kind,
+            cargo.amount,
+            swarm_member.0,
+            incoming,
+            &stockpiles,
+            &facilities,
+            &chargers,
+            &swarms,
+        ) else {
+            continue;
+        };
         let hauler_pos = transform.translation.truncate();
         if hauler_pos.distance(sink.pos) <= sink.radius || route.is_some() {
             continue;
@@ -600,117 +937,107 @@ pub fn hauler_carry_assign_system(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DeliveryResult {
-    Delivered,
-    TooFar,
-    Full,
-    Missing,
-}
-
-fn deliver_to_sink(
-    sink: Entity,
-    hauler_pos: Vec2,
-    amount: u32,
-    stockpiles: &mut Query<(&mut Stockpile, &Transform)>,
-    facilities: &mut Query<(&mut ProductionFacility, &Transform)>,
-    chargers: &mut Query<(&mut Charger, &Transform)>,
-    ledger: &mut ResourceLedger,
-) -> DeliveryResult {
-    if let Ok((mut stockpile, transform)) = stockpiles.get_mut(sink) {
-        if hauler_pos.distance(transform.translation.truncate()) > stockpile.radius {
-            return DeliveryResult::TooFar;
-        }
-        if stockpile.free_space() < amount {
-            return DeliveryResult::Full;
-        }
-        stockpile.amount += amount;
-        ledger.add(stockpile.kind, amount);
-        DeliveryResult::Delivered
-    } else if let Ok((mut facility, transform)) = facilities.get_mut(sink) {
-        // Leg 3 delivery into a facility's own input hopper. The
-        // hopper is the only buffer production consumes from, so
-        // this is the moment material actually reaches production.
-        if hauler_pos.distance(transform.translation.truncate()) > BUILDING_FOOTPRINT_RADIUS {
-            return DeliveryResult::TooFar;
-        }
-        if facility.input_free_space() < amount {
-            return DeliveryResult::Full;
-        }
-        facility.input_amount += amount;
-        ledger.add(facility.input_kind, amount);
-        DeliveryResult::Delivered
-    } else if let Ok((mut charger, transform)) = chargers.get_mut(sink) {
-        if hauler_pos.distance(transform.translation.truncate()) > charger.radius {
-            return DeliveryResult::TooFar;
-        }
-        if charger.free_space() < amount {
-            return DeliveryResult::Full;
-        }
-        charger.amount += amount;
-        ledger.add(charger.kind, amount);
-        DeliveryResult::Delivered
-    } else {
-        DeliveryResult::Missing
-    }
-}
-
-/// Drop the hauler's carry into the assigned sink when the hauler
-/// has arrived. The arrival trigger is the movement system removing
-/// the [`DirectMovementComponent`], which is the same signal the
-/// worker delivery system uses.
-#[allow(clippy::type_complexity)]
+/// Unload only into a destination that remains valid for cargo's source tier.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn hauler_delivery_system(
     mut commands: Commands,
     mut haulers: Query<
-        (Entity, &Transform, &mut HaulerLoad, &HaulerAssignment),
+        (
+            Entity,
+            &Transform,
+            &mut Cargo,
+            &HaulerAssignment,
+            Option<&LogisticsReservation>,
+            &SwarmMember,
+        ),
         (
             With<Nanobot>,
-            With<HaulerLoad>,
+            With<Cargo>,
             With<HaulerAssignment>,
             Without<DirectMovementComponent>,
+            Without<HaulerLoading>,
         ),
     >,
-    mut stockpiles: Query<(&mut Stockpile, &Transform)>,
-    mut facilities: Query<(&mut ProductionFacility, &Transform)>,
-    mut chargers: Query<(&mut Charger, &Transform)>,
-    mut ledger: ResMut<ResourceLedger>,
+    stockpiles: Query<(
+        Entity,
+        &Stockpile,
+        &Transform,
+        Option<&StockpileRole>,
+        Option<&OwnerSwarm>,
+    )>,
+    facilities: Query<(Entity, &ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
+    chargers: Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
+    swarms: Query<&SwarmId>,
+    reservations: Query<(Entity, &LogisticsReservation)>,
 ) {
-    for (entity, transform, mut load, assignment) in &mut haulers {
-        match deliver_to_sink(
+    for (entity, transform, mut load, assignment, reservation, swarm_member) in &mut haulers {
+        let Some(tier) = source_tier(
+            assignment.source,
+            load.kind,
+            swarm_member.0,
+            &stockpiles,
+            &swarms,
+        ) else {
+            continue;
+        };
+        if !reservation_covers_destination(reservation, assignment.sink, load.amount) {
+            continue;
+        }
+        let incoming = reserved_destination_capacity(&reservations, assignment.sink, Some(entity));
+        let Some(endpoint) = valid_destination_snapshot(
             assignment.sink,
-            transform.translation.truncate(),
+            tier,
+            load.kind,
             load.amount,
-            &mut stockpiles,
-            &mut facilities,
-            &mut chargers,
-            &mut ledger,
-        ) {
-            DeliveryResult::Delivered => {
-                load.amount = 0;
-                commands
-                    .entity(entity)
-                    .remove::<HaulerAssignment>()
-                    .remove::<HaulerLoad>()
-                    .remove::<HaulerRoute>();
-            }
-            DeliveryResult::TooFar | DeliveryResult::Full => {
-                // Too far: wait for movement/assignment to restore
-                // the arrival path. Full: keep waiting at the sink;
-                // redirecting is a known first-implementation
-                // limitation.
-            }
-            DeliveryResult::Missing => {
-                // Assigned sink is gone. Drop the load so the hauler
-                // can pick new work; the assignment is removed too so
-                // the assignment system can re-evaluate on the next
-                // tick.
-                commands
-                    .entity(entity)
-                    .remove::<HaulerAssignment>()
-                    .remove::<HaulerLoad>()
-                    .remove::<HaulerRoute>();
-            }
+            swarm_member.0,
+            incoming,
+            &stockpiles,
+            &facilities,
+            &chargers,
+            &swarms,
+        ) else {
+            continue;
+        };
+        if transform.translation.truncate().distance(endpoint.pos) > endpoint.radius {
+            continue;
+        }
+        let transfer_limit = load.amount.min(HAULER_TRANSFER_PER_TICK);
+        let actual = if let Ok((_, stockpile, _, _, _)) = stockpiles.get(assignment.sink) {
+            let actual = transfer_limit.min(stockpile.free_space());
+            let mut updated = *stockpile;
+            updated.amount += actual;
+            commands.entity(assignment.sink).insert(updated);
+            actual
+        } else if let Ok((_, facility, _, _)) = facilities.get(assignment.sink) {
+            let actual = transfer_limit.min(facility.input_free_space());
+            let mut updated = facility.clone();
+            updated.input_amount += actual;
+            commands.entity(assignment.sink).insert(updated);
+            actual
+        } else if let Ok((_, charger, _, _)) = chargers.get(assignment.sink) {
+            let actual = transfer_limit.min(charger.free_space());
+            let mut updated = *charger;
+            updated.amount += actual;
+            commands.entity(assignment.sink).insert(updated);
+            actual
+        } else {
+            0
+        };
+        if actual == 0 {
+            continue;
+        }
+        load.amount -= actual;
+        if load.amount == 0 {
+            commands
+                .entity(entity)
+                .remove::<HaulerAssignment>()
+                .remove::<Cargo>()
+                .remove::<LogisticsReservation>()
+                .remove::<HaulerRoute>();
+        } else if let Some(reservation) = reservation {
+            let mut updated = *reservation;
+            updated.destination_remaining = updated.destination_remaining.saturating_sub(actual);
+            commands.entity(entity).insert(updated);
         }
     }
 }
@@ -740,6 +1067,7 @@ impl Plugin for HaulPlugin {
             (
                 hauler_arrive_source_system,
                 hauler_load_system,
+                hauler_reroute_system,
                 hauler_carry_assign_system,
                 hauler_delivery_system,
                 hauler_route_follow_system,

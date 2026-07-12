@@ -58,7 +58,7 @@ use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::placement::{find_build_zone_placement, BUILDING_FOOTPRINT_RADIUS};
 use crate::nanobot::planned::{planned_visual_components, PlannedKind, PlannedStructure};
 use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
-use crate::resources::{ResourceDeposit, ResourceKind, Stockpile};
+use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
 use crate::structure_sprites::StructureSprites;
 
 // ---------------------------------------------------------------------------
@@ -144,11 +144,9 @@ pub const AUTO_CHARGER_CAPACITY: u32 = 60;
 /// radius covers its own cell with a comfortable margin.
 pub const AUTO_CHARGER_RADIUS: f32 = 64.0;
 
-/// Material buffer an auto-created charger starts with. Less
-/// than the capacity so a freshly emerged charger has room
-/// for an immediate hauler delivery, but enough to sustain
-/// one or two defenders for a meaningful number of ticks.
-pub const AUTO_CHARGER_INITIAL_AMOUNT: u32 = 10;
+/// Material buffer an auto-created charger starts with. New chargers begin
+/// empty so all minerals enter through physical logistics.
+pub const AUTO_CHARGER_INITIAL_AMOUNT: u32 = 0;
 
 /// Maximum defenders that can be actively charging from a
 /// single charger at once before a new charger is allowed to
@@ -175,12 +173,9 @@ pub const MAX_CHARGERS_PER_CELL: u32 = 3;
 /// haulers (the hauler's sink selection includes chargers
 /// with free space).
 ///
-/// `amount` is the physical resource buffer; when `amount ==
-/// 0` the charger is "empty" and is not a valid rotation
-/// target. `capacity` caps the buffer; a freshly auto-created
-/// charger starts with [`AUTO_CHARGER_INITIAL_AMOUNT`] units
-/// and the auto-creation system leaves room for an immediate
-/// delivery.
+/// `amount` is the physical resource buffer; when `amount == 0` the
+/// charger is "empty" and is not a valid rotation target. `capacity`
+/// caps the buffer; freshly completed chargers begin empty.
 #[derive(Debug, Component, Clone, Copy)]
 pub struct Charger {
     /// Defend cell the charger lives in. Used by the
@@ -206,9 +201,8 @@ pub struct Charger {
 }
 
 impl Charger {
-    /// Build a new charger in `cell` with the default kind,
-    /// capacity, radius, and starting amount. Used by the
-    /// auto-creation system and by tests.
+    /// Build a new empty charger in `cell` with default kind, capacity,
+    /// and radius. Used by auto-creation and tests.
     pub fn new(cell: IVec2) -> Self {
         Self {
             cell,
@@ -312,6 +306,21 @@ pub struct ChargerProgress {
 // Pure helpers
 // ---------------------------------------------------------------------------
 
+/// Minerals consumed while refilling one defender from `current` to `max`.
+/// Passive drain runs in the same schedule, so each charging tick gains the
+/// net refill and consumes one material unit.
+pub fn minerals_to_fully_charge(current: f32, max: f32) -> u32 {
+    if current >= max || max <= 0.0 {
+        return 0;
+    }
+    let net_refill = CHARGE_REFILL_PER_TICK - CHARGE_DRAIN_PER_TICK;
+    debug_assert!(net_refill > 0.0);
+    let missing_ticks = (max - current.max(0.0)) / net_refill;
+    let rounding_tolerance = f32::EPSILON * missing_ticks.abs().max(1.0) * 8.0;
+    let refill_ticks = (missing_ticks - rounding_tolerance).ceil() as u32;
+    refill_ticks.saturating_mul(CHARGER_MATERIAL_DRAIN_PER_TICK)
+}
+
 /// Linear multiplier in `[0, 1]` derived from `charge`. A
 /// defender at full charge has a `1.0` multiplier; a defender
 /// at or above [`WEAKENED_CHARGE_THRESHOLD`] is treated as
@@ -406,9 +415,8 @@ pub fn defender_charge_drain_system(
 /// with empty charge and no reachable working charger.
 #[allow(clippy::type_complexity)]
 pub fn defender_health_loss_when_empty_system(
-    mut commands: Commands,
     mut defenders: Query<
-        (Entity, &mut Health, &Charge),
+        (&mut Health, &Charge),
         (
             With<Nanobot>,
             With<NanobotType>,
@@ -418,22 +426,11 @@ pub fn defender_health_loss_when_empty_system(
         ),
     >,
 ) {
-    for (entity, mut health, charge) in &mut defenders {
-        if !charge.is_empty() {
-            continue;
-        }
-        let next = health
-            .current
-            .saturating_sub(EMPTY_CHARGE_HEALTH_LOSS_PER_TICK);
-        if next == 0 {
-            // Defender collapsed. Despawn cleanly; the
-            // soft-slot pressure in the defend system is
-            // released by the next assignment tick because
-            // the entity no longer holds the (cell, Defend)
-            // slot.
-            commands.entity(entity).despawn();
-        } else {
-            health.current = next;
+    for (mut health, charge) in &mut defenders {
+        if charge.is_empty() {
+            health.current = health
+                .current
+                .saturating_sub(EMPTY_CHARGE_HEALTH_LOSS_PER_TICK);
         }
     }
 }
@@ -760,10 +757,12 @@ pub fn defender_charger_work_system(
         ),
         (With<Nanobot>, With<ChargerProgress>),
     >,
-    mut chargers: Query<&mut Charger>,
+    mut chargers: Query<(&mut Charger, Option<&OwnerSwarm>)>,
+    swarms: Query<&SwarmId, With<Swarm>>,
+    mut ledger: ResMut<ResourceLedger>,
 ) {
     for (entity, mut charge, assignment, lease) in &mut defenders {
-        let Ok(mut charger) = chargers.get_mut(assignment.charger) else {
+        let Ok((mut charger, owner)) = chargers.get_mut(assignment.charger) else {
             // Charger disappeared mid-charge. Drop both
             // markers and let the defender be re-assigned.
             commands.entity(entity).remove::<ChargerAssignment>();
@@ -799,9 +798,13 @@ pub fn defender_charger_work_system(
         // defenders at the same charger each drain one unit
         // per tick.
         charge.current = (charge.current + CHARGE_REFILL_PER_TICK).min(charge.max);
-        charger.amount = charger
-            .amount
-            .saturating_sub(CHARGER_MATERIAL_DRAIN_PER_TICK);
+        let consumed = CHARGER_MATERIAL_DRAIN_PER_TICK.min(charger.amount);
+        charger.amount -= consumed;
+        let swarm = owner
+            .and_then(|owner| swarms.get(owner.0).ok())
+            .copied()
+            .unwrap_or(SwarmId::PLAYER);
+        ledger.remove_for(swarm, charger.kind, consumed);
         if charge.is_full() {
             // Refill brought the charge to max. Release
             // immediately so the defender returns to the
@@ -954,24 +957,52 @@ mod tests {
     }
 
     #[test]
-    fn charger_starts_with_initial_amount_and_capacity() {
+    fn charge_mineral_need_uses_net_refill_tick_boundaries() {
+        let net_refill = CHARGE_REFILL_PER_TICK - CHARGE_DRAIN_PER_TICK;
+        assert_eq!(minerals_to_fully_charge(MAX_CHARGE, MAX_CHARGE), 0);
+        assert_eq!(
+            minerals_to_fully_charge(MAX_CHARGE - net_refill, MAX_CHARGE),
+            CHARGER_MATERIAL_DRAIN_PER_TICK
+        );
+        assert_eq!(
+            minerals_to_fully_charge(MAX_CHARGE - net_refill * 1.01, MAX_CHARGE),
+            CHARGER_MATERIAL_DRAIN_PER_TICK * 2
+        );
+    }
+
+    #[test]
+    fn charge_mineral_need_clamps_empty_and_out_of_range_charge() {
+        let net_refill = CHARGE_REFILL_PER_TICK - CHARGE_DRAIN_PER_TICK;
+        let full_refill_ticks = (MAX_CHARGE / net_refill).ceil() as u32;
+        let full_refill_minerals =
+            full_refill_ticks.saturating_mul(CHARGER_MATERIAL_DRAIN_PER_TICK);
+        assert_eq!(
+            minerals_to_fully_charge(0.0, MAX_CHARGE),
+            full_refill_minerals
+        );
+        assert_eq!(
+            minerals_to_fully_charge(-1.0, MAX_CHARGE),
+            full_refill_minerals
+        );
+        assert_eq!(minerals_to_fully_charge(MAX_CHARGE + 1.0, MAX_CHARGE), 0);
+    }
+
+    #[test]
+    fn charger_starts_empty_with_full_capacity() {
         let charger = Charger::new(IVec2::new(1, -1));
         assert_eq!(charger.cell, IVec2::new(1, -1));
         assert_eq!(charger.kind, AUTO_CHARGER_KIND);
-        assert_eq!(charger.amount, AUTO_CHARGER_INITIAL_AMOUNT);
+        assert_eq!(charger.amount, 0);
         assert_eq!(charger.capacity, AUTO_CHARGER_CAPACITY);
         assert_eq!(charger.radius, AUTO_CHARGER_RADIUS);
-        assert!(charger.has_supply());
-        assert_eq!(
-            charger.free_space(),
-            AUTO_CHARGER_CAPACITY - AUTO_CHARGER_INITIAL_AMOUNT
-        );
+        assert!(!charger.has_supply());
+        assert_eq!(charger.free_space(), AUTO_CHARGER_CAPACITY);
     }
 
     #[test]
     fn charger_has_supply_only_while_amount_is_positive() {
         let mut charger = Charger::new(IVec2::new(0, 0));
-        assert!(charger.has_supply());
+        assert!(!charger.has_supply());
         charger.amount = 1;
         assert!(charger.has_supply());
         charger.amount = 0;
@@ -1092,15 +1123,9 @@ mod tests {
 
     #[test]
     fn auto_charger_constants_form_a_consistent_buffer() {
-        // A freshly auto-created charger has free space for
-        // a hauler delivery AND a non-zero amount so it is
-        // already a valid rotation target. The first
-        // implementation relies on this: the emergence
-        // system gives the swarm a head start instead of
-        // expecting the hauler to fill the buffer before
-        // the first charge can happen.
+        // New chargers rely on physical logistics for all material.
+        const { assert!(AUTO_CHARGER_INITIAL_AMOUNT == 0) };
         const { assert!(AUTO_CHARGER_INITIAL_AMOUNT < AUTO_CHARGER_CAPACITY) };
-        const { assert!(AUTO_CHARGER_INITIAL_AMOUNT > 0) };
     }
 
     #[test]

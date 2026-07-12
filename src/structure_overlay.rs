@@ -1,17 +1,16 @@
-//! Zoom-aware world-space fill bars for structures and loaded haulers.
+//! Zoom-aware world-space physical logistics indicators.
 //!
-//! Structures always get a small horizontal bar above their sprite. The bar
-//! shows buffer fullness for deposits, stockpiles, facilities, chargers, and
-//! build progress for planned structures. Haulers get the same treatment only
-//! while carrying a [`HaulerLoad`]. Bars live in world space and use the same
-//! zoom threshold that the previous structure labels used.
+//! Structures show physical buffer amounts plus reservation state. Cargo bars
+//! appear above Workers and Haulers only while cargo exists or a source transfer
+//! is active. Every segment reads live ECS state each update.
 
 use bevy::{ecs::query::QueryFilter, prelude::*};
 
 use crate::fly_camera::CameraZoom2d;
 use crate::nanobot::{
-    Charger, HaulerLoad, Nanobot, PlannedStructure, ProductionFacility, BOT_RADIUS,
-    DEFAULT_PLANNED_WORK_TICKS, HAULER_CARRY_CAPACITY, PLANNED_STRUCTURE_FOOTPRINT,
+    Cargo, Charger, ExtractProgress, HaulerLoading, LogisticsReservation, Nanobot, NanobotType,
+    PlannedStructure, ProductionFacility, BOT_RADIUS, DEFAULT_PLANNED_WORK_TICKS,
+    HAULER_CARRY_CAPACITY, PLANNED_STRUCTURE_FOOTPRINT, WORKER_CARRY_CAPACITY,
 };
 use crate::resources::{ResourceDeposit, Stockpile};
 use crate::GAMEPLAY_SPRITE_Z;
@@ -29,7 +28,7 @@ pub const DEFAULT_DEPOSIT_OVERLAY_RADIUS: f32 = 32.0;
 pub const STRUCTURE_FOOTPRINT_LABEL_GAP: f32 = 12.0;
 
 const STRUCTURE_BAR_SIZE: Vec2 = Vec2::new(48.0, 6.0);
-const HAULER_BAR_SIZE: Vec2 = Vec2::new(32.0, 4.0);
+const CARGO_BAR_SIZE: Vec2 = Vec2::new(32.0, 4.0);
 const HAULER_OVERLAY_GAP: f32 = 8.0;
 const FILL_CHILD_Z: f32 = 0.01;
 
@@ -55,17 +54,19 @@ pub enum StructureOverlayKind {
     Facility,
     Planned,
     Charger,
+    Worker,
     Hauler,
 }
 
 impl StructureOverlayKind {
     /// All kinds in stable declaration order.
-    pub const ALL: [StructureOverlayKind; 6] = [
+    pub const ALL: [StructureOverlayKind; 7] = [
         StructureOverlayKind::Deposit,
         StructureOverlayKind::Stockpile,
         StructureOverlayKind::Facility,
         StructureOverlayKind::Planned,
         StructureOverlayKind::Charger,
+        StructureOverlayKind::Worker,
         StructureOverlayKind::Hauler,
     ];
 
@@ -84,7 +85,10 @@ impl StructureOverlayKind {
 pub struct StructureOverlay {
     pub target: Entity,
     pub kind: StructureOverlayKind,
+    /// Physical-amount segment; retained as `fill` for API compatibility.
     pub fill: Entity,
+    pub outgoing_reserved: Entity,
+    pub incoming_reserved: Entity,
 }
 
 /// Marker for overlay background sprites.
@@ -94,6 +98,19 @@ pub struct StructureOverlayBackground;
 /// Marker for overlay fill sprites.
 #[derive(Debug, Component, Clone, Copy)]
 pub struct StructureOverlayFill;
+
+/// Semantic segment type used by deterministic rendering assertions.
+#[derive(Debug, Component, Clone, Copy, PartialEq, Eq)]
+pub struct StructureOverlaySegment {
+    pub kind: StructureOverlaySegmentKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructureOverlaySegmentKind {
+    Physical,
+    OutgoingReserved,
+    IncomingReserved,
+}
 
 /// Backwards-compatible alias for callers that name the generic fill overlay.
 pub type FillOverlay = StructureOverlay;
@@ -109,10 +126,10 @@ pub fn overlay_label_offset_y(kind: StructureOverlayKind, deposit_radius: Option
         | StructureOverlayKind::Facility
         | StructureOverlayKind::Planned
         | StructureOverlayKind::Charger => PLANNED_STRUCTURE_FOOTPRINT / 2.0,
-        StructureOverlayKind::Hauler => BOT_RADIUS,
+        StructureOverlayKind::Worker | StructureOverlayKind::Hauler => BOT_RADIUS,
     };
     let gap = match kind {
-        StructureOverlayKind::Hauler => HAULER_OVERLAY_GAP,
+        StructureOverlayKind::Worker | StructureOverlayKind::Hauler => HAULER_OVERLAY_GAP,
         _ => STRUCTURE_FOOTPRINT_LABEL_GAP,
     };
     extent + gap
@@ -137,7 +154,7 @@ pub fn planned_fill_fraction(planned: &PlannedStructure) -> f32 {
 /// World-space bar size for each overlay kind.
 pub fn overlay_bar_size(kind: StructureOverlayKind) -> Vec2 {
     match kind {
-        StructureOverlayKind::Hauler => HAULER_BAR_SIZE,
+        StructureOverlayKind::Worker | StructureOverlayKind::Hauler => CARGO_BAR_SIZE,
         _ => STRUCTURE_BAR_SIZE,
     }
 }
@@ -155,7 +172,17 @@ pub fn overlay_fill_color(kind: StructureOverlayKind) -> Color {
         StructureOverlayKind::Facility => Color::srgb(0.25, 0.55, 1.0),
         StructureOverlayKind::Planned => Color::srgb(0.85, 0.85, 0.90),
         StructureOverlayKind::Charger => Color::srgb(0.75, 0.35, 1.0),
+        StructureOverlayKind::Worker => Color::srgb(0.35, 1.0, 0.65),
         StructureOverlayKind::Hauler => Color::srgb(0.25, 0.90, 1.0),
+    }
+}
+
+/// Stable colors make reservation direction legible across structure kinds.
+pub fn reservation_segment_color(kind: StructureOverlaySegmentKind) -> Color {
+    match kind {
+        StructureOverlaySegmentKind::Physical => Color::WHITE,
+        StructureOverlaySegmentKind::OutgoingReserved => Color::srgb(1.0, 0.42, 0.12),
+        StructureOverlaySegmentKind::IncomingReserved => Color::srgb(0.20, 0.95, 1.0),
     }
 }
 
@@ -215,18 +242,19 @@ pub fn structure_overlay_spawn_system(
     facilities: Query<Entity, With<ProductionFacility>>,
     planned: Query<Entity, With<PlannedStructure>>,
     chargers: Query<Entity, With<Charger>>,
-    loaded_haulers: Query<Entity, (With<Nanobot>, With<HaulerLoad>)>,
+    cargo_bots: Query<
+        (
+            Entity,
+            &Cargo,
+            &NanobotType,
+            Option<&ExtractProgress>,
+            Option<&HaulerLoading>,
+        ),
+        With<Nanobot>,
+    >,
     existing: Query<(Entity, &StructureOverlay)>,
 ) {
-    // Detect overlays that are stale because their target's
-    // structure kind changed underneath them — most commonly a
-    // `Planned` overlay left behind when a `PlannedStructure`
-    // is promoted in place to a `Stockpile`, `Charger`, or
-    // `ProductionFacility`. Such an overlay would otherwise keep
-    // reading the (now removed) `PlannedStructure` component and
-    // render a permanently empty bar. Despawn it so the
-    // per-kind spawn pass below re-creates the correct overlay.
-    let mut covered: std::collections::HashSet<Entity> = std::collections::HashSet::new();
+    let mut covered = std::collections::HashSet::new();
     for (overlay_entity, overlay) in &existing {
         let actual = actual_overlay_kind(
             overlay.target,
@@ -235,12 +263,11 @@ pub fn structure_overlay_spawn_system(
             &facilities,
             &planned,
             &chargers,
-            &loaded_haulers,
+            &cargo_bots,
         );
         if actual == Some(overlay.kind) {
             covered.insert(overlay.target);
         } else {
-            // `despawn` recursively removes the fill child too.
             commands.entity(overlay_entity).despawn();
         }
     }
@@ -274,12 +301,19 @@ pub fn structure_overlay_spawn_system(
         &chargers,
         StructureOverlayKind::Charger,
     );
-    spawn_missing(
-        &mut commands,
-        &covered,
-        &loaded_haulers,
-        StructureOverlayKind::Hauler,
-    );
+    for (entity, cargo, bot_type, extracting, loading) in &cargo_bots {
+        if covered.contains(&entity)
+            || (cargo.amount == 0 && extracting.is_none() && loading.is_none())
+        {
+            continue;
+        }
+        let kind = match bot_type {
+            NanobotType::Worker => StructureOverlayKind::Worker,
+            NanobotType::Hauler => StructureOverlayKind::Hauler,
+            _ => continue,
+        };
+        spawn_overlay_for(&mut commands, entity, kind);
+    }
 }
 
 /// Resolve an entity's current overlay kind by probing each
@@ -294,7 +328,16 @@ fn actual_overlay_kind(
     facilities: &Query<Entity, With<ProductionFacility>>,
     planned: &Query<Entity, With<PlannedStructure>>,
     chargers: &Query<Entity, With<Charger>>,
-    loaded_haulers: &Query<Entity, (With<Nanobot>, With<HaulerLoad>)>,
+    cargo_bots: &Query<
+        (
+            Entity,
+            &Cargo,
+            &NanobotType,
+            Option<&ExtractProgress>,
+            Option<&HaulerLoading>,
+        ),
+        With<Nanobot>,
+    >,
 ) -> Option<StructureOverlayKind> {
     if deposits.get(target).is_ok() {
         Some(StructureOverlayKind::Deposit)
@@ -306,8 +349,16 @@ fn actual_overlay_kind(
         Some(StructureOverlayKind::Planned)
     } else if chargers.get(target).is_ok() {
         Some(StructureOverlayKind::Charger)
-    } else if loaded_haulers.get(target).is_ok() {
-        Some(StructureOverlayKind::Hauler)
+    } else if let Ok((_, cargo, bot_type, extracting, loading)) = cargo_bots.get(target) {
+        if cargo.amount == 0 && extracting.is_none() && loading.is_none() {
+            None
+        } else {
+            match bot_type {
+                NanobotType::Worker => Some(StructureOverlayKind::Worker),
+                NanobotType::Hauler => Some(StructureOverlayKind::Hauler),
+                _ => None,
+            }
+        }
     } else {
         None
     }
@@ -328,22 +379,37 @@ fn spawn_missing(
 
 fn spawn_overlay_for(commands: &mut Commands, target: Entity, kind: StructureOverlayKind) {
     let size = overlay_bar_size(kind);
-    let fill = commands
-        .spawn((
-            StructureOverlayFill,
-            Sprite {
-                color: overlay_fill_color(kind),
-                custom_size: Some(Vec2::new(0.0, size.y)),
-                ..default()
-            },
-            Transform::from_translation(Vec3::new(-size.x / 2.0, 0.0, FILL_CHILD_Z)),
-            Visibility::Inherited,
-        ))
-        .id();
+    let spawn_segment = |commands: &mut Commands, segment_kind| {
+        commands
+            .spawn((
+                StructureOverlayFill,
+                StructureOverlaySegment { kind: segment_kind },
+                Sprite {
+                    color: match segment_kind {
+                        StructureOverlaySegmentKind::Physical => overlay_fill_color(kind),
+                        _ => reservation_segment_color(segment_kind),
+                    },
+                    custom_size: Some(Vec2::new(0.0, size.y)),
+                    ..default()
+                },
+                Transform::from_translation(Vec3::new(-size.x / 2.0, 0.0, FILL_CHILD_Z)),
+                Visibility::Inherited,
+            ))
+            .id()
+    };
+    let fill = spawn_segment(commands, StructureOverlaySegmentKind::Physical);
+    let outgoing_reserved = spawn_segment(commands, StructureOverlaySegmentKind::OutgoingReserved);
+    let incoming_reserved = spawn_segment(commands, StructureOverlaySegmentKind::IncomingReserved);
 
     let background = commands
         .spawn((
-            StructureOverlay { target, kind, fill },
+            StructureOverlay {
+                target,
+                kind,
+                fill,
+                outgoing_reserved,
+                incoming_reserved,
+            },
             StructureOverlayBackground,
             Sprite {
                 color: overlay_background_color(kind),
@@ -355,14 +421,24 @@ fn spawn_overlay_for(commands: &mut Commands, target: Entity, kind: StructureOve
         ))
         .id();
 
-    commands.entity(background).add_child(fill);
+    commands
+        .entity(background)
+        .add_children(&[fill, outgoing_reserved, incoming_reserved]);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OverlayAmounts {
+    physical: u32,
+    capacity: u32,
+    outgoing_reserved: u32,
+    incoming_reserved: u32,
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn structure_overlay_update_system(
     mut overlays: Query<(&StructureOverlay, &mut Transform), Without<StructureOverlayFill>>,
     mut fills: Query<
-        (&mut Sprite, &mut Transform),
+        (&StructureOverlaySegment, &mut Sprite, &mut Transform),
         (With<StructureOverlayFill>, Without<StructureOverlay>),
     >,
     deposits: Query<&ResourceDeposit, Without<StructureOverlay>>,
@@ -370,7 +446,8 @@ pub fn structure_overlay_update_system(
     facilities: Query<&ProductionFacility, Without<StructureOverlay>>,
     planned: Query<&PlannedStructure, Without<StructureOverlay>>,
     chargers: Query<&Charger, Without<StructureOverlay>>,
-    haulers: Query<&HaulerLoad, Without<StructureOverlay>>,
+    cargo: Query<&Cargo, Without<StructureOverlay>>,
+    reservations: Query<&LogisticsReservation>,
     target_transforms: Query<
         &Transform,
         (Without<StructureOverlay>, Without<StructureOverlayFill>),
@@ -383,82 +460,153 @@ pub fn structure_overlay_update_system(
         else {
             continue;
         };
-
         let deposit_radius = deposits.get(overlay.target).ok().map(|d| d.radius);
         let offset_y = overlay_label_offset_y(overlay.kind, deposit_radius);
         transform.translation = (target_pos + Vec2::new(0.0, offset_y)).extend(STRUCTURE_OVERLAY_Z);
 
-        let fraction = compute_fill_fraction(
+        let amounts = compute_overlay_amounts(
             overlay.kind,
             &deposits,
             &stockpiles,
             &facilities,
             &planned,
             &chargers,
-            &haulers,
+            &cargo,
+            &reservations,
             overlay.target,
         );
-        update_fill_sprite(overlay.kind, fraction, overlay.fill, &mut fills);
+        update_segment_sprite(overlay.kind, amounts, overlay.fill, &mut fills);
+        update_segment_sprite(overlay.kind, amounts, overlay.outgoing_reserved, &mut fills);
+        update_segment_sprite(overlay.kind, amounts, overlay.incoming_reserved, &mut fills);
     }
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
-fn compute_fill_fraction(
+fn compute_overlay_amounts(
     kind: StructureOverlayKind,
     deposits: &Query<&ResourceDeposit, Without<StructureOverlay>>,
     stockpiles: &Query<&Stockpile, Without<StructureOverlay>>,
     facilities: &Query<&ProductionFacility, Without<StructureOverlay>>,
     planned: &Query<&PlannedStructure, Without<StructureOverlay>>,
     chargers: &Query<&Charger, Without<StructureOverlay>>,
-    haulers: &Query<&HaulerLoad, Without<StructureOverlay>>,
+    cargo: &Query<&Cargo, Without<StructureOverlay>>,
+    reservations: &Query<&LogisticsReservation>,
     target: Entity,
-) -> f32 {
-    match kind {
+) -> OverlayAmounts {
+    let (physical, capacity) = match kind {
         StructureOverlayKind::Deposit => deposits
             .get(target)
-            .map(|d| fill_fraction(d.amount, d.capacity))
-            .unwrap_or(0.0),
+            .map(|value| (value.amount, value.capacity))
+            .unwrap_or_default(),
         StructureOverlayKind::Stockpile => stockpiles
             .get(target)
-            .map(|s| fill_fraction(s.amount, s.capacity))
-            .unwrap_or(0.0),
+            .map(|value| (value.amount, value.capacity))
+            .unwrap_or_default(),
         StructureOverlayKind::Facility => facilities
             .get(target)
-            .map(|f| fill_fraction(f.input_amount, f.input_capacity))
-            .unwrap_or(0.0),
+            .map(|value| (value.input_amount, value.input_capacity))
+            .unwrap_or_default(),
         StructureOverlayKind::Planned => planned
             .get(target)
-            .map(planned_fill_fraction)
-            .unwrap_or(0.0),
+            .map(|value| {
+                (
+                    DEFAULT_PLANNED_WORK_TICKS.saturating_sub(value.work_remaining),
+                    DEFAULT_PLANNED_WORK_TICKS,
+                )
+            })
+            .unwrap_or_default(),
         StructureOverlayKind::Charger => chargers
             .get(target)
-            .map(|c| fill_fraction(c.amount, c.capacity))
-            .unwrap_or(0.0),
-        StructureOverlayKind::Hauler => haulers
+            .map(|value| (value.amount, value.capacity))
+            .unwrap_or_default(),
+        StructureOverlayKind::Worker => cargo
             .get(target)
-            .map(|l| fill_fraction(l.amount, HAULER_CARRY_CAPACITY))
-            .unwrap_or(0.0),
+            .map(|value| (value.amount, WORKER_CARRY_CAPACITY))
+            .unwrap_or_default(),
+        StructureOverlayKind::Hauler => cargo
+            .get(target)
+            .map(|value| (value.amount, HAULER_CARRY_CAPACITY))
+            .unwrap_or_default(),
+    };
+    let outgoing_reserved = if matches!(
+        kind,
+        StructureOverlayKind::Deposit | StructureOverlayKind::Stockpile
+    ) {
+        reservations
+            .iter()
+            .filter(|reservation| reservation.source == target)
+            .map(|reservation| reservation.source_remaining)
+            .sum()
+    } else {
+        0
+    };
+    let incoming_reserved = if matches!(
+        kind,
+        StructureOverlayKind::Stockpile
+            | StructureOverlayKind::Facility
+            | StructureOverlayKind::Charger
+    ) {
+        reservations
+            .iter()
+            .filter(|reservation| reservation.destination == target)
+            .map(|reservation| reservation.destination_remaining)
+            .sum()
+    } else {
+        0
+    };
+    OverlayAmounts {
+        physical,
+        capacity,
+        outgoing_reserved,
+        incoming_reserved,
     }
 }
 
 #[allow(clippy::type_complexity)]
-fn update_fill_sprite(
+fn update_segment_sprite(
     kind: StructureOverlayKind,
-    fraction: f32,
-    fill: Entity,
+    amounts: OverlayAmounts,
+    entity: Entity,
     fills: &mut Query<
-        (&mut Sprite, &mut Transform),
+        (&StructureOverlaySegment, &mut Sprite, &mut Transform),
         (With<StructureOverlayFill>, Without<StructureOverlay>),
     >,
 ) {
-    let Ok((mut sprite, mut transform)) = fills.get_mut(fill) else {
+    let Ok((segment, mut sprite, mut transform)) = fills.get_mut(entity) else {
         return;
     };
     let size = overlay_bar_size(kind);
-    let fill_width = size.x * fraction.clamp(0.0, 1.0);
+    let physical_fraction = fill_fraction(amounts.physical, amounts.capacity);
+    let (fraction, start_fraction, color) = match segment.kind {
+        StructureOverlaySegmentKind::Physical => (physical_fraction, 0.0, overlay_fill_color(kind)),
+        StructureOverlaySegmentKind::OutgoingReserved => {
+            let reserved = amounts.outgoing_reserved.min(amounts.physical);
+            let fraction = fill_fraction(reserved, amounts.capacity);
+            (
+                fraction,
+                (physical_fraction - fraction).max(0.0),
+                reservation_segment_color(segment.kind),
+            )
+        }
+        StructureOverlaySegmentKind::IncomingReserved => (
+            fill_fraction(amounts.incoming_reserved, amounts.capacity).min(1.0 - physical_fraction),
+            physical_fraction,
+            reservation_segment_color(segment.kind),
+        ),
+    };
+    let fill_width = size.x * fraction;
     sprite.custom_size = Some(Vec2::new(fill_width, size.y));
-    sprite.color = overlay_fill_color(kind);
-    transform.translation = Vec3::new(-(size.x - fill_width) / 2.0, 0.0, FILL_CHILD_Z);
+    sprite.color = color;
+    transform.translation = Vec3::new(
+        -size.x / 2.0 + size.x * start_fraction + fill_width / 2.0,
+        0.0,
+        FILL_CHILD_Z
+            + if segment.kind == StructureOverlaySegmentKind::Physical {
+                0.0
+            } else {
+                0.01
+            },
+    );
 }
 
 pub fn structure_overlay_visibility_system(
@@ -475,17 +623,25 @@ pub fn structure_overlay_visibility_system(
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub fn structure_overlay_cleanup_system(
     mut commands: Commands,
     overlays: Query<(Entity, &StructureOverlay)>,
     targets: Query<Entity>,
-    loaded_haulers: Query<(), With<HaulerLoad>>,
+    cargo_bots: Query<(&Cargo, Option<&ExtractProgress>, Option<&HaulerLoading>), With<Nanobot>>,
 ) {
     for (overlay_entity, overlay) in &overlays {
         let target_gone = targets.get(overlay.target).is_err();
-        let empty_hauler = overlay.kind == StructureOverlayKind::Hauler
-            && loaded_haulers.get(overlay.target).is_err();
-        if target_gone || empty_hauler {
+        let cargo_hidden = matches!(
+            overlay.kind,
+            StructureOverlayKind::Worker | StructureOverlayKind::Hauler
+        ) && cargo_bots.get(overlay.target).map_or(
+            true,
+            |(cargo, extracting, loading)| {
+                cargo.amount == 0 && extracting.is_none() && loading.is_none()
+            },
+        );
+        if target_gone || cargo_hidden {
             commands.entity(overlay_entity).despawn();
         }
     }
@@ -523,7 +679,11 @@ mod tests {
         );
         assert_eq!(
             overlay_bar_size(StructureOverlayKind::Hauler),
-            HAULER_BAR_SIZE
+            CARGO_BAR_SIZE
+        );
+        assert_eq!(
+            overlay_bar_size(StructureOverlayKind::Worker),
+            CARGO_BAR_SIZE
         );
     }
 
@@ -604,9 +764,11 @@ mod tests {
                 assert_eq!(offset, structure_offset);
             }
         }
-        assert_eq!(
-            overlay_label_offset_y(StructureOverlayKind::Hauler, None),
-            BOT_RADIUS + HAULER_OVERLAY_GAP
-        );
+        for kind in [StructureOverlayKind::Worker, StructureOverlayKind::Hauler] {
+            assert_eq!(
+                overlay_label_offset_y(kind, None),
+                BOT_RADIUS + HAULER_OVERLAY_GAP
+            );
+        }
     }
 }

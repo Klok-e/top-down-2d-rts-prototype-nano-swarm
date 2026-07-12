@@ -3,8 +3,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         project_actionable_opportunities_system, ActionableProjection, AllocationRegion,
-        OpportunityCategory, PlannedKind, PlannedStructure, Structure, StructureKind,
-        MAINTENANCE_NEEDS_THRESHOLD,
+        OpportunityCategory, OwnerSwarm, PlannedKind, PlannedStructure, Structure, StructureKind,
+        SwarmId, MAINTENANCE_NEEDS_THRESHOLD,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole},
 };
@@ -93,6 +93,7 @@ fn build_and_defend_intent_project_maintenance_and_defend_work() {
 #[test]
 fn haul_opportunity_is_indexed_by_source_region() {
     let mut app = projection_app();
+    let swarm = app.world_mut().spawn(SwarmId::PLAYER).id();
     let source_cell = IVec2::new(9, 0);
     app.world_mut().spawn((
         Stockpile {
@@ -102,6 +103,7 @@ fn haul_opportunity_is_indexed_by_source_region() {
             radius: 16.0,
         },
         StockpileRole::Source,
+        OwnerSwarm(swarm),
         Transform::from_xyz(9.5 * 512.0, 32.0, 0.0),
     ));
     app.world_mut().spawn((
@@ -112,6 +114,7 @@ fn haul_opportunity_is_indexed_by_source_region() {
             radius: 16.0,
         },
         StockpileRole::Sink,
+        OwnerSwarm(swarm),
         Transform::from_xyz(32.0, 32.0, 0.0),
     ));
 
@@ -129,6 +132,50 @@ fn haul_opportunity_is_indexed_by_source_region() {
             .is_empty(),
         "sink region must not own source-anchored haul work"
     );
+}
+
+#[test]
+fn haul_projection_rejects_unowned_and_cross_swarm_pairs() {
+    let mut app = projection_app();
+    let player = app.world_mut().spawn(SwarmId::PLAYER).id();
+    let enemy = app.world_mut().spawn(SwarmId(9)).id();
+    let source = Stockpile {
+        kind: ResourceKind::Minerals,
+        amount: 20,
+        capacity: 20,
+        radius: 16.0,
+    };
+    let sink = Stockpile {
+        kind: ResourceKind::Minerals,
+        amount: 0,
+        capacity: 50,
+        radius: 16.0,
+    };
+    app.world_mut().spawn((
+        source,
+        StockpileRole::Source,
+        OwnerSwarm(player),
+        Transform::from_xyz(32.0, 32.0, 0.0),
+    ));
+    app.world_mut().spawn((
+        sink,
+        StockpileRole::Sink,
+        OwnerSwarm(enemy),
+        Transform::from_xyz(64.0, 32.0, 0.0),
+    ));
+    app.world_mut().spawn((
+        sink,
+        StockpileRole::Sink,
+        Transform::from_xyz(96.0, 32.0, 0.0),
+    ));
+
+    app.update();
+
+    assert!(app
+        .world()
+        .resource::<ActionableProjection>()
+        .opportunities(AllocationRegion::for_cell(IVec2::ZERO))
+        .is_empty());
 }
 
 #[test]

@@ -8,8 +8,8 @@ use super::{
 use crate::nanobot::{
     ChargerAssignment, ChargerProgress, DefendAssignment, DefendHold, DirectMovementComponent,
     ExtractProgress, GatherAssignment, HaulerAssignment, HaulerLoading, HaulerRoute,
-    MaintenanceAssignment, MaintenanceProgress, PlannedStructureClaim, PlannedStructureProgress,
-    SwarmId,
+    LogisticsReservation, MaintenanceAssignment, MaintenanceProgress, PlannedStructureClaim,
+    PlannedStructureProgress, SwarmId,
 };
 
 /// Charge override state for a regional lease.
@@ -167,10 +167,21 @@ pub fn maintain_regional_leases_system(
         Option<&DefendAssignment>,
         Option<&DefendHold>,
         Option<&HaulerAssignment>,
+        Option<&LogisticsReservation>,
     )>,
 ) {
-    for (entity, mut lease, progress, gather, planned, maintenance, defend, hold, haul) in
-        &mut leases
+    for (
+        entity,
+        mut lease,
+        progress,
+        gather,
+        planned,
+        maintenance,
+        defend,
+        hold,
+        haul,
+        reservation,
+    ) in &mut leases
     {
         let lifecycle_active = gather.is_some()
             || planned.is_some()
@@ -186,7 +197,7 @@ pub fn maintain_regional_leases_system(
             },
             |value| value.0,
         );
-        let supported = projection_supports_lease(&projection, &lease);
+        let supported = reservation.is_some() || projection_supports_lease(&projection, &lease);
         let decision = evaluate_lease(
             &mut lease,
             clock.tick(),
@@ -204,7 +215,8 @@ pub fn maintain_regional_leases_system(
                 OpportunityCategory::Gather => {
                     entity_commands
                         .remove::<GatherAssignment>()
-                        .remove::<ExtractProgress>();
+                        .remove::<ExtractProgress>()
+                        .remove::<LogisticsReservation>();
                 }
                 OpportunityCategory::PlannedBuild => {
                     entity_commands
@@ -225,6 +237,7 @@ pub fn maintain_regional_leases_system(
                     entity_commands
                         .remove::<HaulerAssignment>()
                         .remove::<HaulerLoading>()
+                        .remove::<LogisticsReservation>()
                         .remove::<HaulerRoute>();
                 }
             }

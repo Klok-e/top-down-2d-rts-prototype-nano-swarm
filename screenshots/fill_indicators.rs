@@ -3,7 +3,10 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
-    nanobot::{Charger, HaulerLoad, Nanobot, PlannedKind, PlannedStructure, ProductionFacility},
+    nanobot::{
+        Charger, HaulerLoad, Nanobot, NanobotType, PlannedKind, PlannedStructure,
+        ProductionFacility,
+    },
     resources::{ResourceDeposit, ResourceKind, Stockpile},
     structure_overlay::{StructureOverlay, StructureOverlayKind},
     GAMEPLAY_SPRITE_Z,
@@ -160,6 +163,7 @@ fn spawn_loaded_hauler(world: &mut World, pos: Vec2) -> Entity {
     world
         .spawn((
             Nanobot {},
+            NanobotType::Hauler,
             HaulerLoad {
                 kind: ResourceKind::Minerals,
                 amount: 30,

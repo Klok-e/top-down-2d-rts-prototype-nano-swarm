@@ -732,6 +732,13 @@ pub fn spawn_busy_facility_at(app: &mut App, world_pos: Vec2, target: NanobotTyp
 /// amount actually added (capacity minus whatever was already
 /// in the hopper).
 pub fn fill_facility_input(app: &mut App, facility: Entity) -> u32 {
+    let owner = app
+        .world()
+        .entity(facility)
+        .get::<OwnerSwarm>()
+        .and_then(|owner| app.world().entity(owner.0).get::<SwarmId>())
+        .copied()
+        .unwrap_or(SwarmId::PLAYER);
     let added = {
         let world = app.world_mut();
         let mut entity = world.entity_mut(facility);
@@ -744,7 +751,7 @@ pub fn fill_facility_input(app: &mut App, facility: Entity) -> u32 {
     };
     app.world_mut()
         .resource_mut::<ResourceLedger>()
-        .add(ResourceKind::Minerals, added);
+        .add_for(owner, ResourceKind::Minerals, added);
     added
 }
 

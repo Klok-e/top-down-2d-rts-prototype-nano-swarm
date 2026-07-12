@@ -1,6 +1,7 @@
 pub mod allocation;
 mod autonomy;
 mod build;
+mod cargo;
 mod charge;
 mod collapse;
 mod components;
@@ -24,6 +25,7 @@ mod sprites;
 pub use allocation::*;
 pub use autonomy::*;
 pub use build::*;
+pub use cargo::*;
 pub use charge::*;
 pub use collapse::*;
 pub use components::*;
@@ -118,6 +120,10 @@ impl Plugin for NanobotPlugin {
         )
         .add_systems(Update, velocity_system)
         .add_systems(Update, move_velocity_system)
+        // Death settlement belongs to the final lifecycle phase. Every Update
+        // system finishes and applies deferred component mutations before a dead
+        // bot is removed, so no gameplay command can target its stale entity ID.
+        .add_systems(Last, nanobot_death_cleanup_system)
         .add_systems(Update, bot_debug_circle_system);
     }
 }

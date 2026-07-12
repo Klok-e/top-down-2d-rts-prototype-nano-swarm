@@ -18,6 +18,8 @@ mod gather_overlap;
 mod gather_owner_filter;
 #[path = "behavior/gather_zone.rs"]
 mod gather_zone;
+#[path = "behavior/gradual_hauler_pickup.rs"]
+mod gradual_hauler_pickup;
 #[path = "behavior/hauler_corridor.rs"]
 mod hauler_corridor;
 #[path = "behavior/idle_spread.rs"]
@@ -34,6 +36,8 @@ mod no_instant_spawning;
 mod opponent_swarm;
 #[path = "behavior/per_swarm_intent_ownership.rs"]
 mod per_swarm_intent_ownership;
+#[path = "behavior/physical_worker_gather.rs"]
+mod physical_worker_gather;
 #[path = "behavior/planned_structure.rs"]
 mod planned_structure;
 #[path = "behavior/production_collapse.rs"]
@@ -58,6 +62,8 @@ mod stockpile_and_haul;
 mod structure_overlay;
 #[path = "behavior/tactical_overlay.rs"]
 mod tactical_overlay;
+#[path = "behavior/terminal_logistics_priority.rs"]
+mod terminal_logistics_priority;
 #[path = "behavior/world_space_nanobots.rs"]
 mod world_space_nanobots;
 #[path = "behavior/zone_brush_ui_capture.rs"]

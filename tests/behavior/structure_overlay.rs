@@ -4,13 +4,14 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
     nanobot::{
-        Charger, HaulerLoad, PlannedKind, PlannedStructure, ProductionFacility,
-        HAULER_CARRY_CAPACITY,
+        Cargo, Charger, ExtractProgress, HaulerLoad, LogisticsReservation, PlannedKind,
+        PlannedStructure, ProductionFacility, HAULER_CARRY_CAPACITY, WORKER_CARRY_CAPACITY,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole},
     structure_overlay::{
         fill_fraction, overlay_bar_size, overlay_fill_color, overlay_label_offset_y,
-        StructureOverlay, StructureOverlayFill, StructureOverlayKind, StructureOverlayPlugin,
+        reservation_segment_color, StructureOverlay, StructureOverlayFill, StructureOverlayKind,
+        StructureOverlayPlugin, StructureOverlaySegment, StructureOverlaySegmentKind,
         StructureOverlaySettings, STRUCTURE_FOOTPRINT_LABEL_GAP, STRUCTURE_OVERLAY_Z,
     },
     GAMEPLAY_SPRITE_Z, MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
@@ -115,6 +116,160 @@ fn charger_overlay_bar_uses_amount_over_capacity() {
     let overlay = find_overlay_for(&mut app, charger);
     assert_eq!(kind_of(&app, overlay), StructureOverlayKind::Charger);
     assert_fill_fraction(&app, overlay, StructureOverlayKind::Charger, 0.25);
+}
+
+#[test]
+fn worker_transfer_overlay_exists_while_empty_then_tracks_live_cargo() {
+    let mut app = build_app();
+    let worker = common::spawn_worker_at(&mut app, Vec2::ZERO);
+    app.world_mut().entity_mut(worker).insert((
+        Cargo::empty(ResourceKind::Minerals),
+        ExtractProgress::default(),
+    ));
+
+    app.update();
+
+    let overlay = find_overlay_for(&mut app, worker);
+    assert_eq!(kind_of(&app, overlay), StructureOverlayKind::Worker);
+    assert_segment(
+        &app,
+        overlay,
+        StructureOverlaySegmentKind::Physical,
+        0.0,
+        overlay_fill_color(StructureOverlayKind::Worker),
+    );
+
+    app.world_mut()
+        .entity_mut(worker)
+        .get_mut::<Cargo>()
+        .unwrap()
+        .amount = WORKER_CARRY_CAPACITY / 2;
+    app.update();
+
+    assert_segment(
+        &app,
+        overlay,
+        StructureOverlaySegmentKind::Physical,
+        0.5,
+        overlay_fill_color(StructureOverlayKind::Worker),
+    );
+}
+
+#[test]
+fn structure_reservation_segments_track_gradual_transfer_state() {
+    let mut app = build_app();
+    let source = common::spawn_stockpile(&mut app, Vec2::ZERO, 12, 20);
+    let mut facility = ProductionFacility::new();
+    facility.input_amount = 4;
+    facility.input_capacity = 20;
+    let sink = app
+        .world_mut()
+        .spawn((facility, Transform::from_xyz(64.0, 0.0, 0.0)))
+        .id();
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
+    app.world_mut().entity_mut(hauler).insert((
+        Cargo::empty(ResourceKind::Minerals),
+        LogisticsReservation::new(source, sink, ResourceKind::Minerals, 12),
+        top_down_2d_rts_prototype_nano_swarm::nanobot::HaulerLoading,
+    ));
+
+    app.update();
+
+    let source_overlay = find_overlay_for(&mut app, source);
+    let sink_overlay = find_overlay_for(&mut app, sink);
+    assert_segment(
+        &app,
+        source_overlay,
+        StructureOverlaySegmentKind::Physical,
+        0.6,
+        overlay_fill_color(StructureOverlayKind::Stockpile),
+    );
+    assert_segment(
+        &app,
+        source_overlay,
+        StructureOverlaySegmentKind::OutgoingReserved,
+        0.6,
+        reservation_segment_color(StructureOverlaySegmentKind::OutgoingReserved),
+    );
+    assert_segment(
+        &app,
+        sink_overlay,
+        StructureOverlaySegmentKind::IncomingReserved,
+        0.6,
+        reservation_segment_color(StructureOverlaySegmentKind::IncomingReserved),
+    );
+
+    app.world_mut()
+        .entity_mut(source)
+        .get_mut::<Stockpile>()
+        .unwrap()
+        .amount = 8;
+    app.world_mut()
+        .entity_mut(hauler)
+        .get_mut::<Cargo>()
+        .unwrap()
+        .amount = 4;
+    app.world_mut()
+        .entity_mut(hauler)
+        .get_mut::<LogisticsReservation>()
+        .unwrap()
+        .source_remaining = 8;
+    app.update();
+
+    assert_segment(
+        &app,
+        source_overlay,
+        StructureOverlaySegmentKind::Physical,
+        0.4,
+        overlay_fill_color(StructureOverlayKind::Stockpile),
+    );
+    assert_segment(
+        &app,
+        source_overlay,
+        StructureOverlaySegmentKind::OutgoingReserved,
+        0.4,
+        reservation_segment_color(StructureOverlaySegmentKind::OutgoingReserved),
+    );
+    let hauler_overlay = find_overlay_for(&mut app, hauler);
+    assert_segment(
+        &app,
+        hauler_overlay,
+        StructureOverlaySegmentKind::Physical,
+        0.2,
+        overlay_fill_color(StructureOverlayKind::Hauler),
+    );
+
+    app.world_mut()
+        .entity_mut(sink)
+        .get_mut::<ProductionFacility>()
+        .unwrap()
+        .input_amount = 8;
+    app.world_mut()
+        .entity_mut(hauler)
+        .get_mut::<Cargo>()
+        .unwrap()
+        .amount = 8;
+    app.world_mut()
+        .entity_mut(hauler)
+        .get_mut::<LogisticsReservation>()
+        .unwrap()
+        .destination_remaining = 8;
+    app.update();
+
+    assert_segment(
+        &app,
+        sink_overlay,
+        StructureOverlaySegmentKind::Physical,
+        0.4,
+        overlay_fill_color(StructureOverlayKind::Facility),
+    );
+    assert_segment(
+        &app,
+        sink_overlay,
+        StructureOverlaySegmentKind::IncomingReserved,
+        0.4,
+        reservation_segment_color(StructureOverlaySegmentKind::IncomingReserved),
+    );
 }
 
 #[test]
@@ -561,10 +716,135 @@ fn assert_fill_fraction(app: &App, overlay: Entity, kind: StructureOverlayKind, 
     assert!((actual_x - expected_x).abs() < 0.01);
 }
 
+fn assert_segment(
+    app: &App,
+    overlay: Entity,
+    segment_kind: StructureOverlaySegmentKind,
+    expected_fraction: f32,
+    expected_color: Color,
+) {
+    let overlay = app
+        .world()
+        .entity(overlay)
+        .get::<StructureOverlay>()
+        .unwrap();
+    let segment = match segment_kind {
+        StructureOverlaySegmentKind::Physical => overlay.fill,
+        StructureOverlaySegmentKind::OutgoingReserved => overlay.outgoing_reserved,
+        StructureOverlaySegmentKind::IncomingReserved => overlay.incoming_reserved,
+    };
+    assert_eq!(
+        app.world()
+            .entity(segment)
+            .get::<StructureOverlaySegment>()
+            .unwrap()
+            .kind,
+        segment_kind
+    );
+    let sprite = app.world().entity(segment).get::<Sprite>().unwrap();
+    let expected_size = overlay_bar_size(overlay.kind);
+    assert_eq!(sprite.color, expected_color);
+    assert!((sprite.custom_size.unwrap().x - expected_size.x * expected_fraction).abs() < 0.01);
+    assert_eq!(sprite.custom_size.unwrap().y, expected_size.y);
+}
+
 #[allow(dead_code)]
 fn _exports() {
     let _: Charger = Charger::new(IVec2::ZERO);
     let _: PlannedStructure = PlannedStructure::new(PlannedKind::Charger, IVec2::ZERO);
     let _: ProductionFacility = ProductionFacility::new();
     let _: StructureOverlayPlugin = StructureOverlayPlugin;
+}
+
+#[test]
+fn reservation_segments_cover_each_logistics_endpoint_direction() {
+    let mut app = build_app();
+    let deposit = common::spawn_deposit(&mut app, Vec2::ZERO, 20);
+    app.world_mut()
+        .entity_mut(deposit)
+        .get_mut::<ResourceDeposit>()
+        .unwrap()
+        .capacity = 20;
+    let source = common::spawn_stockpile(&mut app, Vec2::new(64.0, 0.0), 10, 20);
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(128.0, 0.0), 10, 20);
+    let mut facility = ProductionFacility::new();
+    facility.input_capacity = 20;
+    let terminal = app
+        .world_mut()
+        .spawn((facility, Transform::from_xyz(192.0, 0.0, 0.0)))
+        .id();
+    app.world_mut().spawn(LogisticsReservation::new(
+        deposit,
+        source,
+        ResourceKind::Minerals,
+        4,
+    ));
+    app.world_mut().spawn(LogisticsReservation::new(
+        source,
+        sink,
+        ResourceKind::Minerals,
+        6,
+    ));
+    app.world_mut().spawn(LogisticsReservation::new(
+        sink,
+        terminal,
+        ResourceKind::Minerals,
+        8,
+    ));
+
+    app.update();
+
+    let deposit_overlay = find_overlay_for(&mut app, deposit);
+    let source_overlay = find_overlay_for(&mut app, source);
+    let sink_overlay = find_overlay_for(&mut app, sink);
+    let terminal_overlay = find_overlay_for(&mut app, terminal);
+    assert_segment(
+        &app,
+        deposit_overlay,
+        StructureOverlaySegmentKind::OutgoingReserved,
+        0.2,
+        reservation_segment_color(StructureOverlaySegmentKind::OutgoingReserved),
+    );
+    assert_segment(
+        &app,
+        source_overlay,
+        StructureOverlaySegmentKind::IncomingReserved,
+        0.2,
+        reservation_segment_color(StructureOverlaySegmentKind::IncomingReserved),
+    );
+    assert_segment(
+        &app,
+        source_overlay,
+        StructureOverlaySegmentKind::OutgoingReserved,
+        0.3,
+        reservation_segment_color(StructureOverlaySegmentKind::OutgoingReserved),
+    );
+    assert_segment(
+        &app,
+        sink_overlay,
+        StructureOverlaySegmentKind::IncomingReserved,
+        0.3,
+        reservation_segment_color(StructureOverlaySegmentKind::IncomingReserved),
+    );
+    assert_segment(
+        &app,
+        sink_overlay,
+        StructureOverlaySegmentKind::OutgoingReserved,
+        0.4,
+        reservation_segment_color(StructureOverlaySegmentKind::OutgoingReserved),
+    );
+    assert_segment(
+        &app,
+        terminal_overlay,
+        StructureOverlaySegmentKind::IncomingReserved,
+        0.4,
+        reservation_segment_color(StructureOverlaySegmentKind::IncomingReserved),
+    );
+    assert_segment(
+        &app,
+        terminal_overlay,
+        StructureOverlaySegmentKind::OutgoingReserved,
+        0.0,
+        reservation_segment_color(StructureOverlaySegmentKind::OutgoingReserved),
+    );
 }

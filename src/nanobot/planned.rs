@@ -643,21 +643,15 @@ pub fn worker_planned_structure_work_system(
         let Ok((planned_entity, mut planned_state, planned_transform, first_target)) =
             planned.get_mut(progress.target)
         else {
-            // Target disappeared. Release the worker; the
-            // planned structure is gone so the worker has
-            // nothing to do.
             commands
                 .entity(worker_entity)
                 .remove::<PlannedStructureClaim>()
                 .remove::<PlannedStructureProgress>();
             continue;
         };
-        let first_target = first_target.copied().map(|t| t.0);
+        let first_target = first_target.copied().map(|target| target.0);
 
         if planned_state.is_complete() {
-            // Another worker (or a future system) already
-            // finished this planned structure between ticks.
-            // Promote defensively and release the worker.
             promote_planned_to_completion(
                 &mut commands,
                 planned_entity,
@@ -731,14 +725,9 @@ fn release_planned_worker(commands: &mut Commands, worker_entity: Entity) {
 ///   `PlannedProductionTarget` sidecar, or `None` for test
 ///   fixtures that bypass the auto-creation system (the
 ///   same fallback the pre-multi-swarm tests rely on).
-/// - [`PlannedKind::Charger`] completes into a
-///   [`crate::nanobot::Charger`] built from the plan's
-///   cell, with the default capacity / radius / initial
-///   amount so the existing charge sustain loop sees a
-///   "ready to serve" charger with `AUTO_CHARGER_INITIAL_AMOUNT`
-///   material already on hand. The `OwnerSwarm` is
-///   preserved so the completed charger keeps the swarm
-///   that painted the Defend cell the plan lived in.
+/// - [`PlannedKind::Charger`] completes into an empty
+///   [`crate::nanobot::Charger`] with default capacity and radius.
+///   `OwnerSwarm` remains on the entity, preserving plan ownership.
 ///   `first_target` is unused for this kind; the
 ///   pre-existing test fixtures that pre-spawn a Charger
 ///   already establish the default-shape contract.
@@ -795,13 +784,8 @@ fn promote_planned_to_completion(
             commands.entity(planned_entity).insert((facility, visual));
         }
         PlannedKind::Charger => {
-            // Promote to a real `Charger` with the default
-            // shape (`AUTO_CHARGER_INITIAL_AMOUNT` material
-            // already on hand, full capacity, default
-            // radius). The `OwnerSwarm` stays on the entity
-            // through Bevy's component-merge semantics, so
-            // the completed charger keeps the swarm that
-            // painted the Defend cell the plan lived in.
+            // Completed chargers begin empty. OwnerSwarm remains on the
+            // entity through Bevy component-merge semantics.
             let charger = crate::nanobot::Charger::new(cell);
             commands.entity(planned_entity).remove::<PlannedStructure>();
             commands.entity(planned_entity).insert((charger, visual));

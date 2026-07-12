@@ -15,10 +15,8 @@
 //!   4. A Worker claims the planned Charger; only one
 //!      worker holds the claim.
 //!   5. A Worker builds the planned Charger to
-//!      completion; the plan promotes to a real Charger
-//!      that uses the default `AUTO_CHARGER_INITIAL_AMOUNT`
-//!      material so the existing charge sustain loop
-//!      picks it up.
+//!      completion; the plan promotes to an empty Charger
+//!      without minting minerals.
 //!   6. A completed Charger provides charge resupply
 //!      through the existing Charger behavior (rotation,
 //!      refill, release).
@@ -42,6 +40,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         PlannedStructureClaim, SwarmId, DEFAULT_PLANNED_WORK_TICKS, LOW_CHARGE_THRESHOLD,
         NANOBOT_DEFAULT_MAX_HEALTH,
     },
+    resources::{ResourceKind, ResourceLedger},
 };
 
 #[path = "../common/mod.rs"]
@@ -267,11 +266,9 @@ fn worker_builds_planned_charger_to_completion() {
     // Acceptance: "One Worker builds the Planned Charger
     // to completion." A Worker at the cell claims the
     // plan, spends `DEFAULT_PLANNED_WORK_TICKS` ticks of
-    // worker time, and the plan promotes to a real
-    // `Charger` with the default shape
-    // (`AUTO_CHARGER_INITIAL_AMOUNT` material on hand).
-    // The visual flips to the completed color. The
-    // `OwnerSwarm` is preserved through the promotion.
+    // worker time, and the plan promotes to an empty
+    // `Charger`. The visual flips to the completed color.
+    // `OwnerSwarm` remains through promotion.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
     let cell_center = common::cell_world_center(cell);
@@ -283,6 +280,10 @@ fn worker_builds_planned_charger_to_completion() {
     // contract is exercised.
     app.world_mut().entity_mut(plan).insert(OwnerSwarm(swarm));
     let _worker = common::spawn_worker_at(&mut app, cell_center);
+    let ledger_before = app
+        .world()
+        .resource::<ResourceLedger>()
+        .total_for(SwarmId::PLAYER, ResourceKind::Minerals);
 
     // 1 tick for claim + arrive (worker is at the cell so
     // arrive fires on the same tick as claim), then
@@ -307,12 +308,17 @@ fn worker_builds_planned_charger_to_completion() {
         charger.cell, cell,
         "completed Charger must record the plan's cell"
     );
-    // Default shape: AUTO_CHARGER_INITIAL_AMOUNT material
-    // on hand so the rotation chain can pick the
-    // completed charger up immediately.
+    assert_eq!(charger.amount, 0, "completed Charger must start empty");
     assert!(
-        charger.has_supply(),
-        "completed Charger must have AUTO_CHARGER_INITIAL_AMOUNT material on hand"
+        !charger.has_supply(),
+        "empty completed Charger cannot supply charge"
+    );
+    assert_eq!(
+        world
+            .resource::<ResourceLedger>()
+            .total_for(SwarmId::PLAYER, ResourceKind::Minerals),
+        ledger_before,
+        "Charger completion must not seed the resource ledger",
     );
     // Visual flipped to the completed color.
     let sprite = world
@@ -369,16 +375,8 @@ fn completed_planned_charger_provides_charge_to_defenders() {
     for _ in 0..build_ticks {
         app.update();
     }
-    // The completed Charger only has the default
-    // `AUTO_CHARGER_INITIAL_AMOUNT` units. The defender
-    // needs more material to recover from a
-    // LOW_CHARGE_THRESHOLD start (the rotation chain
-    // drains the buffer at 1 unit per charging tick).
-    // Top up the buffer so the end-to-end test can
-    // observe the full charge / release / return-to-hold
-    // cycle. The existing charger-logistics tests use the
-    // same pattern: pre-stock the charger rather than
-    // depending on a hauler delivery mid-rotation.
+    // Completed chargers begin empty. Top up this focused charge-loop
+    // fixture directly; logistics delivery is covered below.
     {
         let w = &mut app.world_mut();
         let mut q = w.query::<&mut Charger>();
@@ -475,16 +473,15 @@ fn hauler_delivers_to_completed_planned_charger() {
     // promoted from a plan.
     let mut app = build_app();
     let cell = IVec2::new(2, 0);
-    let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell_center = common::cell_world_center(cell);
-    let _plan = common::spawn_planned_charger_at_cell(&mut app, cell);
+    let plan = common::spawn_planned_charger_at_cell(&mut app, cell);
+    app.world_mut().entity_mut(plan).insert(OwnerSwarm(swarm));
     let _worker = common::spawn_worker_at(&mut app, cell_center);
-    // Leg source: a source-role stockpile close to the charger
-    // (deposits are worker-only under ADR-0005). The charger is
-    // the terminal sink; its source may be any stockpile with
-    // material.
+    // Terminal legs source only from same-swarm Sink stockpiles.
     let source_pos = Vec2::new(120.0, 0.0);
-    let _source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
+    let source = common::spawn_sink_stockpile(&mut app, source_pos, 1000, 1000);
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
     let _hauler = common::spawn_hauler_at(&mut app, source_pos);
 
     // Build the plan first.
@@ -516,16 +513,9 @@ fn hauler_delivers_to_completed_planned_charger() {
         let charger = q.iter(world).next().expect("completed Charger must exist");
         charger.amount
     };
-    // The completed charger's amount has grown from the
-    // initial AUTO_CHARGER_INITIAL_AMOUNT because a
-    // hauler delivered minerals. We assert strictly
-    // greater than the initial amount to confirm the
-    // delivery happened, without pinning the exact
-    // amount.
-    use top_down_2d_rts_prototype_nano_swarm::nanobot::AUTO_CHARGER_INITIAL_AMOUNT;
     assert!(
-        amount > AUTO_CHARGER_INITIAL_AMOUNT,
-        "hauler must have delivered minerals to the completed Charger; got {amount}"
+        amount > 0,
+        "hauler must deliver minerals to initially empty completed Charger; got {amount}"
     );
 }
 

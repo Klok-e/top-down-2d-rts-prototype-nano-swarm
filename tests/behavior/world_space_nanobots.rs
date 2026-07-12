@@ -98,17 +98,22 @@ fn gather_bot_lands_at_deposit_world_position_not_cell_corner() {
         deposit: _deposit,
     });
 
-    // Drive the simulation until the worker reaches the
-    // deposit. bot_speed = 5.0; the worker must walk
-    // 1024 units (from 256, 256 to -768, 256). At 5
-    // units/tick, that's 205 ticks. The deposit's
-    // physical radius is 32, so the worker stops at
-    // distance <= 32 (issue #38 / ADR-0004). The test
-    // uses a generous 500 ticks to be robust against
-    // tiny tuning shifts.
+    // Drive until physical arrival starts extraction. Stopping at this
+    // state avoids observing a later Cargo trip toward the Source Stockpile.
+    let mut arrived = false;
     for _ in 0..500 {
         app.update();
+        if app
+            .world()
+            .entity(worker)
+            .get::<top_down_2d_rts_prototype_nano_swarm::nanobot::ExtractProgress>()
+            .is_some()
+        {
+            arrived = true;
+            break;
+        }
     }
+    assert!(arrived, "worker must reach deposit and begin extraction");
 
     let world = app.world();
     let bot_pos = world
