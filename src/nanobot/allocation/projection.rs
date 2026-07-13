@@ -14,6 +14,7 @@ use crate::nanobot::{
     SwarmId,
 };
 use crate::resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole};
+use crate::ZONE_BLOCK_SIZE;
 
 /// Region-indexed derived work. Callers may invalidate cells/regions without
 /// owning projection logic; next projection pass replaces those regions only.
@@ -92,8 +93,9 @@ pub fn project_actionable_opportunities_system(
         Entity,
         Ref<ResourceDeposit>,
         Ref<Transform>,
-        Option<&OwnerSwarm>,
+        Option<Ref<OwnerSwarm>>,
     )>,
+    mut removed_deposit_owners: RemovedComponents<OwnerSwarm>,
     planned: Query<(Entity, Ref<PlannedStructure>, Option<&OwnerSwarm>)>,
     structures: Query<(Entity, Ref<Structure>, Ref<Transform>, Option<&OwnerSwarm>)>,
     stockpiles: Query<(
@@ -129,8 +131,11 @@ pub fn project_actionable_opportunities_system(
                 .any(|opportunity| match opportunity.target {
                     OpportunityTarget::Gather { deposit, .. } => match deposits.get(deposit) {
                         Err(_) => true,
-                        Ok((_, deposit, transform, _)) => {
-                            deposit.is_changed() || transform.is_changed() || deposit.amount == 0
+                        Ok((_, deposit, transform, owner)) => {
+                            deposit.is_changed()
+                                || transform.is_changed()
+                                || owner.as_ref().is_some_and(|owner| owner.is_changed())
+                                || deposit.amount == 0
                         }
                     },
                     OpportunityTarget::PlannedBuild { structure, .. } => {
@@ -151,8 +156,20 @@ pub fn project_actionable_opportunities_system(
         projection.invalidate_region(region);
     }
 
-    for (_, deposit, transform, _) in &deposits {
-        if deposit.is_changed() || transform.is_changed() {
+    for (_, deposit, transform, owner) in &deposits {
+        if deposit.is_changed()
+            || transform.is_changed()
+            || owner.as_ref().is_some_and(|owner| owner.is_changed())
+        {
+            invalidate_circle_regions(
+                &mut projection,
+                transform.translation.truncate(),
+                deposit.radius,
+            );
+        }
+    }
+    for entity in removed_deposit_owners.read() {
+        if let Ok((_, deposit, transform, _)) = deposits.get(entity) {
             invalidate_circle_regions(
                 &mut projection,
                 transform.translation.truncate(),
@@ -272,42 +289,58 @@ fn project_intent_work(
         Entity,
         Ref<ResourceDeposit>,
         Ref<Transform>,
-        Option<&OwnerSwarm>,
+        Option<Ref<OwnerSwarm>>,
     )>,
     structures: &Query<(Entity, Ref<Structure>, Ref<Transform>, Option<&OwnerSwarm>)>,
     swarms: &Query<&SwarmId>,
     out: &mut Vec<ActionableOpportunity>,
 ) {
     for (entity, deposit, transform, owner) in deposits.iter() {
-        let Some(deposit_owner) = resolve_owner(owner, swarms) else {
+        let Some(deposit_owner) = resolve_owner(owner.as_deref(), swarms) else {
             continue;
         };
         if deposit.amount == 0 {
             continue;
         }
-        let anchor = grid
-            .iter_cells()
-            .filter(|(cell, intent)| {
-                intent.has(IntentKind::Gather)
-                    && owners_compatible(intent.owner(IntentKind::Gather), deposit_owner)
-                    && cell_overlaps_circle(*cell, transform.translation.truncate(), deposit.radius)
-            })
-            .min_by_key(|(cell, _)| (cell.y, cell.x));
-        let Some((cell, intent)) = anchor else {
-            continue;
-        };
-        if AllocationRegion::for_cell(cell) == region {
-            out.push(ActionableOpportunity {
-                region,
-                category: OpportunityCategory::Gather,
-                target: OpportunityTarget::Gather {
-                    deposit: entity,
+
+        let mut anchors = Vec::<(Option<SwarmId>, IVec2)>::new();
+        for (cell, intent) in grid.iter_cells().filter(|(cell, intent)| {
+            intent.has(IntentKind::Gather)
+                && owners_compatible(intent.owner(IntentKind::Gather), deposit_owner)
+                && cell_overlaps_circle(*cell, transform.translation.truncate(), deposit.radius)
+        }) {
+            let effective_owner = deposit_owner.or(intent.owner(IntentKind::Gather));
+            if let Some((_, anchor)) = anchors
+                .iter_mut()
+                .find(|(owner, _)| *owner == effective_owner)
+            {
+                if (cell.x, cell.y) < (anchor.x, anchor.y) {
+                    *anchor = cell;
+                }
+            } else {
+                anchors.push((effective_owner, cell));
+            }
+        }
+
+        if deposit_owner.is_none() && anchors.iter().any(|(owner, _)| owner.is_none()) {
+            anchors.retain(|(owner, _)| owner.is_none());
+        }
+        anchors.sort_by_key(|(owner, _)| owner.map_or((false, 0), |owner| (true, owner.0)));
+
+        for (owner, cell) in anchors {
+            if AllocationRegion::for_cell(cell) == region {
+                out.push(ActionableOpportunity {
+                    region,
+                    category: OpportunityCategory::Gather,
+                    target: OpportunityTarget::Gather {
+                        deposit: entity,
+                        cell,
+                    },
                     cell,
-                },
-                cell,
-                owner: intent.owner(IntentKind::Gather).or(deposit_owner),
-                available_work: deposit.amount,
-            });
+                    owner,
+                    available_work: deposit.amount,
+                });
+            }
         }
     }
 
@@ -420,12 +453,37 @@ fn project_haul_work(
 }
 
 fn invalidate_circle_regions(projection: &mut ActionableProjection, center: Vec2, radius: f32) {
-    let min = crate::nanobot::world_to_cell(center - Vec2::splat(radius.max(0.0)));
-    let max = crate::nanobot::world_to_cell(center + Vec2::splat(radius.max(0.0)));
+    let radius = radius.max(0.0);
+    let lower = center - Vec2::splat(radius);
+    let mut min = crate::nanobot::world_to_cell(lower);
+    if (lower.x / ZONE_BLOCK_SIZE).fract() == 0.0 {
+        min.x -= 1;
+    }
+    if (lower.y / ZONE_BLOCK_SIZE).fract() == 0.0 {
+        min.y -= 1;
+    }
+    let max = crate::nanobot::world_to_cell(center + Vec2::splat(radius));
     for y in min.y..=max.y {
         for x in min.x..=max.x {
             projection.invalidate_cell(IVec2::new(x, y));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn circle_invalidation_includes_cells_touching_exact_lower_boundary() {
+        let mut projection = ActionableProjection::default();
+        let center = Vec2::new(9.0 * ZONE_BLOCK_SIZE, 0.5 * ZONE_BLOCK_SIZE);
+
+        invalidate_circle_regions(&mut projection, center, ZONE_BLOCK_SIZE);
+
+        assert!(projection
+            .dirty_regions
+            .contains(&AllocationRegion::for_cell(IVec2::new(7, 0))));
     }
 }
 

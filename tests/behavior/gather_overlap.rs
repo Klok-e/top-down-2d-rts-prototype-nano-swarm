@@ -123,8 +123,9 @@ fn deposit_with_no_visual_overlap_remains_ineligible() {
 }
 
 #[test]
-fn deposit_overlapping_two_painted_cells_picks_nearest_paint() {
-    // Binary paint makes both cells eligible; worker distance resolves choice.
+fn deposit_overlapping_two_painted_cells_uses_canonical_anchor() {
+    // One deposit creates one opportunity for this swarm. Overlapping paint
+    // chooses a deterministic cell anchor instead of multiplying demand.
     let mut app = common::sim_app_with_gather();
     let near_cell = IVec2::new(0, 0);
     let far_cell = IVec2::new(1, 0);
@@ -138,8 +139,9 @@ fn deposit_overlapping_two_painted_cells_picks_nearest_paint() {
     // (0, 0) (distance 256) and cell (1, 0) (distance 0).
     let deposit_center = Vec2::new(768.0, ZONE_BLOCK_SIZE * 0.5);
     let deposit = common::spawn_deposit_with_radius(&mut app, deposit_center, 100, 300.0);
-    // Worker is closer to cell (0, 0).
-    let worker_pos = Vec2::new(300.0, ZONE_BLOCK_SIZE * 0.5);
+    // Worker starts closer to the noncanonical cell; anchor selection remains
+    // deterministic and independent from worker position.
+    let worker_pos = Vec2::new(1_100.0, ZONE_BLOCK_SIZE * 0.5);
     let worker = common::spawn_worker_at(&mut app, worker_pos);
 
     for _ in 0..5 {

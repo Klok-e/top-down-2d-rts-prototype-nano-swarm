@@ -1,6 +1,6 @@
 # Hauler route cost fields
 
-Haulers use route planning for logistics legs, with Logistics Corridor paint acting as a soft route-cost discount rather than a mandatory road or a job source. All hauler source and sink selection should be able to compare route costs, and the chosen leg should move through route waypoints; stronger corridor paint lowers cell traversal cost, while unpainted cells remain valid normal-cost terrain. This replaces ad-hoc single corridor waypoints with a general A* route-cost field that can later accept path blockers without changing the player-facing meaning of corridors.
+Haulers use route planning for logistics legs, with binary Logistics Corridor paint acting as a soft route-cost discount rather than a mandatory road or a job source. All hauler source and sink selection should be able to compare route costs, and the chosen leg should move through route waypoints; an owned painted corridor cell has 0.35 times normal traversal cost, while unpainted and enemy corridor cells remain valid normal-cost terrain. This replaces ad-hoc single corridor waypoints with a general A* route-cost field that can later accept path blockers without changing the player-facing meaning of corridors.
 
 ## Consequences
 

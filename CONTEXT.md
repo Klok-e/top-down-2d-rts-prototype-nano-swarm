@@ -13,11 +13,11 @@ An individual autonomous agent within the swarm. It may choose tasks from player
 _Avoid_: Unit, soldier, worker
 
 **Intent Zone**:
-A player-painted spatial region that expresses what kind of work should happen there. Intent zones are the primary command surface for directing the swarm.
+A player-painted spatial region that expresses what kind of work should happen there. Intent zones are the primary command surface for directing the swarm. Intent at a location is binary: painting adds it, repeated painting has no further effect, and erasing removes it.
 _Avoid_: Group zone, activity zone, command area
 
 **Gather Zone**:
-An intent zone where nanobots extract resources from available deposits. Gather intent persists when local resources are depleted; workers leave when no useful work remains, and the zone can reactivate if resources appear later.
+An intent zone where nanobots extract resources from available deposits. Each Resource Deposit contributes work once for each eligible swarm regardless of how many of that swarm's painted cells overlap it; paint establishes eligibility, while deposit work determines nanobot demand. Gather intent persists when local resources are depleted; workers leave when no useful work remains, and the zone can reactivate if resources appear later.
 _Avoid_: Mining zone, resource zone
 
 **Resource Deposit**:
@@ -25,11 +25,11 @@ A map object that contains extractable resources for gather work. It is separate
 _Avoid_: Mineral node, mineral patch, resource pile
 
 **Build Zone**:
-An intent zone that marks free base space where automatic construction may place production facilities, sink stockpiles, and similar support structures. Build zones are not direct building placement commands; they constrain where base infrastructure may emerge.
+An intent zone that marks free base space where automatic construction may place production facilities, sink stockpiles, and similar support structures. Build zones are not direct building placement commands; they constrain where base infrastructure may emerge. Zone area provides placement options but does not itself create construction demand.
 _Avoid_: Construction group, builder assignment, manual building placement
 
 **Defend Zone**:
-An intent zone where nanobots hold and protect an area. Defenders spread across defend intent according to paint strength, local crowding, and threats rather than clustering on a single command point. Painting defend intent into enemy territory functions as an attack or advance order; no separate attack zone is needed initially. Defend zones include chargers that resupply defenders, making cut-off or surrounded defenders weaker over time.
+An intent zone where nanobots hold and protect an area. Each painted cell provides one Soft Work Slot: one defender is preferred, crowding discourages extras, and threats may pull more. Larger zones therefore request broader baseline coverage. Painting defend intent into enemy territory functions as an attack or advance order; no separate attack zone is needed initially. Defend zones include chargers that resupply defenders, making cut-off or surrounded defenders weaker over time.
 _Avoid_: Fighter group, combat squad, attack zone
 
 **Stockpile**:
@@ -97,11 +97,11 @@ Ongoing worker time required to keep structures functional. All structures degra
 _Avoid_: Permanent buildings, fire-and-forget construction
 
 **Overlapping Intent**:
-Multiple intent zones may cover the same space. Overlap means several kinds of work are valid there; allocation and priority decide which nanobots respond.
+Multiple intent zones may cover the same space. Overlap means several kinds of work are valid there; autonomous allocation decides which nanobots respond without a player-set task priority.
 _Avoid_: Exclusive zones, zone ownership
 
 **Intent Allocation**:
-The moment-to-moment act of steering the swarm by adjusting intent zone size, paint strength, and production ratio. This is the primary player skill, not micro-managing individual nanobots.
+The moment-to-moment act of steering the swarm by adjusting intent zone placement and size, plus production ratio. Players do not set task priorities; autonomous allocation weighs useful work, distance, type fit, crowding, and commitments. This is the primary player skill, not micro-managing individual nanobots.
 _Avoid_: Unit micro, direct control
 
 **Soft Work Slot**:
@@ -113,16 +113,12 @@ Nanobots are aware of player-painted intent globally, but execute it through sim
 _Avoid_: Perfect allocator, smart commander AI
 
 **Global Intent Awareness**:
-All valid player-painted intent can eventually attract eligible nanobots, even when no nanobot currently searches it directly. Awareness may be mediated through regional demand and bounded local decisions rather than every nanobot evaluating every intent cell. Response is weighted by paint strength, useful work, distance, type fit, and current commitments, so nearby or idle nanobots usually respond first.
+All valid player-painted intent can eventually attract eligible nanobots, even when no nanobot currently searches it directly. Awareness may be mediated through regional demand and bounded local decisions rather than every nanobot evaluating every intent cell. Response is weighted by useful work, distance, type fit, local crowding, and current commitments, so nearby or idle nanobots usually respond first.
 _Avoid_: Local-only awareness, hidden command radius
 
 **Commitment**:
 A nanobot's tendency to finish its current short task before reconsidering player intent. Carrying nanobots complete a valid delivery, reroute when a destination becomes invalid, or physically return cargo to a compatible stockpile when no destination can receive it.
 _Avoid_: Instant retargeting, hard lock-in
-
-**Paint Strength**:
-The intensity of a painted intent zone at a location. Higher paint strength attracts more eligible nanobots, can support more useful nanobot presence before a cell feels crowded, and can override weak commitments, but does not make work happen faster by itself. Overpainting can overcommit the swarm, causing congestion, waiting, or starvation elsewhere. Repeated painting increases strength; erasing reduces or removes it. Player-painted intent persists until changed.
-_Avoid_: Priority slider, command level
 
 **Nanobot Type**:
 A specialization of nanobot with different capabilities or efficiency. The player does not assign individual nanobots to types manually.
@@ -141,7 +137,7 @@ Resources move physically through nanobots carrying them. Minerals remain swarm-
 _Avoid_: Global stockpile, teleporting resources
 
 **Logistics Corridor**:
-A player-painted movement intent for haulers that encourages resource transport along a path between stockpiles, facilities, chargers, or other resource needs. Corridors bias hauler path choice and logistics travel preference, with stronger paint making a route more attractive, but do not create resource tasks by themselves. Corridors are special hauler guidance, not general direct movement commands.
+A player-painted movement intent for haulers that encourages resource transport along a path between stockpiles, facilities, chargers, or other resource needs. Owned Corridor cells apply a fixed route bias; their shape defines the preferred path, while unpainted or enemy Corridor cells give no benefit. Corridors do not create resource tasks by themselves and are special hauler guidance, not general direct movement commands.
 _Avoid_: Road, waypoint chain, manual route
 
 **Defender**:
