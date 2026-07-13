@@ -1,10 +1,9 @@
 //! Screenshot test for issue #37: defender spatial pressure and
 //! in-cell holding.
 //!
-//! Captures a frame after a handful of player defenders have had
-//! time to spread across a small plus of strongly-painted Defend
-//! cells near the world origin. The deterministic ECS assertion
-//! (defenders hold DISTINCT cells, each INSIDE its assigned cell)
+//! Captures player defenders spreading across isolated plus of strongly-painted
+//! Defend cells. Deterministic ECS assertion (defenders hold distinct cells,
+//! each inside its assigned cell)
 //! is the primary evidence; the screenshot is the visual
 //! confirmation that the spread is real and not a cluster on one
 //! cell center.
@@ -18,39 +17,57 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
     nanobot::{
-        point_in_cell, Charge, Commitment, DefendHold, Health, Nanobot, NanobotType, SwarmId,
-        SwarmMember, VelocityComponent,
+        point_in_cell, Charge, Commitment, DefendHold, Health, Nanobot, NanobotSprites,
+        NanobotType, SwarmId, SwarmMember, VelocityComponent,
     },
+    ZONE_BLOCK_SIZE,
 };
 
 use crate::harness::{run_screenshot_test, TestContext, TestFlow};
 
-/// The plus of Defend cells painted around the world origin.
-/// Centers (0,0), (1,0), (-1,0), (0,1), (0,-1) -- five cells the
-/// defenders can spread across. Chosen so the camera (centered on
-/// the origin, orthographic scale 2.0) frames the whole plus.
+#[derive(Component)]
+struct SpreadTestDefender;
+
+/// Plus lives away from default scenario paint, keeping visual evidence isolated.
+/// Default orthographic scale 2.0 frames all five cells.
+const CENTER_CELL: IVec2 = IVec2::new(0, 5);
 const DEFEND_CELLS: [IVec2; 5] = [
-    IVec2::new(0, 0),
-    IVec2::new(1, 0),
-    IVec2::new(-1, 0),
-    IVec2::new(0, 1),
-    IVec2::new(0, -1),
+    CENTER_CELL,
+    IVec2::new(1, 5),
+    IVec2::new(-1, 5),
+    IVec2::new(0, 6),
+    IVec2::new(0, 4),
 ];
 
 /// Number of defenders the test spawns. Fewer than cells so the
 /// spread is unambiguous (each defender can hold a distinct cell).
 const DEFENDER_COUNT: usize = 4;
 
-fn origin_center() -> Vec2 {
-    Vec2::new(256.0, 256.0)
+fn defend_center() -> Vec2 {
+    Vec2::new(
+        (CENTER_CELL.x as f32 + 0.5) * ZONE_BLOCK_SIZE,
+        (CENTER_CELL.y as f32 + 0.5) * ZONE_BLOCK_SIZE,
+    )
+}
+
+fn prepare_view(world: &mut World) {
+    let target = defend_center();
+    for mut transform in world
+        .query_filtered::<&mut Transform, With<Camera2d>>()
+        .iter_mut(world)
+    {
+        transform.translation.x = target.x;
+        transform.translation.y = target.y;
+    }
 }
 
 /// Paint the plus of Defend cells and spawn the defenders on the
 /// first frame, then let the simulation spread them. After enough
 /// frames for travel + arrival, capture and assert.
 pub fn defender_spread(ctx: &mut TestContext) -> TestFlow {
+    let world = &mut *ctx.world;
     if ctx.frame == 0 {
-        let world = &mut *ctx.world;
+        prepare_view(world);
         // Paint the Defend plus, stamped with player ownership so
         // the per-swarm intent filter routes player defenders to
         // these cells.
@@ -65,10 +82,14 @@ pub fn defender_spread(ctx: &mut TestContext) -> TestFlow {
                 );
             }
         }
-        // Spawn the defenders at the (0,0) cell center.
-        let spawn = origin_center();
+        // Spawn visible defenders at isolated center cell.
+        let spawn = defend_center();
+        let sprite = world
+            .resource::<NanobotSprites>()
+            .handle(NanobotType::Defender, false);
         for _ in 0..DEFENDER_COUNT {
             world.spawn((
+                SpreadTestDefender,
                 Nanobot {},
                 NanobotType::Defender,
                 Commitment::Idle,
@@ -77,6 +98,7 @@ pub fn defender_spread(ctx: &mut TestContext) -> TestFlow {
                 Charge::default(),
                 SwarmMember::new(SwarmId::PLAYER),
                 Transform::from_translation(spawn.extend(0.0)),
+                Sprite::from_image(sprite.clone()),
             ));
         }
         return TestFlow::Continue;
@@ -100,14 +122,15 @@ pub fn defender_spread(ctx: &mut TestContext) -> TestFlow {
         // cluster), and every holder must be physically INSIDE
         // its held cell (proving in-cell holding, not center
         // clustering or drift out of cell).
-        let world = &mut *ctx.world;
         let mut holds: Vec<(IVec2, Vec2)> = Vec::new();
         for (hold, transform, member, ntype) in world
-            .query::<(&DefendHold, &Transform, &SwarmMember, &NanobotType)>()
+            .query_filtered::<
+                (&DefendHold, &Transform, &SwarmMember, &NanobotType),
+                With<SpreadTestDefender>,
+            >()
             .iter(world)
         {
-            // Only count player defenders -- the default opponent
-            // scenario also has a defender holding its own cell.
+            // Count only marked player defenders spawned by this test.
             if *ntype != NanobotType::Defender || member.0 != SwarmId::PLAYER {
                 continue;
             }

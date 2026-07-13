@@ -1,18 +1,15 @@
 //! Screenshot test for issue #38 / ADR-0004.
 //!
-//! Captures a frame from the default scenario and asserts
-//! on pixel content: the worker must be near the deposit
-//! center (not the cell corner), and the constructed
-//! structure must be co-located with the working bot.
+//! Captures default scenario and asserts ECS world positions: worker must be
+//! near deposit center, not cell corner. Artifact also shows production
+//! structure with bots co-located.
 //!
 //! This is the visual half of the issue #38 acceptance
 //! ("Screenshot evidence (via the `screenshots/` harness)
 //! shows a worker at the deposit center and a structure
 //! with bots co-located. The producing agent inspects the
-//! image and states the visual facts."). The pixel checks
-//! below are a deterministic proxy for the visual
-//! inspection; a real visual run still requires the
-//! `--ignored` screenshot harness with a window.
+//! image and states visual facts."). ECS checks below supplement visual
+//! inspection; ignored harness performs offscreen GPU rendering and readback.
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{nanobot::SwarmId, ZONE_BLOCK_SIZE};
@@ -35,34 +32,16 @@ fn cell_corner_pos() -> Vec2 {
     deposit_pos() + Vec2::new(256.0, 256.0)
 }
 
-/// Capture one frame after the worker has had time to
-/// walk to the deposit. The harness is `harness = false`
-/// and the test is `ignored` by default (no display);
-/// run with `cargo test --test screenshots -- --ignored
-/// world_space_nanobots`.
-///
-/// The callback drives the simulation by setting up the
-/// scenario through Bevy resources + entities, runs a
-/// few frames, and then requests a screenshot. The
-/// post-screenshot assertions check the worker's
-/// `GlobalTransform` lands near the deposit (not at the
-/// cell corner).
+/// Capture after worker has had time to walk to deposit. Test is ignored by
+/// default; run with `cargo test --test screenshots -- --ignored
+/// world_space_nanobots`. Callback pauses until PNG readback completes, then
+/// resumes and exits.
 pub fn world_space_nanobots(ctx: &mut TestContext) -> TestFlow {
-    // Build the scenario by directly mutating the
-    // world. The default `build_app` already
-    // initialises the player and opponent swarms, the
-    // default Gather/Build/Defend paint, the default
-    // resource deposit at `(-768, 256)`, the default
-    // production facility, and the default
-    // `ResourceLedger`. We just need to drive the
-    // simulation forward a few frames so the worker
-    // walks to the deposit.
-    //
-    // The screenshot capture is signal-driven: the
-    // callback requests the capture, the harness
-    // writes the PNG to disk, then the callback is
-    // resumed. After the capture, the assertions run
-    // and the test exits.
+    // Full offscreen app startup initializes player/opponent swarms, default
+    // Gather/Build/Defend paint, resource deposit at (-768, 256), production
+    // facility, and ResourceLedger. Advance simulation until worker arrives.
+    // Capture wait runs full app updates, so simulation may advance before the
+    // callback resumes. No post-resume gameplay state is assumed.
     if ctx.frame < 250 {
         // Drive the simulation. The player swarm sits
         // at (256, 256); the deposit is at (-768, 256);
@@ -72,9 +51,8 @@ pub fn world_space_nanobots(ctx: &mut TestContext) -> TestFlow {
         return TestFlow::Continue;
     }
     if ctx.frame == 250 {
-        // Assert on ECS state before the capture so
-        // the test fails fast on a regression even if
-        // the screenshot harness is unavailable.
+        // Assert ECS state before capture so simulation regressions fail with
+        // position-specific diagnostics.
         let world = &mut *ctx.world;
         let deposit = deposit_pos();
         let corner = cell_corner_pos();

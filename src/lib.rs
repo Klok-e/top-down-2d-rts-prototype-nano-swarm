@@ -17,12 +17,22 @@ pub mod zones;
 use ai::AiPlugin;
 use anyhow::Result;
 use bevy::{
+    app::TerminalCtrlCHandlerPlugin,
+    camera::RenderTarget,
+    log::LogPlugin,
     prelude::*,
-    render::storage::ShaderStorageBuffer,
+    render::{
+        pipelined_rendering::PipelinedRenderingPlugin,
+        render_resource::{TextureFormat, TextureUsages},
+        storage::ShaderStorageBuffer,
+        RenderPlugin,
+    },
     sprite_render::{Material2dPlugin, MeshMaterial2d},
     window::{
-        Window, WindowLevel, WindowMode, WindowPlugin, WindowResizeConstraints, WindowResolution,
+        ExitCondition, Window, WindowLevel, WindowMode, WindowPlugin, WindowResizeConstraints,
+        WindowResolution,
     },
+    winit::WinitPlugin,
 };
 use fly_camera::{Camera2dFlyPlugin, CameraZoom2d, FlyCamera2d};
 use game_settings::GameSettings;
@@ -73,16 +83,64 @@ fn primary_window_config() -> Window {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presentation {
+    Windowed,
+    Offscreen { width: u32, height: u32 },
+}
+
+#[derive(Resource, Default)]
+struct PresentationTarget(Option<Handle<Image>>);
+
+fn offscreen_render_plugin() -> RenderPlugin {
+    RenderPlugin {
+        synchronous_pipeline_compilation: true,
+        ..default()
+    }
+}
+
 pub fn build_app() -> App {
+    build_app_with_presentation(Presentation::Windowed)
+}
+
+pub fn build_app_with_presentation(presentation: Presentation) -> App {
     let mut app = App::new();
-    app.insert_resource(IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32))
+    let target = match presentation {
+        Presentation::Windowed => {
+            app.add_plugins(DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(primary_window_config()),
+                ..default()
+            }));
+            None
+        }
+        Presentation::Offscreen { width, height } => {
+            app.add_plugins(
+                DefaultPlugins
+                    .set(WindowPlugin {
+                        primary_window: None,
+                        exit_condition: ExitCondition::DontExit,
+                        ..default()
+                    })
+                    .set(offscreen_render_plugin())
+                    // Both plugins install process-global handlers. Screenshot trials
+                    // construct multiple Apps in one process, so Offscreen omits them.
+                    .disable::<LogPlugin>()
+                    .disable::<TerminalCtrlCHandlerPlugin>()
+                    // Manual offscreen updates render in lockstep with readback.
+                    .disable::<PipelinedRenderingPlugin>()
+                    .disable::<WinitPlugin>(),
+            );
+            let mut image =
+                Image::new_target_texture(width, height, TextureFormat::bevy_default(), None);
+            image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
+            Some(app.world_mut().resource_mut::<Assets<Image>>().add(image))
+        }
+    };
+    app.insert_resource(PresentationTarget(target))
+        .insert_resource(IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32))
         .init_resource::<ResourceLedger>()
         .insert_resource(scenario::default_player_ratio())
         .init_resource::<nanobot::OpponentSwarmIdAlloc>()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(primary_window_config()),
-            ..default()
-        }))
         .add_plugins(Material2dPlugin::<BackgroundMaterial>::default())
         // must be before NanobotPlugin because otherwise it receives events with despawned entities
         .add_plugins(NanoswarmUiSetupPlugin)
@@ -227,16 +285,27 @@ fn setup_things_startup(
     mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
     mut grid: ResMut<IntentGrid>,
     opponent_id_alloc: ResMut<nanobot::OpponentSwarmIdAlloc>,
+    presentation_target: Res<PresentationTarget>,
 ) -> Result<()> {
     let handle = zone_mats.add(ZoneMaterial::new(MAP_WIDTH, MAP_HEIGHT, &mut buffers));
-    commands
-        .spawn((
-            Camera2d,
-            Projection::Orthographic(OrthographicProjection {
-                scale: DEFAULT_CAMERA_ZOOM,
-                ..OrthographicProjection::default_2d()
-            }),
-        ))
+    let is_offscreen = presentation_target.0.is_some();
+    let render_target = presentation_target
+        .0
+        .clone()
+        .map(RenderTarget::from)
+        .unwrap_or_default();
+    let mut camera = commands.spawn((
+        Camera2d,
+        render_target,
+        Projection::Orthographic(OrthographicProjection {
+            scale: DEFAULT_CAMERA_ZOOM,
+            ..OrthographicProjection::default_2d()
+        }),
+    ));
+    if is_offscreen {
+        camera.insert(IsDefaultUiCamera);
+    }
+    camera
         .insert(FlyCamera2d::default())
         .insert(CameraZoom2d {
             zoom_speed: 10.,
@@ -314,6 +383,15 @@ mod overlay_transform_tests {
         assert_eq!(c.min_width, c.max_width);
         assert_eq!(c.min_height, c.max_height);
         assert_eq!(window.name.as_deref(), Some("nano-swarm"));
+    }
+
+    #[test]
+    fn offscreen_rendering_compiles_pipelines_synchronously() {
+        assert!(offscreen_render_plugin().synchronous_pipeline_compilation);
+        assert!(
+            !RenderPlugin::default().synchronous_pipeline_compilation,
+            "windowed presentation keeps Bevy's asynchronous default"
+        );
     }
 
     #[test]

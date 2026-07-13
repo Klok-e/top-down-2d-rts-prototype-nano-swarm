@@ -36,10 +36,9 @@ lto = "thin"
 name = "swarm_acceptance"
 harness = false
 
-# Window-creating (screenshot) tests run on the main thread via a
-# custom `main()` driven by libtest-mimic, so they cannot use cargo's
-# default harness. They are marked ignored and skipped by default;
-# run them with: cargo test --test screenshots -- --ignored
+# Offscreen GPU screenshot tests use a custom `main()` driven by
+# `libtest-mimic`; they are ignored by default and run without winit or
+# a desktop window: cargo test --test screenshots -- --ignored
 # (filter: cargo test --test screenshots -- --ignored smoke)
 [[test]]
 name = "screenshots"
@@ -48,4 +47,6 @@ harness = false
 
 [dev-dependencies]
 libtest-mimic = "0.8.2"
+bevy_image_export = "0.16"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 criterion = { version = "0.8", features = ["html_reports"] }

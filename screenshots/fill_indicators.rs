@@ -43,9 +43,9 @@ fn focus_camera(world: &mut World) {
     for (mut transform, mut projection, mut zoom) in query.iter_mut(world) {
         transform.translation.x = 0.0;
         transform.translation.y = 0.0;
-        zoom.zoom = 1.0;
+        zoom.zoom = 0.8;
         if let Projection::Orthographic(ortho) = &mut *projection {
-            ortho.scale = 0.4;
+            ortho.scale = 0.8;
         }
     }
 }
@@ -62,12 +62,12 @@ fn despawn_existing_sprites(world: &mut World) {
 
 fn spawn_focused_scene(world: &mut World) -> Vec<Entity> {
     vec![
-        spawn_deposit(world, Vec2::new(-140.0, -35.0)),
-        spawn_stockpile(world, Vec2::new(-84.0, -35.0)),
-        spawn_facility(world, Vec2::new(-28.0, -35.0)),
-        spawn_planned(world, Vec2::new(28.0, -35.0)),
-        spawn_charger(world, Vec2::new(84.0, -35.0)),
-        spawn_loaded_hauler(world, Vec2::new(140.0, -35.0)),
+        spawn_deposit(world, Vec2::new(-225.0, -35.0)),
+        spawn_stockpile(world, Vec2::new(-135.0, -35.0)),
+        spawn_facility(world, Vec2::new(-45.0, -35.0)),
+        spawn_planned(world, Vec2::new(45.0, -35.0)),
+        spawn_charger(world, Vec2::new(135.0, -35.0)),
+        spawn_loaded_hauler(world, Vec2::new(225.0, -35.0)),
     ]
 }
 
