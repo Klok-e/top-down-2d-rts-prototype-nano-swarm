@@ -8,6 +8,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{
         brush_key_for_kind, brush_selection_keyboard_system, BrushSelection, IntentGrid, IntentKind,
     },
+    nanobot::SwarmId,
     ui::{check_ui_interaction, UiHandling},
     zones::{
         mirror_intent_to_zone_material_system, zone_brush_system, ZoneMaterial,
@@ -317,6 +318,40 @@ fn scripted_right_mouse_erase_clears_visible_bit_at_cursor() {
     for kind in IntentKind::ALL {
         assert!(!cell.present(kind.index() as u32));
     }
+}
+
+#[test]
+fn scripted_player_erase_preserves_enemy_paint_at_cursor() {
+    let mut app = build_app();
+    let window = spawn_window(&mut app);
+    set_cursor(&mut app, window, Vec2::new(640.0, 360.0));
+    spawn_camera(&mut app, Vec2::ZERO);
+    let material_entity = spawn_zone_material(&mut app);
+    let enemy = SwarmId(11);
+    let cell = IVec2::ZERO;
+
+    assert!(app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Gather,
+        Some(enemy),
+    ));
+    app.update();
+
+    press_mouse(&mut app, MouseButton::Right);
+    app.update();
+    clear_mouse(&mut app);
+
+    let grid = app.world().resource::<IntentGrid>();
+    let painted_cell = grid.cell(cell).expect("cursor cell must be in bounds");
+    assert_eq!(
+        painted_cell.owner(IntentKind::Gather),
+        Some(enemy),
+        "player erase must preserve enemy-owned Gather paint",
+    );
+    assert!(
+        zone_cell(&app, material_entity, cell).present(IntentKind::Gather.index() as u32),
+        "enemy paint must remain visible after player erase",
+    );
 }
 
 #[test]

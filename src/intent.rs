@@ -214,6 +214,17 @@ impl IntentGrid {
         self.remove(point, kind)
     }
 
+    /// Erase `kind` only when its active paint belongs to `owner`.
+    pub fn erase_owned(&mut self, point: IVec2, kind: IntentKind, owner: Option<SwarmId>) -> bool {
+        if !self.in_bounds(point) {
+            return false;
+        }
+        if self.cells[self.index(point)].owner(kind) == owner {
+            self.remove(point, kind);
+        }
+        true
+    }
+
     /// Number of changed cells awaiting the render mirror.
     pub fn render_dirty_count(&self) -> usize {
         self.render_dirty.len()

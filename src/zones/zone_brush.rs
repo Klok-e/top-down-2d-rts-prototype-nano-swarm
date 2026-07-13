@@ -150,7 +150,7 @@ pub fn zone_brush_system(
     if mouse_button_input.pressed(MouseButton::Left) {
         intent_grid.paint_owned(idx, brush_kind, Some(SwarmId::PLAYER));
     } else if mouse_button_input.pressed(MouseButton::Right) {
-        intent_grid.erase(idx, brush_kind);
+        intent_grid.erase_owned(idx, brush_kind, Some(SwarmId::PLAYER));
     }
 }
 
