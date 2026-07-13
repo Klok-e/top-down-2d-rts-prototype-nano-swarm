@@ -17,7 +17,7 @@ cargo test --test behavior
 cargo test --test playtest
 ```
 
-Run the screenshot (window-creating) target — ignored by default, run with `--ignored`:
+Run the offscreen GPU screenshot target — ignored by default, run with `--ignored`:
 
 ```bash
 cargo test --test screenshots -- --ignored          # all
@@ -52,9 +52,9 @@ tests/
   playtest.rs         # aggregate integration target
   playtest/
     *.rs              # scripted player/runtime flows
-screenshots/            # window-creating visual tests (harness = false)
+screenshots/            # offscreen GPU-rendered visual tests (harness = false)
   main.rs             # libtest-mimic entry point + TESTS list
-  harness.rs          # callback driver (TestFlow, app.run() loop)
+  harness.rs          # deterministic callback/update/readback driver
   *.rs                # screenshot test callbacks
 ```
 
@@ -130,19 +130,19 @@ Script input through Bevy state, not OS automation:
 - Set UI `Interaction` components for UI controls.
 - Run `app.update()` and assert deterministic ECS state.
 
-Headless scripted playtests run in normal `cargo test`. If a playtest needs a real window, GPU, or screenshot, do not put it under `tests/playtest/` — `#[test]` runs on a cargo worker thread, but winit requires the main thread and a real `app.run()` event loop. Use the `screenshots/` harness instead; see "Screenshot evidence" below.
+Headless scripted playtests run in normal `cargo test`. GPU-bearing presentation checks carry `#[ignore]`, and GPU-rendered screenshot evidence belongs in the ignored `screenshots/` target; see "Screenshot evidence" below.
 
 ### Screenshot evidence
 
-For any change, the agent must produce screenshot evidence in addition to deterministic ECS assertions: open the app in a real window, capture a frame, read the image back, and describe the visual facts that satisfy the acceptance criteria. The screenshot exists to force the agent to look at the rendered result — deterministic assertions do not catch rendering, UI, camera, or scene-setup breakage, and "cargo test passed" alone is not sufficient evidence.
+For any change, the agent must produce screenshot evidence in addition to deterministic ECS assertions: render the full game app into an offscreen image, capture a frame, read the image back, and describe the visual facts that satisfy the acceptance criteria. The screenshot exists to force the agent to look at the rendered result — deterministic assertions do not catch rendering, UI, camera, or scene-setup breakage, and "cargo test passed" alone is not sufficient evidence.
 
-Window-creating tests live in `screenshots/`, a `harness = false` cargo target driven by `libtest-mimic`, kept separate from the headless `tests/` because winit requires the main thread and a real `app.run()` event loop. They are marked ignored so the default `cargo test` skips them (`test foo ... ignored`); run them with `cargo test --test screenshots -- --ignored` (filter: `-- --ignored <name>`). The harness forces `--test-threads=1` so each `app.run()` stays on the main thread.
+Offscreen tests live in `screenshots/`, a `harness = false` cargo target driven by `libtest-mimic`. They are marked ignored so the default `cargo test` skips GPU rendering (`test foo ... ignored`); run them with `cargo test --test screenshots -- --ignored` (filter: `-- --ignored <name>`). The harness creates no desktop window or compositor connection.
 
-Each screenshot test is a `fn(&mut TestContext) -> TestFlow` callback called once per frame inside `app.run()`, built on `top_down_2d_rts_prototype_nano_swarm::build_app()` (real window + render pipeline; the `sim_app_with_*` builders are headless and cannot capture). The callback drives game state through `ctx.world: &mut World`, asserts on ECS state, and requests captures by returning `TestFlow::Screenshot(name)`. There is no script language — the callback is Rust using the same seams the headless tests use. Capture timing is signal-driven: a `ScreenshotCaptured` observer must fire before the next callback frame, so the PNG is guaranteed on disk before the callback resumes. Register new tests in the `TESTS` list in `screenshots/main.rs`; artifacts land under `target/playtest-screenshots/` (gitignored with `/target`) and are never committed.
+Each screenshot test is a `fn(&mut TestContext) -> TestFlow` callback called once per gameplay update, built on `top_down_2d_rts_prototype_nano_swarm::build_app_with_presentation(Presentation::Offscreen { .. })`. Callback runs in `First`. `TestFlow::Screenshot(name)` pauses callback execution until the named PNG exists and validates, then callback resumes on its next frame; multiple captures are supported, and `TestFlow::Exit` succeeds only after at least one validated capture. Harness returns the final captured path. Request and readback-pump updates run full app schedules, so gameplay **continues advancing while callback waits**. After every resume, callback must assert and reset any relevant world state before requesting the next capture; never assume state still matches capture-request time. Bevy's public `App` API offers no supported render-extraction-only pump, and harness avoids mutating internal schedule order. Callback/readback budgets fail only between completed updates. They are not wall-clock timeouts and cannot preempt `bevy_image_export` blocking inside `RenderDevice::poll(PollType::Wait { timeout: None, .. })` or cleanup's blocking worker wait. Register tests in `screenshots/main.rs`; artifacts land under `target/playtest-screenshots/` (gitignored with `/target`) and are never committed.
 
 Screenshot evidence must be inspected, not merely produced. The producing agent must open/read the image artifact, describe the relevant visual facts, and state whether they satisfy the acceptance criteria. For visual bug fixes, the verifier must independently inspect the screenshots before passing. If a screenshot is ambiguous, improve the scripted setup or fail/needs-info with the exact blocker; do not pass on artifact existence alone. Rust pixel assertions are useful deterministic checks but do not replace agent inspection for visual bug fixes.
 
-If the environment cannot create a window or render a frame, the run fails with the exact blocker; it is not a normal test failure and not a skipped check. The screenshot harness reports the failure rather than silently passing on artifact existence alone.
+GPU adapter or readback failures may surface as app-update panic, plugin-readiness failure, or exhausted completed-update budget; adapter-specific diagnostics are not guaranteed by Bevy/wgpu. `bevy_image_export` exposes worker count plus blocking `finish()`, but no worker `JoinHandle` or save-error channel. Harness can wait for worker completion, detect missing output, and clean temporary output through RAII, but cannot enforce exact timeout or recover dependency's logged save error. Harness never falls back to desktop window.
 
 ## Test data
 

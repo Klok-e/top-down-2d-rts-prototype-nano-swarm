@@ -1,13 +1,12 @@
 //! Sample screenshot test exercising the callback harness end to end.
 //!
-//! Drives the full [`top_down_2d_rts_prototype_nano_swarm::build_app`]
-//! stack: warm up 5 frames so the default scenario (background, intent
-//! meshes, camera, spawned swarms) renders, capture one screenshot,
-//! then exit. The callback also asserts on ECS state mid-run to show
-//! that deterministic assertions and visual capture mix in the same
-//! callback (`tests/` style assertions + a PNG).
+//! Drives full offscreen [`top_down_2d_rts_prototype_nano_swarm::build_app_with_presentation`]
+//! stack: warm up 5 updates so default scenario (background, intent meshes,
+//! camera, spawned swarms) renders, capture one screenshot, then exit.
+//! Callback also asserts ECS state mid-run, showing deterministic assertions
+//! and visual capture can coexist in same callback.
 //!
-//! Run: `SCREENSHOT_TEST=1 cargo test --test screenshots -- smoke`
+//! Run: `cargo test --test screenshots -- --ignored smoke`
 //! The artifact lands at `target/playtest-screenshots/smoke.png`
 //! (gitignored with `/target`).
 
@@ -17,9 +16,8 @@ use crate::harness::{TestContext, TestFlow};
 
 /// Smoke test: warm up, assert the camera exists, capture, exit.
 pub fn smoke(ctx: &mut TestContext) -> TestFlow {
-    // Assert on ECS state mid-run: the default scenario must have
-    // spawned a camera. This proves the harness drives a real
-    // `app.run()` with Startup executed, not an empty app.
+    // Startup must spawn a camera before deterministic updates reach this point.
+    // This proves the harness drives full app startup, not an empty app.
     if ctx.frame == 2 {
         let mut camera = ctx.world.query::<&Camera>();
         assert!(

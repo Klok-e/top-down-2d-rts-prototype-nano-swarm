@@ -14,11 +14,10 @@
 //! `target/playtest-screenshots/zone_strength_ramp.png` (gitignored with
 //! `/target`).
 //!
-//! This test creates a real winit window + render pipeline, so it cannot
-//! run headless. The unit test `strength_slots_do_not_corrupt_each_other`
-//! in `src/zones/zone_brush.rs` and the `mouse_zone_painting` playtest
-//! cover the data plumbing deterministically; this screenshot is the only
-//! proof the visual alpha ramp actually renders.
+//! This test renders through offscreen GPU target. Unit test
+//! `strength_slots_do_not_corrupt_each_other` in `src/zones/zone_brush.rs`
+//! and `mouse_zone_painting` playtest cover data plumbing deterministically;
+//! this screenshot proves visual alpha ramp renders.
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
@@ -47,10 +46,9 @@ const COLUMN_CELL_X: [i32; 5] = [-2, -1, 0, 1, 2];
 /// along `Y = 0` so nothing else lands inside the framed region.
 const ROW_CELL_Y: [i32; 4] = [6, 5, 4, 3];
 
-/// Orthographic projection scale used to frame the cluster. Larger
-/// scale shows more world units; this value fits the five-column by
-/// four-row cluster into a 1280x720 window with a margin on each side
-/// (`visible_world = window_pixels * scale`).
+/// Orthographic projection scale used to frame cluster. Larger scale shows
+/// more world units; this value fits five-column by four-row cluster into
+/// 1280x720 offscreen target with margin (`visible_world = pixels * scale`).
 const FRAMING_SCALE: f32 = 3.2;
 
 /// Frame on which the test stops warming up and asserts + captures. The
