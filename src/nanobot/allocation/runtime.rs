@@ -819,17 +819,32 @@ fn region_distance_key(left: AllocationRegion, right: AllocationRegion) -> u32 {
 
 fn claim_key(target: OpportunityTarget) -> (u8, u64, u64, u64) {
     match target {
-        OpportunityTarget::Gather { deposit, cell } => (
-            0,
-            deposit.to_bits(),
-            i64::from(cell.x) as u64,
-            i64::from(cell.y) as u64,
-        ),
+        OpportunityTarget::Gather { deposit, .. } => (0, deposit.to_bits(), 0, 0),
         OpportunityTarget::PlannedBuild { structure, .. } => (1, structure.to_bits(), 0, 0),
         OpportunityTarget::Maintenance { structure } => (2, structure.to_bits(), 0, 0),
         OpportunityTarget::Defend { cell } => {
             (3, i64::from(cell.x) as u64, i64::from(cell.y) as u64, 0)
         }
         OpportunityTarget::Haul { source, sink, .. } => (4, source.to_bits(), sink.to_bits(), 0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gather_claim_key_is_shared_by_deposit_across_anchors() {
+        let deposit = Entity::PLACEHOLDER;
+        let first = OpportunityTarget::Gather {
+            deposit,
+            cell: IVec2::ZERO,
+        };
+        let second = OpportunityTarget::Gather {
+            deposit,
+            cell: IVec2::new(8, 3),
+        };
+
+        assert_eq!(claim_key(first), claim_key(second));
     }
 }

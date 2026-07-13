@@ -200,8 +200,9 @@ pub fn mirror_intent_to_zone_material_system(
         .map(|cell| cell.active)
         .collect::<Vec<_>>();
     buffers
-        .insert(zone_map.id(), ShaderStorageBuffer::from(packed_presence))
-        .expect("zone storage buffer handle must remain valid");
+        .get_mut(&zone_map)
+        .expect("zone storage buffer handle must remain valid")
+        .set_data(packed_presence);
 }
 
 fn zone_buffer_index_from_grid_point(point: IVec2, width: i32, height: i32) -> Option<IVec2> {

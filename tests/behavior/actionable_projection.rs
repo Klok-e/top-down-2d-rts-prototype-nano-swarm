@@ -259,3 +259,123 @@ fn deposit_projects_once_across_overlapping_allocation_regions() {
     app.update();
     assert!(gather_opportunities(app.world().resource::<ActionableProjection>()).is_empty());
 }
+
+#[test]
+fn unowned_deposit_projects_once_for_each_distinct_painted_owner() {
+    let mut app = projection_app();
+    let first_owner = SwarmId::PLAYER;
+    let second_owner = SwarmId(7);
+    let left = IVec2::ZERO;
+    let right = IVec2::X;
+    {
+        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
+        assert!(grid.paint_owned(left, IntentKind::Gather, Some(first_owner)));
+        assert!(grid.paint_owned(right, IntentKind::Gather, Some(second_owner)));
+    }
+    app.world_mut().spawn((
+        ResourceDeposit {
+            kind: ResourceKind::Minerals,
+            amount: 20,
+            capacity: 20,
+            radius: 64.0,
+        },
+        Transform::from_xyz(512.0, 256.0, 0.0),
+    ));
+
+    app.update();
+
+    let opportunities = gather_opportunities(app.world().resource::<ActionableProjection>());
+    assert_eq!(opportunities.len(), 2);
+    assert_eq!(
+        opportunities
+            .iter()
+            .filter(|opportunity| opportunity.owner == Some(first_owner))
+            .count(),
+        1
+    );
+    assert_eq!(
+        opportunities
+            .iter()
+            .filter(|opportunity| opportunity.owner == Some(second_owner))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn unowned_gather_paint_suppresses_owned_groups_for_unowned_deposit() {
+    let mut app = projection_app();
+    let shared = IVec2::ZERO;
+    let owned = IVec2::X;
+    {
+        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
+        assert!(grid.paint(shared, IntentKind::Gather));
+        assert!(grid.paint_owned(owned, IntentKind::Gather, Some(SwarmId::PLAYER)));
+    }
+    app.world_mut().spawn((
+        ResourceDeposit {
+            kind: ResourceKind::Minerals,
+            amount: 20,
+            capacity: 20,
+            radius: 64.0,
+        },
+        Transform::from_xyz(512.0, 256.0, 0.0),
+    ));
+
+    app.update();
+
+    let opportunities = gather_opportunities(app.world().resource::<ActionableProjection>());
+    assert_eq!(opportunities.len(), 1);
+    assert_eq!(opportunities[0].owner, None);
+    assert_eq!(opportunities[0].cell, shared);
+}
+
+#[test]
+fn deposit_owner_changes_and_removal_reproject_gather_opportunity() {
+    let mut app = projection_app();
+    let first_swarm = app.world_mut().spawn(SwarmId::PLAYER).id();
+    let second_id = SwarmId(7);
+    let second_swarm = app.world_mut().spawn(second_id).id();
+    let shared = IVec2::ZERO;
+    let first_owned = IVec2::X;
+    {
+        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
+        assert!(grid.paint(shared, IntentKind::Gather));
+        assert!(grid.paint_owned(first_owned, IntentKind::Gather, Some(SwarmId::PLAYER)));
+    }
+    let deposit = app
+        .world_mut()
+        .spawn((
+            ResourceDeposit {
+                kind: ResourceKind::Minerals,
+                amount: 20,
+                capacity: 20,
+                radius: 64.0,
+            },
+            OwnerSwarm(first_swarm),
+            Transform::from_xyz(512.0, 256.0, 0.0),
+        ))
+        .id();
+
+    app.update();
+    let opportunities = gather_opportunities(app.world().resource::<ActionableProjection>());
+    assert_eq!(opportunities.len(), 1);
+    assert_eq!(opportunities[0].owner, Some(SwarmId::PLAYER));
+    assert_eq!(opportunities[0].cell, shared);
+
+    app.world_mut()
+        .entity_mut(deposit)
+        .insert(OwnerSwarm(second_swarm));
+    app.update();
+    let opportunities = gather_opportunities(app.world().resource::<ActionableProjection>());
+    assert_eq!(opportunities.len(), 1);
+    assert_eq!(opportunities[0].owner, Some(second_id));
+    assert_eq!(opportunities[0].cell, shared);
+
+    app.world_mut().entity_mut(deposit).remove::<OwnerSwarm>();
+    app.update();
+    let opportunities = gather_opportunities(app.world().resource::<ActionableProjection>());
+    assert_eq!(opportunities.len(), 1);
+    assert_eq!(opportunities[0].owner, None);
+    assert_eq!(opportunities[0].cell, shared);
+}
