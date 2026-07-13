@@ -26,7 +26,7 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         completed_visual_color, GatherAssignment, PlannedKind, PlannedStructure, SwarmId,
         SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PADDING,
@@ -44,22 +44,12 @@ fn build_app() -> App {
 
 fn paint_gather(app: &mut App, cell: IVec2) {
     let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-    assert!(grid.paint_owned(
-        cell,
-        IntentKind::Gather,
-        PAINT_STRENGTH_CAP,
-        Some(SwarmId::PLAYER),
-    ));
+    assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
 }
 
 fn paint_build(app: &mut App, cell: IVec2) {
     let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-    assert!(grid.paint_owned(
-        cell,
-        IntentKind::Build,
-        PAINT_STRENGTH_CAP,
-        Some(SwarmId::PLAYER),
-    ));
+    assert!(grid.paint_owned(cell, IntentKind::Build, Some(SwarmId::PLAYER),));
 }
 
 fn spawn_swarm_and_worker(app: &mut App, worker_pos: Vec2) -> (Entity, Entity) {

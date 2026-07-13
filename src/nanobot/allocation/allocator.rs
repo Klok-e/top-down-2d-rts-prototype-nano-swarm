@@ -103,10 +103,8 @@ pub fn regional_pressure(
 ) -> RegionalPressure {
     let mut categories = CategoryValues::default();
     for opportunity in opportunities {
-        let paint = u32::from(opportunity.paint_strength).max(1);
         let contribution = opportunity
             .available_work
-            .saturating_mul(paint)
             .saturating_mul(weights.get(opportunity.category));
         categories.set(
             opportunity.category,
@@ -333,9 +331,7 @@ where
             let Some(claims) = claim_count(*opportunity) else {
                 continue;
             };
-            let pressure = opportunity
-                .available_work
-                .saturating_mul(u32::from(opportunity.paint_strength).max(1));
+            let pressure = opportunity.available_work;
             let score = (
                 category_priority(opportunity.category),
                 claims,

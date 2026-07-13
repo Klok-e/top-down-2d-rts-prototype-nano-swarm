@@ -14,14 +14,8 @@ use bevy::{
 
 use crate::nanobot::SwarmId;
 
-/// Upper bound on paint strength for any single layer at a cell. Repeated
-/// painting saturates at this value rather than overflowing. The cap is part
-/// of the public simulation contract: downstream systems (allocation, path
-/// preference, scoring) read strengths in `[0, PAINT_STRENGTH_CAP]`.
-pub const PAINT_STRENGTH_CAP: u8 = 16;
-
-/// Player intent kinds. Declaration order matches the zone overlay's colour and
-/// strength slots, so [`IntentKind::index`] is the stable cross-module layer key.
+/// Player intent kinds. Declaration order matches zone overlay colour slots, so
+/// [`IntentKind::index`] is stable cross-module layer key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IntentKind {
     Gather,
@@ -60,31 +54,18 @@ impl IntentKind {
     }
 }
 
-/// One active intent layer at a cell: which kind and how strong the paint is.
+/// One active intent layer at a cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IntentLayer {
     pub kind: IntentKind,
-    pub strength: u8,
 }
 
 /// Multiple intent layers at one cell. `active` is a bitmask of
-/// [`IntentKind::bit`] flags; `strength` stores the paint strength for each
-/// kind, but the entry is only meaningful while the matching bit in `active`
-/// is set.
-///
-/// `owner` carries the [`SwarmId`] that painted each kind. A
-/// `None` slot means the layer is unowned (legacy "shared"
-/// paint) and any swarm may use it. A `Some(id)` slot means only
-/// nanobots with `SwarmMember(id)` may score this layer; the
-/// per-swarm intent ownership contract from issue #20.
-///
-/// Like `strength`, the entry is only meaningful while the
-/// matching bit in `active` is set. Removing a layer also
-/// clears its owner slot.
+/// [`IntentKind::bit`] flags. Ownership is stored independently per kind, so
+/// overlapping kinds can belong to different swarms.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IntentCell {
     pub active: u8,
-    pub strength: [u8; IntentKind::COUNT],
     pub owner: [Option<SwarmId>; IntentKind::COUNT],
 }
 
@@ -94,85 +75,50 @@ impl IntentCell {
         self.active == 0
     }
 
-    /// True when the given intent kind is active at this cell.
+    /// True when given intent kind is active at this cell.
     pub fn has(&self, kind: IntentKind) -> bool {
         (self.active & kind.bit()) != 0
     }
 
-    /// Paint strength for `kind`, or `0` if the kind is not active.
-    pub fn strength(&self, kind: IntentKind) -> u8 {
-        if self.has(kind) {
-            self.strength[kind.index()]
-        } else {
-            0
-        }
+    /// Activate `kind` as unowned paint.
+    pub fn add(&mut self, kind: IntentKind) {
+        self.add_owned(kind, None);
     }
 
-    /// Activate `kind` with the given paint strength. Overwrites any previous
-    /// strength for the same kind. A zero strength removes the layer so
-    /// presence stays equivalent to `strength > 0`. Writes the owner as
-    /// "unowned" (`None`); use [`IntentCell::add_owned`] when the caller
-    /// knows which swarm painted the layer.
-    pub fn add(&mut self, kind: IntentKind, strength: u8) {
-        self.add_owned(kind, strength, None);
-    }
-
-    /// Activate `kind` with the given paint strength and stamp
-    /// `owner` as the swarm that painted it. Overwrites any
-    /// previous strength and owner for the same kind. A zero strength
-    /// removes the layer so presence stays equivalent to `strength > 0`.
-    /// Pass `None` to mark the layer as unowned.
-    pub fn add_owned(&mut self, kind: IntentKind, strength: u8, owner: Option<SwarmId>) {
-        let strength = strength.min(PAINT_STRENGTH_CAP);
-        if strength == 0 {
-            self.remove(kind);
-            return;
-        }
+    /// Activate `kind` and stamp its owner. Returns whether state changed.
+    pub fn add_owned(&mut self, kind: IntentKind, owner: Option<SwarmId>) -> bool {
+        let changed = !self.has(kind) || self.owner[kind.index()] != owner;
         self.active |= kind.bit();
-        self.strength[kind.index()] = strength;
         self.owner[kind.index()] = owner;
+        changed
     }
 
-    /// Deactivate `kind` and clear its stored strength + owner.
-    pub fn remove(&mut self, kind: IntentKind) {
-        self.active &= !kind.bit();
-        self.strength[kind.index()] = 0;
-        self.owner[kind.index()] = None;
-    }
-
-    /// Owner of the `kind` layer at this cell, or `None` if the
-    /// layer is unowned (legacy shared paint or no layer).
-    pub fn owner(&self, kind: IntentKind) -> Option<SwarmId> {
-        if self.has(kind) {
-            self.owner[kind.index()]
-        } else {
-            None
-        }
-    }
-
-    /// True when `kind` is owned by `swarm` (either the swarm
-    /// painted it directly, or the layer is unowned and any
-    /// swarm counts as the owner). Equivalent to the
-    /// "scoring-visible" predicate the autonomy filter uses.
-    pub fn visible_to(&self, kind: IntentKind, swarm: SwarmId) -> bool {
+    /// Deactivate `kind` and clear its owner. Returns whether state changed.
+    pub fn remove(&mut self, kind: IntentKind) -> bool {
         if !self.has(kind) {
             return false;
         }
-        match self.owner[kind.index()] {
-            None => true,
-            Some(owner) => owner == swarm,
-        }
+        self.active &= !kind.bit();
+        self.owner[kind.index()] = None;
+        true
     }
 
-    /// Iterate active intent layers at this cell. Order matches
-    /// [`IntentKind`] declaration order.
+    /// Owner of active `kind`, or `None` for unowned or absent paint.
+    pub fn owner(&self, kind: IntentKind) -> Option<SwarmId> {
+        self.has(kind).then(|| self.owner[kind.index()]).flatten()
+    }
+
+    /// True when `kind` is visible to `swarm`. Unowned paint is shared.
+    pub fn visible_to(&self, kind: IntentKind, swarm: SwarmId) -> bool {
+        self.has(kind) && self.owner(kind).is_none_or(|owner| owner == swarm)
+    }
+
+    /// Iterate active intent layers in declaration order.
     pub fn iter_layers(&self) -> impl Iterator<Item = IntentLayer> + '_ {
-        IntentKind::ALL.into_iter().filter_map(move |kind| {
-            self.has(kind).then_some(IntentLayer {
-                kind,
-                strength: self.strength[kind.index()],
-            })
-        })
+        IntentKind::ALL
+            .into_iter()
+            .filter(|&kind| self.has(kind))
+            .map(|kind| IntentLayer { kind })
     }
 }
 
@@ -231,117 +177,41 @@ impl IntentGrid {
         }
     }
 
-    /// Add `kind` intent at `point` with the given paint strength. Returns
-    /// `true` when the cell was within bounds and the layer was added.
-    ///
-    /// Writes the layer as unowned (legacy shared paint). Use
-    /// [`IntentGrid::add_owned`] when the caller knows which swarm
-    /// painted the layer; that is the entry point the
-    /// `spawn_opponent_swarm` helper and the player brush use to
-    /// stamp the per-swarm ownership.
-    pub fn add(&mut self, point: IVec2, kind: IntentKind, strength: u8) -> bool {
-        if let Some(cell) = self.cell_mut(point) {
-            cell.add(kind, strength);
-            true
-        } else {
-            false
-        }
+    /// Set unowned `kind` intent at `point`. Returns whether point is in bounds.
+    pub fn add(&mut self, point: IVec2, kind: IntentKind) -> bool {
+        self.set_owned(point, kind, None)
     }
 
-    /// Add `kind` intent at `point` with the given paint strength,
-    /// stamping `owner` as the swarm that painted the layer.
-    /// Returns `true` when the cell was within bounds and the
-    /// layer was added. `None` marks the layer as unowned (any
-    /// swarm may score it).
-    pub fn add_owned(
-        &mut self,
-        point: IVec2,
-        kind: IntentKind,
-        strength: u8,
-        owner: Option<SwarmId>,
-    ) -> bool {
-        if let Some(cell) = self.cell_mut(point) {
-            cell.add_owned(kind, strength, owner);
-            true
-        } else {
-            false
-        }
+    /// Set `kind` intent and owner at `point`. Returns whether point is in bounds.
+    pub fn add_owned(&mut self, point: IVec2, kind: IntentKind, owner: Option<SwarmId>) -> bool {
+        self.set_owned(point, kind, owner)
     }
 
-    /// Remove `kind` intent at `point`. Returns `true` when the cell was
-    /// within bounds (regardless of whether the kind was active).
+    /// Clear `kind` intent at `point`. Returns whether point is in bounds.
     pub fn remove(&mut self, point: IVec2, kind: IntentKind) -> bool {
-        if let Some(cell) = self.cell_mut(point) {
-            cell.remove(kind);
-            true
-        } else {
-            false
+        if !self.in_bounds(point) {
+            return false;
         }
+        let idx = self.index(point);
+        if self.cells[idx].remove(kind) {
+            self.mark_dirty(point);
+        }
+        true
     }
 
-    /// Add `delta` to the paint strength of `kind` at `point`, saturating at
-    /// [`PAINT_STRENGTH_CAP`]. If the layer is not yet active it is
-    /// activated at `min(delta, PAINT_STRENGTH_CAP)`. Returns `true` when
-    /// the cell was within bounds.
-    ///
-    /// Writes the layer as unowned; use [`IntentGrid::paint_owned`]
-    /// when the caller knows which swarm painted it.
-    pub fn paint(&mut self, point: IVec2, kind: IntentKind, delta: u8) -> bool {
-        if let Some(cell) = self.cell_mut(point) {
-            // Inactive layers have a zeroed strength slot, so this single
-            // expression covers both the first-paint and accumulate cases.
-            let next = cell.strength[kind.index()]
-                .saturating_add(delta)
-                .min(PAINT_STRENGTH_CAP);
-            cell.add(kind, next);
-            true
-        } else {
-            false
-        }
+    /// Paint unowned `kind` at `point`. Repeated paint is a no-op.
+    pub fn paint(&mut self, point: IVec2, kind: IntentKind) -> bool {
+        self.set_owned(point, kind, None)
     }
 
-    /// Add `delta` to the paint strength of `kind` at `point`,
-    /// stamping `owner` as the painting swarm. Saturates at
-    /// [`PAINT_STRENGTH_CAP`]. Returns `true` when the cell was
-    /// within bounds.
-    pub fn paint_owned(
-        &mut self,
-        point: IVec2,
-        kind: IntentKind,
-        delta: u8,
-        owner: Option<SwarmId>,
-    ) -> bool {
-        if let Some(cell) = self.cell_mut(point) {
-            let next = cell.strength[kind.index()]
-                .saturating_add(delta)
-                .min(PAINT_STRENGTH_CAP);
-            cell.add_owned(kind, next, owner);
-            true
-        } else {
-            false
-        }
+    /// Paint owned `kind` at `point`. Repeated paint by same owner is a no-op.
+    pub fn paint_owned(&mut self, point: IVec2, kind: IntentKind, owner: Option<SwarmId>) -> bool {
+        self.set_owned(point, kind, owner)
     }
 
-    /// Subtract `delta` from the paint strength of `kind` at `point`. If
-    /// the resulting strength is zero the layer is removed. Returns `true`
-    /// when the cell was within bounds. Erasing an inactive kind is a
-    /// no-op.
-    pub fn erase(&mut self, point: IVec2, kind: IntentKind, delta: u8) -> bool {
-        if let Some(cell) = self.cell_mut(point) {
-            if !cell.has(kind) {
-                return true;
-            }
-            let current = cell.strength[kind.index()];
-            let next = current.saturating_sub(delta);
-            if next == 0 {
-                cell.remove(kind);
-            } else {
-                cell.strength[kind.index()] = next;
-            }
-            true
-        } else {
-            false
-        }
+    /// Erase `kind` at `point` immediately. Erasing absent paint is a no-op.
+    pub fn erase(&mut self, point: IVec2, kind: IntentKind) -> bool {
+        self.remove(point, kind)
     }
 
     /// Number of changed cells awaiting the render mirror.
@@ -364,16 +234,6 @@ impl IntentGrid {
         drain_sorted(&mut self.projection_dirty)
     }
 
-    /// Compatibility alias for render-mirror dirty count.
-    pub fn dirty_count(&self) -> usize {
-        self.render_dirty_count()
-    }
-
-    /// Compatibility alias for draining render-mirror changes.
-    pub fn drain_dirty(&mut self) -> Vec<IVec2> {
-        self.drain_render_dirty()
-    }
-
     /// Iterate every cell in row-major order. Useful for systems that need to
     /// read the full grid state.
     pub fn iter_cells(&self) -> impl Iterator<Item = (IVec2, &IntentCell)> {
@@ -386,14 +246,20 @@ impl IntentGrid {
         })
     }
 
-    fn cell_mut(&mut self, point: IVec2) -> Option<&mut IntentCell> {
+    fn set_owned(&mut self, point: IVec2, kind: IntentKind, owner: Option<SwarmId>) -> bool {
         if !self.in_bounds(point) {
-            return None;
+            return false;
         }
         let idx = self.index(point);
+        if self.cells[idx].add_owned(kind, owner) {
+            self.mark_dirty(point);
+        }
+        true
+    }
+
+    fn mark_dirty(&mut self, point: IVec2) {
         self.render_dirty.insert(point);
         self.projection_dirty.insert(point);
-        Some(&mut self.cells[idx])
     }
 
     fn index(&self, point: IVec2) -> usize {
@@ -422,144 +288,102 @@ mod tests {
         let grid = IntentGrid::new(4, 4);
         let cell = grid.cell(IVec2::new(1, 1)).unwrap();
         assert!(cell.is_empty());
-        assert!(!cell.has(IntentKind::Gather));
-        assert!(!cell.has(IntentKind::Build));
-        assert_eq!(cell.strength(IntentKind::Gather), 0);
         assert_eq!(cell.iter_layers().count(), 0);
     }
 
     #[test]
-    fn add_activates_a_layer_with_stored_strength() {
+    fn paint_is_binary_and_repeated_paint_stays_clean() {
         let mut grid = IntentGrid::new(4, 4);
-        assert!(grid.add(IVec2::new(-2, -2), IntentKind::Gather, 7));
+        let point = IVec2::ZERO;
 
-        let cell = grid.cell(IVec2::new(-2, -2)).unwrap();
-        assert!(cell.has(IntentKind::Gather));
-        assert_eq!(cell.strength(IntentKind::Gather), 7);
-        assert!(!cell.has(IntentKind::Build));
+        assert!(grid.paint(point, IntentKind::Gather));
+        assert!(grid.cell(point).unwrap().has(IntentKind::Gather));
+        assert_eq!(grid.render_dirty_count(), 1);
+        assert_eq!(grid.drain_render_dirty(), vec![point]);
+        assert_eq!(grid.drain_projection_dirty(), vec![point]);
+
+        assert!(grid.paint(point, IntentKind::Gather));
+        assert_eq!(grid.render_dirty_count(), 0);
+        assert_eq!(grid.projection_dirty_count(), 0);
     }
 
     #[test]
-    fn multiple_kinds_coexist_at_one_cell() {
+    fn ownership_change_marks_binary_layer_dirty() {
         let mut grid = IntentGrid::new(4, 4);
-        let point = IVec2::new(1, 1);
-        assert!(grid.add(point, IntentKind::Gather, 3));
-        assert!(grid.add(point, IntentKind::Defend, 5));
-        assert!(grid.add(point, IntentKind::Corridor, 9));
+        let point = IVec2::ZERO;
+        grid.paint_owned(point, IntentKind::Build, Some(SwarmId::PLAYER));
+        grid.drain_render_dirty();
+        grid.drain_projection_dirty();
+
+        grid.paint_owned(point, IntentKind::Build, Some(SwarmId(7)));
+
+        let cell = grid.cell(point).unwrap();
+        assert_eq!(cell.owner(IntentKind::Build), Some(SwarmId(7)));
+        assert_eq!(grid.render_dirty_count(), 1);
+        assert_eq!(grid.projection_dirty_count(), 1);
+    }
+
+    #[test]
+    fn overlapping_kinds_keep_independent_ownership() {
+        let mut grid = IntentGrid::new(4, 4);
+        let point = IVec2::ZERO;
+        grid.paint_owned(point, IntentKind::Gather, Some(SwarmId::PLAYER));
+        grid.paint_owned(point, IntentKind::Defend, Some(SwarmId(7)));
 
         let cell = grid.cell(point).unwrap();
         assert!(cell.has(IntentKind::Gather));
-        assert!(!cell.has(IntentKind::Build));
         assert!(cell.has(IntentKind::Defend));
+        assert_eq!(cell.owner(IntentKind::Gather), Some(SwarmId::PLAYER));
+        assert_eq!(cell.owner(IntentKind::Defend), Some(SwarmId(7)));
+    }
+
+    #[test]
+    fn erase_clears_selected_kind_immediately_and_stays_clean_when_repeated() {
+        let mut grid = IntentGrid::new(4, 4);
+        let point = IVec2::ZERO;
+        grid.paint(point, IntentKind::Gather);
+        grid.paint(point, IntentKind::Corridor);
+        grid.drain_render_dirty();
+        grid.drain_projection_dirty();
+
+        assert!(grid.erase(point, IntentKind::Gather));
+        let cell = grid.cell(point).unwrap();
+        assert!(!cell.has(IntentKind::Gather));
         assert!(cell.has(IntentKind::Corridor));
+        assert_eq!(grid.drain_render_dirty(), vec![point]);
+        assert_eq!(grid.drain_projection_dirty(), vec![point]);
 
-        let layers: Vec<IntentLayer> = cell.iter_layers().collect();
-        assert_eq!(layers.len(), 3);
-        assert!(layers.contains(&IntentLayer {
-            kind: IntentKind::Gather,
-            strength: 3
-        }));
-        assert!(layers.contains(&IntentLayer {
-            kind: IntentKind::Defend,
-            strength: 5
-        }));
-        assert!(layers.contains(&IntentLayer {
-            kind: IntentKind::Corridor,
-            strength: 9
-        }));
-    }
-
-    #[test]
-    fn remove_clears_only_the_target_kind() {
-        let mut grid = IntentGrid::new(4, 4);
-        let point = IVec2::new(1, 1);
-        grid.add(point, IntentKind::Gather, 4);
-        grid.add(point, IntentKind::Build, 6);
-
-        assert!(grid.remove(point, IntentKind::Gather));
-
-        let cell = grid.cell(point).unwrap();
-        assert!(!cell.has(IntentKind::Gather));
-        assert_eq!(cell.strength(IntentKind::Gather), 0);
-        assert!(cell.has(IntentKind::Build));
-        assert_eq!(cell.strength(IntentKind::Build), 6);
-        assert!(!cell.is_empty());
-    }
-
-    #[test]
-    fn add_zero_strength_keeps_layer_absent() {
-        let mut grid = IntentGrid::new(4, 4);
-        let point = IVec2::new(1, 1);
-        grid.add(point, IntentKind::Gather, 5);
-
-        assert!(grid.add(point, IntentKind::Gather, 0));
-
-        let cell = grid.cell(point).unwrap();
-        assert!(!cell.has(IntentKind::Gather));
-        assert_eq!(cell.strength(IntentKind::Gather), 0);
-        assert_eq!(cell.iter_layers().count(), 0);
-    }
-
-    #[test]
-    fn add_clamps_above_strength_cap() {
-        let mut grid = IntentGrid::new(4, 4);
-        let point = IVec2::new(1, 1);
-
-        assert!(grid.add(point, IntentKind::Build, 250));
-
-        let cell = grid.cell(point).unwrap();
-        assert!(cell.has(IntentKind::Build));
-        assert_eq!(cell.strength(IntentKind::Build), PAINT_STRENGTH_CAP);
+        assert!(grid.erase(point, IntentKind::Gather));
+        assert_eq!(grid.render_dirty_count(), 0);
+        assert_eq!(grid.projection_dirty_count(), 0);
     }
 
     #[test]
     fn out_of_bounds_writes_are_rejected() {
         let mut grid = IntentGrid::new(3, 3);
-        assert!(grid.in_bounds(IVec2::new(-1, -1)));
-        assert!(grid.in_bounds(IVec2::new(1, 1)));
-        assert!(!grid.in_bounds(IVec2::new(-2, 0)));
-        assert!(!grid.in_bounds(IVec2::new(2, 0)));
-        assert!(!grid.in_bounds(IVec2::new(0, 2)));
-        assert!(!grid.in_bounds(IVec2::new(0, -2)));
-
-        assert!(!grid.add(IVec2::new(-2, 0), IntentKind::Gather, 1));
-        assert!(!grid.add(IVec2::new(2, 0), IntentKind::Gather, 1));
-        assert!(!grid.remove(IVec2::new(0, 2), IntentKind::Gather));
-
-        assert!(grid.cell(IVec2::new(-2, 0)).is_none());
-        assert!(grid.cell(IVec2::new(2, 0)).is_none());
+        assert!(!grid.paint(IVec2::new(-2, 0), IntentKind::Gather));
+        assert!(!grid.erase(IVec2::new(2, 0), IntentKind::Gather));
     }
 
     #[test]
-    fn render_and_projection_dirty_cells_drain_independently() {
+    fn dirty_cells_drain_independently_in_deterministic_order() {
         let mut grid = IntentGrid::new(4, 4);
-        grid.add(IVec2::new(-2, -2), IntentKind::Gather, 1);
-        grid.add(IVec2::new(0, -1), IntentKind::Build, 2);
-        grid.add(IVec2::new(-2, -2), IntentKind::Gather, 1);
+        grid.add(IVec2::new(0, -1), IntentKind::Build);
+        grid.add(IVec2::new(-2, -2), IntentKind::Gather);
 
-        assert_eq!(grid.render_dirty_count(), 2);
+        let expected = vec![IVec2::new(-2, -2), IVec2::new(0, -1)];
+        assert_eq!(grid.drain_render_dirty(), expected);
         assert_eq!(grid.projection_dirty_count(), 2);
-        assert_eq!(
-            grid.drain_render_dirty(),
-            vec![IVec2::new(-2, -2), IVec2::new(0, -1)]
-        );
-        assert_eq!(grid.render_dirty_count(), 0);
-        assert_eq!(grid.projection_dirty_count(), 2);
-        assert_eq!(
-            grid.drain_projection_dirty(),
-            vec![IVec2::new(-2, -2), IVec2::new(0, -1)]
-        );
-        assert_eq!(grid.projection_dirty_count(), 0);
+        assert_eq!(grid.drain_projection_dirty(), expected);
     }
 
     #[test]
     fn iter_cells_covers_whole_grid_in_row_major_order() {
         let mut grid = IntentGrid::new(2, 2);
-        grid.add(IVec2::new(0, 0), IntentKind::Defend, 2);
-
+        grid.add(IVec2::ZERO, IntentKind::Defend);
         let seen: Vec<(IVec2, bool)> = grid
             .iter_cells()
-            .map(|(p, c)| (p, c.has(IntentKind::Defend)))
+            .map(|(point, cell)| (point, cell.has(IntentKind::Defend)))
             .collect();
         assert_eq!(
             seen,
@@ -567,39 +391,9 @@ mod tests {
                 (IVec2::new(-1, -1), false),
                 (IVec2::new(0, -1), false),
                 (IVec2::new(-1, 0), false),
-                (IVec2::new(0, 0), true),
+                (IVec2::ZERO, true),
             ]
         );
-    }
-
-    #[test]
-    fn deterministic_sequence_produces_same_grid_state() {
-        fn run(ops: &[(IVec2, IntentKind, u8, bool)]) -> Vec<u8> {
-            // bool: true = add, false = remove
-            let mut grid = IntentGrid::new(2, 2);
-            for (p, k, s, add) in ops {
-                if *add {
-                    grid.add(*p, *k, *s);
-                } else {
-                    grid.remove(*p, *k);
-                }
-            }
-            grid.cells
-                .iter()
-                .flat_map(|c| [c.active, c.strength[0], c.strength[1]])
-                .collect()
-        }
-
-        let ops = vec![
-            (IVec2::new(-1, -1), IntentKind::Gather, 4, true),
-            (IVec2::new(0, -1), IntentKind::Build, 2, true),
-            (IVec2::new(-1, -1), IntentKind::Gather, 4, false),
-            (IVec2::new(-1, 0), IntentKind::Defend, 9, true),
-        ];
-
-        let first = run(&ops);
-        let second = run(&ops);
-        assert_eq!(first, second);
     }
 
     #[test]
@@ -607,140 +401,8 @@ mod tests {
         let mut grid = IntentGrid::new(0, 0);
         assert_eq!(grid.width(), 0);
         assert_eq!(grid.height(), 0);
-        assert!(!grid.add(IVec2::new(0, 0), IntentKind::Gather, 1));
-        assert!(grid.cell(IVec2::new(0, 0)).is_none());
-    }
-
-    #[test]
-    fn paint_activates_layer_at_delta_for_inactive_kind() {
-        let mut grid = IntentGrid::new(4, 4);
-        assert!(grid.paint(IVec2::new(0, 0), IntentKind::Gather, 3));
-
-        let cell = grid.cell(IVec2::new(0, 0)).unwrap();
-        assert!(cell.has(IntentKind::Gather));
-        assert_eq!(cell.strength(IntentKind::Gather), 3);
-    }
-
-    #[test]
-    fn paint_accumulates_until_cap() {
-        let mut grid = IntentGrid::new(4, 4);
-        let point = IVec2::new(0, 0);
-        for _ in 0..(PAINT_STRENGTH_CAP as usize) {
-            assert!(grid.paint(point, IntentKind::Gather, 1));
-        }
-        assert_eq!(
-            grid.cell(point).unwrap().strength(IntentKind::Gather),
-            PAINT_STRENGTH_CAP
-        );
-
-        // more painting saturates, does not overflow
-        assert!(grid.paint(point, IntentKind::Gather, 5));
-        assert_eq!(
-            grid.cell(point).unwrap().strength(IntentKind::Gather),
-            PAINT_STRENGTH_CAP
-        );
-        assert!(grid.paint(point, IntentKind::Gather, 200));
-        assert_eq!(
-            grid.cell(point).unwrap().strength(IntentKind::Gather),
-            PAINT_STRENGTH_CAP
-        );
-    }
-
-    #[test]
-    fn paint_above_cap_delta_clamps_on_first_paint() {
-        let mut grid = IntentGrid::new(4, 4);
-        let point = IVec2::new(0, 0);
-        assert!(grid.paint(point, IntentKind::Build, 200));
-        assert_eq!(
-            grid.cell(point).unwrap().strength(IntentKind::Build),
-            PAINT_STRENGTH_CAP
-        );
-    }
-
-    #[test]
-    fn erase_decrements_strength_without_touching_other_kinds() {
-        let mut grid = IntentGrid::new(4, 4);
-        let point = IVec2::new(0, 0);
-        grid.paint(point, IntentKind::Gather, 5);
-        grid.paint(point, IntentKind::Defend, 4);
-
-        assert!(grid.erase(point, IntentKind::Gather, 2));
-        let cell = grid.cell(point).unwrap();
-        assert_eq!(cell.strength(IntentKind::Gather), 3);
-        assert_eq!(cell.strength(IntentKind::Defend), 4);
-    }
-
-    #[test]
-    fn erase_to_zero_removes_the_layer() {
-        let mut grid = IntentGrid::new(4, 4);
-        let point = IVec2::new(0, 0);
-        grid.paint(point, IntentKind::Gather, 3);
-
-        assert!(grid.erase(point, IntentKind::Gather, 3));
-
-        let cell = grid.cell(point).unwrap();
-        assert!(!cell.has(IntentKind::Gather));
-        assert_eq!(cell.strength(IntentKind::Gather), 0);
-        assert_eq!(cell.active, 0);
-    }
-
-    #[test]
-    fn erase_below_zero_treated_as_full_removal() {
-        let mut grid = IntentGrid::new(4, 4);
-        let point = IVec2::new(0, 0);
-        grid.paint(point, IntentKind::Corridor, 2);
-
-        // a single big erase removes the layer entirely rather than
-        // leaving a negative or underflowed value behind
-        assert!(grid.erase(point, IntentKind::Corridor, 10));
-        let cell = grid.cell(point).unwrap();
-        assert!(!cell.has(IntentKind::Corridor));
-        assert_eq!(cell.active, 0);
-    }
-
-    #[test]
-    fn erase_on_inactive_kind_is_a_noop() {
-        let mut grid = IntentGrid::new(4, 4);
-        let point = IVec2::new(0, 0);
-        grid.paint(point, IntentKind::Gather, 4);
-
-        // Defend was never painted; erasing it must not touch Gather.
-        assert!(grid.erase(point, IntentKind::Defend, 5));
-        let cell = grid.cell(point).unwrap();
-        assert_eq!(cell.strength(IntentKind::Gather), 4);
-        assert!(!cell.has(IntentKind::Defend));
-    }
-
-    #[test]
-    fn overlapping_layers_keep_independent_strengths() {
-        let mut grid = IntentGrid::new(4, 4);
-        let point = IVec2::new(0, 0);
-        grid.paint(point, IntentKind::Gather, 5);
-        grid.paint(point, IntentKind::Build, 7);
-        grid.paint(point, IntentKind::Defend, 2);
-        // Corridor delta is over the cap so the first paint clamps to it
-        grid.paint(point, IntentKind::Corridor, 200);
-
-        let cell = grid.cell(point).unwrap();
-        assert_eq!(cell.strength(IntentKind::Gather), 5);
-        assert_eq!(cell.strength(IntentKind::Build), 7);
-        assert_eq!(cell.strength(IntentKind::Defend), 2);
-        assert_eq!(cell.strength(IntentKind::Corridor), PAINT_STRENGTH_CAP);
-
-        // erasing one kind does not move the others
-        grid.erase(point, IntentKind::Gather, 2);
-        let cell = grid.cell(point).unwrap();
-        assert_eq!(cell.strength(IntentKind::Gather), 3);
-        assert_eq!(cell.strength(IntentKind::Build), 7);
-        assert_eq!(cell.strength(IntentKind::Defend), 2);
-        assert_eq!(cell.strength(IntentKind::Corridor), PAINT_STRENGTH_CAP);
-    }
-
-    #[test]
-    fn paint_out_of_bounds_is_rejected() {
-        let mut grid = IntentGrid::new(3, 3);
-        assert!(!grid.paint(IVec2::new(-2, 0), IntentKind::Gather, 1));
-        assert!(!grid.erase(IVec2::new(2, 0), IntentKind::Gather, 1));
+        assert!(!grid.add(IVec2::ZERO, IntentKind::Gather));
+        assert!(grid.cell(IVec2::ZERO).is_none());
     }
 }
 

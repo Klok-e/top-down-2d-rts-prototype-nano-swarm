@@ -13,7 +13,7 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         best_candidate, spawn_opponent_swarm, Commitment, Health, Nanobot, NanobotBundle,
         NanobotType, OpponentSwarm, OwnerSwarm, PrepaintedIntent, ProductionFacility,
@@ -63,11 +63,7 @@ fn opponent_swarm_can_be_initialized_with_prepainted_intent() {
         app.world_mut(),
         opponent_pos,
         ratio.clone(),
-        &[PrepaintedIntent::new(
-            gather_cell,
-            IntentKind::Gather,
-            PAINT_STRENGTH_CAP,
-        )],
+        &[PrepaintedIntent::new(gather_cell, IntentKind::Gather)],
         &[SeedNanobots::new(NanobotType::Worker, 2)],
     );
 
@@ -82,7 +78,6 @@ fn opponent_swarm_can_be_initialized_with_prepainted_intent() {
 
     let grid = world.resource::<IntentGrid>();
     let cell = grid.cell(gather_cell).expect("cell must be in bounds");
-    assert_eq!(cell.strength(IntentKind::Gather), PAINT_STRENGTH_CAP);
     assert!(cell.has(IntentKind::Gather));
 
     let children = children_of(world, opponent);
@@ -139,11 +134,7 @@ fn opponent_nanobot_picks_prepainted_intent_via_same_scoring() {
         app.world_mut(),
         opponent_pos,
         ratio,
-        &[PrepaintedIntent::new(
-            gather_cell,
-            IntentKind::Gather,
-            PAINT_STRENGTH_CAP,
-        )],
+        &[PrepaintedIntent::new(gather_cell, IntentKind::Gather)],
         &[SeedNanobots::new(NanobotType::Worker, 1)],
     );
     app.update();

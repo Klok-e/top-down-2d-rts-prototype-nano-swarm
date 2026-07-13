@@ -335,12 +335,12 @@ mod tests {
         // Build only is also fit for a Worker. The merged worker
         // region is the union of both kinds.
         let mut gather_only = IntentCell::default();
-        gather_only.add(IntentKind::Gather, 4);
+        gather_only.add(IntentKind::Gather);
         assert!(cell_is_fit_for(NanobotType::Worker, &gather_only));
         assert!(!cell_is_fit_for(NanobotType::Hauler, &gather_only));
 
         let mut build_only = IntentCell::default();
-        build_only.add(IntentKind::Build, 4);
+        build_only.add(IntentKind::Build);
         assert!(cell_is_fit_for(NanobotType::Worker, &build_only));
         assert!(!cell_is_fit_for(NanobotType::Defender, &build_only));
 
@@ -351,7 +351,7 @@ mod tests {
         assert!(cell_is_fit_for(NanobotType::Worker, &build_only));
 
         let mut corridor = IntentCell::default();
-        corridor.add(IntentKind::Corridor, 4);
+        corridor.add(IntentKind::Corridor);
         assert!(cell_is_fit_for(NanobotType::Hauler, &corridor));
         assert!(!cell_is_fit_for(NanobotType::Worker, &corridor));
 
@@ -387,8 +387,8 @@ mod tests {
         // a Worker should see both as fit neighbours, while the
         // unpainted / out-of-bounds neighbours are dropped.
         let mut grid = IntentGrid::new(3, 3);
-        grid.add(IVec2::new(1, 0), IntentKind::Gather, 4);
-        grid.add(IVec2::new(0, 1), IntentKind::Build, 4);
+        grid.add(IVec2::new(1, 0), IntentKind::Gather);
+        grid.add(IVec2::new(0, 1), IntentKind::Build);
 
         let fit = fit_neighbour_cells(NanobotType::Worker, IVec2::new(0, 0), &grid);
         assert!(fit.contains(&IVec2::new(1, 0)));

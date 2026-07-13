@@ -101,7 +101,6 @@ pub struct ActionableOpportunity {
     pub target: OpportunityTarget,
     pub cell: IVec2,
     pub owner: Option<SwarmId>,
-    pub paint_strength: u8,
     pub available_work: u32,
 }
 

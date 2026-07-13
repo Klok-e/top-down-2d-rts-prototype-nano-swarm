@@ -21,7 +21,7 @@ fn region(x: i32, y: i32) -> AllocationRegion {
 fn defend_opportunity(
     region: AllocationRegion,
     cell: IVec2,
-    strength: u8,
+    available_work: u32,
 ) -> ActionableOpportunity {
     ActionableOpportunity {
         region,
@@ -29,8 +29,7 @@ fn defend_opportunity(
         target: OpportunityTarget::Defend { cell },
         cell,
         owner: None,
-        paint_strength: strength,
-        available_work: u32::from(strength),
+        available_work,
     }
 }
 
@@ -304,7 +303,7 @@ fn unsupported_opportunity_revokes_lease_in_the_same_app_update() {
         );
     app.world_mut()
         .resource_mut::<IntentGrid>()
-        .add(IVec2::ZERO, IntentKind::Defend, 3);
+        .add(IVec2::ZERO, IntentKind::Defend);
     app.update();
 
     let opportunity = app

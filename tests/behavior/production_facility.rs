@@ -413,7 +413,7 @@ fn additional_facility_plans_when_existing_busy_and_build_zone_free() {
     // plan was created for). This test pins the new
     // emergence path end-to-end.
     use top_down_2d_rts_prototype_nano_swarm::{
-        intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+        intent::{IntentGrid, IntentKind},
         nanobot::{
             completed_visual_color, planned_visual_color, OwnerSwarm, PlannedKind,
             PlannedProductionTarget, PlannedStructure, SwarmId, DEFAULT_PLANNED_WORK_TICKS,
@@ -441,12 +441,7 @@ fn additional_facility_plans_when_existing_busy_and_build_zone_free() {
     // occupying the Build cell.
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(
-            IVec2::new(1, 0),
-            IntentKind::Build,
-            PAINT_STRENGTH_CAP,
-            Some(SwarmId::PLAYER),
-        ));
+        assert!(grid.paint_owned(IVec2::new(1, 0), IntentKind::Build, Some(SwarmId::PLAYER),));
     }
 
     app.update();

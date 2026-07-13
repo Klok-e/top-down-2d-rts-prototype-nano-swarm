@@ -10,7 +10,7 @@ use pathfinding::prelude::astar;
 
 use crate::{
     ai::get_world_from_zone,
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{gather::world_to_cell, SwarmId},
     ZONE_BLOCK_SIZE,
 };
@@ -21,7 +21,7 @@ const DIAGONAL_STEP_COST: u32 = 1_414;
 const CORRIDOR_MIN_MULTIPLIER_SCALED: u32 = 350;
 const NORMAL_MULTIPLIER_SCALED: u32 = COST_SCALE;
 
-/// Cost multiplier for maximum-strength Logistics Corridor paint.
+/// Cost multiplier for owned Logistics Corridor paint.
 pub const CORRIDOR_MIN_COST_MULTIPLIER: f32 =
     CORRIDOR_MIN_MULTIPLIER_SCALED as f32 / COST_SCALE as f32;
 
@@ -113,10 +113,7 @@ fn traversal_multiplier_scaled(cell: IVec2, grid: &IntentGrid, swarm: SwarmId) -
     if !intent_cell.visible_to(IntentKind::Corridor, swarm) {
         return NORMAL_MULTIPLIER_SCALED;
     }
-    let strength = intent_cell.strength(IntentKind::Corridor) as u32;
-    let discount = (NORMAL_MULTIPLIER_SCALED - CORRIDOR_MIN_MULTIPLIER_SCALED) * strength
-        / PAINT_STRENGTH_CAP as u32;
-    NORMAL_MULTIPLIER_SCALED - discount
+    CORRIDOR_MIN_MULTIPLIER_SCALED
 }
 
 fn octile_heuristic_scaled(from: IVec2, to: IVec2) -> u32 {
@@ -144,19 +141,15 @@ mod tests {
     }
 
     #[test]
-    fn stronger_corridor_paint_has_lower_route_cost() {
-        let start = Vec2::new(0.0, 0.0);
+    fn painted_corridor_has_fixed_discount() {
+        let start = Vec2::ZERO;
         let end = Vec2::new(3.0 * ZONE_BLOCK_SIZE, 0.0);
-        let painted = IVec2::new(1, 0);
-        let mut weak = IntentGrid::new(8, 8);
-        let mut strong = IntentGrid::new(8, 8);
-        weak.paint(painted, IntentKind::Corridor, 1);
-        strong.paint(painted, IntentKind::Corridor, PAINT_STRENGTH_CAP);
+        let mut grid = IntentGrid::new(8, 8);
+        grid.paint(IVec2::new(1, 0), IntentKind::Corridor);
 
-        let weak_cost = hauler_route_cost(start, end, &weak, SwarmId::PLAYER);
-        let strong_cost = hauler_route_cost(start, end, &strong, SwarmId::PLAYER);
-
-        assert!(strong_cost < weak_cost);
+        let painted = hauler_route_cost(start, end, &grid, SwarmId::PLAYER);
+        let normal = hauler_route_cost(start, end, &IntentGrid::new(8, 8), SwarmId::PLAYER);
+        assert!(painted < normal);
     }
 
     #[test]
@@ -166,12 +159,7 @@ mod tests {
         let painted = IVec2::new(1, 0);
         let unpainted = IntentGrid::new(8, 8);
         let mut enemy = IntentGrid::new(8, 8);
-        enemy.paint_owned(
-            painted,
-            IntentKind::Corridor,
-            PAINT_STRENGTH_CAP,
-            Some(SwarmId(99)),
-        );
+        enemy.paint_owned(painted, IntentKind::Corridor, Some(SwarmId(99)));
 
         let normal_cost = hauler_route_cost(start, end, &unpainted, SwarmId::PLAYER);
         let enemy_cost = hauler_route_cost(start, end, &enemy, SwarmId::PLAYER);
@@ -186,7 +174,7 @@ mod tests {
         let painted = IVec2::new(1, 0);
         let unpainted = IntentGrid::new(8, 8);
         let mut shared = IntentGrid::new(8, 8);
-        shared.paint(painted, IntentKind::Corridor, PAINT_STRENGTH_CAP);
+        shared.paint(painted, IntentKind::Corridor);
 
         let normal_cost = hauler_route_cost(start, end, &unpainted, SwarmId(42));
         let shared_cost = hauler_route_cost(start, end, &shared, SwarmId(42));
@@ -206,7 +194,7 @@ mod tests {
             IVec2::new(3, 1),
             IVec2::new(4, 1),
         ] {
-            grid.paint(cell, IntentKind::Corridor, PAINT_STRENGTH_CAP);
+            grid.paint(cell, IntentKind::Corridor);
         }
 
         let route = plan_hauler_route(start, end, &grid, SwarmId::PLAYER).unwrap();

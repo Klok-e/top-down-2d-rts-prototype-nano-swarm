@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         Commitment, GatherAssignment, Health, Nanobot, NanobotSprites, NanobotType, RegionalLease,
         SwarmId, SwarmMember, VelocityComponent,
@@ -38,12 +38,9 @@ pub fn regional_allocation(ctx: &mut TestContext) -> TestFlow {
     }
 
     if ctx.frame == 0 {
-        world.resource_mut::<IntentGrid>().add_owned(
-            CELL,
-            IntentKind::Gather,
-            PAINT_STRENGTH_CAP,
-            Some(TEST_SWARM),
-        );
+        world
+            .resource_mut::<IntentGrid>()
+            .add_owned(CELL, IntentKind::Gather, Some(TEST_SWARM));
         world.spawn((
             ResourceDeposit {
                 kind: ResourceKind::Minerals,

@@ -25,7 +25,7 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{GatherAssignment, SwarmId},
     ZONE_BLOCK_SIZE,
 };
@@ -43,16 +43,10 @@ fn build_app() -> App {
     common::sim_app_with_gather_planned()
 }
 
-/// Paint `cell` with player-owned Gather intent at full
-/// strength, mirroring the scenario helper.
+/// Paint `cell` with player-owned Gather intent.
 fn paint_gather(app: &mut App, cell: IVec2) {
     let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-    assert!(grid.paint_owned(
-        cell,
-        IntentKind::Gather,
-        PAINT_STRENGTH_CAP,
-        Some(SwarmId::PLAYER),
-    ));
+    assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
 }
 
 #[test]
@@ -266,12 +260,7 @@ fn opponent_gather_bot_lands_at_deposit_world_position() {
     // Paint the deposit's gather cell as opponent-owned.
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(
-            deposit_cell,
-            IntentKind::Gather,
-            PAINT_STRENGTH_CAP,
-            Some(SwarmId(7)),
-        ));
+        assert!(grid.paint_owned(deposit_cell, IntentKind::Gather, Some(SwarmId(7)),));
     }
     // Find the seed worker.
     let worker = {

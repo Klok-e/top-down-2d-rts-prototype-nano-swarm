@@ -4,7 +4,7 @@ use bevy::{prelude::*, time::TimeUpdateStrategy};
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         idle_spread_system, move_velocity_system, separation_system, velocity_system, Commitment,
         NanobotBundle, NanobotType, RegionalAllocationPlugin, SwarmId,
@@ -45,12 +45,7 @@ fn app_with_bots(defend_work: bool) -> App {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
         for y in -8..8 {
             for x in -8..8 {
-                grid.add_owned(
-                    IVec2::new(x, y),
-                    IntentKind::Defend,
-                    PAINT_STRENGTH_CAP,
-                    Some(SwarmId::PLAYER),
-                );
+                grid.add_owned(IVec2::new(x, y), IntentKind::Defend, Some(SwarmId::PLAYER));
             }
         }
     }

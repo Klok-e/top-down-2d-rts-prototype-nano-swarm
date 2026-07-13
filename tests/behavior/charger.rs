@@ -15,7 +15,7 @@
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     ai::AiPlugin,
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         defender_charger_work_system, nanobot_death_cleanup_system, Cargo, Charge, Charger,
         ChargerAssignment, ChargerProgress, DefendAssignment, DefendHold, Health,
@@ -81,11 +81,9 @@ fn charger_auto_emerges_in_defend_cell_with_defender_load() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(1, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Defend,
-        PAINT_STRENGTH_CAP,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend);
     let cell_center = common::cell_world_center(cell);
     // Spawn the defender and then plant it in a DefendHold
     // below; the auto-creation system reads "holding or
@@ -149,11 +147,9 @@ fn charger_does_not_emerge_in_cell_without_load() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(1, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Defend,
-        PAINT_STRENGTH_CAP,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend);
 
     app.update();
 
@@ -193,11 +189,9 @@ fn charger_emergence_respects_existing_charger_busyness() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Defend,
-        PAINT_STRENGTH_CAP,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend);
     let cell_center = common::cell_world_center(cell);
     let _charger = common::spawn_charger_at(&mut app, cell, 100);
 
@@ -255,11 +249,9 @@ fn charger_does_not_emerge_extra_when_load_below_busy_threshold() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Defend,
-        PAINT_STRENGTH_CAP,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend);
     let cell_center = common::cell_world_center(cell);
     let _charger = common::spawn_charger_at(&mut app, cell, 100);
     // 1 charger and 2 defenders: 2 < MAX_DEFENDERS_PER_CHARGER
@@ -370,11 +362,9 @@ fn empty_charge_causes_defender_health_loss_when_no_charger() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Defend,
-        PAINT_STRENGTH_CAP,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend);
     let cell_center = common::cell_world_center(cell);
     let _charger = common::spawn_charger_at(&mut app, cell, 0);
     let defender = common::spawn_defender_at(&mut app, cell_center);
@@ -462,11 +452,9 @@ fn defender_rotates_to_working_charger_when_charge_is_low() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Defend,
-        PAINT_STRENGTH_CAP,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend);
     let cell_center = common::cell_world_center(cell);
     let _charger = common::spawn_charger_at(&mut app, cell, 100);
     let defender = common::spawn_defender_at(&mut app, cell_center);
@@ -519,11 +507,9 @@ fn defender_does_not_rotate_to_empty_charger() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Defend,
-        PAINT_STRENGTH_CAP,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend);
     let cell_center = common::cell_world_center(cell);
     // Charger with NO material: not a working rotation target.
     let _charger = common::spawn_charger_at(&mut app, cell, 0);
@@ -558,11 +544,9 @@ fn defender_charges_at_a_working_charger_and_returns_to_defend() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Defend,
-        PAINT_STRENGTH_CAP,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend);
     let cell_center = common::cell_world_center(cell);
     let _charger = common::spawn_charger_at(&mut app, cell, 200);
     let defender = common::spawn_defender_at(&mut app, cell_center);
@@ -648,11 +632,10 @@ fn charger_requires_logistics_support_via_physical_resources() {
     {
         let _swarm = common::spawn_swarm_at(&mut app_empty, Vec2::new(0.0, 0.0));
         let cell = IVec2::new(0, 0);
-        app_empty.world_mut().resource_mut::<IntentGrid>().paint(
-            cell,
-            IntentKind::Defend,
-            PAINT_STRENGTH_CAP,
-        );
+        app_empty
+            .world_mut()
+            .resource_mut::<IntentGrid>()
+            .paint(cell, IntentKind::Defend);
         let cell_center = common::cell_world_center(cell);
         // Pre-spawn an empty charger so the auto-creation
         // system does not also create a working charger
@@ -687,11 +670,10 @@ fn charger_requires_logistics_support_via_physical_resources() {
     {
         let _swarm = common::spawn_swarm_at(&mut app_filled, Vec2::new(0.0, 0.0));
         let cell = IVec2::new(0, 0);
-        app_filled.world_mut().resource_mut::<IntentGrid>().paint(
-            cell,
-            IntentKind::Defend,
-            PAINT_STRENGTH_CAP,
-        );
+        app_filled
+            .world_mut()
+            .resource_mut::<IntentGrid>()
+            .paint(cell, IntentKind::Defend);
         let cell_center = common::cell_world_center(cell);
         let _charger = common::spawn_charger_at(&mut app_filled, cell, 200);
         let defender = common::spawn_defender_at(&mut app_filled, cell_center);
@@ -744,7 +726,7 @@ fn hauler_delivers_minerals_to_a_charger_with_free_space() {
     // system does nothing.
     app.world_mut()
         .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend, 1);
+        .paint(cell, IntentKind::Defend);
 
     // Drive enough ticks for the hauler to load (5 ticks at
     // HAULER_EXTRACT_PER_TICK) and walk from the deposit at
@@ -782,11 +764,9 @@ fn defender_without_low_charge_does_not_rotate_to_charger() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Defend,
-        PAINT_STRENGTH_CAP,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend);
     let cell_center = common::cell_world_center(cell);
     let _charger = common::spawn_charger_at(&mut app, cell, 100);
     let defender = common::spawn_defender_at(&mut app, cell_center);
@@ -851,11 +831,9 @@ fn defender_charge_refills_faster_than_drain_at_a_working_charger() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Defend,
-        PAINT_STRENGTH_CAP,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend);
     let cell_center = common::cell_world_center(cell);
     let charger = common::spawn_charger_at(&mut app, cell, 100);
     let defender = common::spawn_defender_at(&mut app, cell_center);
@@ -904,16 +882,12 @@ fn defender_charger_assignment_does_not_block_defend_reassignment() {
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(0, 0);
     let other_cell = IVec2::new(2, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Defend,
-        PAINT_STRENGTH_CAP,
-    );
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        other_cell,
-        IntentKind::Defend,
-        PAINT_STRENGTH_CAP,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend);
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(other_cell, IntentKind::Defend);
     let cell_center = common::cell_world_center(cell);
     let charger = common::spawn_charger_at(&mut app, cell, 100);
     let defender = common::spawn_defender_at(&mut app, cell_center);

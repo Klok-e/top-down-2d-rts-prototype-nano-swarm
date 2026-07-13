@@ -132,11 +132,8 @@ pub fn world_to_cell(world: Vec2) -> IVec2 {
 /// counts as overlap so a deposit circle that just reaches the
 /// cell border still makes the deposit eligible.
 ///
-/// Issue #22 contract: a Resource Deposit is eligible for gather
-/// work when its circular work area intersects a painted Gather
-/// cell owned by the same swarm. Paint strength still affects
-/// scoring, but the eligibility gate is geometric overlap, not
-/// exact intent-grid cell membership.
+/// A Resource Deposit is eligible for gather work when its circular work area
+/// intersects a compatible painted Gather cell.
 pub fn cell_overlaps_circle(cell: IVec2, circle_center: Vec2, circle_radius: f32) -> bool {
     let min = Vec2::new(
         cell.x as f32 * ZONE_BLOCK_SIZE,

@@ -11,7 +11,7 @@ use bevy::{math::vec3, prelude::*};
 use crate::{
     ai::{get_world_from_zone, AiStateComponent},
     building::{Minerals, ProcessingFacility},
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         Commitment, Health, Nanobot, NanobotBundle, NanobotSprites, NanobotType, OpponentSwarm,
         OwnerSwarm, ProductionFacility, ProductionRatio, Swarm, SwarmBundle, SwarmId, SwarmMember,
@@ -71,7 +71,7 @@ pub fn paint_default_player_intent(grid: &mut IntentGrid) {
         (PLAYER_CELL, IntentKind::Build),
         (PLAYER_DEFEND_CELL, IntentKind::Defend),
     ] {
-        grid.paint_owned(cell, kind, PAINT_STRENGTH_CAP, Some(SwarmId::PLAYER));
+        grid.paint_owned(cell, kind, Some(SwarmId::PLAYER));
     }
 }
 
@@ -87,7 +87,7 @@ pub fn paint_default_opponent_intent(grid: &mut IntentGrid, owner: SwarmId) {
         (OPPONENT_CELL, IntentKind::Build),
         (OPPONENT_DEFEND_CELL, IntentKind::Defend),
     ] {
-        grid.paint_owned(cell, kind, PAINT_STRENGTH_CAP, Some(owner));
+        grid.paint_owned(cell, kind, Some(owner));
     }
 }
 
@@ -310,22 +310,16 @@ mod tests {
 
         let deposit_cell = grid.cell(PLAYER_DEPOSIT_CELL).unwrap();
         assert!(deposit_cell.has(IntentKind::Gather));
-        assert_eq!(
-            deposit_cell.strength(IntentKind::Gather),
-            PAINT_STRENGTH_CAP
-        );
         assert!(!deposit_cell.has(IntentKind::Corridor));
 
         let start_cell = grid.cell(PLAYER_CELL).unwrap();
         assert!(start_cell.has(IntentKind::Build));
-        assert_eq!(start_cell.strength(IntentKind::Build), PAINT_STRENGTH_CAP);
         assert!(!start_cell.has(IntentKind::Corridor));
 
         // Defend is prepainted on its own cell, distinct from
         // the Build / start cell (see PLAYER_DEFEND_CELL).
         let defend_cell = grid.cell(PLAYER_DEFEND_CELL).unwrap();
         assert!(defend_cell.has(IntentKind::Defend));
-        assert_eq!(defend_cell.strength(IntentKind::Defend), PAINT_STRENGTH_CAP);
         assert!(!defend_cell.has(IntentKind::Corridor));
     }
 
@@ -376,17 +370,14 @@ mod tests {
 
         let gather_cell = grid.cell(OPPONENT_DEPOSIT_CELL).unwrap();
         assert!(gather_cell.has(IntentKind::Gather));
-        assert_eq!(gather_cell.strength(IntentKind::Gather), PAINT_STRENGTH_CAP);
         assert_eq!(gather_cell.owner(IntentKind::Gather), Some(opponent_id));
 
         let start_cell = grid.cell(OPPONENT_CELL).unwrap();
         assert!(start_cell.has(IntentKind::Build));
-        assert_eq!(start_cell.strength(IntentKind::Build), PAINT_STRENGTH_CAP);
         assert_eq!(start_cell.owner(IntentKind::Build), Some(opponent_id));
 
         let defend_cell = grid.cell(OPPONENT_DEFEND_CELL).unwrap();
         assert!(defend_cell.has(IntentKind::Defend));
-        assert_eq!(defend_cell.strength(IntentKind::Defend), PAINT_STRENGTH_CAP);
         assert_eq!(defend_cell.owner(IntentKind::Defend), Some(opponent_id));
     }
 

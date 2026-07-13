@@ -16,7 +16,7 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{best_candidate, Commitment, NanobotType, SoftWorkSlots, SwarmId},
 };
 
@@ -96,11 +96,9 @@ fn idle_worker_responds_immediately_to_nearby_gather_paint() {
     // Gather cell must pick that cell as its candidate.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Gather,
-        PAINT_STRENGTH_CAP,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Gather);
 
     app.update();
 
@@ -131,10 +129,10 @@ fn idle_worker_picks_closest_cell_when_two_have_equal_paint() {
     let far = IVec2::new(2, 0);
     app.world_mut()
         .resource_mut::<IntentGrid>()
-        .paint(near, IntentKind::Gather, 8);
+        .paint(near, IntentKind::Gather);
     app.world_mut()
         .resource_mut::<IntentGrid>()
-        .paint(far, IntentKind::Gather, 8);
+        .paint(far, IntentKind::Gather);
 
     app.update();
 
@@ -155,20 +153,16 @@ fn idle_worker_picks_closest_cell_when_two_have_equal_paint() {
 }
 
 #[test]
-fn idle_worker_picks_stronger_paint_when_two_are_equidistant() {
-    // Two cells at the same distance: the more strongly painted one
-    // wins because paint strength is a positive linear factor.
+fn equal_binary_paint_uses_deterministic_cell_order() {
     let mut app = build_app();
     let weak = IVec2::new(-1, 0);
     let strong = IVec2::new(1, 0);
     app.world_mut()
         .resource_mut::<IntentGrid>()
-        .paint(weak, IntentKind::Gather, 2);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        strong,
-        IntentKind::Gather,
-        PAINT_STRENGTH_CAP,
-    );
+        .paint(weak, IntentKind::Gather);
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(strong, IntentKind::Gather);
 
     app.update();
 
@@ -186,8 +180,7 @@ fn idle_worker_picks_stronger_paint_when_two_are_equidistant() {
         SwarmId::PLAYER,
     )
     .expect("must find a candidate");
-    assert_eq!(picked.cell, strong);
-    assert!(picked.paint_strength > 0);
+    assert_eq!(picked.cell, weak);
 }
 
 #[test]
@@ -201,10 +194,10 @@ fn soft_work_slot_pressure_reduces_score_but_never_rejects() {
     let b = IVec2::new(1, 0);
     app.world_mut()
         .resource_mut::<IntentGrid>()
-        .paint(a, IntentKind::Gather, 8);
+        .paint(a, IntentKind::Gather);
     app.world_mut()
         .resource_mut::<IntentGrid>()
-        .paint(b, IntentKind::Gather, 8);
+        .paint(b, IntentKind::Gather);
 
     // Pile 5 nanobots on cell `a` for Gather.
     {
@@ -242,16 +235,12 @@ fn type_fit_routes_defender_to_defend_and_worker_to_gather() {
     let mut app = build_app();
     let gather = IVec2::new(-1, 0);
     let defend = IVec2::new(1, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        gather,
-        IntentKind::Gather,
-        PAINT_STRENGTH_CAP,
-    );
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        defend,
-        IntentKind::Defend,
-        PAINT_STRENGTH_CAP,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(gather, IntentKind::Gather);
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(defend, IntentKind::Defend);
 
     app.update();
 
@@ -296,11 +285,9 @@ fn commitment_ordering_idle_above_working_above_carrying() {
     // test: idle > working > carrying for the same painted cell.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Gather,
-        PAINT_STRENGTH_CAP,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Gather);
     app.update();
 
     let grid = app.world().resource::<IntentGrid>();
@@ -357,19 +344,19 @@ fn mixed_swarm_picks_through_type_fit_and_distance_together() {
     let worker_gather = IVec2::new(0, 0);
     app.world_mut()
         .resource_mut::<IntentGrid>()
-        .paint(worker_gather, IntentKind::Gather, 12);
+        .paint(worker_gather, IntentKind::Gather);
     // Hauler territory: Corridor paint slightly to the right.
     let hauler_corridor = IVec2::new(2, 0);
     app.world_mut()
         .resource_mut::<IntentGrid>()
-        .paint(hauler_corridor, IntentKind::Corridor, 12);
+        .paint(hauler_corridor, IntentKind::Corridor);
     // Defender territory: Defend paint further to the right.
     // The 6x6 grid spans [-3, 3), so cell (2, 0) is the farthest
     // x-axis cell we can use for a clearly distinct defender.
     let defender_defend = IVec2::new(2, 2);
     app.world_mut()
         .resource_mut::<IntentGrid>()
-        .paint(defender_defend, IntentKind::Defend, 12);
+        .paint(defender_defend, IntentKind::Defend);
     app.update();
 
     let grid = app.world().resource::<IntentGrid>();

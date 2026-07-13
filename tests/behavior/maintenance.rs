@@ -9,7 +9,7 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         MaintenanceAssignment, MaintenanceProgress, Structure, MAINTENANCE_BUFFER_TICKS,
         MAINTENANCE_NEEDS_THRESHOLD, MAINTENANCE_WORK_DURATION_TICKS, STRUCTURE_MAX_HEALTH,
@@ -142,7 +142,7 @@ fn worker_travels_to_and_maintains_stale_structure() {
     let cell = IVec2::new(0, 0);
     app.world_mut()
         .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
+        .paint(cell, IntentKind::Build);
     let center = common::cell_world_center(cell);
     let structure = common::spawn_structure_at(&mut app, center);
     // Make the structure stale so the maintenance system
@@ -188,7 +188,7 @@ fn maintenance_does_not_consume_stockpile_resources() {
     let cell = IVec2::new(0, 0);
     app.world_mut()
         .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
+        .paint(cell, IntentKind::Build);
     let center = common::cell_world_center(cell);
     let structure = common::spawn_structure_at(&mut app, center);
     app.world_mut()
@@ -244,7 +244,7 @@ fn sufficient_worker_time_keeps_structure_stable() {
     let cell = IVec2::new(0, 0);
     app.world_mut()
         .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
+        .paint(cell, IntentKind::Build);
     let center = common::cell_world_center(cell);
     let structure = common::spawn_structure_at(&mut app, center);
     common::spawn_worker_at(&mut app, center);
@@ -285,7 +285,7 @@ fn idle_worker_picks_maintenance_over_idling_when_structure_is_stale() {
     let cell = IVec2::new(0, 0);
     app.world_mut()
         .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
+        .paint(cell, IntentKind::Build);
     let center = common::cell_world_center(cell);
     let structure = common::spawn_structure_at(&mut app, center);
     app.world_mut()

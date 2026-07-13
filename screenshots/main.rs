@@ -30,7 +30,7 @@ mod production_ratio_panel;
 mod regional_allocation;
 mod smoke;
 mod world_space_nanobots;
-mod zone_strength_ramp;
+mod zone_binary_overlay;
 
 use harness::{regression, run_screenshot_test, TestContext, TestFlow};
 
@@ -103,8 +103,8 @@ fn main() -> std::process::ExitCode {
             run(world_space_nanobots::world_space_nanobots)
         })
         .with_ignored_flag(true),
-        Trial::test("zone_strength_ramp", || {
-            run(zone_strength_ramp::zone_strength_ramp)
+        Trial::test("zone_binary_overlay", || {
+            run(zone_binary_overlay::zone_binary_overlay)
         })
         .with_ignored_flag(true),
     ];

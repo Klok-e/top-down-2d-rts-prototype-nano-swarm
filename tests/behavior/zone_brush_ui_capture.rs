@@ -94,11 +94,8 @@ fn brush_paints_when_no_ui_capture_is_set_in_current_frame() {
     press_left_mouse(&mut app);
     app.update();
 
-    // `dirty_count` is the brush's "did anything happen" flag:
-    // painting a cell marks it dirty, so a non-zero count means
-    // the brush executed its paint path end-to-end.
     let grid = app.world().resource::<IntentGrid>();
-    let dirty_count = grid.dirty_count();
+    let dirty_count = grid.render_dirty_count();
     assert!(
         dirty_count > 0,
         "brush must paint at least one cell when the cursor is over the world (dirty cells: {dirty_count})"
@@ -131,7 +128,7 @@ fn brush_skips_paint_when_ui_capture_is_set_in_current_frame() {
     app.update();
 
     let grid = app.world().resource::<IntentGrid>();
-    let dirty_count = grid.dirty_count();
+    let dirty_count = grid.render_dirty_count();
     assert_eq!(
         dirty_count, 0,
         "brush must not paint when is_pointer_over_ui is true (dirty cells: {dirty_count})"
@@ -165,7 +162,7 @@ fn brush_paints_when_only_no_pointer_capture_root_is_over() {
     app.update();
 
     let grid = app.world().resource::<IntentGrid>();
-    let dirty_count = grid.dirty_count();
+    let dirty_count = grid.render_dirty_count();
     assert!(
         dirty_count > 0,
         "brush must paint when only NoPointerCapture nodes are over the cursor (dirty cells: {dirty_count})"
@@ -202,7 +199,7 @@ fn brush_paints_after_check_ui_clears_stale_over_ui_state() {
     );
 
     let grid = app.world().resource::<IntentGrid>();
-    let dirty_count = grid.dirty_count();
+    let dirty_count = grid.render_dirty_count();
     assert!(
         dirty_count > 0,
         "brush must paint after check_ui_interaction clears the stale state \

@@ -6,27 +6,19 @@ use bevy::{
         ResMut, Vec2, Window,
     },
     reflect::TypePath,
-    render::{
-        render_resource::{AsBindGroup, ShaderType},
-        storage::ShaderStorageBuffer,
-    },
+    render::{render_resource::AsBindGroup, storage::ShaderStorageBuffer},
     shader::ShaderRef,
     sprite_render::{AlphaMode2d, Material2d},
 };
 
 use crate::{
-    intent::{BrushSelection, IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{BrushSelection, IntentGrid, IntentKind},
     nanobot::SwarmId,
     ui::UiHandling,
     ZONE_BLOCK_SIZE,
 };
 
-/// Per-cell data uploaded to the zone shader storage buffer. Each cell packs
-/// four 5-bit paint-strength slots (one per [`IntentKind`]) into a single
-/// `u32`. A slot value of `0` means the kind is absent; a non-zero value is
-/// the paint strength in `[1, PAINT_STRENGTH_CAP]`. The mirror system copies
-/// [`IntentCell::strength`] into these slots and the zone shader maps each
-/// strength to an overlay alpha.
+/// Per-cell presence bits uploaded to zone shader storage buffer.
 #[derive(AsBindGroup, Asset, TypePath, Debug, Clone)]
 pub struct ZoneMaterial {
     #[storage(2, read_only)]
@@ -42,7 +34,7 @@ impl ZoneMaterial {
     pub fn new(width: u32, height: u32, buffers: &mut Assets<ShaderStorageBuffer>) -> ZoneMaterial {
         let zone_data = vec![ZonePointData::new(); (width * height) as usize];
         ZoneMaterial {
-            zone_map: buffers.add(ShaderStorageBuffer::from(zone_data.clone())),
+            zone_map: buffers.add(ShaderStorageBuffer::from(vec![0u32; zone_data.len()])),
             zone_data,
             width,
             height,
@@ -58,26 +50,10 @@ impl ZoneMaterial {
     }
 }
 
-/// Number of strength slots packed into [`ZonePointData`]. Slot order matches
-/// [`IntentKind::index`], but the packed render data stays index-based.
-const ZONE_STRENGTH_SLOT_COUNT: u32 = 4;
-
-/// Number of bits used to store one kind's paint strength in [`ZonePointData`].
-/// A strength in `[0, PAINT_STRENGTH_CAP]` (`PAINT_STRENGTH_CAP = 16`) fits in
-/// 5 bits with headroom to spare, so the four slots occupy 20 of the 32 bits.
-const ZONE_STRENGTH_SLOT_BITS: u32 = 5;
-
-/// Bit mask covering a single 5-bit strength slot.
-const ZONE_STRENGTH_SLOT_MASK: u32 = (1u32 << ZONE_STRENGTH_SLOT_BITS) - 1;
-
-#[derive(Debug, Clone, Copy, ShaderType)]
+#[derive(Debug, Clone, Copy)]
 pub struct ZonePointData {
-    /// Packed paint strength for each kind. Slot `i` occupies bits
-    /// `[5*i, 5*i+5)` and stores the strength in
-    /// `[0, PAINT_STRENGTH_CAP]`. Slot order matches [`IntentKind::index`]:
-    /// 0 = Gather, 1 = Build, 2 = Defend, 3 = Corridor. The top 12 bits are
-    /// spare.
-    pub strength: u32,
+    /// Presence bits in [`IntentKind::index`] order.
+    pub active: u32,
 }
 
 impl Default for ZonePointData {
@@ -88,34 +64,30 @@ impl Default for ZonePointData {
 
 impl ZonePointData {
     pub fn new() -> Self {
-        ZonePointData { strength: 0 }
+        Self { active: 0 }
     }
 
-    /// Write the paint strength of kind `kind_index` into its 5-bit slot.
-    /// `kind_index` is `IntentKind::index()` (`0..4`); out-of-range indices
-    /// panic. Strengths above `PAINT_STRENGTH_CAP` are clamped to it so the
-    /// slot can never exceed the shader's alpha ramp ceiling.
-    pub fn set_strength(&mut self, kind_index: u32, strength: u8) {
+    /// Set one intent-kind presence bit.
+    pub fn set_present(&mut self, kind_index: u32, present: bool) {
         assert!(
-            kind_index < ZONE_STRENGTH_SLOT_COUNT,
+            kind_index < IntentKind::COUNT as u32,
             "kind_index out of range"
         );
-        let clamped = (strength as u32).min(PAINT_STRENGTH_CAP as u32);
-        let shift = kind_index * ZONE_STRENGTH_SLOT_BITS;
-        self.strength &= !(ZONE_STRENGTH_SLOT_MASK << shift);
-        self.strength |= clamped << shift;
+        let bit = 1 << kind_index;
+        if present {
+            self.active |= bit;
+        } else {
+            self.active &= !bit;
+        }
     }
 
-    /// Read the paint strength stored for kind `kind_index`, or `0` if the
-    /// kind is absent at this cell. `kind_index` is `IntentKind::index()`
-    /// (`0..4`); out-of-range indices panic.
-    pub fn strength(&self, kind_index: u32) -> u8 {
+    /// Read one intent-kind presence bit.
+    pub fn present(&self, kind_index: u32) -> bool {
         assert!(
-            kind_index < ZONE_STRENGTH_SLOT_COUNT,
+            kind_index < IntentKind::COUNT as u32,
             "kind_index out of range"
         );
-        let shift = kind_index * ZONE_STRENGTH_SLOT_BITS;
-        ((self.strength >> shift) & ZONE_STRENGTH_SLOT_MASK) as u8
+        (self.active & (1 << kind_index)) != 0
     }
 }
 
@@ -133,11 +105,6 @@ impl Material2d for ZoneMaterial {
 pub struct ZoneMaterialHandleComponent {
     pub handle: Handle<ZoneMaterial>,
 }
-
-/// Per-frame paint delta. Held mouse input that calls
-/// [`IntentGrid::paint`] every frame accumulates strength up to
-/// `PAINT_STRENGTH_CAP` defined in [`crate::intent`].
-const BRUSH_PAINT_DELTA: u8 = 1;
 
 /// Reads mouse input and writes player intent into the [`IntentGrid`]
 /// resource for the layer currently selected in [`BrushSelection`]. The
@@ -181,15 +148,9 @@ pub fn zone_brush_system(
 
     let brush_kind = brush_selection.kind;
     if mouse_button_input.pressed(MouseButton::Left) {
-        // The player brush always writes with the player
-        // `SwarmId` so the per-swarm intent filter routes
-        // player paint to player workers (and never to
-        // opponent workers). Without this stamp a player
-        // brush would write unowned paint that opponent
-        // workers could also see.
-        intent_grid.paint_owned(idx, brush_kind, BRUSH_PAINT_DELTA, Some(SwarmId::PLAYER));
+        intent_grid.paint_owned(idx, brush_kind, Some(SwarmId::PLAYER));
     } else if mouse_button_input.pressed(MouseButton::Right) {
-        intent_grid.erase(idx, brush_kind, BRUSH_PAINT_DELTA);
+        intent_grid.erase(idx, brush_kind);
     }
 }
 
@@ -227,20 +188,20 @@ pub fn mirror_intent_to_zone_material_system(
 
         if let Some(zone_data) = mat.at_zone_mut(idx.x as u32, idx.y as u32) {
             for kind in IntentKind::ALL {
-                // `IntentCell::strength` returns 0 for an inactive kind, so a
-                // single write per kind both clears absent layers (slot 0)
-                // and mirrors the active strength. The setter clamps to
-                // PAINT_STRENGTH_CAP as a defensive ceiling.
-                zone_data.set_strength(kind.index() as u32, cell.strength(kind));
+                zone_data.set_present(kind.index() as u32, cell.has(kind));
             }
         }
     }
 
     let zone_map = mat.zone_map.clone();
-    let zone_data = mat.zone_data.clone();
-    if let Some(buffer) = buffers.get_mut(&zone_map) {
-        buffer.set_data(zone_data);
-    }
+    let packed_presence = mat
+        .zone_data
+        .iter()
+        .map(|cell| cell.active)
+        .collect::<Vec<_>>();
+    buffers
+        .insert(zone_map.id(), ShaderStorageBuffer::from(packed_presence))
+        .expect("zone storage buffer handle must remain valid");
 }
 
 fn zone_buffer_index_from_grid_point(point: IVec2, width: i32, height: i32) -> Option<IVec2> {
@@ -263,44 +224,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn strength_slots_do_not_corrupt_each_other() {
-        // Each of the four 5-bit slots is independent: writing one must
-        // never disturb another. Cover the full kind range with distinct
-        // values including the paint-strength cap, then read every slot
-        // back. This pins the packed layout the zone shader reads.
+    fn presence_bits_do_not_corrupt_each_other() {
         let mut point = ZonePointData::new();
+        point.set_present(0, true);
+        point.set_present(2, true);
 
-        point.set_strength(0, 1);
-        point.set_strength(1, 4);
-        point.set_strength(2, 8);
-        point.set_strength(3, PAINT_STRENGTH_CAP);
+        assert!(point.present(0));
+        assert!(!point.present(1));
+        assert!(point.present(2));
+        assert!(!point.present(3));
 
-        assert_eq!(point.strength(0), 1);
-        assert_eq!(point.strength(1), 4);
-        assert_eq!(point.strength(2), 8);
-        assert_eq!(point.strength(3), PAINT_STRENGTH_CAP);
+        point.set_present(0, false);
+        assert!(!point.present(0));
+        assert!(point.present(2));
     }
 
     #[test]
-    fn empty_point_reports_zero_strength_for_every_kind() {
+    fn presence_storage_buffer_has_one_u32_per_cell() {
+        let buffer = ShaderStorageBuffer::from(vec![1u32, 2, 4, 8]);
+        assert_eq!(
+            buffer.data.unwrap(),
+            [1u32, 2, 4, 8]
+                .into_iter()
+                .flat_map(u32::to_ne_bytes)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn empty_point_reports_every_kind_absent() {
         let point = ZonePointData::new();
         for kind_index in 0..IntentKind::COUNT as u32 {
-            assert_eq!(
-                point.strength(kind_index),
-                0,
-                "freshly-created point must report strength 0 for every kind"
-            );
+            assert!(!point.present(kind_index));
         }
-    }
-
-    #[test]
-    fn set_strength_clamps_above_cap_so_slot_never_overflows() {
-        // The 5-bit slot could hold up to 31, but the paint contract caps
-        // strength at PAINT_STRENGTH_CAP. The setter must enforce that cap
-        // so a stray caller cannot push the alpha ramp past its ceiling.
-        let mut point = ZonePointData::new();
-        point.set_strength(2, 250);
-        assert_eq!(point.strength(2), PAINT_STRENGTH_CAP);
     }
 
     #[test]

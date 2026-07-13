@@ -1,28 +1,8 @@
 //! Reusable spatial-pressure helpers shared between defender
 //! spreading (issue #37) and future idle cosmetic spread.
 //!
-//! The defender spread model (see
-//! `docs/adr/0007-defender-spatial-pressure.md`) scores every
-//! visible owned Defend cell as a function of paint strength,
-//! defend pressure, distance, and crowding. Crowding combines
-//! two occupancy signals:
-//!
-//! - **physical density** -- every nanobot physically standing in
-//!   the candidate cell, regardless of type or state; and
-//! - **reservations** -- defenders already assigned to or holding
-//!   that cell (the `(cell, Defend)` soft work slot).
-//!
-//! Both signals are turned into a single soft crowding multiplier
-//! that never hard-rejects a cell: an extra defender lowers the
-//! score but can never zero it, so very strong paint can still pull
-//! a defender into an already-occupied cell when nothing better is
-//! available.
-//!
-//! The helpers here are deliberately pure (capacity / crowding /
-//! geometry math) or plain Bevy resources (`CellDensity`). They
-//! carry no Defend-specific semantics so the future idle cosmetic
-//! spread issue can reuse the same capacity / crowding / density /
-//! de-clamping math without reaching into `defend.rs`.
+//! Defend spatial pressure combines physical density and reservations into soft
+//! crowding. Capacity remains one per painted cell; crowding never hard-rejects.
 
 use std::collections::HashMap;
 
@@ -32,35 +12,8 @@ use crate::nanobot::components::Nanobot;
 use crate::nanobot::gather::world_to_cell;
 use crate::ZONE_BLOCK_SIZE;
 
-/// Paint strength required to add one unit of desired occupancy
-/// capacity to a Defend cell. Lower values let weak paint support
-/// more defenders before crowding bites; higher values concentrate
-/// defenders on strongly painted cells. Four strength per capacity
-/// unit means a maximally painted cell (`PAINT_STRENGTH_CAP == 16`)
-/// supports four defenders comfortably before crowding
-/// significantly reduces its score, and a half-painted cell
-/// supports two.
-pub const DEFEND_PAINT_PER_CAPACITY_UNIT: u8 = 4;
-
-/// Desired defender occupancy a cell supports before crowding
-/// significantly reduces its score. Grows linearly with paint
-/// strength and is floored at `1` so even a minimally painted
-/// Defend cell can hold a single defender without self-crowding.
-/// The first defender at a cell never crowding-penalises it; each
-/// defender beyond the capacity lowers the score but never to zero.
-pub fn paint_occupancy_capacity(strength: u8) -> u32 {
-    (strength / DEFEND_PAINT_PER_CAPACITY_UNIT).max(1) as u32
-}
-
-/// Soft crowding multiplier in `(0, 1]`. The shape is
-/// `capacity / (capacity + occupancy)`: never zero (so extra
-/// defenders are never hard-rejected by capacity), strictly
-/// decreasing in `occupancy`, and higher `capacity` (from stronger
-/// paint) yields a higher factor at the same occupancy. With
-/// `capacity == 1` the formula reduces to `1 / (1 + occupancy)`,
-/// matching the legacy [`crate::nanobot::autonomy::SoftWorkSlots`]
-/// soft-slot shape so existing gather/build/haul scoring keeps its
-/// tuning while Defend scoring switches to paint-driven capacity.
+/// Soft crowding multiplier in `(0, 1]`. Capacity is explicit so helper remains
+/// reusable; Defend passes baseline capacity one.
 pub fn crowding_factor(occupancy: u32, capacity: u32) -> f32 {
     let cap = capacity.max(1) as f32;
     cap / (cap + occupancy as f32)
@@ -157,87 +110,21 @@ pub fn point_in_cell(pos: Vec2, cell: IVec2) -> bool {
 
 #[cfg(test)]
 mod tests {
-    //! Pure-helper unit tests for the spatial-pressure math. The
-    //! end-to-end defender spread contracts live in
-    //! `tests/defend_zone_behavior.rs`; this module pins the
-    //! capacity / crowding / geometry helpers the scoring is built
-    //! on so a tuning change cannot silently flip a contract.
-
     use super::*;
 
     #[test]
-    fn capacity_grows_with_paint_and_floors_at_one() {
-        // Even the weakest active paint (strength 1) supports a
-        // single defender without self-crowding.
-        assert_eq!(paint_occupancy_capacity(1), 1);
-        // Capacity steps up every DEFEND_PAINT_PER_CAPACITY_UNIT
-        // of paint strength. Integer division means capacity
-        // rises at strengths 4, 8, 12, 16 -- not at 5.
-        assert_eq!(paint_occupancy_capacity(DEFEND_PAINT_PER_CAPACITY_UNIT), 1);
-        assert_eq!(
-            paint_occupancy_capacity(DEFEND_PAINT_PER_CAPACITY_UNIT + 1),
-            1
-        );
-        assert_eq!(
-            paint_occupancy_capacity(DEFEND_PAINT_PER_CAPACITY_UNIT * 2),
-            2
-        );
-        // Max paint supports the full ladder of capacity units.
-        assert_eq!(
-            paint_occupancy_capacity(crate::intent::PAINT_STRENGTH_CAP),
-            crate::intent::PAINT_STRENGTH_CAP as u32 / DEFEND_PAINT_PER_CAPACITY_UNIT as u32
-        );
-    }
-
-    #[test]
     fn crowding_factor_is_one_at_zero_occupancy() {
-        // The first defender at a cell never crowding-penalises it,
-        // regardless of capacity.
         assert!((crowding_factor(0, 1) - 1.0).abs() < 1e-6);
-        assert!((crowding_factor(0, 4) - 1.0).abs() < 1e-6);
     }
 
     #[test]
     fn crowding_factor_never_hard_rejects() {
-        // Crowding is a soft penalty: it stays strictly positive no
-        // matter how crowded the cell is, so very strong paint can
-        // still pull an extra defender in.
-        let mut prev = crowding_factor(0, 2);
-        for n in 1..=32u32 {
-            let next = crowding_factor(n, 2);
-            assert!(next > 0.0, "crowding must stay positive at n={n}");
-            assert!(
-                next < prev,
-                "crowding must strictly decrease with occupancy at n={n}"
-            );
+        let mut prev = crowding_factor(0, 1);
+        for n in 1..=32 {
+            let next = crowding_factor(n, 1);
+            assert!(next > 0.0);
+            assert!(next < prev);
             prev = next;
-        }
-    }
-
-    #[test]
-    fn crowding_factor_higher_capacity_lifts_score_at_same_occupancy() {
-        // Stronger paint raises desired occupancy (capacity), so at
-        // the same occupancy the stronger cell is less crowded.
-        let occ = 3;
-        let weak = crowding_factor(occ, 1);
-        let strong = crowding_factor(occ, 4);
-        assert!(
-            strong > weak,
-            "stronger paint must lift the crowding factor at fixed occupancy; weak={weak} strong={strong}"
-        );
-    }
-
-    #[test]
-    fn crowding_factor_capacity_one_matches_legacy_soft_slot_shape() {
-        // With capacity == 1 the formula must reduce to the legacy
-        // 1 / (1 + occupancy) shape so gather/build/haul scoring
-        // keeps its existing tuning.
-        for n in 0..=8u32 {
-            let legacy = 1.0 / (1.0 + n as f32);
-            assert!(
-                (crowding_factor(n, 1) - legacy).abs() < 1e-6,
-                "capacity-1 crowding must equal legacy soft-slot shape at n={n}"
-            );
         }
     }
 
