@@ -15,7 +15,7 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         point_in_cell, Charge, Commitment, DefendHold, Health, Nanobot, NanobotSprites,
         NanobotType, SwarmId, SwarmMember, VelocityComponent,
@@ -74,12 +74,7 @@ pub fn defender_spread(ctx: &mut TestContext) -> TestFlow {
         {
             let mut grid = world.resource_mut::<IntentGrid>();
             for cell in DEFEND_CELLS {
-                grid.add_owned(
-                    cell,
-                    IntentKind::Defend,
-                    PAINT_STRENGTH_CAP,
-                    Some(SwarmId::PLAYER),
-                );
+                grid.add_owned(cell, IntentKind::Defend, Some(SwarmId::PLAYER));
             }
         }
         // Spawn visible defenders at isolated center cell.

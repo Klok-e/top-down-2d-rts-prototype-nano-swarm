@@ -3,7 +3,7 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         Commitment, DefendHold, NanobotType, OwnerSwarm, PlannedKind, PlannedProductionTarget,
         PlannedStructure, PlannedStructureClaim, SwarmId, BUILDING_FOOTPRINT_PADDING,
@@ -17,12 +17,7 @@ mod common;
 
 fn paint_build(app: &mut App, cell: IVec2) {
     let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-    assert!(grid.paint_owned(
-        cell,
-        IntentKind::Build,
-        PAINT_STRENGTH_CAP,
-        Some(SwarmId::PLAYER),
-    ));
+    assert!(grid.paint_owned(cell, IntentKind::Build, Some(SwarmId::PLAYER),));
 }
 
 fn spawn_owned_planned_production(app: &mut App, cell: IVec2) -> Entity {
@@ -147,22 +142,12 @@ const SOURCE_STOCKPILE_OBSTACLE_GAP: f32 =
 
 fn paint_gather(app: &mut App, cell: IVec2) {
     let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-    assert!(grid.paint_owned(
-        cell,
-        IntentKind::Gather,
-        PAINT_STRENGTH_CAP,
-        Some(SwarmId::PLAYER),
-    ));
+    assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
 }
 
 fn paint_defend(app: &mut App, cell: IVec2) {
     let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-    assert!(grid.paint_owned(
-        cell,
-        IntentKind::Defend,
-        PAINT_STRENGTH_CAP,
-        Some(SwarmId::PLAYER),
-    ));
+    assert!(grid.paint_owned(cell, IntentKind::Defend, Some(SwarmId::PLAYER),));
 }
 
 fn planned_source_stockpile_position(app: &mut App) -> Option<Vec2> {

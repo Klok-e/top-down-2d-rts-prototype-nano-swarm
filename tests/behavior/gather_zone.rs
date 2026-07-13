@@ -18,7 +18,7 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         best_candidate, Commitment, DirectMovementComponent, ExtractProgress, GatherAssignment,
         NanobotType, ReturningToStockpile, SoftWorkSlots, SwarmId, WorkerLoad, EXTRACT_PER_TICK,
@@ -246,7 +246,7 @@ fn gather_intent_persists_after_deposit_depletes() {
     let cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(cell, IntentKind::Gather, PAINT_STRENGTH_CAP));
+        assert!(grid.paint(cell, IntentKind::Gather));
     }
     app.update();
 
@@ -260,11 +260,6 @@ fn gather_intent_persists_after_deposit_depletes() {
     assert!(
         painted.has(IntentKind::Gather),
         "Gather intent must persist after local deposits are depleted"
-    );
-    assert_eq!(
-        painted.strength(IntentKind::Gather),
-        PAINT_STRENGTH_CAP,
-        "Gather strength unchanged by depletion"
     );
 }
 
@@ -283,7 +278,7 @@ fn idle_worker_reactivates_when_deposit_refills() {
 
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(IVec2::new(0, 0), IntentKind::Gather, PAINT_STRENGTH_CAP));
+        assert!(grid.paint(IVec2::new(0, 0), IntentKind::Gather));
     }
 
     // Drain the deposit. 4 extraction ticks at the deposit (no
@@ -347,7 +342,7 @@ fn idle_worker_chooses_gather_via_autonomy_scoring() {
     let cell = IVec2::new(2, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(cell, IntentKind::Gather, PAINT_STRENGTH_CAP));
+        assert!(grid.paint(cell, IntentKind::Gather));
     }
     let cell_world_center = common::cell_world_center(cell);
     let deposit = common::spawn_deposit(&mut app, cell_world_center, 100);
@@ -412,7 +407,7 @@ fn haulers_do_not_extract_directly() {
     let cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(cell, IntentKind::Gather, PAINT_STRENGTH_CAP));
+        assert!(grid.paint(cell, IntentKind::Gather));
     }
     let cell_world_center = common::cell_world_center(cell);
     let _deposit = common::spawn_deposit(&mut app, cell_world_center, 100);

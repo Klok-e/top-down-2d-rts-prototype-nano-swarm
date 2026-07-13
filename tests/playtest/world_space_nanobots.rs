@@ -20,7 +20,7 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::SwarmId,
     ZONE_BLOCK_SIZE,
 };
@@ -36,12 +36,7 @@ fn build_app() -> App {
 
 fn paint_gather(app: &mut App, cell: IVec2) {
     let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-    assert!(grid.paint_owned(
-        cell,
-        IntentKind::Gather,
-        PAINT_STRENGTH_CAP,
-        Some(SwarmId::PLAYER),
-    ));
+    assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
 }
 
 #[test]

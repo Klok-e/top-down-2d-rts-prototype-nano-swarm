@@ -39,13 +39,9 @@ fn center(cell: IVec2) -> Vec2 {
     common::cell_world_center(cell)
 }
 
-/// Paint `kind` at `cell` at a moderate strength. Spread only checks
-/// presence (`has`), not strength, so any non-zero strength is fine;
-/// a fixed mid value keeps the tests readable.
+/// Paint `kind` at `cell`.
 fn paint(app: &mut App, cell: IVec2, kind: IntentKind) {
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .add(cell, kind, 4);
+    app.world_mut().resource_mut::<IntentGrid>().add(cell, kind);
 }
 
 /// Build a minimal app with only `idle_spread_system` registered, so

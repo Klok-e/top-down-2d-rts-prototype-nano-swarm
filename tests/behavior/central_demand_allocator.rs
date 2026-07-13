@@ -11,7 +11,7 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         Commitment, DemandCategory, GatherAssignment, PlannedKind, PlannedStructure,
         PlannedStructureClaim, SwarmId,
@@ -21,17 +21,10 @@ use top_down_2d_rts_prototype_nano_swarm::{
 #[path = "../common/mod.rs"]
 mod common;
 
-/// Paint `cell` with player-owned Gather intent at full
-/// strength. Mirrors the `paint_gather` helper used by
-/// the other behavior tests.
+/// Paint `cell` with player-owned Gather intent.
 fn paint_gather(app: &mut App, cell: IVec2) {
     let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-    assert!(grid.paint_owned(
-        cell,
-        IntentKind::Gather,
-        PAINT_STRENGTH_CAP,
-        Some(SwarmId::PLAYER),
-    ));
+    assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
 }
 
 #[test]
@@ -317,12 +310,7 @@ fn demand_snapshot_excludes_other_swarm_owned_paint() {
     // player's snapshot must not include it.
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(
-            cell,
-            IntentKind::Gather,
-            PAINT_STRENGTH_CAP,
-            Some(SwarmId(7)),
-        ));
+        assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId(7)),));
     }
     let _deposit = common::spawn_deposit(&mut app, center, 100);
     let worker = common::spawn_worker_at(&mut app, center);

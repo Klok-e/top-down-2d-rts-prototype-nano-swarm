@@ -6,7 +6,7 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         DirectMovementComponent, HaulerAssignment, HaulerLoad, LogisticsReservation, OwnerSwarm,
         ProductionFacility, Swarm, SwarmId, DEFAULT_STOCKPILE_CAPACITY, HAULER_CARRY_CAPACITY,
@@ -75,11 +75,9 @@ fn stockpile_auto_emerges_in_gather_cell_with_demand() {
     // tick of simulation.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Gather,
-        PAINT_STRENGTH_CAP,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Gather);
     assert_eq!(
         stockpile_count(app.world_mut()),
         0,
@@ -107,11 +105,9 @@ fn stockpile_not_duplicated_when_one_already_exists() {
     // not "multiply indefinitely".
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Gather,
-        PAINT_STRENGTH_CAP,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Gather);
     let cell_world_center = common::cell_world_center(cell);
 
     // Manually pre-place a stockpile in the same cell. The
@@ -136,11 +132,9 @@ fn stockpile_not_emerged_for_corridor_only_cell() {
     // demand in the gather/build sense, so no stockpile emerges.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Corridor,
-        PAINT_STRENGTH_CAP,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Corridor);
 
     for _ in 0..3 {
         app.update();
@@ -340,7 +334,7 @@ fn hauler_delivers_full_load_to_sink() {
     app.world_mut()
         .entity_mut(sink_entity)
         .insert(OwnerSwarm(swarm));
-    let hauler = common::spawn_hauler_at(&mut app, source_pos);
+    let _hauler = common::spawn_hauler_at(&mut app, source_pos);
 
     // Fill the load (5 extraction ticks), travel to the stockpile edge,
     // then unload at four units per tick. This hand-seeded deposit leg

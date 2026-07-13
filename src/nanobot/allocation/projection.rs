@@ -110,6 +110,15 @@ pub fn project_actionable_opportunities_system(
 ) {
     for cell in grid.drain_projection_dirty() {
         projection.invalidate_cell(cell);
+        for (_, deposit, transform, _) in &deposits {
+            if cell_overlaps_circle(cell, transform.translation.truncate(), deposit.radius) {
+                invalidate_circle_regions(
+                    &mut projection,
+                    transform.translation.truncate(),
+                    deposit.radius,
+                );
+            }
+        }
     }
 
     let stale_regions = projection
@@ -118,7 +127,12 @@ pub fn project_actionable_opportunities_system(
             opportunities
                 .iter()
                 .any(|opportunity| match opportunity.target {
-                    OpportunityTarget::Gather { deposit, .. } => deposits.get(deposit).is_err(),
+                    OpportunityTarget::Gather { deposit, .. } => match deposits.get(deposit) {
+                        Err(_) => true,
+                        Ok((_, deposit, transform, _)) => {
+                            deposit.is_changed() || transform.is_changed() || deposit.amount == 0
+                        }
+                    },
                     OpportunityTarget::PlannedBuild { structure, .. } => {
                         planned.get(structure).is_err()
                     }
@@ -264,6 +278,39 @@ fn project_intent_work(
     swarms: &Query<&SwarmId>,
     out: &mut Vec<ActionableOpportunity>,
 ) {
+    for (entity, deposit, transform, owner) in deposits.iter() {
+        let Some(deposit_owner) = resolve_owner(owner, swarms) else {
+            continue;
+        };
+        if deposit.amount == 0 {
+            continue;
+        }
+        let anchor = grid
+            .iter_cells()
+            .filter(|(cell, intent)| {
+                intent.has(IntentKind::Gather)
+                    && owners_compatible(intent.owner(IntentKind::Gather), deposit_owner)
+                    && cell_overlaps_circle(*cell, transform.translation.truncate(), deposit.radius)
+            })
+            .min_by_key(|(cell, _)| (cell.y, cell.x));
+        let Some((cell, intent)) = anchor else {
+            continue;
+        };
+        if AllocationRegion::for_cell(cell) == region {
+            out.push(ActionableOpportunity {
+                region,
+                category: OpportunityCategory::Gather,
+                target: OpportunityTarget::Gather {
+                    deposit: entity,
+                    cell,
+                },
+                cell,
+                owner: intent.owner(IntentKind::Gather).or(deposit_owner),
+                available_work: deposit.amount,
+            });
+        }
+    }
+
     let min = region.min_cell();
     for dy in 0..ALLOCATION_REGION_CELLS {
         for dx in 0..ALLOCATION_REGION_CELLS {
@@ -271,37 +318,6 @@ fn project_intent_work(
             let Some(intent) = grid.cell(cell) else {
                 continue;
             };
-
-            if intent.has(IntentKind::Gather) {
-                let paint_owner = intent.owner(IntentKind::Gather);
-                for (entity, deposit, transform, owner) in deposits.iter() {
-                    let Some(deposit_owner) = resolve_owner(owner, swarms) else {
-                        continue;
-                    };
-                    if deposit.amount == 0
-                        || !owners_compatible(paint_owner, deposit_owner)
-                        || !cell_overlaps_circle(
-                            cell,
-                            transform.translation.truncate(),
-                            deposit.radius,
-                        )
-                    {
-                        continue;
-                    }
-                    out.push(ActionableOpportunity {
-                        region,
-                        category: OpportunityCategory::Gather,
-                        target: OpportunityTarget::Gather {
-                            deposit: entity,
-                            cell,
-                        },
-                        cell,
-                        owner: paint_owner.or(deposit_owner),
-                        paint_strength: intent.strength(IntentKind::Gather),
-                        available_work: deposit.amount,
-                    });
-                }
-            }
 
             if intent.has(IntentKind::Build) {
                 let paint_owner = intent.owner(IntentKind::Build);
@@ -321,22 +337,19 @@ fn project_intent_work(
                         target: OpportunityTarget::Maintenance { structure: entity },
                         cell,
                         owner: paint_owner.or(structure_owner),
-                        paint_strength: intent.strength(IntentKind::Build),
                         available_work: 1,
                     });
                 }
             }
 
             if intent.has(IntentKind::Defend) {
-                let strength = intent.strength(IntentKind::Defend);
                 out.push(ActionableOpportunity {
                     region,
                     category: OpportunityCategory::Defend,
                     target: OpportunityTarget::Defend { cell },
                     cell,
                     owner: intent.owner(IntentKind::Defend),
-                    paint_strength: strength,
-                    available_work: u32::from(strength),
+                    available_work: 1,
                 });
             }
         }
@@ -365,7 +378,6 @@ fn project_planned_work(
             },
             cell: planned.cell,
             owner,
-            paint_strength: 0,
             available_work: planned.work_remaining,
         });
     }
@@ -401,7 +413,6 @@ fn project_haul_work(
                 },
                 cell: source.cell,
                 owner: source.owner,
-                paint_strength: 0,
                 available_work: source.amount.min(sink.free_space),
             });
         }

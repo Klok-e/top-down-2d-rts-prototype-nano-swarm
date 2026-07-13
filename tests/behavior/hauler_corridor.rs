@@ -2,7 +2,7 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{DirectMovementComponent, HaulerAssignment, HaulerRoute, OwnerSwarm},
     ZONE_BLOCK_SIZE,
 };
@@ -23,12 +23,11 @@ fn own_for_player(app: &mut App, entities: &[Entity]) {
     }
 }
 
-fn paint_corridor(app: &mut App, cell: IVec2, strength: u8) {
-    assert!(app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Corridor,
-        strength
-    ));
+fn paint_corridor(app: &mut App, cell: IVec2) {
+    assert!(app
+        .world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Corridor));
 }
 
 fn route_visits_row(route: &HaulerRoute, y: i32) -> bool {
@@ -69,7 +68,7 @@ fn hauler_uses_route_system_without_corridor_paint() {
 fn corridor_only_intent_does_not_create_hauling_job() {
     let mut app = build_app();
     let hauler = common::spawn_hauler_at(&mut app, Vec2::new(0.0, 0.0));
-    paint_corridor(&mut app, IVec2::new(0, 0), PAINT_STRENGTH_CAP);
+    paint_corridor(&mut app, IVec2::new(0, 0));
 
     for _ in 0..5 {
         app.update();
@@ -125,8 +124,8 @@ fn leg_selection_uses_corridor_biased_route_cost() {
     let corridor_sink = common::spawn_sink_stockpile(&mut app, corridor_sink_pos, 0, 1000);
     own_for_player(&mut app, &[source, near_sink, corridor_sink]);
     let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
-    paint_corridor(&mut app, IVec2::new(2, 0), PAINT_STRENGTH_CAP);
-    paint_corridor(&mut app, IVec2::new(3, 0), PAINT_STRENGTH_CAP);
+    paint_corridor(&mut app, IVec2::new(2, 0));
+    paint_corridor(&mut app, IVec2::new(3, 0));
 
     app.update();
 
@@ -160,7 +159,7 @@ fn source_leg_route_can_take_physically_longer_corridor_detour() {
         IVec2::new(2, 1),
         IVec2::new(3, 1),
     ] {
-        paint_corridor(&mut app, cell, PAINT_STRENGTH_CAP);
+        paint_corridor(&mut app, cell);
     }
 
     app.update();
@@ -195,7 +194,7 @@ fn route_stays_stable_after_corridor_paint_changes() {
         IVec2::new(3, 1),
     ];
     for cell in cells {
-        paint_corridor(&mut app, cell, PAINT_STRENGTH_CAP);
+        paint_corridor(&mut app, cell);
     }
 
     app.update();
@@ -208,11 +207,10 @@ fn route_stays_stable_after_corridor_paint_changes() {
         .clone();
 
     for cell in cells {
-        assert!(app.world_mut().resource_mut::<IntentGrid>().erase(
-            cell,
-            IntentKind::Corridor,
-            PAINT_STRENGTH_CAP
-        ));
+        assert!(app
+            .world_mut()
+            .resource_mut::<IntentGrid>()
+            .erase(cell, IntentKind::Corridor));
     }
     app.update();
 
@@ -242,7 +240,7 @@ fn carry_leg_uses_corridor_biased_route_to_sink() {
         IVec2::new(2, 1),
         IVec2::new(3, 1),
     ] {
-        paint_corridor(&mut app, cell, PAINT_STRENGTH_CAP);
+        paint_corridor(&mut app, cell);
     }
     app.world_mut()
         .entity_mut(hauler)

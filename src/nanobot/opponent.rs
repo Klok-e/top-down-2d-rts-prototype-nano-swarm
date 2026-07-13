@@ -34,18 +34,11 @@ pub struct PrepaintedIntent {
     pub cell: IVec2,
     /// Which intent layer to activate.
     pub kind: IntentKind,
-    /// Paint strength to apply. Values are clamped to the
-    /// shared [`crate::intent::PAINT_STRENGTH_CAP`].
-    pub strength: u8,
 }
 
 impl PrepaintedIntent {
-    pub fn new(cell: IVec2, kind: IntentKind, strength: u8) -> Self {
-        Self {
-            cell,
-            kind,
-            strength,
-        }
+    pub fn new(cell: IVec2, kind: IntentKind) -> Self {
+        Self { cell, kind }
     }
 }
 
@@ -104,7 +97,7 @@ pub fn spawn_opponent_swarm(
     {
         let mut grid = world.resource_mut::<IntentGrid>();
         for paint in prepainted {
-            grid.paint_owned(paint.cell, paint.kind, paint.strength, Some(swarm_id));
+            grid.paint_owned(paint.cell, paint.kind, Some(swarm_id));
         }
     }
 
@@ -175,7 +168,6 @@ pub fn next_opponent_swarm_id(world: &mut World) -> SwarmId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::intent::PAINT_STRENGTH_CAP;
 
     fn build_app() -> App {
         let mut app = App::new();
@@ -213,18 +205,18 @@ mod tests {
             Vec2::new(0.0, 0.0),
             ProductionRatio::new(),
             &[
-                PrepaintedIntent::new(gather_cell, IntentKind::Gather, PAINT_STRENGTH_CAP),
-                PrepaintedIntent::new(defend_cell, IntentKind::Defend, 8),
+                PrepaintedIntent::new(gather_cell, IntentKind::Gather),
+                PrepaintedIntent::new(defend_cell, IntentKind::Defend),
             ],
             &[],
         );
         let grid = app.world().resource::<IntentGrid>();
         let g = grid.cell(gather_cell).unwrap();
         assert!(g.has(IntentKind::Gather));
-        assert_eq!(g.strength(IntentKind::Gather), PAINT_STRENGTH_CAP);
+        assert_eq!(g.owner(IntentKind::Gather), Some(SwarmId(1)));
         let d = grid.cell(defend_cell).unwrap();
         assert!(d.has(IntentKind::Defend));
-        assert_eq!(d.strength(IntentKind::Defend), 8);
+        assert_eq!(d.owner(IntentKind::Defend), Some(SwarmId(1)));
     }
 
     #[test]

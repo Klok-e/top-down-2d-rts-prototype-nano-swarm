@@ -30,7 +30,7 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         spawn_opponent_swarm, Commitment, GatherAssignment, Health, Nanobot, NanobotType,
         OwnerSwarm, PlannedStructureClaim, PrepaintedIntent, ProductionFacility, ProductionPlugin,
@@ -68,12 +68,7 @@ fn player_painted_intent_is_owned_by_player_swarm() {
     let cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(
-            cell,
-            IntentKind::Gather,
-            PAINT_STRENGTH_CAP,
-            Some(SwarmId::PLAYER),
-        ));
+        assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
     }
 
     let grid = app.world().resource::<IntentGrid>();
@@ -98,12 +93,7 @@ fn player_painted_gather_drives_player_worker() {
     let cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(
-            cell,
-            IntentKind::Gather,
-            PAINT_STRENGTH_CAP,
-            Some(SwarmId::PLAYER),
-        ));
+        assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
     }
     let cell_center = common::cell_world_center(cell);
     let _deposit = common::spawn_deposit(&mut app, cell_center, 100);
@@ -135,11 +125,7 @@ fn opponent_prepainted_intent_is_owned_by_opponent_swarm() {
         app.world_mut(),
         opponent_pos,
         ProductionRatio::new(),
-        &[PrepaintedIntent::new(
-            gather_cell,
-            IntentKind::Gather,
-            PAINT_STRENGTH_CAP,
-        )],
+        &[PrepaintedIntent::new(gather_cell, IntentKind::Gather)],
         &[],
     );
     let opponent_id = app
@@ -174,11 +160,7 @@ fn opponent_prepainted_gather_drives_opponent_worker() {
         app.world_mut(),
         opponent_pos,
         ProductionRatio::new(),
-        &[PrepaintedIntent::new(
-            gather_cell,
-            IntentKind::Gather,
-            PAINT_STRENGTH_CAP,
-        )],
+        &[PrepaintedIntent::new(gather_cell, IntentKind::Gather)],
         &[SeedNanobots::new(NanobotType::Worker, 1)],
     );
     // Place a deposit in the cell so the assignment has a
@@ -223,12 +205,7 @@ fn player_worker_ignores_opponent_gather_zone() {
     let opponent_cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(
-            opponent_cell,
-            IntentKind::Gather,
-            PAINT_STRENGTH_CAP,
-            Some(SwarmId(7)),
-        ));
+        assert!(grid.paint_owned(opponent_cell, IntentKind::Gather, Some(SwarmId(7)),));
     }
     let cell_center = common::cell_world_center(opponent_cell);
     let _deposit = common::spawn_deposit(&mut app, cell_center, 100);
@@ -268,12 +245,7 @@ fn opponent_worker_ignores_player_gather_zone() {
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
         // Player-painted cell (owner is `SwarmId::PLAYER`).
-        assert!(grid.paint_owned(
-            cell,
-            IntentKind::Gather,
-            PAINT_STRENGTH_CAP,
-            Some(SwarmId::PLAYER),
-        ));
+        assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
     }
     let cell_center = common::cell_world_center(cell);
     let _deposit = common::spawn_deposit(&mut app, cell_center, 100);
@@ -320,7 +292,7 @@ fn unowned_paint_remains_visible_to_every_swarm() {
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
         // The plain (unowned) `paint` API.
-        assert!(grid.paint(cell, IntentKind::Gather, PAINT_STRENGTH_CAP));
+        assert!(grid.paint(cell, IntentKind::Gather));
     }
 
     let grid = app.world().resource::<IntentGrid>();

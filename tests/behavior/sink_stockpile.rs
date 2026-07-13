@@ -29,7 +29,7 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         completed_visual_color, HaulerAssignment, OwnerSwarm, PlannedKind, PlannedStructure,
         PlannedStructureClaim, PlannedStructureProgress, SwarmId, DEFAULT_PLANNED_WORK_TICKS,
@@ -46,12 +46,7 @@ fn build_app() -> App {
 
 fn paint_build(app: &mut App, cell: IVec2) {
     let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-    assert!(grid.paint_owned(
-        cell,
-        IntentKind::Build,
-        PAINT_STRENGTH_CAP,
-        Some(SwarmId::PLAYER),
-    ));
+    assert!(grid.paint_owned(cell, IntentKind::Build, Some(SwarmId::PLAYER),));
 }
 
 #[test]
@@ -86,12 +81,7 @@ fn no_sink_stockpile_planned_without_build_paint() {
     let cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(
-            cell,
-            IntentKind::Gather,
-            PAINT_STRENGTH_CAP,
-            Some(SwarmId::PLAYER),
-        ));
+        assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
     }
 
     for _ in 0..5 {
@@ -341,12 +331,7 @@ fn source_stockpile_demand_ignores_sink_stockpile_in_same_cell() {
     let center = common::cell_world_center(cell);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(
-            cell,
-            IntentKind::Gather,
-            PAINT_STRENGTH_CAP,
-            Some(SwarmId::PLAYER),
-        ));
+        assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
     }
     let _swarm = common::spawn_swarm_at(&mut app, center);
     let _worker = common::spawn_worker_at(&mut app, center);
@@ -461,11 +446,7 @@ fn opponent_build_cell_creates_opponent_owned_sink_stockpile() {
         app.world_mut(),
         opponent_pos,
         ProductionRatio::new(),
-        &[PrepaintedIntent::new(
-            cell,
-            IntentKind::Build,
-            PAINT_STRENGTH_CAP,
-        )],
+        &[PrepaintedIntent::new(cell, IntentKind::Build)],
         &[SeedNanobots::new(
             top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotType::Worker,
             1,

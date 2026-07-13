@@ -9,7 +9,7 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         completed_visual_color, planned_visual_color, OwnerSwarm, PlannedStructure,
         PlannedStructureClaim, PlannedStructureProgress, Swarm, SwarmId,
@@ -35,7 +35,7 @@ fn planned_structure_does_not_emerge_from_build_paint_alone() {
     let cell = IVec2::new(0, 0);
     app.world_mut()
         .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
+        .paint(cell, IntentKind::Build);
 
     app.update();
 
@@ -53,7 +53,7 @@ fn build_paint_alone_stays_empty_across_repeated_ticks() {
     let cell = IVec2::new(0, 0);
     app.world_mut()
         .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Build, PAINT_STRENGTH_CAP);
+        .paint(cell, IntentKind::Build);
 
     for _ in 0..5 {
         app.update();
@@ -71,11 +71,9 @@ fn planned_structure_not_emerged_for_gather_only_cell() {
     // construction demand, so no PlannedStructure emerges.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Gather,
-        PAINT_STRENGTH_CAP,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Gather);
 
     for _ in 0..3 {
         app.update();

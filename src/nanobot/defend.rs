@@ -10,13 +10,9 @@
 //! Issue #37 contract: Defenders spread across painted Defend cells
 //! using spatial-pressure scoring instead of clustering at cell
 //! centers. See `docs/adr/0007-defender-spatial-pressure.md`. The
-//! scoring model layers on top of the global intent candidate
-//! scoring (type fit, paint strength, distance, commitment):
+//! scoring (type fit, distance, commitment):
 //!
-//! - **paint strength** raises both the cell's attraction and its
-//!   desired occupancy (capacity) -- a strongly painted cell can
-//!   absorb more defenders before crowding significantly reduces
-//!   its score;
+//! - each painted cell provides one baseline soft work slot;
 //! - **physical density** (every nanobot in the candidate cell)
 //!   plus **defender reservations** (the `(cell, Defend)` soft
 //!   work slot) combine into a single soft crowding penalty that
@@ -56,13 +52,13 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use crate::intent::{IntentCell, IntentGrid, IntentKind, PAINT_STRENGTH_CAP};
+use crate::intent::{IntentCell, IntentGrid, IntentKind};
 use crate::nanobot::autonomy::{Commitment, IntentCandidate, NanobotType, SoftWorkSlots};
 use crate::nanobot::charge::{ChargerAssignment, ChargerProgress};
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, SwarmMember};
 use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::spatial_pressure::{
-    cell_density_system, crowding_factor, paint_occupancy_capacity, point_in_cell, CellDensity,
+    cell_density_system, crowding_factor, point_in_cell, CellDensity,
 };
 use crate::ZONE_BLOCK_SIZE;
 
@@ -241,37 +237,18 @@ pub struct DefendSelfExclusion {
     pub reserved_cell: Option<IVec2>,
 }
 
-/// Score one Defend cell for a defender, pure over the
-/// spatial-pressure factors. Mirrors the global
-/// [`crate::nanobot::autonomy::score_intent`] shape (type fit *
-/// paint * need * distance * crowding * commitment) but swaps the
-/// generic soft-slot crowding for paint-driven capacity crowding
-/// over the cell's resolved occupancy. `physical_density` and
-/// `reservations` are expected to already exclude the scoring
-/// defender (see [`DefendSelfExclusion`]); this function does not
-/// re-exclude.
-#[allow(clippy::too_many_arguments)]
+/// Score one Defend cell using pressure, distance, baseline capacity-one soft
+/// crowding, and commitment. Pressure may outweigh crowding and pull extras.
 fn score_defend_cell(
     commitment: Commitment,
     nanobot_pos: Vec2,
     candidate_cell: IVec2,
-    paint_strength: u8,
     defend_pressure: f32,
     physical_density: u32,
     reservations: u32,
     cell_size: f32,
 ) -> f32 {
-    // Type fit is the multiplicative base: a Defender fits Defend
-    // (1.0). The caller iterates only Defend cells, but keeping
-    // the factor makes the scoring shape explicit and matches the
-    // generic scorer.
     let type_fit = NanobotType::Defender.fit_for(IntentKind::Defend);
-
-    // Paint strength is a positive linear term normalised by the
-    // cap. Stronger paint raises both this attraction term and the
-    // capacity term below, so a strongly painted cell is both more
-    // attractive and more tolerant of crowding.
-    let paint_norm = paint_strength as f32 / PAINT_STRENGTH_CAP as f32;
 
     let candidate_pos = Vec2::new(
         (candidate_cell.x as f32 + 0.5) * cell_size,
@@ -280,26 +257,17 @@ fn score_defend_cell(
     let raw_distance = nanobot_pos.distance(candidate_pos);
     let distance_penalty = 1.0 / (1.0 + raw_distance / cell_size.max(1.0));
 
-    // Crowding combines physical density and reservations into one
-    // soft penalty against the paint-driven capacity. Never zero.
-    let capacity = paint_occupancy_capacity(paint_strength);
     let occupancy = physical_density + reservations;
-    let crowding = crowding_factor(occupancy, capacity);
+    let crowding = crowding_factor(occupancy, 1);
 
     let reassess = commitment.reassess_factor();
     let need = defend_pressure.max(0.0);
 
-    type_fit * paint_norm * need * distance_penalty * crowding * reassess
+    type_fit * need * distance_penalty * crowding * reassess
 }
 
-/// Resolve the per-cell scoring factors for one Defend cell,
-/// excluding the scoring defender's own body and reservation. Shared
-/// by [`best_defend_candidate`] (which picks the max across all
-/// cells) and the assignment system's hysteresis comparison (which
-/// scores the held cell specifically). Returning the resolved
-/// factors keeps the exclusion logic in one place. Paint strength
-/// is read from the grid by the caller, so it is not part of the
-/// resolved tuple.
+/// Resolve per-cell scoring factors while excluding scoring defender's body and
+/// reservation.
 #[allow(clippy::type_complexity)]
 fn resolve_defend_factors(
     cell: IVec2,
@@ -324,14 +292,8 @@ fn resolve_defend_factors(
     (pressure_val, physical, reservations)
 }
 
-/// Score every visible owned Defend cell for one defender and return
-/// the highest-scoring candidate. This is the Defend-specific
-/// counterpart to [`crate::nanobot::autonomy::best_candidate`]: it
-/// layers paint-driven capacity crowding, physical density, and the
-/// defend-pressure hook on top of the global scoring shape. The
-/// scoring defender's own body and reservation are excluded via
-/// `exclusion` so a holding defender re-scoring its own cell is not
-/// over-penalised by itself.
+/// Score every visible owned Defend cell. Baseline capacity is one per cell;
+/// physical density and reservations apply soft crowding.
 ///
 /// Returns [`None`] when no visible owned Defend cell exists; the
 /// caller decides what to do (a holding defender in this case will
@@ -357,14 +319,12 @@ pub fn best_defend_candidate(
         if !intent_cell.visible_to(IntentKind::Defend, swarm) {
             continue;
         }
-        let strength = intent_cell.strength(IntentKind::Defend);
         let (pressure_val, physical, reservations) =
             resolve_defend_factors(cell, slots, density, pressure, exclusion);
         let score = score_defend_cell(
             commitment,
             nanobot_pos,
             cell,
-            strength,
             pressure_val,
             physical,
             reservations,
@@ -379,7 +339,6 @@ pub fn best_defend_candidate(
                 cell,
                 kind: IntentKind::Defend,
                 score,
-                paint_strength: strength,
                 need: pressure_val,
                 distance: nanobot_pos.distance(candidate_pos),
                 // slot_count is repurposed to carry the resolved
@@ -421,14 +380,12 @@ fn score_specific_defend_cell(
     if !intent_cell.visible_to(IntentKind::Defend, swarm) {
         return None;
     }
-    let strength = intent_cell.strength(IntentKind::Defend);
     let (pressure_val, physical, reservations) =
         resolve_defend_factors(cell, slots, density, pressure, exclusion);
     Some(score_defend_cell(
         commitment,
         nanobot_pos,
         cell,
-        strength,
         pressure_val,
         physical,
         reservations,
@@ -811,8 +768,8 @@ mod tests {
         let mut grid = IntentGrid::new(4, 4);
         let held = IVec2::new(-1, 0);
         let other = IVec2::new(1, 0);
-        grid.paint(held, IntentKind::Defend, PAINT_STRENGTH_CAP);
-        grid.paint(other, IntentKind::Defend, PAINT_STRENGTH_CAP);
+        grid.paint(held, IntentKind::Defend);
+        grid.paint(other, IntentKind::Defend);
 
         let mut slots = SoftWorkSlots::new();
         // The defender holds `held`: one reservation there.
@@ -851,45 +808,6 @@ mod tests {
     }
 
     #[test]
-    fn best_defend_candidate_prefers_higher_paint_for_occupancy() {
-        // Stronger paint raises both attraction and capacity, so
-        // at equal distance the strongly painted cell wins even
-        // when it already has a reservation and the weak cell is
-        // empty.
-        let mut grid = IntentGrid::new(4, 4);
-        let weak = IVec2::new(-1, 0);
-        let strong = IVec2::new(1, 0);
-        grid.paint(weak, IntentKind::Defend, 4);
-        grid.paint(strong, IntentKind::Defend, PAINT_STRENGTH_CAP);
-
-        let mut slots = SoftWorkSlots::new();
-        // Pile a reservation on the strong cell so its occupancy
-        // is 1; the weak cell stays empty (occupancy 0).
-        slots.occupy(strong, IntentKind::Defend);
-        let density = CellDensity::default();
-        let pressure = DefendPressure::default();
-        let pos = Vec2::new(0.0, 0.0);
-        let exclusion = DefendSelfExclusion::default();
-
-        let candidate = best_defend_candidate(
-            &grid,
-            Commitment::Idle,
-            pos,
-            &slots,
-            &density,
-            &pressure,
-            ZONE_BLOCK_SIZE,
-            crate::nanobot::components::SwarmId::PLAYER,
-            exclusion,
-        )
-        .expect("must find a candidate");
-        assert_eq!(
-            candidate.cell, strong,
-            "strong paint must beat weak paint despite one reservation"
-        );
-    }
-
-    #[test]
     fn defend_pressure_hook_raises_a_cells_score() {
         // The pressure hook multiplies a cell's need. Two
         // equally-painted, equidistant cells: raising one cell's
@@ -897,15 +815,16 @@ mod tests {
         let mut grid = IntentGrid::new(4, 4);
         let a = IVec2::new(-1, 0);
         let b = IVec2::new(1, 0);
-        grid.paint(a, IntentKind::Defend, PAINT_STRENGTH_CAP);
-        grid.paint(b, IntentKind::Defend, PAINT_STRENGTH_CAP);
+        grid.paint(a, IntentKind::Defend);
+        grid.paint(b, IntentKind::Defend);
 
-        let slots = SoftWorkSlots::new();
+        let mut slots = SoftWorkSlots::new();
+        slots.occupy(b, IntentKind::Defend);
         let density = CellDensity::default();
         let mut pressure = DefendPressure::default();
         pressure.set(b, 3.0);
 
-        let pos = Vec2::new(0.0, 0.0);
+        let pos = Vec2::new(0.5 * ZONE_BLOCK_SIZE, 0.5 * ZONE_BLOCK_SIZE);
         let exclusion = DefendSelfExclusion::default();
         let candidate = best_defend_candidate(
             &grid,

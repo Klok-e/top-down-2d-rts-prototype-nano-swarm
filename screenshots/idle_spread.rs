@@ -47,7 +47,7 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         world_to_cell, Commitment, DirectMovementComponent, Health, Nanobot, NanobotType, SwarmId,
         SwarmMember, VelocityComponent,
@@ -125,7 +125,7 @@ pub fn idle_spread(ctx: &mut TestContext) -> TestFlow {
         {
             let mut grid = world.resource_mut::<IntentGrid>();
             for &cell in &CORRIDOR_CELLS {
-                grid.add_owned(cell, IntentKind::Corridor, PAINT_STRENGTH_CAP, None);
+                grid.add_owned(cell, IntentKind::Corridor, None);
             }
         }
         // Spawn the idle haulers stacked at the stranded start cell.

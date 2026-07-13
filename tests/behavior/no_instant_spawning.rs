@@ -19,7 +19,7 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         Charger, DefendHold, NanobotType, PlannedStructure, ProductionFacility, ProductionRatio,
         SwarmId,
@@ -87,7 +87,7 @@ fn planned_count(world: &mut World) -> usize {
 /// intent stamp.
 fn paint_owned(app: &mut App, cell: IVec2, kind: IntentKind) {
     let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-    assert!(grid.paint_owned(cell, kind, PAINT_STRENGTH_CAP, Some(SwarmId::PLAYER)));
+    assert!(grid.paint_owned(cell, kind, Some(SwarmId::PLAYER)));
 }
 
 #[test]

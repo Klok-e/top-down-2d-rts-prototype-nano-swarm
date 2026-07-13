@@ -24,7 +24,7 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         best_defend_candidate, cell_density_system, is_enemy_territory, point_in_cell,
         AllocationRegion, CellDensity, ChargerAssignment, ChargerProgress, Commitment,
@@ -81,7 +81,7 @@ fn idle_defender_picks_defend_cell_via_autonomy_scoring() {
     let cell = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(cell, IntentKind::Defend, PAINT_STRENGTH_CAP));
+        assert!(grid.paint(cell, IntentKind::Defend));
     }
     let defender = common::spawn_defender_at(&mut app, Vec2::new(0.0, 0.0));
 
@@ -143,7 +143,7 @@ fn workers_and_haulers_do_not_get_defend_assignments() {
     let cell = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(cell, IntentKind::Defend, PAINT_STRENGTH_CAP));
+        assert!(grid.paint(cell, IntentKind::Defend));
     }
     let worker = common::spawn_worker_at(&mut app, Vec2::new(0.0, 0.0));
     let hauler = common::spawn_hauler_at(&mut app, Vec2::new(0.0, 0.0));
@@ -181,7 +181,7 @@ fn defend_arrival_uses_in_cell_area_not_exact_center() {
     let cell = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(cell, IntentKind::Defend, PAINT_STRENGTH_CAP));
+        assert!(grid.paint(cell, IntentKind::Defend));
     }
     let cell_center = common::cell_world_center(cell);
     let defender = common::spawn_defender_at(&mut app, Vec2::new(0.0, 0.0));
@@ -241,7 +241,7 @@ fn defender_hold_releases_when_paint_erased() {
     let cell = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(cell, IntentKind::Defend, PAINT_STRENGTH_CAP));
+        assert!(grid.paint(cell, IntentKind::Defend));
     }
     let defender = common::spawn_defender_at(&mut app, Vec2::new(0.0, 0.0));
 
@@ -264,7 +264,7 @@ fn defender_hold_releases_when_paint_erased() {
     // Erase the Defend paint.
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.erase(cell, IntentKind::Defend, PAINT_STRENGTH_CAP));
+        assert!(grid.erase(cell, IntentKind::Defend));
     }
     app.update();
 
@@ -312,8 +312,8 @@ fn multiple_defenders_route_independently_to_distinct_defend_cells() {
     let right_cell = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(left_cell, IntentKind::Defend, PAINT_STRENGTH_CAP));
-        assert!(grid.paint(right_cell, IntentKind::Defend, PAINT_STRENGTH_CAP));
+        assert!(grid.paint(left_cell, IntentKind::Defend));
+        assert!(grid.paint(right_cell, IntentKind::Defend));
     }
     let d1 = common::spawn_defender_at(&mut app, origin_center);
     let d2 = common::spawn_defender_at(&mut app, origin_center);
@@ -358,8 +358,8 @@ fn candidate_score_falls_with_physical_density_of_all_nanobot_types() {
     let empty = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(crowded, IntentKind::Defend, PAINT_STRENGTH_CAP));
-        assert!(grid.paint(empty, IntentKind::Defend, PAINT_STRENGTH_CAP));
+        assert!(grid.paint(crowded, IntentKind::Defend));
+        assert!(grid.paint(empty, IntentKind::Defend));
     }
     // Park three workers in the "crowded" cell. They are idle
     // workers with no Defend assignment -- only their bodies
@@ -397,7 +397,7 @@ fn extra_defenders_are_never_hard_rejected_by_capacity() {
     let only_cell = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(only_cell, IntentKind::Defend, PAINT_STRENGTH_CAP));
+        assert!(grid.paint(only_cell, IntentKind::Defend));
     }
     let mut defenders = Vec::new();
     for _ in 0..4 {
@@ -442,8 +442,8 @@ fn holding_defender_does_not_retarget_within_hysteresis_margin() {
     let rival = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(held, IntentKind::Defend, PAINT_STRENGTH_CAP));
-        assert!(grid.paint(rival, IntentKind::Defend, PAINT_STRENGTH_CAP));
+        assert!(grid.paint(held, IntentKind::Defend));
+        assert!(grid.paint(rival, IntentKind::Defend));
     }
     let defender = spawn_holding_defender(&mut app, held);
     {
@@ -478,8 +478,8 @@ fn holding_defender_keeps_valid_lease_despite_pressure_change() {
     let rival = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(held, IntentKind::Defend, PAINT_STRENGTH_CAP));
-        assert!(grid.paint(rival, IntentKind::Defend, PAINT_STRENGTH_CAP));
+        assert!(grid.paint(held, IntentKind::Defend));
+        assert!(grid.paint(rival, IntentKind::Defend));
     }
     let defender = spawn_holding_defender(&mut app, held);
     {
@@ -517,7 +517,7 @@ fn holding_defender_retargets_immediately_when_current_paint_erased() {
     let friendly = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(friendly, IntentKind::Defend, 8));
+        assert!(grid.paint(friendly, IntentKind::Defend));
     }
     let defender = spawn_holding_defender(&mut app, friendly);
 
@@ -534,8 +534,8 @@ fn holding_defender_retargets_immediately_when_current_paint_erased() {
     // cell. The defender must release hold and advance.
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.erase(friendly, IntentKind::Defend, 8));
-        assert!(grid.paint(enemy, IntentKind::Defend, PAINT_STRENGTH_CAP));
+        assert!(grid.erase(friendly, IntentKind::Defend));
+        assert!(grid.paint(enemy, IntentKind::Defend));
     }
     app.update();
     app.update();
@@ -583,8 +583,8 @@ fn holding_defender_does_not_retarget_while_in_charger_states() {
     let rival = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(held, IntentKind::Defend, PAINT_STRENGTH_CAP));
-        assert!(grid.paint(rival, IntentKind::Defend, PAINT_STRENGTH_CAP));
+        assert!(grid.paint(held, IntentKind::Defend));
+        assert!(grid.paint(rival, IntentKind::Defend));
     }
     let defender = spawn_holding_defender(&mut app, held);
     // Pull the defender into a ChargerAssignment as if the charge
@@ -635,7 +635,7 @@ fn cosmetic_de_clumping_keeps_holding_defender_inside_its_cell() {
     let held = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(held, IntentKind::Defend, PAINT_STRENGTH_CAP));
+        assert!(grid.paint(held, IntentKind::Defend));
     }
     // Spawn the defender OUTSIDE its held cell (one cell over) and
     // mark it holding `held`.
@@ -712,8 +712,8 @@ fn defend_pressure_hook_pulls_idle_defender_toward_pressurized_cell() {
     let hot = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(calm, IntentKind::Defend, PAINT_STRENGTH_CAP));
-        assert!(grid.paint(hot, IntentKind::Defend, PAINT_STRENGTH_CAP));
+        assert!(grid.paint(calm, IntentKind::Defend));
+        assert!(grid.paint(hot, IntentKind::Defend));
     }
     {
         let mut pressure = app.world_mut().resource_mut::<DefendPressure>();
@@ -799,8 +799,8 @@ fn charger_progress_marker_is_excluded_from_defend_assignment() {
     let rival = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(held, IntentKind::Defend, PAINT_STRENGTH_CAP));
-        assert!(grid.paint(rival, IntentKind::Defend, PAINT_STRENGTH_CAP));
+        assert!(grid.paint(held, IntentKind::Defend));
+        assert!(grid.paint(rival, IntentKind::Defend));
     }
     let defender = spawn_holding_defender(&mut app, held);
     {

@@ -5,8 +5,7 @@
 //! new contract uses geometric overlap: a deposit is eligible when
 //! its circular work area (center, radius) intersects the
 //! rectangle of a painted Gather cell owned by the worker's swarm.
-//! Paint strength still drives scoring, but the eligibility gate is
-//! the circle-rectangle intersection, not the grid cell membership.
+//! Paint establishes geometric eligibility; candidate scoring resolves overlap.
 //!
 //! Each test pins one bullet of the acceptance criteria so a
 //! failure points at a single contract:
@@ -16,15 +15,14 @@
 //! 2. `deposit_with_no_visual_overlap_remains_ineligible` -- a
 //!    deposit far from the painted cell stays untouched.
 //! 3. `deposit_overlapping_two_painted_cells_picks_nearest_paint`
-//!    -- when the deposit straddles two painted cells, the worker
-//!    routes to the cell whose paint is nearer the bot.
+//!    -- deterministic distance scoring resolves compatible overlap.
 //! 4. `opponent_overlap_eligibility_does_not_leak_to_player_workers`
 //!    -- a player Worker still cannot pick an opponent-painted
 //!    deposit overlap (per-swarm ownership is preserved).
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind, PAINT_STRENGTH_CAP},
+    intent::{IntentGrid, IntentKind},
     nanobot::{Commitment, GatherAssignment, SwarmId},
     resources::ResourceDeposit,
     ZONE_BLOCK_SIZE,
@@ -47,12 +45,7 @@ fn deposit_overlapping_painted_cell_is_eligible_when_center_in_other_cell() {
     let painted_cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(
-            painted_cell,
-            IntentKind::Gather,
-            PAINT_STRENGTH_CAP,
-            Some(SwarmId::PLAYER),
-        ));
+        assert!(grid.paint_owned(painted_cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
     }
     // Deposit center sits in cell (1, 0) (cell x = 1 spans world
     // x = [512, 1024)). The chosen center (768, 256) is the cell
@@ -96,12 +89,7 @@ fn deposit_with_no_visual_overlap_remains_ineligible() {
     let painted_cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(
-            painted_cell,
-            IntentKind::Gather,
-            PAINT_STRENGTH_CAP,
-            Some(SwarmId::PLAYER),
-        ));
+        assert!(grid.paint_owned(painted_cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
     }
     // Deposit in cell (3, 0). Cell (3, 0) center is at
     // (3 * 512 + 256, 256) = (1792, 256). A radius of 32 stays
@@ -136,35 +124,21 @@ fn deposit_with_no_visual_overlap_remains_ineligible() {
 
 #[test]
 fn deposit_overlapping_two_painted_cells_picks_nearest_paint() {
-    // Paint Gather in two cells with different strengths. Place
-    // a deposit whose circle overlaps both cells, with its
-    // center closer to the strongly-painted cell. The worker
-    // scores cells (paint strength, distance, need, etc.); the
-    // stronger paint should win even when the deposit straddles
-    // both. The worker must end up with a GatherAssignment on
-    // the strongly-painted cell pointing at the deposit.
+    // Binary paint makes both cells eligible; worker distance resolves choice.
     let mut app = common::sim_app_with_gather();
-    let weak_cell = IVec2::new(0, 0);
-    let strong_cell = IVec2::new(1, 0);
+    let near_cell = IVec2::new(0, 0);
+    let far_cell = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(weak_cell, IntentKind::Gather, 2, Some(SwarmId::PLAYER),));
-        assert!(grid.paint_owned(
-            strong_cell,
-            IntentKind::Gather,
-            PAINT_STRENGTH_CAP,
-            Some(SwarmId::PLAYER),
-        ));
+        assert!(grid.paint_owned(near_cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
+        assert!(grid.paint_owned(far_cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
     }
     // Deposit straddling the two cells. Center at (768, 256)
     // (cell (1, 0) center) with radius 300 reaches both cell
     // (0, 0) (distance 256) and cell (1, 0) (distance 0).
     let deposit_center = Vec2::new(768.0, ZONE_BLOCK_SIZE * 0.5);
     let deposit = common::spawn_deposit_with_radius(&mut app, deposit_center, 100, 300.0);
-    // Worker positioned between the two cells, but closer to the
-    // weak cell so distance does not break the paint tie on its
-    // own. The strong cell has paint strength 16 vs 2, so the
-    // strong cell still wins on the global scoring contract.
+    // Worker is closer to cell (0, 0).
     let worker_pos = Vec2::new(300.0, ZONE_BLOCK_SIZE * 0.5);
     let worker = common::spawn_worker_at(&mut app, worker_pos);
 
@@ -181,10 +155,7 @@ fn deposit_overlapping_two_painted_cells_picks_nearest_paint() {
         assignment.deposit, deposit,
         "worker must be assigned to the deposit that overlaps both cells"
     );
-    assert_eq!(
-        assignment.cell, strong_cell,
-        "stronger paint must win the scoring tie even when the worker is nearer the weak cell"
-    );
+    assert_eq!(assignment.cell, near_cell);
 }
 
 #[test]
@@ -200,12 +171,7 @@ fn opponent_overlap_eligibility_does_not_leak_to_player_workers() {
     let opponent_cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(
-            opponent_cell,
-            IntentKind::Gather,
-            PAINT_STRENGTH_CAP,
-            Some(opponent_id),
-        ));
+        assert!(grid.paint_owned(opponent_cell, IntentKind::Gather, Some(opponent_id),));
     }
     // Deposit straddling the opponent cell with a generous
     // radius, so by the overlap rule it is a perfectly eligible
