@@ -2,11 +2,11 @@
 
 use bevy::{prelude::*, render::storage::ShaderStorageBuffer};
 use top_down_2d_rts_prototype_nano_swarm::{
+    MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
     fly_camera::CameraZoom2d,
     intent::{IntentGrid, IntentKind},
     nanobot::SwarmId,
     zones::{ZoneMaterial, ZoneMaterialHandleComponent, ZonePointData},
-    MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
 };
 
 use crate::harness::{TestContext, TestFlow};

@@ -5,16 +5,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use bevy::prelude::*;
 
 use super::{
-    ActionableOpportunity, AllocationRegion, OpportunityCategory, OpportunityTarget,
-    ALLOCATION_REGION_CELLS,
+    ALLOCATION_REGION_CELLS, ActionableOpportunity, AllocationRegion, OpportunityCategory,
+    OpportunityTarget,
 };
+use crate::ZONE_BLOCK_SIZE;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::{
-    cell_overlaps_circle, Charger, OwnerSwarm, PlannedStructure, ProductionFacility, Structure,
-    SwarmId,
+    Charger, OwnerSwarm, PlannedStructure, ProductionFacility, Structure, SwarmId,
+    cell_overlaps_circle,
 };
 use crate::resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole};
-use crate::ZONE_BLOCK_SIZE;
 
 /// Region-indexed derived work. Callers may invalidate cells/regions without
 /// owning projection logic; next projection pass replaces those regions only.
@@ -481,9 +481,11 @@ mod tests {
 
         invalidate_circle_regions(&mut projection, center, ZONE_BLOCK_SIZE);
 
-        assert!(projection
-            .dirty_regions
-            .contains(&AllocationRegion::for_cell(IVec2::new(7, 0))));
+        assert!(
+            projection
+                .dirty_regions
+                .contains(&AllocationRegion::for_cell(IVec2::new(7, 0)))
+        );
     }
 }
 

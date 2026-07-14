@@ -5,9 +5,9 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Commitment, DefendHold, NanobotType, OwnerSwarm, PlannedKind, PlannedProductionTarget,
-        PlannedStructure, PlannedStructureClaim, SwarmId, BUILDING_FOOTPRINT_PADDING,
-        BUILDING_FOOTPRINT_RADIUS,
+        BUILDING_FOOTPRINT_PADDING, BUILDING_FOOTPRINT_RADIUS, Commitment, DefendHold, NanobotType,
+        OwnerSwarm, PlannedKind, PlannedProductionTarget, PlannedStructure, PlannedStructureClaim,
+        SwarmId,
     },
     resources::ResourceDeposit,
 };

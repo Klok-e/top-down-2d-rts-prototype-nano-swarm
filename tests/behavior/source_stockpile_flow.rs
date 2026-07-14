@@ -27,11 +27,11 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        completed_visual_color, Commitment, ExtractProgress, GatherAssignment, Health, Nanobot,
+        Commitment, DEFAULT_PLANNED_WORK_TICKS, ExtractProgress, GatherAssignment, Health, Nanobot,
         NanobotType, OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructureClaim,
-        PlannedStructureProgress, Swarm, SwarmId, SwarmMember, VelocityComponent,
-        DEFAULT_PLANNED_WORK_TICKS, SOURCE_STOCKPILE_JITTER_AMPLITUDE,
-        SOURCE_STOCKPILE_PLACEMENT_RADIUS,
+        PlannedStructureProgress, SOURCE_STOCKPILE_JITTER_AMPLITUDE,
+        SOURCE_STOCKPILE_PLACEMENT_RADIUS, Swarm, SwarmId, SwarmMember, VelocityComponent,
+        completed_visual_color,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile},
 };
@@ -565,7 +565,12 @@ fn scenario_sized_deposit_at_authored_cell_center_gets_source_stockpile() {
 
     let world = app.world_mut();
     assert!(
-        world.entity(deposit).get::<ResourceDeposit>().unwrap().amount < 100,
+        world
+            .entity(deposit)
+            .get::<ResourceDeposit>()
+            .unwrap()
+            .amount
+            < 100,
         "deposit amount should decrease once extraction resumes instead of worker idling at deposit"
     );
 }

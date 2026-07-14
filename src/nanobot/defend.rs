@@ -52,15 +52,15 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
+use crate::ZONE_BLOCK_SIZE;
 use crate::intent::{IntentCell, IntentGrid, IntentKind};
 use crate::nanobot::autonomy::{Commitment, IntentCandidate, NanobotType, SoftWorkSlots};
 use crate::nanobot::charge::{ChargerAssignment, ChargerProgress};
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, SwarmMember};
 use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::spatial_pressure::{
-    cell_density_system, crowding_factor, point_in_cell, CellDensity,
+    CellDensity, cell_density_system, crowding_factor, point_in_cell,
 };
-use crate::ZONE_BLOCK_SIZE;
 
 /// Number of cells around the Swarm that count as "friendly
 /// territory". A Defend cell at Chebyshev distance greater than this

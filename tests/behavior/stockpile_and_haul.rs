@@ -8,9 +8,9 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        DirectMovementComponent, HaulerAssignment, HaulerLoad, LogisticsReservation, OwnerSwarm,
-        ProductionFacility, Swarm, SwarmId, DEFAULT_STOCKPILE_CAPACITY, HAULER_CARRY_CAPACITY,
-        WORKER_CARRY_CAPACITY,
+        DEFAULT_STOCKPILE_CAPACITY, DirectMovementComponent, HAULER_CARRY_CAPACITY,
+        HaulerAssignment, HaulerLoad, LogisticsReservation, OwnerSwarm, ProductionFacility, Swarm,
+        SwarmId, WORKER_CARRY_CAPACITY,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile},
 };

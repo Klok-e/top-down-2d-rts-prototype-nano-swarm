@@ -15,15 +15,15 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
+    ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        point_in_cell, Charge, Commitment, DefendHold, Health, Nanobot, NanobotSprites,
-        NanobotType, SwarmId, SwarmMember, VelocityComponent,
+        Charge, Commitment, DefendHold, Health, Nanobot, NanobotSprites, NanobotType, SwarmId,
+        SwarmMember, VelocityComponent, point_in_cell,
     },
-    ZONE_BLOCK_SIZE,
 };
 
-use crate::harness::{run_screenshot_test, TestContext, TestFlow};
+use crate::harness::{TestContext, TestFlow, run_screenshot_test};
 
 #[derive(Component)]
 struct SpreadTestDefender;

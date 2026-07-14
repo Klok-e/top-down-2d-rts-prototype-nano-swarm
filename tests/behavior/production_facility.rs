@@ -9,8 +9,9 @@
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
-        production_facility_pick_target_system, NanobotType, OwnerSwarm, ProductionFacility,
-        ProductionRatio, SwarmBundle, SwarmId, PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT,
+        NanobotType, OwnerSwarm, PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT,
+        ProductionFacility, ProductionRatio, SwarmBundle, SwarmId,
+        production_facility_pick_target_system,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
 };
@@ -415,8 +416,8 @@ fn additional_facility_plans_when_existing_busy_and_build_zone_free() {
     use top_down_2d_rts_prototype_nano_swarm::{
         intent::{IntentGrid, IntentKind},
         nanobot::{
-            completed_visual_color, planned_visual_color, OwnerSwarm, PlannedKind,
-            PlannedProductionTarget, PlannedStructure, SwarmId, DEFAULT_PLANNED_WORK_TICKS,
+            DEFAULT_PLANNED_WORK_TICKS, OwnerSwarm, PlannedKind, PlannedProductionTarget,
+            PlannedStructure, SwarmId, completed_visual_color, planned_visual_color,
         },
     };
     let mut app = common::sim_app_with_production_planned();
@@ -550,10 +551,13 @@ fn additional_facility_plans_when_existing_busy_and_build_zone_free() {
     assert!(
         remaining.is_none(),
         "PlannedStructure must complete; remaining={remaining:?}, claim={}, progress={}, lease={}, movement={}",
-        worker_state.contains::<top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedStructureClaim>(),
-        worker_state.contains::<top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedStructureProgress>(),
+        worker_state
+            .contains::<top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedStructureClaim>(),
+        worker_state
+            .contains::<top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedStructureProgress>(),
         worker_state.contains::<top_down_2d_rts_prototype_nano_swarm::nanobot::RegionalLease>(),
-        worker_state.contains::<top_down_2d_rts_prototype_nano_swarm::nanobot::DirectMovementComponent>(),
+        worker_state
+            .contains::<top_down_2d_rts_prototype_nano_swarm::nanobot::DirectMovementComponent>(),
     );
     let facility = world
         .entity(planned_entity)

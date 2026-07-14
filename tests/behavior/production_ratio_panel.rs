@@ -3,17 +3,17 @@
 use bevy::{prelude::*, ui::RelativeCursorPosition};
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
-        spawn_opponent_swarm, Nanobot, NanobotType, ProductionRatio, SwarmId, SwarmMember,
-        SwarmProduction,
+        Nanobot, NanobotType, ProductionRatio, SwarmId, SwarmMember, SwarmProduction,
+        spawn_opponent_swarm,
     },
     ui::{
-        production_ratio_panel::{
-            production_ratio_drag_system, setup_production_ratio_panel,
-            update_production_ratio_panel, ActualCompositionTick, HandleBoundary,
-            ProductionRatioDragState, ProductionRatioHandle, ProductionRatioPanelRoot,
-            ProductionRatioSegment, ProductionRatioTrack, ProductionRatioValueText, HANDLE_WIDTH,
-        },
         FontsResource,
+        production_ratio_panel::{
+            ActualCompositionTick, HANDLE_WIDTH, HandleBoundary, ProductionRatioDragState,
+            ProductionRatioHandle, ProductionRatioPanelRoot, ProductionRatioSegment,
+            ProductionRatioTrack, ProductionRatioValueText, production_ratio_drag_system,
+            setup_production_ratio_panel, update_production_ratio_panel,
+        },
     },
 };
 
@@ -156,9 +156,11 @@ fn panel_has_segmented_structure_persistent_labels_and_no_buttons() {
         (NanobotType::Hauler, "Hauler 30%"),
         (NanobotType::Defender, "Defender 10%"),
     ] {
-        assert!(labels
-            .iter()
-            .any(|label| label == &(kind, name.to_string())));
+        assert!(
+            labels
+                .iter()
+                .any(|label| label == &(kind, name.to_string()))
+        );
     }
 }
 
@@ -241,11 +243,12 @@ fn zero_share_updates_segments_and_labels_without_removing_them() {
         .find(|(segment, _)| segment.0 == NanobotType::Worker)
         .unwrap();
     assert_eq!(percent(worker.1.width), 0.0);
-    assert!(app
-        .world_mut()
-        .query::<(&ProductionRatioValueText, &Text)>()
-        .iter(app.world())
-        .any(|(label, text)| label.0 == NanobotType::Worker && text.0 == "Worker 0%"));
+    assert!(
+        app.world_mut()
+            .query::<(&ProductionRatioValueText, &Text)>()
+            .iter(app.world())
+            .any(|(label, text)| label.0 == NanobotType::Worker && text.0 == "Worker 0%")
+    );
 }
 
 #[test]
@@ -325,10 +328,11 @@ fn handles_and_track_participate_in_world_pointer_capture() {
         .collect();
     assert_eq!(targets.len(), 3);
     for entity in targets {
-        assert!(app
-            .world()
-            .entity(entity)
-            .contains::<RelativeCursorPosition>());
+        assert!(
+            app.world()
+                .entity(entity)
+                .contains::<RelativeCursorPosition>()
+        );
     }
 }
 

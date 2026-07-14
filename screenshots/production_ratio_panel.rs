@@ -4,8 +4,8 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{Nanobot, NanobotType, ProductionRatio, SwarmId, SwarmMember},
     ui::production_ratio_panel::{
-        ActualCompositionTick, HandleBoundary, ProductionRatioHandle, ProductionRatioValueText,
-        HANDLE_WIDTH,
+        ActualCompositionTick, HANDLE_WIDTH, HandleBoundary, ProductionRatioHandle,
+        ProductionRatioValueText,
     },
 };
 
@@ -48,10 +48,12 @@ pub fn production_ratio_panel(ctx: &mut TestContext) -> TestFlow {
             (NanobotType::Hauler, "Hauler 0%"),
             (NanobotType::Defender, "Defender 60%"),
         ] {
-            assert!(world
-                .query::<(&ProductionRatioValueText, &Text)>()
-                .iter(world)
-                .any(|(label, text)| label.0 == kind && text.0 == expected));
+            assert!(
+                world
+                    .query::<(&ProductionRatioValueText, &Text)>()
+                    .iter(world)
+                    .any(|(label, text)| label.0 == kind && text.0 == expected)
+            );
         }
         let offsets: Vec<_> = world
             .query::<(&ProductionRatioHandle, &Node)>()

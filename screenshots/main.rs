@@ -32,7 +32,7 @@ mod smoke;
 mod world_space_nanobots;
 mod zone_binary_overlay;
 
-use harness::{regression, run_screenshot_test, TestContext, TestFlow};
+use harness::{TestContext, TestFlow, regression, run_screenshot_test};
 
 /// Wraps a screenshot callback in the `Result<(), Failed>` shape
 /// `libtest-mimic`'s [`Trial::test`] expects. The artifact path is

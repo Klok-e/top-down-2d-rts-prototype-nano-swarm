@@ -32,10 +32,10 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        spawn_opponent_swarm, Commitment, GatherAssignment, Health, Nanobot, NanobotType,
-        OwnerSwarm, PlannedStructureClaim, PrepaintedIntent, ProductionFacility, ProductionPlugin,
-        ProductionRatio, SeedNanobots, SwarmId, SwarmMember, VelocityComponent,
-        PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT,
+        Commitment, GatherAssignment, Health, Nanobot, NanobotType, OwnerSwarm,
+        PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT, PlannedStructureClaim, PrepaintedIntent,
+        ProductionFacility, ProductionPlugin, ProductionRatio, SeedNanobots, SwarmId, SwarmMember,
+        VelocityComponent, spawn_opponent_swarm,
     },
     resources::ResourceDeposit,
 };

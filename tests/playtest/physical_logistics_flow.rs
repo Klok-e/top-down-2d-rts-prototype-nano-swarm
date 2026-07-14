@@ -3,9 +3,9 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
-        Cargo, DirectMovementComponent, HaulerAssignment, HaulerLoading, HaulerRoute,
-        LogisticsReservation, OwnerSwarm, ProductionFacility, SwarmId, HAULER_EXTRACT_PER_TICK,
-        HAULER_TRANSFER_PER_TICK,
+        Cargo, DirectMovementComponent, HAULER_EXTRACT_PER_TICK, HAULER_TRANSFER_PER_TICK,
+        HaulerAssignment, HaulerLoading, HaulerRoute, LogisticsReservation, OwnerSwarm,
+        ProductionFacility, SwarmId,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
 };
@@ -154,16 +154,18 @@ fn assignment_load_transit_and_terminal_unload_preserve_physical_custody() {
     assert_eq!(stockpile_amount(&app, source), 0);
     assert_eq!(facility_amount(&app, terminal), INITIAL_MINERALS);
     assert!(app.world().entity(hauler).get::<Cargo>().is_none());
-    assert!(app
-        .world()
-        .entity(hauler)
-        .get::<LogisticsReservation>()
-        .is_none());
-    assert!(app
-        .world()
-        .entity(hauler)
-        .get::<HaulerAssignment>()
-        .is_none());
+    assert!(
+        app.world()
+            .entity(hauler)
+            .get::<LogisticsReservation>()
+            .is_none()
+    );
+    assert!(
+        app.world()
+            .entity(hauler)
+            .get::<HaulerAssignment>()
+            .is_none()
+    );
     assert_custody_and_ledger(&app, source, hauler, terminal);
 }
 

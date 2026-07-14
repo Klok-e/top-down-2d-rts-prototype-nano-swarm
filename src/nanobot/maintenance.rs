@@ -40,17 +40,17 @@
 use bevy::prelude::*;
 
 use crate::intent::{IntentGrid, IntentKind};
-use crate::nanobot::autonomy::{best_candidate, Commitment, NanobotType, SoftWorkSlots};
+use crate::nanobot::autonomy::{Commitment, NanobotType, SoftWorkSlots, best_candidate};
 use crate::nanobot::components::SwarmMember;
 // `StructureKind` is only used by the unit tests in this
 // module. Marked `allow(unused_imports)` so the lib build does
 // not warn; the tests do pick the import up via `use super::*`.
+use crate::ZONE_BLOCK_SIZE;
 #[allow(unused_imports)]
 use crate::nanobot::build::{Structure, StructureKind};
 use crate::nanobot::components::{DirectMovementComponent, Nanobot};
 use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::placement::BUILDING_FOOTPRINT_RADIUS;
-use crate::ZONE_BLOCK_SIZE;
 
 /// How many ticks a structure stays stable after a maintenance
 /// shift. The buffer gives the swarm room to come back later

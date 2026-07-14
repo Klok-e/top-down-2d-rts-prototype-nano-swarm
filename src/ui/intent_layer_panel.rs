@@ -8,9 +8,9 @@
 use std::collections::HashSet;
 
 use bevy::prelude::{
-    default, BackgroundColor, BorderColor, Bundle, Button, Changed, Children, Color, Commands,
-    Component, DetectChanges, Entity, Interaction, Node, PositionType, Query, Res, ResMut, Text,
-    TextColor, TextFont, Val, With,
+    BackgroundColor, BorderColor, Bundle, Button, Changed, Children, Color, Commands, Component,
+    DetectChanges, Entity, Interaction, Node, PositionType, Query, Res, ResMut, Text, TextColor,
+    TextFont, Val, With, default,
 };
 use bevy::ui::{
     AlignItems, BorderRadius, FlexDirection, JustifyContent, RelativeCursorPosition, UiRect,

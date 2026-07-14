@@ -5,16 +5,16 @@
 
 use bevy::{camera::RenderTargetInfo, prelude::*, render::storage::ShaderStorageBuffer};
 use top_down_2d_rts_prototype_nano_swarm::{
+    MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
     intent::{
-        brush_key_for_kind, brush_selection_keyboard_system, BrushSelection, IntentGrid, IntentKind,
+        BrushSelection, IntentGrid, IntentKind, brush_key_for_kind, brush_selection_keyboard_system,
     },
     nanobot::SwarmId,
-    ui::{check_ui_interaction, UiHandling},
+    ui::{UiHandling, check_ui_interaction},
     zones::{
-        mirror_intent_to_zone_material_system, zone_brush_system, ZoneMaterial,
-        ZoneMaterialHandleComponent, ZonePointData,
+        ZoneMaterial, ZoneMaterialHandleComponent, ZonePointData,
+        mirror_intent_to_zone_material_system, zone_brush_system,
     },
-    MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
 };
 
 #[path = "../common/mod.rs"]

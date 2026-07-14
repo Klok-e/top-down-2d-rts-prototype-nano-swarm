@@ -15,8 +15,8 @@ use bevy::window::Window;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{BrushSelection, IntentGrid},
     ui::{
-        check_ui_interaction, intent_layer_panel::IntentLayerPanelRoot, NoPointerCapture,
-        UiHandling,
+        NoPointerCapture, UiHandling, check_ui_interaction,
+        intent_layer_panel::IntentLayerPanelRoot,
     },
     zones::zone_brush_system,
 };

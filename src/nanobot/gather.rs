@@ -24,25 +24,25 @@
 
 use bevy::prelude::*;
 
+use crate::ZONE_BLOCK_SIZE;
 use crate::ai::get_world_from_zone;
 use crate::intent::{IntentGrid, IntentKind};
-use crate::nanobot::autonomy::{best_candidate, Commitment, NanobotType, SoftWorkSlots};
+use crate::nanobot::autonomy::{Commitment, NanobotType, SoftWorkSlots, best_candidate};
 use crate::nanobot::cargo::{Cargo, LogisticsReservation};
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm, SwarmId, SwarmMember};
 use crate::nanobot::haul::HAULER_TRANSFER_PER_TICK;
 use crate::nanobot::placement::{
-    find_source_stockpile_placement, BUILDING_FOOTPRINT_RADIUS, SOURCE_STOCKPILE_FOOTPRINT_RADIUS,
+    BUILDING_FOOTPRINT_RADIUS, SOURCE_STOCKPILE_FOOTPRINT_RADIUS,
     SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PADDING, SOURCE_STOCKPILE_PLACEMENT_COUNT,
-    SOURCE_STOCKPILE_PLACEMENT_RADIUS,
+    SOURCE_STOCKPILE_PLACEMENT_RADIUS, find_source_stockpile_placement,
 };
 use crate::nanobot::planned::{
-    planned_visual_components, PlannedKind, PlannedStructure, PlannedStructureClaim,
-    PlannedStructureProgress,
+    PlannedKind, PlannedStructure, PlannedStructureClaim, PlannedStructureProgress,
+    planned_visual_components,
 };
 use crate::nanobot::production::OwnerSwarm;
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole};
 use crate::structure_sprites::StructureSprites;
-use crate::ZONE_BLOCK_SIZE;
 
 /// Maximum units a Worker can carry in a single trip. The glossary
 /// is explicit: Workers carry "small" amounts; Haulers carry more.

@@ -6,28 +6,29 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use super::{
-    choose_bounded_candidate_from_ordered_regions_with_claims, outward_pull_budgets, pressure_map,
     ActionableOpportunity, ActionableProjection, AllocationCandidate, AllocationClock,
     AllocationRegion, CandidateBounds, CategoryEligibility, CategoryWeights, OpportunityCategory,
     OpportunityTarget, RegionalLease, RegionalLeaseConfig, RegionalLeaseState,
+    choose_bounded_candidate_from_ordered_regions_with_claims, outward_pull_budgets, pressure_map,
 };
 use crate::{
+    ZONE_BLOCK_SIZE,
     intent::IntentGrid,
     nanobot::{
+        BUILDING_FOOTPRINT_RADIUS, Commitment, DEFEND_IN_CELL_STOP_RADIUS, DefendAssignment,
+        DefendHold, DirectMovementComponent, ExtractProgress, GatherAssignment,
+        HAULER_CARRY_CAPACITY, HaulerAssignment, HaulerLoad, HaulerLoading, Health,
+        LogisticsReservation, MaintenanceAssignment, MaintenanceProgress, Nanobot, NanobotType,
+        PRODUCTION_COST_PER_BOT, PlannedStructure, PlannedStructureClaim, PlannedStructureProgress,
+        ProductionFacility, ReturningToStockpile, SwarmId, SwarmMember, WORKER_CARRY_CAPACITY,
+        WorkerLoad,
         charge::{
-            minerals_to_fully_charge, Charge, Charger, ChargerAssignment, ChargerProgress,
-            LOW_CHARGE_THRESHOLD, WEAKENED_CHARGE_THRESHOLD,
+            Charge, Charger, ChargerAssignment, ChargerProgress, LOW_CHARGE_THRESHOLD,
+            WEAKENED_CHARGE_THRESHOLD, minerals_to_fully_charge,
         },
-        hauler_route_cost, planned_route_movement, Commitment, DefendAssignment, DefendHold,
-        DirectMovementComponent, ExtractProgress, GatherAssignment, HaulerAssignment, HaulerLoad,
-        HaulerLoading, Health, LogisticsReservation, MaintenanceAssignment, MaintenanceProgress,
-        Nanobot, NanobotType, PlannedStructure, PlannedStructureClaim, PlannedStructureProgress,
-        ProductionFacility, ReturningToStockpile, SwarmId, SwarmMember, WorkerLoad,
-        BUILDING_FOOTPRINT_RADIUS, DEFEND_IN_CELL_STOP_RADIUS, HAULER_CARRY_CAPACITY,
-        PRODUCTION_COST_PER_BOT, WORKER_CARRY_CAPACITY,
+        hauler_route_cost, planned_route_movement,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile},
-    ZONE_BLOCK_SIZE,
 };
 
 /// Maximum projection buckets examined for one nanobot acquisition.

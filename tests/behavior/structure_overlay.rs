@@ -2,19 +2,19 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
+    GAMEPLAY_SPRITE_Z, MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
     fly_camera::CameraZoom2d,
     nanobot::{
-        Cargo, Charger, ExtractProgress, HaulerLoad, LogisticsReservation, PlannedKind,
-        PlannedStructure, ProductionFacility, HAULER_CARRY_CAPACITY, WORKER_CARRY_CAPACITY,
+        Cargo, Charger, ExtractProgress, HAULER_CARRY_CAPACITY, HaulerLoad, LogisticsReservation,
+        PlannedKind, PlannedStructure, ProductionFacility, WORKER_CARRY_CAPACITY,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole},
     structure_overlay::{
-        fill_fraction, overlay_bar_size, overlay_fill_color, overlay_label_offset_y,
-        reservation_segment_color, StructureOverlay, StructureOverlayFill, StructureOverlayKind,
-        StructureOverlayPlugin, StructureOverlaySegment, StructureOverlaySegmentKind,
-        StructureOverlaySettings, STRUCTURE_FOOTPRINT_LABEL_GAP, STRUCTURE_OVERLAY_Z,
+        STRUCTURE_FOOTPRINT_LABEL_GAP, STRUCTURE_OVERLAY_Z, StructureOverlay, StructureOverlayFill,
+        StructureOverlayKind, StructureOverlayPlugin, StructureOverlaySegment,
+        StructureOverlaySegmentKind, StructureOverlaySettings, fill_fraction, overlay_bar_size,
+        overlay_fill_color, overlay_label_offset_y, reservation_segment_color,
     },
-    GAMEPLAY_SPRITE_Z, MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
 };
 
 #[path = "../common/mod.rs"]

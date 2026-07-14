@@ -45,9 +45,9 @@ use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::{Commitment, NanobotType};
 use crate::nanobot::components::{Health, Nanobot, Swarm, SwarmId, SwarmMember, VelocityComponent};
 use crate::nanobot::gather::world_to_cell;
-use crate::nanobot::placement::{find_build_zone_placement, BUILDING_FOOTPRINT_RADIUS};
+use crate::nanobot::placement::{BUILDING_FOOTPRINT_RADIUS, find_build_zone_placement};
 use crate::nanobot::planned::{
-    planned_visual_components, PlannedKind, PlannedProductionTarget, PlannedStructure,
+    PlannedKind, PlannedProductionTarget, PlannedStructure, planned_visual_components,
 };
 use crate::nanobot::{NanobotBundle, NanobotSprites};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
@@ -171,12 +171,8 @@ impl ProductionRatio {
 
 impl Default for ProductionRatio {
     fn default() -> Self {
-        // Default 60/30/10 mix. Stored as 6/3/1 so the
-        // slider's step-5 tick lines up cleanly without
-        // forcing the player through 12 clicks to drop a
-        // type out of the mix.
         let mut r = Self::new();
-        r.set_weight(NanobotType::Worker, 6);
+        r.set_weight(NanobotType::Worker, 3);
         r.set_weight(NanobotType::Hauler, 3);
         r.set_weight(NanobotType::Defender, 1);
         r

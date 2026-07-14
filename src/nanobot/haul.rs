@@ -10,15 +10,15 @@ use bevy::prelude::*;
 
 use crate::intent::IntentGrid;
 use crate::nanobot::{
+    Cargo, LogisticsReservation, NanobotType, OwnerSwarm, ProductionFacility, STOP_THRESHOLD,
     charge::Charger,
     components::{DirectMovementComponent, Nanobot, SwarmId, SwarmMember},
     hauler_route_cost,
     logistics_leg::{
-        pick_logistics_leg_with_cost, HaulerContext, StockpileCandidate, TerminalCandidate,
+        HaulerContext, StockpileCandidate, TerminalCandidate, pick_logistics_leg_with_cost,
     },
     placement::BUILDING_FOOTPRINT_RADIUS,
-    plan_hauler_route, Cargo, LogisticsReservation, NanobotType, OwnerSwarm, ProductionFacility,
-    STOP_THRESHOLD,
+    plan_hauler_route,
 };
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole};
 

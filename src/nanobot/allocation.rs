@@ -12,7 +12,7 @@ use crate::resources::ResourceKind;
 
 pub use allocator::*;
 pub use lease::*;
-pub use projection::{project_actionable_opportunities_system, ActionableProjection};
+pub use projection::{ActionableProjection, project_actionable_opportunities_system};
 pub use runtime::*;
 
 /// Intent cells per deterministic allocation region axis.

@@ -31,8 +31,8 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        completed_visual_color, HaulerAssignment, OwnerSwarm, PlannedKind, PlannedStructure,
-        PlannedStructureClaim, PlannedStructureProgress, SwarmId, DEFAULT_PLANNED_WORK_TICKS,
+        DEFAULT_PLANNED_WORK_TICKS, HaulerAssignment, OwnerSwarm, PlannedKind, PlannedStructure,
+        PlannedStructureClaim, PlannedStructureProgress, SwarmId, completed_visual_color,
     },
     resources::{ResourceKind, Stockpile, StockpileRole},
 };
@@ -437,7 +437,7 @@ fn opponent_build_cell_creates_opponent_owned_sink_stockpile() {
     // cells; the planned-structure auto-creation must
     // route the Sink Stockpile to the right owner.
     use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-        spawn_opponent_swarm, PrepaintedIntent, ProductionRatio, SeedNanobots, Swarm, SwarmId,
+        PrepaintedIntent, ProductionRatio, SeedNanobots, Swarm, SwarmId, spawn_opponent_swarm,
     };
     let mut app = build_app();
     let opponent_pos = Vec2::new(2_000.0, 0.0);

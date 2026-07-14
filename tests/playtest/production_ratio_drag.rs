@@ -4,12 +4,12 @@ use bevy::{prelude::*, ui::RelativeCursorPosition};
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{NanobotType, ProductionRatio},
     ui::{
-        production_ratio_panel::{
-            production_ratio_drag_system, setup_production_ratio_panel,
-            update_production_ratio_panel, HandleBoundary, ProductionRatioDragState,
-            ProductionRatioHandle, ProductionRatioTrack,
-        },
         FontsResource,
+        production_ratio_panel::{
+            HandleBoundary, ProductionRatioDragState, ProductionRatioHandle, ProductionRatioTrack,
+            production_ratio_drag_system, setup_production_ratio_panel,
+            update_production_ratio_panel,
+        },
     },
 };
 

@@ -20,9 +20,9 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
+    ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
     nanobot::SwarmId,
-    ZONE_BLOCK_SIZE,
 };
 
 #[path = "../common/mod.rs"]

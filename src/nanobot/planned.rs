@@ -59,15 +59,15 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
+use crate::GAMEPLAY_SPRITE_Z;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::NanobotType;
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm, SwarmId, SwarmMember};
 use crate::nanobot::gather::world_to_cell;
-use crate::nanobot::placement::{find_build_zone_placement, BUILDING_FOOTPRINT_RADIUS};
+use crate::nanobot::placement::{BUILDING_FOOTPRINT_RADIUS, find_build_zone_placement};
 use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
 use crate::resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole};
 use crate::structure_sprites::{StructureSprites, StructureVisual, StructureVisualState};
-use crate::GAMEPLAY_SPRITE_Z;
 
 /// Number of worker-time ticks required to finish a planned
 /// structure. V1 consumes no minerals; the only cost is this

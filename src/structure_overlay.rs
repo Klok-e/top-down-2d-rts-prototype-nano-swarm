@@ -6,14 +6,14 @@
 
 use bevy::{ecs::query::QueryFilter, prelude::*};
 
+use crate::GAMEPLAY_SPRITE_Z;
 use crate::fly_camera::CameraZoom2d;
 use crate::nanobot::{
-    Cargo, Charger, ExtractProgress, HaulerLoading, LogisticsReservation, Nanobot, NanobotType,
-    PlannedStructure, ProductionFacility, BOT_RADIUS, DEFAULT_PLANNED_WORK_TICKS,
-    HAULER_CARRY_CAPACITY, PLANNED_STRUCTURE_FOOTPRINT, WORKER_CARRY_CAPACITY,
+    BOT_RADIUS, Cargo, Charger, DEFAULT_PLANNED_WORK_TICKS, ExtractProgress, HAULER_CARRY_CAPACITY,
+    HaulerLoading, LogisticsReservation, Nanobot, NanobotType, PLANNED_STRUCTURE_FOOTPRINT,
+    PlannedStructure, ProductionFacility, WORKER_CARRY_CAPACITY,
 };
 use crate::resources::{ResourceDeposit, Stockpile};
-use crate::GAMEPLAY_SPRITE_Z;
 
 /// Camera zoom value at or above which overlays hide.
 pub const DEFAULT_OVERLAY_HIDE_ZOOM_THRESHOLD: f32 = 8.0;
@@ -650,7 +650,7 @@ pub fn structure_overlay_cleanup_system(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nanobot::{PlannedKind, DEFAULT_PLANNED_WORK_TICKS};
+    use crate::nanobot::{DEFAULT_PLANNED_WORK_TICKS, PlannedKind};
 
     #[test]
     fn fill_fraction_clamps_and_handles_zero_capacity() {

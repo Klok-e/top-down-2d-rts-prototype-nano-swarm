@@ -2,9 +2,9 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        project_actionable_opportunities_system, ActionableOpportunity, ActionableProjection,
-        AllocationRegion, OpportunityCategory, OwnerSwarm, PlannedKind, PlannedStructure,
-        Structure, StructureKind, SwarmId, MAINTENANCE_NEEDS_THRESHOLD,
+        ActionableOpportunity, ActionableProjection, AllocationRegion, MAINTENANCE_NEEDS_THRESHOLD,
+        OpportunityCategory, OwnerSwarm, PlannedKind, PlannedStructure, Structure, StructureKind,
+        SwarmId, project_actionable_opportunities_system,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole},
 };
@@ -170,11 +170,12 @@ fn haul_projection_rejects_unowned_and_cross_swarm_pairs() {
 
     app.update();
 
-    assert!(app
-        .world()
-        .resource::<ActionableProjection>()
-        .opportunities(AllocationRegion::for_cell(IVec2::ZERO))
-        .is_empty());
+    assert!(
+        app.world()
+            .resource::<ActionableProjection>()
+            .opportunities(AllocationRegion::for_cell(IVec2::ZERO))
+            .is_empty()
+    );
 }
 
 #[test]
@@ -195,9 +196,11 @@ fn projection_replaces_only_regions_dirtied_by_intent_changes() {
     app.update();
 
     let projection = app.world().resource::<ActionableProjection>();
-    assert!(projection
-        .opportunities(AllocationRegion::for_cell(first))
-        .is_empty());
+    assert!(
+        projection
+            .opportunities(AllocationRegion::for_cell(first))
+            .is_empty()
+    );
     let untouched = projection.opportunities(AllocationRegion::for_cell(second));
     assert_eq!(untouched.len(), 1);
     assert_eq!(

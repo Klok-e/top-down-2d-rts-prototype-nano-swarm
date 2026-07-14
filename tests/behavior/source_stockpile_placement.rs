@@ -28,9 +28,9 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        completed_visual_color, GatherAssignment, PlannedKind, PlannedStructure, SwarmId,
-        SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PADDING,
-        SOURCE_STOCKPILE_PLACEMENT_RADIUS,
+        GatherAssignment, PlannedKind, PlannedStructure, SOURCE_STOCKPILE_JITTER_AMPLITUDE,
+        SOURCE_STOCKPILE_PADDING, SOURCE_STOCKPILE_PLACEMENT_RADIUS, SwarmId,
+        completed_visual_color,
     },
     resources::Stockpile,
 };

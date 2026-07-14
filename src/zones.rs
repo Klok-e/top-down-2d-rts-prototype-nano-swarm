@@ -8,7 +8,7 @@ use bevy::{
     sprite_render::Material2dPlugin,
 };
 
-use crate::intent::{brush_selection_keyboard_system, BrushSelection};
+use crate::intent::{BrushSelection, brush_selection_keyboard_system};
 
 #[derive(Debug, Default)]
 pub struct ZonesPlugin {}

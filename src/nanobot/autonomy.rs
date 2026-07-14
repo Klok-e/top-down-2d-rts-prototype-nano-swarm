@@ -196,11 +196,7 @@ pub struct IntentCandidate {
 
 /// Per-cell useful-work weight.
 fn need_from_cell(cell: &IntentCell, kind: IntentKind) -> f32 {
-    if cell.has(kind) {
-        1.0
-    } else {
-        0.0
-    }
+    if cell.has(kind) { 1.0 } else { 0.0 }
 }
 
 /// Score one `(nanobot, candidate cell, intent kind)` triple against
@@ -588,16 +584,18 @@ mod tests {
 
     #[test]
     fn global_awareness_returns_none_for_empty_grid() {
-        assert!(best_candidate(
-            &IntentGrid::new(4, 4),
-            NanobotType::Worker,
-            Commitment::Idle,
-            Vec2::ZERO,
-            &SoftWorkSlots::new(),
-            cell_size(),
-            &IntentKind::ALL,
-            SwarmId::PLAYER,
-        )
-        .is_none());
+        assert!(
+            best_candidate(
+                &IntentGrid::new(4, 4),
+                NanobotType::Worker,
+                Commitment::Idle,
+                Vec2::ZERO,
+                &SoftWorkSlots::new(),
+                cell_size(),
+                &IntentKind::ALL,
+                SwarmId::PLAYER,
+            )
+            .is_none()
+        );
     }
 }
