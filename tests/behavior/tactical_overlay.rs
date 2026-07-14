@@ -7,8 +7,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{Charger, NanobotType, OpponentSwarm, PlannedKind, PlannedStructure, Swarm, SwarmId},
     resources::{ResourceDeposit, Stockpile},
     tactical_overlay::{
-        cluster_radius_for_zoom, TacticalClusterKey, TacticalMarker, TacticalMarkerKind,
-        TacticalOverlayPlugin, TacticalOverlaySettings, TACTICAL_MARKER_ALPHA, UNOWNED_SWARM_ID,
+        TACTICAL_MARKER_ALPHA, TacticalClusterKey, TacticalMarker, TacticalMarkerKind,
+        TacticalOverlayPlugin, TacticalOverlaySettings, UNOWNED_SWARM_ID, cluster_radius_for_zoom,
     },
 };
 

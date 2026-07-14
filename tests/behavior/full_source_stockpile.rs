@@ -33,9 +33,9 @@ use std::f32::consts::TAU;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        ExtractProgress, GatherAssignment, PlannedKind, PlannedStructure, SwarmId, WorkerLoad,
+        ExtractProgress, GatherAssignment, PlannedKind, PlannedStructure,
         SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PLACEMENT_COUNT,
-        SOURCE_STOCKPILE_PLACEMENT_RADIUS, WORKER_CARRY_CAPACITY,
+        SOURCE_STOCKPILE_PLACEMENT_RADIUS, SwarmId, WORKER_CARRY_CAPACITY, WorkerLoad,
     },
     resources::{ResourceKind, Stockpile},
 };

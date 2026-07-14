@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::intent::{
-    brush_key_for_kind, brush_selection_keyboard_system, BrushSelection, IntentKind,
+    BrushSelection, IntentKind, brush_key_for_kind, brush_selection_keyboard_system,
 };
 
 fn build_app() -> App {

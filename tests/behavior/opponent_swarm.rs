@@ -13,14 +13,14 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
+    ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        best_candidate, spawn_opponent_swarm, Commitment, Health, Nanobot, NanobotBundle,
-        NanobotType, OpponentSwarm, OwnerSwarm, PrepaintedIntent, ProductionFacility,
+        Commitment, Health, Nanobot, NanobotBundle, NanobotType, OpponentSwarm, OwnerSwarm,
+        PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT, PrepaintedIntent, ProductionFacility,
         ProductionRatio, SeedNanobots, SoftWorkSlots, Swarm, SwarmId, SwarmProduction,
-        VelocityComponent, PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT,
+        VelocityComponent, best_candidate, spawn_opponent_swarm,
     },
-    ZONE_BLOCK_SIZE,
 };
 
 #[path = "../common/mod.rs"]

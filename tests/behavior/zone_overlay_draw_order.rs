@@ -8,8 +8,8 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    background_overlay_transform, zone_overlay_transform, GAMEPLAY_SPRITE_Z, MAP_HEIGHT, MAP_WIDTH,
-    ZONE_BLOCK_SIZE,
+    GAMEPLAY_SPRITE_Z, MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE, background_overlay_transform,
+    zone_overlay_transform,
 };
 
 /// Spawn the two overlay entities using the production transform

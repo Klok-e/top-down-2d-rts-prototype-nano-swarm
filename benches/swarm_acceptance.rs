@@ -1,13 +1,13 @@
 use std::time::Duration;
 
 use bevy::{prelude::*, time::TimeUpdateStrategy};
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        idle_spread_system, move_velocity_system, separation_system, velocity_system, Commitment,
-        NanobotBundle, NanobotType, RegionalAllocationPlugin, SwarmId,
+        Commitment, NanobotBundle, NanobotType, RegionalAllocationPlugin, SwarmId,
+        idle_spread_system, move_velocity_system, separation_system, velocity_system,
     },
     resources::ResourceLedger,
 };

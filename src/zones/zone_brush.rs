@@ -12,10 +12,10 @@ use bevy::{
 };
 
 use crate::{
+    ZONE_BLOCK_SIZE,
     intent::{BrushSelection, IntentGrid, IntentKind},
     nanobot::SwarmId,
     ui::UiHandling,
-    ZONE_BLOCK_SIZE,
 };
 
 /// Per-cell presence bits uploaded to zone shader storage buffer.

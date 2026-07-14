@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
+    GAMEPLAY_SPRITE_Z,
     fly_camera::CameraZoom2d,
     nanobot::{
         Charger, HaulerLoad, Nanobot, NanobotType, PlannedKind, PlannedStructure,
@@ -9,7 +10,6 @@ use top_down_2d_rts_prototype_nano_swarm::{
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile},
     structure_overlay::{StructureOverlay, StructureOverlayKind},
-    GAMEPLAY_SPRITE_Z,
 };
 
 use crate::harness::{TestContext, TestFlow};
@@ -186,9 +186,11 @@ fn assert_bar_overlays_exist(world: &mut World) {
         .filter(|overlay| targets.contains(&overlay.target))
         .collect();
     assert_eq!(overlays.len(), targets.len());
-    assert!(overlays
-        .iter()
-        .any(|o| o.kind == StructureOverlayKind::Hauler));
+    assert!(
+        overlays
+            .iter()
+            .any(|o| o.kind == StructureOverlayKind::Hauler)
+    );
 
     let mut text_query = world.query::<(&StructureOverlay, Option<&Text2d>)>();
     for (overlay, text) in text_query.iter(world) {

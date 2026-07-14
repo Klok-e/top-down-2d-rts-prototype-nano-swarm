@@ -27,9 +27,9 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        completed_visual_color, planned_visual_color, NanobotType, OwnerSwarm, PlannedKind,
-        PlannedProductionTarget, PlannedStructure, PlannedStructureClaim, PlannedStructureProgress,
-        ProductionFacility, ProductionRatio, SwarmId, DEFAULT_PLANNED_WORK_TICKS,
+        DEFAULT_PLANNED_WORK_TICKS, NanobotType, OwnerSwarm, PlannedKind, PlannedProductionTarget,
+        PlannedStructure, PlannedStructureClaim, PlannedStructureProgress, ProductionFacility,
+        ProductionRatio, SwarmId, completed_visual_color, planned_visual_color,
     },
     resources::Stockpile,
 };

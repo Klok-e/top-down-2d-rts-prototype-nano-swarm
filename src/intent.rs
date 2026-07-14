@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 
 use bevy::{
-    input::{keyboard::KeyCode, ButtonInput},
+    input::{ButtonInput, keyboard::KeyCode},
     prelude::{IVec2, Res, ResMut, Resource},
 };
 

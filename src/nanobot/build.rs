@@ -35,14 +35,14 @@
 
 use bevy::prelude::*;
 
+use crate::ZONE_BLOCK_SIZE;
 use crate::ai::get_world_from_zone;
 use crate::intent::{IntentGrid, IntentKind};
-use crate::nanobot::autonomy::{best_candidate, Commitment, NanobotType, SoftWorkSlots};
+use crate::nanobot::autonomy::{Commitment, NanobotType, SoftWorkSlots, best_candidate};
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, SwarmMember};
 use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::placement::BUILDING_FOOTPRINT_RADIUS;
 use crate::resources::{ResourceKind, ResourceLedger, Stockpile};
-use crate::ZONE_BLOCK_SIZE;
 
 /// Maximum health a `Structure` can have. Repair and construction
 /// stop raising health at this cap. A structure starts at full

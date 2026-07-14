@@ -7,8 +7,8 @@ use bevy::{
 };
 
 use crate::{
-    nanobot::{DirectMovementComponent, Nanobot},
     ZONE_BLOCK_SIZE,
+    nanobot::{DirectMovementComponent, Nanobot},
 };
 
 #[derive(Debug, Component, Default)]

@@ -10,8 +10,8 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-    NanobotType, OwnerSwarm, ProductionCollapseState, ProductionFacility, ProductionRatio, Swarm,
-    PRODUCTION_COST_PER_BOT,
+    NanobotType, OwnerSwarm, PRODUCTION_COST_PER_BOT, ProductionCollapseState, ProductionFacility,
+    ProductionRatio, Swarm,
 };
 
 #[path = "../common/mod.rs"]

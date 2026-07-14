@@ -4,13 +4,13 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
+        ActionableOpportunity, ActionableProjection, AllocationCandidate, AllocationClock,
+        AllocationRegion, CandidateBounds, CategoryEligibility, CategoryValues, LeaseDecision,
+        OpportunityCategory, OpportunityTarget, RUNTIME_MAX_CANDIDATES, ReassignmentPolicy,
+        RegionalLease, RegionalLeaseConfig, RegionalLeaseState, RegionalPressure,
         allocate_category_budget, allocate_regional_candidates, choose_bounded_candidate,
         choose_bounded_candidate_with_claims, evaluate_lease, maintain_regional_leases_system,
-        outward_pull_budget, project_actionable_opportunities_system, ActionableOpportunity,
-        ActionableProjection, AllocationCandidate, AllocationClock, AllocationRegion,
-        CandidateBounds, CategoryEligibility, CategoryValues, LeaseDecision, OpportunityCategory,
-        OpportunityTarget, ReassignmentPolicy, RegionalLease, RegionalLeaseConfig,
-        RegionalLeaseState, RegionalPressure, RUNTIME_MAX_CANDIDATES,
+        outward_pull_budget, project_actionable_opportunities_system,
     },
 };
 

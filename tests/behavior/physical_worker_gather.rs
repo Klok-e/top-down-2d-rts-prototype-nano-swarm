@@ -3,8 +3,8 @@
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
-        Cargo, DirectMovementComponent, GatherAssignment, LogisticsReservation, OwnerSwarm,
-        ReturningToStockpile, HAULER_TRANSFER_PER_TICK,
+        Cargo, DirectMovementComponent, GatherAssignment, HAULER_TRANSFER_PER_TICK,
+        LogisticsReservation, OwnerSwarm, ReturningToStockpile,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile, StockpileRole},
 };
@@ -157,9 +157,11 @@ fn same_tick_workers_cannot_overbook_deposit_or_source_capacity() {
         5
     );
     assert!(reservations.iter().all(|claim| claim.source == deposit));
-    assert!(reservations
-        .iter()
-        .all(|claim| claim.destination == stockpile));
+    assert!(
+        reservations
+            .iter()
+            .all(|claim| claim.destination == stockpile)
+    );
     assert_eq!(
         app.world()
             .entity(deposit)

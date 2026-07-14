@@ -9,7 +9,8 @@
 use bevy::{math::vec3, prelude::*};
 
 use crate::{
-    ai::{get_world_from_zone, AiStateComponent},
+    GAMEPLAY_SPRITE_Z,
+    ai::{AiStateComponent, get_world_from_zone},
     building::{Minerals, ProcessingFacility},
     intent::{IntentGrid, IntentKind},
     nanobot::{
@@ -18,7 +19,6 @@ use crate::{
         SwarmProduction, VelocityComponent,
     },
     resources::{ResourceDeposit, ResourceKind},
-    GAMEPLAY_SPRITE_Z,
 };
 
 pub const PLAYER_CELL: IVec2 = IVec2::new(0, 0);

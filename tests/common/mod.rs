@@ -44,12 +44,12 @@ use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
     intent::IntentGrid,
     nanobot::{
-        bot_debug_circle_system, idle_spread_system, move_velocity_system, separation_system,
-        velocity_system, Charge, ChargePlugin, Charger, CollapsePlugin, Commitment, DefendPlugin,
-        GatherPlugin, HaulPlugin, Health, MaintenancePlugin, Nanobot, NanobotBundle, NanobotType,
-        OwnerSwarm, PlannedStructure, PlannedStructurePlugin, ProductionFacility, ProductionPlugin,
+        Charge, ChargePlugin, Charger, CollapsePlugin, Commitment, DefendPlugin, GatherPlugin,
+        HaulPlugin, Health, MaintenancePlugin, Nanobot, NanobotBundle, NanobotType, OwnerSwarm,
+        PlannedStructure, PlannedStructurePlugin, ProductionFacility, ProductionPlugin,
         RegionalAllocationPlugin, SoftWorkSlots, Structure, StructureKind, Swarm, SwarmId,
-        SwarmMember, VelocityComponent,
+        SwarmMember, VelocityComponent, bot_debug_circle_system, idle_spread_system,
+        move_velocity_system, separation_system, velocity_system,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole},
     structure_overlay::StructureOverlayPlugin,
@@ -574,7 +574,7 @@ pub fn spawn_planned_structure_of_kind_at_cell(
     kind: top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedKind,
 ) -> Entity {
     use top_down_2d_rts_prototype_nano_swarm::{
-        nanobot::{planned_visual_color, PLANNED_STRUCTURE_FOOTPRINT},
+        nanobot::{PLANNED_STRUCTURE_FOOTPRINT, planned_visual_color},
         structure_sprites::{StructureVisual, StructureVisualState},
     };
     let center = cell_world_center(cell);
@@ -609,7 +609,7 @@ pub fn spawn_planned_production_facility_at_cell(
 ) -> Entity {
     use top_down_2d_rts_prototype_nano_swarm::{
         nanobot::{
-            planned_visual_color, PlannedKind, PlannedProductionTarget, PLANNED_STRUCTURE_FOOTPRINT,
+            PLANNED_STRUCTURE_FOOTPRINT, PlannedKind, PlannedProductionTarget, planned_visual_color,
         },
         structure_sprites::{StructureVisual, StructureVisualState},
     };
@@ -642,7 +642,7 @@ pub fn spawn_planned_production_facility_at_cell(
 /// charger-auto-creation system produces.
 pub fn spawn_planned_charger_at_cell(app: &mut App, cell: IVec2) -> Entity {
     use top_down_2d_rts_prototype_nano_swarm::{
-        nanobot::{planned_visual_color, PlannedKind, PLANNED_STRUCTURE_FOOTPRINT},
+        nanobot::{PLANNED_STRUCTURE_FOOTPRINT, PlannedKind, planned_visual_color},
         structure_sprites::{StructureVisual, StructureVisualState},
     };
     let center = cell_world_center(cell);
@@ -678,7 +678,7 @@ pub fn spawn_opponent_swarm_with_nanobots(
     ratio: top_down_2d_rts_prototype_nano_swarm::nanobot::ProductionRatio,
     counts: &[(NanobotType, u32)],
 ) -> Entity {
-    use top_down_2d_rts_prototype_nano_swarm::nanobot::{spawn_opponent_swarm, SeedNanobots};
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{SeedNanobots, spawn_opponent_swarm};
     let seeds: Vec<SeedNanobots> = counts
         .iter()
         .map(|(kind, n)| SeedNanobots::new(*kind, *n))

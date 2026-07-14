@@ -33,13 +33,13 @@
 
 use bevy::prelude::*;
 
+use crate::nanobot::OpponentSwarm;
 use crate::nanobot::autonomy::NanobotType;
 use crate::nanobot::components::Swarm;
 use crate::nanobot::production::{
-    count_swarm_nanobots_by_type, total_deficit, OwnerSwarm, ProductionFacility, ProductionRatio,
-    SwarmProduction,
+    OwnerSwarm, ProductionFacility, ProductionRatio, SwarmProduction, count_swarm_nanobots_by_type,
+    total_deficit,
 };
-use crate::nanobot::OpponentSwarm;
 
 /// Why a swarm is or is not in Production Collapse. Stored on
 /// the [`CollapseOutcome`] so callers (UI, tests, future

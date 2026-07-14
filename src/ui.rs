@@ -25,8 +25,8 @@ use self::{
         update_intent_layer_panel_highlight,
     },
     production_ratio_panel::{
-        production_ratio_drag_system, setup_production_ratio_panel, update_production_ratio_panel,
-        ProductionRatioDragState,
+        ProductionRatioDragState, production_ratio_drag_system, setup_production_ratio_panel,
+        update_production_ratio_panel,
     },
     status_panel::{setup_status_panel, update_status_panel_system},
 };

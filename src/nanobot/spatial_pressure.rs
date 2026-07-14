@@ -8,9 +8,9 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
+use crate::ZONE_BLOCK_SIZE;
 use crate::nanobot::components::Nanobot;
 use crate::nanobot::gather::world_to_cell;
-use crate::ZONE_BLOCK_SIZE;
 
 /// Soft crowding multiplier in `(0, 1]`. Capacity is explicit so helper remains
 /// reusable; Defend passes baseline capacity one.

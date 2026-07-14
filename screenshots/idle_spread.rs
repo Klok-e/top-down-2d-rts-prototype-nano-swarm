@@ -47,15 +47,15 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
+    ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        world_to_cell, Commitment, DirectMovementComponent, Health, Nanobot, NanobotType, SwarmId,
-        SwarmMember, VelocityComponent,
+        Commitment, DirectMovementComponent, Health, Nanobot, NanobotType, SwarmId, SwarmMember,
+        VelocityComponent, world_to_cell,
     },
-    ZONE_BLOCK_SIZE,
 };
 
-use crate::harness::{run_screenshot_test, TestContext, TestFlow};
+use crate::harness::{TestContext, TestFlow, run_screenshot_test};
 
 /// Marker component tagging the haulers under test.
 #[derive(Debug, Component)]

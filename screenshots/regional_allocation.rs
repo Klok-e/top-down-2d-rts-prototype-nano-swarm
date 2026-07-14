@@ -2,13 +2,13 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
+    ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Commitment, GatherAssignment, Health, Nanobot, NanobotSprites, NanobotType, RegionalLease,
         SwarmId, SwarmMember, VelocityComponent,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile},
-    ZONE_BLOCK_SIZE,
 };
 
 use crate::harness::{TestContext, TestFlow};
@@ -82,9 +82,10 @@ pub fn regional_allocation(ctx: &mut TestContext) -> TestFlow {
 
     if ctx.frame == 60 {
         let grid = world.resource::<IntentGrid>();
-        assert!(grid
-            .cell(CELL)
-            .is_some_and(|cell| cell.has(IntentKind::Gather)));
+        assert!(
+            grid.cell(CELL)
+                .is_some_and(|cell| cell.has(IntentKind::Gather))
+        );
         for (assignment, lease) in world
             .query_filtered::<(Option<&GatherAssignment>, Option<&RegionalLease>), With<ExhaustionTestWorker>>()
             .iter(world)

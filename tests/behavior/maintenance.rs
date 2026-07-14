@@ -11,8 +11,8 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        MaintenanceAssignment, MaintenanceProgress, Structure, MAINTENANCE_BUFFER_TICKS,
-        MAINTENANCE_NEEDS_THRESHOLD, MAINTENANCE_WORK_DURATION_TICKS, STRUCTURE_MAX_HEALTH,
+        MAINTENANCE_BUFFER_TICKS, MAINTENANCE_NEEDS_THRESHOLD, MAINTENANCE_WORK_DURATION_TICKS,
+        MaintenanceAssignment, MaintenanceProgress, STRUCTURE_MAX_HEALTH, Structure,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
 };

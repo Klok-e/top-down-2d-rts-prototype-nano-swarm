@@ -2,9 +2,9 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
+    ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
     nanobot::{DirectMovementComponent, HaulerAssignment, HaulerRoute, OwnerSwarm},
-    ZONE_BLOCK_SIZE,
 };
 
 #[path = "../common/mod.rs"]
@@ -24,10 +24,11 @@ fn own_for_player(app: &mut App, entities: &[Entity]) {
 }
 
 fn paint_corridor(app: &mut App, cell: IVec2) {
-    assert!(app
-        .world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Corridor));
+    assert!(
+        app.world_mut()
+            .resource_mut::<IntentGrid>()
+            .paint(cell, IntentKind::Corridor)
+    );
 }
 
 fn route_visits_row(route: &HaulerRoute, y: i32) -> bool {
@@ -207,10 +208,11 @@ fn route_stays_stable_after_corridor_paint_changes() {
         .clone();
 
     for cell in cells {
-        assert!(app
-            .world_mut()
-            .resource_mut::<IntentGrid>()
-            .erase(cell, IntentKind::Corridor));
+        assert!(
+            app.world_mut()
+                .resource_mut::<IntentGrid>()
+                .erase(cell, IntentKind::Corridor)
+        );
     }
     app.update();
 

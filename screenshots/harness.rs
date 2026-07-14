@@ -14,7 +14,7 @@ use std::{
 use bevy::{prelude::*, time::TimeUpdateStrategy};
 use image::GenericImageView;
 
-use top_down_2d_rts_prototype_nano_swarm::{build_app_with_presentation, Presentation};
+use top_down_2d_rts_prototype_nano_swarm::{Presentation, build_app_with_presentation};
 
 /// Directory where screenshot artifacts are written. Under `target/` so it is
 /// gitignored with the rest of the build output; artifacts are never committed.
@@ -661,8 +661,8 @@ pub(crate) mod regression {
     use libtest_mimic::Failed;
 
     use super::{
-        image_export_adapter, run_screenshot_test, run_screenshot_test_with_limits, HarnessLimits,
-        TemporaryArtifact, TestContext, TestFlow, HEIGHT, SCREENSHOT_DIR, WIDTH,
+        HEIGHT, HarnessLimits, SCREENSHOT_DIR, TemporaryArtifact, TestContext, TestFlow, WIDTH,
+        image_export_adapter, run_screenshot_test, run_screenshot_test_with_limits,
     };
 
     const FIRST_CAPTURE: &str = "harness-regression-first";

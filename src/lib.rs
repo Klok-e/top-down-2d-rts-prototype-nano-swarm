@@ -22,10 +22,10 @@ use bevy::{
     log::LogPlugin,
     prelude::*,
     render::{
+        RenderPlugin,
         pipelined_rendering::PipelinedRenderingPlugin,
         render_resource::{TextureFormat, TextureUsages},
         storage::ShaderStorageBuffer,
-        RenderPlugin,
     },
     sprite_render::{Material2dPlugin, MeshMaterial2d},
     window::{

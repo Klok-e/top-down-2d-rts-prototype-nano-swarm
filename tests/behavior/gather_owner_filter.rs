@@ -10,8 +10,8 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
-        OwnerSwarm, ReturningToStockpile, Swarm, SwarmId, SwarmMember, WorkerLoad,
-        WORKER_CARRY_CAPACITY,
+        OwnerSwarm, ReturningToStockpile, Swarm, SwarmId, SwarmMember, WORKER_CARRY_CAPACITY,
+        WorkerLoad,
     },
     resources::{ResourceKind, Stockpile, StockpileRole},
 };

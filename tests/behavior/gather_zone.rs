@@ -18,14 +18,14 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
+    ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        best_candidate, Commitment, DirectMovementComponent, ExtractProgress, GatherAssignment,
-        NanobotType, ReturningToStockpile, SoftWorkSlots, SwarmId, WorkerLoad, EXTRACT_PER_TICK,
-        WORKER_CARRY_CAPACITY,
+        Commitment, DirectMovementComponent, EXTRACT_PER_TICK, ExtractProgress, GatherAssignment,
+        NanobotType, ReturningToStockpile, SoftWorkSlots, SwarmId, WORKER_CARRY_CAPACITY,
+        WorkerLoad, best_candidate,
     },
     resources::{ResourceDeposit, Stockpile},
-    ZONE_BLOCK_SIZE,
 };
 
 #[path = "../common/mod.rs"]

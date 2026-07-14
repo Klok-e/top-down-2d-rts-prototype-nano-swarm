@@ -9,15 +9,14 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
+    ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        completed_visual_color, planned_visual_color, OwnerSwarm, PlannedStructure,
-        PlannedStructureClaim, PlannedStructureProgress, Swarm, SwarmId,
-        DEFAULT_PLANNED_WORK_TICKS,
+        DEFAULT_PLANNED_WORK_TICKS, OwnerSwarm, PlannedStructure, PlannedStructureClaim,
+        PlannedStructureProgress, Swarm, SwarmId, completed_visual_color, planned_visual_color,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
     structure_sprites::{StructureVisual, StructureVisualState},
-    ZONE_BLOCK_SIZE,
 };
 
 #[path = "../common/mod.rs"]

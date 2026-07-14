@@ -12,9 +12,9 @@
 //! inspection; ignored harness performs offscreen GPU rendering and readback.
 
 use bevy::prelude::*;
-use top_down_2d_rts_prototype_nano_swarm::{nanobot::SwarmId, ZONE_BLOCK_SIZE};
+use top_down_2d_rts_prototype_nano_swarm::{ZONE_BLOCK_SIZE, nanobot::SwarmId};
 
-use super::harness::{run_screenshot_test, TestContext, TestFlow};
+use super::harness::{TestContext, TestFlow, run_screenshot_test};
 
 const CELL_SIZE: f32 = ZONE_BLOCK_SIZE;
 

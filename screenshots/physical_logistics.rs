@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
+    GAMEPLAY_SPRITE_Z,
     fly_camera::CameraZoom2d,
     nanobot::{
         Cargo, Charger, Health, LogisticsReservation, Nanobot, NanobotType, ProductionFacility,
@@ -12,7 +13,6 @@ use top_down_2d_rts_prototype_nano_swarm::{
         StructureOverlay, StructureOverlayKind, StructureOverlaySegment,
         StructureOverlaySegmentKind,
     },
-    GAMEPLAY_SPRITE_Z,
 };
 
 use crate::harness::{TestContext, TestFlow};
@@ -207,9 +207,11 @@ fn assert_scene_indicators(world: &mut World) {
         .collect();
     assert_eq!(overlays.len(), targets.len());
     for expected in targets {
-        assert!(overlays
-            .iter()
-            .any(|(target, kind, _, _)| (*target, *kind) == expected));
+        assert!(
+            overlays
+                .iter()
+                .any(|(target, kind, _, _)| (*target, *kind) == expected)
+        );
     }
     for (_, kind, outgoing, incoming) in overlays {
         let reservation_entity = match kind {
@@ -218,9 +220,11 @@ fn assert_scene_indicators(world: &mut World) {
             _ => continue,
         };
         let entity = world.entity(reservation_entity);
-        assert!(entity
-            .get::<StructureOverlaySegment>()
-            .is_some_and(|segment| segment.kind != StructureOverlaySegmentKind::Physical));
+        assert!(
+            entity
+                .get::<StructureOverlaySegment>()
+                .is_some_and(|segment| segment.kind != StructureOverlaySegmentKind::Physical)
+        );
         assert!(entity.get::<Sprite>().unwrap().custom_size.unwrap().x > 0.0);
     }
 }

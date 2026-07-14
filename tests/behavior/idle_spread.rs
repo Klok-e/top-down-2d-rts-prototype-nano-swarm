@@ -28,7 +28,7 @@
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
-    nanobot::{idle_spread_system, Commitment, DirectMovementComponent, VelocityComponent},
+    nanobot::{Commitment, DirectMovementComponent, VelocityComponent, idle_spread_system},
 };
 
 #[path = "../common/mod.rs"]

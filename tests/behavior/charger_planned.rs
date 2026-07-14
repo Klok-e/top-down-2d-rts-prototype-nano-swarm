@@ -35,10 +35,10 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        completed_visual_color, planned_visual_color, Charge, Charger, ChargerAssignment,
-        ChargerProgress, DefendHold, Health, OwnerSwarm, PlannedKind, PlannedStructure,
-        PlannedStructureClaim, SwarmId, DEFAULT_PLANNED_WORK_TICKS, LOW_CHARGE_THRESHOLD,
-        NANOBOT_DEFAULT_MAX_HEALTH,
+        Charge, Charger, ChargerAssignment, ChargerProgress, DEFAULT_PLANNED_WORK_TICKS,
+        DefendHold, Health, LOW_CHARGE_THRESHOLD, NANOBOT_DEFAULT_MAX_HEALTH, OwnerSwarm,
+        PlannedKind, PlannedStructure, PlannedStructureClaim, SwarmId, completed_visual_color,
+        planned_visual_color,
     },
     resources::{ResourceKind, ResourceLedger},
 };

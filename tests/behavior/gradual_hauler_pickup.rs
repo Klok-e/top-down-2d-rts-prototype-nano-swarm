@@ -3,8 +3,8 @@
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
-        Cargo, Charger, DirectMovementComponent, HaulerAssignment, LogisticsReservation,
-        OwnerSwarm, ProductionFacility, SwarmId, HAULER_EXTRACT_PER_TICK,
+        Cargo, Charger, DirectMovementComponent, HAULER_EXTRACT_PER_TICK, HaulerAssignment,
+        LogisticsReservation, OwnerSwarm, ProductionFacility, SwarmId,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
 };
@@ -443,11 +443,12 @@ fn owned_hauler_waits_and_releases_claim_when_only_foreign_or_unowned_destinatio
         app.world().entity(hauler).get::<Cargo>().unwrap().amount,
         10
     );
-    assert!(app
-        .world()
-        .entity(hauler)
-        .get::<DirectMovementComponent>()
-        .is_none());
+    assert!(
+        app.world()
+            .entity(hauler)
+            .get::<DirectMovementComponent>()
+            .is_none()
+    );
     assert_eq!(
         app.world()
             .entity(hauler)

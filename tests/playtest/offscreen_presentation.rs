@@ -5,7 +5,7 @@ use bevy::{
     prelude::*,
     render::{pipelined_rendering::PipelinedRenderingPlugin, render_resource::TextureUsages},
 };
-use top_down_2d_rts_prototype_nano_swarm::{build_app_with_presentation, Presentation};
+use top_down_2d_rts_prototype_nano_swarm::{Presentation, build_app_with_presentation};
 
 fn finish_plugins(app: &mut App) {
     while app.plugins_state() == bevy::app::PluginsState::Adding {

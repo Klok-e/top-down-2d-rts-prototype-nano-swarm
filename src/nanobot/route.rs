@@ -9,10 +9,10 @@ use bevy::prelude::{IVec2, Vec2};
 use pathfinding::prelude::astar;
 
 use crate::{
+    ZONE_BLOCK_SIZE,
     ai::get_world_from_zone,
     intent::{IntentGrid, IntentKind},
-    nanobot::{gather::world_to_cell, SwarmId},
-    ZONE_BLOCK_SIZE,
+    nanobot::{SwarmId, gather::world_to_cell},
 };
 
 const COST_SCALE: u32 = 1_000;
