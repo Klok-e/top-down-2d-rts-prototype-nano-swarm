@@ -3,7 +3,7 @@
 //!
 //! Each test isolates one behavior so a failure points at a
 //! single contract: opponent can be initialized with prepainted
-//! intent, opponent production uses its own fixed ratio through
+//! intent, opponent production uses its own fixed priority through
 //! the same production systems, and opponent nanobots are
 //! driven by the same scoring as player nanobots.
 //!
@@ -18,7 +18,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         Commitment, Health, Nanobot, NanobotBundle, NanobotType, OpponentSwarm, OwnerSwarm,
         PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT, PrepaintedIntent, ProductionFacility,
-        ProductionRatio, SeedNanobots, SoftWorkSlots, Swarm, SwarmId, SwarmProduction,
+        ProductionPriority, SeedNanobots, SoftWorkSlots, Swarm, SwarmId, SwarmProduction,
         VelocityComponent, best_candidate, spawn_opponent_swarm,
     },
 };
@@ -27,10 +27,10 @@ use top_down_2d_rts_prototype_nano_swarm::{
 mod common;
 
 fn build_app() -> App {
-    // Use an empty global ratio as a default; opponent tests
-    // set their own ratio via SwarmProduction.
+    // Use an empty global priority as a default; opponent tests
+    // set their own priority via SwarmProduction.
     let mut app = common::sim_app_with_production();
-    app.insert_resource(ProductionRatio::new());
+    app.insert_resource(ProductionPriority::new());
     app
 }
 
@@ -56,13 +56,13 @@ fn opponent_swarm_can_be_initialized_with_prepainted_intent() {
     let mut app = build_app();
     let opponent_pos = Vec2::new(2000.0, 0.0);
     let gather_cell = IVec2::new(2, 0);
-    let mut ratio = ProductionRatio::new();
-    ratio.set_weight(NanobotType::Worker, 5);
+    let mut priority = ProductionPriority::new();
+    priority.set_weight(NanobotType::Worker, 5);
 
     let opponent = spawn_opponent_swarm(
         app.world_mut(),
         opponent_pos,
-        ratio.clone(),
+        priority.clone(),
         &[PrepaintedIntent::new(gather_cell, IntentKind::Gather)],
         &[SeedNanobots::new(NanobotType::Worker, 2)],
     );
@@ -70,11 +70,11 @@ fn opponent_swarm_can_be_initialized_with_prepainted_intent() {
     let world = app.world();
     assert!(world.entity(opponent).get::<OpponentSwarm>().is_some());
     assert!(world.entity(opponent).get::<Swarm>().is_some());
-    let swarm_ratio = world
+    let swarm_priority = world
         .entity(opponent)
         .get::<SwarmProduction>()
         .expect("opponent must carry a SwarmProduction");
-    assert_eq!(swarm_ratio.ratio.weight(NanobotType::Worker), 5);
+    assert_eq!(swarm_priority.priority.weight(NanobotType::Worker), 5);
 
     let grid = world.resource::<IntentGrid>();
     let cell = grid.cell(gather_cell).expect("cell must be in bounds");
@@ -128,12 +128,12 @@ fn opponent_nanobot_picks_prepainted_intent_via_same_scoring() {
     let mut app = build_app();
     let opponent_pos = Vec2::new(2000.0, 0.0);
     let gather_cell = IVec2::new(2, 0);
-    let mut ratio = ProductionRatio::new();
-    ratio.set_weight(NanobotType::Worker, 1);
+    let mut priority = ProductionPriority::new();
+    priority.set_weight(NanobotType::Worker, 1);
     let _opponent = spawn_opponent_swarm(
         app.world_mut(),
         opponent_pos,
-        ratio,
+        priority,
         &[PrepaintedIntent::new(gather_cell, IntentKind::Gather)],
         &[SeedNanobots::new(NanobotType::Worker, 1)],
     );
@@ -171,18 +171,18 @@ fn opponent_nanobot_picks_prepainted_intent_via_same_scoring() {
 }
 
 #[test]
-fn opponent_swarm_uses_own_fixed_ratio_through_same_production_systems() {
+fn opponent_swarm_uses_own_fixed_priority_through_same_production_systems() {
     // Opponent targets 4 Haulers; player uses the global
     // 10/3/1 mix. Each facility has an OwnerSwarm, so the
-    // pick path uses the owner's ratio. Opponent picks
+    // pick path uses the owner's priority. Opponent picks
     // Hauler (its only large deficit), player picks Worker
-    // (its largest deficit under the global ratio).
+    // (its largest deficit under the global priority).
     let mut app = build_app();
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 10);
-        ratio.set_weight(NanobotType::Hauler, 3);
-        ratio.set_weight(NanobotType::Defender, 1);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 10);
+        priority.set_weight(NanobotType::Hauler, 3);
+        priority.set_weight(NanobotType::Defender, 1);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let player_swarm = app
@@ -210,9 +210,9 @@ fn opponent_swarm_uses_own_fixed_ratio_through_same_production_systems() {
     });
 
     let opponent_pos = Vec2::new(2000.0, 0.0);
-    let mut opponent_ratio = ProductionRatio::new();
-    opponent_ratio.set_weight(NanobotType::Hauler, 4);
-    let opponent = spawn_opponent_swarm(app.world_mut(), opponent_pos, opponent_ratio, &[], &[]);
+    let mut opponent_priority = ProductionPriority::new();
+    opponent_priority.set_weight(NanobotType::Hauler, 4);
+    let opponent = spawn_opponent_swarm(app.world_mut(), opponent_pos, opponent_priority, &[], &[]);
 
     let _player_stock =
         common::spawn_stockpile(&mut app, player_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
@@ -248,7 +248,7 @@ fn opponent_swarm_uses_own_fixed_ratio_through_same_production_systems() {
     assert_eq!(
         opp_state.current_target,
         Some(NanobotType::Hauler),
-        "opponent facility must pick from the opponent's own fixed ratio"
+        "opponent facility must pick from the opponent's own fixed priority"
     );
     let player_state = world
         .entity(player_facility)
@@ -256,21 +256,21 @@ fn opponent_swarm_uses_own_fixed_ratio_through_same_production_systems() {
         .unwrap();
     // Issue #32: production now picks the type with the
     // largest **proportional** deficit, not the largest
-    // count gap. With the global ratio W10/H3/D1
+    // count gap. With the global priority W10/H3/D1
     // (normalized 71.4% / 21.4% / 7.1%) and one Worker
     // in the player swarm (current share 100% / 0% / 0%),
     // the largest positive share deficit is on Hauler
     // (target 21.4%, current 0%). The exact *type* picked
     // is less important than the assertion that the
-    // global ratio still drives the player's facility
+    // global priority still drives the player's facility
     // and the opponent's `SwarmProduction` override still
     // drives the opponent's facility, even when they
     // happen to agree (they agree here because both
-    // ratios call for Hauler first).
+    // priorities call for Hauler first).
     assert_eq!(
         player_state.current_target,
         Some(NanobotType::Hauler),
-        "player facility must keep using the global ratio (proportional picker)"
+        "player facility must keep using the global priority (proportional picker)"
     );
 }
 
@@ -280,9 +280,9 @@ fn opponent_production_spawns_nanobots_as_children_of_opponent_swarm() {
     // with a new nanobot parented to the opponent swarm.
     let mut app = build_app();
     let opponent_pos = Vec2::new(2000.0, 0.0);
-    let mut opponent_ratio = ProductionRatio::new();
-    opponent_ratio.set_weight(NanobotType::Worker, 1);
-    let opponent = spawn_opponent_swarm(app.world_mut(), opponent_pos, opponent_ratio, &[], &[]);
+    let mut opponent_priority = ProductionPriority::new();
+    opponent_priority.set_weight(NanobotType::Worker, 1);
+    let opponent = spawn_opponent_swarm(app.world_mut(), opponent_pos, opponent_priority, &[], &[]);
     let _stockpile =
         common::spawn_stockpile(&mut app, opponent_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
     let _facility = app
@@ -340,14 +340,14 @@ fn opponent_production_spawns_nanobots_as_children_of_opponent_swarm() {
 }
 
 #[test]
-fn opponent_uses_default_ratio_when_swarm_production_absent() {
+fn opponent_uses_default_priority_when_swarm_production_absent() {
     // Backward compatibility: a swarm without
     // SwarmProduction falls back to the global
-    // ProductionRatio. Pre-existing tests depend on this.
+    // ProductionPriority. Pre-existing tests depend on this.
     let mut app = build_app();
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Defender, 5);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Defender, 5);
     }
     let swarm_pos = Vec2::new(0.0, 0.0);
     let swarm = app
@@ -368,7 +368,7 @@ fn opponent_uses_default_ratio_when_swarm_production_absent() {
 
     app.update();
 
-    // Global ratio wants Defender; no SwarmProduction so the
+    // Global priority wants Defender; no SwarmProduction so the
     // facility must use the global. (Worker and Hauler
     // targets are 0; Defender is 5.)
     let state = app
@@ -379,6 +379,6 @@ fn opponent_uses_default_ratio_when_swarm_production_absent() {
     assert_eq!(
         state.current_target,
         Some(NanobotType::Defender),
-        "facility without a swarm-specific ratio must fall back to the global ProductionRatio"
+        "facility without a swarm-specific priority must fall back to the global ProductionPriority"
     );
 }

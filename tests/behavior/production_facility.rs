@@ -1,8 +1,8 @@
 //! Integration tests for issue #11: Production Facilities and
-//! Production Ratio control.
+//! Production Priority control.
 //!
 //! Each test isolates one behavior so a failure points at a single
-//! contract: ratio set/get, deficit priority, blocked-type skip,
+//! contract: priority set/get, deficit priority, blocked-type skip,
 //! material consumption from local stockpiles, full-cycle
 //! nanobot spawn, shared cost/time, and facility emergence.
 
@@ -11,7 +11,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Charge, NanobotType, OwnerSwarm, PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT,
-        PopulationDemandPlugin, ProductionFacility, ProductionRatio,
+        PopulationDemandPlugin, ProductionFacility, ProductionPriority,
         SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, SwarmBundle, SwarmId,
         SwarmMember, production_facility_pick_target_system,
     },
@@ -22,12 +22,12 @@ use top_down_2d_rts_prototype_nano_swarm::{
 mod common;
 
 fn build_app() -> App {
-    // Use an empty ratio by default so each test starts from a
+    // Use an empty priority by default so each test starts from a
     // clean slate. Tests that need a specific mix set their own
     // targets; the sensible default lives in the game's
     // `lib.rs` initialization instead.
     let mut app = common::sim_app_with_production();
-    app.insert_resource(ProductionRatio::new());
+    app.insert_resource(ProductionPriority::new());
     app
 }
 
@@ -42,29 +42,29 @@ fn nanobot_count_by_type(world: &mut World, kind: NanobotType) -> u32 {
 }
 
 #[test]
-fn production_ratio_can_be_set_for_each_type() {
-    // Acceptance: "Player can set target Production Ratio for
+fn production_priority_can_be_set_for_each_type() {
+    // Acceptance: "Player can set target Production Priority for
     // Worker, Hauler, and Defender." A round-trip through the
     // resource proves the public surface works for all three
     // types and the total tracks the sum.
     let mut app = build_app();
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 8);
-        ratio.set_weight(NanobotType::Hauler, 3);
-        ratio.set_weight(NanobotType::Defender, 1);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 8);
+        priority.set_weight(NanobotType::Hauler, 3);
+        priority.set_weight(NanobotType::Defender, 1);
     }
-    let ratio = app.world().resource::<ProductionRatio>();
-    assert_eq!(ratio.weight(NanobotType::Worker), 8);
-    assert_eq!(ratio.weight(NanobotType::Hauler), 3);
-    assert_eq!(ratio.weight(NanobotType::Defender), 1);
-    assert_eq!(ratio.total_weight(), 12);
+    let priority = app.world().resource::<ProductionPriority>();
+    assert_eq!(priority.weight(NanobotType::Worker), 8);
+    assert_eq!(priority.weight(NanobotType::Hauler), 3);
+    assert_eq!(priority.weight(NanobotType::Defender), 1);
+    assert_eq!(priority.total_weight(), 12);
 }
 
 #[test]
 fn facility_picks_type_with_largest_deficit() {
     // Acceptance: "Production picks type with largest deficit
-    // from target ratio." A facility facing a 10-unit Hauler
+    // from target priority." A facility facing a 10-unit Hauler
     // deficit, 0-unit Worker deficit, and 4-unit Defender
     // deficit must commit to producing Haulers first.
     let mut app = build_app();
@@ -77,10 +77,10 @@ fn facility_picks_type_with_largest_deficit() {
         &[(NanobotType::Worker, 5), (NanobotType::Defender, 1)],
     );
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 5);
-        ratio.set_weight(NanobotType::Hauler, 10);
-        ratio.set_weight(NanobotType::Defender, 5);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 10);
+        priority.set_weight(NanobotType::Defender, 5);
     }
     let stockpile_pos = Vec2::new(200.0, 100.0);
     let _stockpile =
@@ -109,9 +109,9 @@ fn facility_skips_blocked_type() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 5);
-        ratio.set_weight(NanobotType::Hauler, 5);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 5);
     }
     let pos = Vec2::new(150.0, 50.0);
     let _stockpile = common::spawn_stockpile(&mut app, pos, PRODUCTION_COST_PER_BOT * 5, 1000);
@@ -157,8 +157,8 @@ fn facility_consumes_delivered_resources() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 5);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
     }
     let facility_pos = Vec2::new(0.0, 0.0);
     let facility = common::spawn_idle_facility_at(&mut app, facility_pos);
@@ -213,8 +213,8 @@ fn facility_produces_nanobot_after_full_cycle() {
     let mut app = build_app();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 3);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 3);
     }
     let facility_pos = Vec2::new(0.0, 0.0);
     let _stockpile =
@@ -274,7 +274,7 @@ fn produced_defender_enters_charge_lifecycle() {
     let mut app = build_app();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     app.world_mut()
-        .resource_mut::<ProductionRatio>()
+        .resource_mut::<ProductionPriority>()
         .set_weight(NanobotType::Defender, 1);
     common::spawn_stockpile(&mut app, Vec2::ZERO, PRODUCTION_COST_PER_BOT * 2, 1000);
     common::spawn_idle_facility_at(&mut app, Vec2::ZERO);
@@ -303,11 +303,11 @@ fn produced_defender_enters_charge_lifecycle() {
 }
 
 #[test]
-fn degraded_facility_stops_operating_until_repaired() {
+fn zero_health_facility_stops_operating() {
     let mut app = build_app();
     common::spawn_swarm_at(&mut app, Vec2::ZERO);
     app.world_mut()
-        .resource_mut::<ProductionRatio>()
+        .resource_mut::<ProductionPriority>()
         .set_weight(NanobotType::Worker, 1);
     let facility = common::spawn_idle_facility_at(&mut app, Vec2::ZERO);
     let mut condition = Structure::new(StructureKind::Basic);
@@ -332,13 +332,84 @@ fn degraded_facility_stops_operating_until_repaired() {
 }
 
 #[test]
-fn exact_ratio_swarm_grows_when_useful_work_exceeds_population() {
+fn positive_health_facility_keeps_operating() {
+    let mut app = build_app();
+    common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    app.world_mut()
+        .resource_mut::<ProductionPriority>()
+        .set_weight(NanobotType::Worker, 1);
+    let facility = common::spawn_idle_facility_at(&mut app, Vec2::ZERO);
+    let mut condition = Structure::new(StructureKind::Basic);
+    condition.health = 1;
+    app.world_mut().entity_mut(facility).insert(condition);
+
+    app.update();
+
+    assert_eq!(
+        app.world()
+            .entity(facility)
+            .get::<ProductionFacility>()
+            .unwrap()
+            .current_target,
+        Some(NanobotType::Worker),
+        "a Production Facility operates at any positive health",
+    );
+}
+
+#[test]
+fn defend_work_produces_missing_defender_despite_excess_haulers() {
+    let mut app = build_app();
+    app.add_plugins(PopulationDemandPlugin);
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    for _ in 0..4 {
+        common::spawn_worker_at(&mut app, Vec2::ZERO);
+    }
+    for _ in 0..10 {
+        common::spawn_hauler_at(&mut app, Vec2::ZERO);
+    }
+    {
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 25);
+        priority.set_weight(NanobotType::Hauler, 60);
+        priority.set_weight(NanobotType::Defender, 15);
+    }
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        IVec2::ZERO,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let first = common::spawn_facility_at(&mut app, swarm, Vec2::ZERO);
+    let second = common::spawn_facility_at(&mut app, swarm, Vec2::new(100.0, 0.0));
+    common::fill_facility_input(&mut app, first);
+    common::fill_facility_input(&mut app, second);
+
+    app.update();
+
+    let targets = [first, second]
+        .into_iter()
+        .filter_map(|entity| {
+            app.world()
+                .entity(entity)
+                .get::<ProductionFacility>()
+                .unwrap()
+                .current_target
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        targets,
+        vec![NanobotType::Defender],
+        "one Defend cell commits exactly one Defender cycle; excess Haulers cannot satisfy it",
+    );
+}
+
+#[test]
+fn exact_priority_swarm_grows_when_useful_work_exceeds_population() {
     let mut app = build_app();
     app.add_plugins(PopulationDemandPlugin);
     common::spawn_swarm_at(&mut app, Vec2::ZERO);
     common::spawn_worker_at(&mut app, Vec2::ZERO);
     app.world_mut()
-        .resource_mut::<ProductionRatio>()
+        .resource_mut::<ProductionPriority>()
         .set_weight(NanobotType::Worker, 1);
     for cell in [IVec2::ZERO, IVec2::new(1, 0)] {
         app.world_mut().resource_mut::<IntentGrid>().paint_owned(
@@ -359,7 +430,7 @@ fn exact_ratio_swarm_grows_when_useful_work_exceeds_population() {
             .unwrap()
             .current_target,
         Some(NanobotType::Worker),
-        "workload sets total growth while Production Ratio selects type",
+        "workload sets total growth while Production Priority selects type",
     );
 }
 
@@ -376,8 +447,8 @@ fn shared_early_cost_across_types() {
         let mut app = build_app();
         let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
         {
-            let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-            ratio.set_weight(target, 1);
+            let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+            priority.set_weight(target, 1);
         }
         let facility_pos = Vec2::new(0.0, 0.0);
         let facility = common::spawn_idle_facility_at(&mut app, facility_pos);
@@ -437,8 +508,8 @@ fn shared_early_ticks_across_types() {
         let mut app = build_app();
         let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
         {
-            let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-            ratio.set_weight(target, 1);
+            let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+            priority.set_weight(target, 1);
         }
         let facility_pos = Vec2::new(0.0, 0.0);
         let _stockpile =
@@ -512,18 +583,19 @@ fn additional_facility_plans_when_existing_busy_and_build_zone_free() {
     use top_down_2d_rts_prototype_nano_swarm::{
         intent::{IntentGrid, IntentKind},
         nanobot::{
-            DEFAULT_PLANNED_WORK_TICKS, OwnerSwarm, PlannedKind, PlannedProductionTarget,
-            PlannedStructure, SwarmId, completed_visual_color, planned_visual_color,
+            DEFAULT_PLANNED_WORK_TICKS, OwnerSwarm, PRODUCTION_PRESSURE_TICKS, PlannedKind,
+            PlannedProductionTarget, PlannedStructure, SwarmId, completed_visual_color,
+            planned_visual_color,
         },
     };
     let mut app = common::sim_app_with_production_planned();
-    app.insert_resource(ProductionRatio::new());
+    app.insert_resource(ProductionPriority::new());
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 10);
-        ratio.set_weight(NanobotType::Hauler, 10);
-        ratio.set_weight(NanobotType::Defender, 10);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 10);
+        priority.set_weight(NanobotType::Hauler, 10);
+        priority.set_weight(NanobotType::Defender, 10);
     }
     // One facility already producing Worker (busy). The
     // deficit is high (3 * 10 = 30) so the emergence
@@ -541,7 +613,9 @@ fn additional_facility_plans_when_existing_busy_and_build_zone_free() {
         assert!(grid.paint_owned(IVec2::new(1, 0), IntentKind::Build, Some(SwarmId::PLAYER),));
     }
 
-    app.update();
+    for _ in 0..PRODUCTION_PRESSURE_TICKS {
+        app.update();
+    }
 
     // After one tick: the plan exists, the completed
     // facility does NOT (the build is worker-time only).
@@ -695,8 +769,8 @@ fn no_emergence_when_existing_facility_is_idle() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 10);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 10);
     }
     let facility_pos = Vec2::new(0.0, 0.0);
     let _idle = common::spawn_idle_facility_at(&mut app, facility_pos);
@@ -723,9 +797,9 @@ fn blocked_types_cleared_after_full_cycle() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 1);
-        ratio.set_weight(NanobotType::Hauler, 1);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 1);
+        priority.set_weight(NanobotType::Hauler, 1);
     }
     let facility_pos = Vec2::new(0.0, 0.0);
     let facility_entity = {
@@ -768,9 +842,9 @@ fn no_production_when_all_types_blocked() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 5);
-        ratio.set_weight(NanobotType::Hauler, 5);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 5);
     }
     let facility_pos = Vec2::new(0.0, 0.0);
     let facility_entity = {
@@ -813,8 +887,8 @@ fn production_increases_population_of_picked_type() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Hauler, 1);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Hauler, 1);
     }
     let facility_pos = Vec2::new(0.0, 0.0);
     let _stockpile =
@@ -852,7 +926,7 @@ fn cold_start_facility_recovers_after_hopper_fills() {
     //
     // This is the default scenario's exact cold-start shape:
     // seed swarm 4 W / 2 H / 0 D against the 60/30/10 default
-    // ratio. Only Defender has a positive proportional deficit,
+    // priority. Only Defender has a positive proportional deficit,
     // so it is the type that gets blocked and must later be
     // unblocked. Existing tests never hit this path because
     // `spawn_idle_facility_at` pre-fills the hopper; this test
@@ -865,12 +939,12 @@ fn cold_start_facility_recovers_after_hopper_fills() {
         &[(NanobotType::Worker, 4), (NanobotType::Hauler, 2)],
     );
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
         // 60/30/10 default mix: against 4 W / 2 H / 0 D only
         // Defender has a positive proportional deficit.
-        ratio.set_weight(NanobotType::Worker, 6);
-        ratio.set_weight(NanobotType::Hauler, 3);
-        ratio.set_weight(NanobotType::Defender, 1);
+        priority.set_weight(NanobotType::Worker, 6);
+        priority.set_weight(NanobotType::Hauler, 3);
+        priority.set_weight(NanobotType::Defender, 1);
     }
     // Facility with an EMPTY hopper, exactly as the default
     // scenario spawns it (ProductionFacility::new()).
@@ -930,9 +1004,9 @@ fn cold_start_facility_recovers_after_hopper_fills() {
 #[test]
 fn production_consumption_is_isolated_between_opponent_and_player_ledgers() {
     let mut app = App::new();
-    let mut ratio = ProductionRatio::new();
-    ratio.set_weight(NanobotType::Worker, 1);
-    app.insert_resource(ratio)
+    let mut priority = ProductionPriority::new();
+    priority.set_weight(NanobotType::Worker, 1);
+    app.insert_resource(priority)
         .init_resource::<ResourceLedger>()
         .add_systems(Update, production_facility_pick_target_system);
     let player = app.world_mut().spawn(SwarmBundle::default()).id();

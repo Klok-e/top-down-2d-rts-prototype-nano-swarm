@@ -58,7 +58,7 @@ use crate::nanobot::components::{
 use crate::nanobot::defend::{DefendAssignment, DefendHold};
 use crate::nanobot::maintenance::SupportCondition;
 use crate::nanobot::placement::{
-    BUILDING_FOOTPRINT_RADIUS, find_build_zone_placement, scaled_building_footprint_radius,
+    BUILDING_FOOTPRINT_RADIUS, find_defend_zone_placement, scaled_building_footprint_radius,
 };
 use crate::nanobot::planned::{PlannedKind, PlannedStructure, planned_visual_components};
 use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
@@ -578,13 +578,11 @@ pub fn charger_auto_creation_system(
         let to_spawn = (target_chargers - existing).min(MAX_CHARGERS_PER_CELL - existing);
         let owner = swarm_by_id.get(&swarm_id).copied().or(fallback_owner);
         for _ in 0..to_spawn {
-            let Some((placement_cell, placement_pos)) =
-                find_build_zone_placement(&[cell], &obstacles, 28)
-            else {
+            let Some(placement_pos) = find_defend_zone_placement(cell, &obstacles, 28) else {
                 break;
             };
             let mut entity_commands = commands.spawn((
-                PlannedStructure::new(PlannedKind::Charger, placement_cell),
+                PlannedStructure::new(PlannedKind::Charger, cell),
                 planned_visual_components(PlannedKind::Charger, &structure_sprites, placement_pos),
             ));
             obstacles.push((placement_pos, BUILDING_FOOTPRINT_RADIUS));

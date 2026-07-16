@@ -85,6 +85,9 @@ pub fn scaled_building_footprint_radius(transform: &Transform) -> f32 {
 pub const BUILD_ZONE_PLACEMENT_MAX_OFFSET: f32 =
     crate::ZONE_BLOCK_SIZE / 2.0 - BUILDING_FOOTPRINT_RADIUS - BUILDING_FOOTPRINT_PADDING;
 
+const BUILD_ZONE_RANDOM_CANDIDATES_PER_CELL: u32 = 16;
+const BUILD_ZONE_DENSE_STEP: f32 = 16.0;
+
 /// Generate `count` evenly spaced angles in radians around
 /// the full circle. The first angle is 0 (east). The list
 /// is empty when `count == 0`. Exposed for tests that want
@@ -284,52 +287,127 @@ pub fn find_source_stockpile_placement(
     best.map(|(_, _, pos)| pos)
 }
 
-/// Pick a stable, non-overlapping support-structure placement
-/// inside one of `build_cells`. Candidate order is deterministic:
-/// cells sort by `(x, y)`, then each cell tries its center plus
-/// rings of offsets. `kind_seed` lets different structure kinds
-/// get different organic-looking ring phases without depending on
-/// frame/tick state.
+fn seeded_build_zone_candidates(build_cells: &[IVec2], kind_seed: u32) -> Vec<(u64, IVec2, Vec2)> {
+    let mut candidates =
+        Vec::with_capacity(build_cells.len() * BUILD_ZONE_RANDOM_CANDIDATES_PER_CELL as usize);
+    for &cell in build_cells {
+        let center = crate::ai::get_world_from_zone(cell);
+        for candidate_index in 0..BUILD_ZONE_RANDOM_CANDIDATES_PER_CELL {
+            let index = kind_seed
+                .wrapping_mul(0x9E37_79B9)
+                .wrapping_add(candidate_index);
+            let seed = mix_hash(index, cell);
+            let x = map_to_unit(splitmix64(seed)) * 2.0 - 1.0;
+            let y = map_to_unit(splitmix64(seed.wrapping_add(SPLITMIX64_MIX))) * 2.0 - 1.0;
+            let priority = splitmix64(seed ^ 0xD1B5_4A32_D192_ED03);
+            let offset = Vec2::new(x, y) * BUILD_ZONE_PLACEMENT_MAX_OFFSET;
+            candidates.push((priority, cell, center + offset));
+        }
+    }
+    candidates.sort_unstable_by_key(|(priority, cell, pos)| {
+        (*priority, cell.x, cell.y, pos.x.to_bits(), pos.y.to_bits())
+    });
+    candidates
+}
+
+fn find_dense_build_zone_placement(
+    build_cells: &[IVec2],
+    obstacles: &[(Vec2, f32)],
+    kind_seed: u32,
+) -> Option<(IVec2, Vec2)> {
+    let side = (BUILD_ZONE_PLACEMENT_MAX_OFFSET * 2.0 / BUILD_ZONE_DENSE_STEP).floor() as u32 + 1;
+    let candidate_count = side * side;
+    let mut cells = build_cells.to_vec();
+    cells.sort_unstable_by_key(|cell| {
+        (
+            splitmix64(mix_hash(kind_seed ^ 0xA511_E9B3, *cell)),
+            cell.x,
+            cell.y,
+        )
+    });
+    for cell in cells {
+        let center = crate::ai::get_world_from_zone(cell);
+        let start = (splitmix64(mix_hash(kind_seed, cell)) % candidate_count as u64) as u32;
+        for step in 0..candidate_count {
+            // 353 is coprime with the 27x27 lattice, so every point is visited.
+            let index = (start + step * 353) % candidate_count;
+            let x = index % side;
+            let y = index / side;
+            let offset = Vec2::new(
+                -BUILD_ZONE_PLACEMENT_MAX_OFFSET + x as f32 * BUILD_ZONE_DENSE_STEP,
+                -BUILD_ZONE_PLACEMENT_MAX_OFFSET + y as f32 * BUILD_ZONE_DENSE_STEP,
+            );
+            let pos = center + offset;
+            if !overlaps_any_obstacle(
+                pos,
+                BUILDING_FOOTPRINT_RADIUS,
+                BUILDING_FOOTPRINT_PADDING,
+                obstacles,
+            ) {
+                return Some((cell, pos));
+            }
+        }
+    }
+    None
+}
+
+/// Pick a stable, non-overlapping support-structure placement inside one of
+/// `build_cells`. Seeded candidates are ranked across the whole eligible
+/// region, so no cell or cell center receives special priority. A dense,
+/// deterministic fallback finds tight remaining spaces that random sampling
+/// can miss.
 pub fn find_build_zone_placement(
     build_cells: &[IVec2],
     obstacles: &[(Vec2, f32)],
     kind_seed: u32,
 ) -> Option<(IVec2, Vec2)> {
-    let mut cells = build_cells.to_vec();
-    cells.sort_by_key(|cell| (cell.x, cell.y));
+    for (_, cell, pos) in seeded_build_zone_candidates(build_cells, kind_seed) {
+        if !overlaps_any_obstacle(
+            pos,
+            BUILDING_FOOTPRINT_RADIUS,
+            BUILDING_FOOTPRINT_PADDING,
+            obstacles,
+        ) {
+            return Some((cell, pos));
+        }
+    }
+    find_dense_build_zone_placement(build_cells, obstacles, kind_seed)
+}
+
+/// Preserve the center-first placement behavior used by Defend-Zone Chargers.
+pub fn find_defend_zone_placement(
+    cell: IVec2,
+    obstacles: &[(Vec2, f32)],
+    kind_seed: u32,
+) -> Option<Vec2> {
+    let center = crate::ai::get_world_from_zone(cell);
     let radii = [0.0, 96.0, 160.0, BUILD_ZONE_PLACEMENT_MAX_OFFSET];
     let angles = placement_angles(8);
-    for cell in cells {
-        let center = crate::ai::get_world_from_zone(cell);
-        for (radius_index, radius) in radii.iter().enumerate() {
-            if *radius <= 0.0 {
-                if !overlaps_any_obstacle(
-                    center,
-                    BUILDING_FOOTPRINT_RADIUS,
-                    BUILDING_FOOTPRINT_PADDING,
-                    obstacles,
-                ) {
-                    return Some((cell, center));
-                }
-                continue;
+    for (radius_index, radius) in radii.iter().enumerate() {
+        if *radius <= 0.0 {
+            if !overlaps_any_obstacle(
+                center,
+                BUILDING_FOOTPRINT_RADIUS,
+                BUILDING_FOOTPRINT_PADDING,
+                obstacles,
+            ) {
+                return Some(center);
             }
-            let phase = deterministic_jitter(kind_seed + radius_index as u32, cell, 1.0).x
-                * std::f32::consts::TAU;
-            for angle in &angles {
-                let pos =
-                    center + Vec2::new((angle + phase).cos(), (angle + phase).sin()) * *radius;
-                if world_to_cell(pos) != cell {
-                    continue;
-                }
-                if overlaps_any_obstacle(
+            continue;
+        }
+        let phase = deterministic_jitter(kind_seed + radius_index as u32, cell, 1.0).x
+            * std::f32::consts::TAU;
+        for angle in &angles {
+            let pos = center + Vec2::new((angle + phase).cos(), (angle + phase).sin()) * *radius;
+            if world_to_cell(pos) == cell
+                && !overlaps_any_obstacle(
                     pos,
                     BUILDING_FOOTPRINT_RADIUS,
                     BUILDING_FOOTPRINT_PADDING,
                     obstacles,
-                ) {
-                    continue;
-                }
-                return Some((cell, pos));
+                )
+            {
+                return Some(pos);
             }
         }
     }
@@ -865,5 +943,50 @@ mod tests {
             (chosen - expected).length() < EPS,
             "zero haul direction must tie-break on angle 0; got {chosen:?}"
         );
+    }
+
+    #[test]
+    fn build_zone_placement_is_seeded_stable_and_not_center_first() {
+        let cell = IVec2::new(3, -2);
+        let first = find_build_zone_placement(&[cell], &[], 27).unwrap();
+        let second = find_build_zone_placement(&[cell], &[], 27).unwrap();
+        let center = crate::ai::get_world_from_zone(cell);
+
+        assert_eq!(first, second);
+        assert_eq!(first.0, cell);
+        assert_ne!(first.1, center, "the cell center has no special priority");
+        let offset = first.1 - center;
+        assert!(offset.x.abs() <= BUILD_ZONE_PLACEMENT_MAX_OFFSET);
+        assert!(offset.y.abs() <= BUILD_ZONE_PLACEMENT_MAX_OFFSET);
+    }
+
+    #[test]
+    fn build_zone_placement_is_independent_of_cell_input_order() {
+        let cells = [IVec2::new(0, 0), IVec2::new(1, 0), IVec2::new(-1, 2)];
+        let mut reversed = cells;
+        reversed.reverse();
+
+        assert_eq!(
+            find_build_zone_placement(&cells, &[], 26),
+            find_build_zone_placement(&reversed, &[], 26),
+        );
+    }
+
+    #[test]
+    fn build_zone_placement_uses_dense_fallback_after_random_candidates_are_blocked() {
+        let cell = IVec2::ZERO;
+        let obstacles = seeded_build_zone_candidates(&[cell], 27)
+            .into_iter()
+            .map(|(_, _, pos)| (pos, 0.0))
+            .collect::<Vec<_>>();
+
+        let (_, chosen) = find_build_zone_placement(&[cell], &obstacles, 27)
+            .expect("dense fallback finds remaining in-cell space");
+        assert!(!overlaps_any_obstacle(
+            chosen,
+            BUILDING_FOOTPRINT_RADIUS,
+            BUILDING_FOOTPRINT_PADDING,
+            &obstacles,
+        ));
     }
 }

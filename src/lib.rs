@@ -141,7 +141,7 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
         .insert_resource(PresentationTarget(target))
         .insert_resource(IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32))
         .init_resource::<ResourceLedger>()
-        .insert_resource(scenario::default_player_ratio())
+        .insert_resource(scenario::default_player_priority())
         .init_resource::<nanobot::OpponentSwarmIdAlloc>()
         .add_plugins(Material2dPlugin::<BackgroundMaterial>::default())
         // must be before NanobotPlugin because otherwise it receives events with despawned entities
@@ -208,7 +208,7 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
         .add_plugins(CombatPlugin)
         // Single allocator for Gather, Planned Build, Maintenance, Defend, and Haul.
         .add_plugins(RegionalAllocationPlugin)
-        // Workload chooses total swarm size; Production Ratio chooses composition.
+        // Typed workload chooses required capacity; Production Priority orders shortages.
         .add_plugins(PopulationDemandPlugin)
         // StructureOverlayPlugin is a consumer of the
         // simulation's per-structure state. It registers

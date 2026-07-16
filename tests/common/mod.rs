@@ -533,7 +533,7 @@ pub fn spawn_charger_at(app: &mut App, cell: IVec2, amount: u32) -> Entity {
 
 /// Spawn an idle [`ProductionFacility`] at `world_pos`. The
 /// facility has no `OwnerSwarm`, so it falls back to the global
-/// `ProductionRatio` resource and the first swarm in the world
+/// `ProductionPriority` resource and the first swarm in the world
 /// when the work system spawns a new nanobot -- the same fallback
 /// the pre-multi-swarm production tests rely on. The input hopper
 /// is pre-filled (see [`fill_facility_input`]) so the facility can
@@ -679,10 +679,10 @@ pub fn spawn_planned_charger_at_cell(app: &mut App, cell: IVec2) -> Entity {
 }
 
 /// Spawn an [`OpponentSwarm`] at `world_pos` with the given
-/// `ratio` and `counts` of each nanobot type as children. The
+/// `priority` and `counts` of each nanobot type as children. The
 /// opponent marker and per-swarm `SwarmProduction` are wired in
-/// so the production systems use the opponent's fixed ratio
-/// rather than the global `ProductionRatio` resource.
+/// so the production systems use the opponent's fixed priority
+/// rather than the global `ProductionPriority` resource.
 ///
 /// Thin wrapper over the production
 /// [`top_down_2d_rts_prototype_nano_swarm::nanobot::spawn_opponent_swarm`]
@@ -693,7 +693,7 @@ pub fn spawn_planned_charger_at_cell(app: &mut App, cell: IVec2) -> Entity {
 pub fn spawn_opponent_swarm_with_nanobots(
     app: &mut App,
     world_pos: Vec2,
-    ratio: top_down_2d_rts_prototype_nano_swarm::nanobot::ProductionRatio,
+    priority: top_down_2d_rts_prototype_nano_swarm::nanobot::ProductionPriority,
     counts: &[(NanobotType, u32)],
 ) -> Entity {
     use top_down_2d_rts_prototype_nano_swarm::nanobot::{SeedNanobots, spawn_opponent_swarm};
@@ -701,14 +701,14 @@ pub fn spawn_opponent_swarm_with_nanobots(
         .iter()
         .map(|(kind, n)| SeedNanobots::new(*kind, *n))
         .collect();
-    spawn_opponent_swarm(app.world_mut(), world_pos, ratio, &[], &seeds)
+    spawn_opponent_swarm(app.world_mut(), world_pos, priority, &[], &seeds)
 }
 
 /// Spawn an idle [`ProductionFacility`] owned by `owner` at
 /// `pos`. The owner marker is what tells the production
-/// systems to use the owner's ratio and children for the
+/// systems to use the owner's priority and children for the
 /// deficit math; without it, the facility falls back to the
-/// global `ProductionRatio` resource. The input hopper is
+/// global `ProductionPriority` resource. The input hopper is
 /// pre-filled (see [`fill_facility_input`]).
 pub fn spawn_facility_at(app: &mut App, owner: Entity, pos: Vec2) -> Entity {
     let entity = app

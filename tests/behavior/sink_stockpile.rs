@@ -5,8 +5,7 @@
 //! single contract:
 //!
 //!   1. A Build-painted cell auto-creates a Planned Sink
-//!      Stockpile (not a completed Stockpile) at the cell
-//!      center.
+//!      Stockpile (not a completed Stockpile) at an available position.
 //!   2. A cell without Build paint does NOT auto-create a
 //!      Planned Sink Stockpile.
 //!   3. The auto-creation does not pile a second Planned Sink
@@ -437,7 +436,7 @@ fn opponent_build_cell_creates_opponent_owned_sink_stockpile() {
     // cells; the planned-structure auto-creation must
     // route the Sink Stockpile to the right owner.
     use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-        PrepaintedIntent, ProductionRatio, SeedNanobots, Swarm, SwarmId, spawn_opponent_swarm,
+        PrepaintedIntent, ProductionPriority, SeedNanobots, Swarm, SwarmId, spawn_opponent_swarm,
     };
     let mut app = build_app();
     let opponent_pos = Vec2::new(2_000.0, 0.0);
@@ -445,7 +444,7 @@ fn opponent_build_cell_creates_opponent_owned_sink_stockpile() {
     let opponent = spawn_opponent_swarm(
         app.world_mut(),
         opponent_pos,
-        ProductionRatio::new(),
+        ProductionPriority::new(),
         &[PrepaintedIntent::new(cell, IntentKind::Build)],
         &[SeedNanobots::new(
             top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotType::Worker,

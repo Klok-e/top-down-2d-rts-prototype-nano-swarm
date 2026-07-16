@@ -3,12 +3,12 @@
 //! An "Opponent Swarm" is a non-player swarm that uses the
 //! same intent, production, logistics, maintenance, and
 //! charge systems as the player swarm. Early opponents use
-//! prepainted bases and fixed production ratios; no active
+//! prepainted bases and fixed production priorities; no active
 //! AI is required.
 //!
 //! The [`spawn_opponent_swarm`] helper materialises one
 //! opponent: a `Swarm` entity with the [`OpponentSwarm`]
-//! marker, a fixed [`SwarmProduction`] ratio, prepainted
+//! marker, fixed [`SwarmProduction`] priorities, prepainted
 //! intent on the shared [`IntentGrid`], and seed nanobots as
 //! children. Everything the helper produces is a regular
 //! Bevy component the existing systems already understand, so
@@ -20,7 +20,7 @@ use crate::ai::AiStateComponent;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::Commitment;
 use crate::nanobot::components::{Health, Nanobot, Swarm, SwarmId, SwarmMember, VelocityComponent};
-use crate::nanobot::production::{OpponentSwarm, ProductionRatio, SwarmProduction};
+use crate::nanobot::production::{OpponentSwarm, ProductionPriority, SwarmProduction};
 use crate::nanobot::{NanobotBundle, NanobotType};
 
 /// One prepainted intent cell on the shared grid. The
@@ -58,7 +58,7 @@ impl SeedNanobots {
 
 /// Initialise an opponent swarm: spawn a [`Swarm`] entity
 /// carrying the [`OpponentSwarm`] marker and a fixed
-/// [`SwarmProduction`] ratio, paint the requested intent onto
+/// [`SwarmProduction`] priority, paint the requested intent onto
 /// the shared [`IntentGrid`], and seed the requested
 /// nanobots as children. Returns the spawned swarm entity.
 ///
@@ -66,12 +66,12 @@ impl SeedNanobots {
 /// startup systems (which can take `&mut World` directly) and
 /// the test harness (where `app.world_mut()` exposes the same
 /// handle). The opponent is a swarm first -- the marker and
-/// per-swarm ratio are the only things that make it an
+/// per-swarm priority are the only things that make it an
 /// opponent -- so no special-case runtime path is needed.
 pub fn spawn_opponent_swarm(
     world: &mut World,
     world_pos: Vec2,
-    ratio: ProductionRatio,
+    priority: ProductionPriority,
     prepainted: &[PrepaintedIntent],
     seeds: &[SeedNanobots],
 ) -> Entity {
@@ -80,7 +80,7 @@ pub fn spawn_opponent_swarm(
         .spawn((
             Swarm {},
             OpponentSwarm {},
-            SwarmProduction::new(ratio),
+            SwarmProduction::new(priority),
             swarm_id,
             Transform::from_translation(world_pos.extend(0.0)),
             Visibility::default(),
@@ -184,7 +184,7 @@ mod tests {
         let swarm = spawn_opponent_swarm(
             app.world_mut(),
             Vec2::new(0.0, 0.0),
-            ProductionRatio::new(),
+            ProductionPriority::new(),
             &[],
             &[],
         );
@@ -203,7 +203,7 @@ mod tests {
         let _ = spawn_opponent_swarm(
             app.world_mut(),
             Vec2::new(0.0, 0.0),
-            ProductionRatio::new(),
+            ProductionPriority::new(),
             &[
                 PrepaintedIntent::new(gather_cell, IntentKind::Gather),
                 PrepaintedIntent::new(defend_cell, IntentKind::Defend),
@@ -220,21 +220,21 @@ mod tests {
     }
 
     #[test]
-    fn spawn_opponent_swarm_attaches_production_ratio() {
+    fn spawn_opponent_swarm_attaches_production_priority() {
         // The helper must stamp a `SwarmProduction`
-        // component carrying the requested ratio so the
+        // component carrying the requested priority so the
         // production systems route the opponent's
         // facilities through the opponent's mix.
         let mut app = build_app();
-        let mut ratio = ProductionRatio::new();
-        ratio.set_weight(NanobotType::Hauler, 4);
-        let swarm = spawn_opponent_swarm(app.world_mut(), Vec2::new(0.0, 0.0), ratio, &[], &[]);
+        let mut priority = ProductionPriority::new();
+        priority.set_weight(NanobotType::Hauler, 4);
+        let swarm = spawn_opponent_swarm(app.world_mut(), Vec2::new(0.0, 0.0), priority, &[], &[]);
         let world = app.world();
         let sp = world
             .entity(swarm)
             .get::<SwarmProduction>()
             .expect("SwarmProduction must be attached");
-        assert_eq!(sp.ratio.weight(NanobotType::Hauler), 4);
+        assert_eq!(sp.priority.weight(NanobotType::Hauler), 4);
     }
 
     #[test]
@@ -251,7 +251,7 @@ mod tests {
         let swarm = spawn_opponent_swarm(
             app.world_mut(),
             opponent_pos,
-            ProductionRatio::new(),
+            ProductionPriority::new(),
             &[],
             &[
                 SeedNanobots::new(NanobotType::Worker, 3),

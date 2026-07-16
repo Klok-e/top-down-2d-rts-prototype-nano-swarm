@@ -21,12 +21,13 @@
 
 use libtest_mimic::{Arguments, Conclusion, Failed, Trial};
 
+mod build_zone_placement;
 mod defender_spread;
 mod fill_indicators;
 mod harness;
 mod idle_spread;
 mod physical_logistics;
-mod production_ratio_panel;
+mod production_priority_panel;
 mod regional_allocation;
 mod smoke;
 mod world_space_nanobots;
@@ -81,6 +82,10 @@ fn main() -> std::process::ExitCode {
             regression::missing_screenshot_fails,
         )
         .with_ignored_flag(true),
+        Trial::test("build_zone_placement", || {
+            run(build_zone_placement::build_zone_placement)
+        })
+        .with_ignored_flag(true),
         Trial::test("defender_spread", || run(defender_spread::defender_spread))
             .with_ignored_flag(true),
         Trial::test("idle_spread", || run(idle_spread::idle_spread)).with_ignored_flag(true),
@@ -91,8 +96,8 @@ fn main() -> std::process::ExitCode {
             run(physical_logistics::physical_logistics)
         })
         .with_ignored_flag(true),
-        Trial::test("production_ratio_panel", || {
-            run(production_ratio_panel::production_ratio_panel)
+        Trial::test("production_priority_panel", || {
+            run(production_priority_panel::production_priority_panel)
         })
         .with_ignored_flag(true),
         Trial::test("regional_allocation", || {

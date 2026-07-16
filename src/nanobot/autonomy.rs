@@ -31,7 +31,7 @@ use crate::nanobot::components::SwarmId;
 
 /// Specialization of a nanobot. The player does not assign individual
 /// nanobots to types manually (see the project glossary); types emerge
-/// from the production ratio and are stored on the entity.
+/// from the production priority and are stored on the entity.
 #[derive(Debug, Clone, Copy, Component, PartialEq, Eq, Hash, Reflect, Default)]
 pub enum NanobotType {
     /// Performs direct work at resource deposits and construction sites,

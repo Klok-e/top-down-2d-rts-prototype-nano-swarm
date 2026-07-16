@@ -44,14 +44,16 @@ mod per_swarm_intent_ownership;
 mod physical_worker_gather;
 #[path = "behavior/planned_structure.rs"]
 mod planned_structure;
+#[path = "behavior/population_demand.rs"]
+mod population_demand;
 #[path = "behavior/production_collapse.rs"]
 mod production_collapse;
 #[path = "behavior/production_facility.rs"]
 mod production_facility;
 #[path = "behavior/production_facility_planned.rs"]
 mod production_facility_planned;
-#[path = "behavior/production_ratio_panel.rs"]
-mod production_ratio_panel;
+#[path = "behavior/production_priority_panel.rs"]
+mod production_priority_panel;
 #[path = "behavior/regional_allocation.rs"]
 mod regional_allocation;
 #[path = "behavior/sink_stockpile.rs"]

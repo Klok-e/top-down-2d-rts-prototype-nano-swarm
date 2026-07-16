@@ -7,6 +7,7 @@ Nanobot work allocation uses dirty-region projection from persistent Intent Zone
 - Intent remains authoritative and persistent. Derived actionable opportunities are recomputed for dirty regions from intent and ECS state; lifecycle systems only invalidate regions and do not own the projection.
 - Valid distant work attracts capacity through regional pull budgets. Minimum Category Activation is satisfied before remaining capacity is distributed by weighted pressure.
 - Binary intent contributes eligibility, not a pressure multiplier. Gather and Build pressure comes from useful work; each Defend cell contributes one baseline Soft Work Slot. Players shape allocation through zone geometry rather than paint intensity or task-priority controls.
+- Projected work creates typed Population Demand: Gather, Planned Build, and Maintenance require Workers; Haul requires Haulers; Defend requires Defenders. Unowned opportunities contribute to every swarm allowed to act on them.
 - Regional leases renew while progress is measurable, expire after no progress, and are revoked immediately only when supporting work becomes invalid. Rebalancing otherwise uses idle nanobots and expired leases.
 - Reassignment bursts are bounded by a per-region percentage with a small floor.
 - Independent regions may be processed in parallel, but allocation order, bot identity tie-breakers, and merged results remain deterministic.
