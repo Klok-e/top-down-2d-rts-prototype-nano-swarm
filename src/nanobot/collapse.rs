@@ -13,15 +13,15 @@ use crate::nanobot::OpponentSwarm;
 use crate::nanobot::autonomy::NanobotType;
 use crate::nanobot::components::Swarm;
 use crate::nanobot::production::{
-    OwnerSwarm, PRODUCTION_COST_PER_BOT, ProductionFacility, ProductionRatio, SwarmProduction,
+    OwnerSwarm, PRODUCTION_COST_PER_BOT, ProductionFacility, ProductionPriority, SwarmProduction,
     count_swarm_nanobots_by_type, total_deficit,
 };
 use crate::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        ActionableProjection, BUILDING_FOOTPRINT_RADIUS, Charger, OpportunityCategory, PlannedKind,
-        PlannedStructure, PopulationDemand, SupportCondition, find_build_zone_placement,
-        world_to_cell,
+        ActionableProjection, Charger, OpportunityCategory, PlannedKind, PlannedStructure,
+        PopulationDemand, SupportCondition, find_build_zone_placement,
+        scaled_building_footprint_radius, world_to_cell,
     },
     resources::ResourceDeposit,
 };
@@ -170,7 +170,7 @@ pub fn production_collapse_detection_system(
         ),
         With<crate::nanobot::components::Nanobot>,
     >,
-    global_ratio: Res<ProductionRatio>,
+    global_priority: Res<ProductionPriority>,
     swarm_productions: Query<&SwarmProduction>,
     mut state: ResMut<ProductionCollapseState>,
     grid: Res<IntentGrid>,
@@ -186,15 +186,14 @@ pub fn production_collapse_detection_system(
         let counts = count_swarm_nanobots_by_type(swarm_id, &nanobots);
         let workers = *counts.get(&NanobotType::Worker).unwrap_or(&0);
         let haulers = *counts.get(&NanobotType::Hauler).unwrap_or(&0);
-        let total_population: u32 = counts.values().sum();
-        let ratio = swarm_productions
+        let priority = swarm_productions
             .get(swarm_entity)
-            .map(|production| &production.ratio)
-            .unwrap_or(&*global_ratio);
+            .map(|production| &production.priority)
+            .unwrap_or(&*global_priority);
         let has_unmet_demand = population_demand
             .as_deref()
-            .map(|demand| demand.desired_for(swarm_id) > total_population)
-            .unwrap_or_else(|| total_deficit(ratio, &counts) > 0);
+            .map(|demand| demand.has_shortage(swarm_id, &counts))
+            .unwrap_or_else(|| total_deficit(priority, &counts) > 0);
 
         let operational_production = facilities.iter().any(|(facility, owner, condition)| {
             owner.0 == swarm_entity
@@ -228,7 +227,12 @@ pub fn production_collapse_detection_system(
             .collect::<Vec<_>>();
         let mut obstacles = support_structures
             .iter()
-            .map(|transform| (transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS))
+            .map(|transform| {
+                (
+                    transform.translation.truncate(),
+                    scaled_building_footprint_radius(transform),
+                )
+            })
             .collect::<Vec<_>>();
         obstacles.extend(
             deposits

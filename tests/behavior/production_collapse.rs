@@ -13,7 +13,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         NanobotType, OwnerSwarm, PRODUCTION_COST_PER_BOT, ProductionCollapseState,
-        ProductionFacility, ProductionRatio, RecoveryFacts, Swarm, SwarmId, evaluate_recovery,
+        ProductionFacility, ProductionPriority, RecoveryFacts, Swarm, SwarmId, evaluate_recovery,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
 };
@@ -21,10 +21,10 @@ use top_down_2d_rts_prototype_nano_swarm::{
 mod common;
 
 fn build_app() -> App {
-    // Empty global ratio by default; each test sets the
-    // ratio(s) it needs.
+    // Empty global priority by default; each test sets the
+    // priorities it needs.
     let mut app = common::sim_app_with_collapse();
-    app.insert_resource(ProductionRatio::new());
+    app.insert_resource(ProductionPriority::new());
     app
 }
 
@@ -35,9 +35,9 @@ fn player_swarm_with_working_facility_is_not_collapsed() {
     // system must report no collapse.
     let mut app = build_app();
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 5);
-        ratio.set_weight(NanobotType::Hauler, 2);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let player = common::spawn_swarm_with_nanobots(
@@ -75,9 +75,9 @@ fn player_swarm_with_no_facility_and_recoverable_crew_is_not_collapsed() {
     // report "can recover, not collapsed".
     let mut app = build_app();
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 5);
-        ratio.set_weight(NanobotType::Hauler, 2);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let _player = common::spawn_swarm_with_nanobots(
@@ -116,9 +116,9 @@ fn player_swarm_with_no_facility_and_no_haulers_is_collapsed() {
     // collapse system must report a player loss.
     let mut app = build_app();
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 5);
-        ratio.set_weight(NanobotType::Hauler, 2);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let _player = common::spawn_swarm_with_nanobots(
@@ -146,9 +146,9 @@ fn player_swarm_with_no_facility_and_no_workers_is_collapsed() {
     // chain is dead.
     let mut app = build_app();
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 5);
-        ratio.set_weight(NanobotType::Hauler, 2);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let _player = common::spawn_swarm_with_nanobots(
@@ -171,9 +171,9 @@ fn opponent_swarm_with_no_facility_and_no_haulers_means_player_wins() {
     // The collapse system must report a player win.
     let mut app = build_app();
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 5);
-        ratio.set_weight(NanobotType::Hauler, 2);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let player = common::spawn_swarm_with_nanobots(
@@ -184,13 +184,13 @@ fn opponent_swarm_with_no_facility_and_no_haulers_means_player_wins() {
     common::spawn_facility_at(&mut app, player, player_pos);
 
     let opponent_pos = Vec2::new(2000.0, 0.0);
-    let mut opponent_ratio = ProductionRatio::new();
-    opponent_ratio.set_weight(NanobotType::Worker, 5);
-    opponent_ratio.set_weight(NanobotType::Hauler, 2);
+    let mut opponent_priority = ProductionPriority::new();
+    opponent_priority.set_weight(NanobotType::Worker, 5);
+    opponent_priority.set_weight(NanobotType::Hauler, 2);
     let _opponent = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
         opponent_pos,
-        opponent_ratio,
+        opponent_priority,
         &[(NanobotType::Worker, 2), (NanobotType::Defender, 1)],
     );
 
@@ -217,20 +217,20 @@ fn both_swarms_collapsed_is_a_loss_not_a_win() {
     // state.
     let mut app = build_app();
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 5);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let _player =
         common::spawn_swarm_with_nanobots(&mut app, player_pos, &[(NanobotType::Defender, 1)]);
 
     let opponent_pos = Vec2::new(2000.0, 0.0);
-    let mut opponent_ratio = ProductionRatio::new();
-    opponent_ratio.set_weight(NanobotType::Worker, 5);
+    let mut opponent_priority = ProductionPriority::new();
+    opponent_priority.set_weight(NanobotType::Worker, 5);
     let _opponent = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
         opponent_pos,
-        opponent_ratio,
+        opponent_priority,
         &[(NanobotType::Defender, 1)],
     );
 
@@ -245,13 +245,13 @@ fn both_swarms_collapsed_is_a_loss_not_a_win() {
 
 #[test]
 fn swarm_at_production_target_is_not_collapsed_without_a_facility() {
-    // A swarm that has reached its production ratio target
+    // A swarm that has reached its production priority target
     // has no unmet demand. "No facility" is the success
     // state, not the collapse state.
     let mut app = build_app();
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 2);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let _player =
@@ -275,9 +275,9 @@ fn collapse_state_updates_after_facility_is_destroyed() {
     // own -- here the swarm has no crew at all).
     let mut app = build_app();
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 5);
-        ratio.set_weight(NanobotType::Hauler, 2);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     // No nanobots; the swarm is essentially empty.
@@ -325,9 +325,9 @@ fn opponent_with_recoverable_crew_does_not_trigger_player_win() {
     // player has not won yet.
     let mut app = build_app();
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 5);
-        ratio.set_weight(NanobotType::Hauler, 2);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let player = common::spawn_swarm_with_nanobots(
@@ -338,13 +338,13 @@ fn opponent_with_recoverable_crew_does_not_trigger_player_win() {
     common::spawn_facility_at(&mut app, player, player_pos);
 
     let opponent_pos = Vec2::new(2000.0, 0.0);
-    let mut opponent_ratio = ProductionRatio::new();
-    opponent_ratio.set_weight(NanobotType::Worker, 5);
-    opponent_ratio.set_weight(NanobotType::Hauler, 2);
+    let mut opponent_priority = ProductionPriority::new();
+    opponent_priority.set_weight(NanobotType::Worker, 5);
+    opponent_priority.set_weight(NanobotType::Hauler, 2);
     let opponent = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
         opponent_pos,
-        opponent_ratio,
+        opponent_priority,
         &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
     );
     let opponent_id = *app
@@ -390,9 +390,9 @@ fn idle_facility_with_no_stockpile_is_not_working_for_collapse_check() {
     // report a player loss.
     let mut app = build_app();
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 5);
-        ratio.set_weight(NanobotType::Hauler, 2);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
     let player =

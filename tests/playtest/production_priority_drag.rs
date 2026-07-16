@@ -1,14 +1,14 @@
-//! Scripted player flow for pressing, dragging, and releasing production-ratio handles.
+//! Scripted player flow for pressing, dragging, and releasing production-priority handles.
 
 use bevy::{prelude::*, ui::RelativeCursorPosition};
 use top_down_2d_rts_prototype_nano_swarm::{
-    nanobot::{NanobotType, ProductionRatio},
+    nanobot::{NanobotType, ProductionPriority},
     ui::{
         FontsResource,
-        production_ratio_panel::{
-            HandleBoundary, ProductionRatioDragState, ProductionRatioHandle, ProductionRatioTrack,
-            production_ratio_drag_system, setup_production_ratio_panel,
-            update_production_ratio_panel,
+        production_priority_panel::{
+            HandleBoundary, ProductionPriorityDragState, ProductionPriorityHandle,
+            ProductionPriorityTrack, production_priority_drag_system,
+            setup_production_priority_panel, update_production_priority_panel,
         },
     },
 };
@@ -21,13 +21,17 @@ fn build_app() -> App {
     app.insert_resource(FontsResource {
         font: Handle::default(),
     })
-    .insert_resource(ProductionRatio::default())
-    .init_resource::<ProductionRatioDragState>()
+    .insert_resource(ProductionPriority::default())
+    .init_resource::<ProductionPriorityDragState>()
     .init_resource::<ButtonInput<MouseButton>>()
-    .add_systems(Startup, setup_production_ratio_panel)
+    .add_systems(Startup, setup_production_priority_panel)
     .add_systems(
         Update,
-        (production_ratio_drag_system, update_production_ratio_panel).chain(),
+        (
+            production_priority_drag_system,
+            update_production_priority_panel,
+        )
+            .chain(),
     );
     app.update();
     app
@@ -36,7 +40,7 @@ fn build_app() -> App {
 fn set_track_position(app: &mut App, x: f32) {
     let mut query = app
         .world_mut()
-        .query_filtered::<&mut RelativeCursorPosition, With<ProductionRatioTrack>>();
+        .query_filtered::<&mut RelativeCursorPosition, With<ProductionPriorityTrack>>();
     let mut cursor = query.single_mut(app.world_mut()).unwrap();
     cursor.normalized = Some(Vec2::new(x - 0.5, 0.0));
     cursor.cursor_over = true;
@@ -45,7 +49,7 @@ fn set_track_position(app: &mut App, x: f32) {
 fn hover_worker_handle(app: &mut App) {
     let entities: Vec<_> = app
         .world_mut()
-        .query::<(Entity, &ProductionRatioHandle)>()
+        .query::<(Entity, &ProductionPriorityHandle)>()
         .iter(app.world())
         .map(|(entity, handle)| (entity, handle.0))
         .collect();
@@ -71,7 +75,7 @@ fn live_mouse_drag_updates_until_release_then_stops() {
         .clear();
     assert_eq!(
         app.world()
-            .resource::<ProductionRatio>()
+            .resource::<ProductionPriority>()
             .weight(NanobotType::Worker),
         40,
         "pressing visible Worker handle starts drag"
@@ -81,7 +85,7 @@ fn live_mouse_drag_updates_until_release_then_stops() {
     app.update();
     assert_eq!(
         app.world()
-            .resource::<ProductionRatio>()
+            .resource::<ProductionPriority>()
             .weight(NanobotType::Worker),
         20,
         "held mouse follows live track cursor"
@@ -98,9 +102,9 @@ fn live_mouse_drag_updates_until_release_then_stops() {
     app.update();
     assert_eq!(
         app.world()
-            .resource::<ProductionRatio>()
+            .resource::<ProductionPriority>()
             .weight(NanobotType::Worker),
         20,
-        "released mouse ends pointer capture and later cursor movement does not edit ratio"
+        "released mouse ends pointer capture and later cursor movement does not edit priority"
     );
 }

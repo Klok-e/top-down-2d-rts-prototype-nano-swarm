@@ -34,8 +34,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         Commitment, GatherAssignment, Health, Nanobot, NanobotType, OwnerSwarm,
         PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT, PlannedStructureClaim, PrepaintedIntent,
-        ProductionFacility, ProductionPlugin, ProductionRatio, SeedNanobots, SwarmId, SwarmMember,
-        VelocityComponent, spawn_opponent_swarm,
+        ProductionFacility, ProductionPlugin, ProductionPriority, SeedNanobots, SwarmId,
+        SwarmMember, VelocityComponent, spawn_opponent_swarm,
     },
     resources::ResourceDeposit,
 };
@@ -44,14 +44,14 @@ use top_down_2d_rts_prototype_nano_swarm::{
 mod common;
 
 /// Gather app + the production plugin. The production
-/// systems need a `ProductionRatio` resource (the common
+/// systems need a `ProductionPriority` resource (the common
 /// seam's `sim_app_with_gather` does not register one); the
 /// resource is left empty because the test spawns an opponent
 /// swarm with its own `SwarmProduction` that overrides the
-/// global ratio.
+/// global priority.
 fn app_with_production() -> App {
     let mut app = common::sim_app_with_gather();
-    app.insert_resource(ProductionRatio::new());
+    app.insert_resource(ProductionPriority::new());
     app.add_plugins(ProductionPlugin);
     app
 }
@@ -124,7 +124,7 @@ fn opponent_prepainted_intent_is_owned_by_opponent_swarm() {
     let opponent = spawn_opponent_swarm(
         app.world_mut(),
         opponent_pos,
-        ProductionRatio::new(),
+        ProductionPriority::new(),
         &[PrepaintedIntent::new(gather_cell, IntentKind::Gather)],
         &[],
     );
@@ -159,7 +159,7 @@ fn opponent_prepainted_gather_drives_opponent_worker() {
     let opponent = spawn_opponent_swarm(
         app.world_mut(),
         opponent_pos,
-        ProductionRatio::new(),
+        ProductionPriority::new(),
         &[PrepaintedIntent::new(gather_cell, IntentKind::Gather)],
         &[SeedNanobots::new(NanobotType::Worker, 1)],
     );
@@ -320,9 +320,9 @@ fn opponent_production_spawns_opponent_swarm_id_nanobots() {
     // contract.
     let mut app = app_with_production();
     let opponent_pos = Vec2::new(2000.0, 0.0);
-    let mut ratio = ProductionRatio::new();
-    ratio.set_weight(NanobotType::Worker, 1);
-    let opponent = spawn_opponent_swarm(app.world_mut(), opponent_pos, ratio, &[], &[]);
+    let mut priority = ProductionPriority::new();
+    priority.set_weight(NanobotType::Worker, 1);
+    let opponent = spawn_opponent_swarm(app.world_mut(), opponent_pos, priority, &[], &[]);
     let _stockpile =
         common::spawn_stockpile(&mut app, opponent_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
     let _facility = app

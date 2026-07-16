@@ -8,10 +8,12 @@ mod mouse_zone_painting;
 mod offscreen_presentation;
 #[path = "playtest/physical_logistics_flow.rs"]
 mod physical_logistics_flow;
-#[path = "playtest/production_ratio_drag.rs"]
-mod production_ratio_drag;
+#[path = "playtest/production_priority_drag.rs"]
+mod production_priority_drag;
 #[path = "playtest/regional_allocation.rs"]
 mod regional_allocation;
+#[path = "playtest/typed_population_demand.rs"]
+mod typed_population_demand;
 #[path = "playtest/world_space_nanobots.rs"]
 mod world_space_nanobots;
 #[path = "playtest/zone_shader_compiles.rs"]

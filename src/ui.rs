@@ -2,7 +2,7 @@ pub mod button_bg_interaction;
 pub mod consts;
 mod fps_count;
 pub mod intent_layer_panel;
-pub mod production_ratio_panel;
+pub mod production_priority_panel;
 mod status_panel;
 mod ui_interaction_system;
 mod ui_setup;
@@ -24,9 +24,9 @@ use self::{
         intent_layer_button_click_system, setup_intent_layer_panel,
         update_intent_layer_panel_highlight,
     },
-    production_ratio_panel::{
-        ProductionRatioDragState, production_ratio_drag_system, setup_production_ratio_panel,
-        update_production_ratio_panel,
+    production_priority_panel::{
+        ProductionPriorityDragState, production_priority_drag_system,
+        setup_production_priority_panel, update_production_priority_panel,
     },
     status_panel::{setup_status_panel, update_status_panel_system},
 };
@@ -37,7 +37,7 @@ pub struct NanoswarmUiSetupPlugin;
 impl Plugin for NanoswarmUiSetupPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(UiHandling::default())
-            .init_resource::<ProductionRatioDragState>()
+            .init_resource::<ProductionPriorityDragState>()
             .add_plugins(FrameTimeDiagnosticsPlugin::default())
             .add_systems(
                 Startup,
@@ -45,7 +45,7 @@ impl Plugin for NanoswarmUiSetupPlugin {
                     setup_ui_system,
                     setup_status_panel,
                     setup_intent_layer_panel,
-                    setup_production_ratio_panel,
+                    setup_production_priority_panel,
                 )
                     .chain(),
             )
@@ -61,7 +61,11 @@ impl Plugin for NanoswarmUiSetupPlugin {
             .add_systems(Update, update_intent_layer_panel_highlight)
             .add_systems(
                 Update,
-                (production_ratio_drag_system, update_production_ratio_panel).chain(),
+                (
+                    production_priority_drag_system,
+                    update_production_priority_panel,
+                )
+                    .chain(),
             );
     }
 }

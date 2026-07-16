@@ -29,7 +29,7 @@ An intent zone that marks free base space where automatic construction may place
 _Avoid_: Construction group, builder assignment, manual building placement
 
 **Defend Zone**:
-An intent zone where nanobots hold and protect an area. Each painted cell provides one Soft Work Slot: one defender is preferred, crowding discourages extras, and threats may pull more. Larger zones therefore request broader baseline coverage. Painting defend intent into enemy territory functions as an attack or advance order; no separate attack zone is needed initially. Defend zones include chargers that resupply defenders, making cut-off or surrounded defenders weaker over time.
+An intent zone where nanobots hold and protect an area. Each painted cell requires one Defender, and each hostile nanobot inside it requires one additional Defender; crowding still discourages unnecessary extras. Larger zones therefore request broader baseline coverage. Painting defend intent into enemy territory functions as an attack or advance order; no separate attack zone is needed initially. Defend zones include chargers that resupply defenders, making cut-off or surrounded defenders weaker over time.
 _Avoid_: Fighter group, combat squad, attack zone
 
 **Stockpile**:
@@ -69,7 +69,7 @@ An end-of-chain structure that only receives material and never serves as a haul
 _Avoid_: Sink, consumer building, final destination
 
 **Opponent Swarm**:
-A non-player swarm governed by the same intent, production, logistics, maintenance, and charge rules as the player swarm. Early opponents use prepainted bases and fixed production ratios instead of active AI.
+A non-player swarm governed by the same intent, production, logistics, maintenance, and charge rules as the player swarm. Early opponents use prepainted bases and fixed Production Priorities instead of active AI.
 _Avoid_: Enemy AI faction, scripted attackers
 
 **Production Collapse**:
@@ -101,7 +101,7 @@ Multiple intent zones may cover the same space. Overlap means several kinds of w
 _Avoid_: Exclusive zones, zone ownership
 
 **Intent Allocation**:
-The moment-to-moment act of steering the swarm by adjusting intent zone placement and size, plus production ratio. Players do not set task priorities; autonomous allocation weighs useful work, distance, type fit, crowding, and commitments. This is the primary player skill, not micro-managing individual nanobots.
+The moment-to-moment act of steering the swarm by adjusting intent zone placement and size, plus Production Priority. Players do not prioritize individual tasks; autonomous allocation weighs useful work, distance, type fit, crowding, and commitments. This is the primary player skill, not micro-managing individual nanobots.
 _Avoid_: Unit micro, direct control
 
 **Soft Work Slot**:
@@ -109,7 +109,7 @@ A limited amount of useful work available at a resource, build site, or threat. 
 _Avoid_: Hard assignment slot, infinite work stack
 
 **Dumb Autonomy**:
-Nanobots are aware of player-painted intent globally, but execute it through simple scoring rather than optimal assignment. Their limitations create player-facing pressure through congestion, travel time, carrying capacity, imperfect ratios, and over/under-painting rather than through failing to notice commands.
+Nanobots are aware of player-painted intent globally, but execute it through simple scoring rather than optimal assignment. Their limitations create player-facing pressure through congestion, travel time, carrying capacity, production ordering, and over/under-painting rather than through failing to notice commands.
 _Avoid_: Perfect allocator, smart commander AI
 
 **Global Intent Awareness**:
@@ -144,18 +144,18 @@ _Avoid_: Road, waypoint chain, manual route
 A nanobot type that protects swarm assets and fights threats.
 _Avoid_: Fighter, soldier, combat unit
 
-**Production Ratio**:
-A player-set target mix of nanobot types. Production automatically adjusts over time to move the swarm toward this mix. When producing, the swarm prioritizes the type with the largest deficit from the target ratio, skipping blocked types temporarily if their requirements cannot be met.
+**Production Priority**:
+A player-set relative weighting that orders unmet Worker, Hauler, and Defender demand. It does not create demand or promise a population mix. Production balances shortage size against priority, while a zero-priority type remains eligible when its work is required.
 _Avoid_: Build queue, manual unit training
 
 **Population Demand**:
-The swarm size justified by actionable workload, including committed construction work. A pending Production Facility may increase Worker demand but is never evidence for committing another Production Facility.
+The per-Nanobot-Type capacity justified by actionable workload: gathering, construction, and maintenance require Workers; physical transport requires Haulers; and Defend coverage requires Defenders. Existing and in-production nanobots of one type cannot satisfy another type's demand. Excess nanobots remain in the swarm when demand falls. A pending Production Facility may increase Worker demand but is never evidence for committing another Production Facility.
 _Avoid_: Population cap, unit quota
 
 **Production Pressure**:
-Sustained unmet Population Demand while every existing Production Facility remains busy. Brief demand spikes or a facility's internal cycle progress do not establish Production Pressure.
+Consecutive unmet Population Demand of any type while every operational Production Facility remains busy. Production Priority, including a zero weight, never suppresses pressure from required work. Pressure also accumulates when no Production Facility is operational, while resolved demand or idle operational capacity clears it. Brief demand spikes and a facility's internal cycle progress do not establish Production Pressure.
 _Avoid_: Build-zone size, instantaneous deficit
 
 **Production Facility**:
-A terminal support structure that consumes delivered resources and automatically produces nanobots toward the Production Ratio. Production Pressure may create one unfinished expansion commitment per swarm; capacity is reassessed after that commitment completes or is lost.
+A terminal support structure that consumes delivered resources and automatically fills typed Population Demand in Production Priority order. Production Pressure may create one unfinished expansion commitment per swarm; capacity is reassessed after that commitment completes or is lost.
 _Avoid_: Barracks, factory queue, manual spawner

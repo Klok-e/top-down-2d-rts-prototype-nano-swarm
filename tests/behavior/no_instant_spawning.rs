@@ -21,8 +21,8 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Charger, DefendHold, NanobotType, PlannedStructure, ProductionFacility, ProductionRatio,
-        SwarmId,
+        Charger, DefendHold, NanobotType, PRODUCTION_PRESSURE_TICKS, PlannedStructure,
+        ProductionFacility, ProductionPriority, SwarmId,
     },
     resources::Stockpile,
 };
@@ -265,18 +265,20 @@ fn production_demand_does_not_instant_spawn_completed_facility() {
     // other completed support structure appears as a side
     // effect either.
     let mut app = common::sim_app_with_production_planned();
-    app.insert_resource(ProductionRatio::new());
+    app.insert_resource(ProductionPriority::new());
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 10);
-        ratio.set_weight(NanobotType::Hauler, 10);
-        ratio.set_weight(NanobotType::Defender, 10);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 10);
+        priority.set_weight(NanobotType::Hauler, 10);
+        priority.set_weight(NanobotType::Defender, 10);
     }
     let cell = IVec2::new(0, 0);
     paint_owned(&mut app, cell, IntentKind::Build);
 
-    app.update();
+    for _ in 0..PRODUCTION_PRESSURE_TICKS {
+        app.update();
+    }
 
     let world = app.world_mut();
     let facilities = completed_facility_count(world);
@@ -386,7 +388,7 @@ fn all_demand_sources_share_zero_completed_structures() {
     app.add_plugins(top_down_2d_rts_prototype_nano_swarm::nanobot::HaulPlugin);
     app.add_plugins(top_down_2d_rts_prototype_nano_swarm::nanobot::DefendPlugin);
     app.add_plugins(top_down_2d_rts_prototype_nano_swarm::nanobot::ChargePlugin);
-    app.insert_resource(ProductionRatio::new());
+    app.insert_resource(ProductionPriority::new());
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     // Gather cell (with deposit + worker) and Build cell
     // (no swarm demand) and Defend cell (with a defender in
@@ -413,10 +415,10 @@ fn all_demand_sources_share_zero_completed_structures() {
     // High production demand so the Build cell could also
     // be claimed by the production auto-creator.
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 10);
-        ratio.set_weight(NanobotType::Hauler, 10);
-        ratio.set_weight(NanobotType::Defender, 10);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 10);
+        priority.set_weight(NanobotType::Hauler, 10);
+        priority.set_weight(NanobotType::Defender, 10);
     }
 
     for _ in 0..3 {
@@ -469,17 +471,17 @@ fn scenario_seed_facility_remains_a_completed_production_facility() {
     use top_down_2d_rts_prototype_nano_swarm::nanobot::PRODUCTION_COST_PER_BOT;
     let mut app = common::sim_app_with_production();
     // `sim_app_with_production` registers the production
-    // plugin but does not insert the global `ProductionRatio`
+    // plugin but does not insert the global `ProductionPriority`
     // resource (the production system reads from it, so it
-    // must be present). The default ratio would also work
+    // must be present). The default priority would also work
     // -- the test sets a small Worker target so the pick
     // system has a clear "produce a Worker" signal.
-    app.insert_resource(ProductionRatio::new());
+    app.insert_resource(ProductionPriority::new());
     let swarm_center = Vec2::new(0.0, 0.0);
     let _swarm = common::spawn_swarm_at(&mut app, swarm_center);
     {
-        let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
-        ratio.set_weight(NanobotType::Worker, 1);
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 1);
     }
     let seed = common::spawn_facility_at(&mut app, _swarm, swarm_center);
     let _stockpile =

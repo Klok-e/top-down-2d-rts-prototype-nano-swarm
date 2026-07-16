@@ -3,7 +3,7 @@
 //! The default map is intentionally small on player pressure: it
 //! starts the core economy moving without tutorial text, then leaves
 //! the player to discover the rest of the prototype. The opponent is
-//! a glossary "Opponent Swarm": prepainted intent and fixed ratios,
+//! a glossary "Opponent Swarm": prepainted intent and fixed priorities,
 //! not active AI.
 
 use bevy::{math::vec3, prelude::*};
@@ -15,8 +15,8 @@ use crate::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Commitment, Health, Nanobot, NanobotBundle, NanobotSprites, NanobotType, OpponentSwarm,
-        OwnerSwarm, ProductionFacility, ProductionRatio, Swarm, SwarmBundle, SwarmId, SwarmMember,
-        SwarmProduction, VelocityComponent,
+        OwnerSwarm, ProductionFacility, ProductionPriority, Swarm, SwarmBundle, SwarmId,
+        SwarmMember, SwarmProduction, VelocityComponent,
     },
     resources::{ResourceDeposit, ResourceKind},
 };
@@ -46,22 +46,22 @@ pub fn cell_origin(cell: IVec2) -> Vec2 {
     get_world_from_zone(cell)
 }
 
-pub fn default_player_ratio() -> ProductionRatio {
+pub fn default_player_priority() -> ProductionPriority {
     // Named helper so the call site reads as "the default
-    // player ratio" and future tuning can override the mix
+    // player priority" and future tuning can override the mix
     // without touching `nanobot::production`.
-    ProductionRatio::default()
+    ProductionPriority::default()
 }
 
-pub fn default_opponent_ratio() -> ProductionRatio {
+pub fn default_opponent_priority() -> ProductionPriority {
     // Fixed authored mix (~53/27/20%), deliberately
     // distinct from the player default so the two swarms
     // diverge over time.
-    let mut ratio = ProductionRatio::new();
-    ratio.set_weight(NanobotType::Worker, 8);
-    ratio.set_weight(NanobotType::Hauler, 4);
-    ratio.set_weight(NanobotType::Defender, 3);
-    ratio
+    let mut priority = ProductionPriority::new();
+    priority.set_weight(NanobotType::Worker, 8);
+    priority.set_weight(NanobotType::Hauler, 4);
+    priority.set_weight(NanobotType::Defender, 3);
+    priority
 }
 
 pub fn paint_default_player_intent(grid: &mut IntentGrid) {
@@ -171,7 +171,7 @@ pub fn spawn_default_opponent_scenario(
         .spawn((
             Swarm {},
             OpponentSwarm {},
-            SwarmProduction::new(default_opponent_ratio()),
+            SwarmProduction::new(default_opponent_priority()),
             opponent_swarm_id,
             Transform::from_translation(opponent_pos.extend(0.0)),
             GlobalTransform::default(),
@@ -281,15 +281,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_ratios_match_60_30_10_player_and_authored_opponent() {
+    fn default_priorities_match_60_30_10_player_and_authored_opponent() {
         // Player default must normalize to the issue #32
         // 60/30/10 mix. The stored weights are 6/3/1 so
         // the slider's step-5 tick lines up cleanly with
         // the percentage labels.
-        let player = default_player_ratio();
-        assert!((player.normalized_share(NanobotType::Worker) - 0.60).abs() < 1e-6);
-        assert!((player.normalized_share(NanobotType::Hauler) - 0.30).abs() < 1e-6);
-        assert!((player.normalized_share(NanobotType::Defender) - 0.10).abs() < 1e-6);
+        let player = default_player_priority();
+        assert!((player.normalized_weight(NanobotType::Worker) - 0.60).abs() < 1e-6);
+        assert!((player.normalized_weight(NanobotType::Hauler) - 0.30).abs() < 1e-6);
+        assert!((player.normalized_weight(NanobotType::Defender) - 0.10).abs() < 1e-6);
         // All three types must be set so the picker can
         // choose between them; an unset type reads as zero
         // share and never gets produced.
@@ -297,14 +297,14 @@ mod tests {
         assert!(player.weight(NanobotType::Hauler) > 0);
         assert!(player.weight(NanobotType::Defender) > 0);
 
-        // Opponent mix is a fixed authored ratio the
+        // Opponent mix is a fixed authored priority the
         // slider must not be able to mutate.
-        let opponent = default_opponent_ratio();
+        let opponent = default_opponent_priority();
         assert_eq!(opponent.weight(NanobotType::Worker), 8);
         assert_eq!(opponent.weight(NanobotType::Hauler), 4);
         assert_eq!(opponent.weight(NanobotType::Defender), 3);
         assert!(
-            (opponent.normalized_share(NanobotType::Worker) - 0.60).abs() > 0.01,
+            (opponent.normalized_weight(NanobotType::Worker) - 0.60).abs() > 0.01,
             "opponent mix must remain distinct from the player 60/30/10 default"
         );
     }

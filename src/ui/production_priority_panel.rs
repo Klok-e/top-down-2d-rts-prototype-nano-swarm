@@ -1,8 +1,7 @@
-//! Right-side production-ratio UI.
+//! Right-side production-priority UI.
 //!
 //! Worker, Hauler, and Defender occupy one fixed 100% bar. Two handles edit
-//! cumulative boundaries in 5% steps; target labels and player composition
-//! ticks keep desired and observed mixes visible together.
+//! cumulative boundaries in 5% steps.
 
 use bevy::prelude::*;
 use bevy::ui::{
@@ -10,27 +9,24 @@ use bevy::ui::{
     UiRect, Val,
 };
 
-use crate::nanobot::{Nanobot, NanobotType, ProductionRatio, SwarmId, SwarmMember};
+use crate::nanobot::{NanobotType, ProductionPriority};
 
 use super::ui_setup::FontsResource;
 
 #[derive(Debug, Component)]
-pub struct ProductionRatioPanelRoot;
+pub struct ProductionPriorityPanelRoot;
 
 #[derive(Debug, Component)]
-pub struct ProductionRatioTrack;
+pub struct ProductionPriorityTrack;
 
 #[derive(Debug, Component, Clone, Copy, PartialEq, Eq)]
-pub struct ProductionRatioHandle(pub HandleBoundary);
+pub struct ProductionPriorityHandle(pub HandleBoundary);
 
 #[derive(Debug, Component, Clone, Copy)]
-pub struct ProductionRatioSegment(pub NanobotType);
+pub struct ProductionPrioritySegment(pub NanobotType);
 
 #[derive(Debug, Component, Clone, Copy)]
-pub struct ProductionRatioValueText(pub NanobotType);
-
-#[derive(Debug, Component, Clone, Copy)]
-pub struct ActualCompositionTick(pub HandleBoundary);
+pub struct ProductionPriorityValueText(pub NanobotType);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandleBoundary {
@@ -39,7 +35,7 @@ pub enum HandleBoundary {
 }
 
 #[derive(Debug, Default, Resource)]
-pub struct ProductionRatioDragState {
+pub struct ProductionPriorityDragState {
     active: Option<HandleBoundary>,
 }
 
@@ -92,23 +88,24 @@ fn clamp_boundary(
     }
 }
 
-fn boundaries_from_ratio(ratio: &ProductionRatio) -> (u32, u32) {
-    let total = ratio.total_weight();
+fn boundaries_from_priority(priority: &ProductionPriority) -> (u32, u32) {
+    let total = priority.total_weight();
     if total == 0 {
         return (0, 0);
     }
-    let worker = snap_percent(ratio.weight(NanobotType::Worker) as f32 * 100.0 / total as f32);
+    let worker = snap_percent(priority.weight(NanobotType::Worker) as f32 * 100.0 / total as f32);
     let hauler_end = snap_percent(
-        (ratio.weight(NanobotType::Worker) + ratio.weight(NanobotType::Hauler)) as f32 * 100.0
+        (priority.weight(NanobotType::Worker) + priority.weight(NanobotType::Hauler)) as f32
+            * 100.0
             / total as f32,
     );
     (worker.min(hauler_end), hauler_end)
 }
 
-fn write_boundaries(ratio: &mut ProductionRatio, worker_end: u32, hauler_end: u32) {
-    ratio.set_weight(NanobotType::Worker, worker_end);
-    ratio.set_weight(NanobotType::Hauler, hauler_end - worker_end);
-    ratio.set_weight(NanobotType::Defender, 100 - hauler_end);
+fn write_boundaries(priority: &mut ProductionPriority, worker_end: u32, hauler_end: u32) {
+    priority.set_weight(NanobotType::Worker, worker_end);
+    priority.set_weight(NanobotType::Hauler, hauler_end - worker_end);
+    priority.set_weight(NanobotType::Defender, 100 - hauler_end);
 }
 
 fn handle_offset(boundary: HandleBoundary, coincident: bool) -> f32 {
@@ -122,13 +119,13 @@ fn handle_offset(boundary: HandleBoundary, coincident: bool) -> f32 {
     }
 }
 
-pub fn setup_production_ratio_panel(
+pub fn setup_production_priority_panel(
     mut commands: Commands,
     fonts: Res<FontsResource>,
-    ratio: Res<ProductionRatio>,
+    priority: Res<ProductionPriority>,
 ) {
     let font = fonts.font.clone();
-    let (worker_end, hauler_end) = boundaries_from_ratio(&ratio);
+    let (worker_end, hauler_end) = boundaries_from_priority(&priority);
 
     commands
         .spawn((
@@ -145,11 +142,11 @@ pub fn setup_production_ratio_panel(
                 ..default()
             },
             BackgroundColor(Color::srgba(0.03, 0.04, 0.05, 0.78)),
-            ProductionRatioPanelRoot,
+            ProductionPriorityPanelRoot,
         ))
         .with_children(|panel| {
             panel.spawn((
-                Text::new("Production Ratio"),
+                Text::new("Production Priority"),
                 TextFont {
                     font: font.clone(),
                     font_size: PANEL_TITLE_FONT_SIZE,
@@ -160,7 +157,7 @@ pub fn setup_production_ratio_panel(
 
             panel
                 .spawn((
-                    ProductionRatioTrack,
+                    ProductionPriorityTrack,
                     RelativeCursorPosition::default(),
                     Node {
                         position_type: PositionType::Relative,
@@ -175,7 +172,7 @@ pub fn setup_production_ratio_panel(
                     let ends = [worker_end, hauler_end, 100];
                     for ((kind, start), end) in NanobotType::ALL.into_iter().zip(starts).zip(ends) {
                         track.spawn((
-                            ProductionRatioSegment(kind),
+                            ProductionPrioritySegment(kind),
                             Node {
                                 position_type: PositionType::Absolute,
                                 left: Val::Percent(start as f32),
@@ -191,7 +188,7 @@ pub fn setup_production_ratio_panel(
                         (HandleBoundary::HaulerEnd, hauler_end),
                     ] {
                         track.spawn((
-                            ProductionRatioHandle(boundary),
+                            ProductionPriorityHandle(boundary),
                             RelativeCursorPosition::default(),
                             Node {
                                 position_type: PositionType::Absolute,
@@ -209,21 +206,6 @@ pub fn setup_production_ratio_panel(
                             BorderColor::all(Color::BLACK),
                         ));
                     }
-                    for boundary in [HandleBoundary::WorkerEnd, HandleBoundary::HaulerEnd] {
-                        track.spawn((
-                            ActualCompositionTick(boundary),
-                            Visibility::Hidden,
-                            Node {
-                                position_type: PositionType::Absolute,
-                                left: Val::Percent(0.0),
-                                bottom: Val::Px(-4.0),
-                                width: Val::Px(2.0),
-                                height: Val::Px(TRACK_HEIGHT + 8.0),
-                                ..default()
-                            },
-                            BackgroundColor(Color::srgb(1.0, 0.25, 0.25)),
-                        ));
-                    }
                 });
 
             panel
@@ -236,8 +218,12 @@ pub fn setup_production_ratio_panel(
                 .with_children(|labels| {
                     for kind in NanobotType::ALL {
                         labels.spawn((
-                            ProductionRatioValueText(kind),
-                            Text::new(format!("{} {}%", type_label(kind), ratio.percentage(kind))),
+                            ProductionPriorityValueText(kind),
+                            Text::new(format!(
+                                "{} {}%",
+                                type_label(kind),
+                                priority.percentage(kind)
+                            )),
                             TextFont {
                                 font: font.clone(),
                                 font_size: PANEL_FONT_SIZE,
@@ -250,12 +236,12 @@ pub fn setup_production_ratio_panel(
         });
 }
 
-pub fn production_ratio_drag_system(
+pub fn production_priority_drag_system(
     mouse: Res<ButtonInput<MouseButton>>,
-    mut drag: ResMut<ProductionRatioDragState>,
-    track: Single<&RelativeCursorPosition, With<ProductionRatioTrack>>,
-    handles: Query<(&ProductionRatioHandle, &RelativeCursorPosition)>,
-    mut ratio: ResMut<ProductionRatio>,
+    mut drag: ResMut<ProductionPriorityDragState>,
+    track: Single<&RelativeCursorPosition, With<ProductionPriorityTrack>>,
+    handles: Query<(&ProductionPriorityHandle, &RelativeCursorPosition)>,
+    mut priority: ResMut<ProductionPriority>,
 ) {
     if mouse.just_released(MouseButton::Left) || !mouse.pressed(MouseButton::Left) {
         drag.active = None;
@@ -274,44 +260,24 @@ pub fn production_ratio_drag_system(
     let Some(position) = track.normalized else {
         return;
     };
-    let (worker_end, hauler_end) = boundaries_from_ratio(&ratio);
+    let (worker_end, hauler_end) = boundaries_from_priority(&priority);
     let snapped = snap_percent(track_percent_from_normalized_x(position.x));
     let value = clamp_boundary(active, snapped, worker_end, hauler_end);
     let (new_worker, new_hauler) = match active {
         HandleBoundary::WorkerEnd => (value, hauler_end),
         HandleBoundary::HaulerEnd => (worker_end, value),
     };
-    write_boundaries(&mut ratio, new_worker, new_hauler);
+    write_boundaries(&mut priority, new_worker, new_hauler);
 }
 
 #[allow(clippy::type_complexity)]
-pub fn update_production_ratio_panel(
-    ratio: Res<ProductionRatio>,
-    nanobots: Query<(&NanobotType, &SwarmMember), With<Nanobot>>,
-    mut segments: Query<
-        (&ProductionRatioSegment, &mut Node),
-        (
-            Without<ProductionRatioHandle>,
-            Without<ActualCompositionTick>,
-        ),
-    >,
-    mut handles: Query<
-        (&ProductionRatioHandle, &mut Node),
-        (
-            Without<ProductionRatioSegment>,
-            Without<ActualCompositionTick>,
-        ),
-    >,
-    mut labels: Query<(&ProductionRatioValueText, &mut Text)>,
-    mut ticks: Query<
-        (&ActualCompositionTick, &mut Node, &mut Visibility),
-        (
-            Without<ProductionRatioSegment>,
-            Without<ProductionRatioHandle>,
-        ),
-    >,
+pub fn update_production_priority_panel(
+    priority: Res<ProductionPriority>,
+    mut segments: Query<(&ProductionPrioritySegment, &mut Node), Without<ProductionPriorityHandle>>,
+    mut handles: Query<(&ProductionPriorityHandle, &mut Node), Without<ProductionPrioritySegment>>,
+    mut labels: Query<(&ProductionPriorityValueText, &mut Text)>,
 ) {
-    let (worker_end, hauler_end) = boundaries_from_ratio(&ratio);
+    let (worker_end, hauler_end) = boundaries_from_priority(&priority);
     for (segment, mut node) in &mut segments {
         let (start, width) = match segment.0 {
             NanobotType::Worker => (0, worker_end),
@@ -332,34 +298,8 @@ pub fn update_production_ratio_panel(
         *text = Text::new(format!(
             "{} {}%",
             type_label(label.0),
-            ratio.percentage(label.0)
+            priority.percentage(label.0)
         ));
-    }
-
-    let mut counts = [0_u32; 3];
-    for (kind, member) in &nanobots {
-        if member.0 != SwarmId::PLAYER {
-            continue;
-        }
-        let index = match kind {
-            NanobotType::Worker => 0,
-            NanobotType::Hauler => 1,
-            NanobotType::Defender => 2,
-        };
-        counts[index] += 1;
-    }
-    let total: u32 = counts.iter().sum();
-    for (tick, mut node, mut visibility) in &mut ticks {
-        if total == 0 {
-            *visibility = Visibility::Hidden;
-            continue;
-        }
-        let cumulative = match tick.0 {
-            HandleBoundary::WorkerEnd => counts[0],
-            HandleBoundary::HaulerEnd => counts[0] + counts[1],
-        };
-        node.left = Val::Percent(cumulative as f32 * 100.0 / total as f32);
-        *visibility = Visibility::Visible;
     }
 }
 

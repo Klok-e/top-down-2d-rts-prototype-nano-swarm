@@ -507,12 +507,12 @@ fn hauler_routes_to_facility_from_sink_stockpile_leg3() {
     // contracts at once: terminals beat buffers, a facility's source
     // is a sink stockpile, and a source stockpile is never a leg-3
     // source (the triple that prevents ping-pong).
-    use top_down_2d_rts_prototype_nano_swarm::nanobot::ProductionRatio;
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::ProductionPriority;
     let mut app = build_app();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    // Empty ratio so production never fires and the hauler is the
+    // Empty priority so production never fires and the hauler is the
     // only actor touching the facility's hopper.
-    app.insert_resource(ProductionRatio::new());
+    app.insert_resource(ProductionPriority::new());
     let hauler_pos = Vec2::new(0.0, 0.0);
     let source_pos = Vec2::new(50.0, 0.0); // source-role, closer to hauler
     let sink_pos = Vec2::new(100.0, 0.0); // sink-role

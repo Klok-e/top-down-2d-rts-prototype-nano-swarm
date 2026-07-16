@@ -69,9 +69,7 @@ pub const MAINTENANCE_BUFFER_TICKS: u32 = crate::SIMULATION_HZ as u32 * 60;
 /// actually receives meaningful work.
 pub const MAINTENANCE_WORK_DURATION_TICKS: u32 = crate::SIMULATION_HZ as u32 / 2;
 
-/// Health restored per fixed tick of maintenance work. A shift can restore a
-/// heavily degraded structure while the operational threshold prevents normal
-/// use until enough physical repair has completed.
+/// Health restored per fixed tick of maintenance work.
 pub const MAINTENANCE_HEALTH_PER_TICK: u32 = 2;
 
 /// Health lost on each degradation step after the buffer expires.
@@ -92,8 +90,8 @@ pub const MAINTENANCE_NEEDS_THRESHOLD: u32 = crate::SIMULATION_HZ as u32 * 60 / 
 /// Shared condition carried by every completed support structure.
 pub type SupportCondition = Structure;
 
-/// Below this health, support structures remain repairable but stop operating.
-pub const SUPPORT_OPERATIONAL_HEALTH_THRESHOLD: u32 = 25;
+/// Completed support structures operate at any positive health.
+pub const SUPPORT_OPERATIONAL_HEALTH_THRESHOLD: u32 = 1;
 
 fn attach_support_condition(
     entity: Entity,
