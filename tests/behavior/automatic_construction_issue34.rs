@@ -99,6 +99,43 @@ fn pending_consumer_creates_non_overlapping_sink_stockpile() {
 }
 
 #[test]
+fn scaled_consumer_does_not_hide_its_sink_stockpile() {
+    let mut app = common::sim_app_with_planned();
+    let cell = IVec2::ZERO;
+    paint_build(&mut app, cell);
+    let consumer = spawn_owned_planned_production(&mut app, cell);
+    app.world_mut()
+        .entity_mut(consumer)
+        .get_mut::<Transform>()
+        .expect("consumer must have Transform")
+        .scale = Vec3::new(3.0, 3.0, 1.0);
+
+    app.update();
+
+    let world = app.world_mut();
+    let consumer_pos = world
+        .entity(consumer)
+        .get::<Transform>()
+        .expect("consumer must have Transform")
+        .translation
+        .truncate();
+    let sink_pos = world
+        .query::<(&PlannedStructure, &Transform)>()
+        .iter(world)
+        .find_map(|(plan, transform)| {
+            (plan.kind == PlannedKind::SinkStockpile).then_some(transform.translation.truncate())
+        })
+        .expect("production consumer must create a Sink Stockpile plan");
+    let scaled_consumer_gap =
+        BUILDING_FOOTPRINT_RADIUS + BUILDING_FOOTPRINT_PADDING + BUILDING_FOOTPRINT_RADIUS * 3.0;
+
+    assert!(
+        sink_pos.distance(consumer_pos) >= scaled_consumer_gap,
+        "Sink Stockpile must not hide under scaled Production Facility; sink={sink_pos:?}, facility={consumer_pos:?}, threshold={scaled_consumer_gap}"
+    );
+}
+
+#[test]
 fn blocked_build_cell_creates_no_overlapping_sink_fallback() {
     let mut app = common::sim_app_with_planned();
     let cell = IVec2::new(0, 0);
@@ -205,6 +242,37 @@ fn source_stockpile_placement_rejects_production_facility_overlap() {
         "Source Stockpile placement must reject candidates that overlap a \
          Production Facility; got pos={pos:?}, facility={facility_world:?}, \
          threshold={SOURCE_STOCKPILE_OBSTACLE_GAP}"
+    );
+}
+
+#[test]
+fn source_stockpile_placement_respects_scaled_facility_footprint() {
+    let mut app = common::sim_app_with_gather();
+    let cell = IVec2::ZERO;
+    let center = common::cell_world_center(cell);
+    paint_gather(&mut app, cell);
+    common::spawn_swarm_at(&mut app, center);
+    common::spawn_worker_at(&mut app, center);
+    common::spawn_deposit(&mut app, center, 100);
+    let facility_pos = center + Vec2::X * 196.0;
+    let facility = common::spawn_idle_facility_at(&mut app, facility_pos);
+    app.world_mut()
+        .entity_mut(facility)
+        .get_mut::<Transform>()
+        .expect("facility must have Transform")
+        .scale = Vec3::new(3.0, 3.0, 1.0);
+
+    for _ in 0..5 {
+        app.update();
+    }
+
+    let source_pos = planned_source_stockpile_position(&mut app)
+        .expect("Source Stockpile plan must find a position outside the scaled facility");
+    let scaled_facility_gap =
+        BUILDING_FOOTPRINT_RADIUS + BUILDING_FOOTPRINT_PADDING + BUILDING_FOOTPRINT_RADIUS * 3.0;
+    assert!(
+        source_pos.distance(facility_pos) >= scaled_facility_gap,
+        "Source Stockpile must not hide under scaled facility sprite; source={source_pos:?}, facility={facility_pos:?}, threshold={scaled_facility_gap}"
     );
 }
 

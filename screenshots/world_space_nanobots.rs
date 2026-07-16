@@ -1,8 +1,8 @@
 //! Screenshot test for issue #38 / ADR-0004.
 //!
 //! Captures default scenario and asserts ECS world positions: worker must be
-//! near deposit center, not cell corner. Artifact also shows production
-//! structure with bots co-located.
+//! near deposit center, not cell corner. Artifact also shows the seed Production
+//! Facility visibly offset from the initial nanobot cluster.
 //!
 //! This is the visual half of the issue #38 acceptance
 //! ("Screenshot evidence (via the `screenshots/` harness)
@@ -12,7 +12,11 @@
 //! inspection; ignored harness performs offscreen GPU rendering and readback.
 
 use bevy::prelude::*;
-use top_down_2d_rts_prototype_nano_swarm::{ZONE_BLOCK_SIZE, nanobot::SwarmId};
+use top_down_2d_rts_prototype_nano_swarm::{
+    ZONE_BLOCK_SIZE,
+    nanobot::{OwnerSwarm, ProductionFacility, STRUCTURE_MAX_HEALTH, Structure, SwarmId},
+    scenario::{PLAYER_CELL, SEED_FACILITY_OFFSET, cell_origin},
+};
 
 use super::harness::{TestContext, TestFlow, run_screenshot_test};
 
@@ -42,40 +46,60 @@ pub fn world_space_nanobots(ctx: &mut TestContext) -> TestFlow {
     // facility, and ResourceLedger. Advance simulation until worker arrives.
     // Capture wait runs full app updates, so simulation may advance before the
     // callback resumes. No post-resume gameplay state is assumed.
-    if ctx.frame < 250 {
-        // Drive the simulation. The player swarm sits
-        // at (256, 256); the deposit is at (-768, 256);
-        // the worker must walk 1024 units. At 5
-        // units/tick, that's ~205 ticks. 250 ticks
-        // gives a small margin.
+    if ctx.frame < 900 {
+        // Drive the simulation. The player swarm sits at (256, 256); the
+        // deposit is at (-768, 256); the worker must walk 1024 units. Running
+        // 900 ticks also crosses the unmaintained facility-collapse horizon.
         return TestFlow::Continue;
     }
-    if ctx.frame == 250 {
+    if ctx.frame == 900 {
         // Assert ECS state before capture so simulation regressions fail with
         // position-specific diagnostics.
         let world = &mut *ctx.world;
         let deposit = deposit_pos();
         let corner = cell_corner_pos();
-        // Find the player worker.
-        let worker = world
+        let expected_facility = cell_origin(PLAYER_CELL) + SEED_FACILITY_OFFSET;
+        let player_facility = world
+            .query::<(&ProductionFacility, &OwnerSwarm, &Transform, &Structure)>()
+            .iter(world)
+            .find(|(_, owner, _, _)| {
+                world
+                    .entity(owner.0)
+                    .get::<SwarmId>()
+                    .is_some_and(|swarm| *swarm == SwarmId::PLAYER)
+            })
+            .map(|(_, _, transform, condition)| {
+                (transform.translation.truncate(), condition.health)
+            })
+            .expect("default player Production Facility must survive 900 fixed ticks");
+        assert_eq!(
+            player_facility.0, expected_facility,
+            "maintained seed facility must remain at its visible authored position"
+        );
+        assert_eq!(
+            player_facility.1, STRUCTURE_MAX_HEALTH,
+            "default Worker allocation must keep the seed facility fully maintained"
+        );
+
+        // Population growth may create several Workers. Assert against the
+        // player Worker nearest the Gather target rather than entity order.
+        let bot_pos = world
             .query::<(
-                Entity,
                 &top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotType,
                 &top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmMember,
+                &Transform,
             )>()
             .iter(world)
-            .find(|(_, t, m)| {
-                **t == top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotType::Worker
-                    && m.0 == SwarmId::PLAYER
+            .filter(|(kind, member, _)| {
+                **kind == top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotType::Worker
+                    && member.0 == SwarmId::PLAYER
             })
-            .map(|(e, _, _)| e)
+            .map(|(_, _, transform)| transform.translation.truncate())
+            .min_by(|left, right| {
+                left.distance_squared(deposit)
+                    .total_cmp(&right.distance_squared(deposit))
+            })
             .expect("a player Worker must exist in the default scenario");
-        let bot_pos = world
-            .entity(worker)
-            .get::<Transform>()
-            .expect("worker must have a Transform")
-            .translation
-            .truncate();
         let dist_to_deposit = bot_pos.distance(deposit);
         assert!(
             dist_to_deposit <= 200.0,

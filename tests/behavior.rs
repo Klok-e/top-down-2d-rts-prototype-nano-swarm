@@ -8,8 +8,12 @@ mod automatic_construction_issue34;
 mod charger;
 #[path = "behavior/charger_planned.rs"]
 mod charger_planned;
+#[path = "behavior/combat.rs"]
+mod combat;
 #[path = "behavior/defend_zone.rs"]
 mod defend_zone;
+#[path = "behavior/fixed_simulation.rs"]
+mod fixed_simulation;
 #[path = "behavior/full_source_stockpile.rs"]
 mod full_source_stockpile;
 #[path = "behavior/gather_overlap.rs"]

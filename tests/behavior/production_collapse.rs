@@ -9,11 +9,14 @@
 //! chained in order.
 
 use bevy::{math::Vec2, prelude::*};
-use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-    NanobotType, OwnerSwarm, PRODUCTION_COST_PER_BOT, ProductionCollapseState, ProductionFacility,
-    ProductionRatio, Swarm,
+use top_down_2d_rts_prototype_nano_swarm::{
+    intent::{IntentGrid, IntentKind},
+    nanobot::{
+        NanobotType, OwnerSwarm, PRODUCTION_COST_PER_BOT, ProductionCollapseState,
+        ProductionFacility, ProductionRatio, RecoveryFacts, Swarm, SwarmId, evaluate_recovery,
+    },
+    resources::{ResourceKind, ResourceLedger, Stockpile},
 };
-
 #[path = "../common/mod.rs"]
 mod common;
 
@@ -81,6 +84,17 @@ fn player_swarm_with_no_facility_and_recoverable_crew_is_not_collapsed() {
         &mut app,
         player_pos,
         &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
+    );
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        IVec2::new(1, 0),
+        IntentKind::Build,
+        Some(SwarmId::PLAYER),
+    );
+    common::spawn_stockpile(&mut app, player_pos, PRODUCTION_COST_PER_BOT, 100);
+    app.world_mut().resource_mut::<ResourceLedger>().add_for(
+        SwarmId::PLAYER,
+        ResourceKind::Minerals,
+        PRODUCTION_COST_PER_BOT,
     );
 
     app.update();
@@ -162,11 +176,12 @@ fn opponent_swarm_with_no_facility_and_no_haulers_means_player_wins() {
         ratio.set_weight(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
-    let _player = common::spawn_swarm_with_nanobots(
+    let player = common::spawn_swarm_with_nanobots(
         &mut app,
         player_pos,
         &[(NanobotType::Worker, 2), (NanobotType::Hauler, 1)],
     );
+    common::spawn_facility_at(&mut app, player, player_pos);
 
     let opponent_pos = Vec2::new(2000.0, 0.0);
     let mut opponent_ratio = ProductionRatio::new();
@@ -315,22 +330,48 @@ fn opponent_with_recoverable_crew_does_not_trigger_player_win() {
         ratio.set_weight(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
-    let _player = common::spawn_swarm_with_nanobots(
+    let player = common::spawn_swarm_with_nanobots(
         &mut app,
         player_pos,
         &[(NanobotType::Worker, 2), (NanobotType::Hauler, 1)],
     );
+    common::spawn_facility_at(&mut app, player, player_pos);
 
     let opponent_pos = Vec2::new(2000.0, 0.0);
     let mut opponent_ratio = ProductionRatio::new();
     opponent_ratio.set_weight(NanobotType::Worker, 5);
     opponent_ratio.set_weight(NanobotType::Hauler, 2);
-    let _opponent = common::spawn_opponent_swarm_with_nanobots(
+    let opponent = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
         opponent_pos,
         opponent_ratio,
         &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
     );
+    let opponent_id = *app
+        .world()
+        .entity(opponent)
+        .get::<SwarmId>()
+        .expect("opponent swarm has identity");
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        IVec2::new(2, 0),
+        IntentKind::Build,
+        Some(opponent_id),
+    );
+    app.world_mut().resource_mut::<ResourceLedger>().add_for(
+        opponent_id,
+        ResourceKind::Minerals,
+        PRODUCTION_COST_PER_BOT,
+    );
+    app.world_mut().spawn((
+        Stockpile {
+            kind: ResourceKind::Minerals,
+            amount: PRODUCTION_COST_PER_BOT,
+            capacity: 100,
+            radius: 32.0,
+        },
+        OwnerSwarm(opponent),
+        Transform::from_translation(opponent_pos.extend(0.0)),
+    ));
 
     app.update();
 
@@ -376,4 +417,47 @@ fn idle_facility_with_no_stockpile_is_not_working_for_collapse_check() {
         state.player_collapsed,
         "idle facility + no recover crew must register as a player collapse"
     );
+}
+
+#[test]
+fn worker_and_hauler_without_rebuild_path_are_unrecoverable() {
+    let outcome = evaluate_recovery(RecoveryFacts {
+        has_unmet_demand: true,
+        operational_production: false,
+        viable_planned_facility: false,
+        recoverable_existing_facility: false,
+        funded_existing_facility: false,
+        has_worker: true,
+        has_hauler: true,
+        has_build_space: false,
+        has_material_path: false,
+    });
+
+    assert!(outcome.collapsed);
+}
+
+#[test]
+fn supplied_existing_facility_is_a_recovery_path_without_build_space() {
+    let outcome = evaluate_recovery(RecoveryFacts {
+        has_unmet_demand: true,
+        recoverable_existing_facility: true,
+        has_worker: true,
+        has_hauler: true,
+        has_material_path: true,
+        ..Default::default()
+    });
+
+    assert!(!outcome.collapsed);
+}
+
+#[test]
+fn paid_existing_cycle_needs_only_a_repair_worker() {
+    let outcome = evaluate_recovery(RecoveryFacts {
+        has_unmet_demand: true,
+        funded_existing_facility: true,
+        has_worker: true,
+        ..Default::default()
+    });
+
+    assert!(!outcome.collapsed);
 }

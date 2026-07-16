@@ -176,9 +176,9 @@ pub struct DefendHold {
 /// enemies, raising those cells' scores so defenders concentrate
 /// where the pressure is, without creating defender work outside
 /// Defend paint or changing the scoring architecture.
-#[derive(Debug, Default, Resource)]
+#[derive(Debug, Default, PartialEq, Resource)]
 pub struct DefendPressure {
-    map: HashMap<IVec2, f32>,
+    map: HashMap<(crate::nanobot::components::SwarmId, IVec2), f32>,
 }
 
 impl DefendPressure {
@@ -187,8 +187,12 @@ impl DefendPressure {
     /// the initial scoring model is "every Defend cell is equally
     /// pressurised" until a threat system says otherwise.
     pub fn get(&self, cell: IVec2) -> f32 {
+        self.get_for(crate::nanobot::components::SwarmId::PLAYER, cell)
+    }
+
+    pub fn get_for(&self, swarm: crate::nanobot::components::SwarmId, cell: IVec2) -> f32 {
         self.map
-            .get(&cell)
+            .get(&(swarm, cell))
             .copied()
             .unwrap_or(DEFEND_PRESSURE_BASELINE)
     }
@@ -198,14 +202,24 @@ impl DefendPressure {
     /// below baseline lower it. A threat system writes a value
     /// above baseline when enemies occupy the painted Defend cell.
     pub fn set(&mut self, cell: IVec2, value: f32) {
-        self.map.insert(cell, value);
+        self.set_for(crate::nanobot::components::SwarmId::PLAYER, cell, value);
+    }
+
+    pub fn set_for(&mut self, swarm: crate::nanobot::components::SwarmId, cell: IVec2, value: f32) {
+        self.map.insert((swarm, cell), value);
     }
 
     /// Remove the explicit entry for `cell` so it falls back to
     /// [`DEFEND_PRESSURE_BASELINE`]. Used when the threat that
     /// raised the pressure leaves the cell.
     pub fn remove(&mut self, cell: IVec2) {
-        self.map.remove(&cell);
+        self.map
+            .remove(&(crate::nanobot::components::SwarmId::PLAYER, cell));
+    }
+
+    /// Reset all explicit pressure before rebuilding the current threat snapshot.
+    pub fn clear(&mut self) {
+        self.map.clear();
     }
 
     /// Number of cells with an explicit (non-baseline) pressure
@@ -274,6 +288,7 @@ fn resolve_defend_factors(
     slots: &SoftWorkSlots,
     density: &CellDensity,
     pressure: &DefendPressure,
+    swarm: crate::nanobot::components::SwarmId,
     exclusion: DefendSelfExclusion,
 ) -> (f32, u32, u32) {
     let physical_raw = density.density(cell);
@@ -288,7 +303,7 @@ fn resolve_defend_factors(
     } else {
         reservations_raw
     };
-    let pressure_val = pressure.get(cell);
+    let pressure_val = pressure.get_for(swarm, cell);
     (pressure_val, physical, reservations)
 }
 
@@ -312,7 +327,7 @@ pub fn best_defend_candidate(
     exclusion: DefendSelfExclusion,
 ) -> Option<IntentCandidate> {
     let mut best: Option<IntentCandidate> = None;
-    for (cell, intent_cell) in grid.iter_cells() {
+    for (cell, intent_cell) in grid.iter_active_cells() {
         if !intent_cell.has(IntentKind::Defend) {
             continue;
         }
@@ -320,7 +335,7 @@ pub fn best_defend_candidate(
             continue;
         }
         let (pressure_val, physical, reservations) =
-            resolve_defend_factors(cell, slots, density, pressure, exclusion);
+            resolve_defend_factors(cell, slots, density, pressure, swarm, exclusion);
         let score = score_defend_cell(
             commitment,
             nanobot_pos,
@@ -381,7 +396,7 @@ fn score_specific_defend_cell(
         return None;
     }
     let (pressure_val, physical, reservations) =
-        resolve_defend_factors(cell, slots, density, pressure, exclusion);
+        resolve_defend_factors(cell, slots, density, pressure, swarm, exclusion);
     Some(score_defend_cell(
         commitment,
         nanobot_pos,
@@ -653,7 +668,7 @@ impl Plugin for DefendPlugin {
         app.init_resource::<CellDensity>();
         app.init_resource::<DefendPressure>();
         app.add_systems(
-            Update,
+            FixedUpdate,
             (
                 cell_density_system,
                 defender_arrive_system,
@@ -661,7 +676,7 @@ impl Plugin for DefendPlugin {
             )
                 .chain()
                 .after(crate::nanobot::RegionalAllocationSet::Acquire)
-                .after(crate::nanobot::move_velocity_system),
+                .after(crate::nanobot::NanobotSimulationSet::Movement),
         );
     }
 }

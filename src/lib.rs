@@ -39,8 +39,8 @@ use game_settings::GameSettings;
 use intent::IntentGrid;
 use materials::BackgroundMaterial;
 use nanobot::{
-    CollapsePlugin, NanobotPlugin, PlannedStructurePlugin, ProductionPlugin,
-    RegionalAllocationPlugin,
+    CollapsePlugin, CombatPlugin, NanobotPlugin, PlannedStructurePlugin, PopulationDemandPlugin,
+    ProductionPlugin, RegionalAllocationPlugin,
 };
 use resources::ResourceLedger;
 use structure_overlay::StructureOverlayPlugin;
@@ -136,7 +136,9 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
             Some(app.world_mut().resource_mut::<Assets<Image>>().add(image))
         }
     };
-    app.insert_resource(PresentationTarget(target))
+    app.insert_resource(fixed_simulation_time())
+        .insert_resource(virtual_simulation_time())
+        .insert_resource(PresentationTarget(target))
         .insert_resource(IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32))
         .init_resource::<ResourceLedger>()
         .insert_resource(scenario::default_player_ratio())
@@ -175,16 +177,10 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
         // maintenance chain. No production system
         // auto-spawns any of them.
         .add_plugins(PlannedStructurePlugin)
-        // MaintenancePlugin chains after the planned-structure
-        // work system so the maintenance work system can reset
-        // a structure's buffer counter before the degradation
-        // system runs. Maintenance operates on the legacy
-        // `Structure` component, which is still in the codebase
-        // for test fixtures and unit tests; production
-        // structures (Stockpile, ProductionFacility, Charger)
-        // do not currently participate in the maintenance
-        // loop. Future support-structure kinds can opt in to
-        // maintenance by carrying a `Structure` sidecar.
+        // MaintenancePlugin chains after planned-structure work so maintenance
+        // can reset condition before degradation. Completed Stockpiles,
+        // Production Facilities, and Chargers receive the shared `Structure`
+        // condition sidecar and participate in this lifecycle.
         .add_plugins(nanobot::MaintenancePlugin)
         // ProductionPlugin chains after `move_velocity_system`
         // for the same reason; auto-creation runs last in its
@@ -208,8 +204,12 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
         // auto-creation -> rotation -> arrive -> work) keeps
         // the charge loop self-consistent per tick.
         .add_plugins(nanobot::ChargePlugin)
+        // Combat consumes Defend holds and Charge-scaled stats after sustain updates.
+        .add_plugins(CombatPlugin)
         // Single allocator for Gather, Planned Build, Maintenance, Defend, and Haul.
         .add_plugins(RegionalAllocationPlugin)
+        // Workload chooses total swarm size; Production Ratio chooses composition.
+        .add_plugins(PopulationDemandPlugin)
         // StructureOverlayPlugin is a consumer of the
         // simulation's per-structure state. It registers
         // its spawn/update/visibility/cleanup systems on
@@ -232,6 +232,25 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
 
 pub fn run() {
     build_app().run();
+}
+
+/// Fixed gameplay simulation frequency. Rendering and input remain frame-driven.
+pub const SIMULATION_HZ: f64 = 60.0;
+
+/// Maximum simulation steps consumed by one rendered frame. Capping catch-up
+/// prevents an overloaded frame from causing a self-sustaining lag spiral.
+pub const MAX_SIMULATION_STEPS_PER_FRAME: u32 = 4;
+
+/// Canonical fixed clock shared by runtime and deterministic tests.
+pub fn fixed_simulation_time() -> Time<Fixed> {
+    Time::<Fixed>::from_hz(SIMULATION_HZ)
+}
+
+/// Virtual clock with bounded fixed-step catch-up.
+pub fn virtual_simulation_time() -> Time<Virtual> {
+    Time::<Virtual>::from_max_delta(
+        fixed_simulation_time().timestep() * MAX_SIMULATION_STEPS_PER_FRAME,
+    )
 }
 
 pub const MAP_WIDTH: u32 = 1000;
@@ -363,6 +382,12 @@ mod overlay_transform_tests {
     //! front of the background and behind the gameplay sprites.
 
     use super::*;
+
+    #[test]
+    fn virtual_clock_bounds_fixed_step_catch_up() {
+        let expected = fixed_simulation_time().timestep() * MAX_SIMULATION_STEPS_PER_FRAME;
+        assert_eq!(virtual_simulation_time().max_delta(), expected);
+    }
 
     #[test]
     fn primary_window_starts_windowed_and_always_on_top() {

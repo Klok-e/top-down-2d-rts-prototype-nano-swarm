@@ -5,8 +5,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Commitment, GatherAssignment, Health, Nanobot, NanobotSprites, NanobotType, RegionalLease,
-        SwarmId, SwarmMember, VelocityComponent,
+        Commitment, GatherAssignment, Health, Nanobot, NanobotSprites, NanobotType,
+        OpportunityCategory, RegionalLease, SwarmId, SwarmMember, VelocityComponent,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile},
 };
@@ -91,7 +91,7 @@ pub fn regional_allocation(ctx: &mut TestContext) -> TestFlow {
             .iter(world)
         {
             assert!(assignment.is_none());
-            assert!(lease.is_none());
+            assert!(lease.is_none_or(|lease| lease.category != OpportunityCategory::Gather));
         }
         return TestFlow::Screenshot("regional_allocation".to_string());
     }

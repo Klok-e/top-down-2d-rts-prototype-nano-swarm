@@ -27,14 +27,15 @@ use bevy::prelude::*;
 use crate::ZONE_BLOCK_SIZE;
 use crate::ai::get_world_from_zone;
 use crate::intent::{IntentGrid, IntentKind};
+use crate::nanobot::SupportCondition;
 use crate::nanobot::autonomy::{Commitment, NanobotType, SoftWorkSlots, best_candidate};
 use crate::nanobot::cargo::{Cargo, LogisticsReservation};
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm, SwarmId, SwarmMember};
 use crate::nanobot::haul::HAULER_TRANSFER_PER_TICK;
 use crate::nanobot::placement::{
-    BUILDING_FOOTPRINT_RADIUS, SOURCE_STOCKPILE_FOOTPRINT_RADIUS,
-    SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PADDING, SOURCE_STOCKPILE_PLACEMENT_COUNT,
-    SOURCE_STOCKPILE_PLACEMENT_RADIUS, find_source_stockpile_placement,
+    SOURCE_STOCKPILE_FOOTPRINT_RADIUS, SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PADDING,
+    SOURCE_STOCKPILE_PLACEMENT_COUNT, SOURCE_STOCKPILE_PLACEMENT_RADIUS,
+    find_source_stockpile_placement, scaled_building_footprint_radius,
 };
 use crate::nanobot::planned::{
     PlannedKind, PlannedStructure, PlannedStructureClaim, PlannedStructureProgress,
@@ -215,17 +216,19 @@ fn find_nearest_stockpile(
         &Transform,
         Option<&StockpileRole>,
         Option<&OwnerSwarm>,
+        Option<&SupportCondition>,
     )>,
     swarms: &Query<&SwarmId, With<Swarm>>,
     reservations: &Query<(Entity, &LogisticsReservation)>,
     same_tick_reserved: &std::collections::HashMap<Entity, u32>,
 ) -> Option<(Entity, u32)> {
     let mut best: Option<(f32, Entity, u32)> = None;
-    for (entity, stockpile, transform, role, owner) in stockpiles.iter() {
+    for (entity, stockpile, transform, role, owner, condition) in stockpiles.iter() {
         if Some(entity) == excluding_stockpile
             || stockpile.kind != kind
             || matches!(role, Some(StockpileRole::Sink))
             || !stockpile_owned_by(owner, worker_swarm, swarms)
+            || condition.is_some_and(|condition| !condition.is_operational())
         {
             continue;
         }
@@ -521,16 +524,18 @@ pub fn source_stockpile_demand_system(
                 .iter()
                 .map(|(_, t, _)| (t.translation.truncate(), SOURCE_STOCKPILE_FOOTPRINT_RADIUS)),
         );
-        obstacles.extend(
-            facility_obstacles
-                .iter()
-                .map(|t| (t.translation.truncate(), BUILDING_FOOTPRINT_RADIUS)),
-        );
-        obstacles.extend(
-            charger_obstacles
-                .iter()
-                .map(|t| (t.translation.truncate(), BUILDING_FOOTPRINT_RADIUS)),
-        );
+        obstacles.extend(facility_obstacles.iter().map(|t| {
+            (
+                t.translation.truncate(),
+                scaled_building_footprint_radius(t),
+            )
+        }));
+        obstacles.extend(charger_obstacles.iter().map(|t| {
+            (
+                t.translation.truncate(),
+                scaled_building_footprint_radius(t),
+            )
+        }));
         obstacles.extend(
             newly_planned_positions
                 .iter()
@@ -538,7 +543,7 @@ pub fn source_stockpile_demand_system(
         );
         let mut gather_cells: Vec<IVec2> = Vec::new();
         let mut build_worlds: Vec<Vec2> = Vec::new();
-        for (cell, intent_cell) in grid.iter_cells() {
+        for (cell, intent_cell) in grid.iter_active_cells() {
             if intent_cell.has(IntentKind::Gather)
                 && intent_cell
                     .owner(IntentKind::Gather)
@@ -769,6 +774,7 @@ pub fn worker_gather_arrive_system(
         &Transform,
         Option<&StockpileRole>,
         Option<&OwnerSwarm>,
+        Option<&SupportCondition>,
     )>,
     swarms: Query<&SwarmId, With<Swarm>>,
     planned_structures: Query<&PlannedStructure>,
@@ -931,6 +937,7 @@ pub fn worker_gather_reroute_system(
         &Transform,
         Option<&StockpileRole>,
         Option<&OwnerSwarm>,
+        Option<&SupportCondition>,
     )>,
     swarms: Query<&SwarmId, With<Swarm>>,
     reservations: Query<(Entity, &LogisticsReservation)>,
@@ -943,23 +950,23 @@ pub fn worker_gather_reroute_system(
         if cargo.amount == 0 {
             continue;
         }
-        let current_valid =
-            stockpiles
-                .get(reservation.destination)
-                .is_ok_and(|(_, stockpile, _, role, owner)| {
-                    reservation.destination_remaining >= cargo.amount
-                        && stockpile.kind == cargo.kind
-                        && !matches!(role, Some(StockpileRole::Sink))
-                        && stockpile_owned_by(owner, swarm_member.0, &swarms)
-                        && stockpile
-                            .free_space()
-                            .saturating_sub(reserved_destination_capacity(
-                                &reservations,
-                                reservation.destination,
-                                Some(entity),
-                            ))
-                            >= cargo.amount
-                });
+        let current_valid = stockpiles.get(reservation.destination).is_ok_and(
+            |(_, stockpile, _, role, owner, condition)| {
+                reservation.destination_remaining >= cargo.amount
+                    && stockpile.kind == cargo.kind
+                    && !matches!(role, Some(StockpileRole::Sink))
+                    && stockpile_owned_by(owner, swarm_member.0, &swarms)
+                    && condition.is_none_or(|condition| condition.is_operational())
+                    && stockpile
+                        .free_space()
+                        .saturating_sub(reserved_destination_capacity(
+                            &reservations,
+                            reservation.destination,
+                            Some(entity),
+                        ))
+                        >= cargo.amount
+            },
+        );
         if current_valid {
             continue;
         }
@@ -986,7 +993,7 @@ pub fn worker_gather_reroute_system(
             continue;
         };
         *same_tick_claims.entry(destination).or_default() += cargo.amount;
-        let Ok((_, stockpile, stockpile_transform, _, _)) = stockpiles.get(destination) else {
+        let Ok((_, stockpile, stockpile_transform, _, _, _)) = stockpiles.get(destination) else {
             continue;
         };
         let mut redirected = *reservation;
@@ -1030,6 +1037,7 @@ pub fn worker_gather_carry_assign_system(
         &Transform,
         Option<&StockpileRole>,
         Option<&OwnerSwarm>,
+        Option<&SupportCondition>,
     )>,
     swarms: Query<&SwarmId, With<Swarm>>,
     reservations: Query<(Entity, &LogisticsReservation)>,
@@ -1043,11 +1051,12 @@ pub fn worker_gather_carry_assign_system(
             stockpiles
                 .get(reservation.destination)
                 .ok()
-                .filter(|(_, stockpile, _, role, owner)| {
+                .filter(|(_, stockpile, _, role, owner, condition)| {
                     reservation.destination_remaining >= load.amount
                         && stockpile.kind == load.kind
                         && !matches!(role, Some(StockpileRole::Sink))
                         && stockpile_owned_by(*owner, swarm_member.0, &swarms)
+                        && condition.is_none_or(|condition| condition.is_operational())
                         && stockpile
                             .free_space()
                             .saturating_sub(reserved_destination_capacity(
@@ -1063,7 +1072,7 @@ pub fn worker_gather_carry_assign_system(
                             )
                             >= load.amount
                 })
-                .map(|(destination, stockpile, transform, _, _)| {
+                .map(|(destination, stockpile, transform, _, _, _)| {
                     (destination, stockpile, transform)
                 })
         } else {
@@ -1083,7 +1092,7 @@ pub fn worker_gather_carry_assign_system(
                 stockpiles
                     .get(destination)
                     .ok()
-                    .map(|(_, stockpile, transform, _, _)| (destination, stockpile, transform))
+                    .map(|(_, stockpile, transform, _, _, _)| (destination, stockpile, transform))
             })
         };
         let Some((stockpile_entity, stockpile, stockpile_transform)) = selected else {
@@ -1130,6 +1139,7 @@ pub fn worker_gather_delivery_system(
         &Transform,
         Option<&StockpileRole>,
         Option<&OwnerSwarm>,
+        Option<&SupportCondition>,
     )>,
     swarms: Query<&SwarmId, With<Swarm>>,
 ) {
@@ -1139,7 +1149,7 @@ pub fn worker_gather_delivery_system(
         if *nanobot_type != NanobotType::Worker {
             continue;
         }
-        let Ok((mut stockpile, stockpile_transform, role, owner)) =
+        let Ok((mut stockpile, stockpile_transform, role, owner, condition)) =
             stockpiles.get_mut(returning.stockpile)
         else {
             commands.entity(entity).remove::<ReturningToStockpile>();
@@ -1149,8 +1159,12 @@ pub fn worker_gather_delivery_system(
             || matches!(role, Some(StockpileRole::Sink))
             || !stockpile_owned_by(owner, swarm_member.0, &swarms)
             || stockpile.free_space() == 0
+            || condition.is_some_and(|condition| !condition.is_operational())
         {
             commands.entity(entity).remove::<ReturningToStockpile>();
+            if let Some(reservation) = reservation.as_deref_mut() {
+                reservation.destination_remaining = 0;
+            }
             continue;
         }
         if transform
@@ -1203,7 +1217,7 @@ pub struct GatherPlugin;
 impl Plugin for GatherPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
-            Update,
+            FixedUpdate,
             (
                 source_stockpile_demand_system,
                 worker_gather_arrive_system,
@@ -1214,7 +1228,7 @@ impl Plugin for GatherPlugin {
             )
                 .chain()
                 .after(crate::nanobot::RegionalAllocationSet::Acquire)
-                .after(crate::nanobot::move_velocity_system),
+                .after(crate::nanobot::NanobotSimulationSet::Movement),
         );
     }
 }

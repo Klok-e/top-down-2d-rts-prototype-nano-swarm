@@ -2,9 +2,10 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        ActionableOpportunity, ActionableProjection, AllocationRegion, MAINTENANCE_NEEDS_THRESHOLD,
-        OpportunityCategory, OwnerSwarm, PlannedKind, PlannedStructure, Structure, StructureKind,
-        SwarmId, project_actionable_opportunities_system,
+        ActionableOpportunity, ActionableProjection, AllocationRegion, DefendPressure,
+        MAINTENANCE_NEEDS_THRESHOLD, OpportunityCategory, OwnerSwarm, PlannedKind,
+        PlannedStructure, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, SwarmId,
+        project_actionable_opportunities_system,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole},
 };
@@ -90,6 +91,31 @@ fn build_and_defend_intent_project_maintenance_and_defend_work() {
 }
 
 #[test]
+fn defend_pressure_changes_projected_defender_capacity() {
+    let mut app = projection_app();
+    app.init_resource::<DefendPressure>();
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        IVec2::ZERO,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    app.world_mut()
+        .resource_mut::<DefendPressure>()
+        .set(IVec2::ZERO, 3.0);
+
+    app.update();
+
+    let defend = app
+        .world()
+        .resource::<ActionableProjection>()
+        .opportunities(AllocationRegion::for_cell(IVec2::ZERO))
+        .iter()
+        .find(|opportunity| opportunity.category == OpportunityCategory::Defend)
+        .expect("Defend opportunity projected");
+    assert_eq!(defend.available_work, 3);
+}
+
+#[test]
 fn haul_opportunity_is_indexed_by_source_region() {
     let mut app = projection_app();
     let swarm = app.world_mut().spawn(SwarmId::PLAYER).id();
@@ -130,6 +156,48 @@ fn haul_opportunity_is_indexed_by_source_region() {
             .opportunities(AllocationRegion::for_cell(IVec2::ZERO))
             .is_empty(),
         "sink region must not own source-anchored haul work"
+    );
+}
+
+#[test]
+fn degraded_stockpile_does_not_project_haul_work() {
+    let mut app = projection_app();
+    let swarm = app.world_mut().spawn(SwarmId::PLAYER).id();
+    let mut condition = Structure::new(StructureKind::Basic);
+    condition.health = SUPPORT_OPERATIONAL_HEALTH_THRESHOLD - 1;
+    app.world_mut().spawn((
+        Stockpile {
+            kind: ResourceKind::Minerals,
+            amount: 20,
+            capacity: 20,
+            radius: 16.0,
+        },
+        StockpileRole::Source,
+        OwnerSwarm(swarm),
+        condition,
+        Transform::from_xyz(32.0, 32.0, 0.0),
+    ));
+    app.world_mut().spawn((
+        Stockpile {
+            kind: ResourceKind::Minerals,
+            amount: 0,
+            capacity: 50,
+            radius: 16.0,
+        },
+        StockpileRole::Sink,
+        OwnerSwarm(swarm),
+        Transform::from_xyz(544.0, 32.0, 0.0),
+    ));
+
+    app.update();
+
+    assert!(
+        app.world()
+            .resource::<ActionableProjection>()
+            .opportunities(AllocationRegion::for_cell(IVec2::ZERO))
+            .iter()
+            .all(|opportunity| opportunity.category != OpportunityCategory::Haul),
+        "degraded Stockpile must stop participating in logistics",
     );
 }
 

@@ -73,8 +73,8 @@ A non-player swarm governed by the same intent, production, logistics, maintenan
 _Avoid_: Enemy AI faction, scripted attackers
 
 **Production Collapse**:
-A win or loss condition where a swarm loses the ability to recover because it has no working production capacity and too few remaining nanobots to rebuild it.
-_Avoid_: Population wipeout, king unit death
+A win or loss condition where unmet workload remains but a swarm has neither operational production nor a complete physical recovery path. Recovery requires usable construction space or an owned production plan, appropriate Worker/Hauler capability, and reachable material; surviving crew alone is insufficient.
+_Avoid_: Population wipeout, king unit death, crew-count proxy
 
 **Automatic Construction**:
 The swarm creates needed structures from demand pressure rather than direct player placement. Production facilities, stockpiles, chargers, and similar support structures emerge inside or near matching intent paint when existing capacity is too busy for current intent. Painting a Build Zone alone does not create a structure; there must be active demand for the resulting support structure.
@@ -85,15 +85,15 @@ When an intent category has valid work and available eligible nanobots, the swar
 _Avoid_: Manual assignment, hard quota, perfect allocation
 
 **Planned Structure**:
-A not-yet-built support structure selected by automatic construction and waiting for worker time. Planned structures have a kind, owner, location, and build work remaining before they become physical structures. Once planned, its location is stable; organic-looking placement may vary when first selected, but existing plans do not re-roll every tick.
+A stable, owner-scoped commitment to build one support structure at one location. It persists when the demand that triggered it recedes and resolves only by completion or destruction.
 _Avoid_: Blueprint, ghost building, construction order
 
 **Building Footprint**:
-The occupied space of a planned or completed support structure. Building footprints do not overlap other planned structures, completed structures, or resource deposits; nanobots are ignored for footprint blocking.
-_Avoid_: Sprite overlap, unit collision
+The world area visibly occupied by a planned or completed support structure. Planned and completed forms reserve the same kind-specific footprint, which cannot overlap other structures or resource deposits; nanobots do not block it.
+_Avoid_: Generic sprite size, unit collision
 
 **Maintenance**:
-Ongoing worker time required to keep structures functional. All structures degrade when not maintained, so overexpansion or cut-off worker access can cause infrastructure to weaken or collapse.
+Ongoing worker time required to prevent structure collapse. A structure remains fully functional while any health remains and is destroyed at zero; overexpansion or cut-off worker access creates collapse risk rather than partial shutdown.
 _Avoid_: Permanent buildings, fire-and-forget construction
 
 **Overlapping Intent**:
@@ -148,6 +148,14 @@ _Avoid_: Fighter, soldier, combat unit
 A player-set target mix of nanobot types. Production automatically adjusts over time to move the swarm toward this mix. When producing, the swarm prioritizes the type with the largest deficit from the target ratio, skipping blocked types temporarily if their requirements cannot be met.
 _Avoid_: Build queue, manual unit training
 
+**Population Demand**:
+The swarm size justified by actionable workload, including committed construction work. A pending Production Facility may increase Worker demand but is never evidence for committing another Production Facility.
+_Avoid_: Population cap, unit quota
+
+**Production Pressure**:
+Sustained unmet Population Demand while every existing Production Facility remains busy. Brief demand spikes or a facility's internal cycle progress do not establish Production Pressure.
+_Avoid_: Build-zone size, instantaneous deficit
+
 **Production Facility**:
-A player structure automatically created when existing production facilities are too busy for the swarm's production needs. It consumes delivered resources and automatically produces nanobots toward the production ratio. Early nanobot types may share production cost and time; later designs may differentiate costs or requirements.
+A terminal support structure that consumes delivered resources and automatically produces nanobots toward the Production Ratio. Production Pressure may create one unfinished expansion commitment per swarm; capacity is reassessed after that commitment completes or is lost.
 _Avoid_: Barracks, factory queue, manual spawner

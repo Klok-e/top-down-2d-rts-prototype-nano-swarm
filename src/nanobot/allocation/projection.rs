@@ -11,8 +11,8 @@ use super::{
 use crate::ZONE_BLOCK_SIZE;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::{
-    Charger, OwnerSwarm, PlannedStructure, ProductionFacility, Structure, SwarmId,
-    cell_overlaps_circle,
+    Charger, DefendPressure, OwnerSwarm, PlannedStructure, ProductionFacility, Structure,
+    SupportCondition, SwarmId, cell_overlaps_circle,
 };
 use crate::resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole};
 
@@ -89,6 +89,7 @@ enum SourceRole {
 pub fn project_actionable_opportunities_system(
     mut grid: ResMut<IntentGrid>,
     mut projection: ResMut<ActionableProjection>,
+    pressure: Option<Res<DefendPressure>>,
     deposits: Query<(
         Entity,
         Ref<ResourceDeposit>,
@@ -104,12 +105,34 @@ pub fn project_actionable_opportunities_system(
         Ref<Transform>,
         Option<Ref<StockpileRole>>,
         Option<Ref<OwnerSwarm>>,
+        Option<Ref<SupportCondition>>,
     )>,
-    facilities: Query<(Entity, Ref<ProductionFacility>, Option<Ref<OwnerSwarm>>)>,
-    chargers: Query<(Entity, Ref<Charger>, Option<Ref<OwnerSwarm>>)>,
+    facilities: Query<(
+        Entity,
+        Ref<ProductionFacility>,
+        Option<Ref<OwnerSwarm>>,
+        Option<Ref<SupportCondition>>,
+    )>,
+    chargers: Query<(
+        Entity,
+        Ref<Charger>,
+        Option<Ref<OwnerSwarm>>,
+        Option<Ref<SupportCondition>>,
+    )>,
     swarms: Query<&SwarmId>,
     entities: Query<Entity>,
 ) {
+    if pressure
+        .as_ref()
+        .is_some_and(|pressure| pressure.is_changed())
+    {
+        for (cell, _intent) in grid
+            .iter_active_cells()
+            .filter(|(_, intent)| intent.has(IntentKind::Defend))
+        {
+            projection.invalidate_cell(cell);
+        }
+    }
     for cell in grid.drain_projection_dirty() {
         projection.invalidate_cell(cell);
         for (_, deposit, transform, _) in &deposits {
@@ -191,11 +214,14 @@ pub fn project_actionable_opportunities_system(
     }
 
     let mut haul_sinks_changed = false;
-    for (_, stockpile, transform, role, owner) in &stockpiles {
+    for (_, stockpile, transform, role, owner, condition) in &stockpiles {
         if stockpile.is_changed()
             || transform.is_changed()
             || role.as_ref().is_some_and(|role| role.is_changed())
             || owner.as_ref().is_some_and(|owner| owner.is_changed())
+            || condition
+                .as_ref()
+                .is_some_and(|condition| condition.is_changed())
         {
             projection.invalidate_cell(crate::nanobot::world_to_cell(
                 transform.translation.truncate(),
@@ -203,14 +229,22 @@ pub fn project_actionable_opportunities_system(
             haul_sinks_changed = true;
         }
     }
-    haul_sinks_changed |= facilities.iter().any(|(_, facility, owner)| {
-        facility.is_changed() || owner.as_ref().is_some_and(|owner| owner.is_changed())
+    haul_sinks_changed |= facilities.iter().any(|(_, facility, owner, condition)| {
+        facility.is_changed()
+            || owner.as_ref().is_some_and(|owner| owner.is_changed())
+            || condition
+                .as_ref()
+                .is_some_and(|condition| condition.is_changed())
     });
-    haul_sinks_changed |= chargers.iter().any(|(_, charger, owner)| {
-        charger.is_changed() || owner.as_ref().is_some_and(|owner| owner.is_changed())
+    haul_sinks_changed |= chargers.iter().any(|(_, charger, owner, condition)| {
+        charger.is_changed()
+            || owner.as_ref().is_some_and(|owner| owner.is_changed())
+            || condition
+                .as_ref()
+                .is_some_and(|condition| condition.is_changed())
     });
     if haul_sinks_changed {
-        for (_, stockpile, transform, _, _) in &stockpiles {
+        for (_, stockpile, transform, _, _, _) in &stockpiles {
             if stockpile.amount > 0 {
                 projection.invalidate_cell(crate::nanobot::world_to_cell(
                     transform.translation.truncate(),
@@ -221,7 +255,10 @@ pub fn project_actionable_opportunities_system(
 
     let stockpile_snapshots = stockpiles
         .iter()
-        .filter_map(|(entity, stockpile, transform, role, owner)| {
+        .filter_map(|(entity, stockpile, transform, role, owner, condition)| {
+            if condition.is_some_and(|condition| !condition.is_operational()) {
+                return None;
+            }
             Some(StockpileSnapshot {
                 entity,
                 cell: crate::nanobot::world_to_cell(transform.translation.truncate()),
@@ -244,24 +281,38 @@ pub fn project_actionable_opportunities_system(
             source_role: SourceRole::Source,
         })
         .collect::<Vec<_>>();
-    sinks.extend(facilities.iter().filter_map(|(entity, facility, owner)| {
-        Some(SinkSnapshot {
-            entity,
-            kind: facility.input_kind,
-            free_space: facility.input_free_space(),
-            owner: resolve_owner(owner.as_deref(), &swarms)?,
-            source_role: SourceRole::Sink,
-        })
-    }));
-    sinks.extend(chargers.iter().filter_map(|(entity, charger, owner)| {
-        Some(SinkSnapshot {
-            entity,
-            kind: charger.kind,
-            free_space: charger.free_space(),
-            owner: resolve_owner(owner.as_deref(), &swarms)?,
-            source_role: SourceRole::Sink,
-        })
-    }));
+    sinks.extend(
+        facilities
+            .iter()
+            .filter_map(|(entity, facility, owner, condition)| {
+                if condition.is_some_and(|condition| !condition.is_operational()) {
+                    return None;
+                }
+                Some(SinkSnapshot {
+                    entity,
+                    kind: facility.input_kind,
+                    free_space: facility.input_free_space(),
+                    owner: resolve_owner(owner.as_deref(), &swarms)?,
+                    source_role: SourceRole::Sink,
+                })
+            }),
+    );
+    sinks.extend(
+        chargers
+            .iter()
+            .filter_map(|(entity, charger, owner, condition)| {
+                if condition.is_some_and(|condition| !condition.is_operational()) {
+                    return None;
+                }
+                Some(SinkSnapshot {
+                    entity,
+                    kind: charger.kind,
+                    free_space: charger.free_space(),
+                    owner: resolve_owner(owner.as_deref(), &swarms)?,
+                    source_role: SourceRole::Sink,
+                })
+            }),
+    );
 
     let dirty_regions = projection.take_dirty_regions();
     for region in dirty_regions {
@@ -272,6 +323,7 @@ pub fn project_actionable_opportunities_system(
             &deposits,
             &structures,
             &swarms,
+            pressure.as_deref(),
             &mut opportunities,
         );
         project_planned_work(region, &planned, &swarms, &mut opportunities);
@@ -293,6 +345,7 @@ fn project_intent_work(
     )>,
     structures: &Query<(Entity, Ref<Structure>, Ref<Transform>, Option<&OwnerSwarm>)>,
     swarms: &Query<&SwarmId>,
+    pressure: Option<&DefendPressure>,
     out: &mut Vec<ActionableOpportunity>,
 ) {
     for (entity, deposit, transform, owner) in deposits.iter() {
@@ -304,7 +357,7 @@ fn project_intent_work(
         }
 
         let mut anchors = Vec::<(Option<SwarmId>, IVec2)>::new();
-        for (cell, intent) in grid.iter_cells().filter(|(cell, intent)| {
+        for (cell, intent) in grid.iter_active_cells().filter(|(cell, intent)| {
             intent.has(IntentKind::Gather)
                 && owners_compatible(intent.owner(IntentKind::Gather), deposit_owner)
                 && cell_overlaps_circle(*cell, transform.translation.truncate(), deposit.radius)
@@ -344,6 +397,27 @@ fn project_intent_work(
         }
     }
 
+    for (entity, structure, transform, owner) in structures.iter() {
+        if !structure.needs_maintenance() {
+            continue;
+        }
+        let cell = crate::nanobot::world_to_cell(transform.translation.truncate());
+        if AllocationRegion::for_cell(cell) != region {
+            continue;
+        }
+        let Some(owner) = resolve_owner(owner, swarms) else {
+            continue;
+        };
+        out.push(ActionableOpportunity {
+            region,
+            category: OpportunityCategory::Maintenance,
+            target: OpportunityTarget::Maintenance { structure: entity },
+            cell,
+            owner,
+            available_work: 1,
+        });
+    }
+
     let min = region.min_cell();
     for dy in 0..ALLOCATION_REGION_CELLS {
         for dx in 0..ALLOCATION_REGION_CELLS {
@@ -352,37 +426,20 @@ fn project_intent_work(
                 continue;
             };
 
-            if intent.has(IntentKind::Build) {
-                let paint_owner = intent.owner(IntentKind::Build);
-                for (entity, structure, transform, owner) in structures.iter() {
-                    let Some(structure_owner) = resolve_owner(owner, swarms) else {
-                        continue;
-                    };
-                    if !structure.needs_maintenance()
-                        || crate::nanobot::world_to_cell(transform.translation.truncate()) != cell
-                        || !owners_compatible(paint_owner, structure_owner)
-                    {
-                        continue;
-                    }
-                    out.push(ActionableOpportunity {
-                        region,
-                        category: OpportunityCategory::Maintenance,
-                        target: OpportunityTarget::Maintenance { structure: entity },
-                        cell,
-                        owner: paint_owner.or(structure_owner),
-                        available_work: 1,
-                    });
-                }
-            }
-
             if intent.has(IntentKind::Defend) {
+                let owner = intent.owner(IntentKind::Defend);
                 out.push(ActionableOpportunity {
                     region,
                     category: OpportunityCategory::Defend,
                     target: OpportunityTarget::Defend { cell },
                     cell,
-                    owner: intent.owner(IntentKind::Defend),
-                    available_work: 1,
+                    owner,
+                    available_work: owner
+                        .and_then(|owner| {
+                            pressure.map(|pressure| pressure.get_for(owner, cell).ceil() as u32)
+                        })
+                        .unwrap_or(1)
+                        .max(1),
                 });
             }
         }
@@ -470,25 +527,6 @@ fn invalidate_circle_regions(projection: &mut ActionableProjection, center: Vec2
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn circle_invalidation_includes_cells_touching_exact_lower_boundary() {
-        let mut projection = ActionableProjection::default();
-        let center = Vec2::new(9.0 * ZONE_BLOCK_SIZE, 0.5 * ZONE_BLOCK_SIZE);
-
-        invalidate_circle_regions(&mut projection, center, ZONE_BLOCK_SIZE);
-
-        assert!(
-            projection
-                .dirty_regions
-                .contains(&AllocationRegion::for_cell(IVec2::new(7, 0)))
-        );
-    }
-}
-
 fn resolve_owner(owner: Option<&OwnerSwarm>, swarms: &Query<&SwarmId>) -> Option<Option<SwarmId>> {
     match owner {
         None => Some(None),
@@ -530,4 +568,23 @@ fn opportunity_sort_key(opportunity: &ActionableOpportunity) -> (u8, u8, u64, u6
         opportunity.cell.y,
         opportunity.cell.x,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn circle_invalidation_includes_cells_touching_exact_lower_boundary() {
+        let mut projection = ActionableProjection::default();
+        let center = Vec2::new(9.0 * ZONE_BLOCK_SIZE, 0.5 * ZONE_BLOCK_SIZE);
+
+        invalidate_circle_regions(&mut projection, center, ZONE_BLOCK_SIZE);
+
+        assert!(
+            projection
+                .dirty_regions
+                .contains(&AllocationRegion::for_cell(IVec2::new(7, 0)))
+        );
+    }
 }

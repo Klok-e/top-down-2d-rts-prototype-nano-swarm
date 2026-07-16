@@ -11,8 +11,10 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        MAINTENANCE_BUFFER_TICKS, MAINTENANCE_NEEDS_THRESHOLD, MAINTENANCE_WORK_DURATION_TICKS,
-        MaintenanceAssignment, MaintenanceProgress, STRUCTURE_MAX_HEALTH, Structure,
+        Cargo, DEGRADATION_INTERVAL_TICKS, MAINTENANCE_BUFFER_TICKS, MAINTENANCE_NEEDS_THRESHOLD,
+        MAINTENANCE_WORK_DURATION_TICKS, MaintenanceAssignment, MaintenanceProgress, NanobotBundle,
+        ReturningToStockpile, STRUCTURE_MAX_HEALTH, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD,
+        Structure, StructureKind, worker_gather_delivery_system,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
 };
@@ -72,10 +74,26 @@ fn structure_tracks_maintenance_state_via_buffer_counter() {
 }
 
 #[test]
+fn real_stockpile_enters_shared_maintenance_lifecycle() {
+    let mut app = build_app();
+    let stockpile = common::spawn_stockpile(&mut app, Vec2::ZERO, 0, 100);
+
+    app.update();
+
+    let condition = app
+        .world()
+        .entity(stockpile)
+        .get::<Structure>()
+        .expect("real Stockpile must receive shared structure condition");
+    assert_eq!(condition.health, STRUCTURE_MAX_HEALTH);
+    assert_eq!(condition.ticks_since_maintained, 1);
+}
+
+#[test]
 fn structure_degrades_when_no_workers_maintain_it() {
     // Acceptance: "Structures degrade when not maintained."
-    // Once `ticks_since_maintained` exceeds the buffer, the
-    // structure loses one health per tick.
+    // Once `ticks_since_maintained` exceeds the buffer, the structure loses
+    // health at the fixed degradation cadence.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
     let center = common::cell_world_center(cell);
@@ -83,7 +101,7 @@ fn structure_degrades_when_no_workers_maintain_it() {
 
     // Run past the buffer plus a few extra ticks so the
     // degradation actually kicks in.
-    let ticks = (MAINTENANCE_BUFFER_TICKS + 5) as usize;
+    let ticks = (MAINTENANCE_BUFFER_TICKS + DEGRADATION_INTERVAL_TICKS + 1) as usize;
     for _ in 0..ticks {
         app.update();
     }
@@ -119,7 +137,8 @@ fn structure_collapses_at_zero_health() {
     // Run past the buffer plus the full health bar plus a few
     // extra ticks so the structure is guaranteed to have
     // collapsed.
-    let ticks = (MAINTENANCE_BUFFER_TICKS + STRUCTURE_MAX_HEALTH + 5) as usize;
+    let ticks =
+        (MAINTENANCE_BUFFER_TICKS + STRUCTURE_MAX_HEALTH * DEGRADATION_INTERVAL_TICKS + 1) as usize;
     for _ in 0..ticks {
         app.update();
     }
@@ -308,5 +327,80 @@ fn idle_worker_picks_maintenance_over_idling_when_structure_is_stale() {
     assert!(
         has_marker,
         "worker must receive a maintenance assignment when a stale structure is in the cell"
+    );
+}
+
+#[test]
+fn real_structure_requests_maintenance_without_build_paint() {
+    let mut app = build_app();
+    let center = common::cell_world_center(IVec2::ZERO);
+    let stockpile = common::spawn_stockpile(&mut app, center, 0, 100);
+    app.update();
+    app.world_mut()
+        .entity_mut(stockpile)
+        .get_mut::<Structure>()
+        .expect("stockpile has shared condition")
+        .ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
+    let worker = common::spawn_worker_at(&mut app, center);
+
+    app.update();
+
+    let worker = app.world().entity(worker);
+    assert!(
+        worker.get::<MaintenanceAssignment>().is_some()
+            || worker.get::<MaintenanceProgress>().is_some(),
+        "maintenance originates from the real structure, not Build paint",
+    );
+}
+
+#[test]
+fn degraded_stockpile_rejects_worker_delivery_without_losing_cargo() {
+    let mut app = App::new();
+    app.add_systems(Update, worker_gather_delivery_system);
+    let mut condition = Structure::new(StructureKind::Basic);
+    condition.health = SUPPORT_OPERATIONAL_HEALTH_THRESHOLD - 1;
+    let stockpile = app
+        .world_mut()
+        .spawn((
+            Stockpile {
+                kind: ResourceKind::Minerals,
+                amount: 0,
+                capacity: 100,
+                radius: 32.0,
+            },
+            condition,
+            Transform::default(),
+        ))
+        .id();
+    let worker = app
+        .world_mut()
+        .spawn((
+            NanobotBundle::default(),
+            Transform::default(),
+            Cargo {
+                kind: ResourceKind::Minerals,
+                amount: 4,
+            },
+            ReturningToStockpile { stockpile },
+        ))
+        .id();
+
+    app.update();
+
+    assert_eq!(
+        app.world()
+            .entity(stockpile)
+            .get::<Stockpile>()
+            .unwrap()
+            .amount,
+        0,
+    );
+    assert_eq!(app.world().entity(worker).get::<Cargo>().unwrap().amount, 4);
+    assert!(
+        app.world()
+            .entity(worker)
+            .get::<ReturningToStockpile>()
+            .is_none(),
+        "worker must release degraded destination and retry later",
     );
 }

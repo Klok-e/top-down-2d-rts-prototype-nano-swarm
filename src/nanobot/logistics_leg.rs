@@ -432,9 +432,9 @@ mod tests {
                 1.0
             } else if from == Vec2::new(10.0, 0.0) && to == Vec2::new(200.0, 0.0) {
                 1_000.0
-            } else if from == Vec2::ZERO && to == Vec2::new(100.0, 0.0) {
-                100.0
-            } else if from == Vec2::new(100.0, 0.0) && to == Vec2::new(200.0, 0.0) {
+            } else if (from == Vec2::ZERO && to == Vec2::new(100.0, 0.0))
+                || (from == Vec2::new(100.0, 0.0) && to == Vec2::new(200.0, 0.0))
+            {
                 100.0
             } else {
                 from.distance(to)

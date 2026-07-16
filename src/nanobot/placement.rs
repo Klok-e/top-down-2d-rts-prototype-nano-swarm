@@ -74,6 +74,11 @@ pub const BUILDING_FOOTPRINT_RADIUS: f32 =
 /// between support structures and Resource Deposits.
 pub const BUILDING_FOOTPRINT_PADDING: f32 = 16.0;
 
+/// Placement radius of a rendered support structure, including authored scale.
+pub fn scaled_building_footprint_radius(transform: &Transform) -> f32 {
+    BUILDING_FOOTPRINT_RADIUS * transform.scale.x.abs().max(transform.scale.y.abs())
+}
+
 /// Maximum in-cell offset used when searching for a valid
 /// Build-Zone placement. `ZONE_BLOCK_SIZE / 2 - radius - padding`
 /// keeps candidates inside the painted cell with room for gap.

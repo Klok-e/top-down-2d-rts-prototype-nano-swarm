@@ -47,10 +47,10 @@
 //! caching is explicitly out of scope).
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use bevy::prelude::*;
-use rand::RngExt;
+use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 use crate::ai::get_world_from_zone;
 use crate::intent::{IntentCell, IntentGrid, IntentKind};
@@ -182,6 +182,89 @@ pub fn nearest_fit_cell(from: Vec2, fit_cells: &[IVec2]) -> Option<IVec2> {
     })
 }
 
+const FIT_BUCKET_CELLS: f32 = 16.0;
+
+#[derive(Default)]
+struct FitCellIndex {
+    buckets: BTreeMap<(i32, i32), Vec<IVec2>>,
+}
+
+impl FitCellIndex {
+    fn bucket_size() -> f32 {
+        crate::ZONE_BLOCK_SIZE * FIT_BUCKET_CELLS
+    }
+
+    fn bucket_for_position(position: Vec2) -> IVec2 {
+        let size = Self::bucket_size();
+        IVec2::new(
+            (position.x / size).floor() as i32,
+            (position.y / size).floor() as i32,
+        )
+    }
+
+    fn insert(&mut self, cell: IVec2) {
+        let bucket = Self::bucket_for_position(get_world_from_zone(cell));
+        self.buckets
+            .entry((bucket.x, bucket.y))
+            .or_default()
+            .push(cell);
+    }
+
+    fn bucket_distance_squared(from: Vec2, bucket: (i32, i32)) -> f32 {
+        let size = Self::bucket_size();
+        let min = Vec2::new(bucket.0 as f32 * size, bucket.1 as f32 * size);
+        let max = min + Vec2::splat(size);
+        let dx = if from.x < min.x {
+            min.x - from.x
+        } else if from.x > max.x {
+            from.x - max.x
+        } else {
+            0.0
+        };
+        let dy = if from.y < min.y {
+            min.y - from.y
+        } else if from.y > max.y {
+            from.y - max.y
+        } else {
+            0.0
+        };
+        dx * dx + dy * dy
+    }
+
+    fn consider_cells(cells: &[IVec2], from: Vec2, best: &mut Option<(f32, IVec2)>) {
+        for cell in cells {
+            let distance = from.distance_squared(get_world_from_zone(*cell));
+            if best.is_none_or(|(best_distance, best_cell)| {
+                distance
+                    .total_cmp(&best_distance)
+                    .then_with(|| (cell.y, cell.x).cmp(&(best_cell.y, best_cell.x)))
+                    == Ordering::Less
+            }) {
+                *best = Some((distance, *cell));
+            }
+        }
+    }
+
+    fn nearest(&self, from: Vec2) -> Option<IVec2> {
+        let (&seed_bucket, seed_cells) = self.buckets.iter().min_by(|(left, _), (right, _)| {
+            Self::bucket_distance_squared(from, **left)
+                .total_cmp(&Self::bucket_distance_squared(from, **right))
+                .then_with(|| left.cmp(right))
+        })?;
+        let mut best = None;
+        Self::consider_cells(seed_cells, from, &mut best);
+        let seed_distance = best.expect("occupied seed bucket contains a cell").0;
+        for (bucket, cells) in &self.buckets {
+            if *bucket != seed_bucket
+                && Self::bucket_distance_squared(from, *bucket) <= seed_distance
+            {
+                Self::consider_cells(cells, from, &mut best);
+            }
+        }
+        best.map(|(_, cell)| cell)
+    }
+}
+
 /// Stable index of `ntype` inside [`NanobotType::ALL`]. Used to
 /// address the per-type fit-cell list built each tick.
 fn type_index(ntype: NanobotType) -> usize {
@@ -210,6 +293,7 @@ pub fn idle_spread_system(
     all_bots: Query<&Transform, With<Nanobot>>,
     mut idle_bots: Query<
         (
+            Entity,
             &Transform,
             &NanobotType,
             &Commitment,
@@ -217,20 +301,22 @@ pub fn idle_spread_system(
         ),
         (With<Nanobot>, Without<DirectMovementComponent>),
     >,
+    mut spread_tick: Local<u64>,
 ) {
     // Per-type fit-cell list, rebuilt every tick (cross-tick caching
     // is out of scope). Built in a single pass over painted cells so
     // the per-bot loop never re-scans the grid.
     let kind_sets: [Vec<IntentKind>; NanobotType::COUNT] =
         std::array::from_fn(|i| fit_kinds(NanobotType::ALL[i]));
-    let mut fit_cells: [Vec<IVec2>; NanobotType::COUNT] = std::array::from_fn(|_| Vec::new());
-    for (cell, intent_cell) in grid.iter_cells() {
+    let mut fit_cells: [FitCellIndex; NanobotType::COUNT] =
+        std::array::from_fn(|_| FitCellIndex::default());
+    for (cell, intent_cell) in grid.iter_active_cells() {
         if intent_cell.is_empty() {
             continue;
         }
         for (type_idx, kinds) in kind_sets.iter().enumerate() {
             if kinds.iter().any(|k| intent_cell.has(*k)) {
-                fit_cells[type_idx].push(cell);
+                fit_cells[type_idx].insert(cell);
             }
         }
     }
@@ -245,8 +331,9 @@ pub fn idle_spread_system(
         *density.entry(cell).or_insert(0) += 1;
     }
 
-    let mut rng = rand::rng();
-    for (transform, nanobot_type, commitment, mut velocity) in &mut idle_bots {
+    let tick = *spread_tick;
+    *spread_tick = spread_tick.wrapping_add(1);
+    for (entity, transform, nanobot_type, commitment, mut velocity) in &mut idle_bots {
         if *commitment != Commitment::Idle {
             continue;
         }
@@ -274,10 +361,12 @@ pub fn idle_spread_system(
                     fit.then(|| (n, density.get(&n).copied().unwrap_or(0)))
                 })
                 .collect();
+            let seed = entity.to_bits().wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ tick.rotate_left(32);
+            let mut rng = StdRng::seed_from_u64(seed);
             gradient_step_target(own_excl, &neighbours, &mut rng)
         } else {
             // Stranded: drift toward the nearest type-fit cell.
-            nearest_fit_cell(pos, &fit_cells[type_idx])
+            fit_cells[type_idx].nearest(pos)
         };
 
         if let Some(target_cell) = target {
@@ -491,6 +580,30 @@ mod tests {
         let candidates = vec![IVec2::new(3, 0), IVec2::new(1, 0)];
         let pick = nearest_fit_cell(from, &candidates);
         assert_eq!(pick, Some(IVec2::new(1, 0)));
+    }
+
+    #[test]
+    fn spatial_fit_index_matches_row_major_brute_force() {
+        let candidates = vec![
+            IVec2::new(-33, -17),
+            IVec2::new(4, -17),
+            IVec2::new(-1, 0),
+            IVec2::new(1, 0),
+            IVec2::new(40, 22),
+        ];
+        let mut index = FitCellIndex::default();
+        for cell in candidates.iter().copied() {
+            index.insert(cell);
+        }
+        let probes = [
+            Vec2::ZERO,
+            Vec2::new(-9_000.0, -2_000.0),
+            Vec2::new(8_500.0, 5_100.0),
+            get_world_from_zone(IVec2::new(0, 0)),
+        ];
+        for probe in probes {
+            assert_eq!(index.nearest(probe), nearest_fit_cell(probe, &candidates));
+        }
     }
 
     #[test]

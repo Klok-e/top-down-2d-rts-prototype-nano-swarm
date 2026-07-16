@@ -198,7 +198,7 @@ pub fn structure_auto_creation_system(
     for transform in &existing_sites {
         cells_with_target.insert(world_to_cell(transform.translation.truncate()));
     }
-    for (cell, intent_cell) in grid.iter_cells() {
+    for (cell, intent_cell) in grid.iter_active_cells() {
         if !intent_cell.has(IntentKind::Build) {
             continue;
         }
@@ -574,7 +574,7 @@ impl Plugin for BuildPlugin {
                 worker_build_work_system,
             )
                 .chain()
-                .after(crate::nanobot::move_velocity_system),
+                .after(crate::nanobot::NanobotSimulationSet::Movement),
         );
     }
 }

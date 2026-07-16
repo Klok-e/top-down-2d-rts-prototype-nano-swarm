@@ -6,11 +6,12 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         ActionableOpportunity, ActionableProjection, AllocationCandidate, AllocationClock,
         AllocationRegion, CandidateBounds, CategoryEligibility, CategoryValues, LeaseDecision,
-        OpportunityCategory, OpportunityTarget, RUNTIME_MAX_CANDIDATES, ReassignmentPolicy,
-        RegionalLease, RegionalLeaseConfig, RegionalLeaseState, RegionalPressure,
-        allocate_category_budget, allocate_regional_candidates, choose_bounded_candidate,
+        OpportunityCategory, OpportunityTarget, REGIONAL_FAIRNESS_PROMOTION_TICKS,
+        RUNTIME_MAX_CANDIDATES, ReassignmentPolicy, RegionalLease, RegionalLeaseConfig,
+        RegionalLeaseState, RegionalPressure, allocate_category_budget,
+        allocate_regional_candidates, choose_bounded_candidate,
         choose_bounded_candidate_with_claims, evaluate_lease, maintain_regional_leases_system,
-        outward_pull_budget, project_actionable_opportunities_system,
+        outward_pull_budget, project_actionable_opportunities_system, region_fairness_sort_key,
     },
 };
 
@@ -126,6 +127,44 @@ fn local_choice_obeys_region_candidate_owner_and_category_bounds() {
     assert_eq!(decision.opportunity.cell, IVec2::ZERO);
     assert_eq!(decision.regions_examined, 1);
     assert_eq!(decision.candidates_examined, 1);
+}
+
+#[test]
+fn defend_threat_pressure_beats_distance_after_claims() {
+    let calm = [defend_opportunity(region(0, 0), IVec2::ZERO, 1)];
+    let hot = [defend_opportunity(region(1, 0), IVec2::new(8, 0), 3)];
+    let pull = outward_pull_budget(
+        region(0, 0),
+        1,
+        &[RegionalPressure {
+            region: region(0, 0),
+            categories: CategoryValues::new([0, 0, 0, 1, 0]),
+        }],
+        1,
+    );
+    let bot = AllocationCandidate {
+        entity_bits: 7,
+        region: region(0, 0),
+        owner: None,
+        eligibility: CategoryEligibility::only(OpportunityCategory::Defend),
+    };
+
+    let decision = choose_bounded_candidate_with_claims(
+        bot,
+        pull,
+        [
+            (region(0, 0), calm.as_slice()),
+            (region(1, 0), hot.as_slice()),
+        ],
+        CandidateBounds {
+            max_regions: 2,
+            max_candidates: 2,
+        },
+        |_| Some(0),
+    )
+    .expect("Defend work available");
+
+    assert_eq!(decision.opportunity.cell, IVec2::new(8, 0));
 }
 
 #[test]
@@ -331,4 +370,22 @@ fn unsupported_opportunity_revokes_lease_in_the_same_app_update() {
     app.update();
 
     assert!(!app.world().entity(bot).contains::<RegionalLease>());
+}
+
+#[test]
+fn starved_region_moves_ahead_of_near_regions_after_bounded_wait() {
+    let source = region(0, 0);
+    let far = region(30, 0);
+    let mut regions = (0..17).map(|x| region(x, 0)).collect::<Vec<_>>();
+    regions.push(far);
+    regions.sort_by_key(|candidate| {
+        let age = if *candidate == far {
+            REGIONAL_FAIRNESS_PROMOTION_TICKS
+        } else {
+            0
+        };
+        region_fairness_sort_key(source, *candidate, age)
+    });
+
+    assert_eq!(regions[0], far);
 }

@@ -130,6 +130,9 @@ pub struct IntentGrid {
     width: i32,
     height: i32,
     cells: Vec<IntentCell>,
+    /// Non-empty cells in deterministic `(y, x)` order. Simulation systems use
+    /// this sparse index instead of scanning the million-cell map every tick.
+    active_cells: Vec<IVec2>,
     /// Cells awaiting render-mirror consumption.
     render_dirty: HashSet<IVec2>,
     /// Cells awaiting actionable-projection consumption.
@@ -144,6 +147,7 @@ impl IntentGrid {
             width: width.max(0),
             height: height.max(0),
             cells: vec![IntentCell::default(); size],
+            active_cells: Vec::new(),
             render_dirty: HashSet::new(),
             projection_dirty: HashSet::new(),
         }
@@ -194,6 +198,9 @@ impl IntentGrid {
         }
         let idx = self.index(point);
         if self.cells[idx].remove(kind) {
+            if self.cells[idx].is_empty() {
+                self.remove_active(point);
+            }
             self.mark_dirty(point);
         }
         true
@@ -206,6 +213,25 @@ impl IntentGrid {
 
     /// Paint owned `kind` at `point`. Repeated paint by same owner is a no-op.
     pub fn paint_owned(&mut self, point: IVec2, kind: IntentKind, owner: Option<SwarmId>) -> bool {
+        self.set_owned(point, kind, owner)
+    }
+
+    /// Paint owned intent unless another swarm already owns the active layer.
+    /// Unowned paint may be claimed; same-owner repeated paint remains a no-op.
+    pub fn paint_owned_if_available(
+        &mut self,
+        point: IVec2,
+        kind: IntentKind,
+        owner: Option<SwarmId>,
+    ) -> bool {
+        if !self.in_bounds(point) {
+            return false;
+        }
+        if let Some(existing) = self.cells[self.index(point)].owner(kind)
+            && Some(existing) != owner
+        {
+            return true;
+        }
         self.set_owned(point, kind, owner)
     }
 
@@ -245,8 +271,8 @@ impl IntentGrid {
         drain_sorted(&mut self.projection_dirty)
     }
 
-    /// Iterate every cell in row-major order. Useful for systems that need to
-    /// read the full grid state.
+    /// Iterate every cell in row-major order. Reserved for consumers that truly
+    /// need empty cells too, such as full-grid serialization.
     pub fn iter_cells(&self) -> impl Iterator<Item = (IVec2, &IntentCell)> {
         let w = self.width;
         let min = self.origin_min();
@@ -257,15 +283,46 @@ impl IntentGrid {
         })
     }
 
+    /// Iterate only non-empty cells in deterministic row-major order.
+    pub fn iter_active_cells(&self) -> impl Iterator<Item = (IVec2, &IntentCell)> {
+        self.active_cells
+            .iter()
+            .copied()
+            .map(|point| (point, &self.cells[self.index(point)]))
+    }
+
     fn set_owned(&mut self, point: IVec2, kind: IntentKind, owner: Option<SwarmId>) -> bool {
         if !self.in_bounds(point) {
             return false;
         }
         let idx = self.index(point);
         if self.cells[idx].add_owned(kind, owner) {
+            if self.cells[idx].active == kind.bit() {
+                self.insert_active(point);
+            }
             self.mark_dirty(point);
         }
         true
+    }
+
+    fn insert_active(&mut self, point: IVec2) {
+        let key = |candidate: &IVec2| (candidate.y, candidate.x);
+        if let Err(index) = self
+            .active_cells
+            .binary_search_by_key(&(point.y, point.x), key)
+        {
+            self.active_cells.insert(index, point);
+        }
+    }
+
+    fn remove_active(&mut self, point: IVec2) {
+        let key = |candidate: &IVec2| (candidate.y, candidate.x);
+        if let Ok(index) = self
+            .active_cells
+            .binary_search_by_key(&(point.y, point.x), key)
+        {
+            self.active_cells.remove(index);
+        }
     }
 
     fn mark_dirty(&mut self, point: IVec2) {
@@ -386,6 +443,33 @@ mod tests {
         assert_eq!(grid.drain_render_dirty(), expected);
         assert_eq!(grid.projection_dirty_count(), 2);
         assert_eq!(grid.drain_projection_dirty(), expected);
+    }
+
+    #[test]
+    fn sparse_active_iteration_tracks_paint_overlap_and_final_erase() {
+        let mut grid = IntentGrid::new(1000, 1000);
+        let first = IVec2::new(7, -3);
+        let second = IVec2::new(-4, 8);
+        grid.paint(first, IntentKind::Gather);
+        grid.paint(first, IntentKind::Defend);
+        grid.paint(second, IntentKind::Build);
+
+        assert_eq!(
+            grid.iter_active_cells()
+                .map(|(point, _)| point)
+                .collect::<Vec<_>>(),
+            vec![first, second]
+        );
+
+        grid.erase(first, IntentKind::Gather);
+        assert_eq!(grid.iter_active_cells().count(), 2);
+        grid.erase(first, IntentKind::Defend);
+        assert_eq!(
+            grid.iter_active_cells()
+                .map(|(point, _)| point)
+                .collect::<Vec<_>>(),
+            vec![second]
+        );
     }
 
     #[test]

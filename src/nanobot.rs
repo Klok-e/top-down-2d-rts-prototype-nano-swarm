@@ -4,6 +4,7 @@ mod build;
 mod cargo;
 mod charge;
 mod collapse;
+mod combat;
 mod components;
 mod consts;
 mod debug;
@@ -16,6 +17,7 @@ mod move_system;
 mod opponent;
 mod placement;
 mod planned;
+mod population;
 mod production;
 mod route;
 mod spatial_pressure;
@@ -28,6 +30,7 @@ pub use build::*;
 pub use cargo::*;
 pub use charge::*;
 pub use collapse::*;
+pub use combat::*;
 pub use components::*;
 pub use consts::*;
 pub use debug::*;
@@ -39,6 +42,7 @@ pub use move_system::*;
 pub use opponent::*;
 pub use placement::*;
 pub use planned::*;
+pub use population::*;
 pub use production::*;
 pub use route::*;
 pub use spatial_pressure::*;
@@ -86,6 +90,32 @@ impl Default for NanobotBundle {
     }
 }
 
+/// Attach type-specific lifecycle state whenever a nanobot type is introduced.
+/// This is the single authority used by scenario, opponent, production, and tests.
+pub fn initialize_nanobot_type_components(
+    added: On<Add, NanobotType>,
+    mut commands: Commands,
+    types: Query<&NanobotType>,
+) {
+    let Ok(kind) = types.get(added.entity) else {
+        return;
+    };
+    if *kind == NanobotType::Defender {
+        commands.entity(added.entity).insert(Charge::default());
+    } else {
+        commands.entity(added.entity).remove::<Charge>();
+    }
+}
+
+/// Ordered phases shared across simulation plugins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, SystemSet)]
+pub enum NanobotSimulationSet {
+    Movement,
+    Threat,
+    Combat,
+    Maintenance,
+}
+
 /// Top-level bundle for the player swarm. Holds the [`Swarm`] marker and a
 /// transform used as the origin for child nanobots.
 ///
@@ -106,24 +136,33 @@ pub struct NanobotPlugin {}
 
 impl Plugin for NanobotPlugin {
     fn build(&self, app: &mut App) {
-        // `idle_spread_system` runs before `velocity_system` so its
-        // cosmetic nudge composes with `separation_system` and is
-        // consumed the same frame (issue #39). Separation handles
-        // physical overlap; spread handles region fill. Both write
-        // `VelocityComponent` before `velocity_system` zeroes it, so
-        // they are chained for deterministic composition.
-        app.add_systems(
-            Update,
-            (separation_system, idle_spread_system)
-                .chain()
-                .before(velocity_system),
-        )
-        .add_systems(Update, velocity_system)
-        .add_systems(Update, move_velocity_system)
-        // Death settlement belongs to the final lifecycle phase. Every Update
-        // system finishes and applies deferred component mutations before a dead
-        // bot is removed, so no gameplay command can target its stale entity ID.
-        .add_systems(Last, nanobot_death_cleanup_system)
-        .add_systems(Update, bot_debug_circle_system);
+        // Movement intent, local steering, and integration form one deterministic
+        // fixed-tick pipeline. Presentation-only debug drawing remains frame-driven.
+        app.add_observer(initialize_nanobot_type_components)
+            .configure_sets(
+                FixedUpdate,
+                (
+                    NanobotSimulationSet::Movement,
+                    NanobotSimulationSet::Threat,
+                    NanobotSimulationSet::Combat,
+                    NanobotSimulationSet::Maintenance,
+                )
+                    .chain(),
+            )
+            .add_systems(
+                FixedUpdate,
+                (
+                    move_velocity_system,
+                    separation_system,
+                    idle_spread_system,
+                    velocity_system,
+                )
+                    .chain()
+                    .in_set(NanobotSimulationSet::Movement),
+            )
+            // Death settlement closes each simulation tick so an entity at zero health
+            // cannot act during another fixed tick in the same rendered frame.
+            .add_systems(FixedLast, nanobot_death_cleanup_system)
+            .add_systems(Update, bot_debug_circle_system);
     }
 }

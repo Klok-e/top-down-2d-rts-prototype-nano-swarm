@@ -45,7 +45,8 @@ use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::{Commitment, NanobotType};
 use crate::nanobot::components::{Health, Nanobot, Swarm, SwarmId, SwarmMember, VelocityComponent};
 use crate::nanobot::gather::world_to_cell;
-use crate::nanobot::placement::{BUILDING_FOOTPRINT_RADIUS, find_build_zone_placement};
+use crate::nanobot::maintenance::SupportCondition;
+use crate::nanobot::placement::{find_build_zone_placement, scaled_building_footprint_radius};
 use crate::nanobot::planned::{
     PlannedKind, PlannedProductionTarget, PlannedStructure, planned_visual_components,
 };
@@ -172,7 +173,7 @@ impl ProductionRatio {
 impl Default for ProductionRatio {
     fn default() -> Self {
         let mut r = Self::new();
-        r.set_weight(NanobotType::Worker, 3);
+        r.set_weight(NanobotType::Worker, 6);
         r.set_weight(NanobotType::Hauler, 3);
         r.set_weight(NanobotType::Defender, 1);
         r
@@ -338,6 +339,38 @@ pub fn pick_deficit_type(
     best.filter(|(d, _)| *d > 0.0).map(|(_, k)| k)
 }
 
+/// Pick the type furthest below its target count while total population is
+/// below workload demand. Ratio controls composition; `desired_total` controls size.
+pub fn pick_type_for_population_target(
+    targets: &ProductionRatio,
+    current_counts: &HashMap<NanobotType, u32>,
+    blocked: &HashSet<NanobotType>,
+    desired_total: u32,
+) -> Option<NanobotType> {
+    let total_weight = targets.total_weight();
+    let total_count: u32 = current_counts.values().sum();
+    if total_weight == 0 || total_count >= desired_total {
+        return None;
+    }
+    NanobotType::ALL
+        .iter()
+        .copied()
+        .filter(|kind| !blocked.contains(kind))
+        .map(|kind| {
+            let score = desired_total as i64 * targets.weight(kind) as i64
+                - current_counts.get(&kind).copied().unwrap_or_default() as i64
+                    * total_weight as i64;
+            (score, kind)
+        })
+        .filter(|(score, _)| *score > 0)
+        .max_by(|(left_score, left_kind), (right_score, right_kind)| {
+            left_score
+                .cmp(right_score)
+                .then_with(|| (*right_kind as u8).cmp(&(*left_kind as u8)))
+        })
+        .map(|(_, kind)| kind)
+}
+
 /// Sum of positive share deficits across all types, in
 /// **percentage points** (0-300). Each type contributes
 /// `max(0, target_share - current_share) * 100`, rounded to
@@ -478,8 +511,14 @@ pub fn production_facility_auto_creation_system(
     grid: Res<IntentGrid>,
     structure_sprites: Res<StructureSprites>,
     global_ratio: Res<ProductionRatio>,
+    population_demand: Option<Res<crate::nanobot::PopulationDemand>>,
     nanobots: Query<(&NanobotType, &crate::nanobot::components::SwarmMember), With<Nanobot>>,
-    facilities: Query<(Entity, &ProductionFacility, Option<&OwnerSwarm>)>,
+    facilities: Query<(
+        Entity,
+        &ProductionFacility,
+        Option<&OwnerSwarm>,
+        Option<&SupportCondition>,
+    )>,
     existing_targets: Query<
         &Transform,
         Or<(
@@ -505,7 +544,7 @@ pub fn production_facility_auto_creation_system(
     for transform in &existing_targets {
         let pos = transform.translation.truncate();
         cells_with_target.insert(world_to_cell(pos));
-        obstacles.push((pos, BUILDING_FOOTPRINT_RADIUS));
+        obstacles.push((pos, scaled_building_footprint_radius(transform)));
     }
     // Pre-compute the list of (cell, swarm) pairs that are
     // Build-painted, owned by a swarm, and not already
@@ -513,7 +552,7 @@ pub fn production_facility_auto_creation_system(
     // ownership lookup drive the per-swarm placement
     // decision below.
     let mut build_cells_by_swarm: HashMap<SwarmId, Vec<IVec2>> = HashMap::new();
-    for (cell, intent_cell) in grid.iter_cells() {
+    for (cell, intent_cell) in grid.iter_active_cells() {
         if !intent_cell.has(IntentKind::Build) {
             continue;
         }
@@ -539,9 +578,25 @@ pub fn production_facility_auto_creation_system(
             .map(|sp| &sp.ratio)
             .unwrap_or(&*global_ratio);
         let counts = count_swarm_nanobots_by_type(*swarm_id, &nanobots);
-        if total_deficit(ratio, &counts) < FACILITY_EMERGE_DEFICIT_THRESHOLD {
-            continue;
-        }
+        let target = if let Some(demand) = population_demand.as_deref() {
+            let Some(target) = pick_type_for_population_target(
+                ratio,
+                &counts,
+                &HashSet::new(),
+                demand.desired_for(*swarm_id),
+            ) else {
+                continue;
+            };
+            target
+        } else {
+            if total_deficit(ratio, &counts) < FACILITY_EMERGE_DEFICIT_THRESHOLD {
+                continue;
+            }
+            let Some(target) = pick_deficit_type(ratio, &counts, &HashSet::new()) else {
+                continue;
+            };
+            target
+        };
         // Facilities that "count" for this swarm: the ones
         // explicitly owned by it plus any unowned
         // facilities. Unowned facilities are kept in the
@@ -550,11 +605,14 @@ pub fn production_facility_auto_creation_system(
         // still observe the emergence trigger.
         let relevant: Vec<&ProductionFacility> = facilities
             .iter()
-            .filter(|(_, _, owner)| match owner {
-                Some(OwnerSwarm(e)) => *e == swarm_entity,
-                None => true,
+            .filter(|(_, _, owner, condition)| {
+                condition.is_none_or(|condition| condition.is_operational())
+                    && match owner {
+                        Some(OwnerSwarm(entity)) => *entity == swarm_entity,
+                        None => true,
+                    }
             })
-            .map(|(_, f, _)| f)
+            .map(|(_, facility, _, _)| facility)
             .collect();
         if !relevant.is_empty() {
             let all_busy = relevant.iter().all(|f| f.is_busy());
@@ -565,9 +623,6 @@ pub fn production_facility_auto_creation_system(
                 continue;
             }
         }
-        let Some(target) = pick_deficit_type(ratio, &counts, &HashSet::new()) else {
-            continue;
-        };
         // Build-Zone constrained placement. The swarm must
         // own at least one free Build cell. Without it,
         // the swarm cannot plan a new facility and the
@@ -616,13 +671,21 @@ pub fn production_facility_auto_creation_system(
 #[allow(clippy::type_complexity)]
 pub fn production_facility_pick_target_system(
     global_ratio: Res<ProductionRatio>,
+    population_demand: Option<Res<crate::nanobot::PopulationDemand>>,
     nanobots: Query<(&NanobotType, &crate::nanobot::components::SwarmMember), With<Nanobot>>,
     swarm_productions: Query<&SwarmProduction>,
     swarms: Query<&SwarmId, With<Swarm>>,
-    mut facilities: Query<(&mut ProductionFacility, Option<&OwnerSwarm>)>,
+    mut facilities: Query<(
+        &mut ProductionFacility,
+        Option<&OwnerSwarm>,
+        Option<&SupportCondition>,
+    )>,
     mut ledger: ResMut<ResourceLedger>,
 ) {
-    for (mut facility, owner) in &mut facilities {
+    for (mut facility, owner, condition) in &mut facilities {
+        if condition.is_some_and(|condition| !condition.is_operational()) {
+            continue;
+        }
         if facility.is_busy() {
             continue;
         }
@@ -678,7 +741,20 @@ pub fn production_facility_pick_target_system(
         // types are skipped temporarily instead of stalling
         // all production" half of the contract.
         let mut picked = false;
-        while let Some(kind) = pick_deficit_type(ratio, &counts, &facility.blocked_types) {
+        loop {
+            let kind = if let Some(demand) = population_demand.as_deref() {
+                pick_type_for_population_target(
+                    ratio,
+                    &counts,
+                    &facility.blocked_types,
+                    demand.desired_for(owner_id),
+                )
+            } else {
+                pick_deficit_type(ratio, &counts, &facility.blocked_types)
+            };
+            let Some(kind) = kind else {
+                break;
+            };
             if facility.input_amount >= PRODUCTION_COST_PER_BOT {
                 facility.input_amount -= PRODUCTION_COST_PER_BOT;
                 ledger.remove_for(owner_id, facility.input_kind, PRODUCTION_COST_PER_BOT);
@@ -705,12 +781,20 @@ pub fn production_facility_pick_target_system(
 #[allow(clippy::type_complexity)]
 pub fn production_facility_work_system(
     mut commands: Commands,
-    mut facilities: Query<(&mut ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
+    mut facilities: Query<(
+        &mut ProductionFacility,
+        &Transform,
+        Option<&OwnerSwarm>,
+        Option<&SupportCondition>,
+    )>,
     swarms: Query<(Entity, Option<&SwarmId>), With<Swarm>>,
     opponent_swarms: Query<(), With<OpponentSwarm>>,
     sprites: Option<Res<NanobotSprites>>,
 ) {
-    for (mut facility, transform, owner) in &mut facilities {
+    for (mut facility, transform, owner, condition) in &mut facilities {
+        if condition.is_some_and(|condition| !condition.is_operational()) {
+            continue;
+        }
         let Some(target) = facility.current_target else {
             continue;
         };
@@ -808,7 +892,7 @@ pub struct ProductionPlugin;
 impl Plugin for ProductionPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
-            Update,
+            FixedUpdate,
             (
                 production_facility_pick_target_system,
                 production_facility_work_system,
@@ -816,7 +900,7 @@ impl Plugin for ProductionPlugin {
                     .before(crate::nanobot::planned::sink_stockpile_demand_system),
             )
                 .chain()
-                .after(crate::nanobot::move_velocity_system),
+                .after(crate::nanobot::NanobotSimulationSet::Movement),
         );
     }
 }

@@ -11,6 +11,7 @@ use bevy::prelude::*;
 use crate::intent::IntentGrid;
 use crate::nanobot::{
     Cargo, LogisticsReservation, NanobotType, OwnerSwarm, ProductionFacility, STOP_THRESHOLD,
+    SupportCondition,
     charge::Charger,
     components::{DirectMovementComponent, Nanobot, SwarmId, SwarmMember},
     hauler_route_cost,
@@ -184,6 +185,12 @@ fn candidate_owner(
     }
 }
 
+fn endpoint_is_operational(entity: Entity, conditions: &Query<&SupportCondition>) -> bool {
+    conditions
+        .get(entity)
+        .map_or(true, |condition| condition.is_operational())
+}
+
 /// World position of a hauler source stockpile. A hauler source
 /// is always a stockpile under the tiered model, so this is a
 /// plain component lookup.
@@ -229,7 +236,7 @@ fn stockpile_radius_of(
 /// source. The hauler keeps a single [`HaulerAssignment`] for the
 /// whole trip so the carry-to-sink step does not need to re-select
 /// the sink from scratch.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn hauler_assignment_system(
     mut commands: Commands,
     haulers: Query<
@@ -252,12 +259,16 @@ pub fn hauler_assignment_system(
     )>,
     facilities: Query<(Entity, &ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
     chargers: Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
+    conditions: Query<&SupportCondition>,
     swarms: Query<&SwarmId>,
     grid: Res<IntentGrid>,
 ) {
     let stockpile_candidates: Vec<StockpileCandidate> = stockpiles
         .iter()
         .filter_map(|(entity, stockpile, transform, role, owner)| {
+            if !endpoint_is_operational(entity, &conditions) {
+                return None;
+            }
             let owner = candidate_owner(owner, &swarms)?;
             Some(StockpileCandidate {
                 entity,
@@ -273,6 +284,9 @@ pub fn hauler_assignment_system(
     let mut terminal_candidates: Vec<TerminalCandidate> = facilities
         .iter()
         .filter_map(|(entity, facility, transform, owner)| {
+            if !endpoint_is_operational(entity, &conditions) {
+                return None;
+            }
             let owner = candidate_owner(owner, &swarms)?;
             Some(TerminalCandidate::Facility {
                 entity,
@@ -285,6 +299,9 @@ pub fn hauler_assignment_system(
         .collect();
     terminal_candidates.extend(chargers.iter().filter_map(
         |(entity, charger, transform, owner)| {
+            if !endpoint_is_operational(entity, &conditions) {
+                return None;
+            }
             let owner = candidate_owner(owner, &swarms)?;
             Some(TerminalCandidate::Charger {
                 entity,
@@ -370,8 +387,17 @@ pub fn hauler_arrive_source_system(
     deposits: Query<(&ResourceDeposit, &Transform)>,
     stockpiles: Query<(&Stockpile, &Transform)>,
     chargers: Query<(&Charger, &Transform)>,
+    conditions: Query<&SupportCondition>,
 ) {
     for (entity, transform, assignment, route, reservation) in &haulers {
+        if !endpoint_is_operational(assignment.source, &conditions) {
+            commands
+                .entity(entity)
+                .remove::<HaulerAssignment>()
+                .remove::<LogisticsReservation>()
+                .remove::<HaulerRoute>();
+            continue;
+        }
         let (source_pos, source_radius) = if let Ok((d, t)) = deposits.get(assignment.source) {
             (t.translation.truncate(), d.radius)
         } else if let Ok((s, t)) = stockpiles.get(assignment.source) {
@@ -434,6 +460,7 @@ pub fn hauler_load_system(
     mut deposits: Query<&mut ResourceDeposit>,
     mut source_stockpiles: Query<&mut Stockpile>,
     source_chargers: Query<&mut Charger>,
+    conditions: Query<&SupportCondition>,
     mut ledger: ResMut<ResourceLedger>,
 ) {
     for (entity, mut cargo, assignment, mut reservation, swarm) in &mut haulers {
@@ -472,6 +499,11 @@ pub fn hauler_load_system(
             continue;
         }
 
+        if !endpoint_is_operational(assignment.source, &conditions) {
+            finish_reservation(reservation.as_deref_mut(), cargo.amount);
+            transition_to_carrying(&mut commands, entity, cargo.amount);
+            continue;
+        }
         if let Ok(mut stockpile) = source_stockpiles.get_mut(assignment.source) {
             if stockpile.amount == 0 {
                 finish_reservation(reservation.as_deref_mut(), cargo.amount);
@@ -597,7 +629,11 @@ fn valid_destination_snapshot(
     facilities: &Query<(Entity, &ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
     chargers: &Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
     swarms: &Query<&SwarmId>,
+    conditions: &Query<&SupportCondition>,
 ) -> Option<SinkEndpointSnapshot> {
+    if !endpoint_is_operational(destination, conditions) {
+        return None;
+    }
     if let Ok((_, stockpile, transform, role, owner)) = stockpiles.get(destination) {
         return (stockpile.kind == kind
             && role.copied().unwrap_or(StockpileRole::Source) == StockpileRole::Sink
@@ -656,6 +692,7 @@ pub fn hauler_reroute_system(
     )>,
     facilities: Query<(Entity, &ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
     chargers: Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
+    conditions: Query<&SupportCondition>,
     swarms: Query<&SwarmId>,
     reservations: Query<(Entity, &LogisticsReservation)>,
     grid: Res<IntentGrid>,
@@ -697,6 +734,7 @@ pub fn hauler_reroute_system(
                 &facilities,
                 &chargers,
                 &swarms,
+                &conditions,
             )
             .is_some()
         {
@@ -734,6 +772,7 @@ pub fn hauler_reroute_system(
                             &facilities,
                             &chargers,
                             &swarms,
+                            &conditions,
                         )?;
                         Some((
                             hauler_pos.distance(transform.translation.truncate()),
@@ -764,6 +803,7 @@ pub fn hauler_reroute_system(
                             &facilities,
                             &chargers,
                             &swarms,
+                            &conditions,
                         )?;
                         Some((
                             hauler_pos.distance(transform.translation.truncate()),
@@ -803,6 +843,7 @@ pub fn hauler_reroute_system(
                     &facilities,
                     &chargers,
                     &swarms,
+                    &conditions,
                 )?;
                 Some((
                     candidate != assignment.source,
@@ -888,6 +929,7 @@ pub fn hauler_carry_assign_system(
     )>,
     facilities: Query<(Entity, &ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
     chargers: Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
+    conditions: Query<&SupportCondition>,
     swarms: Query<&SwarmId>,
     reservations: Query<(Entity, &LogisticsReservation)>,
     grid: Res<IntentGrid>,
@@ -924,6 +966,7 @@ pub fn hauler_carry_assign_system(
             &facilities,
             &chargers,
             &swarms,
+            &conditions,
         ) else {
             continue;
         };
@@ -967,6 +1010,7 @@ pub fn hauler_delivery_system(
     )>,
     facilities: Query<(Entity, &ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
     chargers: Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
+    conditions: Query<&SupportCondition>,
     swarms: Query<&SwarmId>,
     reservations: Query<(Entity, &LogisticsReservation)>,
 ) {
@@ -995,6 +1039,7 @@ pub fn hauler_delivery_system(
             &facilities,
             &chargers,
             &swarms,
+            &conditions,
         ) else {
             continue;
         };
@@ -1063,7 +1108,7 @@ pub struct HaulPlugin;
 impl Plugin for HaulPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
-            Update,
+            FixedUpdate,
             (
                 hauler_arrive_source_system,
                 hauler_load_system,
@@ -1074,7 +1119,7 @@ impl Plugin for HaulPlugin {
             )
                 .chain()
                 .after(crate::nanobot::RegionalAllocationSet::Acquire)
-                .after(crate::nanobot::move_velocity_system),
+                .after(crate::nanobot::NanobotSimulationSet::Movement),
         );
     }
 }
