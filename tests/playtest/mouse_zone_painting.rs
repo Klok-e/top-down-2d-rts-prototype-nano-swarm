@@ -355,6 +355,38 @@ fn scripted_player_erase_preserves_enemy_paint_at_cursor() {
 }
 
 #[test]
+fn scripted_player_paint_preserves_enemy_paint_at_cursor() {
+    let mut app = build_app();
+    let window = spawn_window(&mut app);
+    set_cursor(&mut app, window, Vec2::new(640.0, 360.0));
+    spawn_camera(&mut app, Vec2::ZERO);
+    spawn_zone_material(&mut app);
+    let enemy = SwarmId(11);
+    let cell = IVec2::ZERO;
+
+    assert!(app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Gather,
+        Some(enemy),
+    ));
+    app.update();
+
+    press_mouse(&mut app, MouseButton::Left);
+    app.update();
+    clear_mouse(&mut app);
+
+    assert_eq!(
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(cell)
+            .expect("cursor cell must be in bounds")
+            .owner(IntentKind::Gather),
+        Some(enemy),
+        "player paint must preserve enemy-owned Gather paint",
+    );
+}
+
+#[test]
 fn scripted_paint_at_world_corner_lands_in_corner_cell() {
     // Catches a regression in `get_zone_pos_from_world` that would
     // shift every paint towards the origin.

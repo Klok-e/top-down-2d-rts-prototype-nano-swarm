@@ -312,7 +312,7 @@ where
     }
 
     let mut examined = 0;
-    let mut best: Option<((usize, usize, u64, u32, usize), ActionableOpportunity)> = None;
+    let mut best: Option<((usize, usize, u32, u64, usize), ActionableOpportunity)> = None;
     let mut regions_examined = 0;
     for (region, opportunities) in ordered_regions.into_iter().take(bounds.max_regions) {
         regions_examined += 1;
@@ -331,12 +331,16 @@ where
             let Some(claims) = claim_count(*opportunity) else {
                 continue;
             };
-            let pressure = opportunity.available_work;
+            let pressure_priority = if opportunity.category == OpportunityCategory::Defend {
+                u32::MAX - opportunity.available_work
+            } else {
+                0
+            };
             let score = (
                 category_priority(opportunity.category),
                 claims,
+                pressure_priority,
                 u64::from(distance),
-                u32::MAX - pressure,
                 examined,
             );
             if best.as_ref().is_none_or(|(current, _)| score < *current) {

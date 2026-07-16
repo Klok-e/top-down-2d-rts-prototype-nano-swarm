@@ -1,0 +1,3 @@
+# Owner-scoped production capacity commitments
+
+Production capacity grows through stable, owner-scoped commitments rather than Build Zone area or instantaneous production-cycle state. A swarm may hold at most one unfinished Production Facility commitment; adding capacity requires one second of sustained Production Pressure, while a swarm with no surviving facility may commit immediate recovery when a complete physical rebuild path exists. The commitment persists until completion or destruction, and the completed facility chooses what to produce from current demand only after physical funding. This deliberately favors bounded, explainable growth over concurrent demand-sized expansion batches.

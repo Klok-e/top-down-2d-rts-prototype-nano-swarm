@@ -22,7 +22,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
         DEFENDER_BASE_DEFENSE, DefendAssignment, DefendHold, EMPTY_CHARGE_HEALTH_LOSS_PER_TICK,
         Health, LOW_CHARGE_THRESHOLD, LogisticsReservation, MAX_CHARGE, NANOBOT_DEFAULT_MAX_HEALTH,
         Nanobot, NanobotBundle, NanobotPlugin, NanobotType, OwnerSwarm, PlannedKind,
-        PlannedStructure, SoftWorkSlots, SwarmBundle, SwarmId, WEAKENED_CHARGE_THRESHOLD,
+        PlannedStructure, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, SoftWorkSlots, Structure,
+        StructureKind, Swarm, SwarmBundle, SwarmId, SwarmMember, WEAKENED_CHARGE_THRESHOLD,
         defender_charger_work_system, nanobot_death_cleanup_system,
     },
     resources::{ResourceKind, ResourceLedger},
@@ -162,6 +163,30 @@ fn charger_does_not_emerge_in_cell_without_load() {
         planned_charger_count(app.world_mut()),
         0,
         "no planned charger without a holding defender"
+    );
+}
+
+#[test]
+fn enemy_defender_does_not_create_player_charger_demand() {
+    let mut app = build_app();
+    common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let cell = IVec2::ZERO;
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
+    app.world_mut()
+        .entity_mut(defender)
+        .insert((SwarmMember::new(SwarmId(11)), DefendHold { cell }));
+
+    app.update();
+
+    assert_eq!(
+        planned_charger_count(app.world_mut()),
+        0,
+        "hostile defenders must not count toward player charger demand",
     );
 }
 
@@ -498,6 +523,53 @@ fn defender_rotates_to_working_charger_when_charge_is_low() {
 }
 
 #[test]
+fn defender_ignores_closer_enemy_charger() {
+    let mut app = build_app();
+    let player = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let enemy = app
+        .world_mut()
+        .spawn((Swarm {}, SwarmId(11), Transform::default()))
+        .id();
+    let hold_cell = IVec2::ZERO;
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        hold_cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+
+    let enemy_charger = common::spawn_charger_at(&mut app, hold_cell, 100);
+    app.world_mut()
+        .entity_mut(enemy_charger)
+        .insert(OwnerSwarm(enemy));
+    let owned_charger = common::spawn_charger_at(&mut app, IVec2::new(1, 0), 100);
+    app.world_mut()
+        .entity_mut(owned_charger)
+        .insert(OwnerSwarm(player));
+
+    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(hold_cell));
+    app.world_mut().entity_mut(defender).insert((
+        SwarmMember::new(SwarmId::PLAYER),
+        DefendHold { cell: hold_cell },
+    ));
+    app.world_mut()
+        .entity_mut(defender)
+        .get_mut::<Charge>()
+        .unwrap()
+        .current = LOW_CHARGE_THRESHOLD;
+
+    app.update();
+
+    assert_eq!(
+        app.world()
+            .entity(defender)
+            .get::<ChargerAssignment>()
+            .expect("low-charge defender rotates to an owned charger")
+            .charger,
+        owned_charger,
+    );
+}
+
+#[test]
 fn defender_does_not_rotate_to_empty_charger() {
     // Companion: a charger with no material is not a
     // "working" rotation target, so a low-charge defender
@@ -530,6 +602,39 @@ fn defender_does_not_rotate_to_empty_charger() {
     assert!(
         world.entity(defender).get::<DefendHold>().is_some(),
         "defender must stay in hold when no working charger is available"
+    );
+}
+
+#[test]
+fn defender_does_not_rotate_to_degraded_charger() {
+    let mut app = build_app();
+    common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let cell = IVec2::ZERO;
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend);
+    let charger = common::spawn_charger_at(&mut app, cell, 100);
+    let mut condition = Structure::new(StructureKind::Basic);
+    condition.health = SUPPORT_OPERATIONAL_HEALTH_THRESHOLD - 1;
+    app.world_mut().entity_mut(charger).insert(condition);
+    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
+    app.world_mut()
+        .entity_mut(defender)
+        .insert(DefendHold { cell });
+    app.world_mut()
+        .entity_mut(defender)
+        .get_mut::<Charge>()
+        .unwrap()
+        .current = LOW_CHARGE_THRESHOLD;
+
+    app.update();
+
+    assert!(
+        app.world()
+            .entity(defender)
+            .get::<ChargerAssignment>()
+            .is_none(),
+        "degraded Charger must stop operating until repaired",
     );
 }
 

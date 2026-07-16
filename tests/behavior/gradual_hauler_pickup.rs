@@ -4,7 +4,8 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         Cargo, Charger, DirectMovementComponent, HAULER_EXTRACT_PER_TICK, HaulerAssignment,
-        LogisticsReservation, OwnerSwarm, ProductionFacility, SwarmId,
+        LogisticsReservation, OwnerSwarm, ProductionFacility, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD,
+        Structure, StructureKind, SwarmId,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
 };
@@ -292,6 +293,10 @@ fn loaded_hauler_from_source_reroutes_only_to_same_swarm_sink() {
         OwnerSwarm(enemy_swarm),
         Transform::from_translation(Vec2::new(50.0, 0.0).extend(0.0)),
     ));
+    app.update();
+    let mut condition = Structure::new(StructureKind::Basic);
+    condition.health = SUPPORT_OPERATIONAL_HEALTH_THRESHOLD - 1;
+    app.world_mut().entity_mut(source).insert(condition);
     let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
     let mut reservation = LogisticsReservation::new(source, full_sink, ResourceKind::Minerals, 10);
     reservation.source_remaining = 0;

@@ -5,9 +5,9 @@
 //!
 //! ```text
 //!   Structure.ticks_since_maintained
-//!     -> increments every tick
+//!     -> increments every fixed tick
 //!     -> reset to 0 each tick a worker spends maintaining
-//!     -> past the buffer, the structure loses 1 health per tick
+//!     -> past the buffer, health falls at a fixed degradation cadence
 //!     -> at 0 health, the structure collapses and is despawned
 //! ```
 //!
@@ -51,13 +51,15 @@ use crate::nanobot::build::{Structure, StructureKind};
 use crate::nanobot::components::{DirectMovementComponent, Nanobot};
 use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::placement::BUILDING_FOOTPRINT_RADIUS;
+use crate::nanobot::{Charger, ProductionFacility};
+use crate::resources::Stockpile;
 
 /// How many ticks a structure stays stable after a maintenance
 /// shift. The buffer gives the swarm room to come back later
 /// without the structure immediately starting to lose health.
 /// Tuned so a single worker can cycle through a handful of
 /// structures without any of them degrading.
-pub const MAINTENANCE_BUFFER_TICKS: u32 = 50;
+pub const MAINTENANCE_BUFFER_TICKS: u32 = crate::SIMULATION_HZ as u32 * 60;
 
 /// Number of ticks a worker spends on a single maintenance
 /// shift. The worker is "permanently" allocated to maintenance
@@ -65,19 +67,19 @@ pub const MAINTENANCE_BUFFER_TICKS: u32 = 50;
 /// scorer. A short shift keeps the worker responsive to other
 /// work (gather, build) but long enough that the structure
 /// actually receives meaningful work.
-pub const MAINTENANCE_WORK_DURATION_TICKS: u32 = 5;
+pub const MAINTENANCE_WORK_DURATION_TICKS: u32 = crate::SIMULATION_HZ as u32 / 2;
 
-/// Health restored per tick of maintenance work. Combined with
-/// `MAINTENANCE_WORK_DURATION_TICKS`, a single shift restores
-/// 10 health -- enough to fully repair a lightly degraded
-/// structure and to keep a fully-degraded one trending upward
-/// under repeated visits.
+/// Health restored per fixed tick of maintenance work. A shift can restore a
+/// heavily degraded structure while the operational threshold prevents normal
+/// use until enough physical repair has completed.
 pub const MAINTENANCE_HEALTH_PER_TICK: u32 = 2;
 
-/// Health lost per tick once the buffer has expired. One per
-/// tick keeps the math obvious and matches the per-tick
-/// resource-granularity used by the rest of the simulation.
-pub const DEGRADATION_PER_TICK: u32 = 1;
+/// Health lost on each degradation step after the buffer expires.
+pub const DEGRADATION_PER_STEP: u32 = 1;
+
+/// Fixed ticks between degradation steps. Ten health per second gives workers
+/// time to react while making prolonged neglect physically consequential.
+pub const DEGRADATION_INTERVAL_TICKS: u32 = crate::SIMULATION_HZ as u32 / 10;
 
 /// A structure is considered "needing maintenance" once its
 /// buffer counter reaches this value. The threshold sits well
@@ -85,7 +87,49 @@ pub const DEGRADATION_PER_TICK: u32 = 1;
 /// shift and return before the structure actually starts
 /// losing health. A damaged structure (`health < max`) is also
 /// "needy" so combat damage pulls workers back.
-pub const MAINTENANCE_NEEDS_THRESHOLD: u32 = 25;
+pub const MAINTENANCE_NEEDS_THRESHOLD: u32 = crate::SIMULATION_HZ as u32 * 60 / 2;
+
+/// Shared condition carried by every completed support structure.
+pub type SupportCondition = Structure;
+
+/// Below this health, support structures remain repairable but stop operating.
+pub const SUPPORT_OPERATIONAL_HEALTH_THRESHOLD: u32 = 25;
+
+fn attach_support_condition(
+    entity: Entity,
+    commands: &mut Commands,
+    conditions: &Query<(), With<Structure>>,
+) {
+    if conditions.get(entity).is_err() {
+        commands
+            .entity(entity)
+            .insert(Structure::new(StructureKind::Basic));
+    }
+}
+
+fn initialize_stockpile_condition(
+    added: On<Add, Stockpile>,
+    mut commands: Commands,
+    conditions: Query<(), With<Structure>>,
+) {
+    attach_support_condition(added.entity, &mut commands, &conditions);
+}
+
+fn initialize_facility_condition(
+    added: On<Add, ProductionFacility>,
+    mut commands: Commands,
+    conditions: Query<(), With<Structure>>,
+) {
+    attach_support_condition(added.entity, &mut commands, &conditions);
+}
+
+fn initialize_charger_condition(
+    added: On<Add, Charger>,
+    mut commands: Commands,
+    conditions: Query<(), With<Structure>>,
+) {
+    attach_support_condition(added.entity, &mut commands, &conditions);
+}
 
 impl Structure {
     /// True when the structure is a valid maintenance target.
@@ -96,6 +140,11 @@ impl Structure {
     pub fn needs_maintenance(&self) -> bool {
         self.ticks_since_maintained >= MAINTENANCE_NEEDS_THRESHOLD
             || self.health < super::build::STRUCTURE_MAX_HEALTH
+    }
+
+    /// Whether this structure can currently perform its gameplay function.
+    pub fn is_operational(&self) -> bool {
+        self.health >= SUPPORT_OPERATIONAL_HEALTH_THRESHOLD
     }
 }
 
@@ -149,10 +198,13 @@ pub fn structure_degradation_system(
         // to 0 in the same tick; everything else sees it grow.
         structure.ticks_since_maintained = structure.ticks_since_maintained.saturating_add(1);
 
-        if structure.ticks_since_maintained > MAINTENANCE_BUFFER_TICKS {
-            // Buffer expired; the structure is unstable and
-            // starts losing health this tick.
-            let next_health = structure.health.saturating_sub(DEGRADATION_PER_TICK);
+        let overdue_ticks = structure
+            .ticks_since_maintained
+            .saturating_sub(MAINTENANCE_BUFFER_TICKS);
+        if overdue_ticks > 0 && overdue_ticks.is_multiple_of(DEGRADATION_INTERVAL_TICKS) {
+            // Buffer expired; the structure is unstable and loses health at the
+            // fixed degradation cadence.
+            let next_health = structure.health.saturating_sub(DEGRADATION_PER_STEP);
             structure.health = next_health;
             if next_health == 0 {
                 // Collapse: remove the structure from the
@@ -404,18 +456,21 @@ pub struct MaintenancePlugin;
 
 impl Plugin for MaintenancePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            (
-                worker_maintenance_arrive_system,
-                worker_maintenance_work_system,
-                structure_degradation_system,
-            )
-                .chain()
-                .after(crate::nanobot::RegionalAllocationSet::Acquire)
-                .after(crate::nanobot::move_velocity_system)
-                .after(super::build::worker_build_work_system),
-        );
+        app.add_observer(initialize_stockpile_condition)
+            .add_observer(initialize_facility_condition)
+            .add_observer(initialize_charger_condition)
+            .add_systems(
+                FixedUpdate,
+                (
+                    worker_maintenance_arrive_system,
+                    worker_maintenance_work_system,
+                    structure_degradation_system,
+                )
+                    .chain()
+                    .in_set(crate::nanobot::NanobotSimulationSet::Maintenance)
+                    .after(crate::nanobot::RegionalAllocationSet::Acquire)
+                    .after(super::build::worker_build_work_system),
+            );
     }
 }
 
@@ -457,7 +512,7 @@ mod tests {
         // one tick's worth of degradation damage. Otherwise
         // a worker maintaining once cannot keep up with a
         // structure that is already losing health.
-        const { assert!(MAINTENANCE_HEALTH_PER_TICK >= DEGRADATION_PER_TICK) };
+        const { assert!(MAINTENANCE_HEALTH_PER_TICK >= DEGRADATION_PER_STEP) };
     }
 
     #[test]

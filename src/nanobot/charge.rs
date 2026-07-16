@@ -52,10 +52,14 @@ use bevy::prelude::*;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::allocation::RegionalLease;
 use crate::nanobot::autonomy::NanobotType;
-use crate::nanobot::components::{DirectMovementComponent, Health, Nanobot, Swarm, SwarmId};
-use crate::nanobot::defend::DefendHold;
-use crate::nanobot::gather::world_to_cell;
-use crate::nanobot::placement::{BUILDING_FOOTPRINT_RADIUS, find_build_zone_placement};
+use crate::nanobot::components::{
+    DirectMovementComponent, Health, Nanobot, Swarm, SwarmId, SwarmMember,
+};
+use crate::nanobot::defend::{DefendAssignment, DefendHold};
+use crate::nanobot::maintenance::SupportCondition;
+use crate::nanobot::placement::{
+    BUILDING_FOOTPRINT_RADIUS, find_build_zone_placement, scaled_building_footprint_radius,
+};
 use crate::nanobot::planned::{PlannedKind, PlannedStructure, planned_visual_components};
 use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
@@ -474,100 +478,105 @@ pub fn charger_auto_creation_system(
     mut commands: Commands,
     grid: Res<IntentGrid>,
     structure_sprites: Res<StructureSprites>,
-    chargers: Query<(Entity, &Charger, &Transform)>,
-    planned_chargers: Query<(&PlannedStructure, &Transform), With<PlannedStructure>>,
+    chargers: Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
+    planned_chargers: Query<
+        (&PlannedStructure, &Transform, Option<&OwnerSwarm>),
+        With<PlannedStructure>,
+    >,
     structure_obstacles: Query<&Transform, Or<(With<Stockpile>, With<ProductionFacility>)>>,
     deposits: Query<(&ResourceDeposit, &Transform)>,
     defenders_in_cell: Query<
-        (&Transform, &NanobotType),
-        Or<(
-            With<DefendHold>,
-            With<crate::nanobot::defend::DefendAssignment>,
-        )>,
+        (
+            &Transform,
+            &NanobotType,
+            &SwarmMember,
+            Option<&DefendHold>,
+            Option<&DefendAssignment>,
+        ),
+        Or<(With<DefendHold>, With<DefendAssignment>)>,
     >,
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,
 ) {
-    // Index existing chargers by cell so per-cell logic is
-    // O(1) per cell rather than O(chargers * cells).
-    let mut chargers_per_cell: std::collections::HashMap<IVec2, u32> =
+    let swarm_by_id: std::collections::HashMap<SwarmId, Entity> =
+        swarms.iter().map(|(entity, id)| (*id, entity)).collect();
+    let swarm_id_by_entity: std::collections::HashMap<Entity, SwarmId> =
+        swarms.iter().map(|(entity, id)| (entity, *id)).collect();
+    let fallback_owner = swarm_by_id.get(&SwarmId::PLAYER).copied();
+    let owner_id = |owner: Option<&OwnerSwarm>| {
+        owner
+            .and_then(|owner| swarm_id_by_entity.get(&owner.0).copied())
+            .unwrap_or(SwarmId::PLAYER)
+    };
+
+    let mut chargers_per_cell: std::collections::HashMap<(IVec2, SwarmId), u32> =
         std::collections::HashMap::new();
     let mut obstacles: Vec<(Vec2, f32)> = deposits
         .iter()
         .map(|(deposit, transform)| (transform.translation.truncate(), deposit.radius))
         .collect();
     for transform in &structure_obstacles {
-        obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
+        obstacles.push((
+            transform.translation.truncate(),
+            scaled_building_footprint_radius(transform),
+        ));
     }
-    for (_, charger, transform) in &chargers {
-        *chargers_per_cell.entry(charger.cell).or_insert(0) += 1;
-        obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
+    for (_, charger, transform, owner) in &chargers {
+        *chargers_per_cell
+            .entry((charger.cell, owner_id(owner)))
+            .or_insert(0) += 1;
+        obstacles.push((
+            transform.translation.truncate(),
+            scaled_building_footprint_radius(transform),
+        ));
     }
-    for (planned, transform) in &planned_chargers {
-        // Every planned structure (not just Chargers) is
-        // in the obstacle list. The issue #34 "shared
-        // footprint" contract says "Charger placement
-        // rejects candidates that overlap ... Planned
-        // Structures" -- a planned Sink Stockpile or
-        // Production Facility must block a Charger
-        // candidate the same way a planned Charger
-        // would. The busyness count is still scoped to
-        // Planned Chargers, since only Chargers satisfy
-        // Defend demand.
-        obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
+    for (planned, transform, owner) in &planned_chargers {
+        obstacles.push((
+            transform.translation.truncate(),
+            scaled_building_footprint_radius(transform),
+        ));
         if planned.kind == PlannedKind::Charger {
-            *chargers_per_cell.entry(planned.cell).or_insert(0) += 1;
+            *chargers_per_cell
+                .entry((planned.cell, owner_id(owner)))
+                .or_insert(0) += 1;
         }
     }
 
-    // Count defenders per cell: holding or assigned. Defenders
-    // in transit or charging are intentionally NOT counted so
-    // a defender rotating to a charger does not double-count
-    // the cell's load.
-    let mut defenders_per_cell: std::collections::HashMap<IVec2, u32> =
+    let mut defenders_per_cell: std::collections::HashMap<(IVec2, SwarmId), u32> =
         std::collections::HashMap::new();
-    for (transform, nanobot_type) in &defenders_in_cell {
-        if *nanobot_type != NanobotType::Defender {
+    for (transform, kind, member, hold, assignment) in &defenders_in_cell {
+        if *kind != NanobotType::Defender {
             continue;
         }
-        let cell = world_to_cell(transform.translation.truncate());
-        *defenders_per_cell.entry(cell).or_insert(0) += 1;
+        let cell = hold
+            .map(|hold| hold.cell)
+            .or_else(|| assignment.map(|assignment| assignment.cell))
+            .unwrap_or_else(|| {
+                crate::nanobot::gather::world_to_cell(transform.translation.truncate())
+            });
+        *defenders_per_cell.entry((cell, member.0)).or_insert(0) += 1;
     }
 
-    let swarm_by_id: std::collections::HashMap<SwarmId, Entity> =
-        swarms.iter().map(|(e, id)| (*id, e)).collect();
-    let fallback_owner = swarms.iter().next().map(|(e, _)| e);
-
-    for (cell, intent_cell) in grid.iter_cells() {
+    for (cell, intent_cell) in grid.iter_active_cells() {
         if !intent_cell.has(IntentKind::Defend) {
             continue;
         }
-        let load = *defenders_per_cell.get(&cell).unwrap_or(&0);
+        let swarm_id = intent_cell
+            .owner(IntentKind::Defend)
+            .unwrap_or(SwarmId::PLAYER);
+        let key = (cell, swarm_id);
+        let load = *defenders_per_cell.get(&key).unwrap_or(&0);
         if load == 0 {
-            // No demand: a previously-occupied cell whose
-            // defenders have all left (e.g. wiped) is left
-            // alone. The existing chargers and pending
-            // plans remain; the follow-up "charger collapse"
-            // issue can decide whether to despawn them.
             continue;
         }
-        let existing = *chargers_per_cell.get(&cell).unwrap_or(&0);
-        // Demand in charger units: each charger covers up to
-        // MAX_DEFENDERS_PER_CHARGER defenders.
-        let needed_chargers = load.div_ceil(MAX_DEFENDERS_PER_CHARGER);
-        let target_chargers = needed_chargers.min(MAX_CHARGERS_PER_CELL);
+        let existing = *chargers_per_cell.get(&key).unwrap_or(&0);
+        let target_chargers = load
+            .div_ceil(MAX_DEFENDERS_PER_CHARGER)
+            .min(MAX_CHARGERS_PER_CELL);
         if existing >= target_chargers {
             continue;
         }
         let to_spawn = (target_chargers - existing).min(MAX_CHARGERS_PER_CELL - existing);
-        // Per-swarm intent ownership: the Defend cell's
-        // owner is the swarm that painted it. Unowned
-        // paint falls back to the first Swarm, matching
-        // the unowned-paint contract in the rest of the
-        // simulation.
-        let owner = intent_cell
-            .owner(IntentKind::Defend)
-            .and_then(|id| swarm_by_id.get(&id).copied())
-            .or(fallback_owner);
+        let owner = swarm_by_id.get(&swarm_id).copied().or(fallback_owner);
         for _ in 0..to_spawn {
             let Some((placement_cell, placement_pos)) =
                 find_build_zone_placement(&[cell], &obstacles, 28)
@@ -586,26 +595,40 @@ pub fn charger_auto_creation_system(
     }
 }
 
-/// Find the nearest working charger to `pos` -- a charger
-/// with [`Charger::has_supply`] returning `true`. Returns
-/// `None` when no working charger exists in the world. The
-/// helper is pure over query data so the rotation system
-/// stays small.
+/// Find the nearest supplied charger owned by `swarm`. Unowned chargers retain
+/// the legacy player ownership used by older fixtures.
+#[allow(clippy::type_complexity)]
 pub fn find_nearest_working_charger(
     pos: Vec2,
-    chargers: &Query<(Entity, &Charger, &Transform)>,
+    swarm: SwarmId,
+    chargers: &Query<(
+        Entity,
+        &Charger,
+        &Transform,
+        Option<&OwnerSwarm>,
+        Option<&SupportCondition>,
+    )>,
+    swarms: &Query<&SwarmId, With<Swarm>>,
 ) -> Option<(Entity, Vec2)> {
     let mut best: Option<(f32, Entity, Vec2)> = None;
-    for (entity, charger, transform) in chargers.iter() {
-        if !charger.has_supply() {
+    for (entity, charger, transform, owner, condition) in chargers.iter() {
+        let charger_swarm = owner
+            .and_then(|owner| swarms.get(owner.0).ok())
+            .copied()
+            .unwrap_or(SwarmId::PLAYER);
+        if charger_swarm != swarm
+            || !charger.has_supply()
+            || condition.is_some_and(|condition| !condition.is_operational())
+        {
             continue;
         }
-        let d = pos.distance(transform.translation.truncate());
-        if best.is_none_or(|(bd, _, _)| d < bd) {
-            best = Some((d, entity, transform.translation.truncate()));
+        let position = transform.translation.truncate();
+        let distance = pos.distance(position);
+        if best.is_none_or(|(best_distance, _, _)| distance < best_distance) {
+            best = Some((distance, entity, position));
         }
     }
-    best.map(|(_, e, pos)| (e, pos))
+    best.map(|(_, entity, position)| (entity, position))
 }
 
 /// For every holding defender whose charge is low, walk to
@@ -632,6 +655,7 @@ pub fn defender_rotation_to_charger_system(
             &Transform,
             &Charge,
             &NanobotType,
+            &SwarmMember,
             Option<&mut RegionalLease>,
         ),
         (
@@ -643,9 +667,16 @@ pub fn defender_rotation_to_charger_system(
             Without<ChargerProgress>,
         ),
     >,
-    chargers: Query<(Entity, &Charger, &Transform)>,
+    chargers: Query<(
+        Entity,
+        &Charger,
+        &Transform,
+        Option<&OwnerSwarm>,
+        Option<&SupportCondition>,
+    )>,
+    swarms: Query<&SwarmId, With<Swarm>>,
 ) {
-    for (entity, _hold, transform, charge, nanobot_type, lease) in &mut defenders {
+    for (entity, _hold, transform, charge, nanobot_type, member, lease) in &mut defenders {
         if *nanobot_type != NanobotType::Defender {
             continue;
         }
@@ -653,7 +684,8 @@ pub fn defender_rotation_to_charger_system(
             continue;
         }
         let pos = transform.translation.truncate();
-        let Some((charger_entity, charger_pos)) = find_nearest_working_charger(pos, &chargers)
+        let Some((charger_entity, charger_pos)) =
+            find_nearest_working_charger(pos, member.0, &chargers, &swarms)
         else {
             continue;
         };
@@ -667,7 +699,7 @@ pub fn defender_rotation_to_charger_system(
         // arrive guard reads.
         let charger_radius = chargers
             .get(charger_entity)
-            .map(|(_, c, _)| c.radius)
+            .map(|(_, charger, _, _, _)| charger.radius)
             .unwrap_or(0.0);
         if let Some(mut lease) = lease {
             lease.suspend_for_charge();
@@ -708,17 +740,17 @@ pub fn defender_charger_arrive_system(
             Without<ChargerProgress>,
         ),
     >,
-    chargers: Query<(&Charger, &Transform)>,
+    chargers: Query<(&Charger, &Transform, Option<&SupportCondition>)>,
 ) {
     for (entity, assignment, transform) in &defenders {
-        let Ok((charger, charger_transform)) = chargers.get(assignment.charger) else {
-            // Charger entity disappeared (e.g. despawned by a
-            // future collapse system). Drop the assignment
-            // and let the defend assignment pool re-pick the
-            // defender on the next tick.
+        let Ok((charger, charger_transform, condition)) = chargers.get(assignment.charger) else {
             commands.entity(entity).remove::<ChargerAssignment>();
             continue;
         };
+        if condition.is_some_and(|condition| !condition.is_operational()) {
+            commands.entity(entity).remove::<ChargerAssignment>();
+            continue;
+        }
         let distance = transform
             .translation
             .truncate()
@@ -753,16 +785,17 @@ pub fn defender_charger_work_system(
             Entity,
             &mut Charge,
             &ChargerAssignment,
+            &SwarmMember,
             Option<&mut RegionalLease>,
         ),
         (With<Nanobot>, With<ChargerProgress>),
     >,
-    mut chargers: Query<(&mut Charger, Option<&OwnerSwarm>)>,
+    mut chargers: Query<(&mut Charger, Option<&OwnerSwarm>, Option<&SupportCondition>)>,
     swarms: Query<&SwarmId, With<Swarm>>,
     mut ledger: ResMut<ResourceLedger>,
 ) {
-    for (entity, mut charge, assignment, lease) in &mut defenders {
-        let Ok((mut charger, owner)) = chargers.get_mut(assignment.charger) else {
+    for (entity, mut charge, assignment, member, lease) in &mut defenders {
+        let Ok((mut charger, owner, condition)) = chargers.get_mut(assignment.charger) else {
             // Charger disappeared mid-charge. Drop both
             // markers and let the defender be re-assigned.
             commands.entity(entity).remove::<ChargerAssignment>();
@@ -772,6 +805,26 @@ pub fn defender_charger_work_system(
             }
             continue;
         };
+        let charger_swarm = owner
+            .and_then(|owner| swarms.get(owner.0).ok())
+            .copied()
+            .unwrap_or(SwarmId::PLAYER);
+        if charger_swarm != member.0 {
+            commands.entity(entity).remove::<ChargerAssignment>();
+            commands.entity(entity).remove::<ChargerProgress>();
+            if let Some(mut lease) = lease {
+                lease.request_resume();
+            }
+            continue;
+        }
+        if condition.is_some_and(|condition| !condition.is_operational()) {
+            commands.entity(entity).remove::<ChargerAssignment>();
+            commands.entity(entity).remove::<ChargerProgress>();
+            if let Some(mut lease) = lease {
+                lease.request_resume();
+            }
+            continue;
+        }
         if !charger.has_supply() {
             // Charger emptied between the previous tick and
             // this one. Release the defender; the rotation
@@ -800,11 +853,7 @@ pub fn defender_charger_work_system(
         charge.current = (charge.current + CHARGE_REFILL_PER_TICK).min(charge.max);
         let consumed = CHARGER_MATERIAL_DRAIN_PER_TICK.min(charger.amount);
         charger.amount -= consumed;
-        let swarm = owner
-            .and_then(|owner| swarms.get(owner.0).ok())
-            .copied()
-            .unwrap_or(SwarmId::PLAYER);
-        ledger.remove_for(swarm, charger.kind, consumed);
+        ledger.remove_for(charger_swarm, charger.kind, consumed);
         if charge.is_full() {
             // Refill brought the charge to max. Release
             // immediately so the defender returns to the
@@ -870,10 +919,10 @@ impl Plugin for ChargePlugin {
         // positions are stable) and after the defend hold
         // system (so load is counted correctly).
         app.add_systems(
-            Update,
+            FixedUpdate,
             charger_auto_creation_system
                 .before(crate::nanobot::planned::worker_planned_structure_claim_system)
-                .after(crate::nanobot::move_velocity_system)
+                .after(crate::nanobot::NanobotSimulationSet::Movement)
                 .after(crate::nanobot::defend::defender_hold_system),
         );
         // Consumer: drain, health-loss, rotation, arrive,
@@ -882,7 +931,7 @@ impl Plugin for ChargePlugin {
         // visible to the rotation system's "find nearest
         // working charger" scan in the same tick.
         app.add_systems(
-            Update,
+            FixedUpdate,
             (
                 defender_charge_drain_system,
                 defender_health_loss_when_empty_system,
@@ -891,7 +940,7 @@ impl Plugin for ChargePlugin {
                 defender_charger_work_system,
             )
                 .chain()
-                .after(crate::nanobot::move_velocity_system)
+                .after(crate::nanobot::NanobotSimulationSet::Movement)
                 .after(crate::nanobot::defend::defender_hold_system)
                 .after(crate::nanobot::planned::worker_planned_structure_work_system),
         );

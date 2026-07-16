@@ -159,7 +159,8 @@ fn panel_has_segmented_structure_persistent_labels_and_no_buttons() {
         assert!(
             labels
                 .iter()
-                .any(|label| label == &(kind, name.to_string()))
+                .any(|label| label == &(kind, name.to_string())),
+            "missing {name:?} from {labels:?}"
         );
     }
 }

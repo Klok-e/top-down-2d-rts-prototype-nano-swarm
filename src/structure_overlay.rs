@@ -1,8 +1,10 @@
-//! Zoom-aware world-space physical logistics indicators.
+//! Zoom-aware world-space logistics, condition, and work indicators.
 //!
 //! Structures show physical buffer amounts plus reservation state. Cargo bars
 //! appear above Workers and Haulers only while cargo exists or a source transfer
-//! is active. Every segment reads live ECS state each update.
+//! is active. Completed support structures also show maintenance reserve and
+//! health, while active maintenance Workers show shift progress. Every segment
+//! reads live ECS state each update.
 
 use bevy::{ecs::query::QueryFilter, prelude::*};
 
@@ -10,8 +12,10 @@ use crate::GAMEPLAY_SPRITE_Z;
 use crate::fly_camera::CameraZoom2d;
 use crate::nanobot::{
     BOT_RADIUS, Cargo, Charger, DEFAULT_PLANNED_WORK_TICKS, ExtractProgress, HAULER_CARRY_CAPACITY,
-    HaulerLoading, LogisticsReservation, Nanobot, NanobotType, PLANNED_STRUCTURE_FOOTPRINT,
-    PlannedStructure, ProductionFacility, WORKER_CARRY_CAPACITY,
+    HaulerLoading, LogisticsReservation, MAINTENANCE_BUFFER_TICKS, MAINTENANCE_NEEDS_THRESHOLD,
+    MAINTENANCE_WORK_DURATION_TICKS, MaintenanceProgress, Nanobot, NanobotType,
+    PLANNED_STRUCTURE_FOOTPRINT, PlannedStructure, ProductionFacility, STRUCTURE_MAX_HEALTH,
+    SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, WORKER_CARRY_CAPACITY,
 };
 use crate::resources::{ResourceDeposit, Stockpile};
 
@@ -27,8 +31,10 @@ pub const DEFAULT_DEPOSIT_OVERLAY_RADIUS: f32 = 32.0;
 /// Vertical gap between target footprint top and bar centre.
 pub const STRUCTURE_FOOTPRINT_LABEL_GAP: f32 = 12.0;
 
-const STRUCTURE_BAR_SIZE: Vec2 = Vec2::new(48.0, 6.0);
+pub const STRUCTURE_BAR_SIZE: Vec2 = Vec2::new(48.0, 6.0);
 const CARGO_BAR_SIZE: Vec2 = Vec2::new(32.0, 4.0);
+pub const CONDITION_BAR_SIZE: Vec2 = Vec2::new(48.0, 3.0);
+pub const CONDITION_BAR_GAP: f32 = 2.0;
 const HAULER_OVERLAY_GAP: f32 = 8.0;
 const FILL_CHILD_Z: f32 = 0.01;
 
@@ -99,6 +105,27 @@ pub struct StructureOverlayBackground;
 #[derive(Debug, Component, Clone, Copy)]
 pub struct StructureOverlayFill;
 
+/// Maintenance, health, or active Worker progress bar.
+#[derive(Debug, Component, Clone, Copy)]
+pub struct ConditionOverlay {
+    pub target: Entity,
+    pub kind: ConditionOverlayKind,
+    pub fill: Entity,
+}
+
+#[derive(Debug, Component, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConditionOverlayKind {
+    Maintenance,
+    Health,
+    WorkerProgress,
+}
+
+#[derive(Debug, Component, Clone, Copy)]
+pub struct ConditionOverlayBackground;
+
+#[derive(Debug, Component, Clone, Copy)]
+pub struct ConditionOverlayFill;
+
 /// Semantic segment type used by deterministic rendering assertions.
 #[derive(Debug, Component, Clone, Copy, PartialEq, Eq)]
 pub struct StructureOverlaySegment {
@@ -149,6 +176,34 @@ pub fn planned_fill_fraction(planned: &PlannedStructure) -> f32 {
         DEFAULT_PLANNED_WORK_TICKS.saturating_sub(planned.work_remaining),
         DEFAULT_PLANNED_WORK_TICKS,
     )
+}
+
+pub fn maintenance_fill_fraction(ticks_since_maintained: u32) -> f32 {
+    1.0 - fill_fraction(ticks_since_maintained, MAINTENANCE_BUFFER_TICKS)
+}
+
+pub fn health_fill_fraction(health: u32) -> f32 {
+    fill_fraction(health, STRUCTURE_MAX_HEALTH)
+}
+
+pub fn condition_fill_color(kind: ConditionOverlayKind, value: u32) -> Color {
+    match kind {
+        ConditionOverlayKind::Maintenance if value >= MAINTENANCE_BUFFER_TICKS => {
+            Color::srgb(1.0, 0.22, 0.18)
+        }
+        ConditionOverlayKind::Maintenance if value >= MAINTENANCE_NEEDS_THRESHOLD => {
+            Color::srgb(1.0, 0.68, 0.20)
+        }
+        ConditionOverlayKind::Maintenance => Color::srgb(0.25, 0.85, 0.35),
+        ConditionOverlayKind::Health if value < SUPPORT_OPERATIONAL_HEALTH_THRESHOLD => {
+            Color::srgb(1.0, 0.22, 0.18)
+        }
+        ConditionOverlayKind::Health if value < STRUCTURE_MAX_HEALTH => {
+            Color::srgb(1.0, 0.68, 0.20)
+        }
+        ConditionOverlayKind::Health => Color::srgb(0.25, 0.85, 0.35),
+        ConditionOverlayKind::WorkerProgress => Color::WHITE,
+    }
 }
 
 /// World-space bar size for each overlay kind.
@@ -225,9 +280,12 @@ impl Plugin for StructureOverlayPlugin {
             Update,
             (
                 structure_overlay_spawn_system,
+                condition_overlay_spawn_system,
                 structure_overlay_update_system,
+                condition_overlay_update_system,
                 structure_overlay_visibility_system,
                 structure_overlay_cleanup_system,
+                condition_overlay_cleanup_system,
             )
                 .chain(),
         );
@@ -426,6 +484,152 @@ fn spawn_overlay_for(commands: &mut Commands, target: Entity, kind: StructureOve
         .add_children(&[fill, outgoing_reserved, incoming_reserved]);
 }
 
+#[allow(clippy::type_complexity)]
+pub fn condition_overlay_spawn_system(
+    mut commands: Commands,
+    support_targets: Query<
+        Entity,
+        (
+            With<Structure>,
+            Or<(With<Stockpile>, With<ProductionFacility>, With<Charger>)>,
+        ),
+    >,
+    maintenance_workers: Query<
+        Entity,
+        (
+            With<Nanobot>,
+            With<MaintenanceProgress>,
+            Without<ConditionOverlay>,
+        ),
+    >,
+    existing: Query<&ConditionOverlay>,
+) {
+    let covered: std::collections::HashSet<(Entity, ConditionOverlayKind)> = existing
+        .iter()
+        .map(|overlay| (overlay.target, overlay.kind))
+        .collect();
+    for target in &support_targets {
+        for kind in [
+            ConditionOverlayKind::Maintenance,
+            ConditionOverlayKind::Health,
+        ] {
+            if !covered.contains(&(target, kind)) {
+                spawn_condition_overlay(&mut commands, target, kind);
+            }
+        }
+    }
+    for target in &maintenance_workers {
+        let kind = ConditionOverlayKind::WorkerProgress;
+        if !covered.contains(&(target, kind)) {
+            spawn_condition_overlay(&mut commands, target, kind);
+        }
+    }
+}
+
+fn spawn_condition_overlay(commands: &mut Commands, target: Entity, kind: ConditionOverlayKind) {
+    let size = condition_bar_size(kind);
+    let fill = commands
+        .spawn((
+            ConditionOverlayFill,
+            Sprite {
+                color: condition_fill_color(kind, 0),
+                custom_size: Some(Vec2::new(0.0, size.y)),
+                ..default()
+            },
+            Transform::from_translation(Vec3::new(-size.x / 2.0, 0.0, FILL_CHILD_Z)),
+            Visibility::Inherited,
+        ))
+        .id();
+    let background = commands
+        .spawn((
+            ConditionOverlay { target, kind, fill },
+            ConditionOverlayBackground,
+            Sprite {
+                color: overlay_background_color(StructureOverlayKind::Facility),
+                custom_size: Some(size),
+                ..default()
+            },
+            Transform::from_translation(Vec3::new(0.0, 0.0, STRUCTURE_OVERLAY_Z)),
+            Visibility::Inherited,
+        ))
+        .id();
+    commands.entity(background).add_children(&[fill]);
+}
+
+fn condition_bar_size(kind: ConditionOverlayKind) -> Vec2 {
+    match kind {
+        ConditionOverlayKind::Maintenance | ConditionOverlayKind::Health => CONDITION_BAR_SIZE,
+        ConditionOverlayKind::WorkerProgress => CARGO_BAR_SIZE,
+    }
+}
+
+fn condition_overlay_offset_y(kind: ConditionOverlayKind) -> f32 {
+    let resource_y = PLANNED_STRUCTURE_FOOTPRINT / 2.0 + STRUCTURE_FOOTPRINT_LABEL_GAP;
+    let maintenance_y =
+        resource_y + STRUCTURE_BAR_SIZE.y / 2.0 + CONDITION_BAR_GAP + CONDITION_BAR_SIZE.y / 2.0;
+    match kind {
+        ConditionOverlayKind::Maintenance => maintenance_y,
+        ConditionOverlayKind::Health => maintenance_y + CONDITION_BAR_SIZE.y + CONDITION_BAR_GAP,
+        ConditionOverlayKind::WorkerProgress => BOT_RADIUS + HAULER_OVERLAY_GAP,
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub fn condition_overlay_update_system(
+    mut overlays: Query<(&ConditionOverlay, &mut Transform), Without<ConditionOverlayFill>>,
+    mut fills: Query<
+        (&mut Sprite, &mut Transform),
+        (With<ConditionOverlayFill>, Without<ConditionOverlay>),
+    >,
+    conditions: Query<&Structure, Without<ConditionOverlay>>,
+    maintenance_workers: Query<&MaintenanceProgress, Without<ConditionOverlay>>,
+    target_transforms: Query<
+        &Transform,
+        (Without<ConditionOverlay>, Without<ConditionOverlayFill>),
+    >,
+) {
+    for (overlay, mut transform) in &mut overlays {
+        let Ok(target_transform) = target_transforms.get(overlay.target) else {
+            continue;
+        };
+        transform.translation = (target_transform.translation.truncate()
+            + Vec2::Y * condition_overlay_offset_y(overlay.kind))
+        .extend(STRUCTURE_OVERLAY_Z);
+        let (fraction, value) = match overlay.kind {
+            ConditionOverlayKind::Maintenance => conditions
+                .get(overlay.target)
+                .map(|condition| {
+                    (
+                        maintenance_fill_fraction(condition.ticks_since_maintained),
+                        condition.ticks_since_maintained,
+                    )
+                })
+                .unwrap_or_default(),
+            ConditionOverlayKind::Health => conditions
+                .get(overlay.target)
+                .map(|condition| (health_fill_fraction(condition.health), condition.health))
+                .unwrap_or_default(),
+            ConditionOverlayKind::WorkerProgress => maintenance_workers
+                .get(overlay.target)
+                .map(|progress| {
+                    (
+                        fill_fraction(progress.ticks_worked, MAINTENANCE_WORK_DURATION_TICKS),
+                        progress.ticks_worked,
+                    )
+                })
+                .unwrap_or_default(),
+        };
+        let Ok((mut sprite, mut fill_transform)) = fills.get_mut(overlay.fill) else {
+            continue;
+        };
+        let size = condition_bar_size(overlay.kind);
+        let width = size.x * fraction;
+        sprite.custom_size = Some(Vec2::new(width, size.y));
+        sprite.color = condition_fill_color(overlay.kind, value);
+        fill_transform.translation = Vec3::new(-size.x / 2.0 + width / 2.0, 0.0, FILL_CHILD_Z);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct OverlayAmounts {
     physical: u32,
@@ -612,11 +816,20 @@ fn update_segment_sprite(
 pub fn structure_overlay_visibility_system(
     settings: Res<StructureOverlaySettings>,
     zoom_query: Query<&CameraZoom2d>,
-    mut overlays: Query<&mut Visibility, With<StructureOverlay>>,
+    mut overlays: Query<&mut Visibility, (With<StructureOverlay>, Without<ConditionOverlay>)>,
+    mut condition_overlays: Query<
+        &mut Visibility,
+        (With<ConditionOverlay>, Without<StructureOverlay>),
+    >,
 ) {
     let zoom = effective_zoom(zoom_query.iter(), 1.0);
     let target = overlay_visibility_for_zoom(zoom, settings.hide_zoom_threshold);
     for mut visibility in &mut overlays {
+        if *visibility != target {
+            *visibility = target;
+        }
+    }
+    for mut visibility in &mut condition_overlays {
         if *visibility != target {
             *visibility = target;
         }
@@ -643,6 +856,32 @@ pub fn structure_overlay_cleanup_system(
         );
         if target_gone || cargo_hidden {
             commands.entity(overlay_entity).despawn();
+        }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub fn condition_overlay_cleanup_system(
+    mut commands: Commands,
+    overlays: Query<(Entity, &ConditionOverlay)>,
+    support_targets: Query<
+        (),
+        (
+            With<Structure>,
+            Or<(With<Stockpile>, With<ProductionFacility>, With<Charger>)>,
+        ),
+    >,
+    maintenance_workers: Query<(), (With<Nanobot>, With<MaintenanceProgress>)>,
+) {
+    for (entity, overlay) in &overlays {
+        let valid = match overlay.kind {
+            ConditionOverlayKind::Maintenance | ConditionOverlayKind::Health => {
+                support_targets.get(overlay.target).is_ok()
+            }
+            ConditionOverlayKind::WorkerProgress => maintenance_workers.get(overlay.target).is_ok(),
+        };
+        if !valid {
+            commands.entity(entity).despawn();
         }
     }
 }

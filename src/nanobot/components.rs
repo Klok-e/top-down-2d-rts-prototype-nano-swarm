@@ -20,7 +20,7 @@ pub struct Swarm {}
 /// The id is a plain `u32` because the only thing the rest of
 /// the code does with it is compare and store; a richer handle
 /// would just be ceremony around equality.
-#[derive(Debug, Clone, Copy, Component, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, Component, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct SwarmId(pub u32);
 
 impl SwarmId {

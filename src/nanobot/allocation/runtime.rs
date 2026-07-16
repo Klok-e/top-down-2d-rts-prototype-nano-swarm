@@ -1,6 +1,9 @@
 //! Production ECS adapter for deterministic regional allocation.
 
-use std::{cmp::Ordering, collections::BTreeMap};
+use std::{
+    cmp::{Ordering, Reverse},
+    collections::BTreeMap,
+};
 
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
@@ -39,6 +42,29 @@ pub const RUNTIME_MAX_CANDIDATES: usize = 128;
 /// Allocation ticks waited before fairness promotes terminal urgency one tier.
 pub const TERMINAL_FAIRNESS_PROMOTION_TICKS: u32 = 8;
 
+/// Allocation ticks before an unserved region enters the bounded fairness window.
+pub const REGIONAL_FAIRNESS_PROMOTION_TICKS: u32 = 8;
+
+/// Deterministic ordering: promoted starvation debt first, then nearest-region order.
+pub fn region_fairness_sort_key(
+    source: AllocationRegion,
+    region: AllocationRegion,
+    age: u32,
+) -> (bool, Reverse<u32>, u32, i32, i32) {
+    (
+        age < REGIONAL_FAIRNESS_PROMOTION_TICKS,
+        Reverse(age),
+        region_distance_key(source, region),
+        region.y,
+        region.x,
+    )
+}
+
+#[derive(Debug, Default, Resource)]
+pub struct RegionalServiceAges {
+    waiting: BTreeMap<(SwarmId, AllocationRegion, usize), u32>,
+}
+
 /// Waiting age for terminal consumers with actionable Logistics Legs.
 #[derive(Debug, Default, Resource)]
 pub struct TerminalDemandAges {
@@ -74,7 +100,7 @@ impl Default for AllocationTickDue {
     }
 }
 
-/// Single production allocator. Projection and invalidation run every update;
+/// Single production allocator. Projection and invalidation run every fixed tick;
 /// new claims run on deterministic 100 ms simulation-time boundaries.
 pub struct RegionalAllocationPlugin;
 
@@ -85,8 +111,9 @@ impl Plugin for RegionalAllocationPlugin {
             .init_resource::<RegionalLeaseConfig>()
             .init_resource::<AllocationTickDue>()
             .init_resource::<TerminalDemandAges>()
+            .init_resource::<RegionalServiceAges>()
             .configure_sets(
-                Update,
+                FixedUpdate,
                 (
                     RegionalAllocationSet::Project,
                     RegionalAllocationSet::Invalidate,
@@ -95,12 +122,12 @@ impl Plugin for RegionalAllocationPlugin {
                     .chain(),
             )
             .add_systems(
-                Update,
+                FixedUpdate,
                 super::project_actionable_opportunities_system
                     .in_set(RegionalAllocationSet::Project),
             )
             .add_systems(
-                Update,
+                FixedUpdate,
                 (
                     super::release_finished_regional_leases_system,
                     ApplyDeferred,
@@ -112,7 +139,7 @@ impl Plugin for RegionalAllocationPlugin {
                     .in_set(RegionalAllocationSet::Invalidate),
             )
             .add_systems(
-                Update,
+                FixedUpdate,
                 regional_allocation_acquisition_system
                     .run_if(allocation_tick_due)
                     .in_set(RegionalAllocationSet::Acquire),
@@ -121,7 +148,7 @@ impl Plugin for RegionalAllocationPlugin {
 }
 
 fn advance_allocation_clock_system(
-    time: Res<Time>,
+    time: Res<Time<Fixed>>,
     mut clock: ResMut<AllocationClock>,
     mut due: ResMut<AllocationTickDue>,
 ) {
@@ -168,6 +195,7 @@ pub fn regional_allocation_acquisition_system(
     clock: Res<AllocationClock>,
     grid: Res<IntentGrid>,
     projection: Res<ActionableProjection>,
+    mut region_ages: ResMut<RegionalServiceAges>,
     bots: Query<
         (
             Entity,
@@ -322,20 +350,56 @@ pub fn regional_allocation_acquisition_system(
             })
             .collect::<Vec<_>>()
     });
-    let mut capacities = BTreeMap::<(AllocationRegion, usize), u32>::new();
-    let mut source_regions = BTreeMap::new();
+    let candidate_swarms = candidates
+        .iter()
+        .map(|bot| bot.swarm)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut work_by_swarm_kind = BTreeMap::new();
+    for swarm in candidate_swarms.iter().copied() {
+        for (kind, regional_work) in work_by_kind.iter().enumerate() {
+            let regions = regional_work
+                .iter()
+                .filter_map(|(region, opportunities)| {
+                    let compatible = opportunities
+                        .iter()
+                        .copied()
+                        .filter(|work| work.owner.is_none_or(|owner| owner == swarm))
+                        .collect::<Vec<_>>();
+                    (!compatible.is_empty()).then_some((*region, compatible))
+                })
+                .collect::<Vec<_>>();
+            work_by_swarm_kind.insert((swarm, kind), regions);
+        }
+    }
+    let active_region_kinds = work_by_swarm_kind
+        .iter()
+        .flat_map(|((swarm, kind), regions)| {
+            regions
+                .iter()
+                .map(move |(region, _)| (*swarm, *region, *kind))
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    region_ages
+        .waiting
+        .retain(|key, _| active_region_kinds.contains(key));
+    for key in active_region_kinds {
+        let age = region_ages.waiting.entry(key).or_default();
+        *age = age.saturating_add(1);
+    }
+
+    let mut capacities = BTreeMap::<(SwarmId, AllocationRegion, usize), u32>::new();
+    let mut source_regions = std::collections::BTreeSet::new();
     for bot in &candidates {
-        let source = bot.region;
-        source_regions.insert(source, ());
+        source_regions.insert((bot.swarm, bot.region));
         let capacity = capacities
-            .entry((source, kind_index(bot.kind)))
+            .entry((bot.swarm, bot.region, kind_index(bot.kind)))
             .or_default();
         *capacity = capacity.saturating_add(1);
     }
 
     let mut pulls = BTreeMap::new();
     let mut ordered_regions = BTreeMap::new();
-    for (kind_index, regional_work) in work_by_kind.iter().enumerate() {
+    for ((swarm, kind), regional_work) in &work_by_swarm_kind {
         let region_slices = regional_work
             .iter()
             .map(|(region, work)| (*region, work.as_slice()))
@@ -345,19 +409,31 @@ pub fn regional_allocation_acquisition_system(
             .collect::<Vec<_>>();
         let kind_capacities = capacities
             .iter()
-            .filter_map(|((region, candidate_kind), capacity)| {
-                (*candidate_kind == kind_index).then_some((*region, *capacity))
+            .filter_map(|((candidate_swarm, region, candidate_kind), capacity)| {
+                (*candidate_swarm == *swarm && *candidate_kind == *kind)
+                    .then_some((*region, *capacity))
             })
             .collect::<Vec<_>>();
         for (source, pull) in outward_pull_budgets(&kind_capacities, &pressures, u32::MAX) {
-            pulls.insert((source, kind_index), pull);
+            pulls.insert((*swarm, source, *kind), pull);
         }
-        for source in source_regions.keys().copied() {
+        for (source_swarm, source) in source_regions.iter().copied() {
+            if source_swarm != *swarm {
+                continue;
+            }
             let mut ordered = region_slices.clone();
             ordered.sort_by_key(|(region, _)| {
-                (region_distance_key(source, *region), region.y, region.x)
+                region_fairness_sort_key(
+                    source,
+                    *region,
+                    region_ages
+                        .waiting
+                        .get(&(*swarm, *region, *kind))
+                        .copied()
+                        .unwrap_or_default(),
+                )
             });
-            ordered_regions.insert((source, kind_index), ordered);
+            ordered_regions.insert((*swarm, source, *kind), ordered);
         }
     }
     let bounds = CandidateBounds {
@@ -366,7 +442,7 @@ pub fn regional_allocation_acquisition_system(
     };
 
     for bot in candidates {
-        let bot_key = (bot.region, kind_index(bot.kind));
+        let bot_key = (bot.swarm, bot.region, kind_index(bot.kind));
         let Some(pull) = pulls.get(&bot_key).copied() else {
             if bot.resume_pending {
                 commands.entity(bot.entity).remove::<RegionalLease>();
@@ -446,11 +522,14 @@ pub fn regional_allocation_acquisition_system(
         ) {
             continue;
         }
-        if let OpportunityTarget::Haul { sink, .. } = work.target {
-            if facilities.get(sink).is_ok() || chargers.get(sink).is_ok() {
-                terminal.ages.waiting.insert(sink, 0);
-            }
+        if let OpportunityTarget::Haul { sink, .. } = work.target
+            && (facilities.get(sink).is_ok() || chargers.get(sink).is_ok())
+        {
+            terminal.ages.waiting.insert(sink, 0);
         }
+        region_ages
+            .waiting
+            .insert((bot.swarm, work.region, kind_index(bot.kind)), 0);
         let lease = RegionalLease::new(
             work.region,
             work.category,

@@ -64,7 +64,9 @@ use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::NanobotType;
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm, SwarmId, SwarmMember};
 use crate::nanobot::gather::world_to_cell;
-use crate::nanobot::placement::{BUILDING_FOOTPRINT_RADIUS, find_build_zone_placement};
+use crate::nanobot::placement::{
+    BUILDING_FOOTPRINT_RADIUS, find_build_zone_placement, scaled_building_footprint_radius,
+};
 use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
 use crate::resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole};
 use crate::structure_sprites::{StructureSprites, StructureVisual, StructureVisualState};
@@ -251,22 +253,12 @@ pub struct PlannedStructureProgress {
     pub target: Entity,
 }
 
-/// Sidecar on a `PlannedStructure` of
-/// [`PlannedKind::ProductionFacility`]. Records the type the
-/// completed facility should produce first, so the demand
-/// layer can pre-allocate the kind that was most under target
-/// at planning time. The completed `ProductionFacility`
-/// starts with `current_target = Some(this type)`, so its
-/// first pick cycle respects the original demand even if the
-/// swarm's ratio has shifted between plan and completion.
+/// Planning-time snapshot of the type most under target when a
+/// [`PlannedKind::ProductionFacility`] plan is created.
 ///
-/// The target lives on a sidecar component rather than as
-/// data on [`PlannedKind`] so the enum (and its
-/// `const` [`PlannedKind::ALL`] array) stay data-less and
-/// trivially copyable. The promotion path reads this
-/// component and removes it on completion; the production
-/// pick/work systems then re-evaluate the target every cycle
-/// as usual.
+/// The sidecar stays separate so [`PlannedKind`] remains data-less. Promotion
+/// removes it and creates an idle, empty facility; physical input must pay the
+/// first cycle before the normal picker chooses any type.
 #[derive(Debug, Component, Clone, Copy)]
 pub struct PlannedProductionTarget(pub NanobotType);
 
@@ -299,7 +291,10 @@ pub fn sink_stockpile_demand_system(
         .map(|(deposit, transform)| (transform.translation.truncate(), deposit.radius))
         .collect();
     for (_, transform, _, _) in &stockpiles {
-        obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
+        obstacles.push((
+            transform.translation.truncate(),
+            scaled_building_footprint_radius(transform),
+        ));
     }
     // Planned Structures of any kind are in the obstacle
     // list so a fresh Sink Stockpile cannot overlap a
@@ -309,7 +304,10 @@ pub fn sink_stockpile_demand_system(
     // auto-plan Sink Stockpiles (ADR-0005).
     let mut demand_sites: Vec<(IVec2, Option<Entity>)> = Vec::new();
     for (planned_structure, transform, owner) in &planned {
-        obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
+        obstacles.push((
+            transform.translation.truncate(),
+            scaled_building_footprint_radius(transform),
+        ));
         if planned_structure.kind == PlannedKind::ProductionFacility {
             demand_sites.push((
                 world_to_cell(transform.translation.truncate()),
@@ -318,10 +316,16 @@ pub fn sink_stockpile_demand_system(
         }
     }
     for (transform, _) in &facilities {
-        obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
+        obstacles.push((
+            transform.translation.truncate(),
+            scaled_building_footprint_radius(transform),
+        ));
     }
     for (transform, _) in &chargers {
-        obstacles.push((transform.translation.truncate(), BUILDING_FOOTPRINT_RADIUS));
+        obstacles.push((
+            transform.translation.truncate(),
+            scaled_building_footprint_radius(transform),
+        ));
     }
 
     for (transform, owner) in &facilities {
@@ -712,19 +716,10 @@ fn release_planned_worker(commands: &mut Commands, worker_entity: Entity) {
 ///   empty [`Stockpile`] buffer, with
 ///   [`StockpileRole::Source`] or [`StockpileRole::Sink`]
 ///   respectively.
-/// - [`PlannedKind::ProductionFacility`] completes into a
-///   [`ProductionFacility`] carrying `first_target` as its
-///   first `current_target`, plus a local [`Stockpile`]
-///   buffer so the production chain can pull minerals
-///   through the facility's own staging buffer (matching the
-///   seed facility shape in the default scenario). The
-///   `OwnerSwarm` is preserved through the promotion, so
-///   the completed facility keeps the swarm that painted
-///   the Build Zone the plan lived in. `first_target` is
-///   `Some(target)` for plans created by the
-///   `PlannedProductionTarget` sidecar, or `None` for test
-///   fixtures that bypass the auto-creation system (the
-///   same fallback the pre-multi-swarm tests rely on).
+/// - [`PlannedKind::ProductionFacility`] completes into an empty, idle
+///   [`ProductionFacility`]. `OwnerSwarm` is preserved, while the planning
+///   target is removed. Logistics must deliver a complete cycle cost before
+///   the normal production picker starts work.
 /// - [`PlannedKind::Charger`] completes into an empty
 ///   [`crate::nanobot::Charger`] with default capacity and radius.
 ///   `OwnerSwarm` remains on the entity, preserving plan ownership.
@@ -737,7 +732,7 @@ fn promote_planned_to_completion(
     kind: PlannedKind,
     world_pos: Vec2,
     cell: IVec2,
-    first_target: Option<NanobotType>,
+    _first_target: Option<NanobotType>,
     structure_sprites: &StructureSprites,
 ) {
     let visual = completed_visual_bundle(kind, structure_sprites, world_pos);
@@ -759,13 +754,10 @@ fn promote_planned_to_completion(
             ));
         }
         PlannedKind::ProductionFacility => {
-            // The first production target was decided when
-            // the plan was created. The work system reads
-            // it off the sidecar and passes it in, so the
-            // promotion path is a single function call
-            // with no `Entity` lookup.
-            let mut facility = ProductionFacility::new();
-            facility.current_target = first_target;
+            // Completion creates an empty terminal. The normal production picker
+            // chooses a type only after the hopper can pay the full cycle cost; a
+            // planned target must never become a free first nanobot.
+            let facility = ProductionFacility::new();
             commands
                 .entity(planned_entity)
                 .remove::<PlannedStructure>()
@@ -860,7 +852,7 @@ pub struct PlannedStructurePlugin;
 impl Plugin for PlannedStructurePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
-            Update,
+            FixedUpdate,
             (
                 sink_stockpile_demand_system,
                 worker_planned_structure_arrive_system,
@@ -868,7 +860,7 @@ impl Plugin for PlannedStructurePlugin {
             )
                 .chain()
                 .after(crate::nanobot::RegionalAllocationSet::Acquire)
-                .after(crate::nanobot::move_velocity_system),
+                .after(crate::nanobot::NanobotSimulationSet::Movement),
         );
     }
 }

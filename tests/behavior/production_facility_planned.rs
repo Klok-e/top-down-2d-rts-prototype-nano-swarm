@@ -19,9 +19,8 @@
 //!   7. The "demand does not pile plans in a single cell"
 //!      half of the contract (the auto-creation system sees
 //!      the planned cell as occupied).
-//!   8. The plan carries a `PlannedProductionTarget` sidecar
-//!      so the completed facility starts busy with the type
-//!      that was most under target at planning time.
+//!   8. The planning target guides placement only; completion starts idle
+//!      until logistics pays a full production cycle.
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
@@ -328,17 +327,15 @@ fn worker_builds_planned_production_facility_to_completion() {
         world.entity(plan).get::<PlannedStructure>().is_none(),
         "PlannedStructure must be removed on completion"
     );
-    // The completed facility exists with the picked
-    // target as its `current_target`. The sidecar is
-    // also removed so the lifecycle is clean.
+    // Completion creates an empty terminal; production cannot begin until
+    // physical logistics pays the first cycle cost.
     let facility = world
         .entity(plan)
         .get::<ProductionFacility>()
         .expect("completion must replace PlannedStructure with a ProductionFacility");
     assert_eq!(
-        facility.current_target,
-        Some(NanobotType::Hauler),
-        "completed facility's current_target must round-trip from the sidecar"
+        facility.current_target, None,
+        "completed facility must not receive a free first production cycle",
     );
     assert_eq!(
         facility.progress, 0,
@@ -386,13 +383,8 @@ fn completed_production_facility_consumes_resources_and_produces_nanobots() {
     // Acceptance: "Completed Production Facilities consume
     // resources and produce nanobots through existing
     // production rules." A planned facility is built by a
-    // Worker, then a full production cycle runs: the
-    // facility picks a target (using the sidecar), pulls
-    // `PRODUCTION_COST_PER_BOT` from a local stockpile,
-    // advances through the work ticks, and spawns a new
-    // nanobot of the picked type as a child of the
-    // owning swarm.
-    use top_down_2d_rts_prototype_nano_swarm::nanobot::PRODUCTION_COST_PER_BOT;
+    // Worker, then logistics fills its terminal input, a full
+    // production cycle runs, and a new nanobot spawns.
     let mut app = build_app();
     let swarm_center = Vec2::new(0.0, 0.0);
     let cell = IVec2::new(0, 0);
@@ -401,16 +393,11 @@ fn completed_production_facility_consumes_resources_and_produces_nanobots() {
     {
         let mut ratio = app.world_mut().resource_mut::<ProductionRatio>();
         ratio.set_weight(NanobotType::Worker, 1);
+        ratio.set_weight(NanobotType::Hauler, 1);
     }
-    let _plan =
-        common::spawn_planned_production_facility_at_cell(&mut app, cell, NanobotType::Worker);
+    let plan =
+        common::spawn_planned_production_facility_at_cell(&mut app, cell, NanobotType::Hauler);
     let _worker = common::spawn_worker_at(&mut app, cell_center);
-    // A local stockpile with enough material for one
-    // production cycle. Place it at the cell so the
-    // pick system's "closest with material" scan finds
-    // it.
-    let _stockpile =
-        common::spawn_stockpile(&mut app, cell_center, PRODUCTION_COST_PER_BOT * 2, 1000);
 
     // Drive the build to completion, then run enough
     // ticks for the completed facility to do one full
@@ -430,6 +417,7 @@ fn completed_production_facility_consumes_resources_and_produces_nanobots() {
             .is_some(),
         "completed Production Facility must exist after the build"
     );
+    common::fill_facility_input(&mut app, plan);
     // Drive one full production cycle on the completed
     // facility. PRODUCTION_COST_PER_BOT = 20 is
     // consumed, then PRODUCTION_TICKS_PER_BOT = 5 work
@@ -442,18 +430,15 @@ fn completed_production_facility_consumes_resources_and_produces_nanobots() {
 
     // A new Worker owned by the swarm must exist.
     // Issue #38 / ADR-0004: production-spawned
-    // nanobots are top-level entities, not children
-    // of the swarm. Track the pre-cycle worker count
-    // and assert the production cycle added exactly
-    // one (the existing pre-cycle worker is already
-    // owned by the same `SwarmId`).
+    // nanobots are top-level entities, not children of the swarm. The
+    // existing Worker leaves a Hauler composition deficit.
     let swarm_id = app
         .world()
         .entity(swarm)
         .get::<SwarmId>()
         .copied()
         .expect("swarm must carry a SwarmId");
-    let mut owned_workers_after = 0;
+    let mut owned_haulers_after = 0;
     {
         let world = app.world_mut();
         let mut query = world.query::<(
@@ -461,16 +446,14 @@ fn completed_production_facility_consumes_resources_and_produces_nanobots() {
             &top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmMember,
         )>();
         for (ty, member) in query.iter(world) {
-            if member.0 == swarm_id && *ty == NanobotType::Worker {
-                owned_workers_after += 1;
+            if member.0 == swarm_id && *ty == NanobotType::Hauler {
+                owned_haulers_after += 1;
             }
         }
     }
-    // The test seeded one Worker (the builder); the
-    // production cycle must add exactly one more.
     assert_eq!(
-        owned_workers_after, 2,
-        "completed Production Facility must spawn exactly one Worker after a full production cycle (expected initial Worker + 1 spawned Worker)"
+        owned_haulers_after, 1,
+        "completed Production Facility must produce only after its first cycle is paid",
     );
 }
 

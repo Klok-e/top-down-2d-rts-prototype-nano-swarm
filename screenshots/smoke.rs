@@ -11,6 +11,10 @@
 //! (gitignored with `/target`).
 
 use bevy::prelude::*;
+use top_down_2d_rts_prototype_nano_swarm::{
+    nanobot::ProductionFacility,
+    scenario::{PLAYER_CELL, SEED_FACILITY_OFFSET, cell_origin},
+};
 
 use crate::harness::{TestContext, TestFlow};
 
@@ -23,6 +27,23 @@ pub fn smoke(ctx: &mut TestContext) -> TestFlow {
         assert!(
             camera.iter(ctx.world).count() >= 1,
             "default scenario should have spawned at least one camera by frame 2"
+        );
+
+        let facility_positions = ctx
+            .world
+            .query_filtered::<&Transform, With<ProductionFacility>>()
+            .iter(ctx.world)
+            .map(|transform| transform.translation.truncate())
+            .collect::<Vec<_>>();
+        let expected_facility = cell_origin(PLAYER_CELL) + SEED_FACILITY_OFFSET;
+        assert!(
+            facility_positions.contains(&expected_facility),
+            "default player Production Facility must spawn at its visible authored position"
+        );
+        assert_ne!(
+            expected_facility,
+            cell_origin(PLAYER_CELL),
+            "default Production Facility must not be hidden under the seed swarm"
         );
     }
 

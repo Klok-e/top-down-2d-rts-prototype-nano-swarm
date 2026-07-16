@@ -8,10 +8,12 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
+    intent::{IntentGrid, IntentKind},
     nanobot::{
-        NanobotType, OwnerSwarm, PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT,
-        ProductionFacility, ProductionRatio, SwarmBundle, SwarmId,
-        production_facility_pick_target_system,
+        Charge, NanobotType, OwnerSwarm, PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT,
+        PopulationDemandPlugin, ProductionFacility, ProductionRatio,
+        SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, SwarmBundle, SwarmId,
+        SwarmMember, production_facility_pick_target_system,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
 };
@@ -268,6 +270,100 @@ fn facility_produces_nanobot_after_full_cycle() {
 }
 
 #[test]
+fn produced_defender_enters_charge_lifecycle() {
+    let mut app = build_app();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    app.world_mut()
+        .resource_mut::<ProductionRatio>()
+        .set_weight(NanobotType::Defender, 1);
+    common::spawn_stockpile(&mut app, Vec2::ZERO, PRODUCTION_COST_PER_BOT * 2, 1000);
+    common::spawn_idle_facility_at(&mut app, Vec2::ZERO);
+
+    for _ in 0..(PRODUCTION_TICKS_PER_BOT + 3) {
+        app.update();
+    }
+
+    let swarm_id = *app
+        .world()
+        .entity(swarm)
+        .get::<SwarmId>()
+        .expect("swarm has identity");
+    let world = app.world_mut();
+    let mut defenders = world.query::<(&NanobotType, &SwarmMember, Option<&Charge>)>();
+    let charge = defenders
+        .iter(world)
+        .find_map(|(kind, member, charge)| {
+            (*kind == NanobotType::Defender && member.0 == swarm_id).then_some(charge)
+        })
+        .expect("facility produced owned Defender");
+    let charge = charge.expect("produced Defender must receive Charge");
+    let full = Charge::default();
+    assert_eq!(charge.current, full.current);
+    assert_eq!(charge.max, full.max);
+}
+
+#[test]
+fn degraded_facility_stops_operating_until_repaired() {
+    let mut app = build_app();
+    common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    app.world_mut()
+        .resource_mut::<ProductionRatio>()
+        .set_weight(NanobotType::Worker, 1);
+    let facility = common::spawn_idle_facility_at(&mut app, Vec2::ZERO);
+    let mut condition = Structure::new(StructureKind::Basic);
+    condition.health = SUPPORT_OPERATIONAL_HEALTH_THRESHOLD - 1;
+    app.world_mut().entity_mut(facility).insert(condition);
+    let input_before = app
+        .world()
+        .entity(facility)
+        .get::<ProductionFacility>()
+        .unwrap()
+        .input_amount;
+
+    app.update();
+
+    let facility = app
+        .world()
+        .entity(facility)
+        .get::<ProductionFacility>()
+        .unwrap();
+    assert_eq!(facility.current_target, None);
+    assert_eq!(facility.input_amount, input_before);
+}
+
+#[test]
+fn exact_ratio_swarm_grows_when_useful_work_exceeds_population() {
+    let mut app = build_app();
+    app.add_plugins(PopulationDemandPlugin);
+    common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    common::spawn_worker_at(&mut app, Vec2::ZERO);
+    app.world_mut()
+        .resource_mut::<ProductionRatio>()
+        .set_weight(NanobotType::Worker, 1);
+    for cell in [IVec2::ZERO, IVec2::new(1, 0)] {
+        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+            cell,
+            IntentKind::Gather,
+            Some(SwarmId::PLAYER),
+        );
+        common::spawn_deposit(&mut app, common::cell_world_center(cell), 100);
+    }
+    let facility = common::spawn_idle_facility_at(&mut app, Vec2::ZERO);
+
+    app.update();
+
+    assert_eq!(
+        app.world()
+            .entity(facility)
+            .get::<ProductionFacility>()
+            .unwrap()
+            .current_target,
+        Some(NanobotType::Worker),
+        "workload sets total growth while Production Ratio selects type",
+    );
+}
+
+#[test]
 fn shared_early_cost_across_types() {
     // Acceptance: "Tests cover ... shared early cost/time ..."
     // All three early types consume the same
@@ -520,11 +616,7 @@ fn additional_facility_plans_when_existing_busy_and_build_zone_free() {
     // tick as the claim), then `DEFAULT_PLANNED_WORK_TICKS`
     // ticks of work. The build completes on the
     // `DEFAULT_PLANNED_WORK_TICKS + 1`-th tick. We do
-    // NOT add a buffer here: the completed facility's
-    // production cycle starts immediately, and the work
-    // system resets `current_target` to `None` when the
-    // cycle completes. The `is_busy` check must run
-    // before the production cycle finishes.
+    // Completion must remain idle until logistics pays a full cycle.
     let build_ticks = 3 + DEFAULT_PLANNED_WORK_TICKS as usize;
     for _ in 0..(build_ticks + 200) {
         app.update();
@@ -564,22 +656,15 @@ fn additional_facility_plans_when_existing_busy_and_build_zone_free() {
         .get::<ProductionFacility>()
         .expect("completion must replace PlannedStructure with a ProductionFacility");
     assert!(
-        facility.is_busy(),
-        "completed facility must be busy (its current_target is the picked deficit type)"
+        !facility.is_busy(),
+        "completed facility must wait for delivered input before picking a target",
     );
-    // The first pick target round-trips through the
-    // `PlannedProductionTarget` sidecar: the completed
-    // facility's `current_target` must equal the target
-    // stamped on the plan.
-    let sidecar_target = world
-        .entity(planned_entity)
-        .get::<PlannedProductionTarget>()
-        .map(|t| t.0)
-        .or(facility.current_target);
-    assert_eq!(
-        facility.current_target, sidecar_target,
-        "the production target must round-trip through the sidecar so the completed facility's \
-         first pick cycle respects the original demand"
+    assert!(
+        world
+            .entity(planned_entity)
+            .get::<PlannedProductionTarget>()
+            .is_none(),
+        "planning target sidecar must be removed at completion",
     );
     let sprite = world
         .entity(planned_entity)

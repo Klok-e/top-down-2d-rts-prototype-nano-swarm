@@ -45,11 +45,12 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::IntentGrid,
     nanobot::{
         Charge, ChargePlugin, Charger, CollapsePlugin, Commitment, DefendPlugin, GatherPlugin,
-        HaulPlugin, Health, MaintenancePlugin, Nanobot, NanobotBundle, NanobotType, OwnerSwarm,
-        PlannedStructure, PlannedStructurePlugin, ProductionFacility, ProductionPlugin,
-        RegionalAllocationPlugin, SoftWorkSlots, Structure, StructureKind, Swarm, SwarmId,
-        SwarmMember, VelocityComponent, bot_debug_circle_system, idle_spread_system,
-        move_velocity_system, separation_system, velocity_system,
+        HaulPlugin, Health, MaintenancePlugin, Nanobot, NanobotBundle, NanobotSimulationSet,
+        NanobotType, OwnerSwarm, PlannedStructure, PlannedStructurePlugin, ProductionFacility,
+        ProductionPlugin, RegionalAllocationPlugin, SoftWorkSlots, Structure, StructureKind, Swarm,
+        SwarmId, SwarmMember, VelocityComponent, bot_debug_circle_system, idle_spread_system,
+        initialize_nanobot_type_components, move_velocity_system, separation_system,
+        velocity_system,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole},
     structure_overlay::StructureOverlayPlugin,
@@ -77,24 +78,32 @@ pub fn default_game_settings() -> GameSettings {
 pub const DEFAULT_GRID_WIDTH: i32 = 8;
 pub const DEFAULT_GRID_HEIGHT: i32 = 8;
 
-/// Register the four shared movement systems on `app` in the chain
-/// order the rest of the plugin graph expects: separation
-/// (steering apart), velocity (steering intent), move_velocity
-/// (integrate), and the debug-circle overlay (off in tests). Every
-/// simulation plugin in the crate chains after `move_velocity_system`,
-/// so this must be present in every test that uses any of them.
+/// Register deterministic fixed-tick movement and frame-driven debug drawing.
+/// Simulation plugins order their work after `move_velocity_system`.
 fn register_movement_systems(app: &mut App) {
-    app.add_systems(
-        Update,
+    app.add_observer(initialize_nanobot_type_components);
+    app.configure_sets(
+        FixedUpdate,
         (
-            separation_system,
-            idle_spread_system,
-            velocity_system,
-            move_velocity_system,
-            bot_debug_circle_system,
+            NanobotSimulationSet::Movement,
+            NanobotSimulationSet::Threat,
+            NanobotSimulationSet::Combat,
+            NanobotSimulationSet::Maintenance,
         )
             .chain(),
     );
+    app.add_systems(
+        FixedUpdate,
+        (
+            move_velocity_system,
+            separation_system,
+            idle_spread_system,
+            velocity_system,
+        )
+            .chain()
+            .in_set(NanobotSimulationSet::Movement),
+    );
+    app.add_systems(Update, bot_debug_circle_system);
 }
 
 /// Build the smallest Bevy `App` that can host the simulation
@@ -111,9 +120,18 @@ pub fn minimal_app() -> App {
     app.init_resource::<SoftWorkSlots>();
     app.init_resource::<ResourceLedger>();
     app.insert_resource(StructureSprites::from_single_handle(Handle::default()));
+    // Most existing behavior tests treat one 100 ms app update as one simulation
+    // tick. Runtime uses 60 Hz; tests may override this resource when exercising
+    // frame-partition invariance.
+    app.insert_resource(Time::<Fixed>::from_duration(Duration::from_millis(100)));
     app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
         100,
     )));
+    // Prime real-time bookkeeping without running Startup. The first test update then
+    // advances one full manual duration and still runs plugins' Startup systems.
+    app.world_mut()
+        .resource_mut::<Time<bevy::time::Real>>()
+        .update_with_duration(Duration::ZERO);
     app
 }
 

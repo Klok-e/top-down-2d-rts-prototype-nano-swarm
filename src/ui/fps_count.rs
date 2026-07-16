@@ -12,9 +12,9 @@ pub fn fps_ui_system(
     let Ok(mut text) = text.single_mut() else {
         return;
     };
-    if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS) {
-        if let Some(value) = fps.smoothed() {
-            *text = Text::new(format!("FPS: {value:.2}"));
-        }
+    if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS)
+        && let Some(value) = fps.smoothed()
+    {
+        *text = Text::new(format!("FPS: {value:.2}"));
     }
 }

@@ -582,10 +582,8 @@ mod image_export_adapter {
                 .ok_or_else(|| "readback poll requested without active capture".to_string())?;
 
             let capture_ready = active.source_path.is_file();
-            if capture_ready {
-                if let Some(entity) = active.exporter.take() {
-                    let _ = world.despawn(entity);
-                }
+            if capture_ready && let Some(entity) = active.exporter.take() {
+                let _ = world.despawn(entity);
             }
             if !capture_ready || !self.threads.is_finished() {
                 return Ok(CaptureStatus::Pending);
@@ -619,10 +617,10 @@ mod image_export_adapter {
         /// `JoinHandle` and no save-error channel. Cleanup can wait for count
         /// zero, but cannot join workers or recover their logged save errors.
         pub(super) fn cleanup(&mut self, world: &mut World) -> Result<(), String> {
-            if let Some(active) = self.active.as_mut() {
-                if let Some(entity) = active.exporter.take() {
-                    let _ = world.despawn(entity);
-                }
+            if let Some(active) = self.active.as_mut()
+                && let Some(entity) = active.exporter.take()
+            {
+                let _ = world.despawn(entity);
             }
             self.threads.finish();
             if let Some(active) = self.active.take() {

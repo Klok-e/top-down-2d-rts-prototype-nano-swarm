@@ -6,14 +6,19 @@ use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
     nanobot::{
         Cargo, Charger, ExtractProgress, HAULER_CARRY_CAPACITY, HaulerLoad, LogisticsReservation,
-        PlannedKind, PlannedStructure, ProductionFacility, WORKER_CARRY_CAPACITY,
+        MAINTENANCE_BUFFER_TICKS, MAINTENANCE_NEEDS_THRESHOLD, MAINTENANCE_WORK_DURATION_TICKS,
+        MaintenanceAssignment, MaintenanceProgress, PlannedKind, PlannedStructure,
+        ProductionFacility, STRUCTURE_MAX_HEALTH, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure,
+        StructureKind, WORKER_CARRY_CAPACITY,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole},
     structure_overlay::{
-        STRUCTURE_FOOTPRINT_LABEL_GAP, STRUCTURE_OVERLAY_Z, StructureOverlay, StructureOverlayFill,
-        StructureOverlayKind, StructureOverlayPlugin, StructureOverlaySegment,
-        StructureOverlaySegmentKind, StructureOverlaySettings, fill_fraction, overlay_bar_size,
-        overlay_fill_color, overlay_label_offset_y, reservation_segment_color,
+        CONDITION_BAR_GAP, CONDITION_BAR_SIZE, ConditionOverlay, ConditionOverlayKind,
+        STRUCTURE_BAR_SIZE, STRUCTURE_FOOTPRINT_LABEL_GAP, STRUCTURE_OVERLAY_Z, StructureOverlay,
+        StructureOverlayFill, StructureOverlayKind, StructureOverlayPlugin,
+        StructureOverlaySegment, StructureOverlaySegmentKind, StructureOverlaySettings,
+        condition_fill_color, fill_fraction, health_fill_fraction, maintenance_fill_fraction,
+        overlay_bar_size, overlay_fill_color, overlay_label_offset_y, reservation_segment_color,
     },
 };
 
@@ -116,6 +121,158 @@ fn charger_overlay_bar_uses_amount_over_capacity() {
     let overlay = find_overlay_for(&mut app, charger);
     assert_eq!(kind_of(&app, overlay), StructureOverlayKind::Charger);
     assert_fill_fraction(&app, overlay, StructureOverlayKind::Charger, 0.25);
+}
+
+#[test]
+fn completed_support_structure_gets_stacked_condition_bars() {
+    let mut app = build_app();
+    let stockpile = common::spawn_stockpile(&mut app, Vec2::ZERO, 50, 100);
+    app.world_mut()
+        .entity_mut(stockpile)
+        .insert(Structure::new(StructureKind::Basic));
+
+    app.update();
+
+    let resource = find_overlay_for(&mut app, stockpile);
+    let maintenance =
+        find_condition_overlay_for(&mut app, stockpile, ConditionOverlayKind::Maintenance);
+    let health = find_condition_overlay_for(&mut app, stockpile, ConditionOverlayKind::Health);
+    let resource_y = app
+        .world()
+        .entity(resource)
+        .get::<Transform>()
+        .unwrap()
+        .translation
+        .y;
+    let maintenance_y = app
+        .world()
+        .entity(maintenance)
+        .get::<Transform>()
+        .unwrap()
+        .translation
+        .y;
+    let health_y = app
+        .world()
+        .entity(health)
+        .get::<Transform>()
+        .unwrap()
+        .translation
+        .y;
+
+    assert_eq!(CONDITION_BAR_SIZE, Vec2::new(48.0, 3.0));
+    assert!(
+        (maintenance_y
+            - resource_y
+            - (STRUCTURE_BAR_SIZE.y / 2.0 + CONDITION_BAR_GAP + CONDITION_BAR_SIZE.y / 2.0))
+            .abs()
+            < 0.01
+    );
+    assert!((health_y - maintenance_y - (CONDITION_BAR_SIZE.y + CONDITION_BAR_GAP)).abs() < 0.01);
+}
+
+#[test]
+fn maintenance_and_health_bars_track_live_condition() {
+    let mut app = build_app();
+    let facility = common::spawn_idle_facility_at(&mut app, Vec2::ZERO);
+    let mut condition = Structure::new(StructureKind::Basic);
+    condition.ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
+    condition.health = SUPPORT_OPERATIONAL_HEALTH_THRESHOLD;
+    app.world_mut().entity_mut(facility).insert(condition);
+
+    app.update();
+
+    let maintenance =
+        find_condition_overlay_for(&mut app, facility, ConditionOverlayKind::Maintenance);
+    let health = find_condition_overlay_for(&mut app, facility, ConditionOverlayKind::Health);
+    assert_condition_fill(
+        &app,
+        maintenance,
+        maintenance_fill_fraction(MAINTENANCE_NEEDS_THRESHOLD),
+        condition_fill_color(
+            ConditionOverlayKind::Maintenance,
+            MAINTENANCE_NEEDS_THRESHOLD,
+        ),
+    );
+    assert_condition_fill(
+        &app,
+        health,
+        health_fill_fraction(SUPPORT_OPERATIONAL_HEALTH_THRESHOLD),
+        condition_fill_color(
+            ConditionOverlayKind::Health,
+            SUPPORT_OPERATIONAL_HEALTH_THRESHOLD,
+        ),
+    );
+
+    assert_eq!(maintenance_fill_fraction(0), 1.0);
+    assert_eq!(maintenance_fill_fraction(MAINTENANCE_BUFFER_TICKS), 0.0);
+    assert_eq!(health_fill_fraction(STRUCTURE_MAX_HEALTH), 1.0);
+}
+
+#[test]
+fn condition_bars_exclude_deposits_and_planned_structures() {
+    let mut app = build_app();
+    let deposit = common::spawn_deposit(&mut app, Vec2::ZERO, 100);
+    let planned = common::spawn_planned_structure_of_kind_at_cell(
+        &mut app,
+        IVec2::ZERO,
+        PlannedKind::SinkStockpile,
+    );
+    app.world_mut()
+        .entity_mut(deposit)
+        .insert(Structure::new(StructureKind::Basic));
+    app.world_mut()
+        .entity_mut(planned)
+        .insert(Structure::new(StructureKind::Basic));
+
+    app.update();
+
+    assert_no_condition_overlay_for(&mut app, deposit);
+    assert_no_condition_overlay_for(&mut app, planned);
+}
+
+#[test]
+fn maintenance_progress_bar_tracks_worker_shift_and_despawns() {
+    let mut app = build_app();
+    let target = common::spawn_stockpile(&mut app, Vec2::new(64.0, 0.0), 0, 100);
+    let worker = common::spawn_worker_at(&mut app, Vec2::ZERO);
+    app.world_mut()
+        .entity_mut(worker)
+        .insert(MaintenanceProgress {
+            cell: IVec2::ZERO,
+            target,
+            ticks_worked: MAINTENANCE_WORK_DURATION_TICKS / 2,
+        });
+
+    app.update();
+
+    let progress =
+        find_condition_overlay_for(&mut app, worker, ConditionOverlayKind::WorkerProgress);
+    assert_condition_fill(&app, progress, 0.5, Color::WHITE);
+
+    app.world_mut()
+        .entity_mut(worker)
+        .remove::<MaintenanceProgress>();
+    app.update();
+
+    assert!(app.world().get_entity(progress).is_err());
+    assert_no_condition_overlay_for(&mut app, worker);
+}
+
+#[test]
+fn maintenance_assignment_does_not_show_progress_before_arrival() {
+    let mut app = build_app();
+    let target = common::spawn_stockpile(&mut app, Vec2::new(64.0, 0.0), 0, 100);
+    let worker = common::spawn_worker_at(&mut app, Vec2::ZERO);
+    app.world_mut()
+        .entity_mut(worker)
+        .insert(MaintenanceAssignment {
+            cell: IVec2::ZERO,
+            target,
+        });
+
+    app.update();
+
+    assert_no_condition_overlay_for(&mut app, worker);
 }
 
 #[test]
@@ -662,6 +819,39 @@ fn find_overlay_for(app: &mut App, target: Entity) -> Entity {
         .find(|(_, o)| o.target == target)
         .map(|(e, _)| e)
         .unwrap_or_else(|| panic!("no StructureOverlay points at target {target:?}"))
+}
+
+fn find_condition_overlay_for(app: &mut App, target: Entity, kind: ConditionOverlayKind) -> Entity {
+    let world = app.world_mut();
+    let mut query = world.query::<(Entity, &ConditionOverlay)>();
+    query
+        .iter(world)
+        .find(|(_, overlay)| overlay.target == target && overlay.kind == kind)
+        .map(|(entity, _)| entity)
+        .unwrap_or_else(|| panic!("no {kind:?} ConditionOverlay points at target {target:?}"))
+}
+
+fn assert_no_condition_overlay_for(app: &mut App, target: Entity) {
+    let world = app.world_mut();
+    let mut query = world.query::<&ConditionOverlay>();
+    assert!(query.iter(world).all(|overlay| overlay.target != target));
+}
+
+fn assert_condition_fill(app: &App, overlay: Entity, fraction: f32, color: Color) {
+    let overlay = app
+        .world()
+        .entity(overlay)
+        .get::<ConditionOverlay>()
+        .unwrap();
+    let sprite = app.world().entity(overlay.fill).get::<Sprite>().unwrap();
+    let size = sprite.custom_size.unwrap();
+    let expected_width = if overlay.kind == ConditionOverlayKind::WorkerProgress {
+        overlay_bar_size(StructureOverlayKind::Worker).x
+    } else {
+        CONDITION_BAR_SIZE.x
+    } * fraction;
+    assert!((size.x - expected_width).abs() < 0.01);
+    assert_eq!(sprite.color, color);
 }
 
 fn assert_no_overlay_for(app: &mut App, target: Entity) {

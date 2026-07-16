@@ -259,7 +259,7 @@ pub fn best_candidate(
 ) -> Option<IntentCandidate> {
     let mut best: Option<IntentCandidate> = None;
 
-    for (cell, intent_cell) in grid.iter_cells() {
+    for (cell, intent_cell) in grid.iter_active_cells() {
         if intent_cell.is_empty() {
             continue;
         }
