@@ -9,7 +9,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{
         BrushSelection, IntentGrid, IntentKind, brush_key_for_kind, brush_selection_keyboard_system,
     },
-    nanobot::SwarmId,
+    nanobot::{MatchOutcome, SwarmId},
     ui::{UiHandling, check_ui_interaction},
     zones::{
         ZoneMaterial, ZoneMaterialHandleComponent, ZonePointData,
@@ -383,6 +383,96 @@ fn scripted_player_paint_preserves_enemy_paint_at_cursor() {
             .owner(IntentKind::Gather),
         Some(enemy),
         "player paint must preserve enemy-owned Gather paint",
+    );
+}
+
+#[test]
+fn scripted_player_defend_paint_contests_enemy_defend_at_cursor() {
+    let mut app = build_app();
+    let window = spawn_window(&mut app);
+    set_cursor(&mut app, window, Vec2::new(640.0, 360.0));
+    spawn_camera(&mut app, Vec2::ZERO);
+    spawn_zone_material(&mut app);
+    let cursor_cell = IVec2::ZERO;
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cursor_cell,
+        IntentKind::Defend,
+        Some(SwarmId(11)),
+    );
+
+    press_key(
+        &mut app,
+        brush_key_for_kind(IntentKind::Defend).expect("Defend must have a key binding"),
+    );
+    press_mouse(&mut app, MouseButton::Left);
+    app.update();
+
+    assert_eq!(
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(cursor_cell)
+            .unwrap()
+            .owner(IntentKind::Defend),
+        None,
+        "challenging hostile Defend intent must make the cell shared for combat",
+    );
+}
+
+#[test]
+fn scripted_right_mouse_withdraws_player_from_defend_contest() {
+    let mut app = build_app();
+    let window = spawn_window(&mut app);
+    set_cursor(&mut app, window, Vec2::new(640.0, 360.0));
+    spawn_camera(&mut app, Vec2::ZERO);
+    spawn_zone_material(&mut app);
+    let cursor_cell = IVec2::ZERO;
+    let opponent = SwarmId(11);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cursor_cell,
+        IntentKind::Defend,
+        Some(opponent),
+    );
+    press_key(
+        &mut app,
+        brush_key_for_kind(IntentKind::Defend).expect("Defend must have a key binding"),
+    );
+    press_mouse(&mut app, MouseButton::Left);
+    app.update();
+    clear_mouse(&mut app);
+    app.update();
+
+    press_mouse(&mut app, MouseButton::Right);
+    app.update();
+
+    assert_eq!(
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(cursor_cell)
+            .unwrap()
+            .owner(IntentKind::Defend),
+        Some(opponent),
+    );
+}
+
+#[test]
+fn scripted_world_paint_is_blocked_after_match_outcome() {
+    let mut app = build_app();
+    app.insert_resource(MatchOutcome::Victory);
+    let window = spawn_window(&mut app);
+    set_cursor(&mut app, window, Vec2::new(640.0, 360.0));
+    spawn_camera(&mut app, Vec2::ZERO);
+    spawn_zone_material(&mut app);
+
+    press_mouse(&mut app, MouseButton::Left);
+    app.update();
+
+    assert!(
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(IVec2::ZERO)
+            .unwrap()
+            .is_empty(),
+        "terminal match outcome must block further world paint",
     );
 }
 

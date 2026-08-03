@@ -2,9 +2,9 @@
 //!
 //! An "Opponent Swarm" is a non-player swarm that uses the
 //! same intent, production, logistics, maintenance, and
-//! charge systems as the player swarm. Early opponents use
-//! prepainted bases and fixed production priorities; no active
-//! AI is required.
+//! charge systems as the player swarm. Generic opponents use
+//! prepainted bases and fixed production priorities; authored
+//! scenarios may attach a deterministic intent controller.
 //!
 //! The [`spawn_opponent_swarm`] helper materialises one
 //! opponent: a `Swarm` entity with the [`OpponentSwarm`]
@@ -21,7 +21,114 @@ use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::Commitment;
 use crate::nanobot::components::{Health, Nanobot, Swarm, SwarmId, SwarmMember, VelocityComponent};
 use crate::nanobot::production::{OpponentSwarm, ProductionPriority, SwarmProduction};
-use crate::nanobot::{NanobotBundle, NanobotType};
+use crate::nanobot::{MatchOutcome, NanobotBundle, NanobotType, RegionalAllocationSet};
+
+/// Deterministic swarm-level pressure for an authored opponent. The controller
+/// changes only Defend intent; existing autonomy executes the resulting work.
+#[derive(Debug, Component, Clone, Copy)]
+pub struct OpponentIntentController {
+    assault_cell: IVec2,
+    target_cell: IVec2,
+    ticks_until_advance: u32,
+    advance_period_ticks: u32,
+}
+
+impl OpponentIntentController {
+    pub fn new(
+        assault_cell: IVec2,
+        target_cell: IVec2,
+        initial_delay_ticks: u32,
+        advance_period_ticks: u32,
+    ) -> Self {
+        Self {
+            assault_cell,
+            target_cell,
+            ticks_until_advance: initial_delay_ticks,
+            advance_period_ticks: advance_period_ticks.max(1),
+        }
+    }
+}
+
+fn next_assault_cell(from: IVec2, target: IVec2) -> IVec2 {
+    let delta = target - from;
+    if delta.x != 0 {
+        from + IVec2::new(delta.x.signum(), 0)
+    } else if delta.y != 0 {
+        from + IVec2::new(0, delta.y.signum())
+    } else {
+        from
+    }
+}
+
+/// Advance each configured opponent's Defend intent on fixed simulation ticks.
+/// Hostile Defend paint is contested rather than overwritten.
+pub fn opponent_intent_system(
+    mut controllers: Query<(Entity, &SwarmId, &mut OpponentIntentController), With<OpponentSwarm>>,
+    mut grid: ResMut<IntentGrid>,
+    outcome: Option<Res<MatchOutcome>>,
+) {
+    if outcome
+        .as_deref()
+        .is_some_and(|outcome| *outcome != MatchOutcome::InProgress)
+    {
+        return;
+    }
+
+    let mut ordered = controllers
+        .iter()
+        .map(|(entity, swarm, _)| (*swarm, entity))
+        .collect::<Vec<_>>();
+    ordered.sort_by_key(|(swarm, entity)| (*swarm, entity.to_bits()));
+
+    for (swarm, entity) in ordered {
+        let Ok((_, _, mut controller)) = controllers.get_mut(entity) else {
+            continue;
+        };
+        if controller.ticks_until_advance > 0 {
+            controller.ticks_until_advance -= 1;
+            continue;
+        }
+
+        let current_owner = grid
+            .cell(controller.assault_cell)
+            .filter(|cell| cell.has(IntentKind::Defend))
+            .map(|cell| cell.owner(IntentKind::Defend));
+        match current_owner {
+            Some(Some(owner)) if owner != swarm => {
+                grid.contest_defend(controller.assault_cell, swarm);
+                controller.ticks_until_advance = controller.advance_period_ticks;
+                continue;
+            }
+            Some(None) => {
+                controller.ticks_until_advance = controller.advance_period_ticks;
+                continue;
+            }
+            _ => {}
+        }
+
+        let next = next_assault_cell(controller.assault_cell, controller.target_cell);
+        if next == controller.assault_cell {
+            continue;
+        }
+        grid.contest_defend(next, swarm);
+        grid.erase_owned(controller.assault_cell, IntentKind::Defend, Some(swarm));
+        controller.assault_cell = next;
+        controller.ticks_until_advance = controller.advance_period_ticks;
+    }
+}
+
+pub struct OpponentIntentPlugin;
+
+impl Plugin for OpponentIntentPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            FixedUpdate,
+            opponent_intent_system
+                .after(crate::nanobot::defend_contest_resolution_system)
+                .before(RegionalAllocationSet::Project),
+        );
+    }
+}
 
 /// One prepainted intent cell on the shared grid. The
 /// opponent helper takes a slice of these at spawn time and

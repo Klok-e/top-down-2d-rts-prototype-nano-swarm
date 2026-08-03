@@ -55,8 +55,15 @@ use rand::{RngExt, SeedableRng, rngs::StdRng};
 use crate::ai::get_world_from_zone;
 use crate::intent::{IntentCell, IntentGrid, IntentKind};
 use crate::nanobot::autonomy::{Commitment, NanobotType};
-use crate::nanobot::components::{DirectMovementComponent, Nanobot, VelocityComponent};
+use crate::nanobot::components::{
+    DirectMovementComponent, Nanobot, SwarmId, SwarmMember, VelocityComponent,
+};
 use crate::nanobot::gather::world_to_cell;
+use crate::nanobot::{
+    Cargo, ChargerAssignment, ChargerProgress, DefendAssignment, DefendHold, ExtractProgress,
+    GatherAssignment, HaulerAssignment, HaulerLoading, MaintenanceAssignment, MaintenanceProgress,
+    PlannedStructureClaim, PlannedStructureProgress, ReturningToStockpile,
+};
 
 /// Per-tick velocity nudge magnitude applied to idle bots spreading
 /// across their type-fit region. Sized near [`BOT_SEPARATION_FORCE`]
@@ -283,68 +290,98 @@ fn type_index(ntype: NanobotType) -> usize {
 /// kind -- "occupied is occupied", matching the existing
 /// [`crate::nanobot::SoftWorkSlots`] model). `idle_bots` then nudges
 /// only `Commitment::Idle` bots that have no
-/// [`DirectMovementComponent`] (carrying / working / moving bots are
-/// never nudged). The two queries read `Transform` together (read-
+/// [`DirectMovementComponent`] or active task marker (carrying,
+/// working, holding, charging, and moving bots are never nudged).
+/// The two queries read `Transform` together (read-
 /// read compatible) and only `idle_bots` writes `VelocityComponent`,
 /// so they do not conflict.
 #[allow(clippy::type_complexity)]
 pub fn idle_spread_system(
     grid: Res<IntentGrid>,
-    all_bots: Query<&Transform, With<Nanobot>>,
+    all_bots: Query<(&Transform, &SwarmMember), With<Nanobot>>,
     mut idle_bots: Query<
         (
             Entity,
             &Transform,
             &NanobotType,
+            &SwarmMember,
             &Commitment,
             &mut VelocityComponent,
         ),
         (With<Nanobot>, Without<DirectMovementComponent>),
     >,
+    active_tasks: Query<
+        (),
+        Or<(
+            With<GatherAssignment>,
+            With<ExtractProgress>,
+            With<Cargo>,
+            With<ReturningToStockpile>,
+            With<PlannedStructureClaim>,
+            With<PlannedStructureProgress>,
+            With<MaintenanceAssignment>,
+            With<MaintenanceProgress>,
+            With<DefendAssignment>,
+            With<DefendHold>,
+            With<HaulerAssignment>,
+            With<HaulerLoading>,
+            With<ChargerAssignment>,
+            With<ChargerProgress>,
+        )>,
+    >,
     mut spread_tick: Local<u64>,
 ) {
-    // Per-type fit-cell list, rebuilt every tick (cross-tick caching
-    // is out of scope). Built in a single pass over painted cells so
-    // the per-bot loop never re-scans the grid.
+    // Per-swarm, per-type fit-cell lists are rebuilt every tick so
+    // opponent paint cannot attract another swarm's idle nanobots.
     let kind_sets: [Vec<IntentKind>; NanobotType::COUNT] =
         std::array::from_fn(|i| fit_kinds(NanobotType::ALL[i]));
-    let mut fit_cells: [FitCellIndex; NanobotType::COUNT] =
-        std::array::from_fn(|_| FitCellIndex::default());
+
+    // Density counts every nanobot, while the map keys also identify
+    // the swarms that need their own visible-intent index.
+    let mut density: HashMap<IVec2, u32> = HashMap::new();
+    let mut fit_cells: HashMap<SwarmId, [FitCellIndex; NanobotType::COUNT]> = HashMap::new();
+    for (transform, member) in &all_bots {
+        let cell = world_to_cell(transform.translation.truncate());
+        *density.entry(cell).or_insert(0) += 1;
+        fit_cells
+            .entry(member.0)
+            .or_insert_with(|| std::array::from_fn(|_| FitCellIndex::default()));
+    }
+
     for (cell, intent_cell) in grid.iter_active_cells() {
         if intent_cell.is_empty() {
             continue;
         }
-        for (type_idx, kinds) in kind_sets.iter().enumerate() {
-            if kinds.iter().any(|k| intent_cell.has(*k)) {
-                fit_cells[type_idx].insert(cell);
+        for (swarm, indexes) in &mut fit_cells {
+            for (type_idx, kinds) in kind_sets.iter().enumerate() {
+                if kinds
+                    .iter()
+                    .any(|kind| intent_cell.visible_to(*kind, *swarm))
+                {
+                    indexes[type_idx].insert(cell);
+                }
             }
         }
     }
 
-    // Density map: cell -> count of every bot physically standing
-    // there this tick. Local to this system per the issue brief so
-    // spread stays self-contained (no cross-plugin ordering
-    // dependency on the defender density pass).
-    let mut density: HashMap<IVec2, u32> = HashMap::new();
-    for transform in &all_bots {
-        let cell = world_to_cell(transform.translation.truncate());
-        *density.entry(cell).or_insert(0) += 1;
-    }
-
     let tick = *spread_tick;
     *spread_tick = spread_tick.wrapping_add(1);
-    for (entity, transform, nanobot_type, commitment, mut velocity) in &mut idle_bots {
-        if *commitment != Commitment::Idle {
+    for (entity, transform, nanobot_type, member, commitment, mut velocity) in &mut idle_bots {
+        if *commitment != Commitment::Idle || active_tasks.contains(entity) {
             continue;
         }
         let pos = transform.translation.truncate();
         let own_cell = world_to_cell(pos);
         let type_idx = type_index(*nanobot_type);
+        let Some(swarm_fit_cells) = fit_cells.get(&member.0) else {
+            continue;
+        };
 
-        let target = if grid
-            .cell(own_cell)
-            .is_some_and(|c| kind_sets[type_idx].iter().any(|k| c.has(*k)))
-        {
+        let target = if grid.cell(own_cell).is_some_and(|cell| {
+            kind_sets[type_idx]
+                .iter()
+                .any(|kind| cell.visible_to(*kind, member.0))
+        }) {
             // In-region gradient step. Exclude the bot's own body
             // from its own cell's count so a lone bot reads density 0
             // and falls through to random exploration.
@@ -357,7 +394,9 @@ pub fn idle_spread_system(
                 .into_iter()
                 .filter_map(|n| {
                     let neighbour = grid.cell(n)?;
-                    let fit = kind_sets[type_idx].iter().any(|k| neighbour.has(*k));
+                    let fit = kind_sets[type_idx]
+                        .iter()
+                        .any(|kind| neighbour.visible_to(*kind, member.0));
                     fit.then(|| (n, density.get(&n).copied().unwrap_or(0)))
                 })
                 .collect();
@@ -366,7 +405,7 @@ pub fn idle_spread_system(
             gradient_step_target(own_excl, &neighbours, &mut rng)
         } else {
             // Stranded: drift toward the nearest type-fit cell.
-            fit_cells[type_idx].nearest(pos)
+            swarm_fit_cells[type_idx].nearest(pos)
         };
 
         if let Some(target_cell) = target {

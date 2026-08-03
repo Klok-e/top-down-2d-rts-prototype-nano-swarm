@@ -25,3 +25,38 @@ The core gameplay of Nano Swarm is based on a set of key mechanics:
 ## Objective
 
 The primary objective of the game is to manage resources effectively, build a resilient base, command nanobot groups strategically, and overcome opponent forces to gain control over the map.
+
+## Running
+
+Run the normal windowed game:
+
+```bash
+cargo run
+```
+
+Run with GPU-backed offscreen rendering and no desktop window:
+
+```bash
+cargo run -- --headless
+```
+
+Enable the opt-in Unix agent control socket in either presentation mode:
+
+```bash
+cargo run -- --agent-socket
+cargo run -- --headless --agent-socket --width 1280 --height 720
+```
+
+`--agent-socket` listens at `$XDG_RUNTIME_DIR/nano-swarm/control.sock`. The standard-library client controls a running process:
+
+```bash
+python scripts/nano_swarm_control.py state
+python scripts/nano_swarm_control.py button intent.defend
+python scripts/nano_swarm_control.py paint defend 2 0
+python scripts/nano_swarm_control.py camera 1024 256 2
+python scripts/nano_swarm_control.py wait --fixed-ticks 60
+python scripts/nano_swarm_control.py screenshot
+python scripts/nano_swarm_control.py shutdown
+```
+
+Run `cargo run -- --help` for runtime options and see [`docs/agents/agent-control.md`](docs/agents/agent-control.md) for the protocol and synchronization contract.

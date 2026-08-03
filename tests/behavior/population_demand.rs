@@ -71,6 +71,66 @@ fn unowned_defend_work_creates_demand_for_every_visible_swarm() {
 }
 
 #[test]
+fn contested_defend_work_preserves_each_participants_pressure() {
+    let mut app = demand_app();
+    let opponent = SwarmId(7);
+    let cell = IVec2::ZERO;
+    app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
+    app.world_mut().spawn((Swarm {}, opponent));
+    {
+        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
+        grid.paint_owned(cell, IntentKind::Defend, Some(SwarmId::PLAYER));
+        grid.contest_defend(cell, opponent);
+    }
+    {
+        let mut pressure = app.world_mut().resource_mut::<DefendPressure>();
+        pressure.set_for(SwarmId::PLAYER, cell, 3.0);
+        pressure.set_for(opponent, cell, 5.0);
+    }
+
+    app.update();
+
+    let demand = app.world().resource::<PopulationDemand>();
+    assert_eq!(
+        demand.desired_for(SwarmId::PLAYER, NanobotType::Defender),
+        3,
+    );
+    assert_eq!(demand.desired_for(opponent, NanobotType::Defender), 5);
+}
+
+#[test]
+fn replacing_contest_with_shared_defend_reprojects_baseline_demand() {
+    let mut app = demand_app();
+    let opponent = SwarmId(7);
+    let cell = IVec2::ZERO;
+    app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
+    app.world_mut().spawn((Swarm {}, opponent));
+    {
+        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
+        grid.paint_owned(cell, IntentKind::Defend, Some(SwarmId::PLAYER));
+        grid.contest_defend(cell, opponent);
+    }
+    {
+        let mut pressure = app.world_mut().resource_mut::<DefendPressure>();
+        pressure.set_for(SwarmId::PLAYER, cell, 3.0);
+        pressure.set_for(opponent, cell, 5.0);
+    }
+    app.update();
+
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint_owned(cell, IntentKind::Defend, None);
+    app.update();
+
+    let demand = app.world().resource::<PopulationDemand>();
+    assert_eq!(
+        demand.desired_for(SwarmId::PLAYER, NanobotType::Defender),
+        1,
+    );
+    assert_eq!(demand.desired_for(opponent, NanobotType::Defender), 1);
+}
+
+#[test]
 fn gather_work_creates_worker_demand_not_generic_population() {
     let mut app = demand_app();
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));

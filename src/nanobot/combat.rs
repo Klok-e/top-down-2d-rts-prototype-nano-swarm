@@ -1,13 +1,14 @@
 //! Deterministic Defender combat and Defend-cell threat pressure.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::{
-    Charge, DefendHold, DefendPressure, Health, Nanobot, NanobotType, OwnerSwarm, Structure, Swarm,
-    SwarmId, SwarmMember, effective_attack, effective_defense, world_to_cell,
+    Charge, DefendHold, DefendPressure, DirectMovementComponent, Health, Nanobot, NanobotType,
+    OwnerSwarm, Structure, Swarm, SwarmId, SwarmMember, effective_attack, effective_defense,
+    world_to_cell,
 };
 use crate::spatial::FixedSpatialBuckets;
 
@@ -21,7 +22,7 @@ struct Combatant {
     swarm: SwarmId,
     kind: NanobotType,
     charge: Option<f32>,
-    holding: bool,
+    hold: Option<IVec2>,
 }
 
 #[derive(Clone, Copy)]
@@ -29,6 +30,27 @@ struct StructureTarget {
     entity: Entity,
     position: Vec2,
     swarm: SwarmId,
+}
+
+/// Resolve tracked Defend contests after both swarms have reached the cell.
+/// Zero-health Defenders no longer count as holders, allowing the survivor to
+/// claim the existing Defend layer before the next allocation projection.
+pub fn defend_contest_resolution_system(
+    mut grid: ResMut<IntentGrid>,
+    defenders: Query<(&DefendHold, &SwarmMember, &Health), With<Nanobot>>,
+) {
+    let occupants = defenders
+        .iter()
+        .filter(|(_, _, health)| health.current > 0)
+        .map(|(hold, member, _)| (hold.cell, member.0))
+        .collect::<HashSet<_>>();
+    for (cell, incumbent, challenger) in grid.defend_contests() {
+        grid.update_defend_contest_presence(
+            cell,
+            occupants.contains(&(cell, incumbent)),
+            occupants.contains(&(cell, challenger)),
+        );
+    }
 }
 
 fn damage_after_defense(attack: f32, defense: f32) -> u32 {
@@ -50,6 +72,14 @@ pub fn defend_threat_pressure_system(
         let Some(intent) = grid.cell(cell) else {
             continue;
         };
+        if let Some((incumbent, challenger)) = grid.defend_contest(cell) {
+            for owner in [incumbent, challenger] {
+                if member.0 != owner {
+                    *hostile_counts.entry((owner, cell)).or_default() += 1;
+                }
+            }
+            continue;
+        }
         let Some(owner) = intent.owner(IntentKind::Defend) else {
             continue;
         };
@@ -101,7 +131,7 @@ pub fn defender_combat_system(
                 swarm: member.0,
                 kind: *kind,
                 charge: charge.map(|charge| charge.current),
-                holding: hold.is_some(),
+                hold: hold.map(|hold| hold.cell),
             },
         )
         .collect::<Vec<_>>();
@@ -116,9 +146,23 @@ pub fn defender_combat_system(
             })
         })
         .collect::<Vec<_>>();
+    let mut structures_by_cell = HashMap::<IVec2, Vec<StructureTarget>>::new();
+    for target in structures.iter().copied() {
+        structures_by_cell
+            .entry(world_to_cell(target.position))
+            .or_default()
+            .push(target);
+    }
     let mut nanobot_buckets = FixedSpatialBuckets::new(DEFENDER_ATTACK_RANGE);
     for target in snapshot.iter().copied() {
         nanobot_buckets.insert(target.position, target);
+    }
+    let mut nanobots_by_cell = HashMap::<IVec2, Vec<Combatant>>::new();
+    for target in snapshot.iter().copied() {
+        nanobots_by_cell
+            .entry(world_to_cell(target.position))
+            .or_default()
+            .push(target);
     }
     let mut structure_buckets = FixedSpatialBuckets::new(DEFENDER_ATTACK_RANGE);
     for target in structures.iter().copied() {
@@ -129,7 +173,7 @@ pub fn defender_combat_system(
     let mut structure_damage = HashMap::<Entity, u32>::new();
     for attacker in snapshot
         .iter()
-        .filter(|combatant| combatant.kind == NanobotType::Defender && combatant.holding)
+        .filter(|combatant| combatant.kind == NanobotType::Defender && combatant.hold.is_some())
     {
         let attack = effective_attack(attacker.charge.unwrap_or_default());
         let attacker_bucket = nanobot_buckets.bucket_for_position(attacker.position);
@@ -158,6 +202,29 @@ pub fn defender_combat_system(
             continue;
         }
 
+        let held_cell = attacker.hold.expect("holding attacker has a Defend cell");
+        let approach_target = nanobots_by_cell
+            .get(&held_cell)
+            .into_iter()
+            .flatten()
+            .filter(|target| target.swarm != attacker.swarm)
+            .min_by(|left, right| {
+                attacker
+                    .position
+                    .distance(left.position)
+                    .total_cmp(&attacker.position.distance(right.position))
+                    .then_with(|| left.entity.to_bits().cmp(&right.entity.to_bits()))
+            });
+        if let Some(target) = approach_target {
+            commands
+                .entity(attacker.entity)
+                .insert(DirectMovementComponent {
+                    xy: target.position,
+                    stop_radius: DEFENDER_ATTACK_RANGE,
+                });
+            continue;
+        }
+
         let structure_target = structure_buckets
             .neighbourhood(attacker_bucket, 1)
             .flat_map(|(_, targets)| targets)
@@ -174,6 +241,28 @@ pub fn defender_combat_system(
             .map(|(_, entity)| entity);
         if let Some(target) = structure_target {
             *structure_damage.entry(target).or_default() += damage_after_defense(attack, 0.0);
+            continue;
+        }
+
+        let approach_target = structures_by_cell
+            .get(&held_cell)
+            .into_iter()
+            .flatten()
+            .filter(|target| target.swarm != attacker.swarm)
+            .min_by(|left, right| {
+                attacker
+                    .position
+                    .distance(left.position)
+                    .total_cmp(&attacker.position.distance(right.position))
+                    .then_with(|| left.entity.to_bits().cmp(&right.entity.to_bits()))
+            });
+        if let Some(target) = approach_target {
+            commands
+                .entity(attacker.entity)
+                .insert(DirectMovementComponent {
+                    xy: target.position,
+                    stop_radius: DEFENDER_ATTACK_RANGE,
+                });
         }
     }
 
@@ -201,6 +290,13 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DefendPressure>()
+            .add_systems(
+                FixedUpdate,
+                defend_contest_resolution_system
+                    .in_set(crate::nanobot::NanobotSimulationSet::Threat)
+                    .before(defend_threat_pressure_system)
+                    .before(crate::nanobot::RegionalAllocationSet::Project),
+            )
             .add_systems(
                 FixedUpdate,
                 defend_threat_pressure_system

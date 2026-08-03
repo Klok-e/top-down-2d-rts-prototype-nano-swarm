@@ -29,11 +29,32 @@ Before handoff, run:
 
 ```bash
 cargo fmt
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings
 cargo test
+cargo test --test screenshots -- --ignored
 ```
 
 `cargo test` runs unit tests, behavior tests, and headless scripted playtests.
+
+## No-window policy
+
+Automated tests, agent verification, and required playtests must never create an OS window or connect to a desktop compositor.
+
+Allowed:
+
+- Minimal Bevy apps with only the resources, schedules, and systems under test.
+- GPU rendering into `Presentation::Offscreen` image targets.
+- ECS-only `Window` component fixtures when a system needs viewport or cursor math, provided `WinitPlugin` is not installed.
+- A real binary launched with `--headless --agent-socket` and controlled through `scripts/nano_swarm_control.py`.
+
+Forbidden:
+
+- Winit-backed test windows.
+- Sway, X11, Wayland, or other compositor automation.
+- Focus-dependent OS mouse or keyboard automation.
+- Treating a windowed playtest as required verification.
+
+Windowed `cargo run` remains a supported player mode, but it is not an automated test path.
 
 ## File layout
 
@@ -131,6 +152,8 @@ Script input through Bevy state, not OS automation:
 - Run `app.update()` and assert deterministic ECS state.
 
 Headless scripted playtests run in normal `cargo test`. GPU-bearing presentation checks carry `#[ignore]`, and GPU-rendered screenshot evidence belongs in the ignored `screenshots/` target; see "Screenshot evidence" below.
+
+For a real-process playtest, launch `cargo run -- --headless --agent-socket`. Drive all actions through `scripts/nano_swarm_control.py`, use `frame.wait` for explicit synchronization, capture offscreen screenshots throughout the flow, inspect every required artifact, and finish with `shutdown`. Do not substitute direct ECS mutation, `socat`, or compositor input for the external client during final verification.
 
 ### Screenshot evidence
 

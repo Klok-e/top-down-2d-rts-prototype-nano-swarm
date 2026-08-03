@@ -6,7 +6,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
     intent::{IntentGrid, IntentKind},
     nanobot::SwarmId,
-    zones::{ZoneMaterial, ZoneMaterialHandleComponent, ZonePointData},
+    zones::{ZoneMaterial, ZoneMaterialHandleComponent, ZoneOwnership, ZonePointData},
 };
 
 use crate::harness::{TestContext, TestFlow};
@@ -19,7 +19,10 @@ const PRESENT_CELLS: [IVec2; 4] = [
 ];
 const OVERLAP_CELL: IVec2 = IVec2::new(2, 5);
 const ABSENT_CELL: IVec2 = IVec2::new(4, 5);
-const DISPLAY_BITS: [u32; 6] = [0, 1, 2, 4, 8, 15];
+// Absent, player Gather, opponent Build, contested Defend, shared Corridor,
+// and all four player-owned layers. Presence occupies bits 0..=3 and each
+// ownership class occupies two bits beginning at bit 4.
+const DISPLAY_VALUES: [u32; 6] = [0, 17, 130, 772, 8, 1375];
 const CAPTURE_FRAME: u32 = 60;
 const FRAMING_SCALE: f32 = 2.8;
 
@@ -56,25 +59,25 @@ fn paint_examples(world: &mut World) {
 /// independent from asynchronous main-world storage-buffer extraction, while
 /// [`assert_mirror`] separately proves simulation-to-material mirroring.
 fn spawn_binary_display(world: &mut World) {
-    let zone_data = DISPLAY_BITS
+    let zone_data = DISPLAY_VALUES
         .into_iter()
         .map(|active| ZonePointData { active })
         .collect::<Vec<_>>();
     let zone_map = world
         .resource_mut::<Assets<ShaderStorageBuffer>>()
-        .add(ShaderStorageBuffer::from(DISPLAY_BITS.to_vec()));
+        .add(ShaderStorageBuffer::from(DISPLAY_VALUES.to_vec()));
     let material = world
         .resource_mut::<Assets<ZoneMaterial>>()
         .add(ZoneMaterial {
             zone_map,
             zone_data,
-            width: DISPLAY_BITS.len() as u32,
+            width: DISPLAY_VALUES.len() as u32,
             height: 1,
         });
     let mesh = world
         .resource_mut::<Assets<Mesh>>()
         .add(Mesh::from(Rectangle::default()));
-    let width = DISPLAY_BITS.len() as f32 * ZONE_BLOCK_SIZE;
+    let width = DISPLAY_VALUES.len() as f32 * ZONE_BLOCK_SIZE;
 
     world.spawn((
         Sprite::from_color(
@@ -109,6 +112,14 @@ fn assert_mirror(world: &mut World) {
             let expected = kind == expected_kind;
             assert_eq!(sim.has(kind), expected);
             assert_eq!(mirrored.present(kind.index() as u32), expected);
+            assert_eq!(
+                mirrored.ownership(kind.index() as u32),
+                if expected {
+                    ZoneOwnership::Player
+                } else {
+                    ZoneOwnership::Shared
+                }
+            );
         }
     }
     for kind in IntentKind::ALL {

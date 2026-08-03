@@ -5,11 +5,11 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         ActionableOpportunity, ActionableProjection, AllocationCandidate, AllocationClock,
-        AllocationRegion, CandidateBounds, CategoryEligibility, CategoryValues, LeaseDecision,
-        OpportunityCategory, OpportunityTarget, REGIONAL_FAIRNESS_PROMOTION_TICKS,
-        RUNTIME_MAX_CANDIDATES, ReassignmentPolicy, RegionalLease, RegionalLeaseConfig,
-        RegionalLeaseState, RegionalPressure, allocate_category_budget,
-        allocate_regional_candidates, choose_bounded_candidate,
+        AllocationRegion, CandidateBounds, CategoryEligibility, CategoryValues, DefendAssignment,
+        DefendHold, LeaseDecision, OpportunityCategory, OpportunityTarget,
+        REGIONAL_FAIRNESS_PROMOTION_TICKS, RUNTIME_MAX_CANDIDATES, ReassignmentPolicy,
+        RegionalLease, RegionalLeaseConfig, RegionalLeaseState, RegionalPressure,
+        allocate_category_budget, allocate_regional_candidates, choose_bounded_candidate,
         choose_bounded_candidate_with_claims, evaluate_lease, maintain_regional_leases_system,
         outward_pull_budget, project_actionable_opportunities_system, region_fairness_sort_key,
     },
@@ -370,6 +370,79 @@ fn unsupported_opportunity_revokes_lease_in_the_same_app_update() {
     app.update();
 
     assert!(!app.world().entity(bot).contains::<RegionalLease>());
+}
+
+#[test]
+fn supported_assignment_without_motion_or_work_expires() {
+    let mut app = App::new();
+    app.insert_resource(IntentGrid::new(16, 16))
+        .init_resource::<ActionableProjection>()
+        .init_resource::<AllocationClock>()
+        .insert_resource(RegionalLeaseConfig {
+            no_progress_ttl_ticks: 2,
+        })
+        .add_systems(
+            Update,
+            (
+                project_actionable_opportunities_system,
+                maintain_regional_leases_system,
+            )
+                .chain(),
+        );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .add(IVec2::ZERO, IntentKind::Defend);
+    app.update();
+    let opportunity = app
+        .world()
+        .resource::<ActionableProjection>()
+        .opportunities(region(0, 0))[0];
+    let bot = app
+        .world_mut()
+        .spawn((
+            RegionalLease::new(
+                opportunity.region,
+                opportunity.category,
+                opportunity.target,
+                None,
+                0,
+                0,
+                2,
+            ),
+            DefendAssignment { cell: IVec2::ZERO },
+        ))
+        .id();
+    let holder = app
+        .world_mut()
+        .spawn((
+            RegionalLease::new(
+                opportunity.region,
+                opportunity.category,
+                opportunity.target,
+                None,
+                0,
+                0,
+                2,
+            ),
+            DefendHold { cell: IVec2::ZERO },
+        ))
+        .id();
+
+    for _ in 0..4 {
+        app.world_mut()
+            .resource_mut::<AllocationClock>()
+            .advance_by(Duration::from_millis(100));
+        app.update();
+    }
+
+    assert!(
+        !app.world().entity(bot).contains::<RegionalLease>(),
+        "an assignment marker alone is not measurable lease progress",
+    );
+    assert!(
+        app.world().entity(holder).contains::<RegionalLease>(),
+        "holding a supported Defend cell remains active work",
+    );
 }
 
 #[test]

@@ -1,6 +1,6 @@
 # Defender spatial pressure
 
-Defenders spread across all visible owned Defend paint by globally scoring cells instead of clustering on a cell center or drifting freely across zone borders. Binary Defend paint creates one baseline Defender demand per cell, each hostile occupant adds one more, and physical crowding plus defender reservations lowers a cell's score. Threat pressure guides newly available or reassigned Defenders but does not break a supported active lease. This keeps zone area, reinforcement demand, and cosmetic de-clumping legible while preserving stable tactical ownership of each Defender's assigned hold cell.
+Defenders spread across all visible owned Defend paint by globally scoring cells instead of clustering on a cell center or drifting freely across zone borders. Binary Defend paint creates one baseline Defender demand per cell, each hostile occupant adds one more, and physical crowding plus defender reservations lowers a cell's score. A tracked contest projects pressure and reservation crowding independently for each participant, so opposing holders create threat without satisfying each other's capacity. Threat pressure guides newly available or reassigned Defenders but does not break a supported active lease. This keeps zone area, reinforcement demand, and cosmetic de-clumping legible while preserving stable tactical ownership of each Defender's assigned hold cell.
 
 ## Consequences
 

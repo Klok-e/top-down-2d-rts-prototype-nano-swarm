@@ -6,7 +6,7 @@ use crate::{
         Nanobot, NanobotType, OpponentSwarm, OwnerSwarm, PopulationDemand, ProductionFacility,
         SupportCondition, Swarm, SwarmId, SwarmMember,
     },
-    resources::{ResourceDeposit, ResourceKind, Stockpile},
+    resources::{ResourceDeposit, ResourceKind, ResourceLedger},
 };
 
 use super::ui_setup::FontsResource;
@@ -111,13 +111,13 @@ pub fn setup_status_panel(mut commands: Commands, fonts: Res<FontsResource>) {
 pub fn update_status_panel_system(
     player_swarms: Query<(Entity, &SwarmId), (With<Swarm>, Without<OpponentSwarm>)>,
     nanobots: Query<(&NanobotType, &SwarmMember), With<Nanobot>>,
-    stockpiles: Query<(&Stockpile, Option<&OwnerSwarm>)>,
     deposits: Query<(&ResourceDeposit, Option<&OwnerSwarm>)>,
     facilities: Query<(
         &ProductionFacility,
         Option<&OwnerSwarm>,
         Option<&SupportCondition>,
     )>,
+    ledger: Res<ResourceLedger>,
     population_demand: Option<Res<PopulationDemand>>,
     mut text: Query<&mut Text, With<StatusPanelText>>,
 ) {
@@ -144,6 +144,7 @@ pub fn update_status_panel_system(
     }
 
     let mut state = PlayerHudState {
+        minerals: ledger.total_for(*swarm_id, ResourceKind::Minerals),
         workers,
         haulers,
         defenders,
@@ -162,15 +163,10 @@ pub fn update_status_panel_system(
         ..default()
     };
 
-    for (stockpile, owner) in &stockpiles {
-        if stockpile.kind != ResourceKind::Minerals || !belongs_to_player(owner, player_swarm) {
-            continue;
-        }
-        state.minerals = state.minerals.saturating_add(stockpile.amount);
-    }
-
     for (deposit, owner) in &deposits {
-        if deposit.kind != ResourceKind::Minerals || !belongs_to_player(owner, player_swarm) {
+        if deposit.kind != ResourceKind::Minerals
+            || !owner.is_some_and(|OwnerSwarm(owner)| *owner == player_swarm)
+        {
             continue;
         }
         state.deposits_remaining = state.deposits_remaining.saturating_add(deposit.amount);
@@ -219,6 +215,72 @@ fn belongs_to_player(owner: Option<&OwnerSwarm>, player_swarm: Entity) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hud_minerals_use_complete_player_ledger() {
+        let mut app = App::new();
+        app.init_resource::<crate::resources::ResourceLedger>()
+            .add_systems(Update, update_status_panel_system);
+        let player = app.world_mut().spawn((Swarm {}, SwarmId::PLAYER)).id();
+        app.world_mut().spawn((
+            crate::resources::Stockpile {
+                kind: ResourceKind::Minerals,
+                amount: 3,
+                capacity: 100,
+                radius: 32.0,
+            },
+            OwnerSwarm(player),
+        ));
+        app.world_mut()
+            .resource_mut::<crate::resources::ResourceLedger>()
+            .add_for(SwarmId::PLAYER, ResourceKind::Minerals, 17);
+        let text = app.world_mut().spawn((Text::new(""), StatusPanelText)).id();
+
+        app.update();
+
+        assert!(
+            app.world()
+                .entity(text)
+                .get::<Text>()
+                .unwrap()
+                .0
+                .starts_with("Minerals: 17\n"),
+            "HUD includes cargo and terminal minerals tracked by the player ledger",
+        );
+    }
+
+    #[test]
+    fn hud_deposits_exclude_neutral_and_foreign_resources() {
+        let mut app = App::new();
+        app.init_resource::<crate::resources::ResourceLedger>()
+            .add_systems(Update, update_status_panel_system);
+        let player = app.world_mut().spawn((Swarm {}, SwarmId::PLAYER)).id();
+        let foreign = app.world_mut().spawn_empty().id();
+        for (amount, owner) in [(7, Some(player)), (11, None), (13, Some(foreign))] {
+            let mut deposit = app.world_mut().spawn(ResourceDeposit {
+                kind: ResourceKind::Minerals,
+                amount,
+                capacity: amount,
+                radius: 32.0,
+            });
+            if let Some(owner) = owner {
+                deposit.insert(OwnerSwarm(owner));
+            }
+        }
+        let text = app.world_mut().spawn((Text::new(""), StatusPanelText)).id();
+
+        app.update();
+
+        assert!(
+            app.world()
+                .entity(text)
+                .get::<Text>()
+                .unwrap()
+                .0
+                .ends_with("Deposits: 7"),
+            "the player HUD reports only explicitly player-owned deposits",
+        );
+    }
 
     #[test]
     fn format_status_panel_shows_world_state_only() {

@@ -1,3 +1,4 @@
+pub mod agent_control;
 pub mod ai;
 pub mod building;
 pub mod fly_camera;
@@ -6,6 +7,7 @@ pub mod intent;
 pub mod materials;
 pub mod nanobot;
 pub mod resources;
+pub mod runtime;
 pub mod scenario;
 pub mod spatial;
 pub mod structure_overlay;
@@ -39,8 +41,8 @@ use game_settings::GameSettings;
 use intent::IntentGrid;
 use materials::BackgroundMaterial;
 use nanobot::{
-    CollapsePlugin, CombatPlugin, NanobotPlugin, PlannedStructurePlugin, PopulationDemandPlugin,
-    ProductionPlugin, RegionalAllocationPlugin,
+    CollapsePlugin, CombatPlugin, NanobotPlugin, OpponentIntentPlugin, PlannedStructurePlugin,
+    PopulationDemandPlugin, ProductionPlugin, RegionalAllocationPlugin,
 };
 use resources::ResourceLedger;
 use structure_overlay::StructureOverlayPlugin;
@@ -88,6 +90,9 @@ pub enum Presentation {
     Windowed,
     Offscreen { width: u32, height: u32 },
 }
+
+#[derive(Debug, Component)]
+pub struct MainCamera;
 
 #[derive(Resource, Default)]
 struct PresentationTarget(Option<Handle<Image>>);
@@ -206,6 +211,9 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
         .add_plugins(nanobot::ChargePlugin)
         // Combat consumes Defend holds and Charge-scaled stats after sustain updates.
         .add_plugins(CombatPlugin)
+        // The authored opponent changes only its own Defend intent; normal
+        // allocation and role systems execute the resulting pressure.
+        .add_plugins(OpponentIntentPlugin)
         // Single allocator for Gather, Planned Build, Maintenance, Defend, and Haul.
         .add_plugins(RegionalAllocationPlugin)
         // Typed workload chooses required capacity; Production Priority orders shortages.
@@ -314,8 +322,14 @@ fn setup_things_startup(
         .map(RenderTarget::from)
         .unwrap_or_default();
     let mut camera = commands.spawn((
+        MainCamera,
         Camera2d,
         render_target,
+        Transform::from_translation(
+            scenario::cell_origin(scenario::PLAYER_CELL)
+                .midpoint(scenario::cell_origin(scenario::OPPONENT_CELL))
+                .extend(0.0),
+        ),
         Projection::Orthographic(OrthographicProjection {
             scale: DEFAULT_CAMERA_ZOOM,
             ..OrthographicProjection::default_2d()
@@ -327,7 +341,7 @@ fn setup_things_startup(
     camera
         .insert(FlyCamera2d::default())
         .insert(CameraZoom2d {
-            zoom_speed: 10.,
+            zoom_speed: 0.15,
             zoom_min_max: (1., 100.),
             zoom: DEFAULT_CAMERA_ZOOM,
         })

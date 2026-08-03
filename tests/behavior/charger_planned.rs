@@ -37,8 +37,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         Charge, Charger, ChargerAssignment, ChargerProgress, DEFAULT_PLANNED_WORK_TICKS,
         DefendHold, Health, LOW_CHARGE_THRESHOLD, NANOBOT_DEFAULT_MAX_HEALTH, OwnerSwarm,
-        PlannedKind, PlannedStructure, PlannedStructureClaim, SwarmId, completed_visual_color,
-        planned_visual_color,
+        PlannedKind, PlannedStructure, PlannedStructureClaim, Swarm, SwarmId, SwarmMember,
+        completed_visual_color, planned_visual_color,
     },
     resources::{ResourceKind, ResourceLedger},
 };
@@ -160,6 +160,38 @@ fn planned_charger_is_owned_by_swarm_that_painted_defend_cell() {
         owner.0, swarm,
         "Planned Charger must be owned by the swarm that painted the Defend cell"
     );
+}
+
+#[test]
+fn contested_defend_cell_plans_charger_for_each_participant() {
+    let mut app = build_app();
+    let player = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let opponent_id = SwarmId(11);
+    let opponent = app
+        .world_mut()
+        .spawn((Swarm {}, opponent_id, Transform::default()))
+        .id();
+    let cell = IVec2::ZERO;
+    {
+        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
+        grid.paint_owned(cell, IntentKind::Defend, Some(SwarmId::PLAYER));
+        grid.contest_defend(cell, opponent_id);
+    }
+    place_defender_in_hold(&mut app, cell);
+    let opponent_defender = place_defender_in_hold(&mut app, cell);
+    app.world_mut()
+        .entity_mut(opponent_defender)
+        .insert(SwarmMember::new(opponent_id));
+
+    app.update();
+
+    let world = app.world_mut();
+    let owners = world
+        .query::<(&PlannedStructure, &OwnerSwarm)>()
+        .iter(world)
+        .filter_map(|(planned, owner)| (planned.kind == PlannedKind::Charger).then_some(owner.0))
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(owners, std::collections::HashSet::from([player, opponent]));
 }
 
 #[test]

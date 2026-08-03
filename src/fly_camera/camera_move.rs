@@ -4,6 +4,8 @@ use bevy::{
     prelude::{Component, KeyCode, Projection, Query, Res, Time, Transform},
 };
 
+use super::CameraZoom2d;
+
 /// A set of options for initializing a FlyCamera.
 /// Attach this component to a [`Camera2dBundle`](https://docs.rs/bevy/0.4.0/bevy/prelude/struct.Camera2dBundle.html) bundle to control it with your keyboard.
 /// # Example
@@ -38,10 +40,11 @@ pub struct FlyCamera2d {
 impl Default for FlyCamera2d {
     fn default() -> Self {
         const MUL_2D: f32 = 10.0;
+        const REFERENCE_UPDATES_PER_SECOND: f32 = 60.0;
         Self {
-            accel: 3.0 * MUL_2D,
-            max_speed: 1.0 * MUL_2D,
-            friction: 1.75 * MUL_2D,
+            accel: 3.0 * MUL_2D * REFERENCE_UPDATES_PER_SECOND,
+            max_speed: 1.0 * MUL_2D * REFERENCE_UPDATES_PER_SECOND,
+            friction: 1.75 * MUL_2D * REFERENCE_UPDATES_PER_SECOND,
             velocity: Vec2::ZERO,
             key_left: KeyCode::KeyA,
             key_right: KeyCode::KeyD,
@@ -50,6 +53,39 @@ impl Default for FlyCamera2d {
             enabled: true,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum CameraControlError {
+    #[error("camera coordinates and zoom must be finite")]
+    NonFinite,
+    #[error("main camera must use an orthographic projection")]
+    UnsupportedProjection,
+}
+
+pub fn set_camera_view(
+    transform: &mut Transform,
+    projection: &mut Projection,
+    zoom: &mut CameraZoom2d,
+    movement: &mut FlyCamera2d,
+    position: Vec2,
+    requested_zoom: Option<f32>,
+) -> Result<f32, CameraControlError> {
+    let applied_zoom = requested_zoom.unwrap_or(zoom.zoom);
+    if !position.is_finite() || !applied_zoom.is_finite() {
+        return Err(CameraControlError::NonFinite);
+    }
+    let Projection::Orthographic(orthographic) = projection else {
+        return Err(CameraControlError::UnsupportedProjection);
+    };
+    let applied_zoom = applied_zoom.clamp(zoom.zoom_min_max.0, zoom.zoom_min_max.1);
+
+    transform.translation.x = position.x;
+    transform.translation.y = position.y;
+    zoom.zoom = applied_zoom;
+    orthographic.scale = applied_zoom;
+    movement.velocity = Vec2::ZERO;
+    Ok(applied_zoom)
 }
 
 pub fn camera_2d_movement_system(
@@ -100,7 +136,8 @@ pub fn camera_2d_movement_system(
             Some(Projection::Orthographic(ortho)) => ortho.scale,
             _ => 1.,
         };
-        transform.translation += Vec3::new(options.velocity.x, options.velocity.y, 0.0) * scale;
+        transform.translation +=
+            Vec3::new(options.velocity.x, options.velocity.y, 0.0) * scale * time.delta_secs();
     }
 }
 
@@ -113,4 +150,79 @@ fn movement_axis(input: &Res<ButtonInput<KeyCode>>, plus: KeyCode, minus: KeyCod
         axis -= 1.0;
     }
     axis
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use bevy::{
+        app::{App, Update},
+        time::{Real, TimePlugin, TimeUpdateStrategy},
+    };
+
+    use super::*;
+
+    fn distance_after_one_second(
+        frame_time: Duration,
+        frames: usize,
+        movement: FlyCamera2d,
+    ) -> f32 {
+        let mut app = App::new();
+        app.add_plugins(TimePlugin)
+            .insert_resource(ButtonInput::<KeyCode>::default())
+            .insert_resource(TimeUpdateStrategy::ManualDuration(frame_time))
+            .add_systems(Update, camera_2d_movement_system);
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .update_with_duration(Duration::ZERO);
+        let camera = app.world_mut().spawn((movement, Transform::default())).id();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyD);
+
+        for _ in 0..frames {
+            app.update();
+        }
+
+        app.world()
+            .entity(camera)
+            .get::<Transform>()
+            .unwrap()
+            .translation
+            .x
+    }
+
+    #[test]
+    fn keyboard_pan_distance_is_stable_across_frame_partitions() {
+        let movement = || FlyCamera2d {
+            accel: 10.0,
+            max_speed: 100.0,
+            friction: 0.0,
+            ..Default::default()
+        };
+        let at_60_hz =
+            distance_after_one_second(Duration::from_secs_f64(1.0 / 60.0), 60, movement());
+        let at_30_hz =
+            distance_after_one_second(Duration::from_secs_f64(1.0 / 30.0), 30, movement());
+
+        assert!(
+            (at_60_hz - at_30_hz).abs() < 0.2,
+            "equal input duration must travel equally; 60 Hz={at_60_hz}, 30 Hz={at_30_hz}",
+        );
+    }
+
+    #[test]
+    fn default_keyboard_pan_keeps_a_usable_one_second_distance() {
+        let distance = distance_after_one_second(
+            Duration::from_secs_f64(1.0 / 60.0),
+            60,
+            FlyCamera2d::default(),
+        );
+
+        assert!(
+            (distance - 374.375).abs() < 1.0,
+            "default held input should travel about 374 screen pixels in one second, got {distance}",
+        );
+    }
 }
