@@ -13,6 +13,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     structure_overlay::{
         ConditionOverlay, ConditionOverlayKind, StructureOverlay, StructureOverlayKind,
     },
+    ui::collapse_banner::CollapseBannerRoot,
 };
 
 use crate::harness::{TestContext, TestFlow};
@@ -27,6 +28,7 @@ pub fn fill_indicators(ctx: &mut TestContext) -> TestFlow {
     if ctx.frame == 2 {
         focus_camera(ctx.world);
         despawn_existing_sprites(ctx.world);
+        despawn_collapse_banner(ctx.world);
         let targets = spawn_focused_scene(ctx.world);
         ctx.world.insert_resource(targets);
         return TestFlow::Continue;
@@ -40,10 +42,31 @@ pub fn fill_indicators(ctx: &mut TestContext) -> TestFlow {
     if ctx.frame == 12 {
         keep_worker_progress_visible(ctx.world);
         assert_bar_overlays_exist(ctx.world);
+        assert_collapse_banner_absent(ctx.world);
         return TestFlow::Screenshot("fill_indicators".to_string());
     }
 
     TestFlow::Exit
+}
+
+fn despawn_collapse_banner(world: &mut World) {
+    let entities = world
+        .query_filtered::<Entity, With<CollapseBannerRoot>>()
+        .iter(world)
+        .collect::<Vec<_>>();
+    for entity in entities {
+        let _ = world.despawn(entity);
+    }
+}
+
+fn assert_collapse_banner_absent(world: &mut World) {
+    assert_eq!(
+        world
+            .query_filtered::<Entity, With<CollapseBannerRoot>>()
+            .iter(world)
+            .count(),
+        0,
+    );
 }
 
 fn focus_camera(world: &mut World) {

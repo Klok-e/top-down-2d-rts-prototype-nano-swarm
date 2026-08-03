@@ -379,6 +379,56 @@ pub(crate) fn has_any_near_source_stockpile(
         .any(|pos| pos.distance(deposit_pos) <= SOURCE_STOCKPILE_PROXIMITY_RADIUS)
 }
 
+/// Find the Source Stockpile candidate accepted by the Gather planner for one
+/// deposit and swarm. Collapse recovery shares this helper so painted Gather
+/// work counts only when the physical Source leg can exist.
+pub(crate) fn find_source_stockpile_placement_for_demand(
+    deposit: &ResourceDeposit,
+    deposit_pos: Vec2,
+    demand_swarm: SwarmId,
+    grid: &IntentGrid,
+    obstacles: &[(Vec2, f32)],
+    swarm_origin: Option<Vec2>,
+) -> Option<Vec2> {
+    let mut gather_cells = Vec::new();
+    let mut build_worlds = Vec::new();
+    for (cell, intent_cell) in grid.iter_active_cells() {
+        if intent_cell.has(IntentKind::Gather)
+            && intent_cell
+                .owner(IntentKind::Gather)
+                .is_none_or(|owner| owner == demand_swarm)
+        {
+            gather_cells.push(cell);
+        }
+        if intent_cell.has(IntentKind::Build)
+            && intent_cell
+                .owner(IntentKind::Build)
+                .is_none_or(|owner| owner == demand_swarm)
+        {
+            build_worlds.push(get_world_from_zone(cell));
+        }
+    }
+    let haul_direction = compute_haul_direction(deposit_pos, &build_worlds, swarm_origin);
+    let required_clearance =
+        deposit.radius + SOURCE_STOCKPILE_FOOTPRINT_RADIUS + SOURCE_STOCKPILE_PADDING;
+    let placement_radius = if required_clearance > SOURCE_STOCKPILE_PLACEMENT_RADIUS {
+        required_clearance + SOURCE_STOCKPILE_JITTER_AMPLITUDE * 2.0
+    } else {
+        SOURCE_STOCKPILE_PLACEMENT_RADIUS
+    };
+    find_source_stockpile_placement(
+        deposit_pos,
+        &gather_cells,
+        obstacles,
+        haul_direction,
+        placement_radius,
+        SOURCE_STOCKPILE_PLACEMENT_COUNT,
+        SOURCE_STOCKPILE_JITTER_AMPLITUDE,
+        SOURCE_STOCKPILE_FOOTPRINT_RADIUS,
+        SOURCE_STOCKPILE_PADDING,
+    )
+}
+
 /// For each unique deposit that has at least one Worker with a
 /// [`GatherAssignment`], ensure a Planned Source Stockpile
 /// exists within [`SOURCE_STOCKPILE_PROXIMITY_RADIUS`] of the
@@ -433,15 +483,9 @@ pub(crate) fn has_any_near_source_stockpile(
 /// is rejected, no planned structure is created and the
 /// demand is retried on a later tick.
 ///
-/// Ownership: the planned structure is stamped with
-/// [`OwnerSwarm`] using the first [`Swarm`] in the world,
-/// matching the existing planned-structure auto-creation
-/// pattern from issue #21. The promotion path preserves
-/// `OwnerSwarm` on the completed Stockpile, so the
-/// "Source Stockpile owned by the same swarm" contract
-/// holds end-to-end. A per-swarm filter tied to the painted
-/// cell's intent owner is a follow-up; the v1 simulation
-/// has one swarm.
+/// Ownership: the assignment's `demand_swarm` selects the matching
+/// [`Swarm`] entity, which is stamped as [`OwnerSwarm`] on the plan. The
+/// promotion path preserves that owner on the completed Stockpile.
 #[allow(clippy::too_many_arguments)]
 pub fn source_stockpile_demand_system(
     mut commands: Commands,
@@ -541,47 +585,18 @@ pub fn source_stockpile_demand_system(
                 .iter()
                 .map(|p| (*p, SOURCE_STOCKPILE_FOOTPRINT_RADIUS)),
         );
-        let mut gather_cells: Vec<IVec2> = Vec::new();
-        let mut build_worlds: Vec<Vec2> = Vec::new();
-        for (cell, intent_cell) in grid.iter_active_cells() {
-            if intent_cell.has(IntentKind::Gather)
-                && intent_cell
-                    .owner(IntentKind::Gather)
-                    .is_none_or(|owner| owner == demand_swarm)
-            {
-                gather_cells.push(cell);
-            }
-            if intent_cell.has(IntentKind::Build)
-                && intent_cell
-                    .owner(IntentKind::Build)
-                    .is_none_or(|owner| owner == demand_swarm)
-            {
-                build_worlds.push(get_world_from_zone(cell));
-            }
-        }
         let swarm_origin = swarm_by_id.get(&demand_swarm).map(|(_, pos)| *pos);
-        let haul_direction = compute_haul_direction(deposit_pos, &build_worlds, swarm_origin);
         // Find a valid placement for the planned structure.
         // `None` here means every candidate was rejected by
         // the zone / overlap filter; the demand remains
         // unsatisfied and is retried on a later tick.
-        let required_clearance =
-            deposit.radius + SOURCE_STOCKPILE_FOOTPRINT_RADIUS + SOURCE_STOCKPILE_PADDING;
-        let placement_radius = if required_clearance > SOURCE_STOCKPILE_PLACEMENT_RADIUS {
-            required_clearance + SOURCE_STOCKPILE_JITTER_AMPLITUDE * 2.0
-        } else {
-            SOURCE_STOCKPILE_PLACEMENT_RADIUS
-        };
-        let Some(placement_pos) = find_source_stockpile_placement(
+        let Some(placement_pos) = find_source_stockpile_placement_for_demand(
+            deposit,
             deposit_pos,
-            &gather_cells,
+            demand_swarm,
+            &grid,
             &obstacles,
-            haul_direction,
-            placement_radius,
-            SOURCE_STOCKPILE_PLACEMENT_COUNT,
-            SOURCE_STOCKPILE_JITTER_AMPLITUDE,
-            SOURCE_STOCKPILE_FOOTPRINT_RADIUS,
-            SOURCE_STOCKPILE_PADDING,
+            swarm_origin,
         ) else {
             continue;
         };

@@ -26,6 +26,7 @@ mod defender_spread;
 mod fill_indicators;
 mod harness;
 mod idle_spread;
+mod opponent_gameplay_loop;
 mod physical_logistics;
 mod production_priority_panel;
 mod regional_allocation;
@@ -94,6 +95,10 @@ fn main() -> std::process::ExitCode {
         Trial::test("smoke", || run(smoke::smoke)).with_ignored_flag(true),
         Trial::test("physical_logistics", || {
             run(physical_logistics::physical_logistics)
+        })
+        .with_ignored_flag(true),
+        Trial::test("opponent_gameplay_loop", || {
+            run(opponent_gameplay_loop::opponent_gameplay_loop)
         })
         .with_ignored_flag(true),
         Trial::test("production_priority_panel", || {

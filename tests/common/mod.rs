@@ -533,9 +533,9 @@ pub fn spawn_charger_at(app: &mut App, cell: IVec2, amount: u32) -> Entity {
 
 /// Spawn an idle [`ProductionFacility`] at `world_pos`. The
 /// facility has no `OwnerSwarm`, so it falls back to the global
-/// `ProductionPriority` resource and the first swarm in the world
-/// when the work system spawns a new nanobot -- the same fallback
-/// the pre-multi-swarm production tests rely on. The input hopper
+/// `ProductionPriority` resource and the player swarm when the
+/// work system spawns a new nanobot. An untagged swarm remains the
+/// legacy player fallback. The input hopper
 /// is pre-filled (see [`fill_facility_input`]) so the facility can
 /// run production cycles without standing up the full hauler
 /// chain; the real game starts a facility empty and lets leg 3

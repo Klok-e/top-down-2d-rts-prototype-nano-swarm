@@ -29,7 +29,7 @@ An intent zone that marks free base space where automatic construction may place
 _Avoid_: Construction group, builder assignment, manual building placement
 
 **Defend Zone**:
-An intent zone where nanobots hold and protect an area. Each painted cell requires one Defender, and each hostile nanobot inside it requires one additional Defender; crowding still discourages unnecessary extras. Larger zones therefore request broader baseline coverage. Painting defend intent into enemy territory functions as an attack or advance order; no separate attack zone is needed initially. Defend zones include chargers that resupply defenders, making cut-off or surrounded defenders weaker over time.
+An intent zone where nanobots hold and protect an area. Each painted cell requires one Defender, and each hostile nanobot inside it requires one additional Defender; crowding still discourages unnecessary extras. Larger zones therefore request broader baseline coverage. Painting Defend intent over a hostile Defend cell neutralizes its ownership so both swarms contest it; after both sides engage, the sole surviving holder captures it. Painting into enemy territory therefore functions as an attack or advance order without a separate Attack Zone. Defend Zones include chargers that resupply defenders, making cut-off or surrounded defenders weaker over time.
 _Avoid_: Fighter group, combat squad, attack zone
 
 **Stockpile**:
@@ -69,11 +69,11 @@ An end-of-chain structure that only receives material and never serves as a haul
 _Avoid_: Sink, consumer building, final destination
 
 **Opponent Swarm**:
-A non-player swarm governed by the same intent, production, logistics, maintenance, and charge rules as the player swarm. Early opponents use prepainted bases and fixed Production Priorities instead of active AI.
+A non-player swarm governed by the same intent, production, logistics, maintenance, and Charge rules as the player swarm. An authored opponent may use a deterministic intent controller that advances its Defend intent toward a target while leaving nanobot allocation, production, logistics, Maintenance, Charge, and combat to the shared simulation.
 _Avoid_: Enemy AI faction, scripted attackers
 
 **Production Collapse**:
-A win or loss condition where unmet workload remains but a swarm has neither operational production nor a complete physical recovery path. Recovery requires usable construction space or an owned production plan, appropriate Worker/Hauler capability, and reachable material; surviving crew alone is insufficient.
+A terminal win or loss condition where unmet workload remains but a swarm has neither operational production nor a complete physical recovery path. The first detected match result remains latched even if later simulation state changes. Recovery requires usable construction space or an owned production plan, appropriate Worker/Hauler capability, and reachable material; surviving crew alone is insufficient.
 _Avoid_: Population wipeout, king unit death, crew-count proxy
 
 **Automatic Construction**:

@@ -28,7 +28,10 @@
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
-    nanobot::{Commitment, DirectMovementComponent, VelocityComponent, idle_spread_system},
+    nanobot::{
+        Commitment, DefendHold, DirectMovementComponent, SwarmId, VelocityComponent,
+        idle_spread_system,
+    },
 };
 
 #[path = "../common/mod.rs"]
@@ -139,6 +142,29 @@ fn hauler_spreads_only_over_corridor() {
 }
 
 #[test]
+fn player_worker_ignores_opponent_gather_paint() {
+    let mut app = spread_only_app();
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        IVec2::new(1, 0),
+        IntentKind::Gather,
+        Some(SwarmId(1)),
+    );
+    let bot = common::spawn_worker_at(&mut app, center(IVec2::ZERO));
+
+    app.update();
+
+    assert_eq!(
+        app.world()
+            .entity(bot)
+            .get::<VelocityComponent>()
+            .unwrap()
+            .value,
+        Vec2::ZERO,
+        "idle spread must not steer a player nanobot toward opponent intent",
+    );
+}
+
+#[test]
 fn defender_ignores_gather_paint() {
     // A Defender fits Defend only. Surrounded by Gather paint it has
     // no type-fit region, so it receives no nudge. This pins the
@@ -165,6 +191,29 @@ fn defender_ignores_gather_paint() {
         velocity == Vec2::ZERO,
         "defender surrounded by Gather paint must not be nudged; got {:?}",
         velocity
+    );
+}
+
+#[test]
+fn spread_does_not_move_defender_holding_assigned_cell() {
+    let mut app = spread_only_app();
+    paint(&mut app, IVec2::ZERO, IntentKind::Defend);
+    paint(&mut app, IVec2::X, IntentKind::Defend);
+    let defender = common::spawn_defender_at(&mut app, center(IVec2::ZERO));
+    app.world_mut()
+        .entity_mut(defender)
+        .insert(DefendHold { cell: IVec2::ZERO });
+
+    app.update();
+
+    assert_eq!(
+        app.world()
+            .entity(defender)
+            .get::<VelocityComponent>()
+            .unwrap()
+            .value,
+        Vec2::ZERO,
+        "idle cosmetic spread must not own active DefendHold movement",
     );
 }
 

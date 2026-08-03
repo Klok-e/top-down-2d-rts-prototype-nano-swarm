@@ -5220,12 +5220,14 @@ dependencies = [
  "bevy_image_export",
  "criterion",
  "image",
+ "libc",
  "libtest-mimic",
  "log",
  "pathfinding",
  "rand 0.10.1",
  "ron",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 

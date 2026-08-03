@@ -427,20 +427,27 @@ fn project_intent_work(
             };
 
             if intent.has(IntentKind::Defend) {
-                let owner = intent.owner(IntentKind::Defend);
-                out.push(ActionableOpportunity {
-                    region,
-                    category: OpportunityCategory::Defend,
-                    target: OpportunityTarget::Defend { cell },
-                    cell,
-                    owner,
-                    available_work: owner
-                        .and_then(|owner| {
-                            pressure.map(|pressure| pressure.get_for(owner, cell).ceil() as u32)
-                        })
-                        .unwrap_or(1)
-                        .max(1),
-                });
+                let mut project_defend = |owner| {
+                    out.push(ActionableOpportunity {
+                        region,
+                        category: OpportunityCategory::Defend,
+                        target: OpportunityTarget::Defend { cell },
+                        cell,
+                        owner,
+                        available_work: owner
+                            .and_then(|owner| {
+                                pressure.map(|pressure| pressure.get_for(owner, cell).ceil() as u32)
+                            })
+                            .unwrap_or(1)
+                            .max(1),
+                    });
+                };
+                if let Some((incumbent, challenger)) = grid.defend_contest(cell) {
+                    project_defend(Some(incumbent));
+                    project_defend(Some(challenger));
+                } else {
+                    project_defend(intent.owner(IntentKind::Defend));
+                }
             }
         }
     }

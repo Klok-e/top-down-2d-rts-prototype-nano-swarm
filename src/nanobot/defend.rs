@@ -571,8 +571,9 @@ pub fn defender_assignment_system(
 #[allow(clippy::type_complexity)]
 pub fn defender_arrive_system(
     mut commands: Commands,
+    grid: Res<IntentGrid>,
     defenders: Query<
-        (Entity, &DefendAssignment),
+        (Entity, &DefendAssignment, &SwarmMember),
         (
             With<Nanobot>,
             With<NanobotType>,
@@ -582,7 +583,14 @@ pub fn defender_arrive_system(
         ),
     >,
 ) {
-    for (entity, assignment) in &defenders {
+    for (entity, assignment, member) in &defenders {
+        let supported = grid
+            .cell(assignment.cell)
+            .is_some_and(|cell| cell.visible_to(IntentKind::Defend, member.0));
+        if !supported {
+            commands.entity(entity).remove::<DefendAssignment>();
+            continue;
+        }
         commands.entity(entity).remove::<DefendAssignment>();
         commands.entity(entity).insert(DefendHold {
             cell: assignment.cell,
@@ -603,17 +611,15 @@ pub fn defender_arrive_system(
 /// as it is meaningfully inside again. This is cosmetic containment,
 /// not a new tactical assignment: no `DefendAssignment` is inserted.
 ///
-/// The slot is released only when the cell's paint is erased (the
-/// defender returns to the assignment pool) or the assignment system
-/// re-routes the defender to a new cell. The hold marker is removed
-/// in both cases so the next tick's assignment pass sees an idle
-/// defender.
+/// The slot is released when the cell's paint is erased, ownership changes to
+/// another swarm, or the assignment system re-routes the defender. The hold
+/// marker is removed so the next assignment pass sees an idle defender.
 #[allow(clippy::type_complexity)]
 pub fn defender_hold_system(
     mut commands: Commands,
     grid: Res<IntentGrid>,
     defenders: Query<
-        (Entity, &DefendHold, &Transform, &NanobotType),
+        (Entity, &DefendHold, &Transform, &NanobotType, &SwarmMember),
         (
             With<Nanobot>,
             With<NanobotType>,
@@ -622,20 +628,20 @@ pub fn defender_hold_system(
         ),
     >,
 ) {
-    for (entity, hold, transform, nanobot_type) in &defenders {
+    for (entity, hold, transform, nanobot_type, member) in &defenders {
         if *nanobot_type != NanobotType::Defender {
             continue;
         }
-        // If the Defend cell still has paint, the defender keeps
-        // holding. The hold is "the cell is still painted", not
-        // "the defender has been here for a while"; erasing the
-        // paint releases the defender back to the assignment
-        // pool.
-        let still_painted = grid
+        // A hold remains valid only while Defend intent is still visible to the
+        // Defender's swarm. Erasure, withdrawal, or hostile capture releases it.
+        let still_supported = grid
             .cell(hold.cell)
-            .is_some_and(|cell| cell.has(IntentKind::Defend));
-        if !still_painted {
-            commands.entity(entity).remove::<DefendHold>();
+            .is_some_and(|cell| cell.visible_to(IntentKind::Defend, member.0));
+        if !still_supported {
+            commands
+                .entity(entity)
+                .remove::<DefendHold>()
+                .remove::<DirectMovementComponent>();
             continue;
         }
         // Cosmetic containment: if the defender drifted outside

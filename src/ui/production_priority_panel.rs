@@ -39,6 +39,12 @@ pub struct ProductionPriorityDragState {
     active: Option<HandleBoundary>,
 }
 
+impl ProductionPriorityDragState {
+    pub fn is_active(&self) -> bool {
+        self.active.is_some()
+    }
+}
+
 pub const SNAP_STEP: u32 = 5;
 pub const PANEL_TOP: f32 = 8.0;
 pub const PANEL_RIGHT: f32 = 8.0;
@@ -103,9 +109,9 @@ fn boundaries_from_priority(priority: &ProductionPriority) -> (u32, u32) {
 }
 
 fn write_boundaries(priority: &mut ProductionPriority, worker_end: u32, hauler_end: u32) {
-    priority.set_weight(NanobotType::Worker, worker_end);
-    priority.set_weight(NanobotType::Hauler, hauler_end - worker_end);
-    priority.set_weight(NanobotType::Defender, 100 - hauler_end);
+    priority
+        .set_percentages(worker_end, hauler_end - worker_end, 100 - hauler_end)
+        .expect("ordered slider boundaries always produce five-percent shares totaling 100");
 }
 
 fn handle_offset(boundary: HandleBoundary, coincident: bool) -> f32 {

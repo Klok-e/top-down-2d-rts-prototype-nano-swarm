@@ -6,6 +6,8 @@ mod intent_layer_flow;
 mod mouse_zone_painting;
 #[path = "playtest/offscreen_presentation.rs"]
 mod offscreen_presentation;
+#[path = "playtest/opponent_gameplay_loop.rs"]
+mod opponent_gameplay_loop;
 #[path = "playtest/physical_logistics_flow.rs"]
 mod physical_logistics_flow;
 #[path = "playtest/production_priority_drag.rs"]

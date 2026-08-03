@@ -13,23 +13,14 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    ZONE_BLOCK_SIZE,
     nanobot::{OwnerSwarm, ProductionFacility, STRUCTURE_MAX_HEALTH, Structure, SwarmId},
-    scenario::{PLAYER_CELL, SEED_FACILITY_OFFSET, cell_origin},
+    scenario::{PLAYER_CELL, PLAYER_DEPOSIT_CELL, SEED_FACILITY_OFFSET, cell_origin},
 };
 
 use super::harness::{TestContext, TestFlow, run_screenshot_test};
 
-const CELL_SIZE: f32 = ZONE_BLOCK_SIZE;
-
-/// Gather deposit at cell `(-2, 0)` (= PLAYER_DEPOSIT_CELL).
-const DEPOSIT_CELL: IVec2 = IVec2::new(-2, 0);
-
 fn deposit_pos() -> Vec2 {
-    Vec2::new(
-        DEPOSIT_CELL.x as f32 * CELL_SIZE + CELL_SIZE / 2.0,
-        CELL_SIZE / 2.0,
-    )
+    cell_origin(PLAYER_DEPOSIT_CELL)
 }
 
 fn cell_corner_pos() -> Vec2 {
@@ -42,13 +33,13 @@ fn cell_corner_pos() -> Vec2 {
 /// resumes and exits.
 pub fn world_space_nanobots(ctx: &mut TestContext) -> TestFlow {
     // Full offscreen app startup initializes player/opponent swarms, default
-    // Gather/Build/Defend paint, resource deposit at (-768, 256), production
+    // Gather/Build/Defend paint, authored resource deposit, production
     // facility, and ResourceLedger. Advance simulation until worker arrives.
     // Capture wait runs full app updates, so simulation may advance before the
     // callback resumes. No post-resume gameplay state is assumed.
     if ctx.frame < 900 {
         // Drive the simulation. The player swarm sits at (256, 256); the
-        // deposit is at (-768, 256); the worker must walk 1024 units. Running
+        // deposit is one cell left; the worker must walk 512 units. Running
         // 900 ticks also crosses the unmaintained facility-collapse horizon.
         return TestFlow::Continue;
     }

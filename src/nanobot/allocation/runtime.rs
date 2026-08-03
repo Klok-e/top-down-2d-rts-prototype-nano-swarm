@@ -243,7 +243,9 @@ pub fn regional_allocation_acquisition_system(
         .iter()
         .filter(|lease| lease.counts_toward_capacity())
     {
-        *claim_counts.entry(claim_key(lease.target)).or_insert(0) += 1;
+        *claim_counts
+            .entry(claim_key(lease.target, lease.owner))
+            .or_insert(0) += 1;
     }
     let mut reserved_source = BTreeMap::<Entity, u32>::new();
     let mut reserved_destination = BTreeMap::<Entity, u32>::new();
@@ -480,7 +482,14 @@ pub fn regional_allocation_acquisition_system(
                 bounds,
                 |work| {
                     let claims = claim_counts
-                        .get(&claim_key(work.target))
+                        .get(&claim_key(
+                            work.target,
+                            if work.category == OpportunityCategory::Defend {
+                                Some(bot.swarm)
+                            } else {
+                                work.owner
+                            },
+                        ))
                         .copied()
                         .unwrap_or(0);
                     if !target_available(
@@ -530,17 +539,24 @@ pub fn regional_allocation_acquisition_system(
         region_ages
             .waiting
             .insert((bot.swarm, work.region, kind_index(bot.kind)), 0);
+        let lease_owner = if work.category == OpportunityCategory::Defend {
+            Some(bot.swarm)
+        } else {
+            work.owner
+        };
         let lease = RegionalLease::new(
             work.region,
             work.category,
             work.target,
-            work.owner,
+            lease_owner,
             clock.tick(),
             0,
             30,
         );
         commands.entity(bot.entity).insert(lease);
-        *claim_counts.entry(claim_key(work.target)).or_insert(0) += 1;
+        *claim_counts
+            .entry(claim_key(work.target, lease_owner))
+            .or_insert(0) += 1;
         if let Some(pull) = pulls.get_mut(&bot_key) {
             let remaining = pull.categories.get(work.category).saturating_sub(1);
             pull.categories.set(work.category, remaining);
@@ -897,15 +913,24 @@ fn region_distance_key(left: AllocationRegion, right: AllocationRegion) -> u32 {
     left.x.abs_diff(right.x) + left.y.abs_diff(right.y)
 }
 
-fn claim_key(target: OpportunityTarget) -> (u8, u64, u64, u64) {
+fn claim_key(
+    target: OpportunityTarget,
+    owner: Option<SwarmId>,
+) -> (u8, u64, u64, u64, Option<SwarmId>) {
     match target {
-        OpportunityTarget::Gather { deposit, .. } => (0, deposit.to_bits(), 0, 0),
-        OpportunityTarget::PlannedBuild { structure, .. } => (1, structure.to_bits(), 0, 0),
-        OpportunityTarget::Maintenance { structure } => (2, structure.to_bits(), 0, 0),
-        OpportunityTarget::Defend { cell } => {
-            (3, i64::from(cell.x) as u64, i64::from(cell.y) as u64, 0)
+        OpportunityTarget::Gather { deposit, .. } => (0, deposit.to_bits(), 0, 0, owner),
+        OpportunityTarget::PlannedBuild { structure, .. } => (1, structure.to_bits(), 0, 0, owner),
+        OpportunityTarget::Maintenance { structure } => (2, structure.to_bits(), 0, 0, owner),
+        OpportunityTarget::Defend { cell } => (
+            3,
+            i64::from(cell.x) as u64,
+            i64::from(cell.y) as u64,
+            0,
+            owner,
+        ),
+        OpportunityTarget::Haul { source, sink, .. } => {
+            (4, source.to_bits(), sink.to_bits(), 0, owner)
         }
-        OpportunityTarget::Haul { source, sink, .. } => (4, source.to_bits(), sink.to_bits(), 0),
     }
 }
 
@@ -925,6 +950,6 @@ mod tests {
             cell: IVec2::new(8, 3),
         };
 
-        assert_eq!(claim_key(first), claim_key(second));
+        assert_eq!(claim_key(first, None), claim_key(second, None));
     }
 }

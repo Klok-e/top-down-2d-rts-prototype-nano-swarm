@@ -9,14 +9,14 @@
 //! zooms farther out.
 //!
 //! Markers stay screen-constant by setting the body's
-//! `Transform::scale` to `screen_size / zoom` against a
+//! `Transform::scale` to `screen_size * zoom` against a
 //! unit-rectangle sprite, so the on-screen footprint
 //! stays constant regardless of the orthographic
 //! projection's scale. The `cluster_tactical_markers`
-//! algorithm stamps every cluster with a spatial slot
-//! (see [`CLUSTER_SPATIAL_SLOT_SIZE`]) so two same-kind
-//! same-owner clusters that survive the merge pass keep
-//! distinct marker entities. A de-overlap pass nudges
+//! algorithm stamps every cluster with a coarse spatial slot
+//! (see [`CLUSTER_SPATIAL_SLOT_SIZE`]); reconciliation retains
+//! every entity in a slot and matches clusters one-to-one. A
+//! de-overlap pass nudges
 //! cluster positions apart in screen space so visible
 //! icons do not overlap.
 
@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::fly_camera::CameraZoom2d;
 use crate::nanobot::{
-    Charger, OpponentSwarm, PlannedStructure, ProductionFacility, Swarm, SwarmId,
+    Charger, OpponentSwarm, OwnerSwarm, PlannedStructure, ProductionFacility, Swarm, SwarmId,
 };
 use crate::resources::{ResourceDeposit, Stockpile};
 
@@ -64,14 +64,10 @@ pub const TACTICAL_MARKER_ALPHA: f32 = 0.5;
 /// never eclipses a real structure.
 pub const TACTICAL_MARKER_Z: f32 = 0.5;
 
-/// Spatial slot size used to differentiate same-key
-/// clusters. Two clusters whose positions fall in
-/// different slots keep distinct marker entities even
-/// when they share `(kind, owner)`. The default sits at
-/// the maximum merge radius so any two clusters that
-/// survive the merge pass (i.e. are more than
-/// [`DEFAULT_TACTICAL_FAR_MERGE_RADIUS_WORLD`] apart in
-/// world space) also land in different slots.
+/// Spatial slot size used to bucket same-kind, same-owner
+/// clusters during marker reconciliation. Distinct clusters
+/// may share a slot when they are diagonally separated, so a
+/// slot is deliberately not treated as a unique identity.
 pub const CLUSTER_SPATIAL_SLOT_SIZE: f32 = DEFAULT_TACTICAL_FAR_MERGE_RADIUS_WORLD;
 
 /// Number of relaxation iterations the de-overlap pass
@@ -80,10 +76,9 @@ pub const CLUSTER_SPATIAL_SLOT_SIZE: f32 = DEFAULT_TACTICAL_FAR_MERGE_RADIUS_WOR
 /// per tick.
 pub const DEOVERLAP_ITERATIONS: u32 = 8;
 
-/// Synthetic owner id stamped on every landmark source
-/// (deposits, facilities, stockpiles, planned structures,
-/// chargers) so unowned landmarks never collide with a
-/// real [`SwarmId`].
+/// Synthetic owner id stamped on landmarks without a valid
+/// [`OwnerSwarm`] so unowned landmarks never collide with a real
+/// [`SwarmId`].
 pub const UNOWNED_SWARM_ID: SwarmId = SwarmId(u32::MAX);
 
 /// Configuration for the tactical overlay layer. Inserted
@@ -227,14 +222,10 @@ pub fn cluster_radius_for_zoom(zoom: f32, settings: &TacticalOverlaySettings) ->
 /// markers as fungible; positions in different slots
 /// must keep separate markers.
 ///
-/// The slot grid uses [`CLUSTER_SPATIAL_SLOT_SIZE`] as
-/// its cell size, so any two positions that survive the
-/// cluster merge pass (i.e. are more than the maximum
-/// merge radius apart) also land in different slots.
-/// Positions in the same slot may either merge into one
-/// cluster (when within the merge radius) or survive as
-/// two clusters only if the player intentionally puts
-/// them very close together.
+/// The slot grid uses [`CLUSTER_SPATIAL_SLOT_SIZE`] as its cell
+/// size. It is a coarse reconciliation bucket rather than a
+/// unique cluster identifier; same-slot clusters are matched
+/// one-to-one by position.
 pub fn cluster_spatial_slot(position: Vec2) -> (i32, i32) {
     let slot_x = (position.x / CLUSTER_SPATIAL_SLOT_SIZE).floor() as i32;
     let slot_y = (position.y / CLUSTER_SPATIAL_SLOT_SIZE).floor() as i32;
@@ -307,7 +298,7 @@ pub fn cluster_tactical_markers(
 ///
 /// 1. Convert `icon_screen_size` to the minimum world
 ///    distance for non-overlap: `min_world =
-///    icon_screen_size / zoom`. Two icons are
+///    icon_screen_size * zoom`. Two icons are
 ///    non-overlapping when their centres are at least
 ///    `min_world` apart in world space.
 /// 2. Run [`DEOVERLAP_ITERATIONS`] relaxation passes.
@@ -333,7 +324,7 @@ pub fn deoverlap_clusters(
         return clusters;
     }
     let effective_zoom = if zoom >= 1.0 { zoom } else { 1.0 };
-    let min_world_dist = icon_screen_size / effective_zoom;
+    let min_world_dist = icon_screen_size * effective_zoom;
     let mut positions: Vec<Vec2> = clusters.iter().map(|c| c.position).collect();
     for _ in 0..DEOVERLAP_ITERATIONS {
         for i in 0..n {
@@ -414,14 +405,14 @@ pub fn tactical_visibility_for_zoom(zoom: f32, threshold: f32) -> Visibility {
 /// unit-rectangle `Sprite` (custom size 1.0 in each
 /// axis) scaled by this value, so its on-screen pixel
 /// footprint is `icon_screen_size` regardless of zoom:
-/// `world_size * zoom = icon_screen_size`.
+/// `world_size / zoom = icon_screen_size`.
 ///
 /// `zoom < 1.0` clamps to `1.0` so a misconfigured
 /// settings resource cannot produce an infinitely large
 /// marker.
 pub fn marker_world_size_for_zoom(zoom: f32, screen_size: f32) -> f32 {
     let effective_zoom = if zoom >= 1.0 { zoom } else { 1.0 };
-    screen_size / effective_zoom
+    screen_size * effective_zoom
 }
 
 // ---------------------------------------------------------------------------
@@ -464,11 +455,23 @@ pub fn tactical_overlay_update_system(
         (Entity, &Transform, Option<&OpponentSwarm>, Option<&SwarmId>),
         (With<Swarm>, Without<TacticalMarker>),
     >,
-    deposits: Query<&Transform, (With<ResourceDeposit>, Without<TacticalMarker>)>,
-    facilities: Query<&Transform, (With<ProductionFacility>, Without<TacticalMarker>)>,
-    stockpiles: Query<&Transform, (With<Stockpile>, Without<TacticalMarker>)>,
-    planned: Query<&Transform, (With<PlannedStructure>, Without<TacticalMarker>)>,
-    chargers: Query<&Transform, (With<Charger>, Without<TacticalMarker>)>,
+    deposits: Query<
+        (&Transform, Option<&OwnerSwarm>),
+        (With<ResourceDeposit>, Without<TacticalMarker>),
+    >,
+    facilities: Query<
+        (&Transform, Option<&OwnerSwarm>),
+        (With<ProductionFacility>, Without<TacticalMarker>),
+    >,
+    stockpiles: Query<
+        (&Transform, Option<&OwnerSwarm>),
+        (With<Stockpile>, Without<TacticalMarker>),
+    >,
+    planned: Query<
+        (&Transform, Option<&OwnerSwarm>),
+        (With<PlannedStructure>, Without<TacticalMarker>),
+    >,
+    chargers: Query<(&Transform, Option<&OwnerSwarm>), (With<Charger>, Without<TacticalMarker>)>,
     mut existing: Query<
         (
             Entity,
@@ -486,8 +489,10 @@ pub fn tactical_overlay_update_system(
     let marker_size = marker_world_size_for_zoom(zoom, settings.marker_screen_size);
 
     source_cache.clear();
-    for (_entity, transform, opponent, swarm_id) in &swarms {
+    let mut swarm_ids = HashMap::new();
+    for (entity, transform, opponent, swarm_id) in &swarms {
         let owner = swarm_id.copied().unwrap_or(SwarmId::PLAYER);
+        swarm_ids.insert(entity, owner);
         let kind = if opponent.is_some() {
             TacticalMarkerKind::OpponentBase
         } else {
@@ -499,39 +504,44 @@ pub fn tactical_overlay_update_system(
             owner,
         });
     }
-    for transform in &deposits {
+    let landmark_owner = |owner: Option<&OwnerSwarm>| {
+        owner
+            .and_then(|owner| swarm_ids.get(&owner.0).copied())
+            .unwrap_or(UNOWNED_SWARM_ID)
+    };
+    for (transform, owner) in &deposits {
         source_cache.push(TacticalSource {
             position: transform.translation.truncate(),
             kind: TacticalMarkerKind::Deposit,
-            owner: UNOWNED_SWARM_ID,
+            owner: landmark_owner(owner),
         });
     }
-    for transform in &facilities {
+    for (transform, owner) in &facilities {
         source_cache.push(TacticalSource {
             position: transform.translation.truncate(),
             kind: TacticalMarkerKind::Facility,
-            owner: UNOWNED_SWARM_ID,
+            owner: landmark_owner(owner),
         });
     }
-    for transform in &stockpiles {
+    for (transform, owner) in &stockpiles {
         source_cache.push(TacticalSource {
             position: transform.translation.truncate(),
             kind: TacticalMarkerKind::Stockpile,
-            owner: UNOWNED_SWARM_ID,
+            owner: landmark_owner(owner),
         });
     }
-    for transform in &planned {
+    for (transform, owner) in &planned {
         source_cache.push(TacticalSource {
             position: transform.translation.truncate(),
             kind: TacticalMarkerKind::Planned,
-            owner: UNOWNED_SWARM_ID,
+            owner: landmark_owner(owner),
         });
     }
-    for transform in &chargers {
+    for (transform, owner) in &chargers {
         source_cache.push(TacticalSource {
             position: transform.translation.truncate(),
             kind: TacticalMarkerKind::Charger,
-            owner: UNOWNED_SWARM_ID,
+            owner: landmark_owner(owner),
         });
     }
     let mut clusters = cluster_tactical_markers(
@@ -540,11 +550,14 @@ pub fn tactical_overlay_update_system(
     );
     clusters = deoverlap_clusters(clusters, zoom, settings.marker_screen_size);
 
-    // Index existing markers by their cluster key for
-    // O(1) lookup in the patch loop.
-    let mut by_key: HashMap<TacticalClusterKey, Entity> = HashMap::new();
-    for (entity, key, _, _, _) in existing.iter() {
-        by_key.insert(*key, entity);
+    // Keep every marker in a coarse key bucket. Diagonally separated
+    // clusters can share a slot even when they survive merging.
+    let mut by_key: HashMap<TacticalClusterKey, Vec<(Entity, Vec2)>> = HashMap::new();
+    for (entity, key, _, transform, _) in existing.iter() {
+        by_key
+            .entry(*key)
+            .or_default()
+            .push((entity, transform.translation.truncate()));
     }
     let mut matched: HashSet<Entity> = HashSet::new();
     for cluster in &clusters {
@@ -553,7 +566,20 @@ pub fn tactical_overlay_update_system(
             owner: cluster.owner,
             slot: cluster.slot,
         };
-        if let Some(&entity) = by_key.get(&key) {
+        let existing_entity = by_key.get_mut(&key).and_then(|markers| {
+            let nearest = markers
+                .iter()
+                .enumerate()
+                .min_by(|(_, left), (_, right)| {
+                    left.1
+                        .distance_squared(cluster.position)
+                        .total_cmp(&right.1.distance_squared(cluster.position))
+                        .then_with(|| left.0.to_bits().cmp(&right.0.to_bits()))
+                })
+                .map(|(index, _)| index)?;
+            Some(markers.swap_remove(nearest).0)
+        });
+        if let Some(entity) = existing_entity {
             // Patch: update position, scale, and
             // visibility on the survivor.
             if let Ok((_, _, _, mut transform, mut vis)) = existing.get_mut(entity) {
@@ -898,9 +924,9 @@ mod tests {
     #[test]
     fn deoverlap_pushes_two_overlapping_clusters_apart() {
         // Two clusters 1 world unit apart at zoom 8.0
-        // (icon size 32, so min world distance = 4).
+        // (icon size 32, so min world distance = 256).
         // After de-overlap they must sit at least
-        // 4 world units apart along their connecting
+        // 256 world units apart along their connecting
         // line, and the midpoint of the new positions
         // is the same as the midpoint of the originals
         // (the pair relaxes without bias).
@@ -910,7 +936,7 @@ mod tests {
         let out = deoverlap_clusters(vec![a, b], 8.0, 32.0);
         let dist = (out[0].position - out[1].position).length();
         assert!(
-            dist >= 4.0 - 1e-4,
+            dist >= 256.0 - 1e-4,
             "two overlapping icons must be pushed apart to at least the min world distance; got {dist}"
         );
         // The relaxation is mass-balanced: the midpoint
@@ -927,7 +953,7 @@ mod tests {
     #[test]
     fn deoverlap_leaves_far_apart_clusters_in_place() {
         // Two clusters 1000 world units apart at zoom
-        // 8.0. Min world distance is 4, so 1000 is
+        // 8.0. Min world distance is 256, so 1000 is
         // well above the overlap threshold. The
         // de-overlap pass must not move them.
         let a = cluster(Vec2::new(0.0, 0.0), TacticalMarkerKind::Deposit, SwarmId(1));
@@ -955,12 +981,12 @@ mod tests {
             SwarmId(1),
         );
         let out = deoverlap_clusters(vec![a, b, c], 8.0, 32.0);
-        let min_dist = 32.0 / 8.0;
+        let min_dist = 32.0 * 8.0;
         for i in 0..out.len() {
             for j in (i + 1)..out.len() {
                 let d = (out[i].position - out[j].position).length();
                 assert!(
-                    d >= min_dist - 1e-3,
+                    d >= min_dist - 0.01,
                     "pair ({i}, {j}) still overlaps: distance {d} < {min_dist}"
                 );
             }
@@ -1095,11 +1121,11 @@ mod tests {
     #[test]
     fn marker_world_size_keeps_screen_constant() {
         // A camera zoom of 4.0 must produce a world
-        // size of 32/4 = 8 world units so the on-screen
+        // size of 32*4 = 128 world units so the on-screen
         // footprint is 32 pixels regardless of zoom.
-        assert!((marker_world_size_for_zoom(4.0, 32.0) - 8.0).abs() < 1e-4);
-        assert!((marker_world_size_for_zoom(8.0, 32.0) - 4.0).abs() < 1e-4);
-        assert!((marker_world_size_for_zoom(16.0, 32.0) - 2.0).abs() < 1e-4);
+        assert!((marker_world_size_for_zoom(4.0, 32.0) - 128.0).abs() < 1e-4);
+        assert!((marker_world_size_for_zoom(8.0, 32.0) - 256.0).abs() < 1e-4);
+        assert!((marker_world_size_for_zoom(16.0, 32.0) - 512.0).abs() < 1e-4);
     }
 
     #[test]

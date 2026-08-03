@@ -467,12 +467,11 @@ pub fn defender_health_loss_when_empty_system(
 /// can revisit it if defenders starve in practice.
 ///
 /// Ownership: the plan is stamped with [`OwnerSwarm`] from
-/// the Defend cell's intent owner (issue #20's per-swarm
-/// intent ownership). Unowned Defend paint falls back to
-/// the first [`Swarm`] in the world, matching the
-/// unowned-paint contract in the rest of the simulation.
-/// The promotion path preserves [`OwnerSwarm`] on the
-/// completed charger.
+/// the Defend cell's intent owner. A tracked contest evaluates
+/// each participant's defender load independently, while legacy
+/// unowned Defend paint falls back to the player swarm. The
+/// promotion path preserves [`OwnerSwarm`] on the completed
+/// charger.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn charger_auto_creation_system(
     mut commands: Commands,
@@ -560,34 +559,48 @@ pub fn charger_auto_creation_system(
         if !intent_cell.has(IntentKind::Defend) {
             continue;
         }
-        let swarm_id = intent_cell
-            .owner(IntentKind::Defend)
-            .unwrap_or(SwarmId::PLAYER);
-        let key = (cell, swarm_id);
-        let load = *defenders_per_cell.get(&key).unwrap_or(&0);
-        if load == 0 {
-            continue;
-        }
-        let existing = *chargers_per_cell.get(&key).unwrap_or(&0);
-        let target_chargers = load
-            .div_ceil(MAX_DEFENDERS_PER_CHARGER)
-            .min(MAX_CHARGERS_PER_CELL);
-        if existing >= target_chargers {
-            continue;
-        }
-        let to_spawn = (target_chargers - existing).min(MAX_CHARGERS_PER_CELL - existing);
-        let owner = swarm_by_id.get(&swarm_id).copied().or(fallback_owner);
-        for _ in 0..to_spawn {
-            let Some(placement_pos) = find_defend_zone_placement(cell, &obstacles, 28) else {
-                break;
-            };
-            let mut entity_commands = commands.spawn((
-                PlannedStructure::new(PlannedKind::Charger, cell),
-                planned_visual_components(PlannedKind::Charger, &structure_sprites, placement_pos),
-            ));
-            obstacles.push((placement_pos, BUILDING_FOOTPRINT_RADIUS));
-            if let Some(swarm_entity) = owner {
-                entity_commands.insert(OwnerSwarm(swarm_entity));
+        let (first_owner, second_owner) = grid.defend_contest(cell).map_or_else(
+            || {
+                (
+                    intent_cell
+                        .owner(IntentKind::Defend)
+                        .unwrap_or(SwarmId::PLAYER),
+                    None,
+                )
+            },
+            |(incumbent, challenger)| (incumbent, Some(challenger)),
+        );
+        for swarm_id in std::iter::once(first_owner).chain(second_owner) {
+            let key = (cell, swarm_id);
+            let load = *defenders_per_cell.get(&key).unwrap_or(&0);
+            if load == 0 {
+                continue;
+            }
+            let existing = *chargers_per_cell.get(&key).unwrap_or(&0);
+            let target_chargers = load
+                .div_ceil(MAX_DEFENDERS_PER_CHARGER)
+                .min(MAX_CHARGERS_PER_CELL);
+            if existing >= target_chargers {
+                continue;
+            }
+            let to_spawn = (target_chargers - existing).min(MAX_CHARGERS_PER_CELL - existing);
+            let owner = swarm_by_id.get(&swarm_id).copied().or(fallback_owner);
+            for _ in 0..to_spawn {
+                let Some(placement_pos) = find_defend_zone_placement(cell, &obstacles, 28) else {
+                    break;
+                };
+                let mut entity_commands = commands.spawn((
+                    PlannedStructure::new(PlannedKind::Charger, cell),
+                    planned_visual_components(
+                        PlannedKind::Charger,
+                        &structure_sprites,
+                        placement_pos,
+                    ),
+                ));
+                obstacles.push((placement_pos, BUILDING_FOOTPRINT_RADIUS));
+                if let Some(swarm_entity) = owner {
+                    entity_commands.insert(OwnerSwarm(swarm_entity));
+                }
             }
         }
     }

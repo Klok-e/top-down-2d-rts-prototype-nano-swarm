@@ -213,6 +213,33 @@ impl PlannedStructure {
     }
 }
 
+/// Release a plan reservation when its Worker no longer exists or no longer
+/// carries lifecycle state for that plan. Reconciliation runs before
+/// opportunity projection so the same allocation pass can offer the plan to
+/// another Worker after death or lease revocation.
+fn release_stale_planned_workers_system(
+    mut planned: Query<(Entity, &mut PlannedStructure)>,
+    workers: Query<
+        (
+            Option<&PlannedStructureClaim>,
+            Option<&PlannedStructureProgress>,
+        ),
+        With<Nanobot>,
+    >,
+) {
+    for (planned_entity, mut planned) in &mut planned {
+        let active_worker_is_valid = planned.active_worker.is_some_and(|worker| {
+            workers.get(worker).is_ok_and(|(claim, progress)| {
+                claim.is_some_and(|claim| claim.target == planned_entity)
+                    || progress.is_some_and(|progress| progress.target == planned_entity)
+            })
+        });
+        if planned.active_worker.is_some() && !active_worker_is_valid {
+            planned.active_worker = None;
+        }
+    }
+}
+
 /// Color the planned-structure visual uses. Semi-transparent
 /// so the player can still see the underlying map and so the
 /// structure is clearly "not finished yet" at a glance. The
@@ -262,12 +289,57 @@ pub struct PlannedStructureProgress {
 #[derive(Debug, Component, Clone, Copy)]
 pub struct PlannedProductionTarget(pub NanobotType);
 
+/// Build-painted cells where a consumer may place its local Sink Stockpile.
+/// Both planning and collapse recovery use this helper so ownership and
+/// consumer-local topology cannot diverge.
+pub(crate) fn sink_stockpile_zone_cells(
+    grid: &IntentGrid,
+    consumer_cell: IVec2,
+    consumer_owner: Option<Entity>,
+    swarm_by_id: &HashMap<SwarmId, Entity>,
+) -> Vec<IVec2> {
+    let Some(intent_cell) = grid.cell(consumer_cell) else {
+        return Vec::new();
+    };
+    if !intent_cell.has(IntentKind::Build) {
+        return Vec::new();
+    }
+    let painted_owner = intent_cell
+        .owner(IntentKind::Build)
+        .and_then(|id| swarm_by_id.get(&id).copied());
+    if consumer_owner.is_some() && painted_owner.is_some() && consumer_owner != painted_owner {
+        return Vec::new();
+    }
+
+    let mut zone_cells = Vec::new();
+    for dx in -1..=1 {
+        for dy in -1..=1 {
+            let cell = consumer_cell + IVec2::new(dx, dy);
+            let Some(intent) = grid.cell(cell) else {
+                continue;
+            };
+            if !intent.has(IntentKind::Build) {
+                continue;
+            }
+            let cell_owner = intent
+                .owner(IntentKind::Build)
+                .and_then(|id| swarm_by_id.get(&id).copied());
+            if consumer_owner.is_some() && cell_owner.is_some() && cell_owner != consumer_owner {
+                continue;
+            }
+            zone_cells.push(cell);
+        }
+    }
+    zone_cells
+}
+
 /// Plan Sink Stockpiles only when sink-side storage has a real
 /// nearby consumer. Raw Build paint is only a placement constraint:
 /// it does not create construction demand by itself. A pending or
-/// completed Production Facility / Charger in a Build cell asks for
-/// one local Sink Stockpile, placed in that same owned Build cell
-/// without overlapping deposits or other support structures.
+/// completed Production Facility in a Build cell asks for one Sink
+/// Stockpile in its same-owner local 3x3 Build zone, without overlapping
+/// deposits or other support structures. Chargers accept direct delivery and
+/// do not create Sink demand.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn sink_stockpile_demand_system(
     mut commands: Commands,
@@ -343,51 +415,15 @@ pub fn sink_stockpile_demand_system(
 
     let mut newly_planned: Vec<Vec2> = Vec::new();
     for (cell, owner) in demand_sites {
-        let Some(intent_cell) = grid.cell(cell) else {
-            continue;
-        };
-        if !intent_cell.has(IntentKind::Build) {
-            continue;
-        }
-        let painted_owner = intent_cell
-            .owner(IntentKind::Build)
+        let painted_owner = grid
+            .cell(cell)
+            .and_then(|intent| intent.owner(IntentKind::Build))
             .and_then(|id| swarm_by_id.get(&id).copied());
-        if owner.is_some() && painted_owner.is_some() && owner != painted_owner {
-            continue;
-        }
-        // Build the local Build Zone: the facility's own cell plus
-        // its build-painted, same-owner neighbours (a 3x3 block).
-        // The sink stockpile may land in any of these cells -- it
-        // does not need the facility's exact cell, just the painted
-        // zone near it (ADR-0005: dense-base starvation fix). The
-        // non-overlap rule is still enforced by the placer; the
-        // wider cell set just gives it more room to find a free
-        // spot instead of silently starving a packed facility.
-        let mut zone_cells: Vec<IVec2> = Vec::new();
-        for dx in -1..=1 {
-            for dy in -1..=1 {
-                let nc = IVec2::new(cell.x + dx, cell.y + dy);
-                let Some(nc_intent) = grid.cell(nc) else {
-                    continue;
-                };
-                if !nc_intent.has(IntentKind::Build) {
-                    continue;
-                }
-                let nc_owner = nc_intent
-                    .owner(IntentKind::Build)
-                    .and_then(|id| swarm_by_id.get(&id).copied());
-                if owner.is_some() && nc_owner.is_some() && nc_owner != owner {
-                    continue;
-                }
-                zone_cells.push(nc);
-            }
-        }
+        let zone_cells = sink_stockpile_zone_cells(&grid, cell, owner, &swarm_by_id);
         if zone_cells.is_empty() {
-            // No build-painted zone around this facility: skip
-            // rather than force placement outside a Build Zone.
             continue;
         }
-        let in_zone = |c: IVec2| zone_cells.contains(&c);
+        let in_zone = |cell: IVec2| zone_cells.contains(&cell);
         let sink_exists = stockpiles
             .iter()
             .any(|(_, transform, role, stockpile_owner)| {
@@ -852,6 +888,11 @@ pub struct PlannedStructurePlugin;
 impl Plugin for PlannedStructurePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
+            FixedUpdate,
+            release_stale_planned_workers_system
+                .before(crate::nanobot::RegionalAllocationSet::Project),
+        )
+        .add_systems(
             FixedUpdate,
             (
                 sink_stockpile_demand_system,

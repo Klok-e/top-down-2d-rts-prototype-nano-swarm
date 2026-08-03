@@ -13,6 +13,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         StructureOverlay, StructureOverlayKind, StructureOverlaySegment,
         StructureOverlaySegmentKind,
     },
+    ui::collapse_banner::CollapseBannerRoot,
 };
 
 use crate::harness::{TestContext, TestFlow};
@@ -24,6 +25,7 @@ pub fn physical_logistics(ctx: &mut TestContext) -> TestFlow {
     if ctx.frame == 2 {
         focus_camera(ctx.world);
         despawn_existing_sprites(ctx.world);
+        despawn_collapse_banner(ctx.world);
         let targets = spawn_scene(ctx.world);
         ctx.world.insert_resource(PhysicalLogisticsTargets(targets));
         return TestFlow::Continue;
@@ -33,9 +35,30 @@ pub fn physical_logistics(ctx: &mut TestContext) -> TestFlow {
     }
     if ctx.frame == 12 {
         assert_scene_indicators(ctx.world);
+        assert_collapse_banner_absent(ctx.world);
         return TestFlow::Screenshot("physical_logistics".to_string());
     }
     TestFlow::Exit
+}
+
+fn despawn_collapse_banner(world: &mut World) {
+    let entities = world
+        .query_filtered::<Entity, With<CollapseBannerRoot>>()
+        .iter(world)
+        .collect::<Vec<_>>();
+    for entity in entities {
+        let _ = world.despawn(entity);
+    }
+}
+
+fn assert_collapse_banner_absent(world: &mut World) {
+    assert_eq!(
+        world
+            .query_filtered::<Entity, With<CollapseBannerRoot>>()
+            .iter(world)
+            .count(),
+        0,
+    );
 }
 
 fn focus_camera(world: &mut World) {

@@ -13,12 +13,12 @@ use bevy::{
 
 use crate::{
     ZONE_BLOCK_SIZE,
-    intent::{BrushSelection, IntentGrid, IntentKind},
-    nanobot::SwarmId,
+    intent::{BrushSelection, IntentCell, IntentGrid, IntentKind},
+    nanobot::{MatchOutcome, SwarmId},
     ui::UiHandling,
 };
 
-/// Per-cell presence bits uploaded to zone shader storage buffer.
+/// Per-cell presence and ownership bits uploaded to the zone shader.
 #[derive(AsBindGroup, Asset, TypePath, Debug, Clone)]
 pub struct ZoneMaterial {
     #[storage(2, read_only)]
@@ -52,8 +52,18 @@ impl ZoneMaterial {
 
 #[derive(Debug, Clone, Copy)]
 pub struct ZonePointData {
-    /// Presence bits in [`IntentKind::index`] order.
+    /// Packed presence and ownership bits in [`IntentKind::index`] order.
     pub active: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(u32)]
+pub enum ZoneOwnership {
+    #[default]
+    Shared = 0,
+    Player = 1,
+    Opponent = 2,
+    Contested = 3,
 }
 
 impl Default for ZonePointData {
@@ -89,6 +99,44 @@ impl ZonePointData {
         );
         (self.active & (1 << kind_index)) != 0
     }
+
+    pub fn set_ownership(&mut self, kind_index: u32, ownership: ZoneOwnership) {
+        assert!(
+            kind_index < IntentKind::COUNT as u32,
+            "kind_index out of range"
+        );
+        let shift = IntentKind::COUNT as u32 + kind_index * 2;
+        self.active = (self.active & !(0b11 << shift)) | ((ownership as u32) << shift);
+    }
+
+    pub fn ownership(&self, kind_index: u32) -> ZoneOwnership {
+        assert!(
+            kind_index < IntentKind::COUNT as u32,
+            "kind_index out of range"
+        );
+        let shift = IntentKind::COUNT as u32 + kind_index * 2;
+        match (self.active >> shift) & 0b11 {
+            0 => ZoneOwnership::Shared,
+            1 => ZoneOwnership::Player,
+            2 => ZoneOwnership::Opponent,
+            3 => ZoneOwnership::Contested,
+            _ => unreachable!(),
+        }
+    }
+}
+
+fn zone_ownership(cell: &IntentCell, kind: IntentKind, contested_defend: bool) -> ZoneOwnership {
+    if !cell.has(kind) {
+        ZoneOwnership::Shared
+    } else if kind == IntentKind::Defend && contested_defend {
+        ZoneOwnership::Contested
+    } else {
+        match cell.owner(kind) {
+            Some(SwarmId::PLAYER) => ZoneOwnership::Player,
+            Some(_) => ZoneOwnership::Opponent,
+            None => ZoneOwnership::Shared,
+        }
+    }
 }
 
 impl Material2d for ZoneMaterial {
@@ -106,6 +154,59 @@ pub struct ZoneMaterialHandleComponent {
     pub handle: Handle<ZoneMaterial>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerIntentAction {
+    Paint,
+    Erase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PlayerIntentError {
+    #[error("the match is already complete")]
+    MatchFinished,
+    #[error("intent cell is outside the map")]
+    OutOfBounds,
+}
+
+/// Apply one player-owned intent edit using the same ownership and Defend
+/// contest rules regardless of whether it originated from mouse or agent input.
+pub fn apply_player_intent(
+    intent_grid: &mut IntentGrid,
+    outcome: MatchOutcome,
+    cell: IVec2,
+    kind: IntentKind,
+    action: PlayerIntentAction,
+) -> Result<bool, PlayerIntentError> {
+    if outcome != MatchOutcome::InProgress {
+        return Err(PlayerIntentError::MatchFinished);
+    }
+    let before = intent_grid
+        .cell(cell)
+        .copied()
+        .ok_or(PlayerIntentError::OutOfBounds)?;
+    let contest_before = intent_grid.defend_contest(cell);
+
+    match action {
+        PlayerIntentAction::Paint if kind == IntentKind::Defend => {
+            intent_grid.contest_defend(cell, SwarmId::PLAYER);
+        }
+        PlayerIntentAction::Paint => {
+            intent_grid.paint_owned_if_available(cell, kind, Some(SwarmId::PLAYER));
+        }
+        PlayerIntentAction::Erase
+            if kind == IntentKind::Defend
+                && intent_grid.withdraw_defend_contest(cell, SwarmId::PLAYER) => {}
+        PlayerIntentAction::Erase => {
+            intent_grid.erase_owned(cell, kind, Some(SwarmId::PLAYER));
+        }
+    }
+
+    Ok(
+        before != *intent_grid.cell(cell).expect("validated intent cell")
+            || contest_before != intent_grid.defend_contest(cell),
+    )
+}
+
 /// Reads mouse input and writes player intent into the [`IntentGrid`]
 /// resource for the layer currently selected in [`BrushSelection`]. The
 /// simulation owns the grid; the GPU zone material is a downstream mirror of
@@ -115,9 +216,16 @@ pub fn zone_brush_system(
     mouse_button_input: Res<ButtonInput<MouseButton>>,
     brush_selection: Res<BrushSelection>,
     ui_handling: Res<UiHandling>,
+    outcome: Option<Res<MatchOutcome>>,
     camera_query: Query<(&GlobalTransform, &Camera)>,
     mut intent_grid: ResMut<IntentGrid>,
 ) {
+    if outcome
+        .as_deref()
+        .is_some_and(|outcome| *outcome != MatchOutcome::InProgress)
+    {
+        return;
+    }
     if ui_handling.is_pointer_over_ui {
         return;
     }
@@ -139,19 +247,20 @@ pub fn zone_brush_system(
             return;
         };
 
-    let idx = get_zone_pos_from_world(cursor_pos_world);
-    let half_w = intent_grid.width() / 2;
-    let half_h = intent_grid.height() / 2;
-    if idx.x < -half_w || idx.x >= half_w || idx.y < -half_h || idx.y >= half_h {
-        return;
-    }
-
-    let brush_kind = brush_selection.kind;
-    if mouse_button_input.pressed(MouseButton::Left) {
-        intent_grid.paint_owned_if_available(idx, brush_kind, Some(SwarmId::PLAYER));
+    let action = if mouse_button_input.pressed(MouseButton::Left) {
+        PlayerIntentAction::Paint
     } else if mouse_button_input.pressed(MouseButton::Right) {
-        intent_grid.erase_owned(idx, brush_kind, Some(SwarmId::PLAYER));
-    }
+        PlayerIntentAction::Erase
+    } else {
+        return;
+    };
+    let _ = apply_player_intent(
+        &mut intent_grid,
+        outcome.as_deref().copied().unwrap_or_default(),
+        get_zone_pos_from_world(cursor_pos_world),
+        brush_selection.kind,
+        action,
+    );
 }
 
 /// Drains render-dirty cells from [`IntentGrid`] and mirrors them into the
@@ -185,16 +294,21 @@ pub fn mirror_intent_to_zone_material_system(
         let cell = intent_grid
             .cell(point)
             .expect("dirty point must be in-bounds");
+        let contested_defend = intent_grid.defend_contest(point).is_some();
 
         if let Some(zone_data) = mat.at_zone_mut(idx.x as u32, idx.y as u32) {
             for kind in IntentKind::ALL {
                 zone_data.set_present(kind.index() as u32, cell.has(kind));
+                zone_data.set_ownership(
+                    kind.index() as u32,
+                    zone_ownership(cell, kind, contested_defend),
+                );
             }
         }
     }
 
     let zone_map = mat.zone_map.clone();
-    let packed_presence = mat
+    let packed_zone_data = mat
         .zone_data
         .iter()
         .map(|cell| cell.active)
@@ -202,7 +316,7 @@ pub fn mirror_intent_to_zone_material_system(
     buffers
         .get_mut(&zone_map)
         .expect("zone storage buffer handle must remain valid")
-        .set_data(packed_presence);
+        .set_data(packed_zone_data);
 }
 
 fn zone_buffer_index_from_grid_point(point: IVec2, width: i32, height: i32) -> Option<IVec2> {
@@ -238,6 +352,97 @@ mod tests {
         point.set_present(0, false);
         assert!(!point.present(0));
         assert!(point.present(2));
+    }
+
+    #[test]
+    fn ownership_bits_do_not_corrupt_presence_or_other_layers() {
+        let mut point = ZonePointData::new();
+        point.set_present(IntentKind::Gather.index() as u32, true);
+        point.set_present(IntentKind::Defend.index() as u32, true);
+        point.set_ownership(IntentKind::Gather.index() as u32, ZoneOwnership::Player);
+        point.set_ownership(IntentKind::Defend.index() as u32, ZoneOwnership::Contested);
+
+        assert!(point.present(IntentKind::Gather.index() as u32));
+        assert!(point.present(IntentKind::Defend.index() as u32));
+        assert_eq!(
+            point.ownership(IntentKind::Gather.index() as u32),
+            ZoneOwnership::Player
+        );
+        assert_eq!(
+            point.ownership(IntentKind::Defend.index() as u32),
+            ZoneOwnership::Contested
+        );
+        assert_eq!(
+            point.ownership(IntentKind::Build.index() as u32),
+            ZoneOwnership::Shared
+        );
+    }
+
+    #[test]
+    fn render_ownership_distinguishes_player_opponent_shared_and_contested() {
+        let mut player = IntentCell::default();
+        player.add_owned(IntentKind::Defend, Some(SwarmId::PLAYER));
+        let mut opponent = IntentCell::default();
+        opponent.add_owned(IntentKind::Defend, Some(SwarmId(9)));
+        let mut shared = IntentCell::default();
+        shared.add(IntentKind::Defend);
+
+        assert_eq!(
+            zone_ownership(&player, IntentKind::Defend, false),
+            ZoneOwnership::Player
+        );
+        assert_eq!(
+            zone_ownership(&opponent, IntentKind::Defend, false),
+            ZoneOwnership::Opponent
+        );
+        assert_eq!(
+            zone_ownership(&shared, IntentKind::Defend, false),
+            ZoneOwnership::Shared
+        );
+        assert_eq!(
+            zone_ownership(&shared, IntentKind::Defend, true),
+            ZoneOwnership::Contested
+        );
+    }
+
+    #[test]
+    fn player_defend_action_contests_and_withdraws_from_hostile_paint() {
+        let mut grid = IntentGrid::new(5, 5);
+        let cell = ivec2(1, -1);
+        let opponent = SwarmId(9);
+        grid.paint_owned(cell, IntentKind::Defend, Some(opponent));
+
+        assert_eq!(
+            apply_player_intent(
+                &mut grid,
+                MatchOutcome::InProgress,
+                cell,
+                IntentKind::Defend,
+                PlayerIntentAction::Paint,
+            ),
+            Ok(true)
+        );
+        assert_eq!(grid.cell(cell).unwrap().owner(IntentKind::Defend), None);
+        assert_eq!(
+            grid.defend_contests(),
+            vec![(cell, opponent, SwarmId::PLAYER)]
+        );
+
+        assert_eq!(
+            apply_player_intent(
+                &mut grid,
+                MatchOutcome::InProgress,
+                cell,
+                IntentKind::Defend,
+                PlayerIntentAction::Erase,
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            grid.cell(cell).unwrap().owner(IntentKind::Defend),
+            Some(opponent)
+        );
+        assert!(grid.defend_contests().is_empty());
     }
 
     #[test]

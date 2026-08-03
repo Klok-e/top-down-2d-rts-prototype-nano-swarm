@@ -161,39 +161,28 @@ pub fn maintain_regional_leases_system(
         Entity,
         &mut RegionalLease,
         Option<&LeaseProgress>,
-        Option<&GatherAssignment>,
-        Option<&PlannedStructureClaim>,
-        Option<&MaintenanceAssignment>,
-        Option<&DefendAssignment>,
-        Option<&DefendHold>,
-        Option<&HaulerAssignment>,
         Option<&LogisticsReservation>,
     )>,
+    active_progress: Query<
+        (),
+        Or<(
+            With<DirectMovementComponent>,
+            With<ExtractProgress>,
+            With<PlannedStructureProgress>,
+            With<MaintenanceProgress>,
+            With<DefendHold>,
+            With<HaulerLoading>,
+            With<ChargerAssignment>,
+            With<ChargerProgress>,
+        )>,
+    >,
 ) {
-    for (
-        entity,
-        mut lease,
-        progress,
-        gather,
-        planned,
-        maintenance,
-        defend,
-        hold,
-        haul,
-        reservation,
-    ) in &mut leases
-    {
-        let lifecycle_active = gather.is_some()
-            || planned.is_some()
-            || maintenance.is_some()
-            || defend.is_some()
-            || hold.is_some()
-            || haul.is_some();
+    for (entity, mut lease, progress, reservation) in &mut leases {
         let observed_progress = progress.map_or_else(
             || {
                 lease
                     .progress_checkpoint
-                    .saturating_add(u64::from(lifecycle_active))
+                    .saturating_add(u64::from(active_progress.contains(entity)))
             },
             |value| value.0,
         );

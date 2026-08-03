@@ -119,6 +119,14 @@ pub struct ProductionPriority {
     pub weights: HashMap<NanobotType, u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ProductionPriorityPercentError {
+    #[error("production priority percentages must total 100, got {actual}")]
+    InvalidTotal { actual: u32 },
+    #[error("production priority percentages must use five-percent steps")]
+    InvalidStep,
+}
+
 impl ProductionPriority {
     /// Empty priority. Tests use this to set only the types they
     /// care about; the game starts with [`Default`].
@@ -180,6 +188,32 @@ impl ProductionPriority {
         self.weights.insert(kind, proposed);
         Some(proposed)
     }
+
+    pub fn set_percentages(
+        &mut self,
+        worker: u32,
+        hauler: u32,
+        defender: u32,
+    ) -> Result<(), ProductionPriorityPercentError> {
+        let total = worker
+            .checked_add(hauler)
+            .and_then(|total| total.checked_add(defender))
+            .ok_or(ProductionPriorityPercentError::InvalidTotal { actual: u32::MAX })?;
+        if total != 100 {
+            return Err(ProductionPriorityPercentError::InvalidTotal { actual: total });
+        }
+        if [worker, hauler, defender]
+            .into_iter()
+            .any(|percent| !percent.is_multiple_of(5))
+        {
+            return Err(ProductionPriorityPercentError::InvalidStep);
+        }
+
+        self.set_weight(NanobotType::Worker, worker);
+        self.set_weight(NanobotType::Hauler, hauler);
+        self.set_weight(NanobotType::Defender, defender);
+        Ok(())
+    }
 }
 
 impl Default for ProductionPriority {
@@ -223,12 +257,12 @@ impl SwarmProduction {
 /// global [`ProductionPriority`] resource as a fallback) and to
 /// decide which swarm a completed cycle spawns its new
 /// nanobot under. Facilities without this marker fall back to
-/// the global priority and the first swarm in the world, which
-/// keeps the pre-multi-swarm tests working.
+/// the global priority and the player swarm. A swarm without a
+/// [`SwarmId`] remains a legacy player fallback.
 #[derive(Debug, Component, Clone, Copy)]
 pub struct OwnerSwarm(pub Entity);
 
-fn facility_belongs_to_swarm(
+pub(crate) fn facility_belongs_to_swarm(
     owner: Option<&OwnerSwarm>,
     swarm_entity: Entity,
     swarm_id: SwarmId,
@@ -824,9 +858,8 @@ pub fn production_facility_pick_target_system(
 
 /// Advance each busy facility's progress counter. When progress
 /// reaches [`PRODUCTION_TICKS_PER_BOT`], spawn a new nanobot of
-/// the facility's `current_target` as a child of the owning
-/// [`Swarm`] (or the first swarm in the world for unowned
-/// facilities, matching the pre-multi-swarm behaviour), then
+/// the facility's `current_target` for the owning
+/// [`Swarm`] (or the player swarm for unowned facilities), then
 /// reset the facility to idle and clear the blocked set so the
 /// next cycle re-tries blocked types.
 #[allow(clippy::type_complexity)]
@@ -853,12 +886,11 @@ pub fn production_facility_work_system(
         if facility.progress < PRODUCTION_TICKS_PER_BOT {
             continue;
         }
-        // Cycle complete: spawn the nanobot. The owner
-        // swarm is the natural parent (the facility belongs
-        // to it), with a fallback to the first swarm in the
-        // world for unowned facilities. If no swarm exists
-        // the spawn is dropped (tests with no swarm drive
-        // the systems directly).
+        // Cycle complete: spawn the nanobot. The owner swarm is
+        // the natural parent. Unowned facilities use the player
+        // swarm, with an untagged legacy swarm as compatibility
+        // fallback. If no compatible swarm exists, the spawn is
+        // dropped.
         //
         // Issue #38 / ADR-0004: produced nanobots are
         // top-level entities with world `Transform`s, not
@@ -875,14 +907,21 @@ pub fn production_facility_work_system(
         // only as a spawn-origin / ownership marker; the
         // bot ends up at `pos` (the facility's world
         // position) directly.
-        let parent = owner
-            .map(|OwnerSwarm(e)| Some(*e))
-            .unwrap_or_else(|| swarms.iter().next().map(|(entity, _)| entity));
+        let parent = owner.map(|OwnerSwarm(entity)| *entity).or_else(|| {
+            swarms
+                .iter()
+                .find_map(|(entity, id)| (id == Some(&SwarmId::PLAYER)).then_some(entity))
+                .or_else(|| {
+                    swarms
+                        .iter()
+                        .find_map(|(entity, id)| id.is_none().then_some(entity))
+                })
+        });
         if let Some(swarm_entity) = parent {
             let pos = transform.translation.truncate();
             let is_opponent = opponent_swarms.get(swarm_entity).is_ok();
             // Look up the parent swarm's `SwarmId` so the new
-            // child carries the right ownership marker.
+            // nanobot carries the right ownership marker.
             // Pre-multi-swarm tests that spawn a Swarm
             // without a `SwarmId` fall back to the player id;
             // the per-swarm filter is `None == None` for the

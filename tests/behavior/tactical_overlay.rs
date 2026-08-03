@@ -199,6 +199,37 @@ fn one_marker_per_category_per_owner() {
     assert!(app.world().get_entity(opponent).is_ok());
 }
 
+#[test]
+fn nearby_facilities_owned_by_opposing_swarms_stay_separate() {
+    let mut app = build_app();
+    let player = common::spawn_swarm_at(&mut app, Vec2::new(-10_000.0, 0.0));
+    let opponent_id = SwarmId(7);
+    let opponent = app
+        .world_mut()
+        .spawn((
+            Swarm {},
+            OpponentSwarm {},
+            opponent_id,
+            Transform::from_translation(Vec2::new(10_000.0, 0.0).extend(0.0)),
+        ))
+        .id();
+    common::spawn_facility_at(&mut app, player, Vec2::ZERO);
+    common::spawn_facility_at(&mut app, opponent, Vec2::ZERO);
+
+    set_zoom(&mut app, 8.0);
+    app.update();
+
+    let owners = marker_keys(&mut app)
+        .into_iter()
+        .filter_map(|key| (key.kind == TacticalMarkerKind::Facility).then_some(key.owner))
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        owners,
+        std::collections::HashSet::from([SwarmId::PLAYER, opponent_id]),
+        "opposing facilities must not merge into one unowned tactical landmark",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Same-kind same-owner separate clusters
 // ---------------------------------------------------------------------------
@@ -242,6 +273,24 @@ fn multiple_separate_deposit_clusters_can_coexist() {
     );
     assert_eq!(slots[0], (0, 0));
     assert_eq!(slots[1], (3, 0));
+}
+
+#[test]
+fn same_slot_clusters_both_survive_reconciliation() {
+    let mut app = build_app();
+    common::spawn_deposit(&mut app, Vec2::new(100.0, 100.0), 1000);
+    common::spawn_deposit(&mut app, Vec2::new(5_900.0, 5_900.0), 1000);
+    set_zoom(&mut app, 16.0);
+
+    app.update();
+    assert_eq!(count_markers(&mut app), 2);
+    app.update();
+
+    assert_eq!(
+        count_markers(&mut app),
+        2,
+        "same-key clusters must not collapse during entity reconciliation",
+    );
 }
 
 #[test]
@@ -362,42 +411,44 @@ fn far_apart_deposits_collapse_at_far_zoom() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn marker_world_scale_shrinks_as_zoom_grows() {
+fn marker_world_scale_grows_as_zoom_grows() {
     let mut app = build_app();
     common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
     set_zoom(&mut app, 4.0);
     app.update();
-    let small_scale = body_transforms(&mut app)
+    let moderate_zoom_scale = body_transforms(&mut app)
         .first()
         .map(|t| t.scale.x)
         .expect("marker body must exist at zoom 4.0");
 
     set_zoom(&mut app, 16.0);
     app.update();
-    let big_zoom_scale = body_transforms(&mut app)
+    let far_zoom_scale = body_transforms(&mut app)
         .first()
         .map(|t| t.scale.x)
         .expect("marker body must exist at zoom 16.0");
 
     assert!(
-        big_zoom_scale < small_scale,
-        "marker world scale at zoom 16 ({big_zoom_scale}) must be smaller than at zoom 4 ({small_scale})"
+        far_zoom_scale > moderate_zoom_scale,
+        "marker world scale at zoom 16 ({far_zoom_scale}) must be larger than at zoom 4 ({moderate_zoom_scale})"
     );
-    // The transform scale matches
-    // `marker_screen_size / zoom` so the on-screen
-    // footprint is `scale * custom_size * zoom =
-    // 32` pixels (constant).
-    assert!((small_scale - 8.0).abs() < 1e-3, "zoom 4 -> 8.0");
+    // Orthographic projection divides world size by its
+    // scale, so the marker's world size is screen size
+    // multiplied by camera zoom.
     assert!(
-        (big_zoom_scale - 2.0).abs() < 1e-3,
-        "zoom 16 -> 2.0, got {big_zoom_scale}"
+        (moderate_zoom_scale - 128.0).abs() < 1e-3,
+        "zoom 4 -> 128.0"
+    );
+    assert!(
+        (far_zoom_scale - 512.0).abs() < 1e-3,
+        "zoom 16 -> 512.0, got {far_zoom_scale}"
     );
 }
 
 /// On-screen pixel footprint of the first marker body:
-/// `custom_size.x * transform.scale.x * zoom`. The body
+/// `custom_size.x * transform.scale.x / zoom`. The body
 /// is a unit-rectangle sprite scaled by
-/// `marker_screen_size / zoom`, so the result equals
+/// `marker_screen_size * zoom`, so the result equals
 /// `marker_screen_size` regardless of zoom.
 fn marker_on_screen_size(app: &mut App) -> f32 {
     let world = app.world_mut();
@@ -412,7 +463,7 @@ fn marker_on_screen_size(app: &mut App) -> f32 {
     let custom = sprite
         .custom_size
         .expect("marker sprite must have explicit custom_size");
-    custom.x * transform.scale.x * zoom
+    custom.x * transform.scale.x / zoom
 }
 
 #[test]

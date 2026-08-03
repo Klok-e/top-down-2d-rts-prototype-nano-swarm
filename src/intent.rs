@@ -5,7 +5,7 @@
 //! shader storage buffers. The GPU zone material reads from this resource via a
 //! mirror system; the resource itself never reads from rendering.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use bevy::{
     input::{ButtonInput, keyboard::KeyCode},
@@ -13,6 +13,10 @@ use bevy::{
 };
 
 use crate::nanobot::SwarmId;
+
+/// Fixed ticks a sole challenger must remain in a contested Defend cell before
+/// capturing it when the incumbent never engages.
+pub const UNCONTESTED_CAPTURE_TICKS: u32 = 120;
 
 /// Player intent kinds. Declaration order matches zone overlay colour slots, so
 /// [`IntentKind::index`] is stable cross-module layer key.
@@ -129,6 +133,7 @@ impl IntentCell {
 pub struct IntentGrid {
     width: i32,
     height: i32,
+    revision: u64,
     cells: Vec<IntentCell>,
     /// Non-empty cells in deterministic `(y, x)` order. Simulation systems use
     /// this sparse index instead of scanning the million-cell map every tick.
@@ -137,6 +142,16 @@ pub struct IntentGrid {
     render_dirty: HashSet<IVec2>,
     /// Cells awaiting actionable-projection consumption.
     projection_dirty: HashSet<IVec2>,
+    defend_contests: HashMap<IVec2, DefendContestState>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DefendContestState {
+    incumbent: SwarmId,
+    challenger: SwarmId,
+    both_engaged: bool,
+    sole_holder: Option<SwarmId>,
+    sole_holder_ticks: u32,
 }
 
 impl IntentGrid {
@@ -146,10 +161,12 @@ impl IntentGrid {
         Self {
             width: width.max(0),
             height: height.max(0),
+            revision: 0,
             cells: vec![IntentCell::default(); size],
             active_cells: Vec::new(),
             render_dirty: HashSet::new(),
             projection_dirty: HashSet::new(),
+            defend_contests: HashMap::new(),
         }
     }
 
@@ -159,6 +176,11 @@ impl IntentGrid {
 
     pub fn height(&self) -> i32 {
         self.height
+    }
+
+    /// Monotonic revision of externally visible cell and contest state.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// True when `point` falls inside the grid bounds.
@@ -198,6 +220,9 @@ impl IntentGrid {
         }
         let idx = self.index(point);
         if self.cells[idx].remove(kind) {
+            if kind == IntentKind::Defend {
+                self.defend_contests.remove(&point);
+            }
             if self.cells[idx].is_empty() {
                 self.remove_active(point);
             }
@@ -213,7 +238,14 @@ impl IntentGrid {
 
     /// Paint owned `kind` at `point`. Repeated paint by same owner is a no-op.
     pub fn paint_owned(&mut self, point: IVec2, kind: IntentKind, owner: Option<SwarmId>) -> bool {
-        self.set_owned(point, kind, owner)
+        let contest_removed =
+            kind == IntentKind::Defend && self.defend_contests.remove(&point).is_some();
+        let previous_revision = self.revision;
+        let in_bounds = self.set_owned(point, kind, owner);
+        if contest_removed && in_bounds && self.revision == previous_revision {
+            self.mark_dirty(point);
+        }
+        in_bounds
     }
 
     /// Paint owned intent unless another swarm already owns the active layer.
@@ -233,6 +265,114 @@ impl IntentGrid {
             return true;
         }
         self.set_owned(point, kind, owner)
+    }
+
+    /// Paint player-facing Defend intent, or neutralize an existing hostile
+    /// Defend layer so both swarms can contest the same cell. Other intent
+    /// layers at the cell keep their existing ownership.
+    pub fn contest_defend(&mut self, point: IVec2, challenger: SwarmId) -> bool {
+        if !self.in_bounds(point) {
+            return false;
+        }
+        if let Some(contest) = self.defend_contests.get(&point)
+            && (contest.incumbent == challenger || contest.challenger == challenger)
+        {
+            return true;
+        }
+        match self.cells[self.index(point)].owner(IntentKind::Defend) {
+            Some(owner) if owner != challenger => {
+                self.defend_contests.insert(
+                    point,
+                    DefendContestState {
+                        incumbent: owner,
+                        challenger,
+                        both_engaged: false,
+                        sole_holder: None,
+                        sole_holder_ticks: 0,
+                    },
+                );
+                self.set_owned(point, IntentKind::Defend, None)
+            }
+            _ => {
+                self.defend_contests.remove(&point);
+                self.set_owned(point, IntentKind::Defend, Some(challenger))
+            }
+        }
+    }
+
+    /// Snapshot active Defend contests in deterministic cell order.
+    pub fn defend_contests(&self) -> Vec<(IVec2, SwarmId, SwarmId)> {
+        let mut contests = self
+            .defend_contests
+            .iter()
+            .map(|(cell, contest)| (*cell, contest.incumbent, contest.challenger))
+            .collect::<Vec<_>>();
+        contests.sort_by_key(|(cell, _, _)| (cell.y, cell.x));
+        contests
+    }
+
+    /// Participants in the Defend contest at `point`, if one is active.
+    pub fn defend_contest(&self, point: IVec2) -> Option<(SwarmId, SwarmId)> {
+        self.defend_contests
+            .get(&point)
+            .map(|contest| (contest.incumbent, contest.challenger))
+    }
+
+    /// Withdraw one participant from a tracked Defend contest. Control returns
+    /// to the remaining participant without changing overlapping intent layers.
+    pub fn withdraw_defend_contest(&mut self, point: IVec2, swarm: SwarmId) -> bool {
+        let Some(contest) = self.defend_contests.get(&point).copied() else {
+            return false;
+        };
+        let remaining = if contest.challenger == swarm {
+            contest.incumbent
+        } else if contest.incumbent == swarm {
+            contest.challenger
+        } else {
+            return false;
+        };
+        self.defend_contests.remove(&point);
+        self.set_owned(point, IntentKind::Defend, Some(remaining));
+        true
+    }
+
+    /// Record which participants currently hold a contested Defend cell. Once
+    /// both sides have engaged, the sole remaining holder captures the layer.
+    pub fn update_defend_contest_presence(
+        &mut self,
+        point: IVec2,
+        incumbent_present: bool,
+        challenger_present: bool,
+    ) -> Option<SwarmId> {
+        let winner = {
+            let contest = self.defend_contests.get_mut(&point)?;
+            contest.both_engaged |= incumbent_present && challenger_present;
+            let sole_holder = match (incumbent_present, challenger_present) {
+                (true, false) => Some(contest.incumbent),
+                (false, true) => Some(contest.challenger),
+                _ => None,
+            };
+            if contest.both_engaged {
+                sole_holder
+            } else if sole_holder == Some(contest.challenger) {
+                let holder = contest.challenger;
+                if contest.sole_holder != Some(holder) {
+                    contest.sole_holder = Some(holder);
+                    contest.sole_holder_ticks = 0;
+                }
+                contest.sole_holder_ticks = contest.sole_holder_ticks.saturating_add(1);
+                (contest.sole_holder_ticks >= UNCONTESTED_CAPTURE_TICKS).then_some(holder)
+            } else {
+                contest.sole_holder = None;
+                contest.sole_holder_ticks = 0;
+                None
+            }
+        };
+        if let Some(winner) = winner {
+            self.defend_contests.remove(&point);
+            self.set_owned(point, IntentKind::Defend, Some(winner));
+        }
+        winner
     }
 
     /// Erase `kind` at `point` immediately. Erasing absent paint is a no-op.
@@ -326,6 +466,7 @@ impl IntentGrid {
     }
 
     fn mark_dirty(&mut self, point: IVec2) {
+        self.revision = self.revision.saturating_add(1);
         self.render_dirty.insert(point);
         self.projection_dirty.insert(point);
     }
@@ -389,6 +530,22 @@ mod tests {
         assert_eq!(cell.owner(IntentKind::Build), Some(SwarmId(7)));
         assert_eq!(grid.render_dirty_count(), 1);
         assert_eq!(grid.projection_dirty_count(), 1);
+    }
+
+    #[test]
+    fn replacing_contest_with_shared_defend_marks_derived_state_dirty() {
+        let mut grid = IntentGrid::new(4, 4);
+        let point = IVec2::ZERO;
+        grid.paint_owned(point, IntentKind::Defend, Some(SwarmId::PLAYER));
+        grid.contest_defend(point, SwarmId(7));
+        grid.drain_render_dirty();
+        grid.drain_projection_dirty();
+
+        grid.paint_owned(point, IntentKind::Defend, None);
+
+        assert!(grid.defend_contest(point).is_none());
+        assert_eq!(grid.drain_render_dirty(), vec![point]);
+        assert_eq!(grid.drain_projection_dirty(), vec![point]);
     }
 
     #[test]

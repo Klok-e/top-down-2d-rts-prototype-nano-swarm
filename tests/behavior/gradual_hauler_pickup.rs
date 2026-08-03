@@ -195,6 +195,91 @@ fn hauler_unloads_into_stockpile_gradually_and_ledger_neutrally() {
 }
 
 #[test]
+fn simultaneous_hauler_unloads_into_stockpile_conserve_all_cargo() {
+    let mut app = common::sim_app_with_gather_haul();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let source = common::spawn_stockpile(&mut app, Vec2::ZERO, 0, 100);
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::ZERO, 3, 100);
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
+
+    let mut haulers = Vec::new();
+    for _ in 0..2 {
+        let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
+        let mut reservation = LogisticsReservation::new(source, sink, ResourceKind::Minerals, 10);
+        reservation.source_remaining = 0;
+        app.world_mut().entity_mut(hauler).insert((
+            Cargo {
+                kind: ResourceKind::Minerals,
+                amount: 10,
+            },
+            HaulerAssignment { source, sink },
+            reservation,
+        ));
+        haulers.push(hauler);
+    }
+
+    app.update();
+
+    let delivered = HAULER_EXTRACT_PER_TICK * haulers.len() as u32;
+    assert_eq!(
+        app.world().entity(sink).get::<Stockpile>().unwrap().amount,
+        3 + delivered,
+        "same-tick destination updates accumulate instead of overwriting each other",
+    );
+    let carried = haulers
+        .into_iter()
+        .map(|hauler| app.world().entity(hauler).get::<Cargo>().unwrap().amount)
+        .sum::<u32>();
+    assert_eq!(
+        app.world().entity(sink).get::<Stockpile>().unwrap().amount + carried,
+        23,
+        "unloading changes mineral location without changing the physical total",
+    );
+}
+
+#[test]
+fn simultaneous_haulers_unload_against_exact_independent_reservations() {
+    let mut app = common::sim_app_with_gather_haul();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let source = common::spawn_stockpile(&mut app, Vec2::ZERO, 0, 100);
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::ZERO, 0, 20);
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
+
+    let haulers = [
+        common::spawn_hauler_at(&mut app, Vec2::ZERO),
+        common::spawn_hauler_at(&mut app, Vec2::ZERO),
+    ];
+    for hauler in haulers {
+        let mut reservation = LogisticsReservation::new(source, sink, ResourceKind::Minerals, 10);
+        reservation.source_remaining = 0;
+        app.world_mut().entity_mut(hauler).insert((
+            Cargo {
+                kind: ResourceKind::Minerals,
+                amount: 10,
+            },
+            HaulerAssignment { source, sink },
+            reservation,
+        ));
+    }
+
+    app.update();
+
+    assert_eq!(
+        app.world().entity(sink).get::<Stockpile>().unwrap().amount,
+        HAULER_EXTRACT_PER_TICK * haulers.len() as u32,
+        "completed same-tick deliveries release capacity for later reserved Haulers",
+    );
+    for hauler in haulers {
+        assert_eq!(
+            app.world().entity(hauler).get::<Cargo>().unwrap().amount,
+            10 - HAULER_EXTRACT_PER_TICK,
+        );
+    }
+}
+
+#[test]
 fn hauler_unloads_into_facility_gradually() {
     let mut app = common::sim_app_with_gather_haul();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);

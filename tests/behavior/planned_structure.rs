@@ -12,8 +12,9 @@ use top_down_2d_rts_prototype_nano_swarm::{
     ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        DEFAULT_PLANNED_WORK_TICKS, OwnerSwarm, PlannedStructure, PlannedStructureClaim,
-        PlannedStructureProgress, Swarm, SwarmId, completed_visual_color, planned_visual_color,
+        Commitment, DEFAULT_PLANNED_WORK_TICKS, Health, OwnerSwarm, PlannedStructure,
+        PlannedStructureClaim, PlannedStructureProgress, Swarm, SwarmId, completed_visual_color,
+        nanobot_death_cleanup_system, planned_visual_color,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
     structure_sprites::{StructureVisual, StructureVisualState},
@@ -192,6 +193,98 @@ fn only_one_worker_can_claim_a_planned_structure() {
 }
 
 #[test]
+fn surviving_worker_finishes_plan_after_claiming_worker_dies() {
+    let mut app = build_app();
+    app.add_systems(FixedLast, nanobot_death_cleanup_system);
+    let cell = IVec2::ZERO;
+    let center = common::cell_world_center(cell);
+    let planned = common::spawn_planned_structure_at_cell(&mut app, cell);
+    let workers = [
+        common::spawn_worker_at(&mut app, center),
+        common::spawn_worker_at(&mut app, center),
+    ];
+
+    app.update();
+    let claiming_worker = app
+        .world()
+        .entity(planned)
+        .get::<PlannedStructure>()
+        .unwrap()
+        .active_worker
+        .expect("one Worker claims the plan");
+    assert!(workers.contains(&claiming_worker));
+    app.world_mut()
+        .entity_mut(claiming_worker)
+        .get_mut::<Health>()
+        .unwrap()
+        .current = 0;
+
+    for _ in 0..(DEFAULT_PLANNED_WORK_TICKS + 3) {
+        app.update();
+    }
+
+    assert!(app.world().get_entity(claiming_worker).is_err());
+    assert!(
+        app.world()
+            .entity(planned)
+            .get::<PlannedStructure>()
+            .is_none(),
+        "a dead claim holder releases the plan for a surviving Worker",
+    );
+    assert!(app.world().entity(planned).get::<Stockpile>().is_some());
+}
+
+#[test]
+fn replacement_worker_finishes_plan_after_live_claim_is_revoked() {
+    let mut app = build_app();
+    let cell = IVec2::ZERO;
+    let center = common::cell_world_center(cell);
+    let replacement = common::spawn_worker_at(&mut app, center);
+    let former_claimant =
+        common::spawn_worker_at(&mut app, center + Vec2::splat(10.0 * ZONE_BLOCK_SIZE));
+    app.world_mut()
+        .entity_mut(former_claimant)
+        .insert(Commitment::Working);
+    let planned = common::spawn_planned_structure_at_cell(&mut app, cell);
+    {
+        let mut state = *app
+            .world()
+            .entity(planned)
+            .get::<PlannedStructure>()
+            .unwrap();
+        state.active_worker = Some(former_claimant);
+        app.world_mut().entity_mut(planned).insert(state);
+    }
+
+    for _ in 0..(DEFAULT_PLANNED_WORK_TICKS + 4) {
+        app.update();
+    }
+
+    assert!(app.world().get_entity(former_claimant).is_ok());
+    assert!(app.world().get_entity(replacement).is_ok());
+    let remaining = app
+        .world()
+        .entity(planned)
+        .get::<PlannedStructure>()
+        .copied();
+    let replacement_claim = app
+        .world()
+        .entity(replacement)
+        .get::<PlannedStructureClaim>()
+        .copied();
+    let former_claim = app
+        .world()
+        .entity(former_claimant)
+        .get::<PlannedStructureClaim>()
+        .copied();
+    assert!(
+        remaining.is_none(),
+        "a live Worker without matching claim markers must release the plan; remaining={remaining:?}, replacement_claim={replacement_claim:?}, former_claim={former_claim:?}",
+    );
+    assert!(app.world().entity(planned).get::<Stockpile>().is_some());
+}
+
+#[test]
 fn claimed_planned_structure_is_skipped_by_other_workers() {
     // Acceptance: "Other Workers do not work on an already
     // claimed Planned Structure." A second worker that wakes
@@ -203,15 +296,20 @@ fn claimed_planned_structure_is_skipped_by_other_workers() {
     let cell = IVec2::new(0, 0);
     let center = common::cell_world_center(cell);
     let planned = common::spawn_planned_structure_at_cell(&mut app, cell);
-    // Pre-claim the planned structure. The real claim system
-    // would do this, but we want to focus the test on the
-    // "skip claimed" half of the contract.
+    // Pre-claim the planned structure with both sides of the reservation. The
+    // test focuses on the "skip claimed" half of the contract.
     let claiming_worker = common::spawn_worker_at(&mut app, center);
     {
         let world = app.world_mut();
         let mut state = *world.entity(planned).get::<PlannedStructure>().unwrap();
         state.active_worker = Some(claiming_worker);
         world.entity_mut(planned).insert(state);
+        world
+            .entity_mut(claiming_worker)
+            .insert(PlannedStructureClaim {
+                cell,
+                target: planned,
+            });
     }
     // Late worker that tries to claim after the first.
     let late_worker = common::spawn_worker_at(&mut app, center);

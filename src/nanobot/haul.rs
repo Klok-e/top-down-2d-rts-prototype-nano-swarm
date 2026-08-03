@@ -1001,25 +1001,38 @@ pub fn hauler_delivery_system(
             Without<HaulerLoading>,
         ),
     >,
-    stockpiles: Query<(
+    mut stockpiles: Query<(
         Entity,
-        &Stockpile,
+        &mut Stockpile,
         &Transform,
         Option<&StockpileRole>,
         Option<&OwnerSwarm>,
     )>,
-    facilities: Query<(Entity, &ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
-    chargers: Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
+    mut facilities: Query<(
+        Entity,
+        &mut ProductionFacility,
+        &Transform,
+        Option<&OwnerSwarm>,
+    )>,
+    mut chargers: Query<(Entity, &mut Charger, &Transform, Option<&OwnerSwarm>)>,
     conditions: Query<&SupportCondition>,
     swarms: Query<&SwarmId>,
     reservations: Query<(Entity, &LogisticsReservation)>,
 ) {
+    let mut destination_claims = std::collections::HashMap::<Entity, u32>::new();
+    for (_, reservation) in &reservations {
+        let total = destination_claims
+            .entry(reservation.destination)
+            .or_default();
+        *total = total.saturating_add(reservation.destination_remaining);
+    }
+
     for (entity, transform, mut load, assignment, reservation, swarm_member) in &mut haulers {
         let Some(tier) = source_tier(
             assignment.source,
             load.kind,
             swarm_member.0,
-            &stockpiles,
+            &stockpiles.as_readonly(),
             &swarms,
         ) else {
             continue;
@@ -1027,7 +1040,15 @@ pub fn hauler_delivery_system(
         if !reservation_covers_destination(reservation, assignment.sink, load.amount) {
             continue;
         }
-        let incoming = reserved_destination_capacity(&reservations, assignment.sink, Some(entity));
+        let own_claim = reservation
+            .filter(|reservation| reservation.destination == assignment.sink)
+            .map(|reservation| reservation.destination_remaining)
+            .unwrap_or_default();
+        let incoming = destination_claims
+            .get(&assignment.sink)
+            .copied()
+            .unwrap_or_default()
+            .saturating_sub(own_claim);
         let Some(endpoint) = valid_destination_snapshot(
             assignment.sink,
             tier,
@@ -1035,9 +1056,9 @@ pub fn hauler_delivery_system(
             load.amount,
             swarm_member.0,
             incoming,
-            &stockpiles,
-            &facilities,
-            &chargers,
+            &stockpiles.as_readonly(),
+            &facilities.as_readonly(),
+            &chargers.as_readonly(),
             &swarms,
             &conditions,
         ) else {
@@ -1047,23 +1068,17 @@ pub fn hauler_delivery_system(
             continue;
         }
         let transfer_limit = load.amount.min(HAULER_TRANSFER_PER_TICK);
-        let actual = if let Ok((_, stockpile, _, _, _)) = stockpiles.get(assignment.sink) {
+        let actual = if let Ok((_, mut stockpile, _, _, _)) = stockpiles.get_mut(assignment.sink) {
             let actual = transfer_limit.min(stockpile.free_space());
-            let mut updated = *stockpile;
-            updated.amount += actual;
-            commands.entity(assignment.sink).insert(updated);
+            stockpile.amount += actual;
             actual
-        } else if let Ok((_, facility, _, _)) = facilities.get(assignment.sink) {
+        } else if let Ok((_, mut facility, _, _)) = facilities.get_mut(assignment.sink) {
             let actual = transfer_limit.min(facility.input_free_space());
-            let mut updated = facility.clone();
-            updated.input_amount += actual;
-            commands.entity(assignment.sink).insert(updated);
+            facility.input_amount += actual;
             actual
-        } else if let Ok((_, charger, _, _)) = chargers.get(assignment.sink) {
+        } else if let Ok((_, mut charger, _, _)) = chargers.get_mut(assignment.sink) {
             let actual = transfer_limit.min(charger.free_space());
-            let mut updated = *charger;
-            updated.amount += actual;
-            commands.entity(assignment.sink).insert(updated);
+            charger.amount += actual;
             actual
         } else {
             0
@@ -1072,6 +1087,18 @@ pub fn hauler_delivery_system(
             continue;
         }
         load.amount -= actual;
+        if let Some(reservation) = reservation {
+            let remaining = if load.amount == 0 {
+                0
+            } else {
+                reservation.destination_remaining.saturating_sub(actual)
+            };
+            let released = reservation.destination_remaining.saturating_sub(remaining);
+            let total = destination_claims
+                .entry(reservation.destination)
+                .or_default();
+            *total = total.saturating_sub(released);
+        }
         if load.amount == 0 {
             commands
                 .entity(entity)

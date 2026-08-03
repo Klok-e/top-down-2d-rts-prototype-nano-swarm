@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::intent::{
-    BrushSelection, IntentGrid, IntentKind, brush_key_for_kind, brush_selection_keyboard_system,
+    BrushSelection, IntentGrid, IntentKind, UNCONTESTED_CAPTURE_TICKS, brush_key_for_kind,
+    brush_selection_keyboard_system,
 };
 use top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId;
 
@@ -55,6 +56,62 @@ fn repeated_binary_writes_do_not_create_dirty_work() {
     grid.erase(point, IntentKind::Corridor);
     assert_eq!(grid.render_dirty_count(), 0);
     assert_eq!(grid.projection_dirty_count(), 0);
+}
+
+#[test]
+fn challenging_enemy_defend_intent_neutralizes_only_that_layer() {
+    let mut grid = IntentGrid::new(4, 4);
+    let point = IVec2::ZERO;
+    let opponent = SwarmId(7);
+    grid.paint_owned(point, IntentKind::Defend, Some(opponent));
+    grid.paint_owned(point, IntentKind::Build, Some(opponent));
+
+    grid.contest_defend(point, SwarmId::PLAYER);
+
+    let cell = grid.cell(point).unwrap();
+    assert!(cell.has(IntentKind::Defend));
+    assert_eq!(cell.owner(IntentKind::Defend), None);
+    assert_eq!(cell.owner(IntentKind::Build), Some(opponent));
+}
+
+#[test]
+fn challenger_can_withdraw_and_restore_incumbent_defend_control() {
+    let mut grid = IntentGrid::new(4, 4);
+    let point = IVec2::ZERO;
+    let opponent = SwarmId(7);
+    grid.paint_owned(point, IntentKind::Defend, Some(opponent));
+    grid.contest_defend(point, SwarmId::PLAYER);
+
+    assert!(grid.withdraw_defend_contest(point, SwarmId::PLAYER));
+
+    assert_eq!(
+        grid.cell(point).unwrap().owner(IntentKind::Defend),
+        Some(opponent),
+    );
+}
+
+#[test]
+fn uncontested_capture_timer_resets_when_the_sole_holder_changes() {
+    let mut grid = IntentGrid::new(4, 4);
+    let point = IVec2::ZERO;
+    let opponent = SwarmId(7);
+    grid.paint_owned(point, IntentKind::Defend, Some(opponent));
+    grid.contest_defend(point, SwarmId::PLAYER);
+
+    for _ in 0..UNCONTESTED_CAPTURE_TICKS / 2 {
+        assert_eq!(
+            grid.update_defend_contest_presence(point, true, false),
+            None
+        );
+    }
+    for _ in 0..UNCONTESTED_CAPTURE_TICKS / 2 {
+        assert_eq!(
+            grid.update_defend_contest_presence(point, false, true),
+            None
+        );
+    }
+
+    assert_eq!(grid.cell(point).unwrap().owner(IntentKind::Defend), None);
 }
 
 #[test]

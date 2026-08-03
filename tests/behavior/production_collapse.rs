@@ -8,14 +8,21 @@
 //! swarms, facilities, and the production + collapse systems
 //! chained in order.
 
+use std::f32::consts::TAU;
+
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        NanobotType, OwnerSwarm, PRODUCTION_COST_PER_BOT, ProductionCollapseState,
-        ProductionFacility, ProductionPriority, RecoveryFacts, Swarm, SwarmId, evaluate_recovery,
+        Cargo, CollapsePlugin, GatherAssignment, GatherPlugin, HaulerAssignment,
+        LogisticsReservation, MatchOutcome, NanobotType, OpponentSwarm, OwnerSwarm,
+        PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT, PlannedKind, PlannedStructure,
+        PlannedStructurePlugin, ProductionCollapseState, ProductionFacility, ProductionPlugin,
+        ProductionPriority, RecoveryFacts, SOURCE_STOCKPILE_PLACEMENT_COUNT,
+        SOURCE_STOCKPILE_PLACEMENT_RADIUS, Swarm, SwarmId, SwarmMember, SwarmProduction,
+        evaluate_recovery,
     },
-    resources::{ResourceKind, ResourceLedger, Stockpile},
+    resources::{ResourceKind, ResourceLedger, Stockpile, StockpileRole},
 };
 #[path = "../common/mod.rs"]
 mod common;
@@ -25,6 +32,25 @@ fn build_app() -> App {
     // priorities it needs.
     let mut app = common::sim_app_with_collapse();
     app.insert_resource(ProductionPriority::new());
+    app
+}
+
+fn build_planning_app() -> App {
+    let mut app = common::sim_app();
+    app.add_plugins(PlannedStructurePlugin)
+        .add_plugins(ProductionPlugin)
+        .add_plugins(CollapsePlugin)
+        .insert_resource(ProductionPriority::new());
+    app
+}
+
+fn build_gather_recovery_app() -> App {
+    let mut app = common::sim_app();
+    app.add_plugins(GatherPlugin)
+        .add_plugins(PlannedStructurePlugin)
+        .add_plugins(ProductionPlugin)
+        .add_plugins(CollapsePlugin)
+        .insert_resource(ProductionPriority::new());
     app
 }
 
@@ -69,6 +95,95 @@ fn player_swarm_with_working_facility_is_not_collapsed() {
 }
 
 #[test]
+fn busy_unowned_facility_uses_player_fallback_for_collapse_detection() {
+    let mut app = build_app();
+    {
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 1);
+    }
+    app.world_mut().spawn((
+        Swarm {},
+        SwarmId(1),
+        OpponentSwarm {},
+        SwarmProduction::new(ProductionPriority::new()),
+        Transform::from_translation(Vec3::X),
+    ));
+    common::spawn_swarm_with_nanobots(&mut app, Vec2::ZERO, &[]);
+    let mut production = ProductionFacility::new();
+    production.current_target = Some(NanobotType::Worker);
+    production.progress = PRODUCTION_TICKS_PER_BOT - 1;
+    app.world_mut()
+        .spawn((production, Transform::from_translation(Vec3::ZERO)));
+
+    app.update();
+
+    let produced_members = app
+        .world_mut()
+        .query::<(&NanobotType, &SwarmMember)>()
+        .iter(app.world())
+        .map(|(kind, member)| (*kind, member.0))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        produced_members,
+        vec![(NanobotType::Worker, SwarmId::PLAYER)],
+        "an unowned facility must complete production for the player even when an opponent was spawned first",
+    );
+    assert!(
+        !app.world()
+            .resource::<ProductionCollapseState>()
+            .player_collapsed,
+        "collapse detection must use the same player fallback as production",
+    );
+    assert_eq!(
+        *app.world().resource::<MatchOutcome>(),
+        MatchOutcome::InProgress,
+    );
+}
+
+#[test]
+fn unfunded_unowned_facility_is_not_a_player_hauler_destination() {
+    let mut app = build_app();
+    {
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 2);
+    }
+    let player = common::spawn_swarm_with_nanobots(
+        &mut app,
+        Vec2::ZERO,
+        &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
+    );
+    app.world_mut().spawn((
+        ProductionFacility::new(),
+        Transform::from_translation(Vec3::ZERO),
+    ));
+    app.world_mut().spawn((
+        Stockpile {
+            kind: ResourceKind::Minerals,
+            amount: PRODUCTION_COST_PER_BOT,
+            capacity: 100,
+            radius: 32.0,
+        },
+        OwnerSwarm(player),
+        StockpileRole::Sink,
+        Transform::from_translation(Vec3::ZERO),
+    ));
+
+    app.update();
+
+    assert!(
+        app.world()
+            .resource::<ProductionCollapseState>()
+            .player_collapsed,
+        "an empty unowned facility cannot receive player Hauler deliveries",
+    );
+    assert_eq!(
+        *app.world().resource::<MatchOutcome>(),
+        MatchOutcome::Defeat,
+    );
+}
+
+#[test]
 fn player_swarm_with_no_facility_and_recoverable_crew_is_not_collapsed() {
     // The player swarm lost every facility but still has
     // 1 Worker and 1 Hauler. The collapse system must
@@ -80,7 +195,7 @@ fn player_swarm_with_no_facility_and_recoverable_crew_is_not_collapsed() {
         priority.set_weight(NanobotType::Hauler, 2);
     }
     let player_pos = Vec2::new(0.0, 0.0);
-    let _player = common::spawn_swarm_with_nanobots(
+    let player = common::spawn_swarm_with_nanobots(
         &mut app,
         player_pos,
         &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
@@ -90,7 +205,10 @@ fn player_swarm_with_no_facility_and_recoverable_crew_is_not_collapsed() {
         IntentKind::Build,
         Some(SwarmId::PLAYER),
     );
-    common::spawn_stockpile(&mut app, player_pos, PRODUCTION_COST_PER_BOT, 100);
+    let stockpile = common::spawn_stockpile(&mut app, player_pos, PRODUCTION_COST_PER_BOT, 100);
+    app.world_mut()
+        .entity_mut(stockpile)
+        .insert(OwnerSwarm(player));
     app.world_mut().resource_mut::<ResourceLedger>().add_for(
         SwarmId::PLAYER,
         ResourceKind::Minerals,
@@ -106,6 +224,407 @@ fn player_swarm_with_no_facility_and_recoverable_crew_is_not_collapsed() {
     );
     assert!(!state.opponent_collapsed);
     assert!(!state.player_won());
+}
+
+#[test]
+fn unowned_stockpile_material_does_not_preserve_player_recovery() {
+    let mut app = build_app();
+    {
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 2);
+    }
+    common::spawn_swarm_with_nanobots(
+        &mut app,
+        Vec2::ZERO,
+        &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
+    );
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        IVec2::new(1, 0),
+        IntentKind::Build,
+        Some(SwarmId::PLAYER),
+    );
+    common::spawn_stockpile(&mut app, Vec2::ZERO, PRODUCTION_COST_PER_BOT, 100);
+
+    app.update();
+
+    assert!(
+        app.world()
+            .resource::<ProductionCollapseState>()
+            .player_collapsed,
+        "Haulers cannot use an unowned endpoint as a production recovery path",
+    );
+}
+
+#[test]
+fn stranded_hauler_cargo_does_not_prevent_collapse() {
+    let mut app = build_app();
+    {
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 2);
+    }
+    common::spawn_swarm_with_nanobots(
+        &mut app,
+        Vec2::ZERO,
+        &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
+    );
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        IVec2::new(1, 0),
+        IntentKind::Build,
+        Some(SwarmId::PLAYER),
+    );
+    let hauler = {
+        let world = app.world_mut();
+        let mut nanobots = world.query::<(Entity, &NanobotType)>();
+        nanobots
+            .iter(world)
+            .find_map(|(entity, kind)| (*kind == NanobotType::Hauler).then_some(entity))
+            .expect("the recovery crew includes a Hauler")
+    };
+    app.world_mut().entity_mut(hauler).insert(Cargo {
+        kind: ResourceKind::Minerals,
+        amount: PRODUCTION_COST_PER_BOT,
+    });
+    app.world_mut().resource_mut::<ResourceLedger>().add_for(
+        SwarmId::PLAYER,
+        ResourceKind::Minerals,
+        PRODUCTION_COST_PER_BOT,
+    );
+
+    app.update();
+
+    assert!(
+        app.world()
+            .resource::<ProductionCollapseState>()
+            .player_collapsed,
+        "cargo without a logistics assignment cannot preserve a recovery path",
+    );
+}
+
+#[test]
+fn assigned_hauler_cargo_preserves_a_recovery_path() {
+    let mut app = build_app();
+    {
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 2);
+    }
+    let player = common::spawn_swarm_with_nanobots(
+        &mut app,
+        Vec2::ZERO,
+        &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
+    );
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        IVec2::new(1, 0),
+        IntentKind::Build,
+        Some(SwarmId::PLAYER),
+    );
+    let source = common::spawn_stockpile(&mut app, Vec2::ZERO, 0, 100);
+    app.world_mut()
+        .entity_mut(source)
+        .insert(OwnerSwarm(player));
+    let missing_sink = app.world_mut().spawn_empty().id();
+    app.world_mut().despawn(missing_sink);
+    let hauler = {
+        let world = app.world_mut();
+        let mut nanobots = world.query::<(Entity, &NanobotType)>();
+        nanobots
+            .iter(world)
+            .find_map(|(entity, kind)| (*kind == NanobotType::Hauler).then_some(entity))
+            .expect("the recovery crew includes a Hauler")
+    };
+    let mut reservation = LogisticsReservation::new(
+        source,
+        missing_sink,
+        ResourceKind::Minerals,
+        PRODUCTION_COST_PER_BOT,
+    );
+    reservation.source_remaining = 0;
+    app.world_mut().entity_mut(hauler).insert((
+        Cargo {
+            kind: ResourceKind::Minerals,
+            amount: PRODUCTION_COST_PER_BOT,
+        },
+        HaulerAssignment {
+            source,
+            sink: missing_sink,
+        },
+        reservation,
+    ));
+
+    app.update();
+
+    assert!(
+        !app.world()
+            .resource::<ProductionCollapseState>()
+            .player_collapsed,
+        "assigned cargo from a live Source can reach rebuilt Sink infrastructure",
+    );
+}
+
+#[test]
+fn partial_facility_input_and_complementary_staged_material_are_recoverable() {
+    let mut app = build_app();
+    {
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 2);
+    }
+    let player = common::spawn_swarm_with_nanobots(
+        &mut app,
+        Vec2::ZERO,
+        &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
+    );
+    let mut facility = ProductionFacility::new();
+    facility.input_amount = PRODUCTION_COST_PER_BOT - 1;
+    app.world_mut().spawn((
+        facility,
+        OwnerSwarm(player),
+        Transform::from_translation(Vec2::ZERO.extend(0.0)),
+    ));
+    app.world_mut().spawn((
+        Stockpile {
+            kind: ResourceKind::Minerals,
+            amount: 1,
+            capacity: 100,
+            radius: 32.0,
+        },
+        OwnerSwarm(player),
+        StockpileRole::Sink,
+        Transform::from_translation(Vec2::ZERO.extend(0.0)),
+    ));
+
+    app.update();
+
+    assert!(
+        !app.world()
+            .resource::<ProductionCollapseState>()
+            .player_collapsed,
+        "partial hopper input plus deliverable staged material is a complete recovery path",
+    );
+    assert_eq!(
+        *app.world().resource::<MatchOutcome>(),
+        MatchOutcome::InProgress,
+    );
+}
+
+#[test]
+fn partial_facility_input_and_source_only_material_are_not_recoverable_without_build_space() {
+    let mut app = build_app();
+    {
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 2);
+    }
+    let player = common::spawn_swarm_with_nanobots(
+        &mut app,
+        Vec2::ZERO,
+        &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
+    );
+    let mut facility = ProductionFacility::new();
+    facility.input_amount = PRODUCTION_COST_PER_BOT - 1;
+    app.world_mut().spawn((
+        facility,
+        OwnerSwarm(player),
+        Transform::from_translation(Vec2::ZERO.extend(0.0)),
+    ));
+    app.world_mut().spawn((
+        Stockpile {
+            kind: ResourceKind::Minerals,
+            amount: 1,
+            capacity: 100,
+            radius: 32.0,
+        },
+        OwnerSwarm(player),
+        Transform::from_translation(Vec2::ZERO.extend(0.0)),
+    ));
+
+    app.update();
+
+    assert!(
+        app.world()
+            .resource::<ProductionCollapseState>()
+            .player_collapsed,
+        "Source material cannot bypass the missing Sink logistics leg",
+    );
+    assert_eq!(
+        *app.world().resource::<MatchOutcome>(),
+        MatchOutcome::Defeat
+    );
+}
+
+#[test]
+fn occupied_facility_build_cell_can_plan_its_local_sink_recovery_path() {
+    let mut app = build_planning_app();
+    {
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 2);
+    }
+    let cell = IVec2::ZERO;
+    let facility_pos = common::cell_world_center(cell);
+    let player = common::spawn_swarm_with_nanobots(
+        &mut app,
+        facility_pos,
+        &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
+    );
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Build,
+        Some(SwarmId::PLAYER),
+    );
+    app.world_mut().spawn((
+        ProductionFacility::new(),
+        OwnerSwarm(player),
+        Transform::from_translation(facility_pos.extend(0.0)),
+    ));
+    let source = common::spawn_stockpile(
+        &mut app,
+        common::cell_world_center(IVec2::new(-2, 0)),
+        PRODUCTION_COST_PER_BOT,
+        100,
+    );
+    app.world_mut()
+        .entity_mut(source)
+        .insert(OwnerSwarm(player));
+
+    app.update();
+
+    assert!(
+        app.world_mut()
+            .query::<&PlannedStructure>()
+            .iter(app.world())
+            .any(|planned| planned.kind == PlannedKind::SinkStockpile),
+        "the Sink planner can place beside a facility in its occupied Build cell",
+    );
+    assert!(
+        !app.world()
+            .resource::<ProductionCollapseState>()
+            .player_collapsed,
+        "the actual local Sink plan preserves recovery",
+    );
+}
+
+#[test]
+fn remote_build_space_cannot_supply_an_idle_facility_outside_build_paint() {
+    let mut app = build_planning_app();
+    {
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 2);
+    }
+    let facility_pos = common::cell_world_center(IVec2::ZERO);
+    let player = common::spawn_swarm_with_nanobots(
+        &mut app,
+        facility_pos,
+        &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
+    );
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        IVec2::new(3, 0),
+        IntentKind::Build,
+        Some(SwarmId::PLAYER),
+    );
+    app.world_mut().spawn((
+        ProductionFacility::new(),
+        OwnerSwarm(player),
+        Transform::from_translation(facility_pos.extend(0.0)),
+    ));
+    let source = common::spawn_stockpile(
+        &mut app,
+        facility_pos + Vec2::new(-200.0, 0.0),
+        PRODUCTION_COST_PER_BOT,
+        100,
+    );
+    app.world_mut()
+        .entity_mut(source)
+        .insert(OwnerSwarm(player));
+
+    app.update();
+
+    assert!(
+        !app.world_mut()
+            .query::<&PlannedStructure>()
+            .iter(app.world())
+            .any(|planned| planned.kind == PlannedKind::SinkStockpile),
+        "remote Build paint cannot create a Sink for an unpainted facility",
+    );
+    assert!(
+        app.world()
+            .resource::<ProductionCollapseState>()
+            .player_collapsed,
+        "unreachable remote Build space cannot prevent collapse",
+    );
+}
+
+#[test]
+fn blocked_source_ring_cannot_turn_gather_paint_into_a_material_path() {
+    let mut app = build_gather_recovery_app();
+    {
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 2);
+    }
+    let gather_cell = IVec2::ZERO;
+    let deposit_pos = common::cell_world_center(gather_cell);
+    let player = common::spawn_swarm_with_nanobots(
+        &mut app,
+        deposit_pos,
+        &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
+    );
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        gather_cell,
+        IntentKind::Gather,
+        Some(SwarmId::PLAYER),
+    );
+    let deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let facility_pos = common::cell_world_center(IVec2::new(3, 0));
+    app.world_mut().spawn((
+        ProductionFacility::new(),
+        OwnerSwarm(player),
+        Transform::from_translation(facility_pos.extend(0.0)),
+    ));
+    let sink = common::spawn_sink_stockpile(&mut app, facility_pos, 0, 100);
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(player));
+
+    let foreign_owner = app.world_mut().spawn_empty().id();
+    for index in 0..SOURCE_STOCKPILE_PLACEMENT_COUNT {
+        let angle = index as f32 * (TAU / SOURCE_STOCKPILE_PLACEMENT_COUNT as f32);
+        let position =
+            deposit_pos + Vec2::new(angle.cos(), angle.sin()) * SOURCE_STOCKPILE_PLACEMENT_RADIUS;
+        app.world_mut().spawn((
+            ProductionFacility::new(),
+            OwnerSwarm(foreign_owner),
+            Transform::from_translation(position.extend(0.0)),
+        ));
+    }
+    let worker = {
+        let world = app.world_mut();
+        let mut nanobots = world.query::<(Entity, &NanobotType)>();
+        nanobots
+            .iter(world)
+            .find_map(|(entity, kind)| (*kind == NanobotType::Worker).then_some(entity))
+            .expect("the recovery crew includes a Worker")
+    };
+    app.world_mut()
+        .entity_mut(worker)
+        .insert(GatherAssignment::new(gather_cell, deposit));
+
+    app.update();
+
+    assert!(
+        !app.world_mut()
+            .query::<&PlannedStructure>()
+            .iter(app.world())
+            .any(|planned| planned.kind == PlannedKind::SourceStockpile),
+        "the exact Source planner rejects every obstructed ring candidate",
+    );
+    assert!(
+        app.world()
+            .resource::<ProductionCollapseState>()
+            .player_collapsed,
+        "blocked Gather extraction cannot preserve production recovery",
+    );
 }
 
 #[test]
@@ -431,6 +950,7 @@ fn worker_and_hauler_without_rebuild_path_are_unrecoverable() {
         has_hauler: true,
         has_build_space: false,
         has_material_path: false,
+        existing_facility_material_path: false,
     });
 
     assert!(outcome.collapsed);

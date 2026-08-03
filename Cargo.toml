@@ -14,9 +14,11 @@ bevy = { version = "0.18.1", features = [
 thiserror = "2.0.18"
 anyhow = "1.0.102"
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
 ron = "0.12.1"
 rand = { version = "0.10.1" }
 log = "0.4.32"
+libc = "0.2"
 pathfinding = "4.15.0"
 
 [profile.dev.package."*"]
