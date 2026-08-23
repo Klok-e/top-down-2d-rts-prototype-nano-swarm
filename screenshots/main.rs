@@ -102,6 +102,10 @@ fn main() -> std::process::ExitCode {
             run(combat_presentation::combat_presentation_density_and_zoom)
         })
         .with_ignored_flag(true),
+        Trial::test("integrated_combat_presentation", || {
+            run(combat_presentation::integrated_combat_presentation)
+        })
+        .with_ignored_flag(true),
         Trial::test("build_zone_placement", || {
             run(build_zone_placement::build_zone_placement)
         })

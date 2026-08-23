@@ -46,11 +46,12 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         Charge, ChargePlugin, Charger, CollapsePlugin, Commitment, DefendPlugin, GatherPlugin,
         HaulPlugin, Health, MaintenancePlugin, Nanobot, NanobotBundle, NanobotSimulationSet,
-        NanobotType, OpponentSwarm, OwnerSwarm, PRODUCTION_TICKS_PER_BOT, PlannedStructure,
-        PlannedStructurePlugin, ProductionFacility, ProductionPlugin, RegionalAllocationPlugin,
-        SoftWorkSlots, Structure, StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent,
-        bot_debug_circle_system, idle_spread_system, initialize_nanobot_type_components,
-        move_velocity_system, separation_system, velocity_system,
+        NanobotType, NanobotVisual, OpponentSwarm, OwnerSwarm, PRODUCTION_TICKS_PER_BOT,
+        PlannedStructure, PlannedStructurePlugin, ProductionFacility, ProductionPlugin,
+        RegionalAllocationPlugin, SoftWorkSlots, Structure, StructureKind, Swarm, SwarmId,
+        SwarmMember, VelocityComponent, bot_debug_circle_system, idle_spread_system,
+        initialize_nanobot_type_components, move_velocity_system, separation_system,
+        velocity_system,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole},
     structure_overlay::StructureOverlayPlugin,
@@ -328,6 +329,16 @@ pub fn sim_app_with_tactical() -> App {
 /// gameplay code.
 pub fn cell_world_center(cell: IVec2) -> Vec2 {
     top_down_2d_rts_prototype_nano_swarm::ai::get_world_from_zone(cell)
+}
+
+/// Return the generic presentation child owned by a nanobot gameplay root.
+pub fn nanobot_visual_child(world: &World, root: Entity) -> Entity {
+    world
+        .get::<Children>(root)
+        .expect("presented nanobot needs children")
+        .iter()
+        .find(|child| world.get::<NanobotVisual>(*child).is_some())
+        .expect("presented nanobot needs a marked visual child")
 }
 
 /// Spawn an empty [`Swarm`] at `world_pos`. The marker carries no

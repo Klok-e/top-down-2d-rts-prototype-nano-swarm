@@ -5,23 +5,14 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         ActiveCombatPulses, ActiveNanobotDeathGhosts, ActiveStructureDeathGhosts, CombatPlugin,
-        CombatPresentationSettings, DefendHold, Health, NanobotPresentationPlugin, NanobotVisual,
-        OpponentSwarm, PlannedKind, Structure, Swarm, SwarmId, SwarmMember, completed_visual_color,
+        CombatPresentationSettings, DefendHold, Health, NanobotPresentationPlugin, OpponentSwarm,
+        PlannedKind, Structure, Swarm, SwarmId, SwarmMember, completed_visual_color,
         nanobot_death_cleanup_system,
     },
 };
 
 #[path = "../common/mod.rs"]
 mod common;
-
-fn visual_child(world: &World, root: Entity) -> Entity {
-    world
-        .get::<Children>(root)
-        .expect("presented combatant needs children")
-        .iter()
-        .find(|child| world.get::<NanobotVisual>(*child).is_some())
-        .expect("presented combatant needs a visual child")
-}
 
 #[test]
 fn real_combat_fact_reaches_runtime_presentation_and_recovers() {
@@ -58,8 +49,8 @@ fn real_combat_fact_reaches_runtime_presentation_and_recovers() {
     app.update();
 
     assert_eq!(app.world().get::<Health>(target).unwrap().current, 90);
-    let attacker_visual = visual_child(app.world(), attacker);
-    let target_visual = visual_child(app.world(), target);
+    let attacker_visual = common::nanobot_visual_child(app.world(), attacker);
+    let target_visual = common::nanobot_visual_child(app.world(), target);
     assert!(
         app.world()
             .get::<Transform>(attacker_visual)
@@ -222,7 +213,7 @@ fn simultaneous_real_attacks_keep_every_pulse_and_one_bounded_target_reaction() 
     );
     assert_eq!(app.world().resource::<ActiveCombatPulses>().len(), 3);
     let settings = *app.world().resource::<CombatPresentationSettings>();
-    let target_visual = visual_child(app.world(), target);
+    let target_visual = common::nanobot_visual_child(app.world(), target);
     let reaction = app
         .world()
         .get::<Transform>(target_visual)
@@ -238,7 +229,7 @@ fn simultaneous_real_attacks_keep_every_pulse_and_one_bounded_target_reaction() 
     assert_eq!(app.world().get::<Transform>(target), Some(&target_root));
     for (attacker, root) in attackers.into_iter().zip(attacker_roots) {
         assert_eq!(app.world().get::<Transform>(attacker), Some(&root));
-        let attacker_visual = visual_child(app.world(), attacker);
+        let attacker_visual = common::nanobot_visual_child(app.world(), attacker);
         assert!(
             app.world()
                 .get::<Transform>(attacker_visual)
