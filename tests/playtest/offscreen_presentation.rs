@@ -5,7 +5,13 @@ use bevy::{
     prelude::*,
     render::{pipelined_rendering::PipelinedRenderingPlugin, render_resource::TextureUsages},
 };
-use top_down_2d_rts_prototype_nano_swarm::{Presentation, build_app_with_presentation};
+use top_down_2d_rts_prototype_nano_swarm::{
+    Presentation, build_app_with_presentation,
+    nanobot::{
+        Nanobot, NanobotSprites, NanobotType, NanobotVisual, OpponentSwarm, Swarm, SwarmId,
+        SwarmMember,
+    },
+};
 
 fn finish_plugins(app: &mut App) {
     while app.plugins_state() == bevy::app::PluginsState::Adding {
@@ -41,6 +47,46 @@ fn offscreen_presentation_starts_full_scene_without_a_window() {
         app.world_mut().query::<&Window>().iter(app.world()).count(),
         0
     );
+
+    let opponent = app
+        .world_mut()
+        .query_filtered::<&SwarmId, (With<Swarm>, With<OpponentSwarm>)>()
+        .single(app.world())
+        .expect("authored opponent swarm must exist")
+        .to_owned();
+    let sprites = app.world().resource::<NanobotSprites>().clone();
+    let nanobots = app
+        .world_mut()
+        .query_filtered::<(Entity, &NanobotType, &SwarmMember), With<Nanobot>>()
+        .iter(app.world())
+        .map(|(entity, kind, member)| (entity, *kind, member.0))
+        .collect::<Vec<_>>();
+    assert!(!nanobots.is_empty(), "full startup must spawn nanobots");
+    for (root, kind, member) in nanobots {
+        assert!(
+            app.world().get::<ChildOf>(root).is_none(),
+            "full-app nanobot roots must remain top-level"
+        );
+        assert!(
+            app.world().get::<Sprite>(root).is_none(),
+            "full-app nanobot roots must not retain direct sprites"
+        );
+        let children = app
+            .world()
+            .get::<Children>(root)
+            .expect("full-app nanobot must own a presentation child");
+        let visual = children
+            .iter()
+            .find(|child| app.world().get::<NanobotVisual>(*child).is_some())
+            .expect("full-app nanobot must own a marked visual child");
+        assert_eq!(
+            app.world()
+                .get::<Sprite>(visual)
+                .expect("visual child must render a Sprite")
+                .image,
+            sprites.handle(kind, member == opponent)
+        );
+    }
 
     let (camera, image_handle) = {
         let mut cameras = app

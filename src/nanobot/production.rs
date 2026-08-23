@@ -41,6 +41,7 @@ use bevy::prelude::*;
 
 use crate::ai::AiStateComponent;
 use crate::intent::{IntentGrid, IntentKind};
+use crate::nanobot::NanobotBundle;
 use crate::nanobot::autonomy::{Commitment, NanobotType};
 use crate::nanobot::components::{Health, Nanobot, Swarm, SwarmId, SwarmMember, VelocityComponent};
 use crate::nanobot::gather::world_to_cell;
@@ -49,7 +50,6 @@ use crate::nanobot::placement::{find_build_zone_placement, scaled_building_footp
 use crate::nanobot::planned::{
     PlannedKind, PlannedProductionTarget, PlannedStructure, planned_visual_components,
 };
-use crate::nanobot::{NanobotBundle, NanobotSprites};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
 use crate::structure_sprites::StructureSprites;
 
@@ -872,8 +872,6 @@ pub fn production_facility_work_system(
         Option<&SupportCondition>,
     )>,
     swarms: Query<(Entity, Option<&SwarmId>), With<Swarm>>,
-    opponent_swarms: Query<(), With<OpponentSwarm>>,
-    sprites: Option<Res<NanobotSprites>>,
 ) {
     for (mut facility, transform, owner, condition) in &mut facilities {
         if condition.is_some_and(|condition| !condition.is_operational()) {
@@ -886,8 +884,8 @@ pub fn production_facility_work_system(
         if facility.progress < PRODUCTION_TICKS_PER_BOT {
             continue;
         }
-        // Cycle complete: spawn the nanobot. The owner swarm is
-        // the natural parent. Unowned facilities use the player
+        // Cycle complete: spawn the nanobot. The owning swarm supplies
+        // its membership identity. Unowned facilities use the player
         // swarm, with an untagged legacy swarm as compatibility
         // fallback. If no compatible swarm exists, the spawn is
         // dropped.
@@ -907,7 +905,7 @@ pub fn production_facility_work_system(
         // only as a spawn-origin / ownership marker; the
         // bot ends up at `pos` (the facility's world
         // position) directly.
-        let parent = owner.map(|OwnerSwarm(entity)| *entity).or_else(|| {
+        let owner_swarm = owner.map(|OwnerSwarm(entity)| *entity).or_else(|| {
             swarms
                 .iter()
                 .find_map(|(entity, id)| (id == Some(&SwarmId::PLAYER)).then_some(entity))
@@ -917,10 +915,9 @@ pub fn production_facility_work_system(
                         .find_map(|(entity, id)| id.is_none().then_some(entity))
                 })
         });
-        if let Some(swarm_entity) = parent {
+        if let Some(swarm_entity) = owner_swarm {
             let pos = transform.translation.truncate();
-            let is_opponent = opponent_swarms.get(swarm_entity).is_ok();
-            // Look up the parent swarm's `SwarmId` so the new
+            // Look up the owning swarm's `SwarmId` so the new
             // nanobot carries the right ownership marker.
             // Pre-multi-swarm tests that spawn a Swarm
             // without a `SwarmId` fall back to the player id;
@@ -931,7 +928,7 @@ pub fn production_facility_work_system(
                 .get(swarm_entity)
                 .map(|(_, id)| id.copied().unwrap_or(SwarmId::PLAYER))
                 .unwrap_or(SwarmId::PLAYER);
-            let mut entity = commands.spawn((
+            commands.spawn((
                 NanobotBundle {
                     nanobot: Nanobot {},
                     nanobot_type: target,
@@ -943,9 +940,6 @@ pub fn production_facility_work_system(
                 Commitment::Idle,
                 Transform::from_translation(pos.extend(0.0)),
             ));
-            if let Some(sprites) = sprites.as_deref() {
-                entity.insert(Sprite::from_image(sprites.handle(target, is_opponent)));
-            }
         }
         // Reset for the next cycle. Clearing the blocked set
         // is the "blocked types are skipped temporarily"

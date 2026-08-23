@@ -14,7 +14,10 @@ use std::{
 use bevy::{prelude::*, time::TimeUpdateStrategy};
 use image::GenericImageView;
 
-use top_down_2d_rts_prototype_nano_swarm::{Presentation, build_app_with_presentation};
+use top_down_2d_rts_prototype_nano_swarm::{
+    Presentation, build_app_with_presentation,
+    nanobot::{Nanobot, NanobotVisual},
+};
 
 /// Directory where screenshot artifacts are written. Under `target/` so it is
 /// gitignored with the rest of the build output; artifacts are never committed.
@@ -26,6 +29,23 @@ const MAX_CALLBACK_FRAMES: u32 = 10_000;
 const MAX_READBACK_UPDATES: u32 = 600;
 const MAX_PLUGIN_READY_TICKS: u32 = 10_000;
 const STARTUP_RENDER_UPDATES: u32 = 10;
+
+/// Remove gameplay nanobot roots and every unrelated Sprite while leaving
+/// presentation children to be removed through their root relationship.
+pub fn clear_nanobots_and_sprite_entities(world: &mut World) {
+    let nanobots = world
+        .query_filtered::<Entity, With<Nanobot>>()
+        .iter(world)
+        .collect::<Vec<_>>();
+    let mut sprites = world.query_filtered::<Entity, (With<Sprite>, Without<NanobotVisual>)>();
+    let entities = nanobots
+        .into_iter()
+        .chain(sprites.iter(world))
+        .collect::<Vec<_>>();
+    for entity in entities {
+        let _ = world.despawn(entity);
+    }
+}
 
 /// What a per-update test callback returns to driver.
 pub enum TestFlow {

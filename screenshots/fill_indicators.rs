@@ -8,6 +8,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         Charger, HaulerLoad, MAINTENANCE_NEEDS_THRESHOLD, MAINTENANCE_WORK_DURATION_TICKS,
         MaintenanceProgress, Nanobot, NanobotType, PlannedKind, PlannedStructure,
         ProductionFacility, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind,
+        SwarmId, SwarmMember,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile},
     structure_overlay::{
@@ -16,7 +17,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     ui::collapse_banner::CollapseBannerRoot,
 };
 
-use crate::harness::{TestContext, TestFlow};
+use crate::harness::{TestContext, TestFlow, clear_nanobots_and_sprite_entities};
 
 #[derive(Resource)]
 struct FillIndicatorTargets {
@@ -27,7 +28,7 @@ struct FillIndicatorTargets {
 pub fn fill_indicators(ctx: &mut TestContext) -> TestFlow {
     if ctx.frame == 2 {
         focus_camera(ctx.world);
-        despawn_existing_sprites(ctx.world);
+        clear_nanobots_and_sprite_entities(ctx.world);
         despawn_collapse_banner(ctx.world);
         let targets = spawn_focused_scene(ctx.world);
         ctx.world.insert_resource(targets);
@@ -78,16 +79,6 @@ fn focus_camera(world: &mut World) {
         if let Projection::Orthographic(ortho) = &mut *projection {
             ortho.scale = 0.8;
         }
-    }
-}
-
-fn despawn_existing_sprites(world: &mut World) {
-    let entities: Vec<Entity> = world
-        .query_filtered::<Entity, With<Sprite>>()
-        .iter(world)
-        .collect();
-    for entity in entities {
-        let _ = world.despawn(entity);
     }
 }
 
@@ -260,11 +251,7 @@ fn spawn_maintenance_worker(world: &mut World, pos: Vec2, target: Entity) -> Ent
                 target,
                 ticks_worked: MAINTENANCE_WORK_DURATION_TICKS / 2,
             },
-            Sprite {
-                color: Color::srgb(0.25, 0.85, 0.35),
-                custom_size: Some(Vec2::splat(32.0)),
-                ..default()
-            },
+            SwarmMember::new(SwarmId::PLAYER),
             Transform::from_translation(pos.extend(GAMEPLAY_SPRITE_Z)),
         ))
         .id()
@@ -279,11 +266,7 @@ fn spawn_loaded_hauler(world: &mut World, pos: Vec2) -> Entity {
                 kind: ResourceKind::Minerals,
                 amount: 30,
             },
-            Sprite {
-                color: Color::srgb(0.22, 0.22, 0.22),
-                custom_size: Some(Vec2::splat(32.0)),
-                ..default()
-            },
+            SwarmMember::new(SwarmId::PLAYER),
             Transform::from_translation(pos.extend(GAMEPLAY_SPRITE_Z)),
         ))
         .id()

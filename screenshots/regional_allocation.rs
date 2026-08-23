@@ -5,8 +5,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Commitment, GatherAssignment, Health, Nanobot, NanobotSprites, NanobotType,
-        OpportunityCategory, RegionalLease, SwarmId, SwarmMember, VelocityComponent,
+        Commitment, GatherAssignment, Health, Nanobot, NanobotType, OpportunityCategory,
+        RegionalLease, SwarmId, SwarmMember, VelocityComponent,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile},
 };
@@ -59,9 +59,6 @@ pub fn regional_allocation(ctx: &mut TestContext) -> TestFlow {
             },
             Transform::from_translation((center + Vec2::new(96.0, 0.0)).extend(0.0)),
         ));
-        let sprite = world
-            .resource::<NanobotSprites>()
-            .handle(NanobotType::Worker, false);
         world.spawn((
             ExhaustionTestWorker,
             Nanobot {},
@@ -71,7 +68,6 @@ pub fn regional_allocation(ctx: &mut TestContext) -> TestFlow {
             Health::default(),
             SwarmMember::new(TEST_SWARM),
             Transform::from_translation(center.extend(0.0)),
-            Sprite::from_image(sprite),
         ));
         return TestFlow::Continue;
     }

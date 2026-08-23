@@ -18,8 +18,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Charge, Commitment, DefendHold, Health, Nanobot, NanobotSprites, NanobotType, SwarmId,
-        SwarmMember, VelocityComponent, point_in_cell,
+        Charge, Commitment, DefendHold, Health, Nanobot, NanobotType, SwarmId, SwarmMember,
+        VelocityComponent, point_in_cell,
     },
 };
 
@@ -79,9 +79,6 @@ pub fn defender_spread(ctx: &mut TestContext) -> TestFlow {
         }
         // Spawn visible defenders at isolated center cell.
         let spawn = defend_center();
-        let sprite = world
-            .resource::<NanobotSprites>()
-            .handle(NanobotType::Defender, false);
         for _ in 0..DEFENDER_COUNT {
             world.spawn((
                 SpreadTestDefender,
@@ -93,7 +90,6 @@ pub fn defender_spread(ctx: &mut TestContext) -> TestFlow {
                 Charge::default(),
                 SwarmMember::new(SwarmId::PLAYER),
                 Transform::from_translation(spawn.extend(0.0)),
-                Sprite::from_image(sprite.clone()),
             ));
         }
         return TestFlow::Continue;

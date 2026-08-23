@@ -117,7 +117,7 @@ pub enum NanobotSimulationSet {
 }
 
 /// Top-level bundle for the player swarm. Holds the [`Swarm`] marker and a
-/// transform used as the origin for child nanobots.
+/// transform used as the spawn origin for its nanobots.
 ///
 /// The `SwarmId` is the player identifier; the production chain
 /// reads it to stamp `SwarmMember` on freshly produced

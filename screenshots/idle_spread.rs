@@ -130,11 +130,8 @@ pub fn idle_spread(ctx: &mut TestContext) -> TestFlow {
         }
         // Spawn the idle haulers stacked at the stranded start cell.
         let spawn = cell_center(START_CELL);
-        let hauler_sprite = world
-            .get_resource::<top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotSprites>()
-            .map(|s| Sprite::from_image(s.handle(NanobotType::Hauler, false)));
         for _ in 0..HAULER_COUNT {
-            let mut entity = world.spawn((
+            world.spawn((
                 SpreadTestBot,
                 Nanobot {},
                 NanobotType::Hauler,
@@ -144,9 +141,6 @@ pub fn idle_spread(ctx: &mut TestContext) -> TestFlow {
                 SwarmMember::new(IDLE_SWARM),
                 Transform::from_translation(spawn.extend(0.0)),
             ));
-            if let Some(sprite) = hauler_sprite.clone() {
-                entity.insert(sprite);
-            }
         }
         return TestFlow::Continue;
     }

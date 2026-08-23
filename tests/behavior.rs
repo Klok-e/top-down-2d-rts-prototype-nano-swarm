@@ -36,6 +36,8 @@ mod intent_brush;
 mod maintenance;
 #[path = "behavior/nanobot_autonomy.rs"]
 mod nanobot_autonomy;
+#[path = "behavior/nanobot_presentation.rs"]
+mod nanobot_presentation;
 #[path = "behavior/no_instant_spawning.rs"]
 mod no_instant_spawning;
 #[path = "behavior/opponent_intent_controller.rs"]

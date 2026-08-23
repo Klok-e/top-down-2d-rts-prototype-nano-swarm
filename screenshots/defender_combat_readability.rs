@@ -7,9 +7,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z, ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Charge, Charger, ChargerAssignment, Commitment, DefendHold, Health, Nanobot,
-        NanobotSprites, NanobotType, OpponentSwarm, OwnerSwarm, Swarm, SwarmId, SwarmMember,
-        VelocityComponent,
+        Charge, Charger, ChargerAssignment, Commitment, DefendHold, Health, Nanobot, NanobotType,
+        OpponentSwarm, OwnerSwarm, Swarm, SwarmId, SwarmMember, VelocityComponent,
     },
 };
 
@@ -53,7 +52,6 @@ fn spawn_defender(
     swarm: SwarmId,
     hold: DefendHold,
     charge: f32,
-    sprite: Handle<Image>,
 ) {
     world.spawn((
         FeelDefender,
@@ -69,7 +67,6 @@ fn spawn_defender(
         SwarmMember::new(swarm),
         hold,
         Transform::from_translation(position.extend(GAMEPLAY_SPRITE_Z)),
-        Sprite::from_image(sprite),
     ));
 }
 
@@ -93,12 +90,6 @@ fn setup_scene(world: &mut World) {
         .resource_mut::<IntentGrid>()
         .contest_defend(CENTER_CELL, opponent_swarm_id);
 
-    let player_sprite = world
-        .resource::<NanobotSprites>()
-        .handle(NanobotType::Defender, false);
-    let opponent_sprite = world
-        .resource::<NanobotSprites>()
-        .handle(NanobotType::Defender, true);
     for (index, offset) in [
         Vec2::new(-54.0, -42.0),
         Vec2::new(-54.0, 42.0),
@@ -115,7 +106,6 @@ fn setup_scene(world: &mut World) {
             SwarmId::PLAYER,
             DefendHold { cell: CENTER_CELL },
             if index < 2 { 0.5 } else { 1.0 },
-            player_sprite.clone(),
         );
     }
     for (index, offset) in [
@@ -132,7 +122,6 @@ fn setup_scene(world: &mut World) {
             opponent_swarm_id,
             DefendHold { cell: CENTER_CELL },
             if index == 0 { 0.5 } else { 1.0 },
-            opponent_sprite.clone(),
         );
     }
 
