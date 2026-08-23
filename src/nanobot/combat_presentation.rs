@@ -487,17 +487,23 @@ fn present_death(
 }
 
 fn aggregate_direction(directions: &mut [Vec2]) -> Option<Vec2> {
-    directions.first()?;
+    if directions.is_empty() {
+        return None;
+    }
     directions.sort_by(|left, right| {
         left.x
             .total_cmp(&right.x)
             .then_with(|| left.y.total_cmp(&right.y))
     });
-    directions
-        .iter()
-        .copied()
-        .fold(Vec2::ZERO, |sum, direction| sum + direction)
-        .try_normalize()
+    let fallback = directions[0].normalize_or(Vec2::X);
+    Some(
+        directions
+            .iter()
+            .copied()
+            .fold(Vec2::ZERO, |sum, direction| sum + direction)
+            .try_normalize()
+            .unwrap_or(fallback),
+    )
 }
 
 fn impact_world_distance(configured: f32, zoom: f32, minimum_screen_distance: f32) -> f32 {
@@ -671,15 +677,17 @@ fn animate_combat(
                     * strength
             });
         visual.transform.translation = (attack_offset + reaction_offset).extend(0.0);
-        visual.transform.rotation =
-            visual
-                .pose
-                .attack_direction
-                .map_or(Quat::IDENTITY, |direction| {
-                    let world_facing = rotation_for_direction(direction).unwrap_or(Quat::IDENTITY);
-                    inverse_root_rotation * world_facing
-                });
-        visual.sprite.color = Color::srgb(1.0, 1.0, 1.0 - visual.pose.reaction_flash * strength);
+        let attack_rotation = visual
+            .pose
+            .attack_direction
+            .map_or(Quat::IDENTITY, |direction| {
+                let world_facing = rotation_for_direction(direction).unwrap_or(Quat::IDENTITY);
+                inverse_root_rotation * world_facing
+            });
+        visual.transform.rotation = Quat::IDENTITY.slerp(attack_rotation, strength);
+        let flash_gain = visual.pose.reaction_flash * strength;
+        visual.sprite.color =
+            Color::linear_rgb(1.0 + flash_gain, 1.0 + flash_gain, 1.0 + flash_gain);
     }
 
     for mut structure in &mut structures {
@@ -890,7 +898,10 @@ mod tests {
     fn aggregate_direction_handles_empty_single_and_cancelling_inputs() {
         assert_eq!(aggregate_direction(&mut []), None);
         assert_eq!(aggregate_direction(&mut [Vec2::X]), Some(Vec2::X));
-        assert_eq!(aggregate_direction(&mut [Vec2::X, Vec2::NEG_X]), None);
+        assert_eq!(
+            aggregate_direction(&mut [Vec2::X, Vec2::NEG_X]),
+            Some(Vec2::NEG_X),
+        );
     }
 
     #[test]

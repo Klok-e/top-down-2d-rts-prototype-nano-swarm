@@ -411,6 +411,7 @@ pub fn defender_combat_system(
         .map(|structure| (structure.entity, structure.presentation_snapshot()))
         .collect::<HashMap<_, _>>();
     let mut destroyed_targets = HashSet::new();
+    let mut resolved_targets = HashSet::new();
     let mut combat_deaths = Vec::new();
     {
         let mut health = combatants.p2();
@@ -418,6 +419,9 @@ pub fn defender_combat_system(
             if let Ok(mut target) = health.get_mut(entity) {
                 let was_alive = target.current > 0;
                 target.current = target.current.saturating_sub(amount);
+                if was_alive {
+                    resolved_targets.insert(entity);
+                }
                 if target.current == 0 {
                     destroyed_targets.insert(entity);
                 }
@@ -435,6 +439,9 @@ pub fn defender_combat_system(
         if let Ok(mut target) = conditions.get_mut(entity) {
             let was_alive = target.health > 0;
             target.health = target.health.saturating_sub(amount);
+            if was_alive {
+                resolved_targets.insert(entity);
+            }
             if target.health == 0 {
                 destroyed_targets.insert(entity);
                 if was_alive && let Some(victim) = structure_snapshots.get(&entity).copied() {
@@ -445,6 +452,9 @@ pub fn defender_combat_system(
         }
     }
     for mut hit in resolved_hits {
+        if !resolved_targets.contains(&hit.target.entity) {
+            continue;
+        }
         hit.target_destroyed = destroyed_targets.contains(&hit.target.entity);
         facts.write(ResolvedCombatFact::Hit(hit));
     }

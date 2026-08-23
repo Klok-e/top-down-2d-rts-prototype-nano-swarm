@@ -1,6 +1,10 @@
 use std::time::Duration;
 
 use bevy::{asset::AssetPlugin, prelude::*, time::TimeUpdateStrategy};
+
+#[path = "../common/mod.rs"]
+mod common;
+
 use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z,
     fly_camera::CameraZoom2d,
@@ -8,21 +12,12 @@ use top_down_2d_rts_prototype_nano_swarm::{
         ActiveCombatDecorations, ActiveCombatPulses, ActiveNanobotDeathGhosts,
         ActiveStructureDeathGhosts, CombatAppearance, CombatPresentationSettings,
         CombatVisualSnapshot, Nanobot, NanobotPresentationPlugin, NanobotSprites, NanobotType,
-        NanobotVisual, PlannedKind, ResolvedCombatDeath, ResolvedCombatFact, ResolvedCombatHit,
+        PlannedKind, ResolvedCombatDeath, ResolvedCombatFact, ResolvedCombatHit,
         StructureCombatAppearance, StructureKind, Swarm, SwarmId, SwarmMember,
         completed_visual_color,
     },
     structure_sprites::{StructureSprites, StructureVisual},
 };
-
-fn visual_child(world: &World, root: Entity) -> Entity {
-    world
-        .get::<Children>(root)
-        .expect("presented nanobot needs children")
-        .iter()
-        .find(|child| world.get::<NanobotVisual>(*child).is_some())
-        .expect("presented nanobot needs its public visual child")
-}
 
 fn presentation_app() -> App {
     let mut app = App::new();
@@ -90,8 +85,8 @@ fn resolved_hit_drives_impact_and_returns_both_visuals_to_neutral() {
         .id();
     app.update();
 
-    let attacker_visual = visual_child(app.world(), attacker);
-    let target_visual = visual_child(app.world(), target);
+    let attacker_visual = common::nanobot_visual_child(app.world(), attacker);
+    let target_visual = common::nanobot_visual_child(app.world(), target);
     let settings = *app.world().resource::<CombatPresentationSettings>();
     assert!(settings.pulse_duration < Duration::from_millis(80));
     assert!(settings.recovery_duration < Duration::from_millis(250));
@@ -123,6 +118,11 @@ fn resolved_hit_drives_impact_and_returns_both_visuals_to_neutral() {
     assert!(attacker_pose.translation.length() > 0.0);
     assert!(attacker_pose.translation.length() <= settings.jab_distance + 0.001);
     assert!(attacker_pose.rotation != Quat::IDENTITY);
+    assert_eq!(
+        app.world().get::<Sprite>(attacker_visual).unwrap().color,
+        Color::WHITE,
+        "an attacker without an incoming hit keeps its neutral tint",
+    );
     assert!(target_pose.translation.length() > 0.0);
     assert!(target_pose.translation.length() <= settings.recoil_distance + 0.001);
     assert_ne!(
@@ -143,6 +143,21 @@ fn resolved_hit_drives_impact_and_returns_both_visuals_to_neutral() {
     assert!(pulse_color.blue > pulse_color.red);
     assert_eq!(app.world().get::<Transform>(attacker), Some(&attacker_root));
     assert_eq!(app.world().get::<Transform>(target), Some(&target_root));
+
+    let impact_facing_angle = attacker_pose.rotation.angle_between(Quat::IDENTITY);
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(
+        settings.recovery_duration.mul_f32(0.5),
+    ));
+    app.update();
+
+    let recovering_facing_angle = app
+        .world()
+        .get::<Transform>(attacker_visual)
+        .unwrap()
+        .rotation
+        .angle_between(Quat::IDENTITY);
+    assert!(recovering_facing_angle > 0.0);
+    assert!(recovering_facing_angle < impact_facing_angle);
 
     app.insert_resource(TimeUpdateStrategy::ManualDuration(
         settings.recovery_duration + Duration::from_millis(1),
@@ -301,7 +316,7 @@ fn structure_hit_flashes_in_place_with_attacker_jab_and_pulse_then_recovers() {
         .spawn((sprite, target_transform, visual))
         .id();
     app.update();
-    let attacker_visual = visual_child(app.world(), attacker);
+    let attacker_visual = common::nanobot_visual_child(app.world(), attacker);
 
     app.world_mut()
         .write_message(ResolvedCombatFact::Hit(ResolvedCombatHit {
@@ -705,13 +720,13 @@ fn injected_reaction(
             app.world().get::<Transform>(attacker),
             Some(&attacker_roots[index]),
         );
-        let visual = visual_child(app.world(), attacker);
+        let visual = common::nanobot_visual_child(app.world(), attacker);
         let jab = app.world().get::<Transform>(visual).unwrap().translation;
         assert!(jab.length() > 0.0);
         assert!(jab.length() <= settings.jab_distance + 0.001);
     }
 
-    let target_visual = visual_child(app.world(), target);
+    let target_visual = common::nanobot_visual_child(app.world(), target);
     let reaction = app
         .world()
         .get::<Transform>(target_visual)
@@ -720,14 +735,14 @@ fn injected_reaction(
         .truncate();
     assert!(reaction.length() > 0.0);
     assert!(reaction.length() <= settings.recoil_distance + 0.001);
-    let flash_blue = app
+    let flash = app
         .world()
         .get::<Sprite>(target_visual)
         .unwrap()
         .color
-        .to_srgba()
-        .blue;
-    (reaction, flash_blue)
+        .to_linear();
+    let flash_brightness = (flash.red + flash.green + flash.blue) / 3.0;
+    (reaction, flash_brightness)
 }
 
 #[test]
@@ -737,11 +752,11 @@ fn simultaneous_hits_combine_into_one_deterministic_bounded_reaction() {
         Vec2::new(-64.0, 32.0),
         Vec2::new(0.0, -64.0),
     ];
-    let (forward_reaction, crowded_flash_blue) =
+    let (forward_reaction, crowded_flash_brightness) =
         injected_reaction(&positions, &[0, 1, 2], &[0, 1, 2]);
-    let (reverse_reaction, reverse_flash_blue) =
+    let (reverse_reaction, reverse_flash_brightness) =
         injected_reaction(&positions, &[2, 1, 0], &[2, 1, 0]);
-    let (_, single_flash_blue) = injected_reaction(&positions[..1], &[0], &[0]);
+    let (_, single_flash_brightness) = injected_reaction(&positions[..1], &[0], &[0]);
 
     let expected_direction = Vec2::new(0.872_871_6, 0.487_950_03);
     assert!(
@@ -752,15 +767,26 @@ fn simultaneous_hits_combine_into_one_deterministic_bounded_reaction() {
         forward_reaction.distance(reverse_reaction) < 0.001,
         "reaction aggregation must not depend on spawn or fact order",
     );
-    assert!((crowded_flash_blue - reverse_flash_blue).abs() < 0.001);
+    assert!((crowded_flash_brightness - reverse_flash_brightness).abs() < 0.001);
     assert!(
-        crowded_flash_blue < single_flash_blue,
+        crowded_flash_brightness > single_flash_brightness,
         "simultaneous impacts must produce one brighter target flash",
     );
     assert!(
-        crowded_flash_blue >= 0.05,
+        crowded_flash_brightness
+            <= 1.0 + CombatPresentationSettings::default().reaction_flash_cap + 0.001,
         "the combined flash must stay capped below full overexposure",
     );
+}
+
+#[test]
+fn opposing_simultaneous_hits_keep_one_deterministic_recoil() {
+    let positions = [Vec2::NEG_X * 64.0, Vec2::X * 64.0];
+    let (forward_reaction, _) = injected_reaction(&positions, &[0, 1], &[0, 1]);
+    let (reverse_reaction, _) = injected_reaction(&positions, &[1, 0], &[1, 0]);
+
+    assert!(forward_reaction.length() > 0.0);
+    assert!(forward_reaction.distance(reverse_reaction) < 0.001);
 }
 
 #[test]
@@ -801,8 +827,8 @@ fn combat_presentation_hides_at_tactical_zoom_and_expires_while_hidden() {
         ))
         .id();
     app.update();
-    let attacker_visual = visual_child(app.world(), attacker);
-    let target_visual = visual_child(app.world(), target);
+    let attacker_visual = common::nanobot_visual_child(app.world(), attacker);
+    let target_visual = common::nanobot_visual_child(app.world(), target);
     let settings = *app.world().resource::<CombatPresentationSettings>();
     let target_snapshot = CombatVisualSnapshot {
         entity: target,

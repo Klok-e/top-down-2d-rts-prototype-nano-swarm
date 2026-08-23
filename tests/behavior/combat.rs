@@ -5,11 +5,12 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, UNCONTESTED_CAPTURE_TICKS},
     nanobot::{
-        Charge, CombatAppearance, CombatPlugin, DefendHold, DefendPressure, DefenderAttackCooldown,
-        DirectMovementComponent, EMPTY_CHARGE_DAMAGE_INTERVAL_TICKS, Health, NanobotType,
-        OwnerSwarm, PlannedKind, ResolvedCombatDeath, ResolvedCombatFact, Structure,
-        StructureCombatAppearance, StructureKind, Swarm, SwarmId, SwarmMember,
-        defender_health_loss_when_empty_system, nanobot_death_cleanup_system,
+        Charge, CombatAppearance, CombatPlugin, DEFENDER_ATTACK_INTERVAL_TICKS, DefendHold,
+        DefendPressure, DefenderAttackCooldown, DirectMovementComponent,
+        EMPTY_CHARGE_DAMAGE_INTERVAL_TICKS, Health, NanobotType, OwnerSwarm, PlannedKind,
+        ResolvedCombatDeath, ResolvedCombatFact, Structure, StructureCombatAppearance,
+        StructureKind, Swarm, SwarmId, SwarmMember, defender_health_loss_when_empty_system,
+        nanobot_death_cleanup_system,
     },
     structure_sprites::StructureVisual,
 };
@@ -337,6 +338,122 @@ fn nearby_hostile_without_delivered_damage_publishes_no_resolved_hit() {
     assert_eq!(
         app.world().entity(target).get::<Health>().unwrap().current,
         100,
+    );
+    assert!(resolved_facts(&app).is_empty());
+}
+
+#[test]
+fn zero_health_nanobot_preserves_targeting_and_cadence_without_publishing_a_hit() {
+    let mut app = common::sim_app_with_defend();
+    app.add_plugins(CombatPlugin);
+    let cell = IVec2::ZERO;
+    let center = common::cell_world_center(cell);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let attacker = common::spawn_defender_at(&mut app, center - Vec2::X * 16.0);
+    app.world_mut()
+        .entity_mut(attacker)
+        .insert(DefendHold { cell });
+    let target = common::spawn_worker_at(&mut app, center + Vec2::X * 16.0);
+    app.world_mut().entity_mut(target).insert((
+        SwarmMember::new(SwarmId(11)),
+        Health {
+            current: 0,
+            max: 100,
+        },
+    ));
+    let live_target = common::spawn_worker_at(&mut app, center + Vec2::X * 32.0);
+    app.world_mut()
+        .entity_mut(live_target)
+        .insert(SwarmMember::new(SwarmId(11)));
+
+    app.update();
+
+    assert_eq!(
+        app.world().entity(target).get::<Health>().unwrap().current,
+        0
+    );
+    assert_eq!(
+        app.world()
+            .entity(live_target)
+            .get::<Health>()
+            .unwrap()
+            .current,
+        100,
+        "the pre-existing target ordering must not fall through to a live target",
+    );
+    assert_eq!(
+        app.world()
+            .entity(attacker)
+            .get::<DefenderAttackCooldown>()
+            .unwrap()
+            .ticks_remaining,
+        DEFENDER_ATTACK_INTERVAL_TICKS - 1,
+        "the pre-existing attack path must still consume the cooldown",
+    );
+    assert!(resolved_facts(&app).is_empty());
+}
+
+#[test]
+fn zero_health_structure_preserves_targeting_and_cadence_without_publishing_a_hit() {
+    let mut app = common::sim_app_with_defend();
+    app.add_plugins(CombatPlugin);
+    let cell = IVec2::ZERO;
+    let center = common::cell_world_center(cell);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let attacker = common::spawn_defender_at(&mut app, center - Vec2::X * 16.0);
+    app.world_mut()
+        .entity_mut(attacker)
+        .insert(DefendHold { cell });
+    let enemy_swarm = app.world_mut().spawn((Swarm {}, SwarmId(11))).id();
+    let structure = app
+        .world_mut()
+        .spawn((
+            Structure::new(StructureKind::Basic),
+            OwnerSwarm(enemy_swarm),
+            Transform::from_translation((center + Vec2::X * 16.0).extend(0.0)),
+        ))
+        .id();
+    app.world_mut()
+        .entity_mut(structure)
+        .get_mut::<Structure>()
+        .unwrap()
+        .health = 0;
+    let live_structure = app
+        .world_mut()
+        .spawn((
+            Structure::new(StructureKind::Basic),
+            OwnerSwarm(enemy_swarm),
+            Transform::from_translation((center + Vec2::X * 32.0).extend(0.0)),
+        ))
+        .id();
+
+    app.update();
+
+    assert_eq!(
+        app.world()
+            .entity(live_structure)
+            .get::<Structure>()
+            .unwrap()
+            .health,
+        Structure::new(StructureKind::Basic).health,
+        "the pre-existing target ordering must not fall through to a live structure",
+    );
+    assert_eq!(
+        app.world()
+            .entity(attacker)
+            .get::<DefenderAttackCooldown>()
+            .unwrap()
+            .ticks_remaining,
+        DEFENDER_ATTACK_INTERVAL_TICKS - 1,
+        "the pre-existing attack path must still consume the cooldown",
     );
     assert!(resolved_facts(&app).is_empty());
 }
