@@ -1,42 +1,12 @@
 //! Defend Zone behavior for Defender nanobots.
 //!
-//! Issue #13 contract: Defenders protect assets in Defend Zones and
-//! advance when Defend Zone intent is painted into enemy territory.
-//! This is the initial attack/advance behavior; no separate Attack
-//! Zone is added. Combat uses swarm systems rather than group
-//! commands -- every Defender is an autonomous agent that picks its
-//! own work from the global Defend intent.
+//! Defenders protect assets and advance through painted Defend intent.
+//! Combat uses swarm systems rather than group commands; regional
+//! allocation supplies each Defender's current work claim.
 //!
-//! Issue #37 contract: Defenders spread across painted Defend cells
-//! using spatial-pressure scoring instead of clustering at cell
-//! centers. See `docs/adr/0007-defender-spatial-pressure.md`. The
-//! scoring (type fit, distance, commitment):
-//!
-//! - each painted cell provides one baseline soft work slot;
-//! - **physical density** (every nanobot in the candidate cell)
-//!   plus **defender reservations** (the `(cell, Defend)` soft
-//!   work slot) combine into a single soft crowding penalty that
-//!   never hard-rejects a cell;
-//! - **defend pressure** (per-cell hook, defaulting to baseline)
-//!   scales the cell's need so future enemy-in-cell pressure can
-//!   raise the score without changing the scoring architecture;
-//! - the scoring defender's **own body and reservation are
-//!   excluded** so a holding defender re-scoring its own cell is
-//!   not over-penalised by itself.
-//!
-//! State machine carried on the defender by marker components:
-//!
-//! ```text
-//!   Idle -> (assignment system) -> Moving (DefendAssignment + DMC)
-//!   Moving -> (arrive system)   -> Holding (DefendAssignment + DefendHold)
-//!   Holding -> (assignment system, hysteresis) -> Moving (new DefendAssignment)
-//! ```
-//!
-//! "Enemy territory" is defined as a Defend cell whose Chebyshev
-//! distance from the Swarm's cell is greater than
-//! [`DEFEND_HOME_RADIUS_CELLS`]. Cells inside the radius are
-//! "friendly territory" and defenders holding there are guarding the
-//! swarm; cells outside are the frontier the swarm is pushing into.
+//! Regional allocation is the sole source of Defender assignments.
+//! This module owns the Defend lifecycle after allocation: movement
+//! arrival, supported-cell holding, and local containment.
 //!
 //! Arrival treats the assigned Defend cell as an area, not a point:
 //! a defender counts as arrived once it is within
@@ -53,23 +23,10 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::ZONE_BLOCK_SIZE;
-use crate::intent::{IntentCell, IntentGrid, IntentKind};
-use crate::nanobot::autonomy::{Commitment, IntentCandidate, NanobotType, SoftWorkSlots};
-use crate::nanobot::charge::{ChargerAssignment, ChargerProgress};
+use crate::intent::{IntentGrid, IntentKind};
+use crate::nanobot::autonomy::NanobotType;
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, SwarmMember};
-use crate::nanobot::gather::world_to_cell;
-use crate::nanobot::spatial_pressure::{
-    CellDensity, cell_density_system, crowding_factor, point_in_cell,
-};
-
-/// Number of cells around the Swarm that count as "friendly
-/// territory". A Defend cell at Chebyshev distance greater than this
-/// from the Swarm's cell is "enemy territory" and triggers the
-/// advance behavior. Tuned to be small enough that the test grid
-/// (8x8) has both friendly and enemy cells relative to a Swarm at
-/// (0, 0), and large enough that a single Defend cell painted at the
-/// Swarm origin is unambiguously friendly.
-pub const DEFEND_HOME_RADIUS_CELLS: i32 = 1;
+use crate::nanobot::spatial_pressure::point_in_cell;
 
 /// In-cell arrival and containment stop radius. A defender counts
 /// as "arrived" at its assigned Defend cell once it is within this
@@ -84,18 +41,6 @@ pub const DEFEND_HOME_RADIUS_CELLS: i32 = 1;
 /// the extent-less sentinel.
 pub const DEFEND_IN_CELL_STOP_RADIUS: f32 = ZONE_BLOCK_SIZE * 0.4;
 
-/// Hysteresis margin for holding-defender retargeting. A holding
-/// defender re-scores Defend cells every tick but only retargets
-/// when another cell's score beats its current cell's score by
-/// this fraction (i.e. `candidate > current * (1 + margin)`). The
-/// margin prevents defenders from oscillating between two nearly
-/// equally attractive cells and keeps cross-cell spreading an
-/// assignment-driven decision rather than uncontrolled drift.
-/// Erased current paint is exempt: when the held cell's Defend
-/// paint is gone its score is zero, so any remaining candidate
-/// clears the margin immediately.
-pub const DEFEND_RETARGET_HYSTERESIS: f32 = 0.25;
-
 /// Baseline defend-pressure need multiplier applied to every
 /// Defend cell. The [`DefendPressure`] hook multiplies this
 /// baseline; cells with no explicit entry score at baseline, and
@@ -105,26 +50,8 @@ pub const DEFEND_RETARGET_HYSTERESIS: f32 = 0.25;
 /// creating defender work outside Defend paint.
 pub const DEFEND_PRESSURE_BASELINE: f32 = 1.0;
 
-/// True when `cell` is in "enemy territory" relative to
-/// `swarm_cell`: the Chebyshev distance between the two cells
-/// exceeds `home_radius_cells`. Inside the radius the cell is
-/// friendly territory and defenders there are guarding the swarm;
-/// outside it is the frontier and defenders are advancing.
-///
-/// Chebyshev distance (king-move) is the natural grid-cell distance
-/// because a Defend cell is a square zone: any cell within
-/// `home_radius_cells` king-moves of the swarm is "in range" of the
-/// swarm's defensive umbrella. Using Manhattan distance would
-/// over-count diagonal cells as far away and produce a diamond
-/// shape; Chebyshev produces a square that matches the zone grid.
-pub fn is_enemy_territory(cell: IVec2, swarm_cell: IVec2, home_radius_cells: i32) -> bool {
-    let dx = (cell.x - swarm_cell.x).abs();
-    let dy = (cell.y - swarm_cell.y).abs();
-    dx.max(dy) > home_radius_cells
-}
-
 /// World position of the center of `cell`. Matches
-/// `ai::get_world_from_zone` so the assignment system and the test
+/// `ai::get_world_from_zone` so the regional allocator and test
 /// seam agree on the center.
 fn cell_center_world(cell: IVec2) -> Vec2 {
     Vec2::new(
@@ -134,7 +61,7 @@ fn cell_center_world(cell: IVec2) -> Vec2 {
 }
 
 /// Marks a Defender as committed to a specific Defend cell. Set by
-/// the assignment system when the defender picks a Defend candidate;
+/// the regional allocator when the defender claims a Defend cell;
 /// cleared when the defender transitions into hold state (the
 /// `DefendHold` marker takes over) or when the defender is re-routed
 /// to a new cell.
@@ -155,14 +82,14 @@ pub struct DefendAssignment {
 /// [`DirectMovementComponent`] only for cosmetic containment -- if
 /// separation forces pushed it outside its assigned cell the hold
 /// system re-inserts a DMC to pull it back to the nearest in-cell
-/// point. The soft work slot stays occupied for the entire hold
+/// point. The regional lease stays active for the entire hold
 /// duration; the hold system releases it when the cell's paint is
-/// erased or the assignment system re-routes the defender.
+/// erased or regional allocation replaces the claim.
 ///
 /// The hold is "the cell is still painted and the defender stays
 /// inside it", not "the defender stands on the exact center". Local
 /// cosmetic de-clumping via separation forces is allowed inside the
-/// cell; cross-cell movement is assignment-driven.
+/// cell; cross-cell movement is allocator-driven.
 #[derive(Debug, Component, Clone, Copy)]
 pub struct DefendHold {
     pub cell: IVec2,
@@ -235,329 +162,6 @@ impl DefendPressure {
     }
 }
 
-/// Information about the defender being scored, used to exclude its
-/// own body and reservation from candidate crowding. A holding
-/// defender's body sits in its held cell and its reservation sits
-/// on the `(held_cell, Defend)` soft work slot; without excluding
-/// both, re-scoring its own cell would over-penalise the cell it is
-/// correctly holding.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DefendSelfExclusion {
-    /// Cell the defender is physically standing in (its body).
-    pub physical_cell: IVec2,
-    /// Cell the defender holds a reservation for (its assigned or
-    /// held Defend cell), if any. `None` for an idle defender that
-    /// has not yet been assigned.
-    pub reserved_cell: Option<IVec2>,
-}
-
-/// Score one Defend cell using pressure, distance, baseline capacity-one soft
-/// crowding, and commitment. Pressure may outweigh crowding and pull extras.
-fn score_defend_cell(
-    commitment: Commitment,
-    nanobot_pos: Vec2,
-    candidate_cell: IVec2,
-    defend_pressure: f32,
-    physical_density: u32,
-    reservations: u32,
-    cell_size: f32,
-) -> f32 {
-    let type_fit = NanobotType::Defender.fit_for(IntentKind::Defend);
-
-    let candidate_pos = Vec2::new(
-        (candidate_cell.x as f32 + 0.5) * cell_size,
-        (candidate_cell.y as f32 + 0.5) * cell_size,
-    );
-    let raw_distance = nanobot_pos.distance(candidate_pos);
-    let distance_penalty = 1.0 / (1.0 + raw_distance / cell_size.max(1.0));
-
-    let occupancy = physical_density + reservations;
-    let crowding = crowding_factor(occupancy, 1);
-
-    let reassess = commitment.reassess_factor();
-    let need = defend_pressure.max(0.0);
-
-    type_fit * need * distance_penalty * crowding * reassess
-}
-
-/// Resolve per-cell scoring factors while excluding scoring defender's body and
-/// reservation.
-#[allow(clippy::type_complexity)]
-fn resolve_defend_factors(
-    cell: IVec2,
-    slots: &SoftWorkSlots,
-    density: &CellDensity,
-    pressure: &DefendPressure,
-    swarm: crate::nanobot::components::SwarmId,
-    exclusion: DefendSelfExclusion,
-) -> (f32, u32, u32) {
-    let physical_raw = density.density(cell);
-    let physical = if cell == exclusion.physical_cell {
-        physical_raw.saturating_sub(1)
-    } else {
-        physical_raw
-    };
-    let reservations_raw = slots.occupied(cell, IntentKind::Defend);
-    let reservations = if exclusion.reserved_cell == Some(cell) {
-        reservations_raw.saturating_sub(1)
-    } else {
-        reservations_raw
-    };
-    let pressure_val = pressure.get_for(swarm, cell);
-    (pressure_val, physical, reservations)
-}
-
-/// Score every visible owned Defend cell. Baseline capacity is one per cell;
-/// physical density and reservations apply soft crowding.
-///
-/// Returns [`None`] when no visible owned Defend cell exists; the
-/// caller decides what to do (a holding defender in this case will
-/// be released by the hold system on the next tick when its paint
-/// is gone).
-#[allow(clippy::too_many_arguments)]
-pub fn best_defend_candidate(
-    grid: &IntentGrid,
-    commitment: Commitment,
-    nanobot_pos: Vec2,
-    slots: &SoftWorkSlots,
-    density: &CellDensity,
-    pressure: &DefendPressure,
-    cell_size: f32,
-    swarm: crate::nanobot::components::SwarmId,
-    exclusion: DefendSelfExclusion,
-) -> Option<IntentCandidate> {
-    let mut best: Option<IntentCandidate> = None;
-    for (cell, intent_cell) in grid.iter_active_cells() {
-        if !intent_cell.has(IntentKind::Defend) {
-            continue;
-        }
-        if !intent_cell.visible_to(IntentKind::Defend, swarm) {
-            continue;
-        }
-        let (pressure_val, physical, reservations) =
-            resolve_defend_factors(cell, slots, density, pressure, swarm, exclusion);
-        let score = score_defend_cell(
-            commitment,
-            nanobot_pos,
-            cell,
-            pressure_val,
-            physical,
-            reservations,
-            cell_size,
-        );
-        if best.is_none_or(|c| score > c.score) {
-            let candidate_pos = Vec2::new(
-                (cell.x as f32 + 0.5) * cell_size,
-                (cell.y as f32 + 0.5) * cell_size,
-            );
-            best = Some(IntentCandidate {
-                cell,
-                kind: IntentKind::Defend,
-                score,
-                need: pressure_val,
-                distance: nanobot_pos.distance(candidate_pos),
-                // slot_count is repurposed to carry the resolved
-                // occupancy (physical + reservations, self
-                // excluded) so debug callers see the crowding the
-                // scorer actually used.
-                slot_count: physical + reservations,
-            });
-        }
-    }
-
-    best
-}
-
-/// Score a specific Defend cell for a defender using the same
-/// spatial-pressure model as [`best_defend_candidate`]. Used by the
-/// assignment system's hysteresis check to compare the candidate
-/// against the defender's currently held cell. Returns `None` when
-/// the cell is no longer a painted, visible Defend cell (its score
-/// is effectively zero, so any remaining candidate clears
-/// hysteresis).
-#[allow(clippy::too_many_arguments)]
-fn score_specific_defend_cell(
-    grid: &IntentGrid,
-    commitment: Commitment,
-    nanobot_pos: Vec2,
-    cell: IVec2,
-    slots: &SoftWorkSlots,
-    density: &CellDensity,
-    pressure: &DefendPressure,
-    cell_size: f32,
-    swarm: crate::nanobot::components::SwarmId,
-    exclusion: DefendSelfExclusion,
-) -> Option<f32> {
-    let intent_cell: &IntentCell = grid.cell(cell)?;
-    if !intent_cell.has(IntentKind::Defend) {
-        return None;
-    }
-    if !intent_cell.visible_to(IntentKind::Defend, swarm) {
-        return None;
-    }
-    let (pressure_val, physical, reservations) =
-        resolve_defend_factors(cell, slots, density, pressure, swarm, exclusion);
-    Some(score_defend_cell(
-        commitment,
-        nanobot_pos,
-        cell,
-        pressure_val,
-        physical,
-        reservations,
-        cell_size,
-    ))
-}
-
-/// For each Defender that is idle OR holding a cell, score the
-/// Defend intent globally with spatial pressure and (re)assign the
-/// defender to the best-scoring cell.
-///
-/// **Idle defenders** are assigned the best-scoring Defend cell
-/// outright: the cell's soft work slot is occupied and a
-/// `DefendAssignment` + `DirectMovementComponent` (center target
-/// with [`DEFEND_IN_CELL_STOP_RADIUS`]) is inserted.
-///
-/// **Holding defenders** re-score every tick but only retarget when
-/// another cell's score beats the current held cell's score by the
-/// configured [`DEFEND_RETARGET_HYSTERESIS`] margin. Erased current
-/// paint makes the held cell's score zero, so any remaining
-/// candidate clears the margin and retargets immediately. This is
-/// the "advance / redistribute" path: cross-cell spreading is
-/// assignment-driven, not uncontrolled drift.
-///
-/// A defender in transit (`DefendAssignment` present) is not picked
-/// up: it is already committed to its current move and will reach
-/// the cell, enter hold, and only then be eligible for re-assignment
-/// on a later tick. A defender en route to a charger or already
-/// charging (`ChargerAssignment` / `ChargerProgress`) is also
-/// skipped so the charge sustain loop owns it until it releases the
-/// markers.
-///
-/// Per-iteration slot snapshots make same-tick picks spread: each
-/// defender sees the cells earlier defenders in the same tick
-/// already occupied, so a wave of idle defenders does not pile onto
-/// the same closest cell.
-#[allow(clippy::type_complexity)]
-pub fn defender_assignment_system(
-    mut commands: Commands,
-    grid: Res<IntentGrid>,
-    mut slots: ResMut<SoftWorkSlots>,
-    density: Res<CellDensity>,
-    pressure: Res<DefendPressure>,
-    defenders: Query<
-        (
-            Entity,
-            &Transform,
-            &Commitment,
-            &NanobotType,
-            &SwarmMember,
-            Option<&DefendHold>,
-        ),
-        (
-            With<Nanobot>,
-            With<NanobotType>,
-            Without<DefendAssignment>,
-            Without<DirectMovementComponent>,
-            // Defenders en route to a charger or already
-            // charging must not be re-routed to a fresh
-            // Defend cell until the charge loop releases
-            // them. The rotation system drops the hold and
-            // inserts the charger markers; the assignment
-            // system must wait for both markers to clear.
-            Without<ChargerAssignment>,
-            Without<ChargerProgress>,
-        ),
-    >,
-) {
-    for (entity, transform, commitment, nanobot_type, swarm_member, hold) in &defenders {
-        if *nanobot_type != NanobotType::Defender {
-            continue;
-        }
-        if *commitment != Commitment::Idle {
-            continue;
-        }
-
-        let defender_pos = transform.translation.truncate();
-        let exclusion = DefendSelfExclusion {
-            physical_cell: world_to_cell(defender_pos),
-            reserved_cell: hold.map(|h| h.cell),
-        };
-
-        // Per-iteration snapshot so each defender sees the picks
-        // made by earlier defenders in the same tick. Without
-        // this, a swarm of defenders at the same starting point
-        // would all pile onto the same closest Defend cell; with
-        // it, soft work slot pressure spreads them across cells.
-        let slots_snapshot = slots.clone();
-        let Some(candidate) = best_defend_candidate(
-            &grid,
-            *commitment,
-            defender_pos,
-            &slots_snapshot,
-            &density,
-            &pressure,
-            ZONE_BLOCK_SIZE,
-            swarm_member.0,
-            exclusion,
-        ) else {
-            continue;
-        };
-
-        // Holding defenders apply hysteresis before the shared
-        // assignment path: keep the current cell unless another
-        // cell beats it by the configured margin, and treat a
-        // same-cell candidate as a no-op. Idle defenders skip
-        // straight to the assignment.
-        if let Some(old_hold) = hold {
-            if candidate.cell == old_hold.cell {
-                continue;
-            }
-            let current_score = score_specific_defend_cell(
-                &grid,
-                *commitment,
-                defender_pos,
-                old_hold.cell,
-                &slots_snapshot,
-                &density,
-                &pressure,
-                ZONE_BLOCK_SIZE,
-                swarm_member.0,
-                exclusion,
-            )
-            .unwrap_or(0.0);
-            let threshold = current_score * (1.0 + DEFEND_RETARGET_HYSTERESIS);
-            if candidate.score <= threshold {
-                // No candidate clears hysteresis. The defender
-                // keeps holding its current cell.
-                continue;
-            }
-            // Retarget: release the old slot and drop the hold so
-            // the shared assignment path below re-reserves the
-            // new cell. Same-tick slot pressure on the new cell
-            // prevents a second defender from piling on behind.
-            slots.release(old_hold.cell, IntentKind::Defend);
-            commands.entity(entity).remove::<DefendHold>();
-        }
-
-        // Shared assignment for the idle and retarget paths:
-        // reserve the candidate cell against same-tick followers
-        // and send the defender toward the cell center with the
-        // in-cell stop radius so it counts as arrived once it is
-        // meaningfully inside the cell.
-        let cell_world = cell_center_world(candidate.cell);
-        slots.occupy(candidate.cell, IntentKind::Defend);
-        commands.entity(entity).insert((
-            DefendAssignment {
-                cell: candidate.cell,
-            },
-            DirectMovementComponent {
-                xy: cell_world,
-                stop_radius: DEFEND_IN_CELL_STOP_RADIUS,
-            },
-        ));
-    }
-}
-
 /// Detect a Defender that has arrived at its assigned Defend cell
 /// and transition it into the hold state. The trigger is the same
 /// as the rest of the simulation: the movement system removes the
@@ -611,9 +215,9 @@ pub fn defender_arrive_system(
 /// as it is meaningfully inside again. This is cosmetic containment,
 /// not a new tactical assignment: no `DefendAssignment` is inserted.
 ///
-/// The slot is released when the cell's paint is erased, ownership changes to
-/// another swarm, or the assignment system re-routes the defender. The hold
-/// marker is removed so the next assignment pass sees an idle defender.
+/// The regional lease is released when the cell's paint is erased, ownership
+/// changes to another swarm, or regional allocation replaces the claim. The hold
+/// marker is removed so the next allocation pass can acquire new work.
 #[allow(clippy::type_complexity)]
 pub fn defender_hold_system(
     mut commands: Commands,
@@ -660,26 +264,18 @@ pub fn defender_hold_system(
     }
 }
 
-/// Plugin that wires the defender systems into the Update schedule.
-/// The chain runs after `move_velocity_system` so the movement
-/// system has already pruned arrived bots (which is the trigger the
-/// arrive system waits for). The density pass runs first so the
-/// assignment scorer sees the post-movement physical layout; the
-/// assignment system runs before arrive and hold so a freshly
-/// repainted cell can re-route a holder on the same tick.
+/// Plugin that wires the defender lifecycle into the fixed schedule.
+/// The chain runs after movement and regional allocation. Allocation
+/// owns assignment; these systems only transition arrival and hold
+/// state.
 pub struct DefendPlugin;
 
 impl Plugin for DefendPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<CellDensity>();
         app.init_resource::<DefendPressure>();
         app.add_systems(
             FixedUpdate,
-            (
-                cell_density_system,
-                defender_arrive_system,
-                defender_hold_system,
-            )
+            (defender_arrive_system, defender_hold_system)
                 .chain()
                 .after(crate::nanobot::RegionalAllocationSet::Acquire)
                 .after(crate::nanobot::NanobotSimulationSet::Movement),
@@ -689,75 +285,10 @@ impl Plugin for DefendPlugin {
 
 #[cfg(test)]
 mod tests {
-    //! Pure-helper unit tests for `is_enemy_territory` and the
-    //! spatial-pressure scoring model. The end-to-end contracts
-    //! (defender selection, hold, advance, hysteresis) live in
-    //! `tests/defend_zone_behavior.rs`.
+    //! Pure-resource tests. End-to-end Defender contracts live in
+    //! `tests/behavior/defend_zone.rs`.
 
     use super::*;
-    use crate::intent::IntentGrid;
-
-    #[test]
-    fn cell_at_swarm_origin_is_friendly_territory() {
-        // A cell at the Swarm's position is unambiguously
-        // friendly: Chebyshev distance is 0, well within any
-        // positive radius.
-        let cell = IVec2::new(0, 0);
-        let swarm = IVec2::new(0, 0);
-        assert!(!is_enemy_territory(cell, swarm, 1));
-        assert!(!is_enemy_territory(cell, swarm, 2));
-    }
-
-    #[test]
-    fn cell_at_radius_boundary_is_friendly_territory() {
-        // A cell whose Chebyshev distance equals the radius
-        // sits exactly on the boundary and counts as
-        // friendly. The check is `> radius`, not `>=`, so the
-        // radius cell is friendly and the radius-plus-one cell
-        // is enemy.
-        let swarm = IVec2::new(0, 0);
-        assert!(!is_enemy_territory(IVec2::new(1, 0), swarm, 1));
-        assert!(!is_enemy_territory(IVec2::new(0, 1), swarm, 1));
-        assert!(!is_enemy_territory(IVec2::new(1, 1), swarm, 1));
-    }
-
-    #[test]
-    fn cell_one_past_radius_is_enemy_territory() {
-        // Chebyshev distance strictly greater than the radius
-        // is enemy territory. With radius 1, a cell two king-
-        // moves away from the swarm is enemy.
-        let swarm = IVec2::new(0, 0);
-        assert!(is_enemy_territory(IVec2::new(2, 0), swarm, 1));
-        assert!(is_enemy_territory(IVec2::new(0, 2), swarm, 1));
-        assert!(is_enemy_territory(IVec2::new(2, 2), swarm, 1));
-        assert!(is_enemy_territory(IVec2::new(-2, -1), swarm, 1));
-    }
-
-    #[test]
-    fn territory_classification_is_symmetric_under_swarm_offset() {
-        // Moving both the cell and the swarm by the same
-        // vector must not change the classification. This pins
-        // the "territory is a relative concept" contract.
-        let cell = IVec2::new(5, -3);
-        let swarm = IVec2::new(2, -1);
-        let offset = IVec2::new(10, 7);
-        let original = is_enemy_territory(cell, swarm, 1);
-        let shifted = is_enemy_territory(cell + offset, swarm + offset, 1);
-        assert_eq!(original, shifted);
-    }
-
-    #[test]
-    fn zero_radius_makes_only_swarm_cell_friendly() {
-        // A radius of 0 means only the Swarm's own cell is
-        // friendly territory. Every other cell, including
-        // diagonals, is enemy. This is the "no home
-        // territory" edge case a follow-up issue can use.
-        let swarm = IVec2::new(0, 0);
-        assert!(!is_enemy_territory(IVec2::new(0, 0), swarm, 0));
-        assert!(is_enemy_territory(IVec2::new(1, 0), swarm, 0));
-        assert!(is_enemy_territory(IVec2::new(0, 1), swarm, 0));
-        assert!(is_enemy_territory(IVec2::new(1, 1), swarm, 0));
-    }
 
     #[test]
     fn defend_pressure_defaults_to_baseline_and_is_overridable() {
@@ -776,118 +307,5 @@ mod tests {
         pressure.remove(IVec2::new(1, 1));
         assert!(pressure.is_empty());
         assert_eq!(pressure.get(IVec2::new(1, 1)), DEFEND_PRESSURE_BASELINE);
-    }
-
-    #[test]
-    fn best_defend_candidate_excludes_self_body_and_reservation() {
-        // A holding defender re-scoring must not count its own
-        // body or reservation, otherwise its own cell would look
-        // crowded by itself. Two equally-painted, equidistant
-        // cells with the defender holding one of them: the
-        // held cell must score equal to (not below) the empty
-        // cell, proving self-exclusion.
-        let mut grid = IntentGrid::new(4, 4);
-        let held = IVec2::new(-1, 0);
-        let other = IVec2::new(1, 0);
-        grid.paint(held, IntentKind::Defend);
-        grid.paint(other, IntentKind::Defend);
-
-        let mut slots = SoftWorkSlots::new();
-        // The defender holds `held`: one reservation there.
-        slots.occupy(held, IntentKind::Defend);
-        let density = CellDensity::default();
-        let pressure = DefendPressure::default();
-
-        // Defender stands at the held cell center.
-        let pos = cell_center_world_for_test(held);
-        let exclusion = DefendSelfExclusion {
-            physical_cell: held,
-            reserved_cell: Some(held),
-        };
-        let candidate = best_defend_candidate(
-            &grid,
-            Commitment::Idle,
-            pos,
-            &slots,
-            &density,
-            &pressure,
-            ZONE_BLOCK_SIZE,
-            crate::nanobot::components::SwarmId::PLAYER,
-            exclusion,
-        )
-        .expect("must find a candidate");
-
-        // Without self-exclusion the held cell would be crowded
-        // (1 body + 1 reservation) and lose to the empty `other`
-        // cell. With self-exclusion both cells are equally
-        // attractive, so the held cell (closer, distance ~0)
-        // wins.
-        assert_eq!(
-            candidate.cell, held,
-            "self-excluded held cell must beat or tie the empty cell"
-        );
-    }
-
-    #[test]
-    fn defend_pressure_hook_raises_a_cells_score() {
-        // The pressure hook multiplies a cell's need. Two
-        // equally-painted, equidistant cells: raising one cell's
-        // pressure above baseline must make it win.
-        let mut grid = IntentGrid::new(4, 4);
-        let a = IVec2::new(-1, 0);
-        let b = IVec2::new(1, 0);
-        grid.paint(a, IntentKind::Defend);
-        grid.paint(b, IntentKind::Defend);
-
-        let mut slots = SoftWorkSlots::new();
-        slots.occupy(b, IntentKind::Defend);
-        let density = CellDensity::default();
-        let mut pressure = DefendPressure::default();
-        pressure.set(b, 3.0);
-
-        let pos = Vec2::new(0.5 * ZONE_BLOCK_SIZE, 0.5 * ZONE_BLOCK_SIZE);
-        let exclusion = DefendSelfExclusion::default();
-        let candidate = best_defend_candidate(
-            &grid,
-            Commitment::Idle,
-            pos,
-            &slots,
-            &density,
-            &pressure,
-            ZONE_BLOCK_SIZE,
-            crate::nanobot::components::SwarmId::PLAYER,
-            exclusion,
-        )
-        .expect("must find a candidate");
-        assert_eq!(candidate.cell, b, "pressurised cell must win");
-    }
-
-    #[test]
-    fn best_defend_candidate_returns_none_when_no_defend_paint() {
-        let grid = IntentGrid::new(4, 4);
-        let slots = SoftWorkSlots::new();
-        let density = CellDensity::default();
-        let pressure = DefendPressure::default();
-        let candidate = best_defend_candidate(
-            &grid,
-            Commitment::Idle,
-            Vec2::new(0.0, 0.0),
-            &slots,
-            &density,
-            &pressure,
-            ZONE_BLOCK_SIZE,
-            crate::nanobot::components::SwarmId::PLAYER,
-            DefendSelfExclusion::default(),
-        );
-        assert!(candidate.is_none());
-    }
-
-    /// Local copy of the cell-center formula so this test module
-    /// does not depend on the private `cell_center_world` helper.
-    fn cell_center_world_for_test(cell: IVec2) -> Vec2 {
-        Vec2::new(
-            (cell.x as f32 + 0.5) * ZONE_BLOCK_SIZE,
-            (cell.y as f32 + 0.5) * ZONE_BLOCK_SIZE,
-        )
     }
 }

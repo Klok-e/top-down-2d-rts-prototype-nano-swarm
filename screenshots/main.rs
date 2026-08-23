@@ -22,6 +22,7 @@
 use libtest_mimic::{Arguments, Conclusion, Failed, Trial};
 
 mod build_zone_placement;
+mod defender_combat_readability;
 mod defender_spread;
 mod fill_indicators;
 mod harness;
@@ -85,6 +86,10 @@ fn main() -> std::process::ExitCode {
         .with_ignored_flag(true),
         Trial::test("build_zone_placement", || {
             run(build_zone_placement::build_zone_placement)
+        })
+        .with_ignored_flag(true),
+        Trial::test("defender_combat_readability", || {
+            run(defender_combat_readability::defender_combat_readability)
         })
         .with_ignored_flag(true),
         Trial::test("defender_spread", || run(defender_spread::defender_spread))

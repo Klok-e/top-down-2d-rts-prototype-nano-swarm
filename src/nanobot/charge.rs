@@ -31,21 +31,21 @@
 //! a working charger reachable: the defender leaves hold,
 //! walks to the charger, and starts charging.
 //!
-//! Soft work slot occupancy is reused: a defender holding a
-//! Defend cell occupies `(cell, Defend)`. The rotation system
-//! releases the slot when the defender leaves hold. A separate
-//! slot for the charger path is not modelled in the first
-//! implementation because each defender visits at most one
-//! charger at a time, so the slot would not add new pressure.
+//! Regional leases remain active while a Defender holds its cell and are
+//! suspended during a charge trip. Charger capacity is tracked from live
+//! assignments, so returning Defenders request lease resumption without
+//! displacing a replacement that acquired the released capacity.
 //!
 //! Logistics: a `Charger` carries a `Stockpile`-shaped physical
 //! buffer of `ResourceKind::Minerals`. Defenders charging from
-//! the buffer drain it at a fixed per-tick rate; when the
+//! the buffer consume one mineral per supplied pulse; when the
 //! buffer is empty, the charger is not "working" and defenders
 //! will not rotate to it. Haulers (issue #8) deliver material
 //! to the buffer so a defended cell with active logistics
 //! stays charged. A defended cell with no haulers reaching it
 //! gradually loses charger material and the defenders degrade.
+
+use std::collections::HashMap;
 
 use bevy::prelude::*;
 
@@ -77,33 +77,17 @@ use crate::structure_sprites::StructureSprites;
 /// working charger.
 pub const MAX_CHARGE: f32 = 1.0;
 
-/// Passive Charge drain per `app.update()` tick for every
-/// defender with a `Charge` component. The drain models
-/// "Defenders use Charge" -- the sustain resource is consumed
-/// just by existing, not by active combat in the first
-/// implementation. The number is small enough that a
-/// `MAX_CHARGE` charge lasts on the order of a few hundred
-/// ticks so test scenarios do not need to drive the simulation
-/// for thousands of ticks to see the rotation trigger.
-pub const CHARGE_DRAIN_PER_TICK: f32 = 0.005;
+/// Passive Charge drain per fixed simulation tick.
+pub const CHARGE_DRAIN_PER_TICK: f32 = 0.00025;
 
-/// Charge refilled per tick while a defender is in a
-/// working charger's radius. Significantly larger than
-/// [`CHARGE_DRAIN_PER_TICK`] so the charge trends upward while
-/// a defender is charging rather than oscillating around a
-/// steady state. With `0.05` refill and `0.005` drain, an
-/// empty defender at a working charger recovers fully in
-/// `1.0 / (0.05 - 0.005) ~= 22` ticks; a partially charged
-/// defender recovers faster.
-pub const CHARGE_REFILL_PER_TICK: f32 = 0.05;
+/// Number of fixed ticks between supplied recharge pulses.
+pub const CHARGE_PULSE_INTERVAL_TICKS: u16 = 10;
 
-/// Charge per tick of `ResourceKind::Minerals` drained from a
-/// charger's `amount` while a defender is charging from it.
-/// The 1:1 ratio keeps the math obvious in the tests: a
-/// charger with `amount = 30` can sustain one defender for 30
-/// ticks. Production-side tuning can rebalance the ratio
-/// without changing the public contracts.
-pub const CHARGER_MATERIAL_DRAIN_PER_TICK: u32 = 1;
+/// Charge granted by one supplied recharge pulse.
+pub const CHARGE_PER_PULSE: f32 = 0.03;
+
+/// Minerals consumed by one supplied recharge pulse.
+pub const CHARGER_MATERIAL_PER_PULSE: u32 = 1;
 
 /// Charge level below which a defender's attack and defense
 /// are weakened. Above the threshold the modifier is 1.0;
@@ -125,13 +109,11 @@ pub const WEAKENED_CHARGE_THRESHOLD: f32 = 0.3;
 /// threshold the rotation kicks in.
 pub const LOW_CHARGE_THRESHOLD: f32 = 0.5;
 
-/// Health lost per tick by a defender with `charge <= 0.0`
-/// that is not currently charging (no `ChargerAssignment` and
-/// no `ChargerProgress`). The loss is the "ignored Charge"
-/// half of the acceptance criterion: a defender that empties
-/// its charge and has no working charger reachable drains
-/// health per tick, eventually collapsing the defender.
-pub const EMPTY_CHARGE_HEALTH_LOSS_PER_TICK: u32 = 2;
+/// Fixed ticks between health damage pulses at empty charge.
+pub const EMPTY_CHARGE_DAMAGE_INTERVAL_TICKS: u8 = 6;
+
+/// Health lost by one empty-charge damage pulse.
+pub const EMPTY_CHARGE_HEALTH_DAMAGE: u32 = 1;
 
 /// Material cost (in `ResourceKind::Minerals`) to fully stock
 /// a freshly auto-created charger. Sized to fit at least one
@@ -287,13 +269,13 @@ impl Charge {
 
 /// Marks a Defender as committed to a specific Charger. Set
 /// by the rotation system when the defender's charge is low
-/// and a working charger is reachable; cleared when the
-/// defender reaches the charger (the `ChargerProgress`
-/// marker takes over) or when the work system finishes the
-/// charging cycle.
+/// and a working charger is reachable; retained while the
+/// defender is in transit or charging, then cleared when
+/// the work system finishes the charging cycle.
 #[derive(Debug, Component, Clone, Copy)]
 pub struct ChargerAssignment {
     pub charger: Entity,
+    pub source_cell: IVec2,
 }
 
 /// Marks a Defender that has arrived at its assigned charger
@@ -306,23 +288,35 @@ pub struct ChargerProgress {
     pub charger: Entity,
 }
 
+/// Fixed-tick progress toward the next supplied recharge pulse.
+#[derive(Debug, Component, Clone, Copy, Default)]
+pub struct ChargerPulseProgress {
+    pub ticks_elapsed: u16,
+}
+
+/// Fixed-tick progress toward the next empty-charge damage pulse.
+#[derive(Debug, Component, Clone, Copy, Default)]
+pub struct EmptyChargeProgress {
+    pub ticks_elapsed: u8,
+}
+
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
 
 /// Minerals consumed while refilling one defender from `current` to `max`.
-/// Passive drain runs in the same schedule, so each charging tick gains the
-/// net refill and consumes one material unit.
+/// Each pulse spans [`CHARGE_PULSE_INTERVAL_TICKS`] drain ticks, then grants
+/// [`CHARGE_PER_PULSE`] charge when one mineral is available.
 pub fn minerals_to_fully_charge(current: f32, max: f32) -> u32 {
     if current >= max || max <= 0.0 {
         return 0;
     }
-    let net_refill = CHARGE_REFILL_PER_TICK - CHARGE_DRAIN_PER_TICK;
+    let net_refill =
+        CHARGE_PER_PULSE - CHARGE_DRAIN_PER_TICK * f32::from(CHARGE_PULSE_INTERVAL_TICKS);
     debug_assert!(net_refill > 0.0);
     let missing_ticks = (max - current.max(0.0)) / net_refill;
     let rounding_tolerance = f32::EPSILON * missing_ticks.abs().max(1.0) * 8.0;
-    let refill_ticks = (missing_ticks - rounding_tolerance).ceil() as u32;
-    refill_ticks.saturating_mul(CHARGER_MATERIAL_DRAIN_PER_TICK)
+    (missing_ticks - rounding_tolerance).ceil() as u32 * CHARGER_MATERIAL_PER_PULSE
 }
 
 /// Linear multiplier in `[0, 1]` derived from `charge`. A
@@ -345,19 +339,16 @@ pub fn charge_strength_multiplier(charge: f32) -> f32 {
 
 /// Effective attack for a defender with `charge` current. The
 /// base attack is a project constant; the multiplier comes
-/// from [`charge_strength_multiplier`]. The first
-/// implementation has no actual combat to consume the value;
-/// the function is the contract a future combat system reads
-/// to decide how much damage a defender's attack deals.
+/// from [`charge_strength_multiplier`]. Combat uses this
+/// value for delivered Defender damage.
 pub fn effective_attack(charge: f32) -> f32 {
     DEFENDER_BASE_ATTACK * charge_strength_multiplier(charge)
 }
 
 /// Effective defense for a defender with `charge` current.
 /// Mirrors [`effective_attack`]: base defense scaled by the
-/// charge multiplier. A future combat system reads this to
-/// decide how much damage a defender takes from an incoming
-/// attack.
+/// charge multiplier. Combat uses this value when resolving
+/// incoming Defender attacks.
 pub fn effective_defense(charge: f32) -> f32 {
     DEFENDER_BASE_DEFENSE * charge_strength_multiplier(charge)
 }
@@ -382,16 +373,11 @@ pub const DEFENDER_BASE_DEFENSE: f32 = 10.0;
 /// defender that has a `Charge` component. The system runs
 /// every tick so the drain is uniform regardless of the
 /// defender's current state (holding, in transit, charging).
-/// A defender that is currently charging from a working
-/// charger recovers faster than the drain (see
-/// [`CHARGE_REFILL_PER_TICK`]) so the charge trends upward
-/// while the defender is at the charger and trends downward
-/// everywhere else.
+/// A defender that is currently charging from a supplied charger recovers
+/// through discrete pulses while the charge trends downward everywhere else.
 ///
-/// The system uses `ChangeTrackers` would be a future
-/// optimisation; the first implementation iterates all
-/// defenders with `Charge` because the cost is trivial
-/// (a single `f32` decrement per defender per tick).
+/// The system iterates all defenders with `Charge`; the work
+/// is a single `f32` decrement per Defender per fixed tick.
 pub fn defender_charge_drain_system(
     mut defenders: Query<(&mut Charge, &NanobotType), With<Nanobot>>,
 ) {
@@ -403,24 +389,18 @@ pub fn defender_charge_drain_system(
     }
 }
 
-/// Drain Health for every defender whose Charge is empty and
-/// who is not currently addressing that empty charge (i.e.
-/// not in [`ChargerAssignment`] or [`ChargerProgress`]). The
-/// "ignored Charge" half of the issue: a defender that has
-/// dropped to zero charge and has no working charger to walk
-/// to loses health per tick.
-///
-/// The system is the "fallback" loop: if a defender has
-/// empty charge but is en route to a charger (ChargerAssignment)
-/// or already charging (ChargerProgress), the rotation chain
-/// has already picked them up and the defender is no longer
-/// "ignoring" the situation. The system is therefore a no-op
-/// for those defenders and only fires for holding defenders
-/// with empty charge and no reachable working charger.
+/// Apply one health damage pulse every six fixed ticks to an empty defender
+/// that is neither en route to nor charging at a Charger.
 #[allow(clippy::type_complexity)]
 pub fn defender_health_loss_when_empty_system(
+    mut commands: Commands,
     mut defenders: Query<
-        (&mut Health, &Charge),
+        (
+            Entity,
+            &mut Health,
+            &Charge,
+            Option<&mut EmptyChargeProgress>,
+        ),
         (
             With<Nanobot>,
             With<NanobotType>,
@@ -430,11 +410,23 @@ pub fn defender_health_loss_when_empty_system(
         ),
     >,
 ) {
-    for (mut health, charge) in &mut defenders {
-        if charge.is_empty() {
-            health.current = health
-                .current
-                .saturating_sub(EMPTY_CHARGE_HEALTH_LOSS_PER_TICK);
+    for (entity, mut health, charge, progress) in &mut defenders {
+        if !charge.is_empty() {
+            if progress.is_some() {
+                commands.entity(entity).remove::<EmptyChargeProgress>();
+            }
+            continue;
+        }
+        if let Some(mut progress) = progress {
+            progress.ticks_elapsed = progress.ticks_elapsed.saturating_add(1);
+            if progress.ticks_elapsed >= EMPTY_CHARGE_DAMAGE_INTERVAL_TICKS {
+                progress.ticks_elapsed = 0;
+                health.current = health.current.saturating_sub(EMPTY_CHARGE_HEALTH_DAMAGE);
+            }
+        } else {
+            commands
+                .entity(entity)
+                .insert(EmptyChargeProgress { ticks_elapsed: 1 });
         }
     }
 }
@@ -606,12 +598,15 @@ pub fn charger_auto_creation_system(
     }
 }
 
-/// Find the nearest supplied charger owned by `swarm`. Unowned chargers retain
-/// the legacy player ownership used by older fixtures.
-#[allow(clippy::type_complexity)]
-pub fn find_nearest_working_charger(
+/// Find the nearest valid local Charger for one source-cell cohort.
+///
+/// Loads include reservations made earlier in the same fixed tick. Entity bits
+/// break equal-distance ties deterministically.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub fn find_local_capacity_aware_charger(
     pos: Vec2,
     swarm: SwarmId,
+    source_cell: IVec2,
     chargers: &Query<(
         Entity,
         &Charger,
@@ -620,7 +615,15 @@ pub fn find_nearest_working_charger(
         Option<&SupportCondition>,
     )>,
     swarms: &Query<&SwarmId, With<Swarm>>,
+    charger_loads: &HashMap<Entity, u32>,
+    cohort_sizes: &HashMap<(SwarmId, IVec2), u32>,
+    rotating_cohort_loads: &HashMap<(SwarmId, IVec2), u32>,
 ) -> Option<(Entity, Vec2)> {
+    let cohort_size = cohort_sizes
+        .get(&(swarm, source_cell))
+        .copied()
+        .unwrap_or(1);
+    let max_rotating = (cohort_size / 2).max(1);
     let mut best: Option<(f32, Entity, Vec2)> = None;
     for (entity, charger, transform, owner, condition) in chargers.iter() {
         let charger_swarm = owner
@@ -628,14 +631,26 @@ pub fn find_nearest_working_charger(
             .copied()
             .unwrap_or(SwarmId::PLAYER);
         if charger_swarm != swarm
+            || charger.cell != source_cell
             || !charger.has_supply()
             || condition.is_some_and(|condition| !condition.is_operational())
+            || charger_loads.get(&entity).copied().unwrap_or_default() >= MAX_DEFENDERS_PER_CHARGER
+            || rotating_cohort_loads
+                .get(&(swarm, source_cell))
+                .copied()
+                .unwrap_or_default()
+                >= max_rotating
         {
             continue;
         }
         let position = transform.translation.truncate();
         let distance = pos.distance(position);
-        if best.is_none_or(|(best_distance, _, _)| distance < best_distance) {
+        let better = best.is_none_or(|(best_distance, best_entity, _)| {
+            distance.total_cmp(&best_distance).is_lt()
+                || (distance.total_cmp(&best_distance).is_eq()
+                    && entity.to_bits() < best_entity.to_bits())
+        });
+        if better {
             best = Some((distance, entity, position));
         }
     }
@@ -643,9 +658,9 @@ pub fn find_nearest_working_charger(
 }
 
 /// For every holding defender whose charge is low, walk to
-/// the nearest working charger. The system releases the
-/// `(cell, Defend)` soft work slot and the `DefendHold`
-/// marker, then inserts a `ChargerAssignment` and a
+/// a valid local working charger. The system suspends the
+/// regional lease, removes the `DefendHold` marker, then inserts a
+/// `ChargerAssignment` and a
 /// `DirectMovementComponent` aimed at the charger. A holding
 /// defender with no working charger reachable stays in hold;
 /// the empty-charge health loss system will drain them per
@@ -659,7 +674,7 @@ pub fn find_nearest_working_charger(
 #[allow(clippy::type_complexity)]
 pub fn defender_rotation_to_charger_system(
     mut commands: Commands,
-    mut defenders: Query<
+    defenders: Query<
         (
             Entity,
             &DefendHold,
@@ -667,7 +682,7 @@ pub fn defender_rotation_to_charger_system(
             &Charge,
             &NanobotType,
             &SwarmMember,
-            Option<&mut RegionalLease>,
+            Option<&RegionalLease>,
         ),
         (
             With<Nanobot>,
@@ -678,6 +693,16 @@ pub fn defender_rotation_to_charger_system(
             Without<ChargerProgress>,
         ),
     >,
+    defender_states: Query<
+        (
+            &NanobotType,
+            &SwarmMember,
+            Option<&DefendHold>,
+            Option<&DefendAssignment>,
+            Option<&ChargerAssignment>,
+        ),
+        With<Nanobot>,
+    >,
     chargers: Query<(
         Entity,
         &Charger,
@@ -687,17 +712,56 @@ pub fn defender_rotation_to_charger_system(
     )>,
     swarms: Query<&SwarmId, With<Swarm>>,
 ) {
-    for (entity, _hold, transform, charge, nanobot_type, member, lease) in &mut defenders {
-        if *nanobot_type != NanobotType::Defender {
+    let mut cohort_sizes = HashMap::<(SwarmId, IVec2), u32>::new();
+    let mut rotating_cohort_loads = HashMap::<(SwarmId, IVec2), u32>::new();
+    let mut charger_loads = HashMap::<Entity, u32>::new();
+    for (kind, member, hold, defend_assignment, charger_assignment) in &defender_states {
+        if *kind != NanobotType::Defender {
             continue;
         }
-        if !charge.needs_rotation() {
+        let source_cell = charger_assignment
+            .map(|assignment| assignment.source_cell)
+            .or_else(|| hold.map(|hold| hold.cell))
+            .or_else(|| defend_assignment.map(|assignment| assignment.cell));
+        let Some(source_cell) = source_cell else {
             continue;
+        };
+        *cohort_sizes.entry((member.0, source_cell)).or_default() += 1;
+        if let Some(assignment) = charger_assignment {
+            *charger_loads.entry(assignment.charger).or_default() += 1;
+            *rotating_cohort_loads
+                .entry((member.0, source_cell))
+                .or_default() += 1;
         }
-        let pos = transform.translation.truncate();
-        let Some((charger_entity, charger_pos)) =
-            find_nearest_working_charger(pos, member.0, &chargers, &swarms)
-        else {
+    }
+
+    let mut candidates = defenders
+        .iter()
+        .filter(|(_, _, _, _, nanobot_type, _, _)| **nanobot_type == NanobotType::Defender)
+        .filter(|(_, _, _, charge, _, _, _)| charge.needs_rotation())
+        .map(|(entity, hold, transform, _, _, member, lease)| {
+            (
+                entity,
+                hold.cell,
+                transform.translation.truncate(),
+                member.0,
+                lease.copied(),
+            )
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|(entity, _, _, _, _)| entity.to_bits());
+
+    for (entity, source_cell, pos, swarm, lease) in candidates {
+        let Some((charger_entity, charger_pos)) = find_local_capacity_aware_charger(
+            pos,
+            swarm,
+            source_cell,
+            &chargers,
+            &swarms,
+            &charger_loads,
+            &cohort_sizes,
+            &rotating_cohort_loads,
+        ) else {
             continue;
         };
         // Issue #38 / ADR-0004: stop on the
@@ -705,8 +769,8 @@ pub fn defender_rotation_to_charger_system(
         // lands at the charger centre, matching the
         // arrive guard's `charger.radius` check.
         // The lookup here is a defensive second pass
-        // after `find_nearest_working_charger` so
-        // the DMC carries the same extent the
+        // after the capacity-aware lookup so the DMC carries
+        // the same extent the
         // arrive guard reads.
         let charger_radius = chargers
             .get(charger_entity)
@@ -714,17 +778,39 @@ pub fn defender_rotation_to_charger_system(
             .unwrap_or(0.0);
         if let Some(mut lease) = lease {
             lease.suspend_for_charge();
+            commands.entity(entity).insert(lease);
         }
         commands.entity(entity).remove::<DefendHold>();
         commands.entity(entity).insert((
             ChargerAssignment {
                 charger: charger_entity,
+                source_cell,
             },
             DirectMovementComponent {
                 xy: charger_pos,
                 stop_radius: charger_radius,
             },
         ));
+        *charger_loads.entry(charger_entity).or_default() += 1;
+        *rotating_cohort_loads
+            .entry((swarm, source_cell))
+            .or_default() += 1;
+    }
+}
+
+fn release_charger_state(
+    commands: &mut Commands,
+    entity: Entity,
+    lease: Option<&mut RegionalLease>,
+) {
+    commands
+        .entity(entity)
+        .remove::<ChargerAssignment>()
+        .remove::<ChargerProgress>()
+        .remove::<ChargerPulseProgress>()
+        .remove::<DirectMovementComponent>();
+    if let Some(lease) = lease {
+        lease.request_resume();
     }
 }
 
@@ -742,52 +828,71 @@ pub fn defender_rotation_to_charger_system(
 #[allow(clippy::type_complexity)]
 pub fn defender_charger_arrive_system(
     mut commands: Commands,
-    defenders: Query<
-        (Entity, &ChargerAssignment, &Transform),
+    mut defenders: Query<
+        (
+            Entity,
+            &ChargerAssignment,
+            &Transform,
+            Option<&DirectMovementComponent>,
+            &SwarmMember,
+            Option<&mut RegionalLease>,
+        ),
         (
             With<Nanobot>,
             With<ChargerAssignment>,
-            Without<DirectMovementComponent>,
             Without<ChargerProgress>,
         ),
     >,
+    grid: Res<IntentGrid>,
     chargers: Query<(&Charger, &Transform, Option<&SupportCondition>)>,
 ) {
-    for (entity, assignment, transform) in &defenders {
+    for (entity, assignment, transform, movement, member, mut lease) in &mut defenders {
+        let source_supported = grid
+            .cell(assignment.source_cell)
+            .is_some_and(|cell| cell.visible_to(IntentKind::Defend, member.0));
         let Ok((charger, charger_transform, condition)) = chargers.get(assignment.charger) else {
-            commands.entity(entity).remove::<ChargerAssignment>();
+            release_charger_state(&mut commands, entity, lease.as_deref_mut());
             continue;
         };
-        if condition.is_some_and(|condition| !condition.is_operational()) {
-            commands.entity(entity).remove::<ChargerAssignment>();
+        if !source_supported
+            || !charger.has_supply()
+            || condition.is_some_and(|condition| !condition.is_operational())
+        {
+            release_charger_state(&mut commands, entity, lease.as_deref_mut());
+            continue;
+        }
+        if movement.is_some() {
             continue;
         }
         let distance = transform
             .translation
             .truncate()
             .distance(charger_transform.translation.truncate());
-        if distance <= charger.radius {
-            commands.entity(entity).insert(ChargerProgress {
-                charger: assignment.charger,
-            });
+        if distance > charger.radius {
+            release_charger_state(&mut commands, entity, lease.as_deref_mut());
+            continue;
         }
+        commands.entity(entity).insert((
+            ChargerProgress {
+                charger: assignment.charger,
+            },
+            ChargerPulseProgress::default(),
+        ));
     }
 }
 
 /// Defender charging work system. For every defender with a
-/// `ChargerProgress`, refill `Charge` by
-/// [`CHARGE_REFILL_PER_TICK`] and drain the charger's
-/// `amount` by [`CHARGER_MATERIAL_DRAIN_PER_TICK`]. The
-/// defender is released back to the defend assignment pool
-/// when the charge is full or the charger runs out of supply.
+/// `ChargerProgress`, grant [`CHARGE_PER_PULSE`] every
+/// [`CHARGE_PULSE_INTERVAL_TICKS`] fixed ticks, and drain one mineral from the
+/// Charger. The defender is released back to the defend assignment pool when
+/// the charge is full or the charger runs out of supply.
 ///
 /// The system always runs in the same chain as the rotation
 /// and arrive systems; a defender at a fresh charger with
 /// empty charge refills on the same tick it arrives, and a
 /// defender whose charger empties mid-charge is released on
 /// the same tick. The release is a marker remove; the defend
-/// assignment system picks the defender back up on the next
-/// tick.
+/// allocator may resume the defender on a later allocation tick.
 #[allow(clippy::type_complexity)]
 pub fn defender_charger_work_system(
     mut commands: Commands,
@@ -796,24 +901,43 @@ pub fn defender_charger_work_system(
             Entity,
             &mut Charge,
             &ChargerAssignment,
+            Option<&mut ChargerPulseProgress>,
             &SwarmMember,
             Option<&mut RegionalLease>,
         ),
         (With<Nanobot>, With<ChargerProgress>),
     >,
+    grid: Option<Res<IntentGrid>>,
     mut chargers: Query<(&mut Charger, Option<&OwnerSwarm>, Option<&SupportCondition>)>,
     swarms: Query<&SwarmId, With<Swarm>>,
     mut ledger: ResMut<ResourceLedger>,
 ) {
-    for (entity, mut charge, assignment, member, lease) in &mut defenders {
+    let mut ordered_defenders = defenders
+        .iter_mut()
+        .map(|(entity, _, _, _, _, _)| entity)
+        .collect::<Vec<_>>();
+    ordered_defenders.sort_by_key(|entity| entity.to_bits());
+
+    for entity in ordered_defenders {
+        let Ok((entity, mut charge, assignment, pulse, member, mut lease)) =
+            defenders.get_mut(entity)
+        else {
+            continue;
+        };
+        let source_supported = match grid.as_ref() {
+            None => true,
+            Some(grid) => grid
+                .cell(assignment.source_cell)
+                .is_some_and(|cell| cell.visible_to(IntentKind::Defend, member.0)),
+        };
+        if !source_supported {
+            release_charger_state(&mut commands, entity, lease.as_deref_mut());
+            continue;
+        }
         let Ok((mut charger, owner, condition)) = chargers.get_mut(assignment.charger) else {
             // Charger disappeared mid-charge. Drop both
             // markers and let the defender be re-assigned.
-            commands.entity(entity).remove::<ChargerAssignment>();
-            commands.entity(entity).remove::<ChargerProgress>();
-            if let Some(mut lease) = lease {
-                lease.request_resume();
-            }
+            release_charger_state(&mut commands, entity, lease.as_deref_mut());
             continue;
         };
         let charger_swarm = owner
@@ -821,19 +945,11 @@ pub fn defender_charger_work_system(
             .copied()
             .unwrap_or(SwarmId::PLAYER);
         if charger_swarm != member.0 {
-            commands.entity(entity).remove::<ChargerAssignment>();
-            commands.entity(entity).remove::<ChargerProgress>();
-            if let Some(mut lease) = lease {
-                lease.request_resume();
-            }
+            release_charger_state(&mut commands, entity, lease.as_deref_mut());
             continue;
         }
         if condition.is_some_and(|condition| !condition.is_operational()) {
-            commands.entity(entity).remove::<ChargerAssignment>();
-            commands.entity(entity).remove::<ChargerProgress>();
-            if let Some(mut lease) = lease {
-                lease.request_resume();
-            }
+            release_charger_state(&mut commands, entity, lease.as_deref_mut());
             continue;
         }
         if !charger.has_supply() {
@@ -843,37 +959,31 @@ pub fn defender_charger_work_system(
             // another working charger is reachable, and
             // otherwise the empty-charge health-loss system
             // starts to fire.
-            commands.entity(entity).remove::<ChargerAssignment>();
-            commands.entity(entity).remove::<ChargerProgress>();
-            if let Some(mut lease) = lease {
-                lease.request_resume();
-            }
+            release_charger_state(&mut commands, entity, lease.as_deref_mut());
             continue;
         }
-        // Refill charge and drain charger material FIRST, then
-        // check whether the refill brought the charge to max.
-        // The drain system runs before the work system in the
-        // chain, so the pre-refill charge is one tick's worth
-        // below the value the work system left it at; checking
-        // `is_full()` *after* the refill is the only way to
-        // detect "this tick's refill finished the job".
-        //
-        // The drain is per-tick and per-defender; multiple
-        // defenders at the same charger each drain one unit
-        // per tick.
-        charge.current = (charge.current + CHARGE_REFILL_PER_TICK).min(charge.max);
-        let consumed = CHARGER_MATERIAL_DRAIN_PER_TICK.min(charger.amount);
+        let Some(mut pulse) = pulse else {
+            commands
+                .entity(entity)
+                .insert(ChargerPulseProgress::default());
+            continue;
+        };
+        pulse.ticks_elapsed = pulse.ticks_elapsed.saturating_add(1);
+        if pulse.ticks_elapsed < CHARGE_PULSE_INTERVAL_TICKS {
+            continue;
+        }
+        pulse.ticks_elapsed = 0;
+
+        let consumed = CHARGER_MATERIAL_PER_PULSE.min(charger.amount);
+        if consumed == 0 {
+            release_charger_state(&mut commands, entity, lease.as_deref_mut());
+            continue;
+        }
         charger.amount -= consumed;
         ledger.remove_for(charger_swarm, charger.kind, consumed);
-        if charge.is_full() {
-            // Refill brought the charge to max. Release
-            // immediately so the defender returns to the
-            // defend pool on the next tick.
-            commands.entity(entity).remove::<ChargerAssignment>();
-            commands.entity(entity).remove::<ChargerProgress>();
-            if let Some(mut lease) = lease {
-                lease.request_resume();
-            }
+        charge.current = (charge.current + CHARGE_PER_PULSE).min(charge.max);
+        if charge.is_full() || !charger.has_supply() {
+            release_charger_state(&mut commands, entity, lease.as_deref_mut());
         }
     }
 }
@@ -883,24 +993,24 @@ pub fn defender_charger_work_system(
 // ---------------------------------------------------------------------------
 
 /// Plugin that wires the charge-sustain systems into the
-/// Update schedule.
+/// fixed simulation schedule.
 ///
 /// As of issue #28, the demand side and the consumer side
-/// are split across two update chains so the demand
-/// `charger_auto_creation_system` runs **before** the
-/// planned-structure claim system (so freshly planned
-/// chargers are visible to the next claim tick) and the
-/// consumer systems run **after** the planned-structure
-/// work system (so freshly promoted chargers are visible
-/// to the rotation system).
+/// are split across two update chains. Demand runs after the
+/// current regional acquisition and Defend hold transition;
+/// a newly planned Charger therefore enters the next
+/// projection/acquisition pass. Consumer systems run after
+/// planned-structure work so freshly promoted chargers are
+/// visible to the rotation system.
 ///
-/// Demand chain (single system, ordered with the planned
-/// structure plugin's claim system):
+/// Demand chain (single system, ordered after Defend hold
+/// state and before planned-structure work):
 ///
 /// 1. [`charger_auto_creation_system`] -- spawn new planned
-///    chargers from current load. The plan is visible
-///    immediately; a Worker builds it through the
-///    planned-structure lifecycle.
+///    chargers from current load. The regional allocator sees
+///    the plan on its next projection/acquisition pass; a
+///    Worker then builds it through the planned-structure
+///    lifecycle.
 ///
 /// Consumer chain (after the planned structure work
 /// system, so the promotion has fired before rotation
@@ -923,24 +1033,24 @@ pub struct ChargePlugin;
 impl Plugin for ChargePlugin {
     fn build(&self, app: &mut App) {
         // Demand: spawn planned chargers from current load
-        // before the planned-structure claim system runs so
-        // the claim system can pick up a freshly planned
-        // charger on the same tick. The chain runs after
-        // `move_velocity_system` (so the defenders' cell
-        // positions are stable) and after the defend hold
-        // system (so load is counted correctly).
+        // after regional acquisition and the Defend hold
+        // transition, so load is counted correctly. The
+        // regional allocator projects and claims the new plan
+        // on a later allocation pass; no legacy worker-claim
+        // system is registered. Run before planned work so
+        // the plan is present before that lifecycle reads it.
         app.add_systems(
             FixedUpdate,
             charger_auto_creation_system
-                .before(crate::nanobot::planned::worker_planned_structure_claim_system)
                 .after(crate::nanobot::NanobotSimulationSet::Movement)
-                .after(crate::nanobot::defend::defender_hold_system),
+                .after(crate::nanobot::defend::defender_hold_system)
+                .before(crate::nanobot::planned::worker_planned_structure_work_system),
         );
         // Consumer: drain, health-loss, rotation, arrive,
         // work. The chain runs after the planned-structure
         // work system so a freshly promoted charger is
-        // visible to the rotation system's "find nearest
-        // working charger" scan in the same tick.
+        // visible to the rotation system's local charger scan
+        // in the same tick.
         app.add_systems(
             FixedUpdate,
             (
@@ -1017,25 +1127,26 @@ mod tests {
     }
 
     #[test]
-    fn charge_mineral_need_uses_net_refill_tick_boundaries() {
-        let net_refill = CHARGE_REFILL_PER_TICK - CHARGE_DRAIN_PER_TICK;
+    fn charge_mineral_need_uses_net_pulse_boundaries() {
+        let net_refill =
+            CHARGE_PER_PULSE - CHARGE_DRAIN_PER_TICK * f32::from(CHARGE_PULSE_INTERVAL_TICKS);
         assert_eq!(minerals_to_fully_charge(MAX_CHARGE, MAX_CHARGE), 0);
         assert_eq!(
             minerals_to_fully_charge(MAX_CHARGE - net_refill, MAX_CHARGE),
-            CHARGER_MATERIAL_DRAIN_PER_TICK
+            CHARGER_MATERIAL_PER_PULSE
         );
         assert_eq!(
             minerals_to_fully_charge(MAX_CHARGE - net_refill * 1.01, MAX_CHARGE),
-            CHARGER_MATERIAL_DRAIN_PER_TICK * 2
+            CHARGER_MATERIAL_PER_PULSE * 2
         );
     }
 
     #[test]
     fn charge_mineral_need_clamps_empty_and_out_of_range_charge() {
-        let net_refill = CHARGE_REFILL_PER_TICK - CHARGE_DRAIN_PER_TICK;
-        let full_refill_ticks = (MAX_CHARGE / net_refill).ceil() as u32;
-        let full_refill_minerals =
-            full_refill_ticks.saturating_mul(CHARGER_MATERIAL_DRAIN_PER_TICK);
+        let net_refill =
+            CHARGE_PER_PULSE - CHARGE_DRAIN_PER_TICK * f32::from(CHARGE_PULSE_INTERVAL_TICKS);
+        let full_refill_pulses = (MAX_CHARGE / net_refill).ceil() as u32;
+        let full_refill_minerals = full_refill_pulses.saturating_mul(CHARGER_MATERIAL_PER_PULSE);
         assert_eq!(
             minerals_to_fully_charge(0.0, MAX_CHARGE),
             full_refill_minerals
@@ -1079,14 +1190,10 @@ mod tests {
     }
 
     #[test]
-    fn refill_outpaces_drain_so_charge_recovers_at_a_charger() {
-        // The contract: a defender at a working charger
-        // recovers faster than the passive drain, so the
-        // charge trends upward. A test asserting
-        // REFILL > DRAIN pins the relationship so a future
-        // tuning pass cannot silently break the sustain
-        // loop.
-        const { assert!(CHARGE_REFILL_PER_TICK > CHARGE_DRAIN_PER_TICK) };
+    fn supplied_pulse_outpaces_field_drain() {
+        let net_refill =
+            CHARGE_PER_PULSE - CHARGE_DRAIN_PER_TICK * f32::from(CHARGE_PULSE_INTERVAL_TICKS);
+        assert!(net_refill > 0.0);
     }
 
     #[test]

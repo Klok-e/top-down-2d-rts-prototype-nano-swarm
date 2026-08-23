@@ -1,79 +1,9 @@
-//! Reusable spatial-pressure helpers shared between defender
-//! spreading (issue #37) and future idle cosmetic spread.
-//!
-//! Defend spatial pressure combines physical density and reservations into soft
-//! crowding. Capacity remains one per painted cell; crowding never hard-rejects.
-
-use std::collections::HashMap;
+//! Geometry helpers for keeping nanobots inside intent-grid cells.
 
 use bevy::prelude::*;
 
 use crate::ZONE_BLOCK_SIZE;
-use crate::nanobot::components::Nanobot;
 use crate::nanobot::gather::world_to_cell;
-
-/// Soft crowding multiplier in `(0, 1]`. Capacity is explicit so helper remains
-/// reusable; Defend passes baseline capacity one.
-pub fn crowding_factor(occupancy: u32, capacity: u32) -> f32 {
-    let cap = capacity.max(1) as f32;
-    cap / (cap + occupancy as f32)
-}
-
-/// Per-tick count of every nanobot physically standing in each
-/// intent-grid cell, regardless of type or state. Computed by
-/// [`cell_density_system`] before the defend assignment system
-/// runs, and read by the defend scorer so a candidate cell's
-/// crowding reflects ALL nanobots (workers, haulers, defenders)
-/// physically present, not just defender reservations. The scoring
-/// defender excludes its own body from its current cell's count
-/// (see `DefendSelfExclusion` in `defend.rs`).
-///
-/// The resource is a plain `HashMap` cloneable snapshot so the
-/// assignment system can read a consistent per-defender view
-/// without recomputing positions mid-loop. The future idle
-/// cosmetic spread issue can read the same density to de-clump
-/// idle nanobots without a second pass.
-#[derive(Debug, Default, Clone, Resource)]
-pub struct CellDensity {
-    counts: HashMap<IVec2, u32>,
-}
-
-impl CellDensity {
-    /// Number of nanobots physically standing in `cell`, or `0`
-    /// when no nanobot has been observed there this tick.
-    pub fn density(&self, cell: IVec2) -> u32 {
-        self.counts.get(&cell).copied().unwrap_or(0)
-    }
-
-    /// Number of distinct cells with at least one nanobot. Useful
-    /// for tests asserting the density pass observed the world.
-    pub fn len(&self) -> usize {
-        self.counts.len()
-    }
-
-    /// True when no cells have any nanobots.
-    pub fn is_empty(&self) -> bool {
-        self.counts.is_empty()
-    }
-}
-
-/// Recompute [`CellDensity`] from every nanobot's world position.
-/// Runs once per tick before the defend assignment system so the
-/// scorer sees the post-movement physical layout. Clearing and
-/// rebuilding each tick keeps the map free of stale entries for
-/// cells whose nanobots have moved or died; the cost is linear in
-/// the nanobot count, which is the same order the movement systems
-/// already pay.
-pub fn cell_density_system(
-    mut density: ResMut<CellDensity>,
-    bots: Query<&Transform, With<Nanobot>>,
-) {
-    density.counts.clear();
-    for transform in &bots {
-        let cell = world_to_cell(transform.translation.truncate());
-        *density.counts.entry(cell).or_insert(0) += 1;
-    }
-}
 
 /// World-space min (inclusive) and max (exclusive) corners of the
 /// intent-grid cell `cell`. A cell at `(i, j)` spans
@@ -113,22 +43,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn crowding_factor_is_one_at_zero_occupancy() {
-        assert!((crowding_factor(0, 1) - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn crowding_factor_never_hard_rejects() {
-        let mut prev = crowding_factor(0, 1);
-        for n in 1..=32 {
-            let next = crowding_factor(n, 1);
-            assert!(next > 0.0);
-            assert!(next < prev);
-            prev = next;
-        }
-    }
-
-    #[test]
     fn cell_bounds_span_one_zone_block() {
         let (min, max) = cell_bounds(IVec2::new(2, -1));
         assert_eq!(min, Vec2::new(2.0 * ZONE_BLOCK_SIZE, -ZONE_BLOCK_SIZE));
@@ -158,13 +72,5 @@ mod tests {
         assert!(!point_in_cell(max, cell), "max corner belongs to next cell");
         assert!(point_in_cell(Vec2::new(min.x + 1.0, max.y - 1.0), cell));
         assert!(!point_in_cell(Vec2::new(min.x - 0.1, min.y), cell));
-    }
-
-    #[test]
-    fn cell_density_default_is_empty_and_zero() {
-        let density = CellDensity::default();
-        assert!(density.is_empty());
-        assert_eq!(density.len(), 0);
-        assert_eq!(density.density(IVec2::new(3, 4)), 0);
     }
 }

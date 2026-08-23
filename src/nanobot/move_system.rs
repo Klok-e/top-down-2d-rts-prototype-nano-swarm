@@ -166,6 +166,21 @@ pub fn separation_system(
 
 pub const MIN_FACING_SPEED: f32 = 0.001;
 
+pub fn clamp_velocity(velocity: Vec2, max_speed: f32) -> Vec2 {
+    if !velocity.is_finite() || !max_speed.is_finite() || max_speed <= 0.0 {
+        return Vec2::ZERO;
+    }
+    let length = velocity.length();
+    if !length.is_finite() {
+        return Vec2::ZERO;
+    }
+    if length > max_speed {
+        velocity / length * max_speed
+    } else {
+        velocity
+    }
+}
+
 pub fn rotation_for_direction(direction: Vec2) -> Option<Quat> {
     if direction.length_squared() <= MIN_FACING_SPEED * MIN_FACING_SPEED {
         return None;
@@ -174,10 +189,14 @@ pub fn rotation_for_direction(direction: Vec2) -> Option<Quat> {
     Some(Quat::from_rotation_z(-normalized.x.atan2(normalized.y)))
 }
 
-pub fn velocity_system(mut query: Query<(&mut VelocityComponent, &mut Transform)>) {
+pub fn velocity_system(
+    mut query: Query<(&mut VelocityComponent, &mut Transform)>,
+    game_settings: Res<GameSettings>,
+) {
     for (mut velocity, mut transform) in query.iter_mut() {
-        transform.translation += velocity.value.extend(0.);
-        if let Some(rotation) = rotation_for_direction(velocity.value) {
+        let applied_velocity = clamp_velocity(velocity.value, game_settings.bot_speed);
+        transform.translation += applied_velocity.extend(0.);
+        if let Some(rotation) = rotation_for_direction(applied_velocity) {
             transform.rotation = rotation;
         }
         velocity.value = Vec2::ZERO;
@@ -223,6 +242,22 @@ mod tests {
     #[test]
     fn facing_rotation_ignores_near_zero_motion() {
         assert!(rotation_for_direction(Vec2::ZERO).is_none());
+    }
+
+    #[test]
+    fn velocity_clamp_zeroes_non_finite_input() {
+        assert_eq!(clamp_velocity(Vec2::new(f32::NAN, 1.0), 5.0), Vec2::ZERO);
+        assert_eq!(
+            clamp_velocity(Vec2::new(f32::INFINITY, 0.0), 5.0),
+            Vec2::ZERO
+        );
+    }
+
+    #[test]
+    fn velocity_clamp_preserves_direction_and_caps_length() {
+        let clamped = clamp_velocity(Vec2::new(6.0, 8.0), 5.0);
+        assert!((clamped.length() - 5.0).abs() < 1e-6);
+        assert!((clamped - Vec2::new(3.0, 4.0)).length() < 1e-6);
     }
 
     fn entity(bits: u64) -> Entity {

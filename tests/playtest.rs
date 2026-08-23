@@ -1,5 +1,7 @@
 #![allow(clippy::duplicate_mod)]
 
+#[path = "playtest/defender_feel.rs"]
+mod defender_feel;
 #[path = "playtest/intent_layer_flow.rs"]
 mod intent_layer_flow;
 #[path = "playtest/mouse_zone_painting.rs"]
