@@ -8,9 +8,9 @@ use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        ActiveCombatPulses, ActiveNanobotDeathGhosts, Charge, CombatPresentationSettings,
-        Commitment, DefendHold, Health, Nanobot, NanobotDeathGhost, NanobotType, NanobotVisual,
-        OpponentSwarm, Swarm, SwarmId, SwarmMember,
+        ActiveCombatDecorations, ActiveCombatPulses, ActiveNanobotDeathGhosts, Charge,
+        CombatPresentationSettings, Commitment, DefendHold, Health, Nanobot, NanobotDeathGhost,
+        NanobotType, NanobotVisual, OpponentSwarm, Swarm, SwarmId, SwarmMember,
     },
 };
 
@@ -49,15 +49,19 @@ fn visual_child(world: &World, root: Entity) -> Entity {
 }
 
 fn focus_camera(world: &mut World, position: Vec2) {
+    focus_camera_at_zoom(world, position, 0.5);
+}
+
+fn focus_camera_at_zoom(world: &mut World, position: Vec2, value: f32) {
     for (mut transform, mut projection, mut zoom) in world
         .query::<(&mut Transform, &mut Projection, &mut CameraZoom2d)>()
         .iter_mut(world)
     {
         transform.translation.x = position.x;
         transform.translation.y = position.y;
-        zoom.zoom = 0.5;
+        zoom.zoom = value;
         if let Projection::Orthographic(orthographic) = &mut *projection {
-            orthographic.scale = 0.5;
+            orthographic.scale = value;
         }
     }
 }
@@ -449,5 +453,290 @@ pub fn nanobot_combat_death(ctx: &mut TestContext) -> TestFlow {
             TestFlow::Screenshot("nanobot_combat_death_expired".to_string())
         }
         LethalEvidencePhase::ExpiryCaptured => TestFlow::Exit,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DenseCombatPhase {
+    AwaitVisuals,
+    AwaitImpact,
+    ImpactCaptured,
+    AwaitNearBoundaryRecovery,
+    AwaitNearBoundary,
+    NearBoundaryCaptured,
+    AwaitTacticalBoundary,
+    TacticalBoundaryCaptured,
+}
+
+#[derive(Resource)]
+struct DenseCombatEvidence {
+    attackers: Vec<(Entity, Transform)>,
+    targets: Vec<(Entity, Transform)>,
+    phase: DenseCombatPhase,
+}
+
+fn spawn_dense_nanobot(
+    world: &mut World,
+    position: Vec2,
+    swarm: SwarmId,
+    kind: NanobotType,
+) -> (Entity, Transform) {
+    let root = Transform::from_translation(position.extend(GAMEPLAY_SPRITE_Z));
+    let entity = world
+        .spawn((
+            Nanobot {},
+            kind,
+            Commitment::Idle,
+            Health::default(),
+            SwarmMember::new(swarm),
+            root,
+        ))
+        .id();
+    if kind == NanobotType::Defender {
+        world.entity_mut(entity).insert(Charge::default());
+    }
+    (entity, root)
+}
+
+fn setup_dense_scene(world: &mut World) {
+    let center = prepare_combat_scene(world);
+    focus_camera_at_zoom(world, center, 1.0);
+    let opponent = *world
+        .query_filtered::<&SwarmId, (With<Swarm>, With<OpponentSwarm>)>()
+        .single(world)
+        .expect("authored scene needs an Opponent Swarm");
+    world.resource_mut::<IntentGrid>().paint_owned(
+        HOLD_CELL,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    world
+        .resource_mut::<IntentGrid>()
+        .contest_defend(HOLD_CELL, opponent);
+    let left_target_position = center + Vec2::new(-180.0, 0.0);
+    let right_target_position = center + Vec2::new(180.0, 0.0);
+    let targets = vec![
+        spawn_dense_nanobot(world, left_target_position, opponent, NanobotType::Worker),
+        spawn_dense_nanobot(
+            world,
+            right_target_position,
+            SwarmId::PLAYER,
+            NanobotType::Worker,
+        ),
+    ];
+    let mut attackers = Vec::new();
+    for offset in [
+        Vec2::new(-64.0, -32.0),
+        Vec2::new(-64.0, 32.0),
+        Vec2::new(0.0, -64.0),
+    ] {
+        attackers.push(spawn_dense_nanobot(
+            world,
+            left_target_position + offset,
+            SwarmId::PLAYER,
+            NanobotType::Defender,
+        ));
+    }
+    for offset in [
+        Vec2::new(64.0, -32.0),
+        Vec2::new(64.0, 32.0),
+        Vec2::new(0.0, -64.0),
+    ] {
+        attackers.push(spawn_dense_nanobot(
+            world,
+            right_target_position + offset,
+            opponent,
+            NanobotType::Defender,
+        ));
+    }
+    world.insert_resource(DenseCombatEvidence {
+        attackers,
+        targets,
+        phase: DenseCombatPhase::AwaitVisuals,
+    });
+}
+
+fn assert_dense_roots_unchanged(world: &World, evidence: &DenseCombatEvidence) {
+    for (entity, root) in evidence.attackers.iter().chain(&evidence.targets) {
+        assert_eq!(world.get::<Transform>(*entity), Some(root));
+    }
+}
+
+pub fn combat_presentation_density_and_zoom(ctx: &mut TestContext) -> TestFlow {
+    if ctx.frame == 0 {
+        setup_dense_scene(ctx.world);
+        return TestFlow::Continue;
+    }
+
+    let phase = ctx.world.resource::<DenseCombatEvidence>().phase;
+    match phase {
+        DenseCombatPhase::AwaitVisuals => {
+            let attackers = ctx
+                .world
+                .resource::<DenseCombatEvidence>()
+                .attackers
+                .iter()
+                .map(|(entity, _)| *entity)
+                .collect::<Vec<_>>();
+            for attacker in attackers {
+                let _ = visual_child(ctx.world, attacker);
+                ctx.world
+                    .entity_mut(attacker)
+                    .insert(DefendHold { cell: HOLD_CELL });
+            }
+            for (target, _) in &ctx.world.resource::<DenseCombatEvidence>().targets {
+                let _ = visual_child(ctx.world, *target);
+            }
+            ctx.world.resource_mut::<DenseCombatEvidence>().phase = DenseCombatPhase::AwaitImpact;
+            ctx.world.resource_mut::<Time<Virtual>>().unpause();
+            TestFlow::Continue
+        }
+        DenseCombatPhase::AwaitImpact => {
+            let pulse_count = ctx.world.resource::<ActiveCombatPulses>().len();
+            if pulse_count != 6 {
+                let target_health = ctx
+                    .world
+                    .resource::<DenseCombatEvidence>()
+                    .targets
+                    .iter()
+                    .map(|(target, _)| {
+                        ctx.world
+                            .get::<Health>(*target)
+                            .map(|health| health.current)
+                    })
+                    .collect::<Vec<_>>();
+                assert!(
+                    ctx.frame < 12,
+                    "dense combat did not resolve on schedule: {pulse_count} pulses, target health {target_health:?}",
+                );
+                return TestFlow::Continue;
+            }
+            ctx.world.resource_mut::<Time<Virtual>>().pause();
+            let evidence = ctx.world.resource::<DenseCombatEvidence>();
+            assert_dense_roots_unchanged(ctx.world, evidence);
+            let settings = *ctx.world.resource::<CombatPresentationSettings>();
+            for (target, _) in &evidence.targets {
+                assert_eq!(
+                    ctx.world.get::<Health>(*target).unwrap().current,
+                    70,
+                    "three real attacks must retain their existing aggregate damage",
+                );
+                let visual = visual_child(ctx.world, *target);
+                let reaction = ctx.world.get::<Transform>(visual).unwrap().translation;
+                assert!(reaction.length() > 0.0);
+                assert!(reaction.length() <= settings.recoil_distance + 0.001);
+                assert_ne!(ctx.world.get::<Sprite>(visual).unwrap().color, Color::WHITE);
+            }
+            for (attacker, _) in &evidence.attackers {
+                let visual = visual_child(ctx.world, *attacker);
+                assert!(
+                    ctx.world
+                        .get::<Transform>(visual)
+                        .unwrap()
+                        .translation
+                        .length()
+                        > 0.0
+                );
+            }
+            let mut player_pulses = 0;
+            let mut opponent_pulses = 0;
+            for pulse in ctx.world.resource::<ActiveCombatPulses>().iter() {
+                let color = pulse.color.to_srgba();
+                if color.blue > color.red {
+                    player_pulses += 1;
+                } else {
+                    opponent_pulses += 1;
+                }
+            }
+            assert_eq!((player_pulses, opponent_pulses), (3, 3));
+            assert!(settings.pulse_thickness >= 1.0);
+            assert!(
+                ctx.world.resource::<ActiveCombatDecorations>().len()
+                    <= settings.max_decorative_effects,
+            );
+            ctx.world.resource_mut::<DenseCombatEvidence>().phase =
+                DenseCombatPhase::ImpactCaptured;
+            TestFlow::Screenshot("combat_presentation_dense_volley".to_string())
+        }
+        DenseCombatPhase::ImpactCaptured => {
+            let center = cell_center(SCENE_CELL);
+            focus_camera_at_zoom(ctx.world, center, 7.99);
+            ctx.world.resource_mut::<DenseCombatEvidence>().phase =
+                DenseCombatPhase::AwaitNearBoundaryRecovery;
+            ctx.world.resource_mut::<Time<Virtual>>().unpause();
+            TestFlow::Continue
+        }
+        DenseCombatPhase::AwaitNearBoundaryRecovery => {
+            if !ctx.world.resource::<ActiveCombatPulses>().is_empty() {
+                assert!(
+                    ctx.frame < 30,
+                    "first dense volley did not expire on schedule"
+                );
+                return TestFlow::Continue;
+            }
+            ctx.world.resource_mut::<DenseCombatEvidence>().phase =
+                DenseCombatPhase::AwaitNearBoundary;
+            TestFlow::Continue
+        }
+        DenseCombatPhase::AwaitNearBoundary => {
+            if ctx.world.resource::<ActiveCombatPulses>().len() != 6 {
+                assert!(
+                    ctx.frame < 40,
+                    "near-boundary dense volley did not resolve on schedule",
+                );
+                return TestFlow::Continue;
+            }
+            ctx.world.resource_mut::<Time<Virtual>>().pause();
+            let evidence = ctx.world.resource::<DenseCombatEvidence>();
+            assert_dense_roots_unchanged(ctx.world, evidence);
+            let minimum = ctx
+                .world
+                .resource::<CombatPresentationSettings>()
+                .minimum_impact_screen_distance;
+            for (entity, _) in evidence.attackers.iter().chain(&evidence.targets) {
+                let visual = visual_child(ctx.world, *entity);
+                assert!(
+                    ctx.world
+                        .get::<Transform>(visual)
+                        .unwrap()
+                        .translation
+                        .length()
+                        / 7.99
+                        >= minimum - 0.001,
+                );
+            }
+            for (target, _) in &evidence.targets {
+                assert_eq!(ctx.world.get::<Health>(*target).unwrap().current, 40);
+            }
+            ctx.world.resource_mut::<DenseCombatEvidence>().phase =
+                DenseCombatPhase::NearBoundaryCaptured;
+            TestFlow::Screenshot("combat_presentation_near_tactical_boundary".to_string())
+        }
+        DenseCombatPhase::NearBoundaryCaptured => {
+            let center = cell_center(SCENE_CELL);
+            focus_camera_at_zoom(ctx.world, center, 8.0);
+            ctx.world.resource_mut::<DenseCombatEvidence>().phase =
+                DenseCombatPhase::AwaitTacticalBoundary;
+            TestFlow::Continue
+        }
+        DenseCombatPhase::AwaitTacticalBoundary => {
+            assert_eq!(ctx.world.resource::<ActiveCombatPulses>().len(), 6);
+            assert!(ctx.world.resource::<ActiveNanobotDeathGhosts>().is_empty());
+            assert!(!ctx.world.resource::<ActiveCombatDecorations>().is_empty());
+            let evidence = ctx.world.resource::<DenseCombatEvidence>();
+            assert_dense_roots_unchanged(ctx.world, evidence);
+            for (entity, _) in evidence.attackers.iter().chain(&evidence.targets) {
+                let visual = visual_child(ctx.world, *entity);
+                assert_eq!(
+                    ctx.world.get::<Transform>(visual),
+                    Some(&Transform::IDENTITY),
+                );
+                assert_eq!(ctx.world.get::<Sprite>(visual).unwrap().color, Color::WHITE);
+            }
+            ctx.world.resource_mut::<DenseCombatEvidence>().phase =
+                DenseCombatPhase::TacticalBoundaryCaptured;
+            TestFlow::Screenshot("combat_presentation_tactical_boundary".to_string())
+        }
+        DenseCombatPhase::TacticalBoundaryCaptured => TestFlow::Exit,
     }
 }
