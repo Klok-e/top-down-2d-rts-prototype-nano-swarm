@@ -7,9 +7,11 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         Charge, CombatAppearance, CombatPlugin, DefendHold, DefendPressure, DefenderAttackCooldown,
         DirectMovementComponent, EMPTY_CHARGE_DAMAGE_INTERVAL_TICKS, Health, NanobotType,
-        OwnerSwarm, ResolvedCombatDeath, ResolvedCombatFact, Structure, StructureKind, Swarm,
-        SwarmId, SwarmMember, defender_health_loss_when_empty_system, nanobot_death_cleanup_system,
+        OwnerSwarm, PlannedKind, ResolvedCombatDeath, ResolvedCombatFact, Structure,
+        StructureCombatAppearance, StructureKind, Swarm, SwarmId, SwarmMember,
+        defender_health_loss_when_empty_system, nanobot_death_cleanup_system,
     },
+    structure_sprites::StructureVisual,
 };
 
 fn resolved_facts(app: &App) -> Vec<ResolvedCombatFact> {
@@ -874,14 +876,20 @@ fn holding_defender_damages_hostile_support_structure() {
         .entity_mut(defender)
         .insert(DefendHold { cell });
     let enemy_swarm = app.world_mut().spawn((Swarm {}, SwarmId(11))).id();
-    let structure = app
-        .world_mut()
-        .spawn((
-            Structure::new(StructureKind::Basic),
-            OwnerSwarm(enemy_swarm),
-            Transform::from_translation((center + Vec2::new(16.0, 0.0)).extend(0.0)),
-        ))
-        .id();
+    let structure = common::spawn_owned_completed_structure(
+        &mut app,
+        enemy_swarm,
+        PlannedKind::Charger,
+        Transform::from_translation((center + Vec2::new(16.0, 0.0)).extend(0.0)),
+        None,
+    );
+    let structure_position = app
+        .world()
+        .entity(structure)
+        .get::<Transform>()
+        .unwrap()
+        .translation
+        .truncate();
     let before = app
         .world()
         .entity(structure)
@@ -900,6 +908,22 @@ fn holding_defender_damages_hostile_support_structure() {
             < before,
         "hostile support structure is a secondary combat target",
     );
+    let facts = resolved_facts(&app);
+    let [ResolvedCombatFact::Hit(hit)] = facts.as_slice() else {
+        panic!("one delivered structure attack must publish exactly one hit fact: {facts:?}");
+    };
+    assert_eq!(hit.target.entity, structure);
+    assert_eq!(hit.target.position, structure_position);
+    assert_eq!(hit.target.swarm, SwarmId(11));
+    assert_eq!(
+        hit.target.appearance,
+        CombatAppearance::Structure(StructureCombatAppearance {
+            kind: StructureKind::Basic,
+            visual: Some(StructureVisual::completed(PlannedKind::Charger)),
+        }),
+    );
+    assert_eq!(hit.damage, 5);
+    assert!(!hit.target_destroyed);
 }
 
 #[test]
@@ -966,22 +990,94 @@ fn lethal_combat_despawns_support_structure_immediately() {
         .entity_mut(defender)
         .insert(DefendHold { cell });
     let enemy_swarm = app.world_mut().spawn((Swarm {}, SwarmId(11))).id();
-    let mut condition = Structure::new(StructureKind::Basic);
-    condition.health = 1;
-    let structure = app
-        .world_mut()
-        .spawn((
-            condition,
-            OwnerSwarm(enemy_swarm),
-            Transform::from_translation((center + Vec2::new(16.0, 0.0)).extend(0.0)),
-        ))
-        .id();
+    let structure = common::spawn_owned_completed_structure(
+        &mut app,
+        enemy_swarm,
+        PlannedKind::ProductionFacility,
+        Transform::from_translation((center + Vec2::new(16.0, 0.0)).extend(0.0)),
+        Some(1),
+    );
+    let structure_position = center + Vec2::new(16.0, 0.0);
 
     app.update();
 
     assert!(
         !app.world().entities().contains(structure),
         "zero-health support structure must not remain repairable",
+    );
+    let facts = resolved_facts(&app);
+    let [
+        ResolvedCombatFact::Hit(hit),
+        ResolvedCombatFact::Death(death),
+    ] = facts.as_slice()
+    else {
+        panic!("lethal structure combat must publish one hit and one death fact: {facts:?}");
+    };
+    assert!(hit.target_destroyed);
+    assert_eq!(
+        *death,
+        ResolvedCombatDeath {
+            victim: top_down_2d_rts_prototype_nano_swarm::nanobot::CombatVisualSnapshot {
+                entity: structure,
+                position: structure_position,
+                swarm: SwarmId(11),
+                appearance: CombatAppearance::Structure(StructureCombatAppearance {
+                    kind: StructureKind::Basic,
+                    visual: Some(StructureVisual::completed(PlannedKind::ProductionFacility)),
+                }),
+            },
+        },
+    );
+}
+
+#[test]
+fn simultaneous_lethal_structure_hits_publish_every_hit_and_one_death() {
+    let mut app = common::sim_app_with_defend();
+    app.add_plugins(CombatPlugin);
+    let cell = IVec2::ZERO;
+    let center = common::cell_world_center(cell);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    for offset in [Vec2::new(-24.0, -8.0), Vec2::new(-24.0, 8.0)] {
+        let defender = common::spawn_defender_at(&mut app, center + offset);
+        app.world_mut()
+            .entity_mut(defender)
+            .insert(DefendHold { cell });
+    }
+    let enemy_swarm = app.world_mut().spawn((Swarm {}, SwarmId(11))).id();
+    let structure = common::spawn_owned_completed_structure(
+        &mut app,
+        enemy_swarm,
+        PlannedKind::SinkStockpile,
+        Transform::from_translation((center + Vec2::new(24.0, 0.0)).extend(0.0)),
+        Some(9),
+    );
+
+    app.update();
+
+    assert!(!app.world().entities().contains(structure));
+    let facts = resolved_facts(&app);
+    let mut hits = Vec::new();
+    let mut deaths = Vec::new();
+    for fact in &facts {
+        match fact {
+            ResolvedCombatFact::Hit(hit) => hits.push(hit),
+            ResolvedCombatFact::Death(death) => deaths.push(death),
+        }
+    }
+    assert_eq!(hits.len(), 2);
+    assert!(hits.iter().all(|hit| hit.target.entity == structure));
+    assert!(hits.iter().all(|hit| hit.target_destroyed));
+    assert_eq!(deaths.len(), 1);
+    assert_eq!(
+        deaths[0].victim.appearance,
+        CombatAppearance::Structure(StructureCombatAppearance {
+            kind: StructureKind::Basic,
+            visual: Some(StructureVisual::completed(PlannedKind::SinkStockpile)),
+        }),
     );
 }
 
