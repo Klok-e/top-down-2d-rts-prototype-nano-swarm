@@ -1,5 +1,7 @@
 #![allow(clippy::duplicate_mod)]
 
+#[path = "playtest/combat_presentation.rs"]
+mod combat_presentation;
 #[path = "playtest/defender_feel.rs"]
 mod defender_feel;
 #[path = "playtest/intent_layer_flow.rs"]

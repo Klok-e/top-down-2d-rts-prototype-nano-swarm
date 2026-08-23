@@ -22,6 +22,7 @@
 use libtest_mimic::{Arguments, Conclusion, Failed, Trial};
 
 mod build_zone_placement;
+mod combat_presentation;
 mod defender_combat_readability;
 mod defender_spread;
 mod fill_indicators;
@@ -84,6 +85,10 @@ fn main() -> std::process::ExitCode {
             "harness_missing_screenshot_fails",
             regression::missing_screenshot_fails,
         )
+        .with_ignored_flag(true),
+        Trial::test("combat_presentation", || {
+            run(combat_presentation::combat_presentation)
+        })
         .with_ignored_flag(true),
         Trial::test("build_zone_placement", || {
             run(build_zone_placement::build_zone_placement)

@@ -7,8 +7,8 @@ use bevy::prelude::*;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::{
     Charge, DefendHold, DefendPressure, DirectMovementComponent, Health, Nanobot, NanobotType,
-    OwnerSwarm, Structure, Swarm, SwarmId, SwarmMember, effective_attack, effective_defense,
-    world_to_cell,
+    OwnerSwarm, Structure, StructureKind, Swarm, SwarmId, SwarmMember, effective_attack,
+    effective_defense, world_to_cell,
 };
 use crate::spatial::FixedSpatialBuckets;
 
@@ -20,6 +20,37 @@ pub const DEFENDER_ATTACK_INTERVAL_TICKS: u16 = 15;
 
 /// Structure damage multiplier for a fully charged Defender attack.
 pub const DEFENDER_STRUCTURE_DAMAGE_FACTOR: f32 = 0.5;
+
+/// Stable visual identity carried by resolved combat after gameplay changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CombatAppearance {
+    Nanobot(NanobotType),
+    Structure(StructureKind),
+}
+
+/// Presentation-ready snapshot captured from one combat participant.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CombatVisualSnapshot {
+    pub entity: Entity,
+    pub position: Vec2,
+    pub swarm: SwarmId,
+    pub appearance: CombatAppearance,
+}
+
+/// A delivered attack after its gameplay damage has resolved.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResolvedCombatHit {
+    pub attacker: CombatVisualSnapshot,
+    pub target: CombatVisualSnapshot,
+    pub damage: u32,
+    pub target_destroyed: bool,
+}
+
+/// Facts published by fixed-step combat for optional render-time presentation.
+#[derive(Debug, Clone, Copy, PartialEq, Message)]
+pub enum ResolvedCombatFact {
+    Hit(ResolvedCombatHit),
+}
 
 /// Per-Defender cooldown after a delivered attack.
 #[derive(Debug, Component, Clone, Copy, PartialEq, Eq)]
@@ -38,11 +69,34 @@ struct Combatant {
     cooldown: Option<u16>,
 }
 
+impl Combatant {
+    fn presentation_snapshot(self) -> CombatVisualSnapshot {
+        CombatVisualSnapshot {
+            entity: self.entity,
+            position: self.position,
+            swarm: self.swarm,
+            appearance: CombatAppearance::Nanobot(self.kind),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct StructureTarget {
     entity: Entity,
     position: Vec2,
     swarm: SwarmId,
+    kind: StructureKind,
+}
+
+impl StructureTarget {
+    fn presentation_snapshot(self) -> CombatVisualSnapshot {
+        CombatVisualSnapshot {
+            entity: self.entity,
+            position: self.position,
+            swarm: self.swarm,
+            appearance: CombatAppearance::Structure(self.kind),
+        }
+    }
 }
 
 /// Resolve tracked Defend contests after both swarms have reached the cell.
@@ -132,12 +186,13 @@ pub fn defender_combat_system(
             ),
             With<Nanobot>,
         >,
-        Query<(Entity, &Transform, &OwnerSwarm), With<Structure>>,
+        Query<(Entity, &Transform, &OwnerSwarm, &Structure)>,
         Query<&mut Health, With<Nanobot>>,
         Query<&mut Structure>,
     )>,
     swarms: Query<&SwarmId, With<Swarm>>,
     mut commands: Commands,
+    mut facts: MessageWriter<ResolvedCombatFact>,
 ) {
     let snapshot = combatants
         .p0()
@@ -157,11 +212,12 @@ pub fn defender_combat_system(
     let structures = combatants
         .p1()
         .iter()
-        .filter_map(|(entity, transform, owner)| {
+        .filter_map(|(entity, transform, owner, structure)| {
             Some(StructureTarget {
                 entity,
                 position: transform.translation.truncate(),
                 swarm: swarms.get(owner.0).ok().copied()?,
+                kind: structure.kind,
             })
         })
         .collect::<Vec<_>>();
@@ -190,6 +246,7 @@ pub fn defender_combat_system(
 
     let mut nanobot_damage = HashMap::<Entity, u32>::new();
     let mut structure_damage = HashMap::<Entity, u32>::new();
+    let mut resolved_hits = Vec::<ResolvedCombatHit>::new();
     for attacker in snapshot
         .iter()
         .filter(|combatant| combatant.kind == NanobotType::Defender && combatant.hold.is_some())
@@ -222,6 +279,12 @@ pub fn defender_combat_system(
                 let damage = damage_after_defense(attack, defense);
                 if damage > 0 {
                     *nanobot_damage.entry(target.entity).or_default() += damage;
+                    resolved_hits.push(ResolvedCombatHit {
+                        attacker: attacker.presentation_snapshot(),
+                        target: target.presentation_snapshot(),
+                        damage,
+                        target_destroyed: false,
+                    });
                     delivered_attack = true;
                 }
             }
@@ -253,19 +316,25 @@ pub fn defender_combat_system(
                     .filter(|target| target.swarm != attacker.swarm)
                     .filter_map(|target| {
                         let distance = attacker.position.distance(target.position);
-                        (distance <= DEFENDER_ATTACK_RANGE).then_some((distance, target.entity))
+                        (distance <= DEFENDER_ATTACK_RANGE).then_some((distance, target))
                     })
                     .min_by(|(left_distance, left), (right_distance, right)| {
                         left_distance
                             .total_cmp(right_distance)
-                            .then_with(|| left.to_bits().cmp(&right.to_bits()))
+                            .then_with(|| left.entity.to_bits().cmp(&right.entity.to_bits()))
                     })
-                    .map(|(_, entity)| entity);
+                    .map(|(_, target)| target);
                 if let Some(target) = structure_target {
                     if cooldown_ready {
                         let damage = structure_hit_damage(attack);
                         if damage > 0 {
-                            *structure_damage.entry(target).or_default() += damage;
+                            *structure_damage.entry(target.entity).or_default() += damage;
+                            resolved_hits.push(ResolvedCombatHit {
+                                attacker: attacker.presentation_snapshot(),
+                                target: target.presentation_snapshot(),
+                                damage,
+                                target_destroyed: false,
+                            });
                             delivered_attack = true;
                         }
                     }
@@ -305,11 +374,15 @@ pub fn defender_combat_system(
         }
     }
 
+    let mut destroyed_targets = HashSet::new();
     {
         let mut health = combatants.p2();
         for (entity, amount) in nanobot_damage {
             if let Ok(mut target) = health.get_mut(entity) {
                 target.current = target.current.saturating_sub(amount);
+                if target.current == 0 {
+                    destroyed_targets.insert(entity);
+                }
             }
         }
     }
@@ -318,9 +391,14 @@ pub fn defender_combat_system(
         if let Ok(mut target) = conditions.get_mut(entity) {
             target.health = target.health.saturating_sub(amount);
             if target.health == 0 {
+                destroyed_targets.insert(entity);
                 commands.entity(entity).despawn();
             }
         }
+    }
+    for mut hit in resolved_hits {
+        hit.target_destroyed = destroyed_targets.contains(&hit.target.entity);
+        facts.write(ResolvedCombatFact::Hit(hit));
     }
 }
 
@@ -329,6 +407,7 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DefendPressure>()
+            .add_message::<ResolvedCombatFact>()
             .add_systems(
                 FixedUpdate,
                 defend_contest_resolution_system
