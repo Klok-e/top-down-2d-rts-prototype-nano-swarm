@@ -15,6 +15,18 @@ use crate::spatial::FixedSpatialBuckets;
 /// Defender attack reach in world units.
 pub const DEFENDER_ATTACK_RANGE: f32 = 96.0;
 
+/// Fixed-tick interval between delivered Defender attacks.
+pub const DEFENDER_ATTACK_INTERVAL_TICKS: u16 = 15;
+
+/// Structure damage multiplier for a fully charged Defender attack.
+pub const DEFENDER_STRUCTURE_DAMAGE_FACTOR: f32 = 0.5;
+
+/// Per-Defender cooldown after a delivered attack.
+#[derive(Debug, Component, Clone, Copy, PartialEq, Eq)]
+pub struct DefenderAttackCooldown {
+    pub ticks_remaining: u16,
+}
+
 #[derive(Clone, Copy)]
 struct Combatant {
     entity: Entity,
@@ -23,6 +35,7 @@ struct Combatant {
     kind: NanobotType,
     charge: Option<f32>,
     hold: Option<IVec2>,
+    cooldown: Option<u16>,
 }
 
 #[derive(Clone, Copy)]
@@ -58,6 +71,10 @@ fn damage_after_defense(attack: f32, defense: f32) -> u32 {
         return 0;
     }
     (attack / (1.0 + defense / 10.0)).round().max(1.0) as u32
+}
+
+fn structure_hit_damage(attack: f32) -> u32 {
+    damage_after_defense(attack * DEFENDER_STRUCTURE_DAMAGE_FACTOR, 0.0)
 }
 
 /// Rebuild pressure from hostile nanobots physically occupying owned Defend cells.
@@ -111,6 +128,7 @@ pub fn defender_combat_system(
                 &NanobotType,
                 Option<&Charge>,
                 Option<&DefendHold>,
+                Option<&DefenderAttackCooldown>,
             ),
             With<Nanobot>,
         >,
@@ -125,13 +143,14 @@ pub fn defender_combat_system(
         .p0()
         .iter()
         .map(
-            |(entity, transform, member, kind, charge, hold)| Combatant {
+            |(entity, transform, member, kind, charge, hold, cooldown)| Combatant {
                 entity,
                 position: transform.translation.truncate(),
                 swarm: member.0,
                 kind: *kind,
                 charge: charge.map(|charge| charge.current),
                 hold: hold.map(|hold| hold.cell),
+                cooldown: cooldown.map(|cooldown| cooldown.ticks_remaining),
             },
         )
         .collect::<Vec<_>>();
@@ -176,6 +195,8 @@ pub fn defender_combat_system(
         .filter(|combatant| combatant.kind == NanobotType::Defender && combatant.hold.is_some())
     {
         let attack = effective_attack(attacker.charge.unwrap_or_default());
+        let cooldown_ready = attacker.cooldown.is_none_or(|ticks| ticks == 0);
+        let mut delivered_attack = false;
         let attacker_bucket = nanobot_buckets.bucket_for_position(attacker.position);
         let nanobot_target = nanobot_buckets
             .neighbourhood(attacker_bucket, 1)
@@ -197,71 +218,89 @@ pub fn defender_combat_system(
             } else {
                 0.0
             };
-            *nanobot_damage.entry(target.entity).or_default() +=
-                damage_after_defense(attack, defense);
-            continue;
-        }
-
-        let held_cell = attacker.hold.expect("holding attacker has a Defend cell");
-        let approach_target = nanobots_by_cell
-            .get(&held_cell)
-            .into_iter()
-            .flatten()
-            .filter(|target| target.swarm != attacker.swarm)
-            .min_by(|left, right| {
-                attacker
-                    .position
-                    .distance(left.position)
-                    .total_cmp(&attacker.position.distance(right.position))
-                    .then_with(|| left.entity.to_bits().cmp(&right.entity.to_bits()))
-            });
-        if let Some(target) = approach_target {
-            commands
-                .entity(attacker.entity)
-                .insert(DirectMovementComponent {
-                    xy: target.position,
-                    stop_radius: DEFENDER_ATTACK_RANGE,
+            if cooldown_ready {
+                let damage = damage_after_defense(attack, defense);
+                if damage > 0 {
+                    *nanobot_damage.entry(target.entity).or_default() += damage;
+                    delivered_attack = true;
+                }
+            }
+        } else {
+            let held_cell = attacker.hold.expect("holding attacker has a Defend cell");
+            let approach_target = nanobots_by_cell
+                .get(&held_cell)
+                .into_iter()
+                .flatten()
+                .filter(|target| target.swarm != attacker.swarm)
+                .min_by(|left, right| {
+                    attacker
+                        .position
+                        .distance(left.position)
+                        .total_cmp(&attacker.position.distance(right.position))
+                        .then_with(|| left.entity.to_bits().cmp(&right.entity.to_bits()))
                 });
-            continue;
+            if let Some(target) = approach_target {
+                commands
+                    .entity(attacker.entity)
+                    .insert(DirectMovementComponent {
+                        xy: target.position,
+                        stop_radius: DEFENDER_ATTACK_RANGE,
+                    });
+            } else {
+                let structure_target = structure_buckets
+                    .neighbourhood(attacker_bucket, 1)
+                    .flat_map(|(_, targets)| targets)
+                    .filter(|target| target.swarm != attacker.swarm)
+                    .filter_map(|target| {
+                        let distance = attacker.position.distance(target.position);
+                        (distance <= DEFENDER_ATTACK_RANGE).then_some((distance, target.entity))
+                    })
+                    .min_by(|(left_distance, left), (right_distance, right)| {
+                        left_distance
+                            .total_cmp(right_distance)
+                            .then_with(|| left.to_bits().cmp(&right.to_bits()))
+                    })
+                    .map(|(_, entity)| entity);
+                if let Some(target) = structure_target {
+                    if cooldown_ready {
+                        let damage = structure_hit_damage(attack);
+                        if damage > 0 {
+                            *structure_damage.entry(target).or_default() += damage;
+                            delivered_attack = true;
+                        }
+                    }
+                } else if let Some(target) = structures_by_cell
+                    .get(&held_cell)
+                    .into_iter()
+                    .flatten()
+                    .filter(|target| target.swarm != attacker.swarm)
+                    .min_by(|left, right| {
+                        attacker
+                            .position
+                            .distance(left.position)
+                            .total_cmp(&attacker.position.distance(right.position))
+                            .then_with(|| left.entity.to_bits().cmp(&right.entity.to_bits()))
+                    })
+                {
+                    commands
+                        .entity(attacker.entity)
+                        .insert(DirectMovementComponent {
+                            xy: target.position,
+                            stop_radius: DEFENDER_ATTACK_RANGE,
+                        });
+                }
+            }
         }
 
-        let structure_target = structure_buckets
-            .neighbourhood(attacker_bucket, 1)
-            .flat_map(|(_, targets)| targets)
-            .filter(|target| target.swarm != attacker.swarm)
-            .filter_map(|target| {
-                let distance = attacker.position.distance(target.position);
-                (distance <= DEFENDER_ATTACK_RANGE).then_some((distance, target.entity))
-            })
-            .min_by(|(left_distance, left), (right_distance, right)| {
-                left_distance
-                    .total_cmp(right_distance)
-                    .then_with(|| left.to_bits().cmp(&right.to_bits()))
-            })
-            .map(|(_, entity)| entity);
-        if let Some(target) = structure_target {
-            *structure_damage.entry(target).or_default() += damage_after_defense(attack, 0.0);
-            continue;
-        }
-
-        let approach_target = structures_by_cell
-            .get(&held_cell)
-            .into_iter()
-            .flatten()
-            .filter(|target| target.swarm != attacker.swarm)
-            .min_by(|left, right| {
-                attacker
-                    .position
-                    .distance(left.position)
-                    .total_cmp(&attacker.position.distance(right.position))
-                    .then_with(|| left.entity.to_bits().cmp(&right.entity.to_bits()))
-            });
-        if let Some(target) = approach_target {
+        if delivered_attack || attacker.cooldown.is_some() {
             commands
                 .entity(attacker.entity)
-                .insert(DirectMovementComponent {
-                    xy: target.position,
-                    stop_radius: DEFENDER_ATTACK_RANGE,
+                .insert(DefenderAttackCooldown {
+                    ticks_remaining: if delivered_attack {
+                        DEFENDER_ATTACK_INTERVAL_TICKS.saturating_sub(1)
+                    } else {
+                        attacker.cooldown.unwrap_or_default().saturating_sub(1)
+                    },
                 });
         }
     }

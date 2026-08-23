@@ -33,7 +33,10 @@ fn empty_committed_defender_makes_charger_beat_startable_production() {
             current: 0.0,
             max: 1.0,
         },
-        ChargerAssignment { charger },
+        ChargerAssignment {
+            charger,
+            source_cell: IVec2::ZERO,
+        },
     ));
     let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
 
@@ -66,7 +69,10 @@ fn charger_emergency_reserves_only_uncovered_committed_charge_need() {
             current: 0.5,
             max: 1.0,
         },
-        ChargerAssignment { charger },
+        ChargerAssignment {
+            charger,
+            source_cell: IVec2::ZERO,
+        },
     ));
     app.world_mut().spawn(LogisticsReservation::new(
         source,
@@ -84,9 +90,9 @@ fn charger_emergency_reserves_only_uncovered_committed_charge_need() {
         .get::<LogisticsReservation>()
         .expect("partial emergency demand is reservable");
     assert_eq!(reservation.destination, charger);
-    assert_eq!(reservation.amount, 3);
-    assert_eq!(reservation.source_remaining, 3);
-    assert_eq!(reservation.destination_remaining, 3);
+    assert_eq!(reservation.amount, 10);
+    assert_eq!(reservation.source_remaining, 10);
+    assert_eq!(reservation.destination_remaining, 10);
 }
 
 #[test]
@@ -142,7 +148,10 @@ fn waiting_production_eventually_beats_continuous_charger_emergency() {
             current: 0.0,
             max: 1.0,
         },
-        ChargerAssignment { charger },
+        ChargerAssignment {
+            charger,
+            source_cell: IVec2::ZERO,
+        },
     ));
     let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
 

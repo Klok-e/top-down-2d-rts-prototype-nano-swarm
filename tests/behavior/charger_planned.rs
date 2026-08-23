@@ -104,6 +104,55 @@ fn demand_creates_planned_charger_not_instant_charger() {
 }
 
 #[test]
+fn newly_planned_charger_waits_for_next_regional_allocation_pass() {
+    let mut app = build_app();
+    let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let cell = IVec2::ZERO;
+    paint_defend_owned(&mut app, cell);
+    let _defender = place_defender_in_hold(&mut app, cell);
+    let worker = common::spawn_worker_at(&mut app, common::cell_world_center(cell));
+
+    // Charger demand runs after the current allocation acquisition, so the
+    // newly created plan cannot be claimed until the next projection pass.
+    app.update();
+    let plan = {
+        let world = app.world_mut();
+        world
+            .query::<(Entity, &PlannedStructure)>()
+            .iter(world)
+            .find_map(|(entity, planned)| (planned.kind == PlannedKind::Charger).then_some(entity))
+            .expect("Defend load must create a planned Charger")
+    };
+    assert!(
+        app.world()
+            .entity(worker)
+            .get::<PlannedStructureClaim>()
+            .is_none(),
+        "the new plan must not be claimed during the creation tick"
+    );
+
+    app.update();
+
+    assert_eq!(
+        app.world()
+            .entity(plan)
+            .get::<PlannedStructure>()
+            .unwrap()
+            .active_worker,
+        Some(worker),
+        "regional acquisition must claim the plan on the next pass"
+    );
+    assert_eq!(
+        app.world()
+            .entity(worker)
+            .get::<PlannedStructureClaim>()
+            .unwrap()
+            .target,
+        plan,
+    );
+}
+
+#[test]
 fn planned_charger_uses_planned_visual_color() {
     // Acceptance: "Planned Structures are visibly distinct
     // from completed structures" (issue #21's visual
@@ -432,11 +481,9 @@ fn completed_planned_charger_provides_charge_to_defenders() {
         entity.insert(DefendHold { cell });
     }
 
-    // Drive enough ticks for: rotation (1) + arrival
-    // (~1) + refill (~18 ticks to go from LOW threshold
-    // to MAX at (REFILL - DRAIN) per tick) + release (1).
-    // 50 is a safe margin.
-    for _ in 0..50 {
+    // Drive enough ticks for rotation, 19 supplied pulses, and
+    // release through the Defend lease.
+    for _ in 0..300 {
         app.update();
     }
 

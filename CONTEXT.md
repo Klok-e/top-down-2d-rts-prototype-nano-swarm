@@ -29,7 +29,7 @@ An intent zone that marks free base space where automatic construction may place
 _Avoid_: Construction group, builder assignment, manual building placement
 
 **Defend Zone**:
-An intent zone where nanobots hold and protect an area. Each painted cell requires one Defender, and each hostile nanobot inside it requires one additional Defender; crowding still discourages unnecessary extras. Larger zones therefore request broader baseline coverage. Painting Defend intent over a hostile Defend cell neutralizes its ownership so both swarms contest it; after both sides engage, the sole surviving holder captures it. Painting into enemy territory therefore functions as an attack or advance order without a separate Attack Zone. Defend Zones include chargers that resupply defenders, making cut-off or surrounded defenders weaker over time.
+An intent zone where nanobots hold and protect an area. Regional allocation owns each Defender's work claim and keeps a supported holder attached to its valid Defend cell; projected threat pressure attracts idle, new, or replacement Defenders without retargeting that holder. Painting Defend intent over a hostile Defend cell neutralizes its ownership so both swarms contest it; after both sides engage, the sole surviving holder captures it. Painting into enemy territory therefore functions as an attack or advance order without a separate Attack Zone. Defend Zones include finite local Chargers: a low-charge Defender may suspend its lease for an operational, supplied Charger in its own held cell, then request lease resumption; it never uses a remote cell's Charger.
 _Avoid_: Fighter group, combat squad, attack zone
 
 **Stockpile**:
@@ -57,11 +57,11 @@ A carrying nanobot's temporary claim on source minerals and destination capacity
 _Avoid_: Resource transfer, inventory deduction, delivery
 
 **Charge**:
-A defender sustain resource restored by visiting chargers. Only defenders use charge. Low charge weakens defender attack and defense, then causes health loss if ignored too long. Defenders automatically rotate to working chargers when charge runs low; fresh defenders can replace them at the front.
+A defender sustain resource restored by visiting Chargers. Only Defenders use Charge. Low Charge weakens Defender attack and defense, then causes health loss if ignored too long. Defenders automatically rotate to an operational, supplied Charger in their held Defend cell when Charge runs low; their regional lease is suspended during travel and charging, so a replacement may cover the cell. Defenders request lease resumption after charging rather than displacing a valid replacement.
 _Avoid_: Ammo, mana, stamina
 
 **Charger**:
-A terminal consumer resupplied from sink stockpiles with minerals physically carried by haulers. Its local mineral buffer restores defender charge; minerals remain in one visible custody state throughout stockpile loading, transit, delivery, and use.
+A terminal consumer resupplied from sink stockpiles with minerals physically carried by haulers. Its finite local mineral buffer restores Charge only for Defenders assigned to its own Defend cell; empty, foreign, degraded, or cut-off Chargers do not attract remote defenders. Minerals remain in one visible custody state throughout stockpile loading, transit, delivery, and use.
 _Avoid_: Charge stockpile, instant resupply, resource sink
 
 **Terminal Consumer**:

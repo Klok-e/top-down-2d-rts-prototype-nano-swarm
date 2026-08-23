@@ -5,10 +5,263 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, UNCONTESTED_CAPTURE_TICKS},
     nanobot::{
-        CombatPlugin, DefendHold, DefendPressure, DirectMovementComponent, Health, OwnerSwarm,
-        Structure, StructureKind, Swarm, SwarmId, SwarmMember,
+        CombatPlugin, DefendHold, DefendPressure, DefenderAttackCooldown, DirectMovementComponent,
+        Health, OwnerSwarm, Structure, StructureKind, Swarm, SwarmId, SwarmMember,
     },
 };
+
+#[test]
+fn equal_full_charge_defenders_resolve_in_readable_ttk_window() {
+    let mut app = common::sim_app_with_defend();
+    app.add_plugins(CombatPlugin);
+    let cell = IVec2::ZERO;
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .contest_defend(cell, SwarmId(11));
+    let center = common::cell_world_center(cell);
+    let player = common::spawn_defender_at(&mut app, center + Vec2::new(-8.0, 0.0));
+    app.world_mut()
+        .entity_mut(player)
+        .insert(DefendHold { cell });
+    let opponent = common::spawn_defender_at(&mut app, center + Vec2::new(8.0, 0.0));
+    app.world_mut()
+        .entity_mut(opponent)
+        .insert((SwarmMember::new(SwarmId(11)), DefendHold { cell }));
+
+    for _ in 0..284 {
+        app.update();
+    }
+    assert!(app.world().entities().contains(player));
+    assert!(app.world().entities().contains(opponent));
+    assert!(app.world().entity(player).get::<Health>().unwrap().current > 0);
+    assert!(
+        app.world()
+            .entity(opponent)
+            .get::<Health>()
+            .unwrap()
+            .current
+            > 0
+    );
+
+    for _ in 0..31 {
+        app.update();
+    }
+    assert!(
+        !app.world().entities().contains(player)
+            || app.world().entity(player).get::<Health>().unwrap().current == 0
+    );
+    assert!(
+        !app.world().entities().contains(opponent)
+            || app
+                .world()
+                .entity(opponent)
+                .get::<Health>()
+                .unwrap()
+                .current
+                == 0
+    );
+}
+
+#[test]
+fn combat_damage_only_occurs_when_cooldown_is_ready() {
+    let mut app = common::sim_app_with_defend();
+    app.add_plugins(CombatPlugin);
+    let cell = IVec2::ZERO;
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .contest_defend(cell, SwarmId(11));
+    let center = common::cell_world_center(cell);
+    let player = common::spawn_defender_at(&mut app, center + Vec2::new(-8.0, 0.0));
+    app.world_mut()
+        .entity_mut(player)
+        .insert(DefendHold { cell });
+    let opponent = common::spawn_defender_at(&mut app, center + Vec2::new(8.0, 0.0));
+    app.world_mut()
+        .entity_mut(opponent)
+        .insert((SwarmMember::new(SwarmId(11)), DefendHold { cell }));
+
+    app.update();
+    assert_eq!(
+        app.world().entity(player).get::<Health>().unwrap().current,
+        95
+    );
+    for _ in 0..14 {
+        app.update();
+    }
+    assert_eq!(
+        app.world().entity(player).get::<Health>().unwrap().current,
+        95
+    );
+
+    app.update();
+    assert_eq!(
+        app.world().entity(player).get::<Health>().unwrap().current,
+        90
+    );
+}
+
+#[test]
+fn simultaneous_lethal_attacks_still_exchange() {
+    let mut app = common::sim_app_with_defend();
+    app.add_plugins(CombatPlugin);
+    let cell = IVec2::ZERO;
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .contest_defend(cell, SwarmId(11));
+    let center = common::cell_world_center(cell);
+    let player = common::spawn_defender_at(&mut app, center + Vec2::new(-8.0, 0.0));
+    app.world_mut()
+        .entity_mut(player)
+        .insert(DefendHold { cell });
+    app.world_mut()
+        .entity_mut(player)
+        .get_mut::<Health>()
+        .unwrap()
+        .current = 5;
+    let opponent = common::spawn_defender_at(&mut app, center + Vec2::new(8.0, 0.0));
+    app.world_mut()
+        .entity_mut(opponent)
+        .insert((SwarmMember::new(SwarmId(11)), DefendHold { cell }));
+    app.world_mut()
+        .entity_mut(opponent)
+        .get_mut::<Health>()
+        .unwrap()
+        .current = 5;
+
+    app.update();
+
+    assert_eq!(
+        app.world().entity(player).get::<Health>().unwrap().current,
+        0
+    );
+    assert_eq!(
+        app.world()
+            .entity(opponent)
+            .get::<Health>()
+            .unwrap()
+            .current,
+        0
+    );
+}
+
+#[test]
+fn pursuit_updates_between_attack_pulses() {
+    let mut app = common::sim_app_with_defend();
+    app.add_plugins(CombatPlugin);
+    let cell = IVec2::ZERO;
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let center = common::cell_world_center(cell);
+    let defender = common::spawn_defender_at(&mut app, center);
+    app.world_mut().entity_mut(defender).insert((
+        DefendHold { cell },
+        DefenderAttackCooldown {
+            ticks_remaining: 10,
+        },
+    ));
+    let hostile = common::spawn_defender_at(&mut app, center + Vec2::new(160.0, 0.0));
+    app.world_mut()
+        .entity_mut(hostile)
+        .insert(SwarmMember::new(SwarmId(11)));
+
+    app.update();
+    assert_eq!(
+        app.world()
+            .entity(defender)
+            .get::<DirectMovementComponent>()
+            .unwrap()
+            .xy,
+        center + Vec2::new(160.0, 0.0)
+    );
+
+    let moved_target = center + Vec2::new(200.0, 0.0);
+    app.world_mut()
+        .entity_mut(hostile)
+        .get_mut::<Transform>()
+        .unwrap()
+        .translation = moved_target.extend(0.0);
+    app.update();
+
+    assert_eq!(
+        app.world()
+            .entity(defender)
+            .get::<DirectMovementComponent>()
+            .unwrap()
+            .xy,
+        moved_target,
+        "pursuit must refresh target position while attack cooldown is active"
+    );
+    assert_eq!(
+        app.world()
+            .entity(defender)
+            .get::<DefenderAttackCooldown>()
+            .unwrap()
+            .ticks_remaining,
+        8
+    );
+}
+
+#[test]
+fn single_defender_does_not_delete_structure_before_readable_window() {
+    let mut app = common::sim_app_with_defend();
+    app.add_plugins(CombatPlugin);
+    let cell = IVec2::ZERO;
+    let center = common::cell_world_center(cell);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let defender = common::spawn_defender_at(&mut app, center);
+    app.world_mut()
+        .entity_mut(defender)
+        .insert(DefendHold { cell });
+    let enemy_swarm = app.world_mut().spawn((Swarm {}, SwarmId(11))).id();
+    let structure = app
+        .world_mut()
+        .spawn((
+            Structure::new(StructureKind::Basic),
+            OwnerSwarm(enemy_swarm),
+            Transform::from_translation((center + Vec2::new(16.0, 0.0)).extend(0.0)),
+        ))
+        .id();
+
+    for _ in 0..284 {
+        app.update();
+    }
+    assert!(app.world().entities().contains(structure));
+    assert!(
+        app.world()
+            .entity(structure)
+            .get::<Structure>()
+            .unwrap()
+            .health
+            > 0
+    );
+
+    for _ in 0..31 {
+        app.update();
+    }
+    assert!(!app.world().entities().contains(structure));
+}
 
 #[test]
 fn opposing_holding_defenders_exchange_damage_in_a_contested_cell() {

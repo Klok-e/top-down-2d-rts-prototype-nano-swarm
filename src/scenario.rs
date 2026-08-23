@@ -1,7 +1,7 @@
 //! Authored default scenario for `cargo run`.
 //!
 //! The default map is a compact skirmish: both economies start moving,
-//! adjacent Defend fronts create immediate territory pressure, and the
+//! Defend fronts create immediate territory pressure, and the
 //! opponent advances by changing intent on a deterministic cadence.
 
 use bevy::{math::vec3, prelude::*};
@@ -23,12 +23,10 @@ use crate::{
 pub const PLAYER_CELL: IVec2 = IVec2::new(0, 0);
 pub const PLAYER_BUILD_FLANK_CELL: IVec2 = IVec2::new(0, 1);
 pub const PLAYER_DEFEND_CELL: IVec2 = IVec2::new(1, 0);
-pub const PLAYER_DEFEND_FLANK_CELL: IVec2 = IVec2::new(1, 1);
 pub const PLAYER_DEPOSIT_CELL: IVec2 = IVec2::new(-1, 0);
 pub const OPPONENT_CELL: IVec2 = IVec2::new(3, 0);
 pub const OPPONENT_BUILD_FLANK_CELL: IVec2 = IVec2::new(3, -1);
 pub const OPPONENT_DEFEND_CELL: IVec2 = IVec2::new(2, 0);
-pub const OPPONENT_DEFEND_FLANK_CELL: IVec2 = IVec2::new(2, -1);
 pub const OPPONENT_DEPOSIT_CELL: IVec2 = IVec2::new(4, 0);
 pub const NEUTRAL_DEPOSIT_CELLS: [IVec2; 2] = [IVec2::new(1, 2), IVec2::new(2, -2)];
 
@@ -81,7 +79,6 @@ pub fn paint_default_player_intent(grid: &mut IntentGrid) {
         (PLAYER_CELL, IntentKind::Build),
         (PLAYER_BUILD_FLANK_CELL, IntentKind::Build),
         (PLAYER_DEFEND_CELL, IntentKind::Defend),
-        (PLAYER_DEFEND_FLANK_CELL, IntentKind::Defend),
     ] {
         grid.paint_owned(cell, kind, Some(SwarmId::PLAYER));
     }
@@ -99,7 +96,6 @@ pub fn paint_default_opponent_intent(grid: &mut IntentGrid, owner: SwarmId) {
         (OPPONENT_CELL, IntentKind::Build),
         (OPPONENT_BUILD_FLANK_CELL, IntentKind::Build),
         (OPPONENT_DEFEND_CELL, IntentKind::Defend),
-        (OPPONENT_DEFEND_FLANK_CELL, IntentKind::Defend),
     ] {
         grid.paint_owned(cell, kind, Some(owner));
     }
@@ -349,17 +345,22 @@ mod tests {
                 .unwrap()
                 .has(IntentKind::Build)
         );
+        assert!(
+            !grid
+                .cell(PLAYER_BUILD_FLANK_CELL)
+                .unwrap()
+                .has(IntentKind::Defend)
+        );
+        assert!(
+            !grid.cell(IVec2::new(1, 1)).unwrap().has(IntentKind::Defend),
+            "removed player Defender flank cell must stay unpainted"
+        );
 
         // Defend is prepainted on its own cell, distinct from
         // the facility's Build cell (see PLAYER_DEFEND_CELL).
         let defend_cell = grid.cell(PLAYER_DEFEND_CELL).unwrap();
         assert!(defend_cell.has(IntentKind::Defend));
         assert!(!defend_cell.has(IntentKind::Corridor));
-        assert!(
-            grid.cell(PLAYER_DEFEND_FLANK_CELL)
-                .unwrap()
-                .has(IntentKind::Defend)
-        );
     }
 
     #[test]
@@ -427,11 +428,18 @@ mod tests {
                 .owner(IntentKind::Build),
             Some(opponent_id)
         );
-        assert_eq!(
-            grid.cell(OPPONENT_DEFEND_FLANK_CELL)
+        assert!(
+            !grid
+                .cell(OPPONENT_BUILD_FLANK_CELL)
                 .unwrap()
-                .owner(IntentKind::Defend),
-            Some(opponent_id)
+                .has(IntentKind::Defend)
+        );
+        assert!(
+            !grid
+                .cell(IVec2::new(2, -1))
+                .unwrap()
+                .has(IntentKind::Defend),
+            "removed opponent Defender flank cell must stay unpainted"
         );
     }
 
