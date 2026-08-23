@@ -4,9 +4,10 @@ use bevy::{asset::AssetPlugin, prelude::*, time::TimeUpdateStrategy};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        ActiveCombatPulses, ActiveNanobotDeathGhosts, CombatPlugin, CombatPresentationSettings,
-        DefendHold, Health, NanobotPresentationPlugin, NanobotVisual, OpponentSwarm, Swarm,
-        SwarmId, SwarmMember, nanobot_death_cleanup_system,
+        ActiveCombatPulses, ActiveNanobotDeathGhosts, ActiveStructureDeathGhosts, CombatPlugin,
+        CombatPresentationSettings, DefendHold, Health, NanobotPresentationPlugin, NanobotVisual,
+        OpponentSwarm, PlannedKind, Structure, Swarm, SwarmId, SwarmMember, completed_visual_color,
+        nanobot_death_cleanup_system,
     },
 };
 
@@ -247,4 +248,137 @@ fn simultaneous_real_attacks_keep_every_pulse_and_one_bounded_target_reaction() 
                 > 0.0,
         );
     }
+}
+
+#[test]
+fn real_support_structure_combat_flashes_in_place_and_recovers() {
+    let mut app = common::sim_app_with_defend();
+    app.add_plugins(TaskPoolPlugin::default())
+        .add_plugins(AssetPlugin::default())
+        .init_asset::<Image>()
+        .add_plugins(CombatPlugin)
+        .add_plugins(NanobotPresentationPlugin);
+
+    let opponent = SwarmId(19);
+    app.world_mut()
+        .spawn((Swarm {}, SwarmId::PLAYER, Transform::default()));
+    let opponent_entity = app
+        .world_mut()
+        .spawn((Swarm {}, opponent, OpponentSwarm {}, Transform::default()))
+        .id();
+    let cell = IVec2::ZERO;
+    let center = common::cell_world_center(cell);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let attacker = common::spawn_defender_at(&mut app, center + Vec2::new(-16.0, 0.0));
+    app.world_mut()
+        .entity_mut(attacker)
+        .insert(DefendHold { cell });
+    let kind = PlannedKind::Charger;
+    let structure_transform =
+        Transform::from_translation((center + Vec2::new(16.0, 0.0)).extend(1.0))
+            .with_rotation(Quat::from_rotation_z(0.31));
+    let structure = common::spawn_owned_completed_structure(
+        &mut app,
+        opponent_entity,
+        kind,
+        structure_transform,
+        None,
+    );
+    let before_health = app.world().get::<Structure>(structure).unwrap().health;
+
+    app.update();
+
+    assert!(app.world().get::<Structure>(structure).unwrap().health < before_health);
+    assert_eq!(app.world().resource::<ActiveCombatPulses>().len(), 1);
+    assert_ne!(
+        app.world().get::<Sprite>(structure).unwrap().color,
+        completed_visual_color(),
+    );
+    assert_eq!(
+        app.world().get::<Transform>(structure),
+        Some(&structure_transform),
+        "real support-structure combat must not move its gameplay root",
+    );
+
+    let settings = *app.world().resource::<CombatPresentationSettings>();
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(
+        settings.recovery_duration + Duration::from_millis(1),
+    ));
+    app.update();
+
+    assert_eq!(
+        app.world().get::<Sprite>(structure).unwrap().color,
+        completed_visual_color(),
+    );
+    assert_eq!(
+        app.world().get::<Transform>(structure),
+        Some(&structure_transform)
+    );
+}
+
+#[test]
+fn lethal_real_support_structure_combat_removes_gameplay_entity_while_effects_finish() {
+    let mut app = common::sim_app_with_defend();
+    app.add_plugins(TaskPoolPlugin::default())
+        .add_plugins(AssetPlugin::default())
+        .init_asset::<Image>()
+        .add_plugins(CombatPlugin)
+        .add_plugins(NanobotPresentationPlugin);
+
+    let opponent = SwarmId(19);
+    app.world_mut()
+        .spawn((Swarm {}, SwarmId::PLAYER, Transform::default()));
+    let opponent_entity = app
+        .world_mut()
+        .spawn((Swarm {}, opponent, OpponentSwarm {}, Transform::default()))
+        .id();
+    let cell = IVec2::ZERO;
+    let center = common::cell_world_center(cell);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let attacker = common::spawn_defender_at(&mut app, center + Vec2::new(-16.0, 0.0));
+    app.world_mut()
+        .entity_mut(attacker)
+        .insert(DefendHold { cell });
+    let kind = PlannedKind::ProductionFacility;
+    let structure = common::spawn_owned_completed_structure(
+        &mut app,
+        opponent_entity,
+        kind,
+        Transform::from_translation((center + Vec2::new(16.0, 0.0)).extend(1.0)),
+        Some(1),
+    );
+
+    app.update();
+
+    assert!(!app.world().entities().contains(structure));
+    assert_eq!(app.world().resource::<ActiveCombatPulses>().len(), 1);
+    let ghosts = app.world().resource::<ActiveStructureDeathGhosts>();
+    let ghost = ghosts.iter().next().expect("structure death needs a ghost");
+    assert_eq!(ghost.victim.entity, structure);
+    assert!(ghost.ring_radius > 0.0);
+
+    let settings = *app.world().resource::<CombatPresentationSettings>();
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(
+        settings.death_duration.mul_f32(0.5),
+    ));
+    app.update();
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(
+        settings.death_duration.mul_f32(0.5) + Duration::from_millis(1),
+    ));
+    app.update();
+
+    assert!(
+        app.world()
+            .resource::<ActiveStructureDeathGhosts>()
+            .is_empty()
+    );
+    assert!(app.world().resource::<ActiveCombatPulses>().is_empty());
 }

@@ -5,11 +5,14 @@ use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z,
     fly_camera::CameraZoom2d,
     nanobot::{
-        ActiveCombatDecorations, ActiveCombatPulses, ActiveNanobotDeathGhosts, CombatAppearance,
-        CombatPresentationSettings, CombatVisualSnapshot, Nanobot, NanobotPresentationPlugin,
-        NanobotSprites, NanobotType, NanobotVisual, ResolvedCombatDeath, ResolvedCombatFact,
-        ResolvedCombatHit, Swarm, SwarmId, SwarmMember,
+        ActiveCombatDecorations, ActiveCombatPulses, ActiveNanobotDeathGhosts,
+        ActiveStructureDeathGhosts, CombatAppearance, CombatPresentationSettings,
+        CombatVisualSnapshot, Nanobot, NanobotPresentationPlugin, NanobotSprites, NanobotType,
+        NanobotVisual, PlannedKind, ResolvedCombatDeath, ResolvedCombatFact, ResolvedCombatHit,
+        StructureCombatAppearance, StructureKind, Swarm, SwarmId, SwarmMember,
+        completed_visual_color,
     },
+    structure_sprites::{StructureSprites, StructureVisual},
 };
 
 fn visual_child(world: &World, root: Entity) -> Entity {
@@ -30,8 +33,26 @@ fn presentation_app() -> App {
         .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
             10,
         )))
+        .insert_resource(StructureSprites::from_single_handle(Handle::default()))
         .add_plugins(NanobotPresentationPlugin);
     app
+}
+
+fn structure_snapshot(
+    entity: Entity,
+    position: Vec2,
+    swarm: SwarmId,
+    visual: StructureVisual,
+) -> CombatVisualSnapshot {
+    CombatVisualSnapshot {
+        entity,
+        position,
+        swarm,
+        appearance: CombatAppearance::Structure(StructureCombatAppearance {
+            kind: StructureKind::Basic,
+            visual: Some(visual),
+        }),
+    }
 }
 
 #[test]
@@ -247,6 +268,284 @@ fn lethal_fact_sequence_keeps_the_final_pulse_with_a_collapsing_ghost_then_expir
             .is_empty()
     );
     assert!(app.world().resource::<ActiveCombatPulses>().is_empty());
+}
+
+#[test]
+fn structure_hit_flashes_in_place_with_attacker_jab_and_pulse_then_recovers() {
+    let mut app = presentation_app();
+    app.world_mut()
+        .spawn((Swarm {}, SwarmId::PLAYER, Transform::default()));
+
+    let attacker_position = Vec2::new(-32.0, 0.0);
+    let target_position = Vec2::new(32.0, 0.0);
+    let attacker = app
+        .world_mut()
+        .spawn((
+            Nanobot {},
+            NanobotType::Defender,
+            SwarmMember::new(SwarmId::PLAYER),
+            Transform::from_translation(attacker_position.extend(GAMEPLAY_SPRITE_Z)),
+        ))
+        .id();
+    let target_transform = Transform::from_translation(target_position.extend(GAMEPLAY_SPRITE_Z))
+        .with_rotation(Quat::from_rotation_z(0.37))
+        .with_scale(Vec3::new(1.25, 0.8, 1.0));
+    let neutral_color = completed_visual_color();
+    let visual = StructureVisual::completed(PlannedKind::Charger);
+    let sprite = Sprite {
+        color: neutral_color,
+        ..default()
+    };
+    let target = app
+        .world_mut()
+        .spawn((sprite, target_transform, visual))
+        .id();
+    app.update();
+    let attacker_visual = visual_child(app.world(), attacker);
+
+    app.world_mut()
+        .write_message(ResolvedCombatFact::Hit(ResolvedCombatHit {
+            attacker: CombatVisualSnapshot {
+                entity: attacker,
+                position: attacker_position,
+                swarm: SwarmId::PLAYER,
+                appearance: CombatAppearance::Nanobot(NanobotType::Defender),
+            },
+            target: structure_snapshot(target, target_position, SwarmId(11), visual),
+            damage: 5,
+            target_destroyed: false,
+        }));
+    app.update();
+
+    assert_ne!(
+        app.world().get::<Transform>(attacker_visual),
+        Some(&Transform::IDENTITY),
+        "the attacking Defender keeps the established jab",
+    );
+    assert_eq!(app.world().resource::<ActiveCombatPulses>().len(), 1);
+    assert_ne!(
+        app.world().get::<Sprite>(target).unwrap().color,
+        neutral_color,
+        "the structure flashes at impact",
+    );
+    assert_eq!(
+        app.world().get::<Transform>(target),
+        Some(&target_transform),
+        "structure impact must not recoil, rotate, or squash the gameplay root",
+    );
+
+    let settings = *app.world().resource::<CombatPresentationSettings>();
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(
+        settings.recovery_duration + Duration::from_millis(1),
+    ));
+    app.update();
+
+    assert_eq!(
+        app.world().get::<Sprite>(target).unwrap().color,
+        neutral_color
+    );
+    assert_eq!(
+        app.world().get::<Transform>(target),
+        Some(&target_transform)
+    );
+    assert!(app.world().resource::<ActiveCombatPulses>().is_empty());
+}
+
+#[test]
+fn simultaneous_structure_hits_keep_every_pulse_with_one_ghost_and_ring_then_expire() {
+    let mut app = presentation_app();
+    app.world_mut()
+        .spawn((Swarm {}, SwarmId::PLAYER, Transform::default()));
+    app.world_mut()
+        .resource_mut::<CombatPresentationSettings>()
+        .max_decorative_effects = 0;
+
+    let victim_position = Vec2::new(32.0, 0.0);
+    let victim = app.world_mut().spawn_empty().id();
+    assert!(app.world_mut().despawn(victim));
+    let visual = StructureVisual::completed(PlannedKind::ProductionFacility);
+    let victim_snapshot = structure_snapshot(victim, victim_position, SwarmId(11), visual);
+    for attacker_position in [Vec2::new(-32.0, -8.0), Vec2::new(-32.0, 8.0)] {
+        let attacker = app.world_mut().spawn_empty().id();
+        app.world_mut()
+            .write_message(ResolvedCombatFact::Hit(ResolvedCombatHit {
+                attacker: CombatVisualSnapshot {
+                    entity: attacker,
+                    position: attacker_position,
+                    swarm: SwarmId::PLAYER,
+                    appearance: CombatAppearance::Nanobot(NanobotType::Defender),
+                },
+                target: victim_snapshot,
+                damage: 5,
+                target_destroyed: true,
+            }));
+    }
+    app.world_mut()
+        .write_message(ResolvedCombatFact::Death(ResolvedCombatDeath {
+            victim: victim_snapshot,
+        }));
+    app.update();
+
+    assert_eq!(
+        app.world().resource::<ActiveCombatPulses>().len(),
+        2,
+        "every contributing hit keeps its primary pulse",
+    );
+    assert!(
+        app.world().resource::<ActiveCombatDecorations>().is_empty(),
+        "the decorative cap must not affect destruction signals",
+    );
+    assert!(
+        app.world()
+            .resource::<ActiveNanobotDeathGhosts>()
+            .is_empty()
+    );
+    let structure_ghosts = app.world().resource::<ActiveStructureDeathGhosts>();
+    let ghosts = structure_ghosts.iter().collect::<Vec<_>>();
+    let [ghost] = ghosts.as_slice() else {
+        panic!("one destroyed structure needs one ghost and one ring: {ghosts:?}");
+    };
+    assert_eq!(ghost.victim, victim_snapshot);
+    assert_eq!(
+        ghost.transform.translation,
+        victim_position.extend(GAMEPLAY_SPRITE_Z)
+    );
+    assert_eq!(
+        ghost.image,
+        app.world()
+            .resource::<StructureSprites>()
+            .production_facility,
+    );
+    assert!(ghost.ring_radius > 0.0);
+    assert!(ghost.ring_color.to_srgba().alpha > 0.0);
+    let initial_radius = ghost.ring_radius;
+    let initial_alpha = ghost.color.to_srgba().alpha;
+    let _ = ghosts;
+    let _ = structure_ghosts;
+
+    let settings = *app.world().resource::<CombatPresentationSettings>();
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(
+        settings.death_duration.mul_f32(0.5),
+    ));
+    app.update();
+
+    let structure_ghosts = app.world().resource::<ActiveStructureDeathGhosts>();
+    let ghost = structure_ghosts.iter().next().unwrap();
+    assert!(
+        ghost.ring_radius > initial_radius,
+        "the destruction ring expands"
+    );
+    assert!(
+        ghost.color.to_srgba().alpha < initial_alpha,
+        "the ghost fades"
+    );
+
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(settings.death_duration));
+    app.update();
+
+    assert!(
+        app.world()
+            .resource::<ActiveStructureDeathGhosts>()
+            .is_empty()
+    );
+    assert!(app.world().resource::<ActiveCombatPulses>().is_empty());
+}
+
+#[test]
+fn structure_effects_hide_at_tactical_zoom_and_expire_while_hidden() {
+    let mut app = presentation_app();
+    let camera = app
+        .world_mut()
+        .spawn(CameraZoom2d {
+            zoom: 7.99,
+            ..default()
+        })
+        .id();
+    let neutral_color = completed_visual_color();
+    let visual = StructureVisual::completed(PlannedKind::SinkStockpile);
+    let sprite = Sprite {
+        color: neutral_color,
+        ..default()
+    };
+    let live_structure = app
+        .world_mut()
+        .spawn((sprite, Transform::default(), visual))
+        .id();
+    let destroyed_structure = app.world_mut().spawn_empty().id();
+    assert!(app.world_mut().despawn(destroyed_structure));
+    let live_snapshot = structure_snapshot(live_structure, Vec2::ZERO, SwarmId(11), visual);
+    let destroyed_snapshot = structure_snapshot(
+        destroyed_structure,
+        Vec2::new(32.0, 0.0),
+        SwarmId(11),
+        visual,
+    );
+    for target in [live_snapshot, destroyed_snapshot] {
+        app.world_mut()
+            .write_message(ResolvedCombatFact::Hit(ResolvedCombatHit {
+                attacker: CombatVisualSnapshot {
+                    entity: Entity::PLACEHOLDER,
+                    position: Vec2::new(-32.0, 0.0),
+                    swarm: SwarmId::PLAYER,
+                    appearance: CombatAppearance::Nanobot(NanobotType::Defender),
+                },
+                target,
+                damage: 5,
+                target_destroyed: target.entity == destroyed_structure,
+            }));
+    }
+    app.world_mut()
+        .write_message(ResolvedCombatFact::Death(ResolvedCombatDeath {
+            victim: destroyed_snapshot,
+        }));
+    app.update();
+
+    assert_ne!(
+        app.world().get::<Sprite>(live_structure).unwrap().color,
+        neutral_color
+    );
+    assert_eq!(app.world().resource::<ActiveCombatPulses>().len(), 2);
+    assert_eq!(
+        app.world().resource::<ActiveStructureDeathGhosts>().len(),
+        1
+    );
+
+    app.world_mut()
+        .get_mut::<CameraZoom2d>(camera)
+        .unwrap()
+        .zoom = 8.0;
+    app.update();
+
+    assert_eq!(
+        app.world().get::<Sprite>(live_structure).unwrap().color,
+        neutral_color
+    );
+    assert_eq!(app.world().resource::<ActiveCombatPulses>().len(), 2);
+    assert_eq!(
+        app.world().resource::<ActiveStructureDeathGhosts>().len(),
+        1
+    );
+
+    let settings = *app.world().resource::<CombatPresentationSettings>();
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(
+        settings.death_duration.mul_f32(0.5),
+    ));
+    app.update();
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(
+        settings.death_duration.mul_f32(0.5) + Duration::from_millis(1),
+    ));
+    app.update();
+
+    assert!(app.world().resource::<ActiveCombatPulses>().is_empty());
+    assert!(
+        app.world()
+            .resource::<ActiveStructureDeathGhosts>()
+            .is_empty()
+    );
+    assert_eq!(
+        app.world().get::<Sprite>(live_structure).unwrap().color,
+        neutral_color
+    );
 }
 
 #[test]

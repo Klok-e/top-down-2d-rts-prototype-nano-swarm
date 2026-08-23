@@ -8,10 +8,13 @@ use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        ActiveCombatDecorations, ActiveCombatPulses, ActiveNanobotDeathGhosts, Charge,
-        CombatPresentationSettings, Commitment, DefendHold, Health, Nanobot, NanobotDeathGhost,
-        NanobotType, NanobotVisual, OpponentSwarm, Swarm, SwarmId, SwarmMember,
+        ActiveCombatDecorations, ActiveCombatPulses, ActiveNanobotDeathGhosts,
+        ActiveStructureDeathGhosts, Charge, CombatPresentationSettings, Commitment, DefendHold,
+        DefenderAttackCooldown, Health, Nanobot, NanobotDeathGhost, NanobotType, NanobotVisual,
+        OpponentSwarm, OwnerSwarm, PLANNED_STRUCTURE_FOOTPRINT, PlannedKind, Structure,
+        StructureKind, Swarm, SwarmId, SwarmMember, completed_visual_color,
     },
+    structure_sprites::{StructureSprites, StructureVisual, StructureVisualState},
 };
 
 use crate::harness::{TestContext, TestFlow, clear_nanobots_and_sprite_entities};
@@ -738,5 +741,223 @@ pub fn combat_presentation_density_and_zoom(ctx: &mut TestContext) -> TestFlow {
             TestFlow::Screenshot("combat_presentation_tactical_boundary".to_string())
         }
         DenseCombatPhase::TacticalBoundaryCaptured => TestFlow::Exit,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StructureCombatPhase {
+    AwaitVisuals,
+    AwaitOrdinaryHit,
+    OrdinaryHitCaptured,
+    AwaitRecovery,
+    RecoveryCaptured,
+    AwaitDestruction,
+    DestructionCaptured,
+}
+
+#[derive(Clone, Copy, Resource)]
+struct StructureCombatEvidence {
+    attacker: Entity,
+    attacker_visual: Entity,
+    structure: Entity,
+    attacker_root: Transform,
+    structure_root: Transform,
+    structure_position: Vec2,
+    start_health: u32,
+    phase: StructureCombatPhase,
+}
+
+fn setup_structure_combat_scene(world: &mut World) {
+    let center = prepare_combat_scene(world);
+    world.resource_mut::<IntentGrid>().paint_owned(
+        HOLD_CELL,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let opponent_entity = world
+        .query_filtered::<Entity, (With<Swarm>, With<OpponentSwarm>)>()
+        .single(world)
+        .expect("authored scene needs an Opponent Swarm");
+    let attacker_position = center + Vec2::new(-44.0, 0.0);
+    let structure_position = center + Vec2::new(44.0, 0.0);
+    let attacker_root = Transform::from_translation(attacker_position.extend(GAMEPLAY_SPRITE_Z));
+    let structure_root = Transform::from_translation(structure_position.extend(GAMEPLAY_SPRITE_Z));
+    let attacker = world
+        .spawn((
+            Nanobot {},
+            NanobotType::Defender,
+            Commitment::Idle,
+            Health::default(),
+            Charge::default(),
+            SwarmMember::new(SwarmId::PLAYER),
+            attacker_root,
+        ))
+        .id();
+    let kind = PlannedKind::ProductionFacility;
+    let mut sprite = world
+        .resource::<StructureSprites>()
+        .sprite(kind, StructureVisualState::Completed);
+    sprite.color = completed_visual_color();
+    sprite.custom_size = Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT));
+    let structure = world
+        .spawn((
+            Structure::new(StructureKind::Basic),
+            OwnerSwarm(opponent_entity),
+            StructureVisual::completed(kind),
+            sprite,
+            structure_root,
+        ))
+        .id();
+    let start_health = world.get::<Structure>(structure).unwrap().health;
+    world.insert_resource(StructureCombatEvidence {
+        attacker,
+        attacker_visual: Entity::PLACEHOLDER,
+        structure,
+        attacker_root,
+        structure_root,
+        structure_position,
+        start_health,
+        phase: StructureCombatPhase::AwaitVisuals,
+    });
+}
+
+pub fn support_structure_combat_presentation(ctx: &mut TestContext) -> TestFlow {
+    if ctx.frame == 0 {
+        setup_structure_combat_scene(ctx.world);
+        return TestFlow::Continue;
+    }
+
+    let evidence = *ctx.world.resource::<StructureCombatEvidence>();
+    match evidence.phase {
+        StructureCombatPhase::AwaitVisuals => {
+            let attacker_visual = visual_child(ctx.world, evidence.attacker);
+            ctx.world
+                .entity_mut(evidence.attacker)
+                .insert(DefendHold { cell: HOLD_CELL });
+            let mut next = ctx.world.resource_mut::<StructureCombatEvidence>();
+            next.attacker_visual = attacker_visual;
+            next.phase = StructureCombatPhase::AwaitOrdinaryHit;
+            ctx.world.resource_mut::<Time<Virtual>>().unpause();
+            TestFlow::Continue
+        }
+        StructureCombatPhase::AwaitOrdinaryHit => {
+            let health = ctx
+                .world
+                .get::<Structure>(evidence.structure)
+                .expect("ordinary structure hit must not destroy the target")
+                .health;
+            if health == evidence.start_health {
+                assert!(ctx.frame < 12, "ordinary structure hit did not resolve");
+                return TestFlow::Continue;
+            }
+            ctx.world.resource_mut::<Time<Virtual>>().pause();
+            assert_eq!(ctx.world.resource::<ActiveCombatPulses>().len(), 1);
+            assert!(
+                ctx.world
+                    .get::<Transform>(evidence.attacker_visual)
+                    .unwrap()
+                    .translation
+                    .length()
+                    > 0.0,
+            );
+            assert_ne!(
+                ctx.world.get::<Sprite>(evidence.structure).unwrap().color,
+                completed_visual_color(),
+            );
+            assert_eq!(
+                ctx.world.get::<Transform>(evidence.structure),
+                Some(&evidence.structure_root),
+            );
+            assert!(
+                ctx.world
+                    .resource::<ActiveStructureDeathGhosts>()
+                    .is_empty(),
+            );
+            ctx.world.resource_mut::<StructureCombatEvidence>().phase =
+                StructureCombatPhase::OrdinaryHitCaptured;
+            TestFlow::Screenshot("support_structure_combat_hit".to_string())
+        }
+        StructureCombatPhase::OrdinaryHitCaptured => {
+            let mut fixed = ctx.world.resource_mut::<Time<Fixed>>();
+            fixed.discard_overstep(Duration::MAX);
+            fixed.set_timestep(Duration::from_secs(60 * 60));
+            ctx.world.resource_mut::<Time<Virtual>>().unpause();
+            ctx.world.resource_mut::<StructureCombatEvidence>().phase =
+                StructureCombatPhase::AwaitRecovery;
+            TestFlow::Continue
+        }
+        StructureCombatPhase::AwaitRecovery => {
+            let recovered = ctx.world.resource::<ActiveCombatPulses>().is_empty()
+                && ctx
+                    .world
+                    .get::<Transform>(evidence.attacker_visual)
+                    .is_some_and(|transform| *transform == Transform::IDENTITY)
+                && ctx
+                    .world
+                    .get::<Sprite>(evidence.structure)
+                    .is_some_and(|sprite| sprite.color == completed_visual_color());
+            if !recovered {
+                assert!(
+                    ctx.frame < 40,
+                    "structure impact did not recover on schedule"
+                );
+                return TestFlow::Continue;
+            }
+            ctx.world.resource_mut::<Time<Virtual>>().pause();
+            assert_eq!(
+                ctx.world.get::<Transform>(evidence.structure),
+                Some(&evidence.structure_root),
+            );
+            ctx.world.resource_mut::<StructureCombatEvidence>().phase =
+                StructureCombatPhase::RecoveryCaptured;
+            TestFlow::Screenshot("support_structure_combat_recovered".to_string())
+        }
+        StructureCombatPhase::RecoveryCaptured => {
+            ctx.world
+                .get_mut::<Structure>(evidence.structure)
+                .expect("recovered structure must remain")
+                .health = 1;
+            ctx.world
+                .entity_mut(evidence.attacker)
+                .insert(DefenderAttackCooldown { ticks_remaining: 0 });
+            let mut fixed = ctx.world.resource_mut::<Time<Fixed>>();
+            fixed.discard_overstep(Duration::MAX);
+            fixed.set_timestep(Duration::from_millis(10));
+            ctx.world.resource_mut::<Time<Virtual>>().unpause();
+            ctx.world.resource_mut::<StructureCombatEvidence>().phase =
+                StructureCombatPhase::AwaitDestruction;
+            TestFlow::Continue
+        }
+        StructureCombatPhase::AwaitDestruction => {
+            if ctx.world.entities().contains(evidence.structure) {
+                assert!(ctx.frame < 55, "lethal structure hit did not resolve");
+                return TestFlow::Continue;
+            }
+            ctx.world.resource_mut::<Time<Virtual>>().pause();
+            assert_eq!(ctx.world.resource::<ActiveCombatPulses>().len(), 1);
+            assert_eq!(
+                ctx.world.get::<Transform>(evidence.attacker),
+                Some(&evidence.attacker_root),
+            );
+            let ghost = ctx
+                .world
+                .resource::<ActiveStructureDeathGhosts>()
+                .iter()
+                .next()
+                .cloned()
+                .expect("lethal structure hit needs a presentation ghost and ring");
+            assert_eq!(ghost.victim.entity, evidence.structure);
+            assert_eq!(ghost.victim.position, evidence.structure_position);
+            assert_eq!(
+                ghost.transform.translation.truncate(),
+                evidence.structure_position,
+            );
+            assert!(ghost.ring_radius > 0.0);
+            assert!(ghost.ring_color.to_srgba().alpha > 0.0);
+            ctx.world.resource_mut::<StructureCombatEvidence>().phase =
+                StructureCombatPhase::DestructionCaptured;
+            TestFlow::Screenshot("support_structure_combat_destroyed".to_string())
+        }
+        StructureCombatPhase::DestructionCaptured => TestFlow::Exit,
     }
 }

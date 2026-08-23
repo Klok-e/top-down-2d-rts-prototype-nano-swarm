@@ -599,6 +599,42 @@ pub fn spawn_structure_at(app: &mut App, world_pos: Vec2) -> Entity {
         .id()
 }
 
+/// Spawn a completed support structure with production-shaped ownership,
+/// condition, and presentation components. Tests may choose a non-default
+/// health value while sharing the same completed visual seam.
+pub fn spawn_owned_completed_structure(
+    app: &mut App,
+    owner: Entity,
+    kind: top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedKind,
+    transform: Transform,
+    health: Option<u32>,
+) -> Entity {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{PLANNED_STRUCTURE_FOOTPRINT, completed_visual_color},
+        structure_sprites::{StructureVisual, StructureVisualState},
+    };
+
+    let mut condition = Structure::new(StructureKind::Basic);
+    if let Some(health) = health {
+        condition.health = health;
+    }
+    let mut sprite = app
+        .world()
+        .resource::<StructureSprites>()
+        .sprite(kind, StructureVisualState::Completed);
+    sprite.color = completed_visual_color();
+    sprite.custom_size = Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT));
+    app.world_mut()
+        .spawn((
+            condition,
+            OwnerSwarm(owner),
+            StructureVisual::completed(kind),
+            sprite,
+            transform,
+        ))
+        .id()
+}
+
 /// Spawn a fresh [`PlannedStructure`] in `cell` for the Source
 /// Stockpile demo kind. The test-only entry point mirrors what
 /// the auto-creation system does so behaviour tests that

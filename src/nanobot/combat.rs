@@ -11,6 +11,7 @@ use crate::nanobot::{
     effective_defense, world_to_cell,
 };
 use crate::spatial::FixedSpatialBuckets;
+use crate::structure_sprites::StructureVisual;
 
 /// Defender attack reach in world units.
 pub const DEFENDER_ATTACK_RANGE: f32 = 96.0;
@@ -21,11 +22,20 @@ pub const DEFENDER_ATTACK_INTERVAL_TICKS: u16 = 15;
 /// Structure damage multiplier for a fully charged Defender attack.
 pub const DEFENDER_STRUCTURE_DAMAGE_FACTOR: f32 = 0.5;
 
+/// Stable support-structure identity retained after gameplay destruction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StructureCombatAppearance {
+    /// Gameplay structure kind used by simulation.
+    pub kind: StructureKind,
+    /// Completed presentation identity when the target owns a rendered visual.
+    pub visual: Option<StructureVisual>,
+}
+
 /// Stable visual identity carried by resolved combat after gameplay changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CombatAppearance {
     Nanobot(NanobotType),
-    Structure(StructureKind),
+    Structure(StructureCombatAppearance),
 }
 
 /// Presentation-ready snapshot captured from one combat participant.
@@ -93,6 +103,7 @@ struct StructureTarget {
     position: Vec2,
     swarm: SwarmId,
     kind: StructureKind,
+    visual: Option<StructureVisual>,
 }
 
 impl StructureTarget {
@@ -101,7 +112,10 @@ impl StructureTarget {
             entity: self.entity,
             position: self.position,
             swarm: self.swarm,
-            appearance: CombatAppearance::Structure(self.kind),
+            appearance: CombatAppearance::Structure(StructureCombatAppearance {
+                kind: self.kind,
+                visual: self.visual,
+            }),
         }
     }
 }
@@ -193,7 +207,13 @@ pub fn defender_combat_system(
             ),
             With<Nanobot>,
         >,
-        Query<(Entity, &Transform, &OwnerSwarm, &Structure)>,
+        Query<(
+            Entity,
+            &Transform,
+            &OwnerSwarm,
+            &Structure,
+            Option<&StructureVisual>,
+        )>,
         Query<&mut Health, With<Nanobot>>,
         Query<&mut Structure>,
     )>,
@@ -219,12 +239,13 @@ pub fn defender_combat_system(
     let structures = combatants
         .p1()
         .iter()
-        .filter_map(|(entity, transform, owner, structure)| {
+        .filter_map(|(entity, transform, owner, structure, visual)| {
             Some(StructureTarget {
                 entity,
                 position: transform.translation.truncate(),
                 swarm: swarms.get(owner.0).ok().copied()?,
                 kind: structure.kind,
+                visual: visual.copied(),
             })
         })
         .collect::<Vec<_>>();
@@ -385,6 +406,10 @@ pub fn defender_combat_system(
         .iter()
         .map(|combatant| (combatant.entity, combatant.presentation_snapshot()))
         .collect::<HashMap<_, _>>();
+    let structure_snapshots = structures
+        .iter()
+        .map(|structure| (structure.entity, structure.presentation_snapshot()))
+        .collect::<HashMap<_, _>>();
     let mut destroyed_targets = HashSet::new();
     let mut combat_deaths = Vec::new();
     {
@@ -408,9 +433,13 @@ pub fn defender_combat_system(
     let mut conditions = combatants.p3();
     for (entity, amount) in structure_damage {
         if let Ok(mut target) = conditions.get_mut(entity) {
+            let was_alive = target.health > 0;
             target.health = target.health.saturating_sub(amount);
             if target.health == 0 {
                 destroyed_targets.insert(entity);
+                if was_alive && let Some(victim) = structure_snapshots.get(&entity).copied() {
+                    combat_deaths.push(ResolvedCombatDeath { victim });
+                }
                 commands.entity(entity).despawn();
             }
         }

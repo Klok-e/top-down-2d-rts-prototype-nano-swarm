@@ -94,6 +94,10 @@ fn main() -> std::process::ExitCode {
             run(combat_presentation::nanobot_combat_death)
         })
         .with_ignored_flag(true),
+        Trial::test("support_structure_combat_presentation", || {
+            run(combat_presentation::support_structure_combat_presentation)
+        })
+        .with_ignored_flag(true),
         Trial::test("combat_presentation_density_and_zoom", || {
             run(combat_presentation::combat_presentation_density_and_zoom)
         })
