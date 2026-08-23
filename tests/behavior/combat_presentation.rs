@@ -3,11 +3,12 @@ use std::time::Duration;
 use bevy::{asset::AssetPlugin, prelude::*, time::TimeUpdateStrategy};
 use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z,
+    fly_camera::CameraZoom2d,
     nanobot::{
-        ActiveCombatPulses, ActiveNanobotDeathGhosts, CombatAppearance, CombatPresentationSettings,
-        CombatVisualSnapshot, Nanobot, NanobotPresentationPlugin, NanobotSprites, NanobotType,
-        NanobotVisual, ResolvedCombatDeath, ResolvedCombatFact, ResolvedCombatHit, Swarm, SwarmId,
-        SwarmMember,
+        ActiveCombatDecorations, ActiveCombatPulses, ActiveNanobotDeathGhosts, CombatAppearance,
+        CombatPresentationSettings, CombatVisualSnapshot, Nanobot, NanobotPresentationPlugin,
+        NanobotSprites, NanobotType, NanobotVisual, ResolvedCombatDeath, ResolvedCombatFact,
+        ResolvedCombatHit, Swarm, SwarmId, SwarmMember,
     },
 };
 
@@ -285,4 +286,327 @@ fn death_ghosts_reuse_every_nanobot_image_for_both_swarms() {
             sprites.handle(kind, !ghost.victim.swarm.is_player()),
         );
     }
+}
+
+#[test]
+fn primary_pulses_ignore_the_decorative_effect_budget() {
+    let mut app = presentation_app();
+    app.world_mut()
+        .resource_mut::<CombatPresentationSettings>()
+        .max_decorative_effects = 1;
+
+    let target = app.world_mut().spawn_empty().id();
+    for index in 0..3 {
+        let attacker = app.world_mut().spawn_empty().id();
+        app.world_mut()
+            .write_message(ResolvedCombatFact::Hit(ResolvedCombatHit {
+                attacker: CombatVisualSnapshot {
+                    entity: attacker,
+                    position: Vec2::new(-32.0, index as f32 * 16.0),
+                    swarm: SwarmId::PLAYER,
+                    appearance: CombatAppearance::Nanobot(NanobotType::Defender),
+                },
+                target: CombatVisualSnapshot {
+                    entity: target,
+                    position: Vec2::new(32.0, 0.0),
+                    swarm: SwarmId(11),
+                    appearance: CombatAppearance::Nanobot(NanobotType::Worker),
+                },
+                damage: 10,
+                target_destroyed: false,
+            }));
+    }
+
+    app.update();
+
+    assert_eq!(
+        app.world().resource::<ActiveCombatPulses>().len(),
+        3,
+        "decorative limits must never remove primary combat signals",
+    );
+    assert_eq!(
+        app.world().resource::<ActiveCombatDecorations>().len(),
+        1,
+        "secondary impact work must obey its configured bound",
+    );
+}
+
+fn injected_reaction(
+    attacker_positions: &[Vec2],
+    spawn_order: &[usize],
+    fact_order: &[usize],
+) -> (Vec2, f32) {
+    let mut app = presentation_app();
+    app.world_mut()
+        .spawn((Swarm {}, SwarmId::PLAYER, Transform::default()));
+    let opponent = SwarmId(11);
+    app.world_mut()
+        .spawn((Swarm {}, opponent, Transform::default()));
+    app.world_mut()
+        .resource_mut::<CombatPresentationSettings>()
+        .max_decorative_effects = 1;
+
+    let target_position = Vec2::ZERO;
+    let target_root = Transform::from_translation(target_position.extend(GAMEPLAY_SPRITE_Z));
+    let target = app
+        .world_mut()
+        .spawn((
+            Nanobot {},
+            NanobotType::Worker,
+            SwarmMember::new(opponent),
+            target_root,
+        ))
+        .id();
+    let mut attackers = vec![Entity::PLACEHOLDER; attacker_positions.len()];
+    let mut attacker_roots = vec![Transform::IDENTITY; attacker_positions.len()];
+    for &index in spawn_order {
+        let root = Transform::from_translation(attacker_positions[index].extend(GAMEPLAY_SPRITE_Z));
+        attackers[index] = app
+            .world_mut()
+            .spawn((
+                Nanobot {},
+                NanobotType::Defender,
+                SwarmMember::new(SwarmId::PLAYER),
+                root,
+            ))
+            .id();
+        attacker_roots[index] = root;
+    }
+    app.update();
+
+    for &index in fact_order {
+        app.world_mut()
+            .write_message(ResolvedCombatFact::Hit(ResolvedCombatHit {
+                attacker: CombatVisualSnapshot {
+                    entity: attackers[index],
+                    position: attacker_positions[index],
+                    swarm: SwarmId::PLAYER,
+                    appearance: CombatAppearance::Nanobot(NanobotType::Defender),
+                },
+                target: CombatVisualSnapshot {
+                    entity: target,
+                    position: target_position,
+                    swarm: opponent,
+                    appearance: CombatAppearance::Nanobot(NanobotType::Worker),
+                },
+                damage: 10,
+                target_destroyed: false,
+            }));
+    }
+    app.update();
+
+    let settings = *app.world().resource::<CombatPresentationSettings>();
+    assert_eq!(
+        app.world().resource::<ActiveCombatPulses>().len(),
+        attacker_positions.len(),
+    );
+    assert_eq!(app.world().get::<Transform>(target), Some(&target_root));
+    for (index, attacker) in attackers.into_iter().enumerate() {
+        assert_eq!(
+            app.world().get::<Transform>(attacker),
+            Some(&attacker_roots[index]),
+        );
+        let visual = visual_child(app.world(), attacker);
+        let jab = app.world().get::<Transform>(visual).unwrap().translation;
+        assert!(jab.length() > 0.0);
+        assert!(jab.length() <= settings.jab_distance + 0.001);
+    }
+
+    let target_visual = visual_child(app.world(), target);
+    let reaction = app
+        .world()
+        .get::<Transform>(target_visual)
+        .unwrap()
+        .translation
+        .truncate();
+    assert!(reaction.length() > 0.0);
+    assert!(reaction.length() <= settings.recoil_distance + 0.001);
+    let flash_blue = app
+        .world()
+        .get::<Sprite>(target_visual)
+        .unwrap()
+        .color
+        .to_srgba()
+        .blue;
+    (reaction, flash_blue)
+}
+
+#[test]
+fn simultaneous_hits_combine_into_one_deterministic_bounded_reaction() {
+    let positions = [
+        Vec2::new(-64.0, -32.0),
+        Vec2::new(-64.0, 32.0),
+        Vec2::new(0.0, -64.0),
+    ];
+    let (forward_reaction, crowded_flash_blue) =
+        injected_reaction(&positions, &[0, 1, 2], &[0, 1, 2]);
+    let (reverse_reaction, reverse_flash_blue) =
+        injected_reaction(&positions, &[2, 1, 0], &[2, 1, 0]);
+    let (_, single_flash_blue) = injected_reaction(&positions[..1], &[0], &[0]);
+
+    let expected_direction = Vec2::new(0.872_871_6, 0.487_950_03);
+    assert!(
+        forward_reaction.normalize().distance(expected_direction) < 0.001,
+        "the target must recoil along the combined incoming direction",
+    );
+    assert!(
+        forward_reaction.distance(reverse_reaction) < 0.001,
+        "reaction aggregation must not depend on spawn or fact order",
+    );
+    assert!((crowded_flash_blue - reverse_flash_blue).abs() < 0.001);
+    assert!(
+        crowded_flash_blue < single_flash_blue,
+        "simultaneous impacts must produce one brighter target flash",
+    );
+    assert!(
+        crowded_flash_blue >= 0.05,
+        "the combined flash must stay capped below full overexposure",
+    );
+}
+
+#[test]
+fn combat_presentation_hides_at_tactical_zoom_and_expires_while_hidden() {
+    let mut app = presentation_app();
+    app.world_mut()
+        .spawn((Swarm {}, SwarmId::PLAYER, Transform::default()));
+    let opponent = SwarmId(11);
+    app.world_mut()
+        .spawn((Swarm {}, opponent, Transform::default()));
+    let camera = app
+        .world_mut()
+        .spawn(CameraZoom2d {
+            zoom: 7.99,
+            ..default()
+        })
+        .id();
+    let attacker_position = Vec2::new(-32.0, 0.0);
+    let target_position = Vec2::new(32.0, 0.0);
+    let attacker_root = Transform::from_translation(attacker_position.extend(GAMEPLAY_SPRITE_Z));
+    let target_root = Transform::from_translation(target_position.extend(GAMEPLAY_SPRITE_Z));
+    let attacker = app
+        .world_mut()
+        .spawn((
+            Nanobot {},
+            NanobotType::Defender,
+            SwarmMember::new(SwarmId::PLAYER),
+            attacker_root,
+        ))
+        .id();
+    let target = app
+        .world_mut()
+        .spawn((
+            Nanobot {},
+            NanobotType::Worker,
+            SwarmMember::new(opponent),
+            target_root,
+        ))
+        .id();
+    app.update();
+    let attacker_visual = visual_child(app.world(), attacker);
+    let target_visual = visual_child(app.world(), target);
+    let settings = *app.world().resource::<CombatPresentationSettings>();
+    let target_snapshot = CombatVisualSnapshot {
+        entity: target,
+        position: target_position,
+        swarm: opponent,
+        appearance: CombatAppearance::Nanobot(NanobotType::Worker),
+    };
+    app.world_mut()
+        .write_message(ResolvedCombatFact::Hit(ResolvedCombatHit {
+            attacker: CombatVisualSnapshot {
+                entity: attacker,
+                position: attacker_position,
+                swarm: SwarmId::PLAYER,
+                appearance: CombatAppearance::Nanobot(NanobotType::Defender),
+            },
+            target: target_snapshot,
+            damage: 10,
+            target_destroyed: false,
+        }));
+    app.world_mut()
+        .write_message(ResolvedCombatFact::Death(ResolvedCombatDeath {
+            victim: target_snapshot,
+        }));
+    app.update();
+
+    assert_eq!(app.world().resource::<ActiveCombatPulses>().len(), 1);
+    assert!(settings.pulse_thickness >= 1.0);
+    assert!(
+        app.world()
+            .get::<Transform>(attacker_visual)
+            .unwrap()
+            .translation
+            .length()
+            / 7.99
+            >= settings.minimum_impact_screen_distance - 0.001,
+    );
+    assert!(
+        app.world()
+            .get::<Transform>(target_visual)
+            .unwrap()
+            .translation
+            .length()
+            / 7.99
+            >= settings.minimum_impact_screen_distance - 0.001,
+    );
+    assert_eq!(app.world().resource::<ActiveNanobotDeathGhosts>().len(), 1);
+    assert_eq!(app.world().resource::<ActiveCombatDecorations>().len(), 1);
+    assert_ne!(
+        app.world().get::<Transform>(attacker_visual),
+        Some(&Transform::IDENTITY),
+    );
+    assert_ne!(
+        app.world().get::<Transform>(target_visual),
+        Some(&Transform::IDENTITY),
+    );
+
+    app.world_mut()
+        .get_mut::<CameraZoom2d>(camera)
+        .unwrap()
+        .zoom = 8.0;
+    app.update();
+
+    assert_eq!(app.world().resource::<ActiveCombatPulses>().len(), 1);
+    assert_eq!(app.world().resource::<ActiveNanobotDeathGhosts>().len(), 1);
+    assert_eq!(app.world().resource::<ActiveCombatDecorations>().len(), 1);
+    assert_eq!(
+        app.world().get::<Transform>(attacker_visual),
+        Some(&Transform::IDENTITY),
+    );
+    assert_eq!(
+        app.world().get::<Transform>(target_visual),
+        Some(&Transform::IDENTITY),
+    );
+    assert_eq!(
+        app.world().get::<Sprite>(target_visual).unwrap().color,
+        Color::WHITE,
+    );
+    assert_eq!(app.world().get::<Transform>(attacker), Some(&attacker_root));
+    assert_eq!(app.world().get::<Transform>(target), Some(&target_root));
+
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(
+        settings.death_duration + Duration::from_millis(1),
+    ));
+    app.update();
+    app.world_mut()
+        .get_mut::<CameraZoom2d>(camera)
+        .unwrap()
+        .zoom = 7.99;
+    app.update();
+
+    assert!(app.world().resource::<ActiveCombatPulses>().is_empty());
+    assert!(
+        app.world()
+            .resource::<ActiveNanobotDeathGhosts>()
+            .is_empty()
+    );
+    assert!(app.world().resource::<ActiveCombatDecorations>().is_empty());
+    assert_eq!(
+        app.world().get::<Transform>(attacker_visual),
+        Some(&Transform::IDENTITY),
+    );
+    assert_eq!(
+        app.world().get::<Transform>(target_visual),
+        Some(&Transform::IDENTITY),
+    );
 }
