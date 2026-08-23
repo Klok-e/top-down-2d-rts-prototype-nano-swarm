@@ -46,10 +46,17 @@ pub struct ResolvedCombatHit {
     pub target_destroyed: bool,
 }
 
+/// Stable victim state for one nanobot destroyed by resolved combat.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResolvedCombatDeath {
+    pub victim: CombatVisualSnapshot,
+}
+
 /// Facts published by fixed-step combat for optional render-time presentation.
 #[derive(Debug, Clone, Copy, PartialEq, Message)]
 pub enum ResolvedCombatFact {
     Hit(ResolvedCombatHit),
+    Death(ResolvedCombatDeath),
 }
 
 /// Per-Defender cooldown after a delivered attack.
@@ -374,14 +381,26 @@ pub fn defender_combat_system(
         }
     }
 
+    let nanobot_snapshots = snapshot
+        .iter()
+        .map(|combatant| (combatant.entity, combatant.presentation_snapshot()))
+        .collect::<HashMap<_, _>>();
     let mut destroyed_targets = HashSet::new();
+    let mut combat_deaths = Vec::new();
     {
         let mut health = combatants.p2();
         for (entity, amount) in nanobot_damage {
             if let Ok(mut target) = health.get_mut(entity) {
+                let was_alive = target.current > 0;
                 target.current = target.current.saturating_sub(amount);
                 if target.current == 0 {
                     destroyed_targets.insert(entity);
+                }
+                if was_alive
+                    && target.current == 0
+                    && let Some(victim) = nanobot_snapshots.get(&entity).copied()
+                {
+                    combat_deaths.push(ResolvedCombatDeath { victim });
                 }
             }
         }
@@ -399,6 +418,10 @@ pub fn defender_combat_system(
     for mut hit in resolved_hits {
         hit.target_destroyed = destroyed_targets.contains(&hit.target.entity);
         facts.write(ResolvedCombatFact::Hit(hit));
+    }
+    combat_deaths.sort_by_key(|death| death.victim.entity.to_bits());
+    for death in combat_deaths {
+        facts.write(ResolvedCombatFact::Death(death));
     }
 }
 

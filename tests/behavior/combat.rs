@@ -5,9 +5,10 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, UNCONTESTED_CAPTURE_TICKS},
     nanobot::{
-        CombatAppearance, CombatPlugin, DefendHold, DefendPressure, DefenderAttackCooldown,
-        DirectMovementComponent, Health, OwnerSwarm, ResolvedCombatFact, Structure, StructureKind,
-        Swarm, SwarmId, SwarmMember,
+        Charge, CombatAppearance, CombatPlugin, DefendHold, DefendPressure, DefenderAttackCooldown,
+        DirectMovementComponent, EMPTY_CHARGE_DAMAGE_INTERVAL_TICKS, Health, NanobotType,
+        OwnerSwarm, ResolvedCombatDeath, ResolvedCombatFact, Structure, StructureKind, Swarm,
+        SwarmId, SwarmMember, defender_health_loss_when_empty_system, nanobot_death_cleanup_system,
     },
 };
 
@@ -70,6 +71,182 @@ fn delivered_hit_publishes_the_resolved_combat_snapshot() {
     );
     assert_eq!(hit.damage, 10);
     assert!(!hit.target_destroyed);
+}
+
+#[test]
+fn lethal_combat_publishes_one_death_snapshot_and_removes_the_nanobot() {
+    let mut app = common::sim_app_with_defend();
+    app.add_plugins(CombatPlugin)
+        .add_systems(FixedLast, nanobot_death_cleanup_system);
+    let cell = IVec2::ZERO;
+    let center = common::cell_world_center(cell);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let attacker = common::spawn_defender_at(&mut app, center + Vec2::new(-16.0, 0.0));
+    app.world_mut()
+        .entity_mut(attacker)
+        .insert(DefendHold { cell });
+    let target_position = center + Vec2::new(16.0, 0.0);
+    let target = common::spawn_worker_at(&mut app, target_position);
+    app.world_mut().entity_mut(target).insert((
+        SwarmMember::new(SwarmId(11)),
+        Health {
+            current: 10,
+            max: 100,
+        },
+    ));
+
+    app.update();
+
+    assert!(!app.world().entities().contains(target));
+    let facts = resolved_facts(&app);
+    let [
+        ResolvedCombatFact::Hit(hit),
+        ResolvedCombatFact::Death(death),
+    ] = facts.as_slice()
+    else {
+        panic!("lethal combat must publish its hit followed by one death fact: {facts:?}");
+    };
+    assert!(hit.target_destroyed);
+    assert_eq!(
+        *death,
+        ResolvedCombatDeath {
+            victim: top_down_2d_rts_prototype_nano_swarm::nanobot::CombatVisualSnapshot {
+                entity: target,
+                position: target_position,
+                swarm: SwarmId(11),
+                appearance: CombatAppearance::Nanobot(NanobotType::Worker),
+            },
+        }
+    );
+}
+
+#[test]
+fn simultaneous_lethal_hits_publish_every_hit_and_one_death() {
+    let mut app = common::sim_app_with_defend();
+    app.add_plugins(CombatPlugin);
+    let cell = IVec2::ZERO;
+    let center = common::cell_world_center(cell);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let left = common::spawn_defender_at(&mut app, center + Vec2::new(-24.0, -8.0));
+    let right = common::spawn_defender_at(&mut app, center + Vec2::new(-24.0, 8.0));
+    app.world_mut().entity_mut(left).insert(DefendHold { cell });
+    app.world_mut()
+        .entity_mut(right)
+        .insert(DefendHold { cell });
+    let target = common::spawn_worker_at(&mut app, center + Vec2::new(24.0, 0.0));
+    app.world_mut().entity_mut(target).insert((
+        SwarmMember::new(SwarmId(11)),
+        Health {
+            current: 15,
+            max: 100,
+        },
+    ));
+
+    app.update();
+
+    let facts = resolved_facts(&app);
+    assert_eq!(facts.len(), 3);
+    let hits = facts
+        .iter()
+        .filter_map(|fact| match fact {
+            ResolvedCombatFact::Hit(hit) => Some(hit),
+            ResolvedCombatFact::Death(_) => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(hits.len(), 2);
+    assert!(hits.iter().all(|hit| hit.target.entity == target));
+    assert!(hits.iter().all(|hit| hit.target_destroyed));
+    assert_eq!(
+        facts
+            .iter()
+            .filter(|fact| matches!(fact, ResolvedCombatFact::Death(_)))
+            .count(),
+        1,
+    );
+}
+
+#[test]
+fn combat_death_snapshots_every_nanobot_type_for_both_swarms() {
+    for victim_swarm in [SwarmId::PLAYER, SwarmId(11)] {
+        for kind in NanobotType::ALL {
+            let mut app = common::sim_app_with_defend();
+            app.add_plugins(CombatPlugin);
+            let cell = IVec2::ZERO;
+            let center = common::cell_world_center(cell);
+            let attacker = common::spawn_defender_at(&mut app, center - Vec2::X * 16.0);
+            let attacker_swarm = if victim_swarm.is_player() {
+                SwarmId(11)
+            } else {
+                SwarmId::PLAYER
+            };
+            app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+                cell,
+                IntentKind::Defend,
+                Some(attacker_swarm),
+            );
+            app.world_mut()
+                .entity_mut(attacker)
+                .insert((SwarmMember::new(attacker_swarm), DefendHold { cell }));
+            let victim_position = center + Vec2::X * 16.0;
+            let victim = match kind {
+                NanobotType::Worker => common::spawn_worker_at(&mut app, victim_position),
+                NanobotType::Hauler => common::spawn_hauler_at(&mut app, victim_position),
+                NanobotType::Defender => common::spawn_defender_at(&mut app, victim_position),
+            };
+            app.world_mut().entity_mut(victim).insert((
+                SwarmMember::new(victim_swarm),
+                Health {
+                    current: 1,
+                    max: 100,
+                },
+            ));
+
+            app.update();
+
+            let facts = resolved_facts(&app);
+            let [ResolvedCombatFact::Hit(_), ResolvedCombatFact::Death(death)] = facts.as_slice()
+            else {
+                panic!("{victim_swarm:?} {kind:?} needs one hit and one death: {facts:?}");
+            };
+            assert_eq!(death.victim.entity, victim);
+            assert_eq!(death.victim.position, victim_position);
+            assert_eq!(death.victim.swarm, victim_swarm);
+            assert_eq!(death.victim.appearance, CombatAppearance::Nanobot(kind));
+        }
+    }
+}
+
+#[test]
+fn charge_depletion_removes_the_nanobot_without_a_combat_death_fact() {
+    let mut app = common::sim_app_with_defend();
+    app.add_plugins(CombatPlugin)
+        .add_systems(FixedUpdate, defender_health_loss_when_empty_system)
+        .add_systems(FixedLast, nanobot_death_cleanup_system);
+    let defender = common::spawn_defender_at(&mut app, Vec2::ZERO);
+    app.world_mut()
+        .entity_mut(defender)
+        .get_mut::<Charge>()
+        .unwrap()
+        .current = 0.0;
+    app.world_mut().entity_mut(defender).insert(Health {
+        current: 1,
+        max: 100,
+    });
+
+    for _ in 0..usize::from(EMPTY_CHARGE_DAMAGE_INTERVAL_TICKS) {
+        app.update();
+    }
+
+    assert!(!app.world().entities().contains(defender));
+    assert!(resolved_facts(&app).is_empty());
 }
 
 #[test]
