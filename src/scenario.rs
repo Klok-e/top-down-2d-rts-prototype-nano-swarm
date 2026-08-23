@@ -12,10 +12,9 @@ use crate::{
     building::{Minerals, ProcessingFacility},
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Commitment, Health, Nanobot, NanobotBundle, NanobotSprites, NanobotType,
-        OpponentIntentController, OpponentSwarm, OwnerSwarm, ProductionFacility,
-        ProductionPriority, Swarm, SwarmBundle, SwarmId, SwarmMember, SwarmProduction,
-        VelocityComponent,
+        Commitment, Health, Nanobot, NanobotBundle, NanobotType, OpponentIntentController,
+        OpponentSwarm, OwnerSwarm, ProductionFacility, ProductionPriority, Swarm, SwarmBundle,
+        SwarmId, SwarmMember, SwarmProduction, VelocityComponent,
     },
     resources::{ResourceDeposit, ResourceKind},
 };
@@ -111,8 +110,6 @@ pub fn spawn_default_player_scenario(
     let player_pos = cell_origin(PLAYER_CELL);
     let facility_pos = player_pos + SEED_FACILITY_OFFSET;
     let deposit_pos = cell_origin(PLAYER_DEPOSIT_CELL);
-    let sprites = NanobotSprites::load(asset_server);
-    commands.insert_resource(sprites.clone());
     let deposit_texture = asset_server.load("resource_deposit.png");
     let facility_texture = asset_server.load("production_facility.png");
 
@@ -138,8 +135,6 @@ pub fn spawn_default_player_scenario(
     spawn_seed_nanobots(
         commands,
         player_pos,
-        &sprites,
-        false,
         SwarmId::PLAYER,
         &[
             (NanobotType::Worker, PLAYER_START_WORKERS),
@@ -173,7 +168,6 @@ pub fn spawn_default_opponent_scenario(
     let opponent_pos = cell_origin(OPPONENT_CELL);
     let facility_pos = opponent_pos + OPPONENT_FACILITY_OFFSET;
     let deposit_pos = cell_origin(OPPONENT_DEPOSIT_CELL);
-    let sprites = NanobotSprites::load(asset_server);
     let deposit_texture = asset_server.load("resource_deposit.png");
     let facility_texture = asset_server.load("production_facility.png");
 
@@ -203,8 +197,6 @@ pub fn spawn_default_opponent_scenario(
     spawn_seed_nanobots(
         commands,
         opponent_pos,
-        &sprites,
-        true,
         opponent_swarm_id,
         &[
             (NanobotType::Worker, OPPONENT_START_WORKERS),
@@ -227,8 +219,6 @@ pub fn spawn_default_opponent_scenario(
 fn spawn_seed_nanobots(
     commands: &mut Commands<'_, '_>,
     world_pos: Vec2,
-    sprites: &NanobotSprites,
-    is_opponent: bool,
     swarm_id: SwarmId,
     seeds: &[(NanobotType, u32)],
 ) {
@@ -244,7 +234,6 @@ fn spawn_seed_nanobots(
                     swarm_member: SwarmMember::new(swarm_id),
                 },
                 Commitment::Idle,
-                Sprite::from_image(sprites.handle(*kind, is_opponent)),
                 Transform::from_translation(world_pos.extend(GAMEPLAY_SPRITE_Z)),
             ));
         }

@@ -46,11 +46,11 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         Charge, ChargePlugin, Charger, CollapsePlugin, Commitment, DefendPlugin, GatherPlugin,
         HaulPlugin, Health, MaintenancePlugin, Nanobot, NanobotBundle, NanobotSimulationSet,
-        NanobotType, OwnerSwarm, PlannedStructure, PlannedStructurePlugin, ProductionFacility,
-        ProductionPlugin, RegionalAllocationPlugin, SoftWorkSlots, Structure, StructureKind, Swarm,
-        SwarmId, SwarmMember, VelocityComponent, bot_debug_circle_system, idle_spread_system,
-        initialize_nanobot_type_components, move_velocity_system, separation_system,
-        velocity_system,
+        NanobotType, OpponentSwarm, OwnerSwarm, PRODUCTION_TICKS_PER_BOT, PlannedStructure,
+        PlannedStructurePlugin, ProductionFacility, ProductionPlugin, RegionalAllocationPlugin,
+        SoftWorkSlots, Structure, StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent,
+        bot_debug_circle_system, idle_spread_system, initialize_nanobot_type_components,
+        move_velocity_system, separation_system, velocity_system,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole},
     structure_overlay::StructureOverlayPlugin,
@@ -347,8 +347,43 @@ pub fn spawn_swarm_at(app: &mut App, world_pos: Vec2) -> Entity {
         .id()
 }
 
+/// Spawn one production facility on the completion tick for every nanobot type
+/// for both the player and one Opponent Swarm. Returns the expected type/owner
+/// pairs produced by one run of `production_facility_work_system`.
+pub fn spawn_completed_facilities_for_all_nanobot_types(
+    app: &mut App,
+    opponent: SwarmId,
+) -> Vec<(NanobotType, SwarmId)> {
+    let player_swarm = app
+        .world_mut()
+        .spawn((Swarm {}, SwarmId::PLAYER, Transform::default()))
+        .id();
+    let opponent_swarm = app
+        .world_mut()
+        .spawn((Swarm {}, OpponentSwarm {}, opponent, Transform::default()))
+        .id();
+    let mut expected = Vec::new();
+    for (owner, swarm, x) in [
+        (player_swarm, SwarmId::PLAYER, -200.0),
+        (opponent_swarm, opponent, 200.0),
+    ] {
+        for (index, kind) in NanobotType::ALL.into_iter().enumerate() {
+            let mut facility = ProductionFacility::new();
+            facility.current_target = Some(kind);
+            facility.progress = PRODUCTION_TICKS_PER_BOT - 1;
+            app.world_mut().spawn((
+                facility,
+                OwnerSwarm(owner),
+                Transform::from_xyz(x, index as f32 * 100.0, 0.0),
+            ));
+            expected.push((kind, swarm));
+        }
+    }
+    expected
+}
+
 /// Spawn a [`Swarm`] at `world_pos` with `counts` of each
-/// [`NanobotType`] as top-level children. Issue #38 / ADR-0004:
+/// [`NanobotType`] as top-level nanobots. Issue #38 / ADR-0004:
 /// nanobots are top-level entities whose `Transform.translation`
 /// is the world position the simulation reads, not a local
 /// position parented to the swarm. The swarm entity itself is

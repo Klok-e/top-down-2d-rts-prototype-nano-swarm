@@ -41,8 +41,8 @@ use game_settings::GameSettings;
 use intent::IntentGrid;
 use materials::BackgroundMaterial;
 use nanobot::{
-    CollapsePlugin, CombatPlugin, NanobotPlugin, OpponentIntentPlugin, PlannedStructurePlugin,
-    PopulationDemandPlugin, ProductionPlugin, RegionalAllocationPlugin,
+    CollapsePlugin, CombatPlugin, NanobotPlugin, NanobotPresentationPlugin, OpponentIntentPlugin,
+    PlannedStructurePlugin, PopulationDemandPlugin, ProductionPlugin, RegionalAllocationPlugin,
 };
 use resources::ResourceLedger;
 use structure_overlay::StructureOverlayPlugin;
@@ -154,6 +154,7 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
         // must be before NanobotPlugin because otherwise it receives events with despawned entities
         .add_plugins(ZonesPlugin::default())
         .add_plugins(NanobotPlugin::default())
+        .add_plugins(NanobotPresentationPlugin)
         // GatherPlugin must come after NanobotPlugin: the gather
         // chain orders itself behind `move_velocity_system`, which
         // only exists once NanobotPlugin is registered.
@@ -277,7 +278,7 @@ pub const BACKGROUND_OVERLAY_Z: f32 = -100.0;
 pub const ZONE_OVERLAY_Z: f32 = -99.0;
 
 /// Z-translation for gameplay sprites (resource deposits, production
-/// facilities, swarm children). Higher than the zone overlay so the
+/// facilities, nanobot visuals). Higher than the zone overlay so the
 /// swarm renders in front of the player's paint.
 pub const GAMEPLAY_SPRITE_Z: f32 = 1.0;
 
@@ -469,7 +470,7 @@ mod overlay_transform_tests {
     #[test]
     fn zone_overlay_transform_sits_below_gameplay_sprite_z() {
         // Gameplay sprites (resource deposit, production facility,
-        // swarm children) all sit at `GAMEPLAY_SPRITE_Z`. The zone overlay
+        // nanobot visuals) all sit at `GAMEPLAY_SPRITE_Z`. The zone overlay
         // must stay below that so the swarm renders in front of the
         // player's paint.
         let zone = zone_overlay_transform(1024.0, 2048.0);

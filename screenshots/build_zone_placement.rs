@@ -7,7 +7,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{BUILDING_FOOTPRINT_RADIUS, find_build_zone_placement, overlaps_any_obstacle},
 };
 
-use crate::harness::{TestContext, TestFlow};
+use crate::harness::{TestContext, TestFlow, clear_nanobots_and_sprite_entities};
 
 const CELLS: [IVec2; 4] = [
     IVec2::new(-2, 0),
@@ -33,8 +33,9 @@ pub fn build_zone_placement(ctx: &mut TestContext) -> TestFlow {
 }
 
 fn clear_scene(world: &mut World) {
+    clear_nanobots_and_sprite_entities(world);
     let entities = world
-        .query_filtered::<Entity, Or<(With<Sprite>, With<Mesh2d>, With<Node>)>>()
+        .query_filtered::<Entity, Or<(With<Mesh2d>, With<Node>)>>()
         .iter(world)
         .collect::<Vec<_>>();
     for entity in entities {

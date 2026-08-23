@@ -5,7 +5,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
     fly_camera::CameraZoom2d,
     intent::{IntentGrid, IntentKind},
-    nanobot::SwarmId,
+    nanobot::{Nanobot, NanobotVisual, SwarmId},
     zones::{ZoneMaterial, ZoneMaterialHandleComponent, ZoneOwnership, ZonePointData},
 };
 
@@ -153,8 +153,12 @@ fn hide_existing_scene(world: &mut World) {
         .query_filtered::<Entity, With<Mesh2d>>()
         .iter(world)
         .collect::<Vec<_>>();
+    let nanobot_entities = world
+        .query_filtered::<Entity, With<Nanobot>>()
+        .iter(world)
+        .collect::<Vec<_>>();
     let sprite_entities = world
-        .query_filtered::<Entity, With<Sprite>>()
+        .query_filtered::<Entity, (With<Sprite>, Without<NanobotVisual>)>()
         .iter(world)
         .collect::<Vec<_>>();
     let ui_entities = world
@@ -163,6 +167,7 @@ fn hide_existing_scene(world: &mut World) {
         .collect::<Vec<_>>();
     for entity in mesh_entities
         .into_iter()
+        .chain(nanobot_entities)
         .chain(sprite_entities)
         .chain(ui_entities)
     {

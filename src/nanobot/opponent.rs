@@ -149,8 +149,8 @@ impl PrepaintedIntent {
     }
 }
 
-/// One seed nanobot entry: spawn `count` entities of `kind`
-/// as children of the new swarm.
+/// One seed nanobot entry: spawn `count` top-level entities of `kind`
+/// as members of the new swarm.
 #[derive(Debug, Clone, Copy)]
 pub struct SeedNanobots {
     pub kind: NanobotType,
@@ -166,8 +166,8 @@ impl SeedNanobots {
 /// Initialise an opponent swarm: spawn a [`Swarm`] entity
 /// carrying the [`OpponentSwarm`] marker and a fixed
 /// [`SwarmProduction`] priority, paint the requested intent onto
-/// the shared [`IntentGrid`], and seed the requested
-/// nanobots as children. Returns the spawned swarm entity.
+/// the shared [`IntentGrid`], and seed the requested top-level
+/// nanobots. Returns the spawned swarm entity.
 ///
 /// Takes `&mut World` so the helper composes with both Bevy
 /// startup systems (which can take `&mut World` directly) and

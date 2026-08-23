@@ -16,7 +16,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     ui::collapse_banner::CollapseBannerRoot,
 };
 
-use crate::harness::{TestContext, TestFlow};
+use crate::harness::{TestContext, TestFlow, clear_nanobots_and_sprite_entities};
 
 #[derive(Resource)]
 struct PhysicalLogisticsTargets(Vec<(Entity, StructureOverlayKind)>);
@@ -24,7 +24,7 @@ struct PhysicalLogisticsTargets(Vec<(Entity, StructureOverlayKind)>);
 pub fn physical_logistics(ctx: &mut TestContext) -> TestFlow {
     if ctx.frame == 2 {
         focus_camera(ctx.world);
-        despawn_existing_sprites(ctx.world);
+        clear_nanobots_and_sprite_entities(ctx.world);
         despawn_collapse_banner(ctx.world);
         let targets = spawn_scene(ctx.world);
         ctx.world.insert_resource(PhysicalLogisticsTargets(targets));
@@ -73,35 +73,13 @@ fn focus_camera(world: &mut World) {
     }
 }
 
-fn despawn_existing_sprites(world: &mut World) {
-    let entities: Vec<_> = world
-        .query_filtered::<Entity, With<Sprite>>()
-        .iter(world)
-        .collect();
-    for entity in entities {
-        let _ = world.despawn(entity);
-    }
-}
-
 fn spawn_scene(world: &mut World) -> Vec<(Entity, StructureOverlayKind)> {
     let source = spawn_stockpile(world, Vec2::new(-150.0, -35.0), 16, StockpileRole::Source);
     let sink = spawn_stockpile(world, Vec2::new(-50.0, -35.0), 12, StockpileRole::Sink);
     let facility = spawn_facility(world, Vec2::new(50.0, -35.0));
     let charger = spawn_charger(world, Vec2::new(150.0, -35.0));
-    let worker = spawn_cargo_bot(
-        world,
-        Vec2::new(-55.0, 70.0),
-        NanobotType::Worker,
-        3,
-        Color::srgb(0.35, 0.95, 0.55),
-    );
-    let hauler = spawn_cargo_bot(
-        world,
-        Vec2::new(55.0, 70.0),
-        NanobotType::Hauler,
-        12,
-        Color::srgb(0.20, 0.75, 0.95),
-    );
+    let worker = spawn_cargo_bot(world, Vec2::new(-55.0, 70.0), NanobotType::Worker, 3);
+    let hauler = spawn_cargo_bot(world, Vec2::new(55.0, 70.0), NanobotType::Hauler, 12);
     world.entity_mut(hauler).insert(LogisticsReservation {
         source,
         destination: facility,
@@ -186,13 +164,7 @@ fn spawn_charger(world: &mut World, pos: Vec2) -> Entity {
         .id()
 }
 
-fn spawn_cargo_bot(
-    world: &mut World,
-    pos: Vec2,
-    kind: NanobotType,
-    amount: u32,
-    color: Color,
-) -> Entity {
+fn spawn_cargo_bot(world: &mut World, pos: Vec2, kind: NanobotType, amount: u32) -> Entity {
     world
         .spawn((
             Nanobot {},
@@ -202,11 +174,6 @@ fn spawn_cargo_bot(
             Cargo {
                 kind: ResourceKind::Minerals,
                 amount,
-            },
-            Sprite {
-                color,
-                custom_size: Some(Vec2::splat(24.0)),
-                ..default()
             },
             Transform::from_translation(pos.extend(GAMEPLAY_SPRITE_Z)),
         ))
