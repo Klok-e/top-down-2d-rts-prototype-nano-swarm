@@ -1,12 +1,24 @@
 //! Render-time presentation of facts already resolved by Defender combat.
 
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
-use bevy::{ecs::query::QueryData, gizmos::GizmoPlugin, prelude::*};
+use bevy::{
+    ecs::query::QueryData,
+    gizmos::GizmoPlugin,
+    prelude::*,
+    render::{
+        Extract, ExtractSchedule, RenderApp, sync_world::TemporaryRenderEntity,
+        view::RenderVisibleEntities,
+    },
+    sprite_render::{ExtractedSprite, ExtractedSpriteKind, ExtractedSprites, SpriteSystems},
+};
 
-use crate::nanobot::{
-    CombatVisualSnapshot, NanobotVisual, ResolvedCombatFact, ResolvedCombatHit, SwarmId,
-    rotation_for_direction,
+use crate::{
+    GAMEPLAY_SPRITE_Z,
+    nanobot::{
+        CombatAppearance, CombatVisualSnapshot, NanobotSprites, NanobotVisual, ResolvedCombatDeath,
+        ResolvedCombatFact, ResolvedCombatHit, SwarmId, rotation_for_direction,
+    },
 };
 
 /// Tunable combat-presentation values shared by windowed and offscreen apps.
@@ -14,6 +26,7 @@ use crate::nanobot::{
 pub struct CombatPresentationSettings {
     pub pulse_duration: Duration,
     pub recovery_duration: Duration,
+    pub death_duration: Duration,
     pub jab_distance: f32,
     pub recoil_distance: f32,
     pub pulse_thickness: f32,
@@ -26,6 +39,7 @@ impl Default for CombatPresentationSettings {
         Self {
             pulse_duration: Duration::from_millis(60),
             recovery_duration: Duration::from_millis(180),
+            death_duration: Duration::from_millis(320),
             jab_distance: 12.0,
             recoil_distance: 10.0,
             pulse_thickness: 6.0,
@@ -54,6 +68,50 @@ struct ActiveCombatPulse {
 #[derive(Debug, Default, Resource)]
 pub struct ActiveCombatPulses {
     active: Vec<ActiveCombatPulse>,
+}
+
+/// Public render state for one nanobot destroyed by resolved combat.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NanobotDeathGhost {
+    pub victim: CombatVisualSnapshot,
+    pub transform: Transform,
+    pub color: Color,
+    pub image: Handle<Image>,
+}
+
+#[derive(Debug)]
+struct ActiveNanobotDeathGhost {
+    visual: NanobotDeathGhost,
+    elapsed: Duration,
+    just_started: bool,
+}
+
+/// Presentation-only death state kept outside the gameplay entity allocator.
+#[derive(Debug, Default, Resource)]
+pub struct ActiveNanobotDeathGhosts {
+    active: Vec<ActiveNanobotDeathGhost>,
+}
+
+impl ActiveNanobotDeathGhosts {
+    pub fn len(&self) -> usize {
+        self.active.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.active.is_empty()
+    }
+
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &NanobotDeathGhost> {
+        self.active.iter().map(|ghost| &ghost.visual)
+    }
+
+    fn push(&mut self, visual: NanobotDeathGhost) {
+        self.active.push(ActiveNanobotDeathGhost {
+            visual,
+            elapsed: Duration::ZERO,
+            just_started: true,
+        });
+    }
 }
 
 impl ActiveCombatPulses {
@@ -123,7 +181,14 @@ impl Plugin for CombatPresentationPlugin {
             app.add_message::<ResolvedCombatFact>();
         }
         app.init_resource::<CombatPresentationSettings>()
-            .init_resource::<ActiveCombatPulses>();
+            .init_resource::<ActiveCombatPulses>()
+            .init_resource::<ActiveNanobotDeathGhosts>();
+        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+            render_app.add_systems(
+                ExtractSchedule,
+                extract_nanobot_death_ghosts.after(SpriteSystems::ExtractSprites),
+            );
+        }
         if app.is_plugin_added::<GizmoPlugin>() {
             app.init_gizmo_group::<CombatGizmos>().add_systems(
                 Update,
@@ -166,13 +231,37 @@ fn consume_resolved_combat(
     mut commands: Commands,
     mut facts: MessageReader<ResolvedCombatFact>,
     visuals: Query<(Entity, &ChildOf), With<NanobotVisual>>,
+    sprites: Res<NanobotSprites>,
     settings: Res<CombatPresentationSettings>,
     mut pulses: ResMut<ActiveCombatPulses>,
+    mut ghosts: ResMut<ActiveNanobotDeathGhosts>,
 ) {
     for fact in facts.read() {
-        let ResolvedCombatFact::Hit(hit) = *fact;
-        present_hit(&mut commands, &visuals, &settings, &mut pulses, hit);
+        match *fact {
+            ResolvedCombatFact::Hit(hit) => {
+                present_hit(&mut commands, &visuals, &settings, &mut pulses, hit);
+            }
+            ResolvedCombatFact::Death(death) => {
+                present_death(&sprites, &mut ghosts, death);
+            }
+        }
     }
+}
+
+fn present_death(
+    sprites: &NanobotSprites,
+    ghosts: &mut ActiveNanobotDeathGhosts,
+    death: ResolvedCombatDeath,
+) {
+    let CombatAppearance::Nanobot(kind) = death.victim.appearance else {
+        return;
+    };
+    ghosts.push(NanobotDeathGhost {
+        victim: death.victim,
+        transform: Transform::from_translation(death.victim.position.extend(GAMEPLAY_SPRITE_Z)),
+        color: Color::WHITE,
+        image: sprites.handle(kind, !death.victim.swarm.is_player()),
+    });
 }
 
 fn present_hit(
@@ -210,24 +299,38 @@ fn present_hit(
     );
 }
 
+fn transient_progress(
+    elapsed: &mut Duration,
+    just_started: &mut bool,
+    delta: Duration,
+    duration: Duration,
+) -> f32 {
+    if *just_started {
+        *just_started = false;
+    } else {
+        *elapsed += delta;
+    }
+    (elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0)
+}
+
 fn animate_combat(
     mut commands: Commands,
     time: Option<Res<Time>>,
     settings: Res<CombatPresentationSettings>,
     roots: Query<&Transform, Without<NanobotVisual>>,
     mut visuals: Query<AnimatedCombatVisual, With<NanobotVisual>>,
+    mut ghosts: ResMut<ActiveNanobotDeathGhosts>,
     mut pulses: ResMut<ActiveCombatPulses>,
 ) {
     let delta = time.as_ref().map_or(Duration::ZERO, |time| time.delta());
     for mut visual in &mut visuals {
-        if visual.pose.just_started {
-            visual.pose.just_started = false;
-        } else {
-            visual.pose.elapsed += delta;
-        }
-        let progress = (visual.pose.elapsed.as_secs_f32()
-            / settings.recovery_duration.as_secs_f32())
-        .clamp(0.0, 1.0);
+        let pose = &mut *visual.pose;
+        let progress = transient_progress(
+            &mut pose.elapsed,
+            &mut pose.just_started,
+            delta,
+            settings.recovery_duration,
+        );
         if progress >= 1.0 {
             *visual.transform = Transform::IDENTITY;
             visual.sprite.color = Color::WHITE;
@@ -259,14 +362,69 @@ fn animate_combat(
         }
     }
 
-    pulses.active.retain_mut(|pulse| {
-        if pulse.just_started {
-            pulse.just_started = false;
-        } else {
-            pulse.elapsed += delta;
+    ghosts.active.retain_mut(|ghost| {
+        let progress = transient_progress(
+            &mut ghost.elapsed,
+            &mut ghost.just_started,
+            delta,
+            settings.death_duration,
+        );
+        if progress >= 1.0 {
+            return false;
         }
-        pulse.elapsed < settings.pulse_duration
+
+        ghost.visual.transform.scale = Vec3::new(1.0 - 0.25 * progress, 1.0 - 0.9 * progress, 1.0);
+        let faction = faction_color(ghost.visual.victim.swarm).to_srgba();
+        let flash = 0.75 * (1.0 - progress / 0.25).clamp(0.0, 1.0);
+        let alpha = (1.0 - (progress - 0.2).max(0.0) / 0.8).clamp(0.0, 1.0);
+        ghost.visual.color = Color::srgba(
+            faction.red + (1.0 - faction.red) * flash,
+            faction.green + (1.0 - faction.green) * flash,
+            faction.blue + (1.0 - faction.blue) * flash,
+            alpha,
+        );
+        true
     });
+
+    pulses.active.retain_mut(|pulse| {
+        transient_progress(
+            &mut pulse.elapsed,
+            &mut pulse.just_started,
+            delta,
+            settings.pulse_duration,
+        ) < 1.0
+    });
+}
+
+fn extract_nanobot_death_ghosts(
+    mut commands: Commands,
+    ghosts: Extract<Res<ActiveNanobotDeathGhosts>>,
+    views: Query<&RenderVisibleEntities>,
+    mut extracted_sprites: ResMut<ExtractedSprites>,
+) {
+    let visible_sprite_anchors = views
+        .iter()
+        .filter_map(|visible| visible.iter::<Sprite>().next().map(|(_, main)| **main))
+        .collect::<HashSet<_>>();
+    for main_entity in visible_sprite_anchors {
+        for ghost in ghosts.iter() {
+            extracted_sprites.sprites.push(ExtractedSprite {
+                main_entity,
+                render_entity: commands.spawn(TemporaryRenderEntity).id(),
+                transform: GlobalTransform::from(ghost.transform),
+                color: ghost.color.into(),
+                image_handle_id: ghost.image.id(),
+                flip_x: false,
+                flip_y: false,
+                kind: ExtractedSpriteKind::Single {
+                    anchor: Vec2::ZERO,
+                    rect: None,
+                    scaling_mode: None,
+                    custom_size: None,
+                },
+            });
+        }
+    }
 }
 
 fn sync_combat_gizmo_settings(
