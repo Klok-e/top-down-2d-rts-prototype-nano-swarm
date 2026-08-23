@@ -1,0 +1,5 @@
+# Combat presentation follows resolved combat
+
+Fixed-step combat emits explicit resolved-hit and combat-death facts for a separate presentation layer to consume; presentation never infers attacks from cooldowns or health changes and never feeds animation state back into gameplay. Nanobots remain top-level world-space gameplay entities under [ADR 0004](./0004-world-space-nanobots.md), while every nanobot sprite moves to a presentation child so render-time facing, lunges, recoil, tint, and death ghosts cannot mutate simulation transforms.
+
+The cutover replaces direct nanobot sprites rather than retaining two visual architectures. Windowed and offscreen presentation, including `--headless --agent-socket`, render the effects; minimal simulation apps may omit the presentation plugin. The visible energy pulse represents damage that has already resolved and is not a projectile, while combat death presentation may outlive an immediately removed gameplay entity without delaying or changing destruction.

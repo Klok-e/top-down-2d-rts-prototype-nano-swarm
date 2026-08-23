@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+SANDBOX_COMMAND=/usr/bin/codex
+SANDBOX_EXTRA_ARGS=(--dangerously-bypass-approvals-and-sandbox)
+SANDBOX_EXTRA_DEVICES=(/dev/kfd)
+source "$SCRIPT_DIR/agent-sandbox-common"
