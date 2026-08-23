@@ -21,7 +21,7 @@ All comments must be written in a timeless manner.
 
 ### Issue tracker
 
-Issues and PRDs live as GitHub issues. See `docs/agents/issue-tracker.md`.
+Issues and specs live as GitHub issues. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
