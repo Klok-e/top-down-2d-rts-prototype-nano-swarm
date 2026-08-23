@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    GAMEPLAY_SPRITE_Z,
+    GAMEPLAY_SPRITE_Z, fixed_simulation_time,
     fly_camera::CameraZoom2d,
     intent::{IntentGrid, IntentKind},
     nanobot::{
@@ -49,6 +49,14 @@ fn visual_child(world: &World, root: Entity) -> Entity {
         .iter()
         .find(|child| world.get::<NanobotVisual>(*child).is_some())
         .expect("combat evidence nanobot needs a presentation child")
+}
+
+fn screenshot_name(world: &World, name: &str) -> String {
+    if world.contains_resource::<IntegratedCombatEvidence>() {
+        format!("integrated_{name}")
+    } else {
+        name.to_string()
+    }
 }
 
 fn focus_camera(world: &mut World, position: Vec2) {
@@ -174,7 +182,7 @@ pub fn combat_presentation(ctx: &mut TestContext) -> TestFlow {
         assert_roots_unchanged(ctx.world, &evidence);
         assert!(is_neutral(ctx.world, &evidence));
         assert!(ctx.world.resource::<ActiveCombatPulses>().is_empty());
-        return TestFlow::Screenshot("combat_presentation_neutral".to_string());
+        return TestFlow::Screenshot(screenshot_name(ctx.world, "combat_presentation_neutral"));
     }
 
     if ctx.frame == 2 {
@@ -235,7 +243,7 @@ pub fn combat_presentation(ctx: &mut TestContext) -> TestFlow {
         assert_eq!(ctx.world.resource::<ActiveCombatPulses>().len(), 1);
         let pulse_color = pulse.color.to_srgba();
         assert!(pulse_color.blue > pulse_color.red);
-        return TestFlow::Screenshot("combat_presentation_impact".to_string());
+        return TestFlow::Screenshot(screenshot_name(ctx.world, "combat_presentation_impact"));
     }
 
     if ctx.frame == 5 {
@@ -261,7 +269,7 @@ pub fn combat_presentation(ctx: &mut TestContext) -> TestFlow {
         ctx.world
             .resource_mut::<CombatEvidence>()
             .recovered_capture_requested = true;
-        return TestFlow::Screenshot("combat_presentation_recovered".to_string());
+        return TestFlow::Screenshot(screenshot_name(ctx.world, "combat_presentation_recovered"));
     }
     assert!(ctx.frame < 30, "combat visuals did not recover on schedule");
     TestFlow::Continue
@@ -395,7 +403,7 @@ pub fn nanobot_combat_death(ctx: &mut TestContext) -> TestFlow {
             assert_ne!(ghost.color, Color::WHITE);
             ctx.world.resource_mut::<LethalCombatEvidence>().phase =
                 LethalEvidencePhase::ImpactCaptured;
-            TestFlow::Screenshot("nanobot_combat_death_impact".to_string())
+            TestFlow::Screenshot(screenshot_name(ctx.world, "nanobot_combat_death_impact"))
         }
         LethalEvidencePhase::ImpactCaptured => {
             let mut fixed = ctx.world.resource_mut::<Time<Fixed>>();
@@ -417,7 +425,10 @@ pub fn nanobot_combat_death(ctx: &mut TestContext) -> TestFlow {
                 assert!(ctx.world.resource::<ActiveCombatPulses>().is_empty());
                 ctx.world.resource_mut::<LethalCombatEvidence>().phase =
                     LethalEvidencePhase::DissolveCaptured;
-                return TestFlow::Screenshot("nanobot_combat_death_dissolve".to_string());
+                return TestFlow::Screenshot(screenshot_name(
+                    ctx.world,
+                    "nanobot_combat_death_dissolve",
+                ));
             }
             let duration = ctx
                 .world
@@ -453,7 +464,7 @@ pub fn nanobot_combat_death(ctx: &mut TestContext) -> TestFlow {
             );
             ctx.world.resource_mut::<LethalCombatEvidence>().phase =
                 LethalEvidencePhase::ExpiryCaptured;
-            TestFlow::Screenshot("nanobot_combat_death_expired".to_string())
+            TestFlow::Screenshot(screenshot_name(ctx.world, "nanobot_combat_death_expired"))
         }
         LethalEvidencePhase::ExpiryCaptured => TestFlow::Exit,
     }
@@ -659,7 +670,10 @@ pub fn combat_presentation_density_and_zoom(ctx: &mut TestContext) -> TestFlow {
             );
             ctx.world.resource_mut::<DenseCombatEvidence>().phase =
                 DenseCombatPhase::ImpactCaptured;
-            TestFlow::Screenshot("combat_presentation_dense_volley".to_string())
+            TestFlow::Screenshot(screenshot_name(
+                ctx.world,
+                "combat_presentation_dense_volley",
+            ))
         }
         DenseCombatPhase::ImpactCaptured => {
             let center = cell_center(SCENE_CELL);
@@ -713,7 +727,10 @@ pub fn combat_presentation_density_and_zoom(ctx: &mut TestContext) -> TestFlow {
             }
             ctx.world.resource_mut::<DenseCombatEvidence>().phase =
                 DenseCombatPhase::NearBoundaryCaptured;
-            TestFlow::Screenshot("combat_presentation_near_tactical_boundary".to_string())
+            TestFlow::Screenshot(screenshot_name(
+                ctx.world,
+                "combat_presentation_near_tactical_boundary",
+            ))
         }
         DenseCombatPhase::NearBoundaryCaptured => {
             let center = cell_center(SCENE_CELL);
@@ -738,7 +755,10 @@ pub fn combat_presentation_density_and_zoom(ctx: &mut TestContext) -> TestFlow {
             }
             ctx.world.resource_mut::<DenseCombatEvidence>().phase =
                 DenseCombatPhase::TacticalBoundaryCaptured;
-            TestFlow::Screenshot("combat_presentation_tactical_boundary".to_string())
+            TestFlow::Screenshot(screenshot_name(
+                ctx.world,
+                "combat_presentation_tactical_boundary",
+            ))
         }
         DenseCombatPhase::TacticalBoundaryCaptured => TestFlow::Exit,
     }
@@ -875,7 +895,7 @@ pub fn support_structure_combat_presentation(ctx: &mut TestContext) -> TestFlow 
             );
             ctx.world.resource_mut::<StructureCombatEvidence>().phase =
                 StructureCombatPhase::OrdinaryHitCaptured;
-            TestFlow::Screenshot("support_structure_combat_hit".to_string())
+            TestFlow::Screenshot(screenshot_name(ctx.world, "support_structure_combat_hit"))
         }
         StructureCombatPhase::OrdinaryHitCaptured => {
             let mut fixed = ctx.world.resource_mut::<Time<Fixed>>();
@@ -910,7 +930,10 @@ pub fn support_structure_combat_presentation(ctx: &mut TestContext) -> TestFlow 
             );
             ctx.world.resource_mut::<StructureCombatEvidence>().phase =
                 StructureCombatPhase::RecoveryCaptured;
-            TestFlow::Screenshot("support_structure_combat_recovered".to_string())
+            TestFlow::Screenshot(screenshot_name(
+                ctx.world,
+                "support_structure_combat_recovered",
+            ))
         }
         StructureCombatPhase::RecoveryCaptured => {
             ctx.world
@@ -956,8 +979,130 @@ pub fn support_structure_combat_presentation(ctx: &mut TestContext) -> TestFlow 
             assert!(ghost.ring_color.to_srgba().alpha > 0.0);
             ctx.world.resource_mut::<StructureCombatEvidence>().phase =
                 StructureCombatPhase::DestructionCaptured;
-            TestFlow::Screenshot("support_structure_combat_destroyed".to_string())
+            TestFlow::Screenshot(screenshot_name(
+                ctx.world,
+                "support_structure_combat_destroyed",
+            ))
         }
         StructureCombatPhase::DestructionCaptured => TestFlow::Exit,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IntegratedCombatPhase {
+    OrdinaryHit,
+    CrowdedVolley,
+    SettleCrowdedVolley,
+    NanobotDestruction,
+    StructureDestruction,
+}
+
+#[derive(Resource)]
+struct IntegratedCombatEvidence {
+    phase: IntegratedCombatPhase,
+    local_frame: u32,
+}
+
+fn reset_integrated_fixed_clock(world: &mut World) {
+    world.insert_resource(fixed_simulation_time());
+    world.resource_mut::<Time<Virtual>>().pause();
+}
+
+fn run_integrated_callback(
+    world: &mut World,
+    local_frame: u32,
+    callback: fn(&mut TestContext) -> TestFlow,
+) -> TestFlow {
+    callback(&mut TestContext {
+        world,
+        frame: local_frame,
+    })
+}
+
+pub fn integrated_combat_presentation(ctx: &mut TestContext) -> TestFlow {
+    if !ctx.world.contains_resource::<IntegratedCombatEvidence>() {
+        ctx.world.insert_resource(IntegratedCombatEvidence {
+            phase: IntegratedCombatPhase::OrdinaryHit,
+            local_frame: 0,
+        });
+    }
+
+    let (phase, local_frame) = {
+        let evidence = ctx.world.resource::<IntegratedCombatEvidence>();
+        (evidence.phase, evidence.local_frame)
+    };
+    if phase == IntegratedCombatPhase::SettleCrowdedVolley {
+        if local_frame == 0 {
+            let mut fixed = ctx.world.resource_mut::<Time<Fixed>>();
+            fixed.discard_overstep(Duration::MAX);
+            fixed.set_timestep(Duration::from_secs(60 * 60));
+            ctx.world.resource_mut::<Time<Virtual>>().unpause();
+        }
+        let settled = ctx.world.resource::<ActiveCombatPulses>().is_empty()
+            && ctx.world.resource::<ActiveCombatDecorations>().is_empty();
+        if settled {
+            reset_integrated_fixed_clock(ctx.world);
+            let mut evidence = ctx.world.resource_mut::<IntegratedCombatEvidence>();
+            evidence.phase = IntegratedCombatPhase::NanobotDestruction;
+            evidence.local_frame = 0;
+        } else {
+            assert!(
+                local_frame < 30,
+                "crowded combat presentation did not settle before the destruction phases",
+            );
+            ctx.world
+                .resource_mut::<IntegratedCombatEvidence>()
+                .local_frame += 1;
+        }
+        return TestFlow::Continue;
+    }
+
+    let (flow, next_phase, reset_clock) = match phase {
+        IntegratedCombatPhase::OrdinaryHit => (
+            run_integrated_callback(ctx.world, local_frame, combat_presentation),
+            Some(IntegratedCombatPhase::CrowdedVolley),
+            true,
+        ),
+        IntegratedCombatPhase::CrowdedVolley => (
+            run_integrated_callback(ctx.world, local_frame, combat_presentation_density_and_zoom),
+            Some(IntegratedCombatPhase::SettleCrowdedVolley),
+            false,
+        ),
+        IntegratedCombatPhase::NanobotDestruction => (
+            run_integrated_callback(ctx.world, local_frame, nanobot_combat_death),
+            Some(IntegratedCombatPhase::StructureDestruction),
+            true,
+        ),
+        IntegratedCombatPhase::StructureDestruction => (
+            run_integrated_callback(
+                ctx.world,
+                local_frame,
+                support_structure_combat_presentation,
+            ),
+            None,
+            false,
+        ),
+        IntegratedCombatPhase::SettleCrowdedVolley => unreachable!(),
+    };
+
+    match flow {
+        TestFlow::Continue | TestFlow::Screenshot(_) => {
+            ctx.world
+                .resource_mut::<IntegratedCombatEvidence>()
+                .local_frame += 1;
+            flow
+        }
+        TestFlow::Exit => {
+            let Some(next_phase) = next_phase else {
+                return TestFlow::Exit;
+            };
+            if reset_clock {
+                reset_integrated_fixed_clock(ctx.world);
+            }
+            let mut evidence = ctx.world.resource_mut::<IntegratedCombatEvidence>();
+            evidence.phase = next_phase;
+            evidence.local_frame = 0;
+            TestFlow::Continue
+        }
     }
 }

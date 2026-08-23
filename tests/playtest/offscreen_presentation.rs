@@ -4,14 +4,21 @@ use bevy::{
     log::LogPlugin,
     prelude::*,
     render::{pipelined_rendering::PipelinedRenderingPlugin, render_resource::TextureUsages},
+    time::TimeUpdateStrategy,
 };
 use top_down_2d_rts_prototype_nano_swarm::{
     Presentation, build_app_with_presentation,
+    intent::{IntentGrid, IntentKind},
     nanobot::{
-        Nanobot, NanobotSprites, NanobotType, NanobotVisual, OpponentSwarm, Swarm, SwarmId,
-        SwarmMember,
+        ActiveCombatPulses, DefendHold, Health, Nanobot, NanobotSprites, NanobotType,
+        OpponentSwarm, Swarm, SwarmId, SwarmMember, VelocityComponent,
     },
 };
+
+use std::time::Duration;
+
+#[path = "../common/mod.rs"]
+mod common;
 
 fn finish_plugins(app: &mut App) {
     while app.plugins_state() == bevy::app::PluginsState::Adding {
@@ -71,14 +78,7 @@ fn offscreen_presentation_starts_full_scene_without_a_window() {
             app.world().get::<Sprite>(root).is_none(),
             "full-app nanobot roots must not retain direct sprites"
         );
-        let children = app
-            .world()
-            .get::<Children>(root)
-            .expect("full-app nanobot must own a presentation child");
-        let visual = children
-            .iter()
-            .find(|child| app.world().get::<NanobotVisual>(*child).is_some())
-            .expect("full-app nanobot must own a marked visual child");
+        let visual = common::nanobot_visual_child(app.world(), root);
         assert_eq!(
             app.world()
                 .get::<Sprite>(visual)
@@ -134,5 +134,82 @@ fn offscreen_presentation_starts_full_scene_without_a_window() {
     assert!(
         targeted_roots.iter().all(|target| *target == Some(camera)),
         "every root UI node must render through main offscreen camera"
+    );
+}
+
+#[test]
+#[ignore = "requires a GPU adapter; run with `cargo test --test playtest full_app_offscreen_combat -- --ignored`"]
+fn full_app_offscreen_combat_uses_real_facts_and_keeps_gameplay_roots_fixed() {
+    let mut app = build_app_with_presentation(Presentation::Offscreen {
+        width: 640,
+        height: 360,
+    });
+    finish_plugins(&mut app);
+    app.update();
+
+    let authored_nanobots = app
+        .world_mut()
+        .query_filtered::<Entity, With<Nanobot>>()
+        .iter(app.world())
+        .collect::<Vec<_>>();
+    for entity in authored_nanobots {
+        app.world_mut().despawn(entity);
+    }
+
+    let opponent = *app
+        .world_mut()
+        .query_filtered::<&SwarmId, (With<Swarm>, With<OpponentSwarm>)>()
+        .single(app.world())
+        .expect("full app needs its authored Opponent Swarm");
+    let cell = IVec2::new(0, 5);
+    let center = common::cell_world_center(cell);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let attacker = common::spawn_defender_at(&mut app, center + Vec2::new(-44.0, 0.0));
+    app.world_mut()
+        .entity_mut(attacker)
+        .insert(DefendHold { cell })
+        .remove::<VelocityComponent>();
+    let target = common::spawn_worker_at(&mut app, center + Vec2::new(44.0, 0.0));
+    app.world_mut()
+        .entity_mut(target)
+        .insert(SwarmMember::new(opponent))
+        .remove::<VelocityComponent>();
+    let attacker_root = *app.world().get::<Transform>(attacker).unwrap();
+    let target_root = *app.world().get::<Transform>(target).unwrap();
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+        17,
+    )));
+    app.update();
+
+    assert_eq!(
+        app.world().get::<Health>(target).unwrap().current,
+        90,
+        "the full app must apply its ordinary Defender damage before presentation",
+    );
+    assert_eq!(app.world().resource::<ActiveCombatPulses>().len(), 1);
+    let attacker_visual = common::nanobot_visual_child(app.world(), attacker);
+    let target_visual = common::nanobot_visual_child(app.world(), target);
+    assert!(
+        app.world()
+            .get::<Transform>(attacker_visual)
+            .unwrap()
+            .translation
+            .length()
+            > 0.0,
+    );
+    assert_ne!(
+        app.world().get::<Sprite>(target_visual).unwrap().color,
+        Color::WHITE,
+    );
+    assert_eq!(app.world().get::<Transform>(attacker), Some(&attacker_root));
+    assert_eq!(app.world().get::<Transform>(target), Some(&target_root));
+    assert_eq!(
+        app.world_mut().query::<&Window>().iter(app.world()).count(),
+        0,
+        "the full-app combat playtest must not create a window",
     );
 }
