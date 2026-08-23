@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REAL_HOME=$(realpath -- "${HOME:?HOME is not set}")
+PROJECT_DIR=$(realpath -- "$PWD")
+SANDBOX_TMP="/tmp/agent-sandbox-$UID"
+
+# A writable bind of an ancestor of HOME would expose the real home itself.
+if [[ "$PROJECT_DIR" == / || "$REAL_HOME" == "$PROJECT_DIR" || "$REAL_HOME" == "$PROJECT_DIR/"* ]]; then
+    printf 'Refusing to sandbox from %s: it is an ancestor of HOME (%s)\n' \
+        "$PROJECT_DIR" "$REAL_HOME" >&2
+    exit 1
+fi
+
+HOST_XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is not set}
+WAYLAND_SOCKET="$HOST_XDG_RUNTIME_DIR/${WAYLAND_DISPLAY:-wayland-0}"
+PIPEWIRE_RUNTIME_DIR_HOST="${PIPEWIRE_RUNTIME_DIR:-$HOST_XDG_RUNTIME_DIR}"
+PIPEWIRE_SOCKET="$PIPEWIRE_RUNTIME_DIR_HOST/pipewire-0"
+DBUS_SESSION_BUS_SOCKET="$HOST_XDG_RUNTIME_DIR/bus"
+SWAY_IPC_SOCKET="${SWAYSOCK:-}"
+
+if [[ -n "$SWAY_IPC_SOCKET" && ! -S "$SWAY_IPC_SOCKET" ]]; then
+    printf 'SWAYSOCK is set but not a socket: %s\n' "$SWAY_IPC_SOCKET" >&2
+    exit 1
+fi
+
+if [[ ! -e "$SANDBOX_TMP" && ! -L "$SANDBOX_TMP" ]]; then
+    if ! mkdir -m 1777 -- "$SANDBOX_TMP" 2>/dev/null && [[ ! -d "$SANDBOX_TMP" ]]; then
+        printf 'Unable to create sandbox temporary path: %s\n' "$SANDBOX_TMP" >&2
+        exit 1
+    fi
+fi
+
+if [[ -L "$SANDBOX_TMP" || ! -d "$SANDBOX_TMP" ]]; then
+    printf 'Unsafe sandbox temporary path: %s\n' "$SANDBOX_TMP" >&2
+    exit 1
+fi
+
+SANDBOX_TMP_OWNER=$(stat -c '%u' -- "$SANDBOX_TMP")
+if [[ "$SANDBOX_TMP_OWNER" != "$UID" ]]; then
+    printf 'Sandbox temporary path is not owned by UID %s: %s\n' \
+        "$UID" "$SANDBOX_TMP" >&2
+    exit 1
+fi
+
+chmod 1777 -- "$SANDBOX_TMP"
+
+for device in "${SANDBOX_EXTRA_DEVICES[@]}"; do
+    if [[ ! -c "$device" ]]; then
+        printf 'Required device is unavailable: %s\n' "$device" >&2
+        exit 1
+    fi
+done
+
+[[ -x "$SANDBOX_COMMAND" ]] || {
+    printf 'Not executable: %s\n' "$SANDBOX_COMMAND" >&2
+    exit 127
+}
+
+args=(
+    --unshare-pid
+    --die-with-parent
+
+    # Host filesystem is read-only by default.
+    --ro-bind / /
+
+    # Private process and device filesystems.
+    --proc /proc
+    --dev /dev
+
+    # GPU access.
+    --dev-bind /dev/dri /dev/dri
+
+    # Private runtime.
+    --tmpfs /run
+    --dir /run/user
+    --dir "$HOST_XDG_RUNTIME_DIR"
+
+    # Wayland access.
+    --bind "$WAYLAND_SOCKET" "$WAYLAND_SOCKET"
+
+    # Session D-Bus / portals. Needed for xdg-open/browser links.
+    --bind-try "$DBUS_SESSION_BUS_SOCKET" "$DBUS_SESSION_BUS_SOCKET"
+    --setenv DE flatpak
+
+    # Audio access. Must come after --tmpfs /run.
+    --bind-try "$PIPEWIRE_SOCKET" "$PIPEWIRE_SOCKET"
+    --setenv PIPEWIRE_RUNTIME_DIR "$PIPEWIRE_RUNTIME_DIR_HOST"
+    --setenv ALSA_CONFIG_PATH /usr/share/alsa/alsa.conf.d/99-pipewire-default.conf
+
+    # Shared temporary storage.
+    --bind "$SANDBOX_TMP" /tmp
+    --setenv TMPDIR /tmp
+    --setenv TMP /tmp
+    --setenv TEMP /tmp
+
+)
+
+for device in "${SANDBOX_EXTRA_DEVICES[@]}"; do
+    args+=(--dev-bind "$device" "$device")
+done
+
+if [[ -n "$SWAY_IPC_SOCKET" ]]; then
+    # Sway IPC access. Needed for focus detection from extensions.
+    args+=(--bind "$SWAY_IPC_SOCKET" "$SWAY_IPC_SOCKET")
+    args+=(--setenv SWAYSOCK "$SWAY_IPC_SOCKET")
+fi
+
+# These roots are intentionally shared and host-backed across all launchers.
+writable_paths=(
+    "$REAL_HOME/.pi"
+    "$REAL_HOME/.agents"
+    "$REAL_HOME/.rustup"
+    "$REAL_HOME/.cargo"
+    "$REAL_HOME/.config/opencode"
+    "$REAL_HOME/.local/share/opencode"
+    "$REAL_HOME/.codex"
+    "$REAL_HOME/.cache"
+    "$PROJECT_DIR"
+)
+
+for path in "${writable_paths[@]}"; do
+    # Create the real source directory if necessary.
+    mkdir -p -- "$path"
+
+    # SOURCE is resolved on the host; DEST is inside the sandbox.
+    args+=(--bind "$path" "$path")
+done
+
+args+=(
+    --chdir "$PROJECT_DIR"
+)
+
+command_args=("$SANDBOX_COMMAND" "${SANDBOX_EXTRA_ARGS[@]}" "$@")
+printf -v command '%q ' "${command_args[@]}"
+
+exec bwrap "${args[@]}" -- \
+    script -q -e -c "exec $command" /dev/null
