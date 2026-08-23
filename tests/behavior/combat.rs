@@ -5,10 +5,162 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, UNCONTESTED_CAPTURE_TICKS},
     nanobot::{
-        CombatPlugin, DefendHold, DefendPressure, DefenderAttackCooldown, DirectMovementComponent,
-        Health, OwnerSwarm, Structure, StructureKind, Swarm, SwarmId, SwarmMember,
+        CombatAppearance, CombatPlugin, DefendHold, DefendPressure, DefenderAttackCooldown,
+        DirectMovementComponent, Health, OwnerSwarm, ResolvedCombatFact, Structure, StructureKind,
+        Swarm, SwarmId, SwarmMember,
     },
 };
+
+fn resolved_facts(app: &App) -> Vec<ResolvedCombatFact> {
+    let messages = app.world().resource::<Messages<ResolvedCombatFact>>();
+    let mut cursor = messages.get_cursor();
+    cursor.read(messages).copied().collect()
+}
+
+#[test]
+fn delivered_hit_publishes_the_resolved_combat_snapshot() {
+    let mut app = common::sim_app_with_defend();
+    app.add_plugins(CombatPlugin);
+    let cell = IVec2::ZERO;
+    let center = common::cell_world_center(cell);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let attacker_position = center + Vec2::new(-16.0, 0.0);
+    let target_position = center + Vec2::new(16.0, 0.0);
+    let attacker = common::spawn_defender_at(&mut app, attacker_position);
+    app.world_mut()
+        .entity_mut(attacker)
+        .insert(DefendHold { cell });
+    let target = common::spawn_worker_at(&mut app, target_position);
+    app.world_mut()
+        .entity_mut(target)
+        .insert(SwarmMember::new(SwarmId(11)));
+
+    app.update();
+
+    assert_eq!(
+        app.world().entity(target).get::<Health>().unwrap().current,
+        90,
+        "the fact must describe damage that already resolved",
+    );
+    let facts = resolved_facts(&app);
+    let [ResolvedCombatFact::Hit(hit)] = facts.as_slice() else {
+        panic!("one delivered attack must publish exactly one hit fact: {facts:?}");
+    };
+    assert_eq!(hit.attacker.entity, attacker);
+    assert_eq!(hit.attacker.position, attacker_position);
+    assert_eq!(hit.attacker.swarm, SwarmId::PLAYER);
+    assert_eq!(
+        hit.attacker.appearance,
+        CombatAppearance::Nanobot(
+            top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotType::Defender
+        ),
+    );
+    assert_eq!(hit.target.entity, target);
+    assert_eq!(hit.target.position, target_position);
+    assert_eq!(hit.target.swarm, SwarmId(11));
+    assert_eq!(
+        hit.target.appearance,
+        CombatAppearance::Nanobot(
+            top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotType::Worker
+        ),
+    );
+    assert_eq!(hit.damage, 10);
+    assert!(!hit.target_destroyed);
+}
+
+#[test]
+fn cooldown_only_tick_publishes_no_resolved_hit() {
+    let mut app = common::sim_app_with_defend();
+    app.add_plugins(CombatPlugin);
+    let cell = IVec2::ZERO;
+    let center = common::cell_world_center(cell);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let attacker = common::spawn_defender_at(&mut app, center);
+    app.world_mut().entity_mut(attacker).insert((
+        DefendHold { cell },
+        DefenderAttackCooldown { ticks_remaining: 3 },
+    ));
+    let target = common::spawn_worker_at(&mut app, center + Vec2::new(16.0, 0.0));
+    app.world_mut()
+        .entity_mut(target)
+        .insert(SwarmMember::new(SwarmId(11)));
+
+    app.update();
+
+    assert_eq!(
+        app.world().entity(target).get::<Health>().unwrap().current,
+        100,
+    );
+    assert!(resolved_facts(&app).is_empty());
+}
+
+#[test]
+fn pursuit_without_delivered_damage_publishes_no_resolved_hit() {
+    let mut app = common::sim_app_with_defend();
+    app.add_plugins(CombatPlugin);
+    let cell = IVec2::ZERO;
+    let center = common::cell_world_center(cell);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let attacker = common::spawn_defender_at(&mut app, center);
+    app.world_mut()
+        .entity_mut(attacker)
+        .insert(DefendHold { cell });
+    let target = common::spawn_worker_at(&mut app, center + Vec2::new(160.0, 0.0));
+    app.world_mut()
+        .entity_mut(target)
+        .insert(SwarmMember::new(SwarmId(11)));
+
+    app.update();
+
+    assert!(
+        app.world()
+            .entity(attacker)
+            .get::<DirectMovementComponent>()
+            .is_some(),
+    );
+    assert!(resolved_facts(&app).is_empty());
+}
+
+#[test]
+fn nearby_hostile_without_delivered_damage_publishes_no_resolved_hit() {
+    let mut app = common::sim_app_with_defend();
+    app.add_plugins(CombatPlugin);
+    let cell = IVec2::ZERO;
+    let center = common::cell_world_center(cell);
+    let attacker = common::spawn_defender_at(&mut app, center);
+    app.world_mut()
+        .entity_mut(attacker)
+        .insert(DefendHold { cell });
+    app.world_mut()
+        .entity_mut(attacker)
+        .get_mut::<top_down_2d_rts_prototype_nano_swarm::nanobot::Charge>()
+        .unwrap()
+        .current = 0.0;
+    let target = common::spawn_worker_at(&mut app, center + Vec2::new(16.0, 0.0));
+    app.world_mut()
+        .entity_mut(target)
+        .insert(SwarmMember::new(SwarmId(11)));
+
+    app.update();
+
+    assert_eq!(
+        app.world().entity(target).get::<Health>().unwrap().current,
+        100,
+    );
+    assert!(resolved_facts(&app).is_empty());
+}
 
 #[test]
 fn equal_full_charge_defenders_resolve_in_readable_ttk_window() {

@@ -1,6 +1,8 @@
 use bevy::prelude::*;
 
-use crate::nanobot::{Nanobot, NanobotType, OpponentSwarm, Swarm, SwarmId, SwarmMember};
+use crate::nanobot::{
+    CombatPresentationPlugin, Nanobot, NanobotType, OpponentSwarm, Swarm, SwarmId, SwarmMember,
+};
 
 /// The single render-time visual owned by a nanobot gameplay root.
 #[derive(Debug, Component)]
@@ -49,7 +51,8 @@ impl Plugin for NanobotPresentationPlugin {
             let sprites = NanobotSprites::load(app.world().resource::<AssetServer>());
             app.insert_resource(sprites);
         }
-        app.add_observer(attach_nanobot_visual);
+        app.add_plugins(CombatPresentationPlugin)
+            .add_observer(attach_nanobot_visual);
     }
 }
 

@@ -12,6 +12,8 @@ mod charger_planned;
 mod collapse_banner;
 #[path = "behavior/combat.rs"]
 mod combat;
+#[path = "behavior/combat_presentation.rs"]
+mod combat_presentation;
 #[path = "behavior/defend_zone.rs"]
 mod defend_zone;
 #[path = "behavior/fixed_simulation.rs"]
