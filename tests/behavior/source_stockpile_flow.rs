@@ -140,7 +140,15 @@ fn opponent_gather_demand_creates_opponent_owned_source_plan() {
         SwarmMember(opponent_id),
         Transform::from_translation(deposit_pos.extend(0.0)),
     ));
-    common::spawn_deposit(&mut app, deposit_pos, 100);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     app.update();
 
@@ -175,7 +183,15 @@ fn no_planned_source_stockpile_from_deposit_without_worker() {
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     for _ in 0..5 {
         app.update();
@@ -206,7 +222,15 @@ fn gather_assignment_triggers_planned_source_stockpile() {
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
     let (swarm, worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     for _ in 0..5 {
         app.update();
@@ -268,7 +292,15 @@ fn worker_builds_planned_source_stockpile() {
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
     let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     // Run enough ticks for: assign -> demand -> claim ->
     // travel to planned -> work -> promotion.
@@ -320,7 +352,15 @@ fn worker_resumes_extraction_after_stockpile_built() {
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
     let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     // Build phase + travel back to deposit + a buffer of
     // extract ticks so the resume is observable in the
@@ -358,7 +398,15 @@ fn worker_delivers_minerals_to_completed_source_stockpile() {
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
     let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     // Build + extract + carry + deliver. The test stops right
     // after the first delivery so the ledger assertion sees a
@@ -428,8 +476,24 @@ fn planned_source_stockpile_is_reused_for_nearby_deposits() {
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
-    let _deposit_a = common::spawn_deposit(&mut app, deposit_pos, 100);
-    let _deposit_b = common::spawn_deposit(&mut app, deposit_pos + Vec2::new(40.0, 0.0), 100);
+    let _deposit_a = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
+    let _deposit_b = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos + Vec2::new(40.0, 0.0),
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     // Two workers so both deposits can be assigned at once.
     let _worker_a = common::spawn_worker_at(&mut app, deposit_pos);
     let _worker_b = common::spawn_worker_at(&mut app, deposit_pos + Vec2::new(40.0, 0.0));
@@ -463,7 +527,15 @@ fn source_stockpile_stays_in_gather_painted_cell() {
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
     let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     for _ in 0..5 {
         app.update();
@@ -498,7 +570,15 @@ fn completed_source_stockpile_keeps_swarm_ownership() {
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
     let (swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     // Build phase + buffer.
     let total_ticks = 1 + travel_ticks(PLANNED_TRAVEL_DISTANCE) + DEFAULT_PLANNED_WORK_TICKS + 5;
@@ -586,7 +666,15 @@ fn worker_waits_for_planned_source_stockpile_before_extracting() {
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
     let (_swarm, worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     // Run a small number of ticks -- enough for the
     // assignment + demand + claim to fire, but well short
@@ -650,7 +738,15 @@ fn second_worker_can_claim_and_build_planned_source_stockpile() {
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
     let (_swarm, _worker_assigned) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     // A second worker far from the deposit so the planned
     // claim system picks it (the first worker is busy with
     // a GatherAssignment, so it is filtered out of the
@@ -699,7 +795,15 @@ fn demand_system_does_not_double_plan_when_planned_already_exists() {
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
-    let _deposit_a = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let _deposit_a = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
 
     // First tick of demand.
@@ -723,7 +827,15 @@ fn demand_system_does_not_double_plan_when_planned_already_exists() {
     // own worker, and assert the demand system does not
     // plan a second Source Stockpile.
     let deposit_b_pos = deposit_pos + Vec2::new(40.0, 0.0);
-    let _deposit_b = common::spawn_deposit(&mut app, deposit_b_pos, 100);
+    let _deposit_b = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_b_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let _worker_b = common::spawn_worker_at(&mut app, deposit_b_pos);
 
     for _ in 0..5 {

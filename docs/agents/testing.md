@@ -2,6 +2,13 @@
 
 This document defines repo-specific testing conventions. For the TDD loop itself, use the TDD skill.
 
+For test design and review, follow the repository's
+[`testing-on-the-toilet` skill](../../.agents/skills/testing-on-the-toilet/SKILL.md).
+Assert observable behavior rather than source text, API reachability, or whether code compiles.
+Derive expected results independently with literal domain examples, compare calculated floating-point
+values with an explicit tolerance, and make every scenario-relevant fixture field visible at the call
+site instead of hiding it behind defaults.
+
 ## Commands
 
 Run one focused test while developing:

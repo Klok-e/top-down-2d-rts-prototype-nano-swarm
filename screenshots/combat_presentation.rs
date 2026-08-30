@@ -395,10 +395,18 @@ pub fn nanobot_combat_death(ctx: &mut TestContext) -> TestFlow {
                 panic!("lethal impact needs one nanobot death ghost: {ghosts:?}");
             };
             assert_eq!(ghost.victim.entity, evidence.victim);
-            assert_eq!(ghost.victim.position, evidence.victim_position);
-            assert_eq!(
-                ghost.transform.translation.truncate(),
-                evidence.victim_position
+            assert!(
+                ghost
+                    .victim
+                    .position
+                    .abs_diff_eq(evidence.victim_position, 0.01)
+            );
+            assert!(
+                ghost
+                    .transform
+                    .translation
+                    .truncate()
+                    .abs_diff_eq(evidence.victim_position, 0.01)
             );
             assert_ne!(ghost.color, Color::WHITE);
             ctx.world.resource_mut::<LethalCombatEvidence>().phase =
@@ -970,10 +978,18 @@ pub fn support_structure_combat_presentation(ctx: &mut TestContext) -> TestFlow 
                 .cloned()
                 .expect("lethal structure hit needs a presentation ghost and ring");
             assert_eq!(ghost.victim.entity, evidence.structure);
-            assert_eq!(ghost.victim.position, evidence.structure_position);
-            assert_eq!(
-                ghost.transform.translation.truncate(),
-                evidence.structure_position,
+            assert!(
+                ghost
+                    .victim
+                    .position
+                    .abs_diff_eq(evidence.structure_position, 0.01)
+            );
+            assert!(
+                ghost
+                    .transform
+                    .translation
+                    .truncate()
+                    .abs_diff_eq(evidence.structure_position, 0.01)
             );
             assert!(ghost.ring_radius > 0.0);
             assert!(ghost.ring_color.to_srgba().alpha > 0.0);

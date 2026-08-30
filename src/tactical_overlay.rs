@@ -633,6 +633,8 @@ mod tests {
     //! de-overlap, multi-cluster coexistence) lives in
     //! `tests/behavior/tactical_overlay.rs`.
 
+    use approx::assert_abs_diff_eq;
+
     use super::*;
 
     fn src(pos: Vec2, kind: TacticalMarkerKind, owner: SwarmId) -> TacticalSource {
@@ -656,41 +658,60 @@ mod tests {
     #[test]
     fn default_settings_match_module_constants() {
         let s = TacticalOverlaySettings::default();
-        assert_eq!(s.show_zoom_threshold, DEFAULT_TACTICAL_SHOW_ZOOM_THRESHOLD);
-        assert_eq!(s.merge_radius_world, DEFAULT_TACTICAL_MERGE_RADIUS_WORLD);
-        assert_eq!(
-            s.far_merge_radius_world,
-            DEFAULT_TACTICAL_FAR_MERGE_RADIUS_WORLD
+        assert_abs_diff_eq!(
+            s.show_zoom_threshold,
+            DEFAULT_TACTICAL_SHOW_ZOOM_THRESHOLD,
+            epsilon = 1e-5
         );
-        assert_eq!(s.far_merge_zoom, DEFAULT_TACTICAL_FAR_MERGE_ZOOM);
-        assert_eq!(s.marker_screen_size, DEFAULT_TACTICAL_MARKER_SCREEN_SIZE);
+        assert_abs_diff_eq!(
+            s.merge_radius_world,
+            DEFAULT_TACTICAL_MERGE_RADIUS_WORLD,
+            epsilon = 1e-5
+        );
+        assert_abs_diff_eq!(
+            s.far_merge_radius_world,
+            DEFAULT_TACTICAL_FAR_MERGE_RADIUS_WORLD,
+            epsilon = 1e-5
+        );
+        assert_abs_diff_eq!(
+            s.far_merge_zoom,
+            DEFAULT_TACTICAL_FAR_MERGE_ZOOM,
+            epsilon = 1e-5
+        );
+        assert_abs_diff_eq!(
+            s.marker_screen_size,
+            DEFAULT_TACTICAL_MARKER_SCREEN_SIZE,
+            epsilon = 1e-5
+        );
     }
 
     #[test]
     fn cluster_radius_at_or_below_threshold_uses_moderate_value() {
         let s = TacticalOverlaySettings::default();
-        assert_eq!(
+        assert_abs_diff_eq!(
             cluster_radius_for_zoom(1.0, &s),
             s.merge_radius_world,
-            "default play zoom is below the show threshold"
+            epsilon = 1e-5
         );
-        assert_eq!(
+        assert_abs_diff_eq!(
             cluster_radius_for_zoom(s.show_zoom_threshold, &s),
-            s.merge_radius_world
+            s.merge_radius_world,
+            epsilon = 1e-5
         );
     }
 
     #[test]
     fn cluster_radius_at_or_above_far_zoom_uses_far_value() {
         let s = TacticalOverlaySettings::default();
-        assert_eq!(
+        assert_abs_diff_eq!(
             cluster_radius_for_zoom(s.far_merge_zoom, &s),
-            s.far_merge_radius_world
+            s.far_merge_radius_world,
+            epsilon = 1e-5
         );
-        assert_eq!(
+        assert_abs_diff_eq!(
             cluster_radius_for_zoom(s.far_merge_zoom + 50.0, &s),
             s.far_merge_radius_world,
-            "beyond the far zoom the radius must not grow further"
+            epsilon = 1e-5
         );
     }
 
@@ -716,7 +737,7 @@ mod tests {
             merge_radius_world: 0.0,
             ..Default::default()
         };
-        assert_eq!(cluster_radius_for_zoom(10.0, &s), 0.0);
+        assert_abs_diff_eq!(cluster_radius_for_zoom(10.0, &s), 0.0, epsilon = 1e-5);
     }
 
     #[test]
@@ -731,7 +752,7 @@ mod tests {
             far_merge_radius_world: moderate - 100.0,
             ..Default::default()
         };
-        assert_eq!(cluster_radius_for_zoom(10.0, &s), moderate);
+        assert_abs_diff_eq!(cluster_radius_for_zoom(10.0, &s), moderate, epsilon = 1e-5);
     }
 
     // -----------------------------------------------------------------------
@@ -786,9 +807,10 @@ mod tests {
         // so two clusters that don't merge always end
         // up in different slots (or the same one only
         // when they would have merged anyway).
-        assert_eq!(
+        assert_abs_diff_eq!(
             CLUSTER_SPATIAL_SLOT_SIZE,
-            DEFAULT_TACTICAL_FAR_MERGE_RADIUS_WORLD
+            DEFAULT_TACTICAL_FAR_MERGE_RADIUS_WORLD,
+            epsilon = 1e-5
         );
     }
 
@@ -918,7 +940,8 @@ mod tests {
         let c = cluster(Vec2::new(0.0, 0.0), TacticalMarkerKind::Deposit, SwarmId(1));
         let out = deoverlap_clusters(vec![c], 8.0, 32.0);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].position, Vec2::ZERO);
+        assert_abs_diff_eq!(out[0].position.x, 0.0, epsilon = 0.01);
+        assert_abs_diff_eq!(out[0].position.y, 0.0, epsilon = 0.01);
     }
 
     #[test]

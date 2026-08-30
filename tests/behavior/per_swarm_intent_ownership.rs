@@ -96,7 +96,15 @@ fn player_painted_gather_drives_player_worker() {
         assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
     }
     let cell_center = common::cell_world_center(cell);
-    let _deposit = common::spawn_deposit(&mut app, cell_center, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: cell_center,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let worker = common::spawn_worker_at(&mut app, cell_center);
 
     for _ in 0..5 {
@@ -165,7 +173,15 @@ fn opponent_prepainted_gather_drives_opponent_worker() {
     );
     // Place a deposit in the cell so the assignment has a
     // target to point at.
-    let _deposit = common::spawn_deposit(&mut app, cell_center, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: cell_center,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let opponent_id = app
         .world()
         .entity(opponent)
@@ -208,7 +224,15 @@ fn player_worker_ignores_opponent_gather_zone() {
         assert!(grid.paint_owned(opponent_cell, IntentKind::Gather, Some(SwarmId(7)),));
     }
     let cell_center = common::cell_world_center(opponent_cell);
-    let _deposit = common::spawn_deposit(&mut app, cell_center, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: cell_center,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let worker = common::spawn_worker_at(&mut app, cell_center);
 
     for _ in 0..5 {
@@ -248,7 +272,15 @@ fn opponent_worker_ignores_player_gather_zone() {
         assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
     }
     let cell_center = common::cell_world_center(cell);
-    let _deposit = common::spawn_deposit(&mut app, cell_center, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: cell_center,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     // Opponent-tagged Worker (no Swarm entity, just the
     // nanobot with the right SwarmMember marker).
     let opponent_worker = app

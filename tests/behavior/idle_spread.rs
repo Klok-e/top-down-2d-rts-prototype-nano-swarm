@@ -153,13 +153,14 @@ fn player_worker_ignores_opponent_gather_paint() {
 
     app.update();
 
-    assert_eq!(
-        app.world()
-            .entity(bot)
-            .get::<VelocityComponent>()
-            .unwrap()
-            .value,
-        Vec2::ZERO,
+    let velocity = app
+        .world()
+        .entity(bot)
+        .get::<VelocityComponent>()
+        .unwrap()
+        .value;
+    assert!(
+        velocity.length() <= 1e-5,
         "idle spread must not steer a player nanobot toward opponent intent",
     );
 }
@@ -188,7 +189,7 @@ fn defender_ignores_gather_paint() {
         .unwrap()
         .value;
     assert!(
-        velocity == Vec2::ZERO,
+        velocity.length() <= 1e-5,
         "defender surrounded by Gather paint must not be nudged; got {:?}",
         velocity
     );
@@ -206,13 +207,14 @@ fn spread_does_not_move_defender_holding_assigned_cell() {
 
     app.update();
 
-    assert_eq!(
-        app.world()
-            .entity(defender)
-            .get::<VelocityComponent>()
-            .unwrap()
-            .value,
-        Vec2::ZERO,
+    let velocity = app
+        .world()
+        .entity(defender)
+        .get::<VelocityComponent>()
+        .unwrap()
+        .value;
+    assert!(
+        velocity.length() <= 1e-5,
         "idle cosmetic spread must not own active DefendHold movement",
     );
 }

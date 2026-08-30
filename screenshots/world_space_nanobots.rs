@@ -63,8 +63,8 @@ pub fn world_space_nanobots(ctx: &mut TestContext) -> TestFlow {
                 (transform.translation.truncate(), condition.health)
             })
             .expect("default player Production Facility must survive 900 fixed ticks");
-        assert_eq!(
-            player_facility.0, expected_facility,
+        assert!(
+            player_facility.0.abs_diff_eq(expected_facility, 0.01),
             "maintained seed facility must remain at its visible authored position"
         );
         assert_eq!(

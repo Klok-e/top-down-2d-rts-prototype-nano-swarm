@@ -18,7 +18,15 @@ fn worker_reserves_exact_partial_trip_without_moving_minerals() {
     let pos = Vec2::ZERO;
     let swarm = common::spawn_swarm_at(&mut app, pos);
     let worker = common::spawn_worker_at(&mut app, pos);
-    let deposit = common::spawn_deposit(&mut app, pos, 3);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: pos,
+            amount: 3,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let stockpile = common::spawn_stockpile(&mut app, pos, 8, 10);
     app.world_mut()
         .entity_mut(stockpile)
@@ -76,7 +84,15 @@ fn extraction_moves_only_new_minerals_into_cargo_and_ledger() {
     let pos = Vec2::ZERO;
     let swarm = common::spawn_swarm_at(&mut app, pos);
     let worker = common::spawn_worker_at(&mut app, pos);
-    let deposit = common::spawn_deposit(&mut app, pos, 10);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: pos,
+            amount: 10,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let stockpile = common::spawn_stockpile(&mut app, pos, 0, 10);
     app.world_mut()
         .entity_mut(stockpile)
@@ -126,7 +142,15 @@ fn same_tick_workers_cannot_overbook_deposit_or_source_capacity() {
     let mut app = common::sim_app_with_gather();
     let pos = Vec2::ZERO;
     let swarm = common::spawn_swarm_at(&mut app, pos);
-    let deposit = common::spawn_deposit(&mut app, pos, 5);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: pos,
+            amount: 5,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let stockpile = common::spawn_stockpile(&mut app, pos, 0, 5);
     app.world_mut()
         .entity_mut(stockpile)
@@ -186,7 +210,15 @@ fn worker_unloads_gradually_at_shared_rate_without_changing_ledger() {
     let pos = Vec2::ZERO;
     let swarm = common::spawn_swarm_at(&mut app, pos);
     let worker = common::spawn_worker_at(&mut app, pos);
-    let source = common::spawn_deposit(&mut app, pos, 0);
+    let source = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: pos,
+            amount: 0,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let stockpile = common::spawn_stockpile(&mut app, pos, 3, 100);
     app.world_mut()
         .entity_mut(stockpile)
@@ -245,7 +277,15 @@ fn loaded_worker_reroutes_from_wrong_owner_without_losing_cargo() {
         .spawn((top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId(9),))
         .id();
     let worker = common::spawn_worker_at(&mut app, Vec2::ZERO);
-    let source = common::spawn_deposit(&mut app, Vec2::ZERO, 0);
+    let source = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::ZERO,
+            amount: 0,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let wrong = common::spawn_stockpile(&mut app, Vec2::ZERO, 0, 100);
     app.world_mut()
         .entity_mut(wrong)
@@ -294,7 +334,15 @@ fn loaded_worker_reroutes_from_wrong_owner_without_losing_cargo() {
 fn loaded_worker_waits_with_cargo_when_no_compatible_source_exists() {
     let mut app = common::sim_app_with_gather();
     let worker = common::spawn_worker_at(&mut app, Vec2::ZERO);
-    let source = common::spawn_deposit(&mut app, Vec2::ZERO, 0);
+    let source = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::ZERO,
+            amount: 0,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let missing = app.world_mut().spawn_empty().id();
     app.world_mut().despawn(missing);
     let mut reservation = LogisticsReservation::new(source, missing, ResourceKind::Minerals, 4);
@@ -333,7 +381,15 @@ fn loaded_worker_waits_with_cargo_when_no_compatible_source_exists() {
 fn loaded_worker_waits_without_movement_when_reserved_stockpile_is_full() {
     let mut app = common::sim_app_with_gather();
     let worker = common::spawn_worker_at(&mut app, Vec2::ZERO);
-    let source = common::spawn_deposit(&mut app, Vec2::ZERO, 0);
+    let source = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::ZERO,
+            amount: 0,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let full = common::spawn_stockpile(&mut app, Vec2::new(100.0, 0.0), 100, 100);
     let mut reservation = LogisticsReservation::new(source, full, ResourceKind::Minerals, 4);
     reservation.source_remaining = 0;

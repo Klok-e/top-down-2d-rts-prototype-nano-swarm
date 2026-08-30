@@ -112,7 +112,15 @@ fn full_source_stockpile_does_not_count_as_usable_for_extraction() {
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
     let (_swarm, worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     // A full Source Stockpile right next to the deposit.
     // The arrive system must ignore it.
     let _full_stockpile = common::spawn_stockpile(
@@ -161,7 +169,15 @@ fn full_source_stockpile_triggers_new_planned_source_stockpile() {
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
     let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     // A full Source Stockpile inside the cell. The demand
     // system must treat it as "not usable" and plan a
     // new one.
@@ -207,7 +223,15 @@ fn full_source_stockpile_with_existing_planned_does_not_duplicate() {
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
     let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let _full_stockpile =
         common::spawn_stockpile(&mut app, deposit_pos + Vec2::new(60.0, 0.0), 1000, 1000);
     // A pre-existing Planned Source Stockpile inside the
@@ -251,7 +275,15 @@ fn no_valid_placement_with_full_stockpile_creates_no_plan() {
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
     let (_swarm, worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     // Full Source Stockpile well outside the ring (200
     // units east of the deposit, so it does not block
     // any ring candidate but is still "near" the
@@ -320,7 +352,15 @@ fn worker_resumes_extraction_after_full_stockpile_expansion() {
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
     let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     // Place the full stockpile well outside the ring so
     // it does not block any ring candidate -- the demand
     // system needs a free candidate to place a new plan.
@@ -525,8 +565,24 @@ fn two_nearby_deposits_with_full_stockpiles_share_one_plan() {
     let deposit_b_pos = deposit_a_pos + Vec2::new(120.0, 0.0);
     let (_swarm, _worker_a) = spawn_swarm_and_worker(&mut app, deposit_a_pos);
     let _worker_b = common::spawn_worker_at(&mut app, deposit_b_pos);
-    let _deposit_a = common::spawn_deposit(&mut app, deposit_a_pos, 100);
-    let _deposit_b = common::spawn_deposit(&mut app, deposit_b_pos, 100);
+    let _deposit_a = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_a_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
+    let _deposit_b = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_b_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let _full_a =
         common::spawn_stockpile(&mut app, deposit_a_pos + Vec2::new(60.0, 0.0), 1000, 1000);
     let _full_b =

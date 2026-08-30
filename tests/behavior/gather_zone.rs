@@ -49,7 +49,15 @@ fn worker_extracts_one_unit_per_tick_when_at_deposit() {
     // the demand system to plan a new Source Stockpile.
     let mut app = build_app();
     let deposit_pos = Vec2::new(100.0, 0.0);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 10);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 10,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let _stockpile = common::spawn_stockpile(
         &mut app,
         deposit_pos + top_down_2d_rts_prototype_nano_swarm::nanobot::SOURCE_STOCKPILE_OFFSET,
@@ -94,7 +102,15 @@ fn worker_fills_small_load_then_head_to_stockpile() {
     let mut app = build_app();
     let deposit_pos = Vec2::new(100.0, 0.0);
     let stockpile_pos = Vec2::new(200.0, 0.0);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 100);
     let worker = common::spawn_worker_at(&mut app, deposit_pos);
 
@@ -153,7 +169,15 @@ fn worker_delivers_carry_to_nearest_stockpile() {
     let mut app = build_app();
     let deposit_pos = Vec2::new(100.0, 0.0);
     let stockpile_pos = Vec2::new(150.0, 0.0); // very close, within radius
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 100);
     let worker = common::spawn_worker_at(&mut app, deposit_pos);
 
@@ -272,7 +296,15 @@ fn idle_worker_reactivates_when_deposit_refills() {
     let mut app = build_app();
     let deposit_pos = Vec2::new(100.0, 0.0);
     let stockpile_pos = Vec2::new(150.0, 0.0);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 4);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 4,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let _stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
     let worker = common::spawn_worker_at(&mut app, deposit_pos);
 
@@ -345,7 +377,15 @@ fn idle_worker_chooses_gather_via_autonomy_scoring() {
         assert!(grid.paint(cell, IntentKind::Gather));
     }
     let cell_world_center = common::cell_world_center(cell);
-    let deposit = common::spawn_deposit(&mut app, cell_world_center, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: cell_world_center,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     // Pre-spawn a usable Source Stockpile near the deposit so
     // the gather arrive system can insert `ExtractProgress`
     // and the assignment is the only thing under test
@@ -410,7 +450,15 @@ fn haulers_do_not_extract_directly() {
         assert!(grid.paint(cell, IntentKind::Gather));
     }
     let cell_world_center = common::cell_world_center(cell);
-    let _deposit = common::spawn_deposit(&mut app, cell_world_center, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: cell_world_center,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let hauler = common::spawn_hauler_at(&mut app, cell_world_center);
 
     for _ in 0..5 {

@@ -84,7 +84,15 @@ fn candidate_placements_lie_on_the_configured_ring() {
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
     let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     for _ in 0..5 {
         app.update();
@@ -116,7 +124,15 @@ fn placement_jitter_is_stable_across_ticks() {
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
     let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     for _ in 0..3 {
         app.update();
@@ -176,7 +192,15 @@ fn candidates_outside_the_gather_zone_are_rejected() {
     paint_gather(&mut app, gather_cell);
     let deposit_pos = common::cell_world_center(deposit_cell);
     let (_swarm, worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     app.world_mut()
         .entity_mut(worker)
         .insert(GatherAssignment::new(gather_cell, deposit));
@@ -223,7 +247,15 @@ fn haul_direction_bias_picks_aligned_candidate() {
     let build_cell = IVec2::new(2, 0);
     paint_build(&mut app, build_cell);
     let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     for _ in 0..5 {
         app.update();
@@ -275,7 +307,15 @@ fn no_planned_source_stockpile_when_gather_cell_is_wrong() {
     paint_gather(&mut app, gather_cell);
     let deposit_pos = common::cell_world_center(deposit_cell);
     let (_swarm, worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     app.world_mut()
         .entity_mut(worker)
         .insert(GatherAssignment::new(gather_cell, deposit));
@@ -311,7 +351,15 @@ fn placement_replaces_planned_structure_with_completed_stockpile() {
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
     let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     // Drive long enough for the build to complete and
     // the worker to start gathering. We do not pin a
@@ -346,7 +394,15 @@ fn no_floating_planned_source_stockpile_after_demand_satisfied() {
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
     let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     // Drive long enough for the build to finish.
     for _ in 0..100 {

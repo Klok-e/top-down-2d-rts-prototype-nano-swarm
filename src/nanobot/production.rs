@@ -994,6 +994,8 @@ mod tests {
     //! Pure-helper unit tests. End-to-end behaviour lives in the production
     //! facility and Production Priority behavior tests.
 
+    use approx::assert_abs_diff_eq;
+
     use super::*;
 
     #[test]
@@ -1242,18 +1244,42 @@ mod tests {
     #[test]
     fn production_priority_default_seeds_60_30_10_normalized_weights() {
         let priority = ProductionPriority::default();
-        assert_eq!(priority.normalized_weight(NanobotType::Worker), 0.60);
-        assert_eq!(priority.normalized_weight(NanobotType::Hauler), 0.30);
-        assert_eq!(priority.normalized_weight(NanobotType::Defender), 0.10);
+        assert_abs_diff_eq!(
+            priority.normalized_weight(NanobotType::Worker),
+            0.60,
+            epsilon = 1e-5
+        );
+        assert_abs_diff_eq!(
+            priority.normalized_weight(NanobotType::Hauler),
+            0.30,
+            epsilon = 1e-5
+        );
+        assert_abs_diff_eq!(
+            priority.normalized_weight(NanobotType::Defender),
+            0.10,
+            epsilon = 1e-5
+        );
     }
 
     #[test]
     fn production_priority_normalized_weight_is_zero_when_total_is_zero() {
         // Avoids NaN from divide-by-zero.
         let priority = ProductionPriority::new();
-        assert_eq!(priority.normalized_weight(NanobotType::Worker), 0.0);
-        assert_eq!(priority.normalized_weight(NanobotType::Hauler), 0.0);
-        assert_eq!(priority.normalized_weight(NanobotType::Defender), 0.0);
+        assert_abs_diff_eq!(
+            priority.normalized_weight(NanobotType::Worker),
+            0.0,
+            epsilon = 1e-5
+        );
+        assert_abs_diff_eq!(
+            priority.normalized_weight(NanobotType::Hauler),
+            0.0,
+            epsilon = 1e-5
+        );
+        assert_abs_diff_eq!(
+            priority.normalized_weight(NanobotType::Defender),
+            0.0,
+            epsilon = 1e-5
+        );
     }
 
     #[test]

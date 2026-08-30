@@ -5216,6 +5216,7 @@ name = "top-down-2d-rts-prototype-nano-swarm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "approx",
  "bevy",
  "bevy_image_export",
  "criterion",

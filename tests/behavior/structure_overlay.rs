@@ -1,24 +1,23 @@
 //! Integration tests for zoom-aware fill bars above structures and loaded haulers.
 
+use approx::assert_abs_diff_eq;
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z, MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
     fly_camera::CameraZoom2d,
     nanobot::{
         Cargo, Charger, ExtractProgress, HAULER_CARRY_CAPACITY, HaulerLoad, LogisticsReservation,
-        MAINTENANCE_BUFFER_TICKS, MAINTENANCE_NEEDS_THRESHOLD, MAINTENANCE_WORK_DURATION_TICKS,
-        MaintenanceAssignment, MaintenanceProgress, PlannedKind, PlannedStructure,
-        ProductionFacility, STRUCTURE_MAX_HEALTH, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure,
-        StructureKind, WORKER_CARRY_CAPACITY,
+        MAINTENANCE_NEEDS_THRESHOLD, MAINTENANCE_WORK_DURATION_TICKS, MaintenanceAssignment,
+        MaintenanceProgress, PlannedKind, PlannedStructure, ProductionFacility,
+        SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, WORKER_CARRY_CAPACITY,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole},
     structure_overlay::{
         CONDITION_BAR_GAP, CONDITION_BAR_SIZE, ConditionOverlay, ConditionOverlayKind,
         STRUCTURE_BAR_SIZE, STRUCTURE_FOOTPRINT_LABEL_GAP, STRUCTURE_OVERLAY_Z, StructureOverlay,
-        StructureOverlayFill, StructureOverlayKind, StructureOverlayPlugin,
-        StructureOverlaySegment, StructureOverlaySegmentKind, StructureOverlaySettings,
-        condition_fill_color, fill_fraction, health_fill_fraction, maintenance_fill_fraction,
-        overlay_bar_size, overlay_fill_color, overlay_label_offset_y, reservation_segment_color,
+        StructureOverlayFill, StructureOverlayKind, StructureOverlaySegment,
+        StructureOverlaySegmentKind, StructureOverlaySettings, fill_fraction, overlay_bar_size,
+        overlay_fill_color, overlay_label_offset_y, reservation_segment_color,
     },
 };
 
@@ -32,7 +31,15 @@ fn build_app() -> App {
 #[test]
 fn deposit_overlay_bar_uses_amount_over_capacity() {
     let mut app = build_app();
-    let deposit = common::spawn_deposit(&mut app, Vec2::ZERO, 500);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::ZERO,
+            amount: 500,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     app.update();
 
@@ -159,7 +166,8 @@ fn completed_support_structure_gets_stacked_condition_bars() {
         .translation
         .y;
 
-    assert_eq!(CONDITION_BAR_SIZE, Vec2::new(48.0, 3.0));
+    assert_abs_diff_eq!(CONDITION_BAR_SIZE.x, 48.0, epsilon = 1e-5);
+    assert_abs_diff_eq!(CONDITION_BAR_SIZE.y, 3.0, epsilon = 1e-5);
     assert!(
         (maintenance_y
             - resource_y
@@ -184,34 +192,22 @@ fn maintenance_and_health_bars_track_live_condition() {
     let maintenance =
         find_condition_overlay_for(&mut app, facility, ConditionOverlayKind::Maintenance);
     let health = find_condition_overlay_for(&mut app, facility, ConditionOverlayKind::Health);
-    assert_condition_fill(
-        &app,
-        maintenance,
-        maintenance_fill_fraction(MAINTENANCE_NEEDS_THRESHOLD),
-        condition_fill_color(
-            ConditionOverlayKind::Maintenance,
-            MAINTENANCE_NEEDS_THRESHOLD,
-        ),
-    );
-    assert_condition_fill(
-        &app,
-        health,
-        health_fill_fraction(SUPPORT_OPERATIONAL_HEALTH_THRESHOLD),
-        condition_fill_color(
-            ConditionOverlayKind::Health,
-            SUPPORT_OPERATIONAL_HEALTH_THRESHOLD,
-        ),
-    );
-
-    assert_eq!(maintenance_fill_fraction(0), 1.0);
-    assert_eq!(maintenance_fill_fraction(MAINTENANCE_BUFFER_TICKS), 0.0);
-    assert_eq!(health_fill_fraction(STRUCTURE_MAX_HEALTH), 1.0);
+    assert_condition_fill(&app, maintenance, 24.0, Color::srgb(1.0, 0.68, 0.20));
+    assert_condition_fill(&app, health, 0.48, Color::srgb(1.0, 0.68, 0.20));
 }
 
 #[test]
 fn condition_bars_exclude_deposits_and_planned_structures() {
     let mut app = build_app();
-    let deposit = common::spawn_deposit(&mut app, Vec2::ZERO, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::ZERO,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let planned = common::spawn_planned_structure_of_kind_at_cell(
         &mut app,
         IVec2::ZERO,
@@ -247,7 +243,7 @@ fn maintenance_progress_bar_tracks_worker_shift_and_despawns() {
 
     let progress =
         find_condition_overlay_for(&mut app, worker, ConditionOverlayKind::WorkerProgress);
-    assert_condition_fill(&app, progress, 0.5, Color::WHITE);
+    assert_condition_fill(&app, progress, 16.0, Color::WHITE);
 
     app.world_mut()
         .entity_mut(worker)
@@ -471,7 +467,15 @@ fn hauler_overlay_despawns_when_load_is_removed() {
 #[test]
 fn no_text_overlay_entities_are_spawned() {
     let mut app = build_app();
-    let _deposit = common::spawn_deposit(&mut app, Vec2::ZERO, 500);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::ZERO,
+            amount: 500,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let hauler = common::spawn_hauler_at(&mut app, Vec2::new(64.0, 0.0));
     app.world_mut().entity_mut(hauler).insert(HaulerLoad {
         kind: ResourceKind::Minerals,
@@ -496,7 +500,15 @@ fn no_text_overlay_entities_are_spawned() {
 #[test]
 fn overlay_fill_reflects_live_state_changes() {
     let mut app = build_app();
-    let deposit = common::spawn_deposit(&mut app, Vec2::ZERO, 1000);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::ZERO,
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     app.update();
     let overlay = find_overlay_for(&mut app, deposit);
@@ -519,7 +531,15 @@ fn overlay_position_tracks_target_world_transform() {
         -(MAP_WIDTH as f32 * ZONE_BLOCK_SIZE) * 0.5 + 16.0,
         -(MAP_HEIGHT as f32 * ZONE_BLOCK_SIZE) * 0.5 + 16.0,
     );
-    let deposit = common::spawn_deposit(&mut app, far_pos, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: far_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let deposit_radius = app
         .world()
         .entity(deposit)
@@ -540,14 +560,22 @@ fn overlay_position_tracks_target_world_transform() {
         .translation;
     assert!((translation.x - far_pos.x).abs() < 1.0);
     assert!((translation.y - (far_pos.y + expected_offset)).abs() < 1.0);
-    assert_eq!(translation.z, STRUCTURE_OVERLAY_Z);
+    assert_abs_diff_eq!(translation.z, STRUCTURE_OVERLAY_Z, epsilon = 1e-5);
 }
 
 #[test]
 fn deposit_overlay_sits_above_deposit_circle() {
     let mut app = build_app();
     let pos = Vec2::new(2048.0, 1024.0);
-    let deposit = common::spawn_deposit_with_radius(&mut app, pos, 250, 96.0);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: pos,
+            amount: 250,
+            capacity: 1000,
+            radius: 96.0,
+        },
+    );
 
     app.update();
 
@@ -561,7 +589,15 @@ fn deposit_overlay_sits_above_deposit_circle() {
 #[test]
 fn overlay_renders_above_gameplay_sprites() {
     let mut app = build_app();
-    let deposit = common::spawn_deposit(&mut app, Vec2::ZERO, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::ZERO,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     app.update();
 
@@ -574,13 +610,21 @@ fn overlay_renders_above_gameplay_sprites() {
         .translation
         .z;
     assert!(z > GAMEPLAY_SPRITE_Z);
-    assert_eq!(z, STRUCTURE_OVERLAY_Z);
+    assert_abs_diff_eq!(z, STRUCTURE_OVERLAY_Z, epsilon = 1e-5);
 }
 
 #[test]
 fn default_threshold_hides_overlay_at_boundary_and_shows_below() {
     let mut app = build_app();
-    let deposit = common::spawn_deposit(&mut app, Vec2::ZERO, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::ZERO,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let camera = app
         .world_mut()
         .spawn(CameraZoom2d {
@@ -605,7 +649,15 @@ fn default_threshold_hides_overlay_at_boundary_and_shows_below() {
 #[test]
 fn configured_threshold_gates_visibility() {
     let mut app = build_app();
-    let deposit = common::spawn_deposit(&mut app, Vec2::ZERO, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::ZERO,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     app.world_mut()
         .resource_mut::<StructureOverlaySettings>()
         .hide_zoom_threshold = 0.5;
@@ -623,7 +675,15 @@ fn configured_threshold_gates_visibility() {
 #[test]
 fn overlay_visibility_does_not_touch_unrelated_entities() {
     let mut app = build_app();
-    let deposit = common::spawn_deposit(&mut app, Vec2::ZERO, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::ZERO,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let unrelated = app
         .world_mut()
         .spawn((Transform::default(), Visibility::Inherited))
@@ -643,7 +703,15 @@ fn overlay_visibility_does_not_touch_unrelated_entities() {
 #[test]
 fn overlay_is_removed_when_target_despawns() {
     let mut app = build_app();
-    let deposit = common::spawn_deposit(&mut app, Vec2::ZERO, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::ZERO,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     app.update();
     let overlay = find_overlay_for(&mut app, deposit);
@@ -664,7 +732,15 @@ fn overlay_is_removed_when_target_despawns() {
 #[test]
 fn overlay_spawns_once_and_persists_across_state_changes() {
     let mut app = build_app();
-    let deposit = common::spawn_deposit(&mut app, Vec2::ZERO, 1000);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::ZERO,
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     app.update();
     let overlay = find_overlay_for(&mut app, deposit);
@@ -697,7 +773,15 @@ fn overlay_spawns_once_and_persists_across_state_changes() {
 fn overlay_spawns_for_every_kind_at_once() {
     let mut app = build_app();
     let cell = IVec2::ZERO;
-    let deposit = common::spawn_deposit(&mut app, Vec2::ZERO, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::ZERO,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let stockpile = common::spawn_stockpile(&mut app, Vec2::new(64.0, 0.0), 50, 200);
     let facility = app
         .world_mut()
@@ -837,7 +921,7 @@ fn assert_no_condition_overlay_for(app: &mut App, target: Entity) {
     assert!(query.iter(world).all(|overlay| overlay.target != target));
 }
 
-fn assert_condition_fill(app: &App, overlay: Entity, fraction: f32, color: Color) {
+fn assert_condition_fill(app: &App, overlay: Entity, expected_width: f32, expected_color: Color) {
     let overlay = app
         .world()
         .entity(overlay)
@@ -845,13 +929,13 @@ fn assert_condition_fill(app: &App, overlay: Entity, fraction: f32, color: Color
         .unwrap();
     let sprite = app.world().entity(overlay.fill).get::<Sprite>().unwrap();
     let size = sprite.custom_size.unwrap();
-    let expected_width = if overlay.kind == ConditionOverlayKind::WorkerProgress {
-        overlay_bar_size(StructureOverlayKind::Worker).x
-    } else {
-        CONDITION_BAR_SIZE.x
-    } * fraction;
-    assert!((size.x - expected_width).abs() < 0.01);
-    assert_eq!(sprite.color, color);
+    assert_abs_diff_eq!(size.x, expected_width, epsilon = 0.01);
+    let actual = sprite.color.to_srgba();
+    let expected = expected_color.to_srgba();
+    assert_abs_diff_eq!(actual.red, expected.red, epsilon = 1e-5);
+    assert_abs_diff_eq!(actual.green, expected.green, epsilon = 1e-5);
+    assert_abs_diff_eq!(actual.blue, expected.blue, epsilon = 1e-5);
+    assert_abs_diff_eq!(actual.alpha, expected.alpha, epsilon = 1e-5);
 }
 
 fn assert_no_overlay_for(app: &mut App, target: Entity) {
@@ -901,7 +985,7 @@ fn assert_fill_fraction(app: &App, overlay: Entity, kind: StructureOverlayKind, 
         actual_size.x,
         expected_width
     );
-    assert_eq!(actual_size.y, overlay_bar_size(kind).y);
+    assert_abs_diff_eq!(actual_size.y, overlay_bar_size(kind).y, epsilon = 0.01);
     let expected_x = -(overlay_bar_size(kind).x - expected_width) / 2.0;
     assert!((actual_x - expected_x).abs() < 0.01);
 }
@@ -933,28 +1017,32 @@ fn assert_segment(
     );
     let sprite = app.world().entity(segment).get::<Sprite>().unwrap();
     let expected_size = overlay_bar_size(overlay.kind);
-    assert_eq!(sprite.color, expected_color);
+    let actual_color = sprite.color.to_srgba();
+    let expected_color = expected_color.to_srgba();
+    assert_abs_diff_eq!(actual_color.red, expected_color.red, epsilon = 1e-5);
+    assert_abs_diff_eq!(actual_color.green, expected_color.green, epsilon = 1e-5);
+    assert_abs_diff_eq!(actual_color.blue, expected_color.blue, epsilon = 1e-5);
+    assert_abs_diff_eq!(actual_color.alpha, expected_color.alpha, epsilon = 1e-5);
     assert!((sprite.custom_size.unwrap().x - expected_size.x * expected_fraction).abs() < 0.01);
-    assert_eq!(sprite.custom_size.unwrap().y, expected_size.y);
-}
-
-#[allow(dead_code)]
-fn _exports() {
-    let _: Charger = Charger::new(IVec2::ZERO);
-    let _: PlannedStructure = PlannedStructure::new(PlannedKind::Charger, IVec2::ZERO);
-    let _: ProductionFacility = ProductionFacility::new();
-    let _: StructureOverlayPlugin = StructureOverlayPlugin;
+    assert_abs_diff_eq!(
+        sprite.custom_size.unwrap().y,
+        expected_size.y,
+        epsilon = 0.01
+    );
 }
 
 #[test]
 fn reservation_segments_cover_each_logistics_endpoint_direction() {
     let mut app = build_app();
-    let deposit = common::spawn_deposit(&mut app, Vec2::ZERO, 20);
-    app.world_mut()
-        .entity_mut(deposit)
-        .get_mut::<ResourceDeposit>()
-        .unwrap()
-        .capacity = 20;
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::ZERO,
+            amount: 20,
+            capacity: 20,
+            radius: 32.0,
+        },
+    );
     let source = common::spawn_stockpile(&mut app, Vec2::new(64.0, 0.0), 10, 20);
     let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(128.0, 0.0), 10, 20);
     let mut facility = ProductionFacility::new();

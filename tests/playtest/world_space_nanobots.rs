@@ -59,7 +59,15 @@ fn scripted_gather_bot_lands_at_deposit_world_position() {
         CELL_SIZE / 2.0,
     );
     let _swarm = common::spawn_swarm_at(&mut app, player_pos);
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let _stockpile = common::spawn_stockpile(&mut app, deposit_pos + Vec2::new(96.0, 0.0), 0, 1000);
     let worker = common::spawn_worker_at(&mut app, player_pos);
     paint_gather(&mut app, deposit_cell);

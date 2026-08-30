@@ -285,6 +285,8 @@ fn spawn_production_facility(
 
 #[cfg(test)]
 mod tests {
+    use approx::assert_abs_diff_eq;
+
     use super::*;
 
     #[test]
@@ -433,36 +435,40 @@ mod tests {
     }
 
     #[test]
-    fn default_scenario_positions_are_cell_centers() {
-        assert_eq!(cell_origin(PLAYER_CELL), get_world_from_zone(PLAYER_CELL));
-        assert_ne!(
-            cell_origin(PLAYER_CELL) + SEED_FACILITY_OFFSET,
-            cell_origin(PLAYER_CELL)
-        );
+    fn default_scenario_assets_keep_the_authored_starting_layout() {
+        let player_origin = cell_origin(PLAYER_CELL);
+        let opponent_origin = cell_origin(OPPONENT_CELL);
+        let player_facility = player_origin + SEED_FACILITY_OFFSET;
+        let opponent_facility = opponent_origin + OPPONENT_FACILITY_OFFSET;
+
+        assert_eq!(crate::nanobot::world_to_cell(player_facility), PLAYER_CELL);
         assert_eq!(
-            crate::nanobot::world_to_cell(cell_origin(PLAYER_CELL) + SEED_FACILITY_OFFSET),
-            PLAYER_CELL
-        );
-        assert_eq!(
-            cell_origin(PLAYER_DEPOSIT_CELL),
-            get_world_from_zone(PLAYER_DEPOSIT_CELL)
-        );
-        assert_eq!(
-            cell_origin(OPPONENT_CELL),
-            get_world_from_zone(OPPONENT_CELL)
-        );
-        assert_ne!(
-            cell_origin(OPPONENT_CELL) + OPPONENT_FACILITY_OFFSET,
-            cell_origin(OPPONENT_CELL)
-        );
-        assert_eq!(
-            crate::nanobot::world_to_cell(cell_origin(OPPONENT_CELL) + SEED_FACILITY_OFFSET),
+            crate::nanobot::world_to_cell(opponent_facility),
             OPPONENT_CELL
         );
-        assert_eq!(
-            cell_origin(OPPONENT_DEPOSIT_CELL),
-            get_world_from_zone(OPPONENT_DEPOSIT_CELL)
+        assert_abs_diff_eq!(player_facility.x - player_origin.x, 160.0, epsilon = 0.01);
+        assert_abs_diff_eq!(player_facility.y, player_origin.y, epsilon = 0.01);
+        assert_abs_diff_eq!(
+            opponent_facility.x - opponent_origin.x,
+            -160.0,
+            epsilon = 0.01
         );
+        assert_abs_diff_eq!(opponent_facility.y, opponent_origin.y, epsilon = 0.01);
+
+        let player_deposit = cell_origin(PLAYER_DEPOSIT_CELL);
+        let opponent_deposit = cell_origin(OPPONENT_DEPOSIT_CELL);
+        assert_abs_diff_eq!(
+            player_deposit.x - player_origin.x,
+            -crate::ZONE_BLOCK_SIZE,
+            epsilon = 0.01
+        );
+        assert_abs_diff_eq!(player_deposit.y, player_origin.y, epsilon = 0.01);
+        assert_abs_diff_eq!(
+            opponent_deposit.x - opponent_origin.x,
+            crate::ZONE_BLOCK_SIZE,
+            epsilon = 0.01
+        );
+        assert_abs_diff_eq!(opponent_deposit.y, opponent_origin.y, epsilon = 0.01);
     }
 
     #[test]
@@ -471,9 +477,10 @@ mod tests {
             cell_origin(OPPONENT_CELL).distance(cell_origin(PLAYER_CELL))
                 <= 4.0 * crate::ZONE_BLOCK_SIZE
         );
-        assert_eq!(
+        assert_abs_diff_eq!(
             cell_origin(OPPONENT_DEFEND_CELL).distance(cell_origin(PLAYER_DEFEND_CELL)),
-            crate::ZONE_BLOCK_SIZE
+            crate::ZONE_BLOCK_SIZE,
+            epsilon = 0.01
         );
     }
 }

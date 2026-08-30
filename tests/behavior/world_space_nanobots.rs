@@ -75,7 +75,15 @@ fn gather_bot_lands_at_deposit_world_position_not_cell_corner() {
         CELL_SIZE / 2.0,
     );
     let _swarm = common::spawn_swarm_at(&mut app, player_pos);
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     // Spawn a Source Stockpile near the deposit so the
     // gather arrive system can insert ExtractProgress
     // (issue #23 contract).
@@ -255,7 +263,15 @@ fn opponent_gather_bot_lands_at_deposit_world_position() {
             1,
         )],
     );
-    let _deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let _stockpile = common::spawn_stockpile(&mut app, deposit_pos + Vec2::new(96.0, 0.0), 0, 1000);
     // Paint the deposit's gather cell as opponent-owned.
     {

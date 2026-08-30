@@ -334,7 +334,15 @@ fn source_stockpile_demand_ignores_sink_stockpile_in_same_cell() {
     }
     let _swarm = common::spawn_swarm_at(&mut app, center);
     let _worker = common::spawn_worker_at(&mut app, center);
-    let _deposit = common::spawn_deposit(&mut app, center, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: center,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     // A completed Sink Stockpile in the same cell. The
     // gather worker's "any near Source Stockpile" check
     // must skip it.
@@ -487,45 +495,6 @@ fn opponent_build_cell_creates_opponent_owned_sink_stockpile() {
         .entity(owner.0)
         .get::<Swarm>()
         .expect("owner must be a Swarm entity");
-}
-
-#[test]
-fn planned_kind_default_is_source_stockpile() {
-    // The "default kind" contract is the foundation's
-    // back-compat: `PlannedKind::default()` continues to
-    // return `SourceStockpile` so test code that doesn't
-    // care about the kind still compiles. The new Sink
-    // Stockpile is reachable only through the explicit
-    // `SinkStockpile` variant.
-    assert_eq!(PlannedKind::default(), PlannedKind::SourceStockpile);
-}
-
-#[test]
-fn planned_kind_all_includes_sink_stockpile() {
-    // The `ALL` constant is a stable list of every kind
-    // the planned-structure foundation models. The Sink
-    // Stockpile must show up so future "iterate every kind"
-    // loops see the new variant.
-    let kinds: Vec<PlannedKind> = PlannedKind::ALL.to_vec();
-    assert_eq!(kinds.len(), PlannedKind::COUNT);
-    assert!(kinds.contains(&PlannedKind::SourceStockpile));
-    assert!(
-        kinds.contains(&PlannedKind::SinkStockpile),
-        "PlannedKind::ALL must include SinkStockpile"
-    );
-}
-
-#[test]
-fn planned_kind_sink_index_is_stable() {
-    // Pin the stable per-kind index for the new variant.
-    // Indexes are part of the public contract: they back
-    // table sizing and per-kind iteration.
-    let sink_index = PlannedKind::SinkStockpile.index();
-    let source_index = PlannedKind::SourceStockpile.index();
-    assert_ne!(
-        sink_index, source_index,
-        "Sink Stockpile index must be distinct from Source Stockpile index"
-    );
 }
 
 #[test]

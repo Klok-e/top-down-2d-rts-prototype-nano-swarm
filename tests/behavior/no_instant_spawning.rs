@@ -109,7 +109,15 @@ fn gather_paint_does_not_instant_spawn_any_support_structure() {
     let center = common::cell_world_center(cell);
     let _swarm = common::spawn_swarm_at(&mut app, center);
     let _worker = common::spawn_worker_at(&mut app, center);
-    let _deposit = common::spawn_deposit(&mut app, center, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: center,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     paint_owned(&mut app, cell, IntentKind::Gather);
 
     for _ in 0..3 {
@@ -398,7 +406,15 @@ fn all_demand_sources_share_zero_completed_structures() {
     let gather_cell = IVec2::new(0, 0);
     let gather_center = common::cell_world_center(gather_cell);
     let _worker = common::spawn_worker_at(&mut app, gather_center);
-    let _deposit = common::spawn_deposit(&mut app, gather_center, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: gather_center,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     paint_owned(&mut app, gather_cell, IntentKind::Gather);
     let build_cell = IVec2::new(1, 0);
     paint_owned(&mut app, build_cell, IntentKind::Build);

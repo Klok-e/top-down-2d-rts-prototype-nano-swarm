@@ -417,7 +417,15 @@ fn exact_priority_swarm_grows_when_useful_work_exceeds_population() {
             IntentKind::Gather,
             Some(SwarmId::PLAYER),
         );
-        common::spawn_deposit(&mut app, common::cell_world_center(cell), 100);
+        common::spawn_deposit(
+            &mut app,
+            common::DepositFixture {
+                world_pos: common::cell_world_center(cell),
+                amount: 100,
+                capacity: 1000,
+                radius: 32.0,
+            },
+        );
     }
     let facility = common::spawn_idle_facility_at(&mut app, Vec2::ZERO);
 

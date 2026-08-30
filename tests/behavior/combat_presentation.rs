@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use approx::assert_abs_diff_eq;
 use bevy::{asset::AssetPlugin, prelude::*, time::TimeUpdateStrategy};
 
 #[path = "../common/mod.rs"]
@@ -31,6 +32,26 @@ fn presentation_app() -> App {
         .insert_resource(StructureSprites::from_single_handle(Handle::default()))
         .add_plugins(NanobotPresentationPlugin);
     app
+}
+
+fn assert_position(actual: Vec2, expected: Vec2) {
+    assert_abs_diff_eq!(actual.x, expected.x, epsilon = 0.01);
+    assert_abs_diff_eq!(actual.y, expected.y, epsilon = 0.01);
+}
+
+fn assert_translation(actual: Vec3, expected: Vec3) {
+    assert_abs_diff_eq!(actual.x, expected.x, epsilon = 0.01);
+    assert_abs_diff_eq!(actual.y, expected.y, epsilon = 0.01);
+    assert_abs_diff_eq!(actual.z, expected.z, epsilon = 0.01);
+}
+
+fn assert_color(actual: Color, expected: Color) {
+    let actual = actual.to_srgba();
+    let expected = expected.to_srgba();
+    assert_abs_diff_eq!(actual.red, expected.red, epsilon = 1e-5);
+    assert_abs_diff_eq!(actual.green, expected.green, epsilon = 1e-5);
+    assert_abs_diff_eq!(actual.blue, expected.blue, epsilon = 1e-5);
+    assert_abs_diff_eq!(actual.alpha, expected.alpha, epsilon = 1e-5);
 }
 
 fn structure_snapshot(
@@ -92,7 +113,7 @@ fn resolved_hit_drives_impact_and_returns_both_visuals_to_neutral() {
     assert!(settings.recovery_duration < Duration::from_millis(250));
     assert!(settings.jab_distance < 16.0);
     assert!(settings.recoil_distance < 16.0);
-    assert_eq!(settings.zoom_cutoff, 8.0);
+    assert_abs_diff_eq!(settings.zoom_cutoff, 8.0, epsilon = 1e-5);
 
     app.world_mut()
         .write_message(ResolvedCombatFact::Hit(ResolvedCombatHit {
@@ -118,10 +139,9 @@ fn resolved_hit_drives_impact_and_returns_both_visuals_to_neutral() {
     assert!(attacker_pose.translation.length() > 0.0);
     assert!(attacker_pose.translation.length() <= settings.jab_distance + 0.001);
     assert!(attacker_pose.rotation != Quat::IDENTITY);
-    assert_eq!(
+    assert_color(
         app.world().get::<Sprite>(attacker_visual).unwrap().color,
         Color::WHITE,
-        "an attacker without an incoming hit keeps its neutral tint",
     );
     assert!(target_pose.translation.length() > 0.0);
     assert!(target_pose.translation.length() <= settings.recoil_distance + 0.001);
@@ -137,8 +157,8 @@ fn resolved_hit_drives_impact_and_returns_both_visuals_to_neutral() {
         .copied()
         .collect::<Vec<_>>();
     assert_eq!(pulses.len(), 1);
-    assert_eq!(pulses[0].start, attacker_position);
-    assert_eq!(pulses[0].end, target_position);
+    assert_position(pulses[0].start, attacker_position);
+    assert_position(pulses[0].end, target_position);
     let pulse_color = pulses[0].color.to_srgba();
     assert!(pulse_color.blue > pulse_color.red);
     assert_eq!(app.world().get::<Transform>(attacker), Some(&attacker_root));
@@ -173,7 +193,7 @@ fn resolved_hit_drives_impact_and_returns_both_visuals_to_neutral() {
         app.world().get::<Transform>(target_visual),
         Some(&Transform::IDENTITY),
     );
-    assert_eq!(
+    assert_color(
         app.world().get::<Sprite>(target_visual).unwrap().color,
         Color::WHITE,
     );
@@ -251,10 +271,13 @@ fn lethal_fact_sequence_keeps_the_final_pulse_with_a_collapsing_ghost_then_expir
     let [ghost] = ghost_values.as_slice() else {
         panic!("lethal combat needs exactly one presentation ghost");
     };
-    assert_eq!(ghost.victim, victim_snapshot);
-    assert_eq!(
+    assert_eq!(ghost.victim.entity, victim_snapshot.entity);
+    assert_position(ghost.victim.position, victim_snapshot.position);
+    assert_eq!(ghost.victim.swarm, victim_snapshot.swarm);
+    assert_eq!(ghost.victim.appearance, victim_snapshot.appearance);
+    assert_translation(
         ghost.transform.translation,
-        victim_position.extend(GAMEPLAY_SPRITE_Z)
+        victim_position.extend(GAMEPLAY_SPRITE_Z),
     );
     assert_eq!(ghost.image, expected_image);
     assert_ne!(ghost.color, Color::WHITE, "the ghost starts flashed");
@@ -355,9 +378,9 @@ fn structure_hit_flashes_in_place_with_attacker_jab_and_pulse_then_recovers() {
     ));
     app.update();
 
-    assert_eq!(
+    assert_color(
         app.world().get::<Sprite>(target).unwrap().color,
-        neutral_color
+        neutral_color,
     );
     assert_eq!(
         app.world().get::<Transform>(target),
@@ -420,10 +443,13 @@ fn simultaneous_structure_hits_keep_every_pulse_with_one_ghost_and_ring_then_exp
     let [ghost] = ghosts.as_slice() else {
         panic!("one destroyed structure needs one ghost and one ring: {ghosts:?}");
     };
-    assert_eq!(ghost.victim, victim_snapshot);
-    assert_eq!(
+    assert_eq!(ghost.victim.entity, victim_snapshot.entity);
+    assert_position(ghost.victim.position, victim_snapshot.position);
+    assert_eq!(ghost.victim.swarm, victim_snapshot.swarm);
+    assert_eq!(ghost.victim.appearance, victim_snapshot.appearance);
+    assert_translation(
         ghost.transform.translation,
-        victim_position.extend(GAMEPLAY_SPRITE_Z)
+        victim_position.extend(GAMEPLAY_SPRITE_Z),
     );
     assert_eq!(
         ghost.image,
@@ -531,9 +557,9 @@ fn structure_effects_hide_at_tactical_zoom_and_expire_while_hidden() {
         .zoom = 8.0;
     app.update();
 
-    assert_eq!(
+    assert_color(
         app.world().get::<Sprite>(live_structure).unwrap().color,
-        neutral_color
+        neutral_color,
     );
     assert_eq!(app.world().resource::<ActiveCombatPulses>().len(), 2);
     assert_eq!(
@@ -557,9 +583,9 @@ fn structure_effects_hide_at_tactical_zoom_and_expire_while_hidden() {
             .resource::<ActiveStructureDeathGhosts>()
             .is_empty()
     );
-    assert_eq!(
+    assert_color(
         app.world().get::<Sprite>(live_structure).unwrap().color,
-        neutral_color
+        neutral_color,
     );
 }
 
@@ -902,7 +928,7 @@ fn combat_presentation_hides_at_tactical_zoom_and_expires_while_hidden() {
         app.world().get::<Transform>(target_visual),
         Some(&Transform::IDENTITY),
     );
-    assert_eq!(
+    assert_color(
         app.world().get::<Sprite>(target_visual).unwrap().color,
         Color::WHITE,
     );

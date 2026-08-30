@@ -19,8 +19,11 @@
 //! cargo test --test screenshots -- --list              # list all
 //! ```
 
+use std::path::Path;
+
 use libtest_mimic::{Arguments, Conclusion, Failed, Trial};
 
+mod background_checkerboard;
 mod build_zone_placement;
 mod combat_presentation;
 mod defender_combat_readability;
@@ -44,6 +47,14 @@ use harness::{TestContext, TestFlow, regression, run_screenshot_test};
 /// discarded on success; failure carries the harness error message.
 fn run(f: fn(&mut TestContext) -> TestFlow) -> Result<(), Failed> {
     run_screenshot_test(f).map_err(Failed::from).map(|_| ())
+}
+
+fn run_with_validation(
+    f: fn(&mut TestContext) -> TestFlow,
+    validate: fn(&Path) -> Result<(), String>,
+) -> Result<(), Failed> {
+    let path = run_screenshot_test(f).map_err(Failed::from)?;
+    validate(&path).map_err(Failed::from)
 }
 
 fn main() -> std::process::ExitCode {
@@ -85,6 +96,13 @@ fn main() -> std::process::ExitCode {
             "harness_missing_screenshot_fails",
             regression::missing_screenshot_fails,
         )
+        .with_ignored_flag(true),
+        Trial::test("background_checkerboard", || {
+            run_with_validation(
+                background_checkerboard::background_checkerboard,
+                background_checkerboard::validate_background_checkerboard,
+            )
+        })
         .with_ignored_flag(true),
         Trial::test("combat_presentation", || {
             run(combat_presentation::combat_presentation)
@@ -145,7 +163,10 @@ fn main() -> std::process::ExitCode {
         })
         .with_ignored_flag(true),
         Trial::test("zone_binary_overlay", || {
-            run(zone_binary_overlay::zone_binary_overlay)
+            run_with_validation(
+                zone_binary_overlay::zone_binary_overlay,
+                zone_binary_overlay::validate_zone_binary_overlay,
+            )
         })
         .with_ignored_flag(true),
     ];

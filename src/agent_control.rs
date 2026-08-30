@@ -697,6 +697,7 @@ fn serve_control_client(mut stream: UnixStream, control: &AgentControlHandle, st
             &mut reader,
             stop,
             Instant::now() + MAX_CONTROL_LINE_DURATION,
+            Instant::now,
         ) {
             Ok(IncomingControlLine::Data(line)) => line,
             Ok(IncomingControlLine::TooLarge) => {
@@ -837,15 +838,20 @@ enum IncomingControlLine {
 }
 
 #[cfg(unix)]
-fn read_control_line(
-    reader: &mut BufReader<UnixStream>,
+fn read_control_line<R, N>(
+    reader: &mut R,
     stop: &AtomicBool,
     deadline: Instant,
-) -> io::Result<IncomingControlLine> {
+    mut now: N,
+) -> io::Result<IncomingControlLine>
+where
+    R: BufRead,
+    N: FnMut() -> Instant,
+{
     let mut line = Vec::new();
     let mut too_large = false;
     loop {
-        if Instant::now() >= deadline {
+        if now() >= deadline {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "control request line exceeded its deadline",
@@ -2169,6 +2175,8 @@ pub fn parse_request_line(line: &[u8]) -> Result<AgentRequest, ProtocolError> {
 
 #[cfg(test)]
 mod tests {
+    use approx::assert_abs_diff_eq;
+
     use super::*;
 
     #[cfg(unix)]
@@ -2470,16 +2478,22 @@ mod tests {
 
         assert!(response.ok, "{:?}", response.error);
         let entity = app.world().entity(camera);
-        assert_eq!(
-            entity.get::<Transform>().unwrap().translation,
-            Vec3::new(1024.0, 256.0, 7.0)
+        let translation = entity.get::<Transform>().unwrap().translation;
+        assert_abs_diff_eq!(translation.x, 1024.0, epsilon = 0.01);
+        assert_abs_diff_eq!(translation.y, 256.0, epsilon = 0.01);
+        assert_abs_diff_eq!(translation.z, 7.0, epsilon = 0.01);
+        assert_abs_diff_eq!(
+            entity.get::<CameraZoom2d>().unwrap().zoom,
+            2.0,
+            epsilon = 1e-5
         );
-        assert_eq!(entity.get::<CameraZoom2d>().unwrap().zoom, 2.0);
         let Projection::Orthographic(projection) = entity.get::<Projection>().unwrap() else {
             panic!("main camera must use an orthographic projection");
         };
-        assert_eq!(projection.scale, 2.0);
-        assert_eq!(entity.get::<FlyCamera2d>().unwrap().velocity, Vec2::ZERO);
+        assert_abs_diff_eq!(projection.scale, 2.0, epsilon = 1e-5);
+        let velocity = entity.get::<FlyCamera2d>().unwrap().velocity;
+        assert_abs_diff_eq!(velocity.x, 0.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(velocity.y, 0.0, epsilon = 1e-5);
     }
 
     #[test]
@@ -2521,11 +2535,15 @@ mod tests {
         assert!(response.recv().unwrap().ok);
 
         let entity = app.world().entity(camera);
-        assert_eq!(
-            entity.get::<Transform>().unwrap().translation,
-            Vec3::new(7.0, 28.0, 3.0)
+        let translation = entity.get::<Transform>().unwrap().translation;
+        assert_abs_diff_eq!(translation.x, 7.0, epsilon = 0.01);
+        assert_abs_diff_eq!(translation.y, 28.0, epsilon = 0.01);
+        assert_abs_diff_eq!(translation.z, 3.0, epsilon = 0.01);
+        assert_abs_diff_eq!(
+            entity.get::<CameraZoom2d>().unwrap().zoom,
+            4.0,
+            epsilon = 1e-5
         );
-        assert_eq!(entity.get::<CameraZoom2d>().unwrap().zoom, 4.0);
     }
 
     #[test]
@@ -3334,20 +3352,38 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn request_line_reader_enforces_an_absolute_deadline() {
-        use std::{os::unix::net::UnixStream, time::Duration};
+        use std::{io::Read, time::Duration};
 
-        let (server, _client) = UnixStream::pair().unwrap();
-        server
-            .set_read_timeout(Some(Duration::from_millis(5)))
-            .unwrap();
-        let mut reader = BufReader::new(server);
+        struct TimedOutReader;
+
+        impl Read for TimedOutReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::TimedOut.into())
+            }
+        }
+
+        impl BufRead for TimedOutReader {
+            fn fill_buf(&mut self) -> io::Result<&[u8]> {
+                Err(io::ErrorKind::TimedOut.into())
+            }
+
+            fn consume(&mut self, _amount: usize) {}
+        }
+
+        let mut reader = TimedOutReader;
         let stop = AtomicBool::new(false);
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(1);
+        let mut clock_reads = 0;
 
-        let error = match read_control_line(
-            &mut reader,
-            &stop,
-            Instant::now() + Duration::from_millis(20),
-        ) {
+        let error = match read_control_line(&mut reader, &stop, deadline, || {
+            clock_reads += 1;
+            if clock_reads == 1 {
+                start
+            } else {
+                deadline + Duration::from_secs(1)
+            }
+        }) {
             Ok(_) => panic!("idle line unexpectedly completed"),
             Err(error) => error,
         };
@@ -3378,7 +3414,10 @@ mod tests {
             io::{BufRead, BufReader, Write},
             net::Shutdown,
             os::unix::net::UnixStream,
-            sync::atomic::{AtomicU64, Ordering},
+            sync::{
+                atomic::{AtomicU64, Ordering},
+                mpsc::sync_channel,
+            },
             thread,
             time::Duration,
         };
@@ -3398,17 +3437,21 @@ mod tests {
                 .unwrap(),
         );
 
+        let (request_ready_tx, request_ready_rx) = sync_channel(0);
         let client = thread::spawn(move || {
             let mut stream = UnixStream::connect(socket_path).unwrap();
             stream
                 .write_all(b"{\"id\":53,\"method\":\"frame.wait\",\"params\":{\"frames\":2}}\n")
                 .unwrap();
             stream.shutdown(Shutdown::Write).unwrap();
+            request_ready_tx.send(()).unwrap();
             let mut response = String::new();
             BufReader::new(stream).read_line(&mut response).unwrap();
             response
         });
-        thread::sleep(Duration::from_millis(30));
+        request_ready_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("half-closed client did not finish sending its request");
 
         for _ in 0..20_000 {
             app.update();
@@ -3418,7 +3461,9 @@ mod tests {
             thread::yield_now();
         }
         assert!(client.is_finished(), "half-closed client remained blocked");
-        let response: serde_json::Value = serde_json::from_str(&client.join().unwrap()).unwrap();
+        let response_text = client.join().expect("half-closed client thread panicked");
+        let response: serde_json::Value = serde_json::from_str(&response_text)
+            .expect("half-closed client must receive a JSON response");
         assert_eq!(response["id"], 53);
         assert_eq!(response["ok"], true);
 

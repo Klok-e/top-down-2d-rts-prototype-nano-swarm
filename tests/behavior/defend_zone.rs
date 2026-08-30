@@ -326,8 +326,8 @@ fn defender_hold_releases_when_paint_erased() {
         .unwrap()
         .translation
         .truncate();
-    assert_eq!(
-        pos_before, pos_after,
+    assert!(
+        pos_before.distance(pos_after) <= 0.01,
         "defender position unchanged by the hold release"
     );
 }

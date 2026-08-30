@@ -16,6 +16,18 @@ _Avoid_: Unit, soldier, worker
 A player-painted spatial region that expresses what kind of work should happen there. Intent zones are the primary command surface for directing the swarm. Intent at a location is binary: painting adds it, repeated painting has no further effect, and erasing removes it.
 _Avoid_: Group zone, activity zone, command area
 
+**Swarm Tile**:
+A cell containing at least one intent layer owned by a swarm, or a Defend Contest in which that swarm participates. Different owned layers can make the same cell territory for multiple swarms; shared unowned intent does not make it territory.
+_Avoid_: Visible intent cell, occupied cell, shared intent cell
+
+**Threat**:
+A hostile nanobot or structure physically present on a Swarm Tile. Each Threat attracts at most one pursuit response; danger and proximity prioritize scarce responders, while attacks may target the nearest hostile in range.
+_Avoid_: Defend-zone intruder, recent attacker, hostile nanobot only
+
+**Pursuit Halo**:
+The one-cell-wide band surrounding Swarm Tiles, including cells that touch only at a corner. It permits an existing defense response to continue briefly outside swarm territory but does not make nearby hostile entities Threats by itself or constrain Defender travel routes.
+_Avoid_: Swarm territory, detection range, unlimited pursuit
+
 **Gather Zone**:
 An intent zone where nanobots extract resources from available deposits. Each Resource Deposit contributes work once for each eligible swarm regardless of how many of that swarm's painted cells overlap it; paint establishes eligibility, while deposit work determines nanobot demand. Gather intent persists when local resources are depleted; workers leave when no useful work remains, and the zone can reactivate if resources appear later.
 _Avoid_: Mining zone, resource zone
@@ -29,8 +41,12 @@ An intent zone that marks free base space where automatic construction may place
 _Avoid_: Construction group, builder assignment, manual building placement
 
 **Defend Zone**:
-An intent zone where nanobots hold and protect an area. Regional allocation owns each Defender's work claim and keeps a supported holder attached to its valid Defend cell; projected threat pressure attracts idle, new, or replacement Defenders without retargeting that holder. Painting Defend intent over a hostile Defend cell neutralizes its ownership so both swarms contest it; after both sides engage, the sole surviving holder captures it. Painting into enemy territory therefore functions as an attack or advance order without a separate Attack Zone. Defend Zones include finite local Chargers: a low-charge Defender may suspend its lease for an operational, supplied Charger in its own held cell, then request lease resumption; it never uses a remote cell's Charger.
+An intent zone that distributes unengaged Defenders at equal density and supports continuous density-driven, procedural roaming within and between its cells. It positions rather than bounds defense or creates population demand: Threats override staging, paint changes rebalance the cohort, and fallback staging uses Swarm Tiles or current cells.
 _Avoid_: Fighter group, combat squad, attack zone
+
+**Defend Contest**:
+A shared claim created when one swarm paints Defend intent over another swarm's Defend layer. Any living participant Defender physically inside establishes presence; after both sides engage, the sole remaining side captures the layer.
+_Avoid_: Territory overlap, attack zone, occupation timer
 
 **Stockpile**:
 A local resource buffer automatically created where sustained material flow is needed. Source stockpiles stage gathered resources near deposits; sink stockpiles stage minerals for terminal consumers. Terminal buffers receive minerals only through physical hauler delivery.
@@ -57,11 +73,11 @@ A carrying nanobot's temporary claim on source minerals and destination capacity
 _Avoid_: Resource transfer, inventory deduction, delivery
 
 **Charge**:
-A defender sustain resource restored by visiting Chargers. Only Defenders use Charge. Low Charge weakens Defender attack and defense, then causes health loss if ignored too long. Defenders automatically rotate to an operational, supplied Charger in their held Defend cell when Charge runs low; their regional lease is suspended during travel and charging, so a replacement may cover the cell. Defenders request lease resumption after charging rather than displacing a valid replacement.
+A Defender sustain resource restored by the nearest valid supplied Charger in owned Defend paint. Rotation is capacity-limited and releases any Threat response; unsupported Defenders continue duty while weakening, and recharged Defenders re-enter current allocation without reclaiming prior work.
 _Avoid_: Ammo, mana, stamina
 
 **Charger**:
-A terminal consumer resupplied from sink stockpiles with minerals physically carried by haulers. Its finite local mineral buffer restores Charge only for Defenders assigned to its own Defend cell; empty, foreign, degraded, or cut-off Chargers do not attract remote defenders. Minerals remain in one visible custody state throughout stockpile loading, transit, delivery, and use.
+A terminal consumer whose finite local mineral buffer restores Charge for its swarm while it is operational, supplied, and inside owned Defend paint. Unserved low Charge creates nearby capacity plans; a Charger outside owned Defend paint is inactive, while unattended valid Chargers receive no Maintenance and may decay.
 _Avoid_: Charge stockpile, instant resupply, resource sink
 
 **Terminal Consumer**:
@@ -141,7 +157,7 @@ A player-painted movement intent for haulers that encourages resource transport 
 _Avoid_: Road, waypoint chain, manual route
 
 **Defender**:
-A nanobot type that protects swarm assets and fights threats.
+A nanobot type that stages and roams in Defend Zones, responds to Threats throughout its swarm's Swarm Tiles, and may briefly pursue them through the Pursuit Halo.
 _Avoid_: Fighter, soldier, combat unit
 
 **Production Priority**:
@@ -149,7 +165,7 @@ A player-set relative weighting that orders unmet Worker, Hauler, and Defender d
 _Avoid_: Build queue, manual unit training
 
 **Population Demand**:
-The per-Nanobot-Type capacity justified by actionable workload: gathering, construction, and maintenance require Workers; physical transport requires Haulers; and Defend coverage requires Defenders. Existing and in-production nanobots of one type cannot satisfy another type's demand. Excess nanobots remain in the swarm when demand falls. A pending Production Facility may increase Worker demand but is never evidence for committing another Production Facility.
+The per-Nanobot-Type capacity justified by actionable workload: gathering, construction, and maintenance require Workers, while physical transport requires Haulers. Defender demand is the greater of half the swarm's unique Swarm Tile count rounded up and its active Threat count; Defend Zones only position that capacity. Existing and in-production nanobots of one type cannot satisfy another type's demand. Excess nanobots remain in the swarm when demand falls. A pending Production Facility may increase Worker demand but is never evidence for committing another Production Facility.
 _Avoid_: Population cap, unit quota
 
 **Production Pressure**:

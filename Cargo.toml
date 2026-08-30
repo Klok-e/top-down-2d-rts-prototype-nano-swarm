@@ -48,6 +48,7 @@ path = "screenshots/main.rs"
 harness = false
 
 [dev-dependencies]
+approx = "0.5.1"
 libtest-mimic = "0.8.2"
 bevy_image_export = "0.16"
 image = { version = "0.25.10", default-features = false, features = ["png"] }

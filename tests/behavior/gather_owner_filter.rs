@@ -10,8 +10,7 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
-        OwnerSwarm, ReturningToStockpile, Swarm, SwarmId, SwarmMember, WORKER_CARRY_CAPACITY,
-        WorkerLoad,
+        OwnerSwarm, ReturningToStockpile, Swarm, SwarmId, WORKER_CARRY_CAPACITY, WorkerLoad,
     },
     resources::{ResourceKind, Stockpile, StockpileRole},
 };
@@ -147,15 +146,4 @@ fn unowned_stockpile_still_usable_by_any_worker() {
         returning.is_some(),
         "unowned stockpile must remain usable by any worker (legacy default)"
     );
-}
-
-#[test]
-fn worker_swarm_member_is_player_by_default() {
-    // Sanity: the common spawn_worker_at helper stamps the
-    // player swarm on the worker, which is the precondition the
-    // two filter tests above rely on.
-    let mut app = build_app();
-    let worker = common::spawn_worker_at(&mut app, Vec2::ZERO);
-    let member = app.world().entity(worker).get::<SwarmMember>();
-    assert_eq!(member.map(|m| m.0), Some(SwarmId::PLAYER));
 }

@@ -1,6 +1,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+use approx::assert_abs_diff_eq;
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind, UNCONTESTED_CAPTURE_TICKS},
@@ -8,9 +9,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
         Charge, CombatAppearance, CombatPlugin, DEFENDER_ATTACK_INTERVAL_TICKS, DefendHold,
         DefendPressure, DefenderAttackCooldown, DirectMovementComponent,
         EMPTY_CHARGE_DAMAGE_INTERVAL_TICKS, Health, NanobotType, OwnerSwarm, PlannedKind,
-        ResolvedCombatDeath, ResolvedCombatFact, Structure, StructureCombatAppearance,
-        StructureKind, Swarm, SwarmId, SwarmMember, defender_health_loss_when_empty_system,
-        nanobot_death_cleanup_system,
+        ResolvedCombatFact, Structure, StructureCombatAppearance, StructureKind, Swarm, SwarmId,
+        SwarmMember, defender_health_loss_when_empty_system, nanobot_death_cleanup_system,
     },
     structure_sprites::StructureVisual,
 };
@@ -19,6 +19,11 @@ fn resolved_facts(app: &App) -> Vec<ResolvedCombatFact> {
     let messages = app.world().resource::<Messages<ResolvedCombatFact>>();
     let mut cursor = messages.get_cursor();
     cursor.read(messages).copied().collect()
+}
+
+fn assert_position(actual: Vec2, expected: Vec2) {
+    assert_abs_diff_eq!(actual.x, expected.x, epsilon = 0.01);
+    assert_abs_diff_eq!(actual.y, expected.y, epsilon = 0.01);
 }
 
 #[test]
@@ -55,7 +60,7 @@ fn delivered_hit_publishes_the_resolved_combat_snapshot() {
         panic!("one delivered attack must publish exactly one hit fact: {facts:?}");
     };
     assert_eq!(hit.attacker.entity, attacker);
-    assert_eq!(hit.attacker.position, attacker_position);
+    assert_position(hit.attacker.position, attacker_position);
     assert_eq!(hit.attacker.swarm, SwarmId::PLAYER);
     assert_eq!(
         hit.attacker.appearance,
@@ -64,7 +69,7 @@ fn delivered_hit_publishes_the_resolved_combat_snapshot() {
         ),
     );
     assert_eq!(hit.target.entity, target);
-    assert_eq!(hit.target.position, target_position);
+    assert_position(hit.target.position, target_position);
     assert_eq!(hit.target.swarm, SwarmId(11));
     assert_eq!(
         hit.target.appearance,
@@ -114,16 +119,12 @@ fn lethal_combat_publishes_one_death_snapshot_and_removes_the_nanobot() {
         panic!("lethal combat must publish its hit followed by one death fact: {facts:?}");
     };
     assert!(hit.target_destroyed);
+    assert_eq!(death.victim.entity, target);
+    assert_position(death.victim.position, target_position);
+    assert_eq!(death.victim.swarm, SwarmId(11));
     assert_eq!(
-        *death,
-        ResolvedCombatDeath {
-            victim: top_down_2d_rts_prototype_nano_swarm::nanobot::CombatVisualSnapshot {
-                entity: target,
-                position: target_position,
-                swarm: SwarmId(11),
-                appearance: CombatAppearance::Nanobot(NanobotType::Worker),
-            },
-        }
+        death.victim.appearance,
+        CombatAppearance::Nanobot(NanobotType::Worker)
     );
 }
 
@@ -220,7 +221,7 @@ fn combat_death_snapshots_every_nanobot_type_for_both_swarms() {
                 panic!("{victim_swarm:?} {kind:?} needs one hit and one death: {facts:?}");
             };
             assert_eq!(death.victim.entity, victim);
-            assert_eq!(death.victim.position, victim_position);
+            assert_position(death.victim.position, victim_position);
             assert_eq!(death.victim.swarm, victim_swarm);
             assert_eq!(death.victim.appearance, CombatAppearance::Nanobot(kind));
         }
@@ -631,13 +632,13 @@ fn pursuit_updates_between_attack_pulses() {
         .insert(SwarmMember::new(SwarmId(11)));
 
     app.update();
-    assert_eq!(
+    assert_position(
         app.world()
             .entity(defender)
             .get::<DirectMovementComponent>()
             .unwrap()
             .xy,
-        center + Vec2::new(160.0, 0.0)
+        center + Vec2::new(160.0, 0.0),
     );
 
     let moved_target = center + Vec2::new(200.0, 0.0);
@@ -648,14 +649,13 @@ fn pursuit_updates_between_attack_pulses() {
         .translation = moved_target.extend(0.0);
     app.update();
 
-    assert_eq!(
+    assert_position(
         app.world()
             .entity(defender)
             .get::<DirectMovementComponent>()
             .unwrap()
             .xy,
         moved_target,
-        "pursuit must refresh target position while attack cooldown is active"
     );
     assert_eq!(
         app.world()
@@ -1030,7 +1030,7 @@ fn holding_defender_damages_hostile_support_structure() {
         panic!("one delivered structure attack must publish exactly one hit fact: {facts:?}");
     };
     assert_eq!(hit.target.entity, structure);
-    assert_eq!(hit.target.position, structure_position);
+    assert_position(hit.target.position, structure_position);
     assert_eq!(hit.target.swarm, SwarmId(11));
     assert_eq!(
         hit.target.appearance,
@@ -1131,19 +1131,15 @@ fn lethal_combat_despawns_support_structure_immediately() {
         panic!("lethal structure combat must publish one hit and one death fact: {facts:?}");
     };
     assert!(hit.target_destroyed);
+    assert_eq!(death.victim.entity, structure);
+    assert_position(death.victim.position, structure_position);
+    assert_eq!(death.victim.swarm, SwarmId(11));
     assert_eq!(
-        *death,
-        ResolvedCombatDeath {
-            victim: top_down_2d_rts_prototype_nano_swarm::nanobot::CombatVisualSnapshot {
-                entity: structure,
-                position: structure_position,
-                swarm: SwarmId(11),
-                appearance: CombatAppearance::Structure(StructureCombatAppearance {
-                    kind: StructureKind::Basic,
-                    visual: Some(StructureVisual::completed(PlannedKind::ProductionFacility)),
-                }),
-            },
-        },
+        death.victim.appearance,
+        CombatAppearance::Structure(StructureCombatAppearance {
+            kind: StructureKind::Basic,
+            visual: Some(StructureVisual::completed(PlannedKind::ProductionFacility)),
+        })
     );
 }
 
