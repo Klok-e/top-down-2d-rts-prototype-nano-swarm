@@ -167,7 +167,7 @@ fn one_marker_per_category_per_owner() {
         IVec2::new(1, 0),
         PlannedKind::SinkStockpile,
     );
-    let _charger = common::spawn_charger_at(&mut app, IVec2::new(2, 0), 30);
+    let _charger = common::spawn_operational_charger_at(&mut app, IVec2::new(2, 0), 30);
 
     set_zoom(&mut app, 5.0);
     app.update();
@@ -871,7 +871,7 @@ fn deoverlap_separates_three_co_located_clusters() {
         },
     );
     common::spawn_idle_facility_at(&mut app, Vec2::new(0.0, 0.0));
-    common::spawn_charger_at(&mut app, IVec2::new(0, 0), 0);
+    common::spawn_operational_charger_at(&mut app, IVec2::new(0, 0), 0);
     set_zoom(&mut app, 8.0);
     app.update();
 

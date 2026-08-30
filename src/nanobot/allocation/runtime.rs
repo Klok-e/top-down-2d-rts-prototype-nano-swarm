@@ -11,7 +11,7 @@ use bevy::prelude::*;
 use super::{
     ActionableOpportunity, ActionableProjection, AllocationCandidate, AllocationClock,
     AllocationRegion, CandidateBounds, CategoryEligibility, CategoryWeights, OpportunityCategory,
-    OpportunityTarget, RegionalLease, RegionalLeaseConfig, RegionalLeaseState,
+    OpportunityTarget, RegionalLease, RegionalLeaseConfig,
     choose_bounded_candidate_from_ordered_regions_with_claims, outward_pull_budgets, pressure_map,
 };
 use crate::{
@@ -91,6 +91,23 @@ struct AllocationTickDue {
     initialized: bool,
 }
 
+/// One-shot request for acquisition on the current fixed step.
+#[derive(Debug, Default, Resource)]
+pub struct RegionalAllocationWake {
+    requested: bool,
+}
+
+impl RegionalAllocationWake {
+    /// Ensure acquisition runs after the current projection/invalidation pass.
+    pub fn request_current_pass(&mut self) {
+        self.requested = true;
+    }
+
+    fn take(&mut self) -> bool {
+        std::mem::take(&mut self.requested)
+    }
+}
+
 impl Default for AllocationTickDue {
     fn default() -> Self {
         Self {
@@ -111,6 +128,7 @@ impl Plugin for RegionalAllocationPlugin {
             .init_resource::<AllocationClock>()
             .init_resource::<RegionalLeaseConfig>()
             .init_resource::<AllocationTickDue>()
+            .init_resource::<RegionalAllocationWake>()
             .init_resource::<TerminalDemandAges>()
             .init_resource::<RegionalServiceAges>()
             .configure_sets(
@@ -157,9 +175,10 @@ fn advance_allocation_clock_system(
     time: Res<Time<Fixed>>,
     mut clock: ResMut<AllocationClock>,
     mut due: ResMut<AllocationTickDue>,
+    mut wake: ResMut<RegionalAllocationWake>,
 ) {
     let elapsed = clock.advance_by(time.delta()) > 0;
-    due.due = !due.initialized || elapsed;
+    due.due = !due.initialized || elapsed || wake.take();
     due.initialized = true;
 }
 
@@ -174,7 +193,6 @@ struct BotSnapshot {
     region: AllocationRegion,
     swarm: SwarmId,
     kind: NanobotType,
-    resume_pending: bool,
 }
 
 #[allow(clippy::type_complexity)]
@@ -245,10 +263,7 @@ pub fn regional_allocation_acquisition_system(
     let chargers = &terminal.chargers;
 
     let mut claim_counts = BTreeMap::new();
-    for lease in active_leases
-        .iter()
-        .filter(|lease| lease.counts_toward_capacity())
-    {
+    for lease in &active_leases {
         *claim_counts
             .entry(claim_key(lease.target, lease.owner))
             .or_insert(0) += 1;
@@ -323,12 +338,10 @@ pub fn regional_allocation_acquisition_system(
             if *commitment != Commitment::Idle {
                 return None;
             }
-            let resume_pending =
-                lease.is_some_and(|lease| lease.state == RegionalLeaseState::ResumePending);
-            if lease.is_some() && !resume_pending {
+            if lease.is_some() {
                 return None;
             }
-            if lease.is_none() && (busy.contains(entity) || charge_busy.contains(entity)) {
+            if busy.contains(entity) || charge_busy.contains(entity) {
                 return None;
             }
             Some(BotSnapshot {
@@ -339,7 +352,6 @@ pub fn regional_allocation_acquisition_system(
                 )),
                 swarm: swarm.0,
                 kind: *kind,
-                resume_pending,
             })
         })
         .collect::<Vec<_>>();
@@ -452,9 +464,6 @@ pub fn regional_allocation_acquisition_system(
     for bot in candidates {
         let bot_key = (bot.swarm, bot.region, kind_index(bot.kind));
         let Some(pull) = pulls.get(&bot_key).copied() else {
-            if bot.resume_pending {
-                commands.entity(bot.entity).remove::<RegionalLease>();
-            }
             continue;
         };
         let Some(ordered) = ordered_regions.get(&bot_key) else {
@@ -514,9 +523,6 @@ pub fn regional_allocation_acquisition_system(
             )
         };
         let Some(work) = decision.map(|decision| decision.opportunity) else {
-            if bot.resume_pending {
-                commands.entity(bot.entity).remove::<RegionalLease>();
-            }
             continue;
         };
 

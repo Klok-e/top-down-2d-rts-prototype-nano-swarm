@@ -12,7 +12,9 @@
 //! The pure-helper unit tests (charge helpers, multipliers,
 //! Charger data) live in `src/nanobot/charge.rs`.
 
-use bevy::{math::Vec2, prelude::*};
+use std::time::Duration;
+
+use bevy::{math::Vec2, prelude::*, time::TimeUpdateStrategy};
 use top_down_2d_rts_prototype_nano_swarm::{
     ai::AiPlugin,
     intent::{IntentGrid, IntentKind},
@@ -21,12 +23,12 @@ use top_down_2d_rts_prototype_nano_swarm::{
         CHARGER_MATERIAL_PER_PULSE, Cargo, Charge, Charger, ChargerAssignment, ChargerProgress,
         ChargerPulseProgress, DefendAssignment, DefendHold, DirectMovementComponent,
         EMPTY_CHARGE_DAMAGE_INTERVAL_TICKS, EMPTY_CHARGE_HEALTH_DAMAGE, Health,
-        LOW_CHARGE_THRESHOLD, LogisticsReservation, MAX_CHARGE, MAX_DEFENDERS_PER_CHARGER,
-        NANOBOT_DEFAULT_MAX_HEALTH, Nanobot, NanobotBundle, NanobotPlugin, NanobotType,
-        OpportunityCategory, OpportunityTarget, OwnerSwarm, PlannedKind, PlannedStructure,
-        RegionalLease, RegionalLeaseState, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure,
-        StructureKind, Swarm, SwarmBundle, SwarmId, SwarmMember, defender_charger_arrive_system,
-        defender_charger_work_system, nanobot_death_cleanup_system,
+        LOW_CHARGE_THRESHOLD, LogisticsReservation, MAX_CHARGE, NANOBOT_DEFAULT_MAX_HEALTH,
+        Nanobot, NanobotBundle, NanobotPlugin, NanobotType, OpportunityCategory, OpportunityTarget,
+        OwnerSwarm, PlannedKind, PlannedStructure, RegionalLease,
+        SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, Swarm, SwarmBundle,
+        SwarmId, SwarmMember, defender_charger_arrive_system, defender_charger_work_system,
+        nanobot_death_cleanup_system,
     },
     resources::{ResourceKind, ResourceLedger},
 };
@@ -76,9 +78,11 @@ fn full_defender_holds_until_field_endurance_threshold() {
     let mut app = build_app();
     common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
     let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
     app.world_mut()
         .entity_mut(defender)
@@ -125,19 +129,18 @@ fn low_defender_recharges_in_readable_bounded_time() {
     let mut app = build_app();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend);
-    let charger = common::spawn_charger_at(&mut app, cell, 60);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 60);
     app.world_mut()
         .entity_mut(charger)
         .insert(OwnerSwarm(swarm));
     let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
     app.world_mut().entity_mut(defender).insert((
-        ChargerAssignment {
-            charger,
-            source_cell: cell,
-        },
+        ChargerAssignment { charger },
         ChargerProgress { charger },
         ChargerPulseProgress::default(),
     ));
@@ -185,10 +188,12 @@ fn normal_rotation_consumes_exact_minerals() {
     let mut app = build_app();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend);
-    let charger = common::spawn_charger_at(&mut app, cell, 60);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 60);
     app.world_mut()
         .entity_mut(charger)
         .insert(OwnerSwarm(swarm));
@@ -199,10 +204,7 @@ fn normal_rotation_consumes_exact_minerals() {
     );
     let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
     app.world_mut().entity_mut(defender).insert((
-        ChargerAssignment {
-            charger,
-            source_cell: cell,
-        },
+        ChargerAssignment { charger },
         ChargerProgress { charger },
         ChargerPulseProgress::default(),
     ));
@@ -277,20 +279,21 @@ fn empty_unsupported_defender_dies_after_grace_period() {
 }
 
 #[test]
-fn charger_never_serves_more_than_maximum_concurrent_defenders() {
+fn swarm_rotation_cap_counts_defenders_across_staging_cells() {
     let mut app = build_app();
-    common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    let cell = IVec2::ZERO;
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend);
-    let charger = common::spawn_charger_at(&mut app, cell, 100);
-    let center = common::cell_world_center(cell);
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     for index in 0..6 {
-        let defender = common::spawn_defender_at(
-            &mut app,
-            center + Vec2::new((index as f32 - 2.5) * 4.0, 0.0),
+        let cell = IVec2::new(index, 0);
+        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+            cell,
+            IntentKind::Defend,
+            Some(SwarmId::PLAYER),
         );
+        let charger = common::spawn_operational_charger_at(&mut app, cell, 100);
+        app.world_mut()
+            .entity_mut(charger)
+            .insert(OwnerSwarm(swarm));
+        let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
         app.world_mut()
             .entity_mut(defender)
             .insert(DefendHold { cell });
@@ -305,22 +308,23 @@ fn charger_never_serves_more_than_maximum_concurrent_defenders() {
 
     let world = app.world_mut();
     let mut assignments = world.query::<&ChargerAssignment>();
-    let assigned = assignments
-        .iter(world)
-        .filter(|assignment| assignment.charger == charger)
-        .count();
-    assert_eq!(assigned, MAX_DEFENDERS_PER_CHARGER as usize);
+    assert_eq!(assignments.iter(world).count(), 3);
 }
 
 #[test]
-fn defend_cell_retains_holders_during_charge_rotation() {
+fn swarm_rotation_keeps_half_of_defenders_on_duty() {
     let mut app = build_app();
-    common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 100);
     app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend);
-    let charger = common::spawn_charger_at(&mut app, cell, 100);
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
     let center = common::cell_world_center(cell);
     for index in 0..3 {
         let defender = common::spawn_defender_at(
@@ -356,14 +360,19 @@ fn defend_cell_retains_holders_during_charge_rotation() {
 }
 
 #[test]
-fn charging_holder_allows_replacement_without_displacement_on_return() {
+fn charging_defender_allows_current_replacement_without_displacement_on_return() {
     let mut app = build_app();
-    common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 200);
     app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend);
-    let _charger = common::spawn_charger_at(&mut app, cell, 200);
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
     let center = common::cell_world_center(cell);
     let charging = common::spawn_defender_at(&mut app, center);
     app.world_mut()
@@ -384,7 +393,7 @@ fn charging_holder_allows_replacement_without_displacement_on_return() {
     assert!(
         replacement_entity.get::<DefendHold>().is_some()
             || replacement_entity.get::<DefendAssignment>().is_some(),
-        "replacement must retain Defend work while the original holder charges"
+        "replacement must retain Defend work while the original defender charges"
     );
     assert!(
         app.world()
@@ -405,7 +414,7 @@ fn charging_holder_allows_replacement_without_displacement_on_return() {
                 .entity(charging)
                 .get::<ChargerAssignment>()
                 .is_some(),
-        "returning holder must remain in the Defend/charge lifecycle"
+        "returning defender must remain in the current Defend/charge lifecycle"
     );
 }
 
@@ -426,7 +435,12 @@ fn material_is_not_overdrawn_under_charger_contention() {
     charger_state.amount = CHARGER_MATERIAL_PER_PULSE;
     let charger = app
         .world_mut()
-        .spawn((charger_state, OwnerSwarm(swarm), Transform::default()))
+        .spawn((
+            charger_state,
+            OwnerSwarm(swarm),
+            Structure::new(StructureKind::Basic),
+            Transform::default(),
+        ))
         .id();
     app.world_mut().resource_mut::<ResourceLedger>().add_for(
         SwarmId::PLAYER,
@@ -442,10 +456,7 @@ fn material_is_not_overdrawn_under_charger_contention() {
                 current: 0.5,
                 max: MAX_CHARGE,
             },
-            ChargerAssignment {
-                charger,
-                source_cell: cell,
-            },
+            ChargerAssignment { charger },
             ChargerProgress { charger },
             ChargerPulseProgress {
                 ticks_elapsed: CHARGE_PULSE_INTERVAL_TICKS - 1,
@@ -496,7 +507,12 @@ fn charger_pulse_recipient_is_stable_across_spawn_order() {
         charger_state.amount = CHARGER_MATERIAL_PER_PULSE;
         let charger = app
             .world_mut()
-            .spawn((charger_state, OwnerSwarm(swarm), Transform::default()))
+            .spawn((
+                charger_state,
+                OwnerSwarm(swarm),
+                Structure::new(StructureKind::Basic),
+                Transform::default(),
+            ))
             .id();
         app.world_mut().resource_mut::<ResourceLedger>().add_for(
             SwarmId::PLAYER,
@@ -517,10 +533,7 @@ fn charger_pulse_recipient_is_stable_across_spawn_order() {
                         current: 0.5,
                         max: MAX_CHARGE,
                     },
-                    ChargerAssignment {
-                        charger,
-                        source_cell: cell,
-                    },
+                    ChargerAssignment { charger },
                     ChargerProgress { charger },
                     ChargerPulseProgress {
                         ticks_elapsed: CHARGE_PULSE_INTERVAL_TICKS - 1,
@@ -551,12 +564,17 @@ fn charger_pulse_recipient_is_stable_across_spawn_order() {
 #[test]
 fn released_charger_slot_is_claimed_deterministically() {
     let mut app = build_app();
-    common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 100);
     app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend);
-    let charger = common::spawn_charger_at(&mut app, cell, 100);
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
     let center = common::cell_world_center(cell);
     for index in 0..4 {
         let defender = common::spawn_defender_at(
@@ -764,7 +782,7 @@ fn charger_emergence_respects_existing_charger_busyness() {
         .resource_mut::<IntentGrid>()
         .paint(cell, IntentKind::Defend);
     let cell_center = common::cell_world_center(cell);
-    let _charger = common::spawn_charger_at(&mut app, cell, 100);
+    let _charger = common::spawn_operational_charger_at(&mut app, cell, 100);
 
     // Plant 5 holding defenders in the same cell. The cell
     // already has 1 charger; with MAX_DEFENDERS_PER_CHARGER
@@ -824,7 +842,7 @@ fn charger_does_not_emerge_extra_when_load_below_busy_threshold() {
         .resource_mut::<IntentGrid>()
         .paint(cell, IntentKind::Defend);
     let cell_center = common::cell_world_center(cell);
-    let _charger = common::spawn_charger_at(&mut app, cell, 100);
+    let _charger = common::spawn_operational_charger_at(&mut app, cell, 100);
     // 1 charger and 2 defenders: 2 < MAX_DEFENDERS_PER_CHARGER
     // (3), so the demand is still 1 charger. No second one.
     for i in 0..2 {
@@ -903,7 +921,7 @@ fn empty_charge_causes_defender_health_loss_when_no_charger() {
         .resource_mut::<IntentGrid>()
         .paint(cell, IntentKind::Defend);
     let cell_center = common::cell_world_center(cell);
-    let _charger = common::spawn_charger_at(&mut app, cell, 0);
+    let _charger = common::spawn_operational_charger_at(&mut app, cell, 0);
     let defender = common::spawn_defender_at(&mut app, cell_center);
     // Empty out the charge and place the defender in hold.
     {
@@ -941,18 +959,23 @@ fn defender_does_not_lose_health_while_charging_at_a_working_charger() {
     // directly in the ChargerProgress state so the strict
     // assertion is not gated on rotation mechanics.
     let mut app = build_app();
-    let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(0, 0);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
     let cell_center = common::cell_world_center(cell);
-    let charger = common::spawn_charger_at(&mut app, cell, 100);
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 100);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
     let defender = common::spawn_defender_at(&mut app, cell_center);
     {
         let w = app.world_mut();
         w.entity_mut(defender).get_mut::<Charge>().unwrap().current = 0.0;
-        w.entity_mut(defender).insert(ChargerAssignment {
-            charger,
-            source_cell: cell,
-        });
+        w.entity_mut(defender).insert(ChargerAssignment { charger });
         w.entity_mut(defender).insert(ChargerProgress { charger });
     }
 
@@ -975,21 +998,25 @@ fn defender_does_not_lose_health_while_charging_at_a_working_charger() {
 }
 
 #[test]
-fn defender_uses_charger_in_held_cell() {
+fn defender_uses_eligible_charger_in_owned_defend_paint() {
     // Acceptance: "Defenders automatically rotate to working
-    // chargers when low on Charge." A holding defender with
+    // chargers when low on Charge." A Defender with
     // charge at or below LOW_CHARGE_THRESHOLD must receive a
     // ChargerAssignment aimed at a working charger; the
-    // DefendHold marker is removed and its regional lease is
-    // suspended.
+    // current Defend state and regional lease are released.
     let mut app = build_app();
-    let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(0, 0);
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
     let cell_center = common::cell_world_center(cell);
-    let _charger = common::spawn_charger_at(&mut app, cell, 100);
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 100);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
     let defender = common::spawn_defender_at(&mut app, cell_center);
     {
         let w = app.world_mut();
@@ -998,8 +1025,8 @@ fn defender_uses_charger_in_held_cell() {
         w.entity_mut(defender).insert(DefendHold { cell });
     }
 
-    // The test directly inserts `DefendHold`; the rotation
-    // path still routes it through the local charger contract.
+    // The test directly inserts `DefendHold`; service selection still uses the
+    // swarm-wide Charger contract.
 
     app.update();
 
@@ -1017,7 +1044,7 @@ fn defender_uses_charger_in_held_cell() {
     );
     // The charger is the right one.
     let assignment = world.entity(defender).get::<ChargerAssignment>().unwrap();
-    assert_eq!(assignment.charger, _charger);
+    assert_eq!(assignment.charger, charger);
 }
 
 #[test]
@@ -1035,11 +1062,11 @@ fn defender_ignores_closer_enemy_charger() {
         Some(SwarmId::PLAYER),
     );
 
-    let enemy_charger = common::spawn_charger_at(&mut app, hold_cell, 100);
+    let enemy_charger = common::spawn_operational_charger_at(&mut app, hold_cell, 100);
     app.world_mut()
         .entity_mut(enemy_charger)
         .insert(OwnerSwarm(enemy));
-    let owned_charger = common::spawn_charger_at(&mut app, hold_cell, 100);
+    let owned_charger = common::spawn_operational_charger_at(&mut app, hold_cell, 100);
     app.world_mut()
         .entity_mut(owned_charger)
         .insert(OwnerSwarm(player));
@@ -1068,21 +1095,61 @@ fn defender_ignores_closer_enemy_charger() {
 }
 
 #[test]
-fn remote_charger_does_not_pull_defender_off_front() {
+fn defender_uses_nearest_eligible_charger_across_owned_defend_paint() {
     let mut app = build_app();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let source_cell = IVec2::ZERO;
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        source_cell,
-        IntentKind::Defend,
-        Some(SwarmId::PLAYER),
-    );
-    let remote = common::spawn_charger_at(&mut app, IVec2::new(1, 0), 100);
-    app.world_mut().entity_mut(remote).insert(OwnerSwarm(swarm));
+    let near_cell = IVec2::new(1, 0);
+    let far_cell = IVec2::new(3, 0);
+    for cell in [source_cell, near_cell, far_cell] {
+        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+            cell,
+            IntentKind::Defend,
+            Some(SwarmId::PLAYER),
+        );
+    }
+    let far = common::spawn_operational_charger_at(&mut app, far_cell, 100);
+    app.world_mut().entity_mut(far).insert(OwnerSwarm(swarm));
+    let near = common::spawn_operational_charger_at(&mut app, near_cell, 100);
+    app.world_mut().entity_mut(near).insert(OwnerSwarm(swarm));
     let defender = common::spawn_defender_at(&mut app, common::cell_world_center(source_cell));
     app.world_mut()
         .entity_mut(defender)
         .insert(DefendHold { cell: source_cell });
+    app.world_mut()
+        .entity_mut(defender)
+        .get_mut::<Charge>()
+        .unwrap()
+        .current = LOW_CHARGE_THRESHOLD;
+
+    app.update();
+
+    assert_eq!(
+        app.world()
+            .entity(defender)
+            .get::<ChargerAssignment>()
+            .expect("low-Charge Defender rotates across its swarm's Defend paint")
+            .charger,
+        near,
+    );
+}
+
+#[test]
+fn charger_without_valid_owner_is_not_eligible() {
+    let mut app = build_app();
+    common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let cell = IVec2::ZERO;
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 100);
+    assert!(app.world().entity(charger).get::<OwnerSwarm>().is_none());
+    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
+    app.world_mut()
+        .entity_mut(defender)
+        .insert(DefendHold { cell });
     app.world_mut()
         .entity_mut(defender)
         .get_mut::<Charge>()
@@ -1101,14 +1168,266 @@ fn remote_charger_does_not_pull_defender_off_front() {
 }
 
 #[test]
-fn invalidated_assignment_releases_capacity_and_resumes_lease() {
+fn charger_in_unowned_defend_paint_is_inactive() {
+    let mut app = build_app();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let staging_cell = IVec2::ZERO;
+    let charger_cell = IVec2::new(1, 0);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        staging_cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(charger_cell, IntentKind::Defend);
+    assert_eq!(
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(charger_cell)
+            .and_then(|cell| cell.owner(IntentKind::Defend)),
+        None,
+    );
+    let charger = common::spawn_operational_charger_at(&mut app, charger_cell, 100);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
+    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(staging_cell));
+    app.world_mut()
+        .entity_mut(defender)
+        .insert(DefendHold { cell: staging_cell });
+    app.world_mut()
+        .entity_mut(defender)
+        .get_mut::<Charge>()
+        .unwrap()
+        .current = LOW_CHARGE_THRESHOLD;
+
+    app.update();
+
+    assert!(
+        app.world()
+            .entity(defender)
+            .get::<ChargerAssignment>()
+            .is_none()
+    );
+}
+
+#[test]
+fn charger_without_support_condition_is_not_eligible() {
+    let mut app = build_app();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let cell = IVec2::ZERO;
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 100);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm))
+        .remove::<Structure>();
+    assert!(app.world().entity(charger).get::<Structure>().is_none());
+    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
+    app.world_mut()
+        .entity_mut(defender)
+        .insert(DefendHold { cell });
+    app.world_mut()
+        .entity_mut(defender)
+        .get_mut::<Charge>()
+        .unwrap()
+        .current = LOW_CHARGE_THRESHOLD;
+
+    app.update();
+
+    assert!(
+        app.world()
+            .entity(defender)
+            .get::<ChargerAssignment>()
+            .is_none()
+    );
+}
+
+#[test]
+fn en_route_and_charging_defenders_share_charger_capacity() {
+    let mut app = build_app();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let cell = IVec2::ZERO;
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 100);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
+    let center = common::cell_world_center(cell);
+    let en_route = common::spawn_defender_at(&mut app, center + Vec2::new(-16.0, 0.0));
+    app.world_mut().entity_mut(en_route).insert((
+        ChargerAssignment { charger },
+        DirectMovementComponent {
+            xy: center,
+            stop_radius: 0.0,
+        },
+    ));
+    let charging = common::spawn_defender_at(&mut app, center);
+    app.world_mut().entity_mut(charging).insert((
+        ChargerAssignment { charger },
+        ChargerProgress { charger },
+        ChargerPulseProgress::default(),
+    ));
+    for offset in [24.0, 32.0, 40.0, 48.0] {
+        let defender = common::spawn_defender_at(&mut app, center + Vec2::new(offset, 0.0));
+        app.world_mut()
+            .entity_mut(defender)
+            .insert(DefendHold { cell });
+        app.world_mut()
+            .entity_mut(defender)
+            .get_mut::<Charge>()
+            .unwrap()
+            .current = LOW_CHARGE_THRESHOLD;
+    }
+
+    app.update();
+
+    let world = app.world_mut();
+    let mut assignments = world.query::<&ChargerAssignment>();
+    assert_eq!(
+        assignments
+            .iter(world)
+            .filter(|assignment| assignment.charger == charger)
+            .count(),
+        3,
+    );
+}
+
+#[test]
+fn charge_departure_releases_current_defend_lease_and_wakes_replacement() {
+    let mut app = build_app();
+    let frame = Duration::from_nanos(16_666_667);
+    app.insert_resource(Time::<Fixed>::from_duration(frame));
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(frame));
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let cell = IVec2::ZERO;
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 100);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
+    app.update();
+
+    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
+    let replacement =
+        common::spawn_defender_at(&mut app, common::cell_world_center(cell) + Vec2::X * 8.0);
+    app.world_mut().entity_mut(defender).insert((
+        DefendHold { cell },
+        RegionalLease::new(
+            AllocationRegion::for_cell(cell),
+            OpportunityCategory::Defend,
+            OpportunityTarget::Defend { cell },
+            Some(SwarmId::PLAYER),
+            0,
+            0,
+            30,
+        ),
+    ));
+    app.world_mut()
+        .entity_mut(defender)
+        .get_mut::<Charge>()
+        .unwrap()
+        .current = LOW_CHARGE_THRESHOLD;
+
+    app.update();
+
+    let defender = app.world().entity(defender);
+    assert_eq!(
+        defender
+            .get::<ChargerAssignment>()
+            .expect("low-Charge Defender departs for service")
+            .charger,
+        charger,
+    );
+    assert!(defender.get::<DefendHold>().is_none());
+    assert!(defender.get::<RegionalLease>().is_none());
+    assert!(
+        app.world()
+            .entity(replacement)
+            .get::<RegionalLease>()
+            .is_some(),
+        "Charge departure wakes a replacement before the next regular allocation tick",
+    );
+}
+
+#[test]
+fn equal_charge_prefers_staged_defender_over_current_tactical_duty() {
+    let mut app = build_app();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let cell = IVec2::ZERO;
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 100);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
+    let first = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
+    let second =
+        common::spawn_defender_at(&mut app, common::cell_world_center(cell) + Vec2::X * 8.0);
+    let (tactical, staged) = if first.to_bits() < second.to_bits() {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    app.world_mut()
+        .entity_mut(tactical)
+        .insert(DefendHold { cell });
+    app.world_mut()
+        .entity_mut(tactical)
+        .get_mut::<Charge>()
+        .unwrap()
+        .current = 0.2;
+    app.world_mut()
+        .entity_mut(staged)
+        .insert(DefendAssignment { cell });
+    app.world_mut()
+        .entity_mut(staged)
+        .get_mut::<Charge>()
+        .unwrap()
+        .current = 0.2;
+
+    app.update();
+
+    assert!(
+        app.world()
+            .entity(staged)
+            .get::<ChargerAssignment>()
+            .is_some()
+    );
+    assert!(
+        app.world()
+            .entity(tactical)
+            .get::<ChargerAssignment>()
+            .is_none()
+    );
+    assert!(app.world().entity(tactical).get::<DefendHold>().is_some());
+}
+
+#[test]
+fn invalidated_assignment_releases_capacity_without_retaining_old_lease() {
     let mut app = App::new();
     app.insert_resource(IntentGrid::new(8, 8));
     app.init_resource::<ResourceLedger>();
     app.add_systems(Update, defender_charger_work_system);
     let cell = IVec2::ZERO;
-    let charger = common::spawn_charger_at(&mut app, cell, 100);
-    let mut lease = RegionalLease::new(
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 100);
+    let lease = RegionalLease::new(
         AllocationRegion::for_cell(cell),
         OpportunityCategory::Defend,
         OpportunityTarget::Defend { cell },
@@ -1117,7 +1436,6 @@ fn invalidated_assignment_releases_capacity_and_resumes_lease() {
         0,
         30,
     );
-    lease.suspend_for_charge();
     let defender = app
         .world_mut()
         .spawn((
@@ -1127,10 +1445,7 @@ fn invalidated_assignment_releases_capacity_and_resumes_lease() {
             Health::default(),
             Charge::default(),
             Transform::from_translation(common::cell_world_center(cell).extend(0.0)),
-            ChargerAssignment {
-                charger,
-                source_cell: cell,
-            },
+            ChargerAssignment { charger },
             ChargerProgress { charger },
             ChargerPulseProgress::default(),
             lease,
@@ -1142,10 +1457,7 @@ fn invalidated_assignment_releases_capacity_and_resumes_lease() {
     let world = app.world();
     assert!(world.entity(defender).get::<ChargerAssignment>().is_none());
     assert!(world.entity(defender).get::<ChargerProgress>().is_none());
-    assert_eq!(
-        world.entity(defender).get::<RegionalLease>().unwrap().state,
-        RegionalLeaseState::ResumePending,
-    );
+    assert!(world.entity(defender).get::<RegionalLease>().is_none());
 }
 
 #[test]
@@ -1165,7 +1477,7 @@ fn emptied_charger_cancels_en_route_assignment_before_arrival() {
             Transform::from_translation(common::cell_world_center(cell).extend(0.0)),
         ))
         .id();
-    let mut lease = RegionalLease::new(
+    let lease = RegionalLease::new(
         AllocationRegion::for_cell(cell),
         OpportunityCategory::Defend,
         OpportunityTarget::Defend { cell },
@@ -1174,7 +1486,6 @@ fn emptied_charger_cancels_en_route_assignment_before_arrival() {
         0,
         30,
     );
-    lease.suspend_for_charge();
     let defender = app
         .world_mut()
         .spawn((
@@ -1182,10 +1493,7 @@ fn emptied_charger_cancels_en_route_assignment_before_arrival() {
             NanobotType::Defender,
             SwarmMember::new(SwarmId::PLAYER),
             Transform::from_translation(Vec2::ZERO.extend(0.0)),
-            ChargerAssignment {
-                charger,
-                source_cell: cell,
-            },
+            ChargerAssignment { charger },
             DirectMovementComponent {
                 xy: common::cell_world_center(cell),
                 stop_radius: 0.0,
@@ -1206,10 +1514,7 @@ fn emptied_charger_cancels_en_route_assignment_before_arrival() {
             .is_none()
     );
     assert!(world.entity(defender).get::<ChargerProgress>().is_none());
-    assert_eq!(
-        world.entity(defender).get::<RegionalLease>().unwrap().state,
-        RegionalLeaseState::ResumePending,
-    );
+    assert!(world.entity(defender).get::<RegionalLease>().is_none());
 }
 
 #[test]
@@ -1220,14 +1525,19 @@ fn defender_does_not_rotate_to_empty_charger() {
     // the empty-charge health loss system fires (covered by
     // another test).
     let mut app = build_app();
-    let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(0, 0);
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
     let cell_center = common::cell_world_center(cell);
     // Charger with NO material: not a working rotation target.
-    let _charger = common::spawn_charger_at(&mut app, cell, 0);
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 0);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
     let defender = common::spawn_defender_at(&mut app, cell_center);
     {
         let w = app.world_mut();
@@ -1251,15 +1561,19 @@ fn defender_does_not_rotate_to_empty_charger() {
 #[test]
 fn defender_does_not_rotate_to_degraded_charger() {
     let mut app = build_app();
-    common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend);
-    let charger = common::spawn_charger_at(&mut app, cell, 100);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 100);
     let mut condition = Structure::new(StructureKind::Basic);
     condition.health = SUPPORT_OPERATIONAL_HEALTH_THRESHOLD - 1;
-    app.world_mut().entity_mut(charger).insert(condition);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert((OwnerSwarm(swarm), condition));
     let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
     app.world_mut()
         .entity_mut(defender)
@@ -1282,60 +1596,87 @@ fn defender_does_not_rotate_to_degraded_charger() {
 }
 
 #[test]
-fn defender_charges_at_a_working_charger_and_returns_to_defend() {
-    // End-to-end: a defender in DefendHold with low charge
-    // rotates to a working charger, the work system refills
-    // the charge, and once the charge is full the work
-    // system releases the defender so the defend pool can
-    // re-assign them. The final assertion is that the
-    // defender is again in DefendHold after enough ticks.
-    let mut app = build_app();
-    let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
-    let cell = IVec2::new(0, 0);
+fn completed_rotation_reenters_current_allocation_without_old_ownership() {
+    let mut app = common::sim_app_with_charge();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
+    let old_cell = IVec2::new(0, 0);
+    let current_cell = IVec2::new(2, 0);
+    for cell in [old_cell, current_cell] {
+        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+            cell,
+            IntentKind::Defend,
+            Some(SwarmId::PLAYER),
+        );
+    }
+    let charger = common::spawn_operational_charger_at(&mut app, current_cell, 200);
     app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend);
-    let cell_center = common::cell_world_center(cell);
-    let _charger = common::spawn_charger_at(&mut app, cell, 200);
-    let defender = common::spawn_defender_at(&mut app, cell_center);
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
+    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(old_cell));
     {
         let w = app.world_mut();
         w.entity_mut(defender).get_mut::<Charge>().unwrap().current = 0.2;
-        w.entity_mut(defender).insert(DefendHold { cell });
+        w.entity_mut(defender).insert((
+            DefendHold { cell: old_cell },
+            RegionalLease::new(
+                AllocationRegion::for_cell(old_cell),
+                OpportunityCategory::Defend,
+                OpportunityTarget::Defend { cell: old_cell },
+                Some(SwarmId::PLAYER),
+                0,
+                0,
+                30,
+            ),
+        ));
     }
 
-    // Run enough ticks for: rotation (1) + travel (~1
-    // tick at the same cell) + arrival (1) + charge refill
-    // Nineteen supplied pulses move charge from 0.2 to full;
-    // the remaining budget covers reassignment, travel, and
-    // hold detection.
-    for _ in 0..500 {
+    app.update();
+    assert!(
+        app.world()
+            .entity(defender)
+            .get::<ChargerAssignment>()
+            .is_some()
+    );
+    assert!(
+        app.world()
+            .entity(defender)
+            .get::<RegionalLease>()
+            .is_none()
+    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .erase(old_cell, IntentKind::Defend);
+
+    for _ in 0..700 {
         app.update();
     }
 
-    // The defender's charge is somewhere in the cycle:
-    // either fully charged after a recent refill, or
-    // between LOW_CHARGE_THRESHOLD and MAX_CHARGE while
-    // holding the cell. The cycle is "hold -> drain ->
-    // rotate to charger -> refill -> release -> hold".
-    // The test pins the observable shape of the cycle: the
-    // defender is in the defend hold (released from the
-    // charger) and the charger has been drained by the
-    // per-tick rate.
-    assert!(
-        app.world().entity(defender).get::<DefendHold>().is_some(),
-        "defender must return to DefendHold after charging"
+    let defender_state = app.world().entity(defender);
+    let assigned_cell = defender_state
+        .get::<DefendHold>()
+        .map(|hold| hold.cell)
+        .or_else(|| {
+            defender_state
+                .get::<DefendAssignment>()
+                .map(|assignment| assignment.cell)
+        });
+    assert_eq!(assigned_cell, Some(current_cell));
+    assert_eq!(
+        defender_state
+            .get::<RegionalLease>()
+            .expect("completed rotation re-enters regional allocation")
+            .target,
+        OpportunityTarget::Defend { cell: current_cell },
     );
     let charge = read_charge(&app, defender).expect("defender has Charge");
     assert!(
         charge >= LOW_CHARGE_THRESHOLD,
-        "defender in DefendHold must have charge above the rotation threshold; got {charge}"
+        "reassigned Defender stays above the next rotation threshold; got {charge}"
     );
     assert!(
         charge <= MAX_CHARGE,
         "charge cannot exceed the cap; got {charge}"
     );
-    // No leftover charger markers.
     assert!(
         app.world()
             .entity(defender)
@@ -1350,17 +1691,154 @@ fn defender_charges_at_a_working_charger_and_returns_to_defend() {
             .is_none(),
         "ChargerProgress must be removed after charging"
     );
-    // The charger's material has been drained by the per-tick
-    // rate. The exact amount is not pinned because the test
-    // also allows for ticks where the defender was in
-    // transit, but it must be strictly less than the
-    // initial 200.
-    let c = app.world().entity(_charger).get::<Charger>().unwrap();
+    let c = app.world().entity(charger).get::<Charger>().unwrap();
     assert!(
         c.amount < 200,
         "charger material must be drained while defenders charge from it; got {}",
         c.amount
     );
+}
+
+#[test]
+fn invalid_charger_cleanup_reenters_current_allocation_in_the_same_tick() {
+    let mut app = common::sim_app_with_charge();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let staging_cell = IVec2::ZERO;
+    let inactive_charger_cell = IVec2::new(1, 0);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        staging_cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let charger = common::spawn_operational_charger_at(&mut app, inactive_charger_cell, 100);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
+    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(staging_cell));
+    app.world_mut().entity_mut(defender).insert((
+        ChargerAssignment { charger },
+        DirectMovementComponent {
+            xy: common::cell_world_center(inactive_charger_cell),
+            stop_radius: 0.0,
+        },
+    ));
+
+    app.update();
+
+    let defender = app.world().entity(defender);
+    assert!(defender.get::<ChargerAssignment>().is_none());
+    assert_eq!(
+        defender
+            .get::<DefendAssignment>()
+            .expect("invalid Charge service returns through current allocation")
+            .cell,
+        staging_cell,
+    );
+    assert_eq!(
+        defender
+            .get::<RegionalLease>()
+            .expect("current allocation creates a fresh lease")
+            .target,
+        OpportunityTarget::Defend { cell: staging_cell },
+    );
+}
+
+#[test]
+fn invalid_charger_cleanup_wakes_allocation_between_regular_ten_hertz_ticks() {
+    let mut app = common::sim_app_with_charge();
+    let frame = Duration::from_nanos(16_666_667);
+    app.insert_resource(Time::<Fixed>::from_duration(frame));
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(frame));
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let staging_cell = IVec2::ZERO;
+    let inactive_charger_cell = IVec2::new(1, 0);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        staging_cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+
+    // Consume the allocator's initial due pass. The next five fixed steps are
+    // normally below its deterministic 100 ms cadence.
+    app.update();
+
+    let charger = common::spawn_operational_charger_at(&mut app, inactive_charger_cell, 100);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
+    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(staging_cell));
+    app.world_mut().entity_mut(defender).insert((
+        ChargerAssignment { charger },
+        DirectMovementComponent {
+            xy: common::cell_world_center(inactive_charger_cell),
+            stop_radius: 0.0,
+        },
+    ));
+
+    app.update();
+
+    let defender = app.world().entity(defender);
+    assert!(defender.get::<ChargerAssignment>().is_none());
+    assert_eq!(
+        defender
+            .get::<DefendAssignment>()
+            .expect("Charge cleanup wakes current allocation before its next regular tick")
+            .cell,
+        staging_cell,
+    );
+    assert_eq!(
+        defender
+            .get::<RegionalLease>()
+            .expect("woken allocation creates a fresh lease")
+            .target,
+        OpportunityTarget::Defend { cell: staging_cell },
+    );
+}
+
+#[test]
+fn completed_recharge_wakes_allocation_between_regular_ten_hertz_ticks() {
+    let mut app = common::sim_app_with_charge();
+    let frame = Duration::from_nanos(16_666_667);
+    app.insert_resource(Time::<Fixed>::from_duration(frame));
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(frame));
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let cell = IVec2::ZERO;
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 100);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
+
+    app.update();
+
+    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
+    app.world_mut().entity_mut(defender).insert((
+        ChargerAssignment { charger },
+        ChargerProgress { charger },
+        ChargerPulseProgress {
+            ticks_elapsed: CHARGE_PULSE_INTERVAL_TICKS - 1,
+        },
+    ));
+    app.world_mut()
+        .entity_mut(defender)
+        .get_mut::<Charge>()
+        .unwrap()
+        .current = MAX_CHARGE - CHARGE_PER_PULSE / 2.0;
+
+    app.update();
+
+    let defender = app.world().entity(defender);
+    assert!(defender.get::<ChargerAssignment>().is_none());
+    assert!(defender.get::<ChargerProgress>().is_none());
+    assert!(
+        defender.get::<DefendAssignment>().is_some(),
+        "completed recharge returns through current allocation before its next regular tick",
+    );
+    assert!(defender.get::<RegionalLease>().is_some());
 }
 
 #[test]
@@ -1378,19 +1856,23 @@ fn charger_requires_logistics_support_via_physical_resources() {
     // defender at the same cell with a stocked charger.
     let mut app_empty = build_app();
     {
-        let _swarm = common::spawn_swarm_at(&mut app_empty, Vec2::new(0.0, 0.0));
+        let swarm = common::spawn_swarm_at(&mut app_empty, Vec2::new(0.0, 0.0));
         let cell = IVec2::new(0, 0);
         app_empty
             .world_mut()
             .resource_mut::<IntentGrid>()
-            .paint(cell, IntentKind::Defend);
+            .paint_owned(cell, IntentKind::Defend, Some(SwarmId::PLAYER));
         let cell_center = common::cell_world_center(cell);
         // Pre-spawn an empty charger so the auto-creation
         // system does not also create a working charger
         // (which would let the rotation chain absorb the
         // defender and stop the health loss). The empty
         // charger is "not working" because it has no supply.
-        let _charger = common::spawn_charger_at(&mut app_empty, cell, 0);
+        let charger = common::spawn_operational_charger_at(&mut app_empty, cell, 0);
+        app_empty
+            .world_mut()
+            .entity_mut(charger)
+            .insert(OwnerSwarm(swarm));
         let defender = common::spawn_defender_at(&mut app_empty, cell_center);
         {
             let w = app_empty.world_mut();
@@ -1416,14 +1898,18 @@ fn charger_requires_logistics_support_via_physical_resources() {
 
     let mut app_filled = build_app();
     {
-        let _swarm = common::spawn_swarm_at(&mut app_filled, Vec2::new(0.0, 0.0));
+        let swarm = common::spawn_swarm_at(&mut app_filled, Vec2::new(0.0, 0.0));
         let cell = IVec2::new(0, 0);
         app_filled
             .world_mut()
             .resource_mut::<IntentGrid>()
-            .paint(cell, IntentKind::Defend);
+            .paint_owned(cell, IntentKind::Defend, Some(SwarmId::PLAYER));
         let cell_center = common::cell_world_center(cell);
-        let _charger = common::spawn_charger_at(&mut app_filled, cell, 200);
+        let charger = common::spawn_operational_charger_at(&mut app_filled, cell, 200);
+        app_filled
+            .world_mut()
+            .entity_mut(charger)
+            .insert(OwnerSwarm(swarm));
         let defender = common::spawn_defender_at(&mut app_filled, cell_center);
         {
             let w = app_filled.world_mut();
@@ -1461,7 +1947,7 @@ fn hauler_delivers_minerals_to_a_charger_with_free_space() {
     // Terminal leg source: a sink stockpile. Chargers cannot
     // bypass shared staging by drawing from source stockpiles.
     let source = common::spawn_sink_stockpile(&mut app, source_pos, 1000, 1000);
-    let charger = common::spawn_charger_at(&mut app, cell, 0);
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 0);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
     app.world_mut()
         .entity_mut(charger)
@@ -1510,13 +1996,18 @@ fn defender_without_low_charge_does_not_rotate_to_charger() {
     // rotation system even if a working charger exists.
     // The defender stays in hold.
     let mut app = build_app();
-    let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(0, 0);
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
     let cell_center = common::cell_world_center(cell);
-    let _charger = common::spawn_charger_at(&mut app, cell, 100);
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 100);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
     let defender = common::spawn_defender_at(&mut app, cell_center);
     {
         let w = app.world_mut();
@@ -1575,23 +2066,25 @@ fn defender_charge_refills_in_supplied_pulses() {
     // state directly so arrival mechanics do not interfere
     // with the rate check.
     let mut app = build_app();
-    let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(0, 0);
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
     let cell_center = common::cell_world_center(cell);
-    let charger = common::spawn_charger_at(&mut app, cell, 100);
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 100);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
     let defender = common::spawn_defender_at(&mut app, cell_center);
     {
         let w = app.world_mut();
         w.entity_mut(defender).get_mut::<Charge>().unwrap().current = 0.5;
         // Plant the defender in the charging state directly
         // so arrival mechanics are not in the way.
-        w.entity_mut(defender).insert(ChargerAssignment {
-            charger,
-            source_cell: cell,
-        });
+        w.entity_mut(defender).insert(ChargerAssignment { charger });
         w.entity_mut(defender).insert((
             ChargerProgress { charger },
             ChargerPulseProgress {
@@ -1624,25 +2117,29 @@ fn defender_charger_assignment_does_not_block_defend_reassignment() {
     // so a charging defender stays charging until the work
     // system releases them.
     let mut app = build_app();
-    let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(0, 0);
     let other_cell = IVec2::new(2, 0);
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend);
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(other_cell, IntentKind::Defend);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        other_cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
     let cell_center = common::cell_world_center(cell);
-    let charger = common::spawn_charger_at(&mut app, cell, 100);
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 100);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
     let defender = common::spawn_defender_at(&mut app, cell_center);
     {
         let w = app.world_mut();
         w.entity_mut(defender).get_mut::<Charge>().unwrap().current = 0.1;
-        w.entity_mut(defender).insert(ChargerAssignment {
-            charger,
-            source_cell: cell,
-        });
+        w.entity_mut(defender).insert(ChargerAssignment { charger });
         w.entity_mut(defender).insert(ChargerProgress { charger });
     }
 
@@ -1667,14 +2164,24 @@ fn defender_charger_assignment_does_not_block_defend_reassignment() {
 #[test]
 fn charger_work_consumes_owning_swarm_resources() {
     let mut app = App::new();
-    app.init_resource::<ResourceLedger>()
+    app.insert_resource(IntentGrid::new(4, 4))
+        .init_resource::<ResourceLedger>()
         .add_systems(Update, defender_charger_work_system);
     let swarm = app.world_mut().spawn(SwarmBundle::default()).id();
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        IVec2::ZERO,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
     let mut charger_component = Charger::new(IVec2::ZERO);
     charger_component.amount = 10;
     let charger = app
         .world_mut()
-        .spawn((charger_component, OwnerSwarm(swarm)))
+        .spawn((
+            charger_component,
+            OwnerSwarm(swarm),
+            Structure::new(StructureKind::Basic),
+        ))
         .id();
     app.world_mut().resource_mut::<ResourceLedger>().add_for(
         top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
@@ -1692,10 +2199,7 @@ fn charger_work_consumes_owning_swarm_resources() {
                 current: 0.5,
                 max: MAX_CHARGE,
             },
-            ChargerAssignment {
-                charger,
-                source_cell: IVec2::ZERO,
-            },
+            ChargerAssignment { charger },
             (
                 ChargerProgress { charger },
                 ChargerPulseProgress {
