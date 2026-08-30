@@ -1,4 +1,4 @@
-//! Offscreen visual evidence for readable Defender combat and local recharge.
+//! Offscreen visual evidence for readable Defender combat and swarm-wide recharge.
 
 use std::collections::HashMap;
 
@@ -8,13 +8,15 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Charge, Charger, ChargerAssignment, Commitment, DefendHold, Health, Nanobot, NanobotType,
-        OpponentSwarm, OwnerSwarm, Swarm, SwarmId, SwarmMember, VelocityComponent,
+        OpponentSwarm, OwnerSwarm, Structure, StructureKind, Swarm, SwarmId, SwarmMember,
+        VelocityComponent,
     },
 };
 
 use crate::harness::{TestContext, TestFlow};
 
 const CENTER_CELL: IVec2 = IVec2::new(0, 5);
+const OPPONENT_CHARGER_CELL: IVec2 = IVec2::new(1, 5);
 
 #[derive(Component)]
 struct FeelDefender;
@@ -53,21 +55,23 @@ fn spawn_defender(
     hold: DefendHold,
     charge: f32,
 ) {
-    world.spawn((
-        FeelDefender,
-        Nanobot {},
-        NanobotType::Defender,
-        Commitment::Idle,
-        VelocityComponent::default(),
-        Health::default(),
-        Charge {
-            current: charge,
-            max: 1.0,
-        },
-        SwarmMember::new(swarm),
-        hold,
-        Transform::from_translation(position.extend(GAMEPLAY_SPRITE_Z)),
-    ));
+    let entity = world
+        .spawn((
+            FeelDefender,
+            Nanobot {},
+            NanobotType::Defender,
+            Commitment::Idle,
+            VelocityComponent::default(),
+            Health::default(),
+            SwarmMember::new(swarm),
+            hold,
+            Transform::from_translation(position.extend(GAMEPLAY_SPRITE_Z)),
+        ))
+        .id();
+    world.entity_mut(entity).insert(Charge {
+        current: charge,
+        max: 1.0,
+    });
 }
 
 fn setup_scene(world: &mut World) {
@@ -89,6 +93,11 @@ fn setup_scene(world: &mut World) {
     world
         .resource_mut::<IntentGrid>()
         .contest_defend(CENTER_CELL, opponent_swarm_id);
+    world.resource_mut::<IntentGrid>().paint_owned(
+        OPPONENT_CHARGER_CELL,
+        IntentKind::Defend,
+        Some(opponent_swarm_id),
+    );
 
     for (index, offset) in [
         Vec2::new(-54.0, -42.0),
@@ -130,6 +139,7 @@ fn setup_scene(world: &mut World) {
     world.spawn((
         player_charger,
         OwnerSwarm(player_swarm),
+        Structure::new(StructureKind::Basic),
         Sprite {
             color: Color::srgb(0.20, 0.55, 0.95),
             custom_size: Some(Vec2::splat(54.0)),
@@ -137,42 +147,48 @@ fn setup_scene(world: &mut World) {
         },
         Transform::from_translation((center + Vec2::new(-132.0, 116.0)).extend(GAMEPLAY_SPRITE_Z)),
     ));
-    let mut opponent_charger = Charger::new(CENTER_CELL);
+    let mut opponent_charger = Charger::new(OPPONENT_CHARGER_CELL);
     opponent_charger.amount = 60;
+    let opponent_charger_center = cell_center(OPPONENT_CHARGER_CELL);
     world.spawn((
         opponent_charger,
         OwnerSwarm(opponent_swarm),
+        Structure::new(StructureKind::Basic),
         Sprite {
             color: Color::srgb(0.90, 0.25, 0.30),
             custom_size: Some(Vec2::splat(54.0)),
             ..default()
         },
-        Transform::from_translation((center + Vec2::new(132.0, 116.0)).extend(GAMEPLAY_SPRITE_Z)),
+        Transform::from_translation(
+            (opponent_charger_center + Vec2::new(-132.0, 116.0)).extend(GAMEPLAY_SPRITE_Z),
+        ),
     ));
 }
 
-fn assert_front_state(world: &mut World, require_holders: bool) {
+fn assert_front_state(world: &mut World, require_rotation: bool) {
     let mut player_holders = 0;
     let mut opponent_holders = 0;
     let mut charger_loads = HashMap::<Entity, usize>::new();
-    let mut cohort_sizes = HashMap::<(SwarmId, IVec2), usize>::new();
-    let mut cohort_loads = HashMap::<(SwarmId, IVec2), usize>::new();
-    for (hold, assignment, member, health, transform) in world
+    let mut living_by_swarm = HashMap::<SwarmId, u32>::new();
+    let mut rotating_by_swarm = HashMap::<SwarmId, u32>::new();
+    let mut low_charge = 0;
+    for (hold, assignment, member, health, charge, transform) in world
         .query_filtered::<(
             Option<&DefendHold>,
             Option<&ChargerAssignment>,
             &SwarmMember,
             &Health,
+            &Charge,
             &Transform,
         ), With<FeelDefender>>()
         .iter(world)
     {
         assert!(transform.translation.is_finite());
-        let source_cell = assignment
-            .map(|assignment| assignment.source_cell)
-            .or_else(|| hold.map(|hold| hold.cell));
-        if let Some(source_cell) = source_cell {
-            *cohort_sizes.entry((member.0, source_cell)).or_default() += 1;
+        if health.current > 0 {
+            *living_by_swarm.entry(member.0).or_default() += 1;
+        }
+        if charge.needs_rotation() {
+            low_charge += 1;
         }
         if let Some(hold) = hold {
             if member.0 == SwarmId::PLAYER && hold.cell == CENTER_CELL {
@@ -184,9 +200,7 @@ fn assert_front_state(world: &mut World, require_holders: bool) {
         }
         if let Some(assignment) = assignment {
             *charger_loads.entry(assignment.charger).or_default() += 1;
-            *cohort_loads
-                .entry((member.0, assignment.source_cell))
-                .or_default() += 1;
+            *rotating_by_swarm.entry(member.0).or_default() += 1;
         }
         assert!(health.current <= health.max);
     }
@@ -197,29 +211,27 @@ fn assert_front_state(world: &mut World, require_holders: bool) {
             "charger {charger:?} exceeded its three-Defender service limit: {load}"
         );
     }
-    for ((swarm, cell), load) in cohort_loads {
-        let cohort_size = cohort_sizes
-            .get(&(swarm, cell))
-            .copied()
-            .expect("assigned Defender must belong to a source cohort");
-        let limit = (cohort_size / 2).max(1);
+    for (swarm, load) in rotating_by_swarm {
+        let living = living_by_swarm.get(&swarm).copied().unwrap_or_default();
+        let within_cap = match living {
+            0 => load == 0,
+            1 => load <= 1,
+            _ => load.saturating_mul(2) <= living,
+        };
         assert!(
-            load <= limit,
-            "cohort {swarm:?} at {cell:?} exceeded its rotation allowance: {load} > {limit}"
+            within_cap,
+            "swarm {swarm:?} exceeded its rotation allowance: {load} of {living} living"
         );
     }
-    if require_holders {
+    if require_rotation {
         assert!(
-            player_holders > 0,
-            "player front fully evacuated for recharge"
-        );
-        assert!(
-            opponent_holders > 0,
-            "opponent front fully evacuated for recharge"
+            total_assignments > 0,
+            "focused Defender scene must show active Charge rotation; low={low_charge}, player_holders={player_holders}, opponent_holders={opponent_holders}"
         );
     }
+    let total_living = living_by_swarm.values().sum::<u32>();
     assert!(
-        player_holders + opponent_holders + total_assignments > 0,
+        total_living > 0,
         "focused Defender scene must remain populated"
     );
 }

@@ -6,19 +6,10 @@ use super::{
     ActionableProjection, AllocationClock, AllocationRegion, OpportunityCategory, OpportunityTarget,
 };
 use crate::nanobot::{
-    ChargerAssignment, ChargerProgress, DefendAssignment, DefendHold, DirectMovementComponent,
-    ExtractProgress, GatherAssignment, HaulerAssignment, HaulerLoading, HaulerRoute,
-    LogisticsReservation, MaintenanceAssignment, MaintenanceProgress, PlannedStructureClaim,
-    PlannedStructureProgress, SwarmId,
+    DefendAssignment, DefendHold, DirectMovementComponent, ExtractProgress, GatherAssignment,
+    HaulerAssignment, HaulerLoading, HaulerRoute, LogisticsReservation, MaintenanceAssignment,
+    MaintenanceProgress, PlannedStructureClaim, PlannedStructureProgress, SwarmId,
 };
-
-/// Charge override state for a regional lease.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RegionalLeaseState {
-    Active,
-    SuspendedForCharge,
-    ResumePending,
-}
 
 /// Temporary ownership of projected capacity, not ownership of authoritative
 /// intent or category-specific work state.
@@ -28,7 +19,6 @@ pub struct RegionalLease {
     pub category: OpportunityCategory,
     pub target: OpportunityTarget,
     pub owner: Option<SwarmId>,
-    pub state: RegionalLeaseState,
     progress_checkpoint: u64,
     expires_at_tick: u64,
 }
@@ -48,7 +38,6 @@ impl RegionalLease {
             category,
             target,
             owner,
-            state: RegionalLeaseState::Active,
             progress_checkpoint: progress,
             expires_at_tick: now_tick.saturating_add(no_progress_ttl_ticks.max(1)),
         }
@@ -60,31 +49,6 @@ impl RegionalLease {
 
     pub fn expires_at_tick(self) -> u64 {
         self.expires_at_tick
-    }
-
-    /// Suspended and resume-pending leases permit temporary replacement.
-    pub fn counts_toward_capacity(self) -> bool {
-        self.state == RegionalLeaseState::Active
-    }
-
-    pub fn suspend_for_charge(&mut self) {
-        self.state = RegionalLeaseState::SuspendedForCharge;
-    }
-
-    pub fn request_resume(&mut self) {
-        if self.state == RegionalLeaseState::SuspendedForCharge {
-            self.state = RegionalLeaseState::ResumePending;
-        }
-    }
-
-    /// Resume only after the allocator confirms category capacity remains.
-    pub fn activate_if_capacity(&mut self, capacity_available: bool) -> bool {
-        if self.state == RegionalLeaseState::ResumePending && capacity_available {
-            self.state = RegionalLeaseState::Active;
-            true
-        } else {
-            false
-        }
     }
 }
 
@@ -172,8 +136,6 @@ pub fn maintain_regional_leases_system(
             With<MaintenanceProgress>,
             With<DefendHold>,
             With<HaulerLoading>,
-            With<ChargerAssignment>,
-            With<ChargerProgress>,
         )>,
     >,
 ) {
@@ -247,23 +209,14 @@ pub fn release_finished_regional_leases_system(
         Option<&DefendAssignment>,
         Option<&DefendHold>,
         Option<&HaulerAssignment>,
-        Option<&ChargerAssignment>,
-        Option<&ChargerProgress>,
     )>,
 ) {
-    for (entity, lease, gather, planned, maintenance, defend, hold, haul, charger, charging) in
-        &leases
-    {
-        if lease.state != RegionalLeaseState::Active {
-            continue;
-        }
+    for (entity, lease, gather, planned, maintenance, defend, hold, haul) in &leases {
         let active = match lease.category {
             OpportunityCategory::Gather => gather.is_some(),
             OpportunityCategory::PlannedBuild => planned.is_some(),
             OpportunityCategory::Maintenance => maintenance.is_some(),
-            OpportunityCategory::Defend => {
-                defend.is_some() || hold.is_some() || charger.is_some() || charging.is_some()
-            }
+            OpportunityCategory::Defend => defend.is_some() || hold.is_some(),
             OpportunityCategory::Haul => haul.is_some(),
         };
         if !active {

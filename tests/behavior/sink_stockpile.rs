@@ -384,7 +384,7 @@ fn charger_in_build_cell_does_not_plan_sink_stockpile() {
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
     paint_build(&mut app, cell);
-    let _charger = common::spawn_charger_at(&mut app, cell, 0);
+    let _charger = common::spawn_operational_charger_at(&mut app, cell, 0);
 
     for _ in 0..5 {
         app.update();

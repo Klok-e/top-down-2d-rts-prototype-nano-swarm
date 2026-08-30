@@ -315,7 +315,7 @@ fn source_stockpile_placement_rejects_charger_overlap() {
         },
     );
     let charger_pos = center + Vec2::new(96.0, 0.0);
-    let charger = common::spawn_charger_at(&mut app, IVec2::new(0, 0), 0);
+    let charger = common::spawn_operational_charger_at(&mut app, IVec2::new(0, 0), 0);
     app.world_mut()
         .entity_mut(charger)
         .insert(Transform::from_translation(charger_pos.extend(0.0)));

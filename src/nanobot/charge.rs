@@ -13,28 +13,21 @@
 //! components:
 //!
 //! ```text
-//!   Holding (DefendHold + Charge)
+//!   Current duty (Charge)
 //!     -> (charge low + working charger available)
-//!     -> Moving (ChargerAssignment + DMC, DefendHold removed)
+//!     -> Moving (ChargerAssignment + DMC, prior allocation released)
 //!   Moving
 //!     -> (arrive at charger)
 //!     -> Charging (ChargerAssignment + ChargerProgress)
 //!   Charging
 //!     -> (charge full OR charger empty)
-//!     -> Idle (markers cleared; defend assignment re-picks)
+//!     -> Unengaged (markers cleared; current allocation re-picks)
 //! ```
 //!
-//! The "ignored Charge" health-loss case is the holding path
-//! with empty charge and no working charger reachable: the
-//! defender stays in hold and drains health per tick. The
-//! rotation case is the holding path with empty/low charge and
-//! a working charger reachable: the defender leaves hold,
-//! walks to the charger, and starts charging.
-//!
-//! Regional leases remain active while a Defender holds its cell and are
-//! suspended during a charge trip. Charger capacity is tracked from live
-//! assignments, so returning Defenders request lease resumption without
-//! displacing a replacement that acquired the released capacity.
+//! A Defender without available service continues its current duty while empty
+//! Charge drains health. Charge departure releases current regional ownership;
+//! completion or invalidation returns through current allocation without
+//! reclaiming prior work.
 //!
 //! Logistics: a `Charger` carries a `Stockpile`-shaped physical
 //! buffer of `ResourceKind::Minerals`. Defenders charging from
@@ -51,6 +44,7 @@ use bevy::prelude::*;
 
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::allocation::RegionalLease;
+use crate::nanobot::allocation::runtime::RegionalAllocationWake;
 use crate::nanobot::autonomy::NanobotType;
 use crate::nanobot::components::{
     DirectMovementComponent, Health, Nanobot, Swarm, SwarmId, SwarmMember,
@@ -98,7 +92,7 @@ pub const CHARGER_MATERIAL_PER_PULSE: u32 = 1;
 /// territory rather than "instantly dead".
 pub const WEAKENED_CHARGE_THRESHOLD: f32 = 0.3;
 
-/// Charge level at or below which a holding defender is
+/// Charge level at or below which a Defender is
 /// eligible to rotate to a working charger. The threshold sits
 /// a notch above [`WEAKENED_CHARGE_THRESHOLD`] so a defender
 /// starts looking for a charger *before* it is too weak to
@@ -253,15 +247,13 @@ impl Charge {
     }
 
     /// True when `current <= 0.0`. The health-loss system uses
-    /// this to decide which holding defenders are "ignored
-    /// Charge" candidates.
+    /// this to decide which Defenders take empty-Charge damage.
     pub fn is_empty(&self) -> bool {
         self.current <= 0.0
     }
 
     /// True when the charge is low enough that the rotation
-    /// system should pull the defender away from the defend
-    /// cell toward a working charger.
+    /// system should route the Defender toward a working Charger.
     pub fn needs_rotation(&self) -> bool {
         self.current <= LOW_CHARGE_THRESHOLD
     }
@@ -275,7 +267,6 @@ impl Charge {
 #[derive(Debug, Component, Clone, Copy)]
 pub struct ChargerAssignment {
     pub charger: Entity,
-    pub source_cell: IVec2,
 }
 
 /// Marks a Defender that has arrived at its assigned charger
@@ -303,6 +294,51 @@ pub struct EmptyChargeProgress {
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
+
+/// Duty priority used when Charge rotation capacity is scarce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DefenderRotationDuty {
+    Staged,
+    Tactical,
+}
+
+/// Observable inputs used to choose which low-Charge Defenders rotate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DefenderRotationCandidate {
+    pub entity: Entity,
+    pub charge: f32,
+    pub duty: DefenderRotationDuty,
+}
+
+/// Maximum simultaneous Charge rotations for one living Defender population.
+pub fn defender_rotation_capacity(living_defenders: u32) -> u32 {
+    if living_defenders == 0 {
+        0
+    } else {
+        (living_defenders / 2).max(1)
+    }
+}
+
+/// Choose low-Charge Defenders for remaining swarm-wide rotation capacity.
+pub fn select_defenders_for_rotation(
+    candidates: &[DefenderRotationCandidate],
+    living_defenders: u32,
+    already_rotating: u32,
+) -> Vec<Entity> {
+    let remaining = defender_rotation_capacity(living_defenders).saturating_sub(already_rotating);
+    let mut ordered = candidates.to_vec();
+    ordered.sort_by(|left, right| {
+        left.charge
+            .total_cmp(&right.charge)
+            .then_with(|| left.duty.cmp(&right.duty))
+            .then_with(|| left.entity.to_bits().cmp(&right.entity.to_bits()))
+    });
+    ordered
+        .into_iter()
+        .take(remaining as usize)
+        .map(|candidate| candidate.entity)
+        .collect()
+}
 
 /// Minerals consumed while refilling one defender from `current` to `max`.
 /// Each pulse spans [`CHARGE_PULSE_INTERVAL_TICKS`] drain ticks, then grants
@@ -598,15 +634,33 @@ pub fn charger_auto_creation_system(
     }
 }
 
-/// Find the nearest valid local Charger for one source-cell cohort.
+/// Apply the shared service-validity rule used throughout a Charge trip.
+fn charger_is_eligible(
+    charger: &Charger,
+    owner: Option<&OwnerSwarm>,
+    condition: Option<&SupportCondition>,
+    swarm: SwarmId,
+    grid: &IntentGrid,
+    swarms: &Query<&SwarmId, With<Swarm>>,
+) -> bool {
+    let charger_swarm = owner.and_then(|owner| swarms.get(owner.0).ok()).copied();
+    charger_swarm == Some(swarm)
+        && grid
+            .cell(charger.cell)
+            .is_some_and(|cell| cell.owner(IntentKind::Defend) == Some(swarm))
+        && charger.has_supply()
+        && condition.is_some_and(SupportCondition::is_operational)
+}
+
+/// Find the nearest eligible Charger in the Defender's swarm.
 ///
-/// Loads include reservations made earlier in the same fixed tick. Entity bits
+/// Loads include assignments made earlier in the same fixed tick. Entity bits
 /// break equal-distance ties deterministically.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
-pub fn find_local_capacity_aware_charger(
+pub fn find_swarm_capacity_aware_charger(
     pos: Vec2,
     swarm: SwarmId,
-    source_cell: IVec2,
+    grid: &IntentGrid,
     chargers: &Query<(
         Entity,
         &Charger,
@@ -616,30 +670,11 @@ pub fn find_local_capacity_aware_charger(
     )>,
     swarms: &Query<&SwarmId, With<Swarm>>,
     charger_loads: &HashMap<Entity, u32>,
-    cohort_sizes: &HashMap<(SwarmId, IVec2), u32>,
-    rotating_cohort_loads: &HashMap<(SwarmId, IVec2), u32>,
 ) -> Option<(Entity, Vec2)> {
-    let cohort_size = cohort_sizes
-        .get(&(swarm, source_cell))
-        .copied()
-        .unwrap_or(1);
-    let max_rotating = (cohort_size / 2).max(1);
     let mut best: Option<(f32, Entity, Vec2)> = None;
     for (entity, charger, transform, owner, condition) in chargers.iter() {
-        let charger_swarm = owner
-            .and_then(|owner| swarms.get(owner.0).ok())
-            .copied()
-            .unwrap_or(SwarmId::PLAYER);
-        if charger_swarm != swarm
-            || charger.cell != source_cell
-            || !charger.has_supply()
-            || condition.is_some_and(|condition| !condition.is_operational())
+        if !charger_is_eligible(charger, owner, condition, swarm, grid, swarms)
             || charger_loads.get(&entity).copied().unwrap_or_default() >= MAX_DEFENDERS_PER_CHARGER
-            || rotating_cohort_loads
-                .get(&(swarm, source_cell))
-                .copied()
-                .unwrap_or_default()
-                >= max_rotating
         {
             continue;
         }
@@ -657,37 +692,30 @@ pub fn find_local_capacity_aware_charger(
     best.map(|(_, entity, position)| (entity, position))
 }
 
-/// For every holding defender whose charge is low, walk to
-/// a valid local working charger. The system suspends the
-/// regional lease, removes the `DefendHold` marker, then inserts a
-/// `ChargerAssignment` and a
-/// `DirectMovementComponent` aimed at the charger. A holding
-/// defender with no working charger reachable stays in hold;
-/// the empty-charge health loss system will drain them per
-/// tick until a charger becomes reachable.
+/// Rotate low-Charge Defenders to eligible Chargers across their swarm.
 ///
 /// The system filters on `Without<ChargerAssignment>` and
 /// `Without<ChargerProgress>` so a defender who is already
 /// en route to a charger or already at one is not re-rotated.
-/// The rotation is also "soft": if no working charger is
-/// reachable, the defender simply stays in hold.
+/// A Defender without working capacity continues its current duty.
 #[allow(clippy::type_complexity)]
 pub fn defender_rotation_to_charger_system(
     mut commands: Commands,
+    mut allocation_wake: Option<ResMut<RegionalAllocationWake>>,
+    grid: Res<IntentGrid>,
     defenders: Query<
         (
             Entity,
-            &DefendHold,
             &Transform,
             &Charge,
             &NanobotType,
             &SwarmMember,
-            Option<&RegionalLease>,
+            Option<&Health>,
+            Option<&DefendHold>,
         ),
         (
             With<Nanobot>,
             With<NanobotType>,
-            With<DefendHold>,
             With<Charge>,
             Without<ChargerAssignment>,
             Without<ChargerProgress>,
@@ -697,9 +725,9 @@ pub fn defender_rotation_to_charger_system(
         (
             &NanobotType,
             &SwarmMember,
-            Option<&DefendHold>,
-            Option<&DefendAssignment>,
+            Option<&Health>,
             Option<&ChargerAssignment>,
+            Option<&ChargerProgress>,
         ),
         With<Nanobot>,
     >,
@@ -712,105 +740,124 @@ pub fn defender_rotation_to_charger_system(
     )>,
     swarms: Query<&SwarmId, With<Swarm>>,
 ) {
-    let mut cohort_sizes = HashMap::<(SwarmId, IVec2), u32>::new();
-    let mut rotating_cohort_loads = HashMap::<(SwarmId, IVec2), u32>::new();
+    let mut living_by_swarm = HashMap::<SwarmId, u32>::new();
+    let mut rotating_by_swarm = HashMap::<SwarmId, u32>::new();
     let mut charger_loads = HashMap::<Entity, u32>::new();
-    for (kind, member, hold, defend_assignment, charger_assignment) in &defender_states {
-        if *kind != NanobotType::Defender {
+    for (kind, member, health, charger_assignment, charger_progress) in &defender_states {
+        if *kind != NanobotType::Defender || health.is_some_and(|health| health.current == 0) {
             continue;
         }
-        let source_cell = charger_assignment
-            .map(|assignment| assignment.source_cell)
-            .or_else(|| hold.map(|hold| hold.cell))
-            .or_else(|| defend_assignment.map(|assignment| assignment.cell));
-        let Some(source_cell) = source_cell else {
-            continue;
-        };
-        *cohort_sizes.entry((member.0, source_cell)).or_default() += 1;
-        if let Some(assignment) = charger_assignment {
-            *charger_loads.entry(assignment.charger).or_default() += 1;
-            *rotating_cohort_loads
-                .entry((member.0, source_cell))
-                .or_default() += 1;
+        *living_by_swarm.entry(member.0).or_default() += 1;
+        let active_charger = charger_assignment
+            .map(|assignment| assignment.charger)
+            .or_else(|| charger_progress.map(|progress| progress.charger));
+        if let Some(charger) = active_charger {
+            *charger_loads.entry(charger).or_default() += 1;
+            *rotating_by_swarm.entry(member.0).or_default() += 1;
         }
     }
 
-    let mut candidates = defenders
+    let candidates = defenders
         .iter()
-        .filter(|(_, _, _, _, nanobot_type, _, _)| **nanobot_type == NanobotType::Defender)
-        .filter(|(_, _, _, charge, _, _, _)| charge.needs_rotation())
-        .map(|(entity, hold, transform, _, _, member, lease)| {
+        .filter(|(_, _, _, nanobot_type, _, health, _)| {
+            **nanobot_type == NanobotType::Defender
+                && !health.is_some_and(|health| health.current == 0)
+        })
+        .filter(|(_, _, charge, _, _, _, _)| charge.needs_rotation())
+        .map(|(entity, transform, charge, _, member, _, hold)| {
             (
-                entity,
-                hold.cell,
-                transform.translation.truncate(),
                 member.0,
-                lease.copied(),
+                DefenderRotationCandidate {
+                    entity,
+                    charge: charge.current,
+                    duty: if hold.is_some() {
+                        DefenderRotationDuty::Tactical
+                    } else {
+                        DefenderRotationDuty::Staged
+                    },
+                },
+                transform.translation.truncate(),
             )
         })
         .collect::<Vec<_>>();
-    candidates.sort_by_key(|(entity, _, _, _, _)| entity.to_bits());
+    let candidate_positions = candidates
+        .iter()
+        .map(|(_, candidate, position)| (candidate.entity, *position))
+        .collect::<HashMap<_, _>>();
+    let mut candidate_swarms = candidates
+        .iter()
+        .map(|(swarm, _, _)| *swarm)
+        .collect::<Vec<_>>();
+    candidate_swarms.sort_unstable();
+    candidate_swarms.dedup();
 
-    for (entity, source_cell, pos, swarm, lease) in candidates {
-        let Some((charger_entity, charger_pos)) = find_local_capacity_aware_charger(
-            pos,
-            swarm,
-            source_cell,
-            &chargers,
-            &swarms,
-            &charger_loads,
-            &cohort_sizes,
-            &rotating_cohort_loads,
-        ) else {
-            continue;
-        };
-        // Issue #38 / ADR-0004: stop on the
-        // charger's physical edge so the defender
-        // lands at the charger centre, matching the
-        // arrive guard's `charger.radius` check.
-        // The lookup here is a defensive second pass
-        // after the capacity-aware lookup so the DMC carries
-        // the same extent the
-        // arrive guard reads.
-        let charger_radius = chargers
-            .get(charger_entity)
-            .map(|(_, charger, _, _, _)| charger.radius)
-            .unwrap_or(0.0);
-        if let Some(mut lease) = lease {
-            lease.suspend_for_charge();
-            commands.entity(entity).insert(lease);
+    for swarm in candidate_swarms {
+        let swarm_candidates = candidates
+            .iter()
+            .filter_map(|(candidate_swarm, candidate, _)| {
+                (*candidate_swarm == swarm).then_some(*candidate)
+            })
+            .collect::<Vec<_>>();
+        let selected = select_defenders_for_rotation(
+            &swarm_candidates,
+            living_by_swarm.get(&swarm).copied().unwrap_or_default(),
+            rotating_by_swarm.get(&swarm).copied().unwrap_or_default(),
+        );
+        for entity in selected {
+            let Some(pos) = candidate_positions.get(&entity) else {
+                continue;
+            };
+            let Some((charger_entity, charger_pos)) = find_swarm_capacity_aware_charger(
+                *pos,
+                swarm,
+                &grid,
+                &chargers,
+                &swarms,
+                &charger_loads,
+            ) else {
+                continue;
+            };
+            let charger_radius = chargers
+                .get(charger_entity)
+                .map(|(_, charger, _, _, _)| charger.radius)
+                .unwrap_or(0.0);
+            commands
+                .entity(entity)
+                .remove::<RegionalLease>()
+                .remove::<DefendAssignment>()
+                .remove::<DefendHold>()
+                .remove::<DirectMovementComponent>()
+                .insert((
+                    ChargerAssignment {
+                        charger: charger_entity,
+                    },
+                    DirectMovementComponent {
+                        xy: charger_pos,
+                        stop_radius: charger_radius,
+                    },
+                ));
+            if let Some(wake) = allocation_wake.as_deref_mut() {
+                wake.request_current_pass();
+            }
+            *charger_loads.entry(charger_entity).or_default() += 1;
         }
-        commands.entity(entity).remove::<DefendHold>();
-        commands.entity(entity).insert((
-            ChargerAssignment {
-                charger: charger_entity,
-                source_cell,
-            },
-            DirectMovementComponent {
-                xy: charger_pos,
-                stop_radius: charger_radius,
-            },
-        ));
-        *charger_loads.entry(charger_entity).or_default() += 1;
-        *rotating_cohort_loads
-            .entry((swarm, source_cell))
-            .or_default() += 1;
     }
 }
 
 fn release_charger_state(
     commands: &mut Commands,
     entity: Entity,
-    lease: Option<&mut RegionalLease>,
+    allocation_wake: &mut Option<ResMut<RegionalAllocationWake>>,
 ) {
     commands
         .entity(entity)
         .remove::<ChargerAssignment>()
         .remove::<ChargerProgress>()
         .remove::<ChargerPulseProgress>()
-        .remove::<DirectMovementComponent>();
-    if let Some(lease) = lease {
-        lease.request_resume();
+        .remove::<DirectMovementComponent>()
+        .remove::<RegionalLease>();
+    if let Some(wake) = allocation_wake.as_deref_mut() {
+        wake.request_current_pass();
     }
 }
 
@@ -828,6 +875,7 @@ fn release_charger_state(
 #[allow(clippy::type_complexity)]
 pub fn defender_charger_arrive_system(
     mut commands: Commands,
+    mut allocation_wake: Option<ResMut<RegionalAllocationWake>>,
     mut defenders: Query<
         (
             Entity,
@@ -835,7 +883,6 @@ pub fn defender_charger_arrive_system(
             &Transform,
             Option<&DirectMovementComponent>,
             &SwarmMember,
-            Option<&mut RegionalLease>,
         ),
         (
             With<Nanobot>,
@@ -844,21 +891,22 @@ pub fn defender_charger_arrive_system(
         ),
     >,
     grid: Res<IntentGrid>,
-    chargers: Query<(&Charger, &Transform, Option<&SupportCondition>)>,
+    chargers: Query<(
+        &Charger,
+        &Transform,
+        Option<&OwnerSwarm>,
+        Option<&SupportCondition>,
+    )>,
+    swarms: Query<&SwarmId, With<Swarm>>,
 ) {
-    for (entity, assignment, transform, movement, member, mut lease) in &mut defenders {
-        let source_supported = grid
-            .cell(assignment.source_cell)
-            .is_some_and(|cell| cell.visible_to(IntentKind::Defend, member.0));
-        let Ok((charger, charger_transform, condition)) = chargers.get(assignment.charger) else {
-            release_charger_state(&mut commands, entity, lease.as_deref_mut());
+    for (entity, assignment, transform, movement, member) in &mut defenders {
+        let Ok((charger, charger_transform, owner, condition)) = chargers.get(assignment.charger)
+        else {
+            release_charger_state(&mut commands, entity, &mut allocation_wake);
             continue;
         };
-        if !source_supported
-            || !charger.has_supply()
-            || condition.is_some_and(|condition| !condition.is_operational())
-        {
-            release_charger_state(&mut commands, entity, lease.as_deref_mut());
+        if !charger_is_eligible(charger, owner, condition, member.0, &grid, &swarms) {
+            release_charger_state(&mut commands, entity, &mut allocation_wake);
             continue;
         }
         if movement.is_some() {
@@ -869,7 +917,7 @@ pub fn defender_charger_arrive_system(
             .truncate()
             .distance(charger_transform.translation.truncate());
         if distance > charger.radius {
-            release_charger_state(&mut commands, entity, lease.as_deref_mut());
+            release_charger_state(&mut commands, entity, &mut allocation_wake);
             continue;
         }
         commands.entity(entity).insert((
@@ -892,10 +940,11 @@ pub fn defender_charger_arrive_system(
 /// empty charge refills on the same tick it arrives, and a
 /// defender whose charger empties mid-charge is released on
 /// the same tick. The release is a marker remove; the defend
-/// allocator may resume the defender on a later allocation tick.
+/// allocator may pick the defender during the current allocation pass.
 #[allow(clippy::type_complexity)]
 pub fn defender_charger_work_system(
     mut commands: Commands,
+    mut allocation_wake: Option<ResMut<RegionalAllocationWake>>,
     mut defenders: Query<
         (
             Entity,
@@ -903,63 +952,32 @@ pub fn defender_charger_work_system(
             &ChargerAssignment,
             Option<&mut ChargerPulseProgress>,
             &SwarmMember,
-            Option<&mut RegionalLease>,
         ),
         (With<Nanobot>, With<ChargerProgress>),
     >,
-    grid: Option<Res<IntentGrid>>,
+    grid: Res<IntentGrid>,
     mut chargers: Query<(&mut Charger, Option<&OwnerSwarm>, Option<&SupportCondition>)>,
     swarms: Query<&SwarmId, With<Swarm>>,
     mut ledger: ResMut<ResourceLedger>,
 ) {
     let mut ordered_defenders = defenders
         .iter_mut()
-        .map(|(entity, _, _, _, _, _)| entity)
+        .map(|(entity, _, _, _, _)| entity)
         .collect::<Vec<_>>();
     ordered_defenders.sort_by_key(|entity| entity.to_bits());
 
     for entity in ordered_defenders {
-        let Ok((entity, mut charge, assignment, pulse, member, mut lease)) =
-            defenders.get_mut(entity)
-        else {
+        let Ok((entity, mut charge, assignment, pulse, member)) = defenders.get_mut(entity) else {
             continue;
         };
-        let source_supported = match grid.as_ref() {
-            None => true,
-            Some(grid) => grid
-                .cell(assignment.source_cell)
-                .is_some_and(|cell| cell.visible_to(IntentKind::Defend, member.0)),
-        };
-        if !source_supported {
-            release_charger_state(&mut commands, entity, lease.as_deref_mut());
-            continue;
-        }
         let Ok((mut charger, owner, condition)) = chargers.get_mut(assignment.charger) else {
             // Charger disappeared mid-charge. Drop both
             // markers and let the defender be re-assigned.
-            release_charger_state(&mut commands, entity, lease.as_deref_mut());
+            release_charger_state(&mut commands, entity, &mut allocation_wake);
             continue;
         };
-        let charger_swarm = owner
-            .and_then(|owner| swarms.get(owner.0).ok())
-            .copied()
-            .unwrap_or(SwarmId::PLAYER);
-        if charger_swarm != member.0 {
-            release_charger_state(&mut commands, entity, lease.as_deref_mut());
-            continue;
-        }
-        if condition.is_some_and(|condition| !condition.is_operational()) {
-            release_charger_state(&mut commands, entity, lease.as_deref_mut());
-            continue;
-        }
-        if !charger.has_supply() {
-            // Charger emptied between the previous tick and
-            // this one. Release the defender; the rotation
-            // system will re-pick them on the next tick if
-            // another working charger is reachable, and
-            // otherwise the empty-charge health-loss system
-            // starts to fire.
-            release_charger_state(&mut commands, entity, lease.as_deref_mut());
+        if !charger_is_eligible(&charger, owner, condition, member.0, &grid, &swarms) {
+            release_charger_state(&mut commands, entity, &mut allocation_wake);
             continue;
         }
         let Some(mut pulse) = pulse else {
@@ -976,14 +994,14 @@ pub fn defender_charger_work_system(
 
         let consumed = CHARGER_MATERIAL_PER_PULSE.min(charger.amount);
         if consumed == 0 {
-            release_charger_state(&mut commands, entity, lease.as_deref_mut());
+            release_charger_state(&mut commands, entity, &mut allocation_wake);
             continue;
         }
         charger.amount -= consumed;
-        ledger.remove_for(charger_swarm, charger.kind, consumed);
+        ledger.remove_for(member.0, charger.kind, consumed);
         charge.current = (charge.current + CHARGE_PER_PULSE).min(charge.max);
         if charge.is_full() || !charger.has_supply() {
-            release_charger_state(&mut commands, entity, lease.as_deref_mut());
+            release_charger_state(&mut commands, entity, &mut allocation_wake);
         }
     }
 }
@@ -995,13 +1013,9 @@ pub fn defender_charger_work_system(
 /// Plugin that wires the charge-sustain systems into the
 /// fixed simulation schedule.
 ///
-/// As of issue #28, the demand side and the consumer side
-/// are split across two update chains. Demand runs after the
-/// current regional acquisition and Defend hold transition;
-/// a newly planned Charger therefore enters the next
-/// projection/acquisition pass. Consumer systems run after
-/// planned-structure work so freshly promoted chargers are
-/// visible to the rotation system.
+/// Demand and consumer state use separate chains. Demand observes current
+/// staging after acquisition. Consumer state settles before regional projection
+/// so Charge lifecycle changes are visible to the current acquisition pass.
 ///
 /// Demand chain (single system, ordered after Defend hold
 /// state and before planned-structure work):
@@ -1012,18 +1026,15 @@ pub fn defender_charger_work_system(
 ///    Worker then builds it through the planned-structure
 ///    lifecycle.
 ///
-/// Consumer chain (after the planned structure work
-/// system, so the promotion has fired before rotation
-/// reads chargers):
+/// Consumer chain (after movement and before regional projection):
 ///
 /// 1. [`defender_charge_drain_system`] -- passive drain
 ///    first so the rotation trigger sees the post-drain
 ///    value.
 /// 2. [`defender_health_loss_when_empty_system`] -- health
-///    loss fires for holding defenders with empty charge
-///    that have not been picked up by the rotation chain.
+///    loss fires for unserved Defenders with empty Charge.
 /// 3. [`defender_rotation_to_charger_system`] -- rotate
-///    low-charge holding defenders to working chargers.
+///    low-Charge Defenders to working Chargers.
 /// 4. [`defender_charger_arrive_system`] -- transition
 ///    arrived defenders into the charging state.
 /// 5. [`defender_charger_work_system`] -- refill charge and
@@ -1046,11 +1057,8 @@ impl Plugin for ChargePlugin {
                 .after(crate::nanobot::defend::defender_hold_system)
                 .before(crate::nanobot::planned::worker_planned_structure_work_system),
         );
-        // Consumer: drain, health-loss, rotation, arrive,
-        // work. The chain runs after the planned-structure
-        // work system so a freshly promoted charger is
-        // visible to the rotation system's local charger scan
-        // in the same tick.
+        // Consumer state settles before regional projection so Charge departure,
+        // completion, and invalidation release old allocation before acquisition.
         app.add_systems(
             FixedUpdate,
             (
@@ -1062,8 +1070,7 @@ impl Plugin for ChargePlugin {
             )
                 .chain()
                 .after(crate::nanobot::NanobotSimulationSet::Movement)
-                .after(crate::nanobot::defend::defender_hold_system)
-                .after(crate::nanobot::planned::worker_planned_structure_work_system),
+                .before(crate::nanobot::RegionalAllocationSet::Project),
         );
     }
 }
@@ -1300,5 +1307,57 @@ mod tests {
         // would do nothing for every defended cell.
         const { assert!(MAX_CHARGERS_PER_CELL >= 1) };
         const { assert!(MAX_DEFENDERS_PER_CHARGER >= 1) };
+    }
+
+    #[test]
+    fn swarm_rotation_capacity_keeps_at_least_half_of_living_defenders_on_duty() {
+        let cases = [(0, 0), (1, 1), (2, 1), (3, 1), (4, 2), (5, 2)];
+
+        for (living, expected) in cases {
+            assert_eq!(
+                defender_rotation_capacity(living),
+                expected,
+                "living population {living}"
+            );
+        }
+    }
+
+    #[test]
+    fn scarce_rotation_slots_prefer_charge_then_duty_then_identity() {
+        let first_spawned = Entity::from_bits(1);
+        let staged = Entity::from_bits(2);
+        let tactical = Entity::from_bits(3);
+        let lowest_charge = Entity::from_bits(4);
+        let candidates = [
+            DefenderRotationCandidate {
+                entity: tactical,
+                charge: 0.2,
+                duty: DefenderRotationDuty::Tactical,
+            },
+            DefenderRotationCandidate {
+                entity: staged,
+                charge: 0.2,
+                duty: DefenderRotationDuty::Staged,
+            },
+            DefenderRotationCandidate {
+                entity: first_spawned,
+                charge: 0.2,
+                duty: DefenderRotationDuty::Staged,
+            },
+            DefenderRotationCandidate {
+                entity: lowest_charge,
+                charge: 0.1,
+                duty: DefenderRotationDuty::Tactical,
+            },
+        ];
+
+        assert_eq!(
+            select_defenders_for_rotation(&candidates, 8, 0),
+            vec![lowest_charge, first_spawned, staged, tactical]
+        );
+        assert_eq!(
+            select_defenders_for_rotation(&candidates, 6, 2),
+            vec![lowest_charge]
+        );
     }
 }

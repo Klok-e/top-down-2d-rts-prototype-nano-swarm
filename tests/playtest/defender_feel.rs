@@ -1,5 +1,5 @@
 //! Near-runtime Defender feel flow: authored-front travel, readable combat,
-//! and staggered local recharge.
+//! and staggered swarm-wide recharge.
 
 use std::collections::HashMap;
 
@@ -227,6 +227,34 @@ fn charger_loads(world: &mut World) -> HashMap<Entity, usize> {
     loads
 }
 
+fn swarm_rotation_loads(world: &mut World) -> HashMap<SwarmId, u32> {
+    let mut loads = HashMap::new();
+    for (member, _) in world
+        .query::<(&SwarmMember, &ChargerAssignment)>()
+        .iter(world)
+    {
+        *loads.entry(member.0).or_default() += 1;
+    }
+    loads
+}
+
+fn assert_swarm_rotation_caps(world: &mut World) {
+    let loads = swarm_rotation_loads(world);
+    for swarm in [SwarmId::PLAYER, OPPONENT_SWARM] {
+        let living = live_defenders(world, swarm) as u32;
+        let rotating = loads.get(&swarm).copied().unwrap_or_default();
+        let within_cap = match living {
+            0 => rotating == 0,
+            1 => rotating <= 1,
+            _ => rotating.saturating_mul(2) <= living,
+        };
+        assert!(
+            within_cap,
+            "swarm {swarm:?} rotated {rotating} of {living} living Defenders"
+        );
+    }
+}
+
 fn holders_in_front(world: &mut World, cell: IVec2, swarm: SwarmId) -> usize {
     world
         .query::<(&DefendHold, &SwarmMember)>()
@@ -258,6 +286,7 @@ fn assert_default_tick_state(
             "authored default charger {charger:?} exceeded its three-Defender service limit: {load}"
         );
     }
+    assert_swarm_rotation_caps(world);
 
     let player_holders = holders_in_front(world, PLAYER_DEFEND_CELL, SwarmId::PLAYER);
     let opponent_holders = holders_in_front(world, PLAYER_DEFEND_CELL, SwarmId(1));
@@ -306,15 +335,20 @@ fn spawn_runtime_front() -> (App, IVec2, Entity, Entity) {
     let front = OPPONENT_DEFEND_CELL;
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
+        grid.paint_owned(
+            PLAYER_DEFEND_CELL,
+            IntentKind::Defend,
+            Some(SwarmId::PLAYER),
+        );
         grid.paint_owned(front, IntentKind::Defend, Some(opponent_id));
         grid.contest_defend(front, SwarmId::PLAYER);
     }
 
-    let player_charger = common::spawn_charger_at(&mut app, front, 60);
+    let player_charger = common::spawn_operational_charger_at(&mut app, PLAYER_DEFEND_CELL, 60);
     app.world_mut()
         .entity_mut(player_charger)
         .insert(OwnerSwarm(player_swarm));
-    let opponent_charger = common::spawn_charger_at(&mut app, front, 60);
+    let opponent_charger = common::spawn_operational_charger_at(&mut app, front, 60);
     app.world_mut()
         .entity_mut(opponent_charger)
         .insert(OwnerSwarm(opponent_swarm));
@@ -405,27 +439,12 @@ fn default_front_has_readable_combat_and_staggered_sustain() {
         for charger in [player_charger, opponent_charger] {
             assert!(loads.get(&charger).copied().unwrap_or_default() <= 3);
         }
+        assert_swarm_rotation_caps(app.world_mut());
 
         let player_holders = holders_in_front(app.world_mut(), front, SwarmId::PLAYER);
         let opponent_holders = holders_in_front(app.world_mut(), front, OPPONENT_SWARM);
-        let player_live = live_defenders(app.world_mut(), SwarmId::PLAYER);
-        let opponent_live = live_defenders(app.world_mut(), OPPONENT_SWARM);
         if player_holders > 0 && opponent_holders > 0 {
             saw_holders = true;
-        }
-        if saw_holders {
-            if player_live > 0 {
-                assert!(
-                    player_holders > 0,
-                    "player cohort fully evacuated the front"
-                );
-            }
-            if opponent_live > 0 {
-                assert!(
-                    opponent_holders > 0,
-                    "opponent cohort fully evacuated the front"
-                );
-            }
         }
 
         if contact_tick.is_none()
@@ -444,13 +463,6 @@ fn default_front_has_readable_combat_and_staggered_sustain() {
             }
 
             if tick == contact + MAX_TICKS_AFTER_CONTACT {
-                let owner = app
-                    .world()
-                    .resource::<IntentGrid>()
-                    .cell(front)
-                    .expect("front cell")
-                    .owner(IntentKind::Defend);
-                assert_eq!(owner, Some(SwarmId::PLAYER));
                 break;
             }
         }

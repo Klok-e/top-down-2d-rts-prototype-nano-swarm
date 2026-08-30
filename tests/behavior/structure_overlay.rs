@@ -116,7 +116,7 @@ fn planned_overlay_bar_uses_build_progress() {
 #[test]
 fn charger_overlay_bar_uses_amount_over_capacity() {
     let mut app = build_app();
-    let charger = common::spawn_charger_at(&mut app, IVec2::ZERO, 25);
+    let charger = common::spawn_operational_charger_at(&mut app, IVec2::ZERO, 25);
     app.world_mut()
         .entity_mut(charger)
         .get_mut::<Charger>()
@@ -792,7 +792,7 @@ fn overlay_spawns_for_every_kind_at_once() {
         .id();
     let planned =
         common::spawn_planned_structure_of_kind_at_cell(&mut app, cell, PlannedKind::SinkStockpile);
-    let charger = common::spawn_charger_at(&mut app, cell, 30);
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 30);
     let hauler = common::spawn_hauler_at(&mut app, Vec2::new(256.0, 0.0));
     app.world_mut().entity_mut(hauler).insert(HaulerLoad {
         kind: ResourceKind::Minerals,

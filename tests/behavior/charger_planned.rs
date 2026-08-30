@@ -36,9 +36,9 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Charge, Charger, ChargerAssignment, ChargerProgress, DEFAULT_PLANNED_WORK_TICKS,
-        DefendHold, Health, LOW_CHARGE_THRESHOLD, NANOBOT_DEFAULT_MAX_HEALTH, OwnerSwarm,
-        PlannedKind, PlannedStructure, PlannedStructureClaim, Swarm, SwarmId, SwarmMember,
-        completed_visual_color, planned_visual_color,
+        DefendHold, Health, LOW_CHARGE_THRESHOLD, MaintenancePlugin, NANOBOT_DEFAULT_MAX_HEALTH,
+        OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructureClaim, Swarm, SwarmId,
+        SwarmMember, completed_visual_color, planned_visual_color,
     },
     resources::{ResourceKind, ResourceLedger},
 };
@@ -431,10 +431,12 @@ fn completed_planned_charger_provides_charge_to_defenders() {
     // systems (rotation, arrive, work) without any new
     // wiring.
     let mut app = build_app();
+    app.add_plugins(MaintenancePlugin);
     let cell = IVec2::new(0, 0);
     let cell_center = common::cell_world_center(cell);
-    let _swarm = common::spawn_swarm_at(&mut app, cell_center);
-    let _plan = common::spawn_planned_charger_at_cell(&mut app, cell);
+    let swarm = common::spawn_swarm_at(&mut app, cell_center);
+    let plan = common::spawn_planned_charger_at_cell(&mut app, cell);
+    app.world_mut().entity_mut(plan).insert(OwnerSwarm(swarm));
     let _worker = common::spawn_worker_at(&mut app, cell_center);
     let defender = common::spawn_defender_at(&mut app, cell_center);
     // Paint the Defend cell so the hold system keeps the
@@ -482,7 +484,7 @@ fn completed_planned_charger_provides_charge_to_defenders() {
     }
 
     // Drive enough ticks for rotation, 19 supplied pulses, and
-    // release through the Defend lease.
+    // re-entry through current Defend allocation.
     for _ in 0..300 {
         app.update();
     }

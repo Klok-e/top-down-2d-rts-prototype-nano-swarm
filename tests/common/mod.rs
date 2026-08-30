@@ -245,8 +245,8 @@ pub fn sim_app_with_defend() -> App {
 }
 
 /// `sim_app` + gather + haul + defend + charge. The full
-/// defend/charge loop: defenders hold a cell, drain, rotate to a
-/// working charger, and return. Haul is registered so a hauler
+/// defend/charge loop: Defenders drain, rotate through swarm-wide
+/// working Chargers, and re-enter current allocation. Haul is registered so a hauler
 /// can deliver to a charger (the logistics support half of the
 /// charge contract).
 pub fn sim_app_with_charge() -> App {
@@ -563,16 +563,17 @@ pub fn spawn_sink_stockpile(app: &mut App, world_pos: Vec2, amount: u32, capacit
         .id()
 }
 
-/// Spawn a [`Charger`] in `cell` with the given `amount` of
-/// minerals. The charger lives at the cell's world centre, so
+/// Spawn a completed, operational [`Charger`] in `cell` with the given
+/// `amount` of minerals. The charger lives at the cell's world centre, so
 /// tests that assert "the charger is in the cell" can compare the
 /// transform without doing the cell-to-world math themselves.
-pub fn spawn_charger_at(app: &mut App, cell: IVec2, amount: u32) -> Entity {
+pub fn spawn_operational_charger_at(app: &mut App, cell: IVec2, amount: u32) -> Entity {
     let mut c = Charger::new(cell);
     c.amount = amount;
     app.world_mut()
         .spawn((
             c,
+            Structure::new(StructureKind::Basic),
             Transform::from_translation(cell_world_center(cell).extend(0.0)),
         ))
         .id()

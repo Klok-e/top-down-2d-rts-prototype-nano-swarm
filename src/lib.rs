@@ -203,12 +203,8 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
         // DirectMovementComponent, the same signal the rest of
         // the per-role systems use.
         .add_plugins(nanobot::DefendPlugin)
-        // ChargePlugin chains after `move_velocity_system`
-        // and after DefendPlugin so the defend hold is
-        // established before the rotation system releases it.
-        // The internal order (drain -> health loss ->
-        // auto-creation -> rotation -> arrive -> work) keeps
-        // the charge loop self-consistent per tick.
+        // ChargePlugin settles consumer state after movement and before regional
+        // acquisition so rotation releases current allocation immediately.
         .add_plugins(nanobot::ChargePlugin)
         // Combat consumes Defend holds and Charge-scaled stats after sustain updates.
         .add_plugins(CombatPlugin)

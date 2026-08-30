@@ -8,8 +8,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
         AllocationRegion, CandidateBounds, CategoryEligibility, CategoryValues, DefendAssignment,
         DefendHold, LeaseDecision, OpportunityCategory, OpportunityTarget,
         REGIONAL_FAIRNESS_PROMOTION_TICKS, RUNTIME_MAX_CANDIDATES, ReassignmentPolicy,
-        RegionalLease, RegionalLeaseConfig, RegionalLeaseState, RegionalPressure,
-        allocate_category_budget, allocate_regional_candidates, choose_bounded_candidate,
+        RegionalLease, RegionalLeaseConfig, RegionalPressure, allocate_category_budget,
+        allocate_regional_candidates, choose_bounded_candidate,
         choose_bounded_candidate_with_claims, evaluate_lease, maintain_regional_leases_system,
         outward_pull_budget, project_actionable_opportunities_system, region_fairness_sort_key,
     },
@@ -296,33 +296,6 @@ fn progress_renews_a_lease_and_no_progress_expires_it() {
         evaluate_lease(&mut lease, 5, 1, true, 3),
         LeaseDecision::RevokeNoProgress
     );
-}
-
-#[test]
-fn charge_suspension_requires_capacity_confirmation_to_resume() {
-    let opportunity = defend_opportunity(region(0, 0), IVec2::ZERO, 1);
-    let mut lease = RegionalLease::new(
-        opportunity.region,
-        opportunity.category,
-        opportunity.target,
-        None,
-        0,
-        0,
-        3,
-    );
-    assert!(lease.counts_toward_capacity());
-
-    lease.suspend_for_charge();
-    assert_eq!(lease.state, RegionalLeaseState::SuspendedForCharge);
-    assert!(!lease.counts_toward_capacity());
-    lease.request_resume();
-    assert_eq!(lease.state, RegionalLeaseState::ResumePending);
-    assert!(!lease.counts_toward_capacity());
-    assert!(!lease.activate_if_capacity(false));
-    assert_eq!(lease.state, RegionalLeaseState::ResumePending);
-    assert!(lease.activate_if_capacity(true));
-    assert_eq!(lease.state, RegionalLeaseState::Active);
-    assert!(lease.counts_toward_capacity());
 }
 
 #[test]
