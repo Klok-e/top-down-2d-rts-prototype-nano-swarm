@@ -5,9 +5,9 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        BUILDING_FOOTPRINT_PADDING, BUILDING_FOOTPRINT_RADIUS, Commitment, DefendHold, NanobotType,
-        OwnerSwarm, PlannedKind, PlannedProductionTarget, PlannedStructure, PlannedStructureClaim,
-        SwarmId,
+        BUILDING_FOOTPRINT_PADDING, BUILDING_FOOTPRINT_RADIUS, Charge, Commitment,
+        LOW_CHARGE_THRESHOLD, NanobotType, OwnerSwarm, PlannedKind, PlannedProductionTarget,
+        PlannedStructure, PlannedStructureClaim, SwarmId,
     },
     resources::ResourceDeposit,
 };
@@ -347,10 +347,12 @@ fn charger_placement_rejects_planned_sink_stockpile_overlap() {
     let center = common::cell_world_center(cell);
     paint_defend(&mut app, cell);
     let swarm = common::spawn_swarm_at(&mut app, center);
-    let _defender = common::spawn_defender_at(&mut app, center);
+    let defender = common::spawn_defender_at(&mut app, center);
     app.world_mut()
-        .entity_mut(_defender)
-        .insert(DefendHold { cell });
+        .entity_mut(defender)
+        .get_mut::<Charge>()
+        .expect("Defender has Charge")
+        .current = LOW_CHARGE_THRESHOLD;
     // A Planned Sink Stockpile at the cell center. The
     // Charger's natural placement (cell center) must
     // collide with this plan, so the demand system must
@@ -391,6 +393,6 @@ fn charger_placement_rejects_planned_sink_stockpile_overlap() {
     }
     assert!(
         charger_count > 0,
-        "Defend demand must still produce a Charger plan at a non-overlapping cell offset"
+        "unserved low Charge must still produce a plan at a non-overlapping Defend site"
     );
 }

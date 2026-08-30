@@ -127,8 +127,8 @@ fn authored_default_scenario_reaches_primary_defend_contest() {
     );
     assert_eq!(
         *app.world().resource::<MatchOutcome>(),
-        MatchOutcome::Victory,
-        "authored default bootstrap must deterministically latch the opponent's terminal result"
+        MatchOutcome::InProgress,
+        "quiet staging must not overbuild a Charger and collapse the opponent economy"
     );
 
     let initial_player_health = aggregate_defender_health(app.world_mut(), SwarmId::PLAYER);

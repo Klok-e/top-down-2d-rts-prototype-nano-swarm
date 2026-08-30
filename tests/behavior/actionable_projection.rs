@@ -2,10 +2,11 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        ActionableOpportunity, ActionableProjection, AllocationRegion, DefendPressure,
-        MAINTENANCE_NEEDS_THRESHOLD, OpportunityCategory, OwnerSwarm, PlannedKind,
-        PlannedStructure, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, SwarmId,
-        project_actionable_opportunities_system,
+        ActionableOpportunity, ActionableProjection, AllocationRegion, Charger, ChargerAssignment,
+        ChargerProgress, DefendPressure, Health, MAINTENANCE_NEEDS_THRESHOLD, Nanobot, NanobotType,
+        OpportunityCategory, OpportunityTarget, OwnerSwarm, PlannedKind, PlannedStructure,
+        SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, Swarm, SwarmId,
+        SwarmMember, project_actionable_opportunities_system,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole},
 };
@@ -16,6 +17,45 @@ fn projection_app() -> App {
         .init_resource::<ActionableProjection>()
         .add_systems(Update, project_actionable_opportunities_system);
     app
+}
+
+fn spawn_stale_owned_charger(app: &mut App, cell: IVec2) -> (Entity, Entity) {
+    let swarm = app.world_mut().spawn((Swarm {}, SwarmId::PLAYER)).id();
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let mut charger = Charger::new(cell);
+    charger.amount = 10;
+    let mut condition = Structure::new(StructureKind::Basic);
+    condition.ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
+    let charger = app
+        .world_mut()
+        .spawn((
+            charger,
+            condition,
+            OwnerSwarm(swarm),
+            Transform::from_translation(
+                top_down_2d_rts_prototype_nano_swarm::ai::get_world_from_zone(cell).extend(0.0),
+            ),
+        ))
+        .id();
+    (swarm, charger)
+}
+
+fn spawn_projection_defender(app: &mut App, swarm: SwarmId, cell: IVec2) -> Entity {
+    app.world_mut()
+        .spawn((
+            Nanobot {},
+            NanobotType::Defender,
+            SwarmMember::new(swarm),
+            Health::default(),
+            Transform::from_translation(
+                top_down_2d_rts_prototype_nano_swarm::ai::get_world_from_zone(cell).extend(0.0),
+            ),
+        ))
+        .id()
 }
 
 #[test]
@@ -88,6 +128,177 @@ fn build_and_defend_intent_project_maintenance_and_defend_work() {
         ]
     );
     assert_eq!(opportunities[1].available_work, 1);
+}
+
+#[test]
+fn unattended_valid_charger_does_not_project_maintenance() {
+    let mut app = projection_app();
+    let (_, charger) = spawn_stale_owned_charger(&mut app, IVec2::ZERO);
+
+    app.update();
+
+    let maintenance = app
+        .world()
+        .resource::<ActionableProjection>()
+        .opportunities(AllocationRegion::for_cell(IVec2::ZERO))
+        .iter()
+        .filter(|opportunity| {
+            opportunity.category == OpportunityCategory::Maintenance
+                && opportunity.target == OpportunityTarget::Maintenance { structure: charger }
+        })
+        .count();
+    assert_eq!(
+        maintenance, 0,
+        "unattended Charger capacity must be allowed to degrade",
+    );
+}
+
+#[test]
+fn friendly_defender_in_charger_or_adjacent_cell_projects_maintenance() {
+    let offsets = [
+        IVec2::new(-1, -1),
+        IVec2::new(0, -1),
+        IVec2::new(1, -1),
+        IVec2::new(-1, 0),
+        IVec2::ZERO,
+        IVec2::new(1, 0),
+        IVec2::new(-1, 1),
+        IVec2::new(0, 1),
+        IVec2::new(1, 1),
+    ];
+
+    for offset in offsets {
+        let mut app = projection_app();
+        let (_, charger) = spawn_stale_owned_charger(&mut app, IVec2::ZERO);
+        spawn_projection_defender(&mut app, SwarmId::PLAYER, offset);
+
+        app.update();
+
+        let projected = app
+            .world()
+            .resource::<ActionableProjection>()
+            .opportunities(AllocationRegion::for_cell(IVec2::ZERO))
+            .iter()
+            .any(|opportunity| {
+                opportunity.target == OpportunityTarget::Maintenance { structure: charger }
+            });
+        assert!(
+            projected,
+            "friendly Defender offset {offset:?} must keep nearby Charger capacity maintained",
+        );
+    }
+}
+
+#[test]
+fn despawned_nearby_defender_removes_cached_charger_maintenance() {
+    let mut app = projection_app();
+    let (_, charger) = spawn_stale_owned_charger(&mut app, IVec2::ZERO);
+    let defender = spawn_projection_defender(&mut app, SwarmId::PLAYER, IVec2::new(1, 0));
+    app.update();
+    assert!(
+        app.world()
+            .resource::<ActionableProjection>()
+            .opportunities(AllocationRegion::for_cell(IVec2::ZERO))
+            .iter()
+            .any(|opportunity| {
+                opportunity.target == OpportunityTarget::Maintenance { structure: charger }
+            }),
+        "nearby live Defender initially requests Charger Maintenance",
+    );
+
+    app.world_mut().despawn(defender);
+    app.update();
+
+    assert!(
+        app.world()
+            .resource::<ActionableProjection>()
+            .opportunities(AllocationRegion::for_cell(IVec2::ZERO))
+            .iter()
+            .all(|opportunity| {
+                opportunity.target != OpportunityTarget::Maintenance { structure: charger }
+            }),
+        "despawned Defender must stop requesting cached Charger Maintenance",
+    );
+}
+
+#[test]
+fn distant_foreign_or_dead_defender_does_not_project_charger_maintenance() {
+    let cases = [
+        ("two-cell distance", SwarmId::PLAYER, IVec2::new(2, 0), true),
+        ("foreign Defender", SwarmId(11), IVec2::new(1, 0), true),
+        ("dead Defender", SwarmId::PLAYER, IVec2::new(1, 0), false),
+    ];
+
+    for (label, swarm, defender_cell, alive) in cases {
+        let mut app = projection_app();
+        let (_, charger) = spawn_stale_owned_charger(&mut app, IVec2::ZERO);
+        let defender = spawn_projection_defender(&mut app, swarm, defender_cell);
+        if !alive {
+            app.world_mut()
+                .entity_mut(defender)
+                .get_mut::<Health>()
+                .expect("Defender has Health")
+                .current = 0;
+        }
+
+        app.update();
+
+        let projected = app
+            .world()
+            .resource::<ActionableProjection>()
+            .opportunities(AllocationRegion::for_cell(IVec2::ZERO))
+            .iter()
+            .any(|opportunity| {
+                opportunity.target == OpportunityTarget::Maintenance { structure: charger }
+            });
+        assert!(!projected, "{label} must not maintain the Charger");
+    }
+}
+
+#[test]
+fn assigned_en_route_or_charging_defender_projects_charger_maintenance() {
+    for service_state in ["assigned", "en-route", "charging"] {
+        let mut app = projection_app();
+        let (_, charger) = spawn_stale_owned_charger(&mut app, IVec2::ZERO);
+        let defender = spawn_projection_defender(&mut app, SwarmId::PLAYER, IVec2::new(3, 0));
+        match service_state {
+            "assigned" => {
+                app.world_mut()
+                    .entity_mut(defender)
+                    .insert(ChargerAssignment { charger });
+            }
+            "en-route" => {
+                app.world_mut().entity_mut(defender).insert((
+                    ChargerAssignment { charger },
+                    top_down_2d_rts_prototype_nano_swarm::nanobot::DirectMovementComponent {
+                        xy: Vec2::ZERO,
+                        stop_radius: 1.0,
+                    },
+                ));
+            }
+            "charging" => {
+                app.world_mut()
+                    .entity_mut(defender)
+                    .insert((ChargerAssignment { charger }, ChargerProgress { charger }));
+            }
+            _ => unreachable!(),
+        }
+
+        app.update();
+
+        let projected = app
+            .world()
+            .resource::<ActionableProjection>()
+            .opportunities(AllocationRegion::for_cell(IVec2::ZERO))
+            .iter()
+            .any(|opportunity| {
+                opportunity.target == OpportunityTarget::Maintenance { structure: charger }
+            });
+        assert!(
+            projected,
+            "{service_state} Defender service must maintain the Charger",
+        );
+    }
 }
 
 #[test]

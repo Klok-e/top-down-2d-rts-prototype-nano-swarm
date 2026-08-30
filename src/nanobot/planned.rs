@@ -125,11 +125,10 @@ pub enum PlannedKind {
     /// const-friendly tag.
     ProductionFacility,
     /// Completes into a [`crate::nanobot::Charger`]. The
-    /// kind emerges from Defend Zone demand (issue #28):
-    /// when a Defend cell has defender load and the
-    /// existing chargers (planned or completed) cannot
-    /// cover it, a Planned Charger is planned at the cell's
-    /// world center. A Worker then builds it through the
+    /// kind emerges when a low-Charge Defender has no available
+    /// completed or pending swarm-wide capacity. The nearest
+    /// non-overlapping site in owned Defend paint receives the
+    /// plan. A Worker then builds it through the
     /// same lifecycle as the other kinds; the completed
     /// charger uses the default `Charger::new(cell)` shape
     /// so the existing charge sustain loop picks it up
