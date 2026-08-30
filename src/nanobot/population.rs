@@ -6,8 +6,8 @@ use bevy::prelude::*;
 
 use crate::nanobot::{
     ActionableProjection, HAULER_CARRY_CAPACITY, NanobotType, OpportunityCategory,
-    OpportunityTarget, RegionalAllocationSet, Swarm, SwarmId,
-    production_facility_pick_target_system,
+    OpportunityTarget, RegionalAllocationSet, SwarmId, TerritorySnapshot,
+    defender_population_demand, production_facility_pick_target_system,
 };
 
 /// Desired population by swarm and Nanobot Type, derived from discrete useful
@@ -48,15 +48,12 @@ impl PopulationDemand {
 /// per mineral.
 pub fn population_demand_system(
     projection: Res<ActionableProjection>,
-    swarms: Query<&SwarmId, With<Swarm>>,
+    territory: Res<TerritorySnapshot>,
     mut demand: ResMut<PopulationDemand>,
 ) {
     demand.desired.clear();
     let mut haul_slots = HashMap::<(SwarmId, Entity), u32>::new();
-    let mut live_swarms = swarms.iter().copied().collect::<HashSet<_>>();
-    if live_swarms.is_empty() {
-        live_swarms.insert(SwarmId::PLAYER);
-    }
+    let live_swarms = territory.swarms().collect::<HashSet<_>>();
     for (_, opportunities) in projection.iter_regions() {
         for opportunity in opportunities {
             let owners = opportunity
@@ -68,9 +65,7 @@ pub fn population_demand_system(
                     OpportunityCategory::Gather
                     | OpportunityCategory::PlannedBuild
                     | OpportunityCategory::Maintenance => (NanobotType::Worker, 1),
-                    OpportunityCategory::Defend => {
-                        (NanobotType::Defender, opportunity.available_work.max(1))
-                    }
+                    OpportunityCategory::Defend => continue,
                     OpportunityCategory::Haul => {
                         let OpportunityTarget::Haul { source, .. } = opportunity.target else {
                             continue;
@@ -92,6 +87,13 @@ pub fn population_demand_system(
     }
     for ((swarm, _), slots) in haul_slots {
         demand.add(swarm, NanobotType::Hauler, slots);
+    }
+    for swarm in live_swarms {
+        demand.add(
+            swarm,
+            NanobotType::Defender,
+            defender_population_demand(territory.tile_count(swarm), territory.threat_count(swarm)),
+        );
     }
 }
 

@@ -76,6 +76,8 @@ mod structure_overlay;
 mod tactical_overlay;
 #[path = "behavior/terminal_logistics_priority.rs"]
 mod terminal_logistics_priority;
+#[path = "behavior/territory_projection.rs"]
+mod territory_projection;
 #[path = "behavior/world_space_nanobots.rs"]
 mod world_space_nanobots;
 #[path = "behavior/zone_brush_ui_capture.rs"]

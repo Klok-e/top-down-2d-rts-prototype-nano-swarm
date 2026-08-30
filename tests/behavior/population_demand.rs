@@ -1,42 +1,26 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
-    nanobot::{
-        ActionableProjection, DefendPressure, NanobotType, PopulationDemand, Swarm, SwarmId,
-        population_demand_system, project_actionable_opportunities_system,
-    },
+    nanobot::{DefendPressure, NanobotType, PopulationDemand, Swarm, SwarmId, SwarmMember},
     resources::{ResourceDeposit, ResourceKind},
 };
 
-fn demand_app() -> App {
-    let mut app = App::new();
-    app.insert_resource(IntentGrid::new(32, 32))
-        .init_resource::<ActionableProjection>()
-        .init_resource::<DefendPressure>()
-        .init_resource::<PopulationDemand>()
-        .add_systems(
-            Update,
-            (
-                project_actionable_opportunities_system,
-                population_demand_system,
-            )
-                .chain(),
-        );
-    app
-}
+#[path = "../common/mod.rs"]
+mod common;
 
 #[test]
-fn defend_cells_and_hostiles_create_typed_defender_demand() {
-    let mut app = demand_app();
+fn swarm_tiles_create_rounded_reserve_without_defend_pressure_multiplier() {
+    let mut app = common::sim_app_with_population_demand();
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        grid.paint_owned(IVec2::ZERO, IntentKind::Defend, Some(SwarmId::PLAYER));
-        grid.paint_owned(IVec2::new(1, 0), IntentKind::Defend, Some(SwarmId::PLAYER));
+        grid.paint_owned(IVec2::ZERO, IntentKind::Gather, Some(SwarmId::PLAYER));
+        grid.paint_owned(IVec2::new(1, 0), IntentKind::Build, Some(SwarmId::PLAYER));
+        grid.paint_owned(IVec2::new(2, 0), IntentKind::Defend, Some(SwarmId::PLAYER));
     }
     app.world_mut()
         .resource_mut::<DefendPressure>()
-        .set(IVec2::ZERO, 3.0);
+        .set(IVec2::new(2, 0), 9.0);
 
     app.update();
 
@@ -45,14 +29,14 @@ fn defend_cells_and_hostiles_create_typed_defender_demand() {
     assert_eq!(demand.desired_for(SwarmId::PLAYER, NanobotType::Hauler), 0);
     assert_eq!(
         demand.desired_for(SwarmId::PLAYER, NanobotType::Defender),
-        4,
-        "two cells contribute two baseline Defenders and pressure adds two more",
+        2,
+        "three unique Swarm Tiles require a peaceful reserve of two Defenders",
     );
 }
 
 #[test]
-fn unowned_defend_work_creates_demand_for_every_visible_swarm() {
-    let mut app = demand_app();
+fn shared_unowned_paint_creates_no_defender_demand() {
+    let mut app = common::sim_app_with_population_demand();
     let opponent = SwarmId(7);
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
     app.world_mut().spawn((Swarm {}, opponent));
@@ -65,14 +49,14 @@ fn unowned_defend_work_creates_demand_for_every_visible_swarm() {
     let demand = app.world().resource::<PopulationDemand>();
     assert_eq!(
         demand.desired_for(SwarmId::PLAYER, NanobotType::Defender),
-        1
+        0
     );
-    assert_eq!(demand.desired_for(opponent, NanobotType::Defender), 1);
+    assert_eq!(demand.desired_for(opponent, NanobotType::Defender), 0);
 }
 
 #[test]
-fn contested_defend_work_preserves_each_participants_pressure() {
-    let mut app = demand_app();
+fn contested_defend_cell_creates_one_swarm_tile_for_each_participant() {
+    let mut app = common::sim_app_with_population_demand();
     let opponent = SwarmId(7);
     let cell = IVec2::ZERO;
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
@@ -93,14 +77,14 @@ fn contested_defend_work_preserves_each_participants_pressure() {
     let demand = app.world().resource::<PopulationDemand>();
     assert_eq!(
         demand.desired_for(SwarmId::PLAYER, NanobotType::Defender),
-        3,
+        1,
     );
-    assert_eq!(demand.desired_for(opponent, NanobotType::Defender), 5);
+    assert_eq!(demand.desired_for(opponent, NanobotType::Defender), 1);
 }
 
 #[test]
 fn replacing_contest_with_shared_defend_reprojects_baseline_demand() {
-    let mut app = demand_app();
+    let mut app = common::sim_app_with_population_demand();
     let opponent = SwarmId(7);
     let cell = IVec2::ZERO;
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
@@ -125,14 +109,47 @@ fn replacing_contest_with_shared_defend_reprojects_baseline_demand() {
     let demand = app.world().resource::<PopulationDemand>();
     assert_eq!(
         demand.desired_for(SwarmId::PLAYER, NanobotType::Defender),
-        1,
+        0,
     );
-    assert_eq!(demand.desired_for(opponent, NanobotType::Defender), 1);
+    assert_eq!(demand.desired_for(opponent, NanobotType::Defender), 0);
+}
+
+#[test]
+fn active_threat_count_replaces_peaceful_reserve_when_larger() {
+    let mut app = common::sim_app_with_population_demand();
+    let opponent = SwarmId(7);
+    app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
+    app.world_mut().spawn((Swarm {}, opponent));
+    {
+        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
+        for x in 0..4 {
+            grid.paint_owned(
+                IVec2::new(x, 0),
+                IntentKind::Corridor,
+                Some(SwarmId::PLAYER),
+            );
+        }
+    }
+    for x in [64.0, 128.0, 192.0] {
+        let hostile = common::spawn_worker_at(&mut app, Vec2::new(x, 64.0));
+        app.world_mut()
+            .entity_mut(hostile)
+            .insert(SwarmMember::new(opponent));
+    }
+
+    app.update();
+
+    let demand = app.world().resource::<PopulationDemand>();
+    assert_eq!(
+        demand.desired_for(SwarmId::PLAYER, NanobotType::Defender),
+        3,
+        "three physical Threats exceed the four-tile peaceful reserve of two",
+    );
 }
 
 #[test]
 fn gather_work_creates_worker_demand_not_generic_population() {
-    let mut app = demand_app();
+    let mut app = common::sim_app_with_population_demand();
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
     app.world_mut().resource_mut::<IntentGrid>().paint_owned(
         IVec2::ZERO,
@@ -156,6 +173,7 @@ fn gather_work_creates_worker_demand_not_generic_population() {
     assert_eq!(demand.desired_for(SwarmId::PLAYER, NanobotType::Hauler), 0);
     assert_eq!(
         demand.desired_for(SwarmId::PLAYER, NanobotType::Defender),
-        0
+        1,
+        "owned Gather intent is also one Swarm Tile",
     );
 }

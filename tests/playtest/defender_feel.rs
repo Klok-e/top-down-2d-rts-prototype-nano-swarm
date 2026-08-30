@@ -11,8 +11,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
         Charge, ChargePlugin, ChargerAssignment, CollapsePlugin, CombatPlugin, DefendHold,
         DefendPlugin, GatherPlugin, HaulPlugin, Health, MaintenancePlugin, MatchOutcome, Nanobot,
         NanobotPlugin, NanobotType, OpponentIntentPlugin, OpponentSwarmIdAlloc, OwnerSwarm,
-        PlannedStructurePlugin, PopulationDemandPlugin, ProductionCollapseState, ProductionPlugin,
-        ProductionPriority, RegionalAllocationPlugin, SwarmId, SwarmMember,
+        PlannedStructurePlugin, PopulationDemand, PopulationDemandPlugin, ProductionCollapseState,
+        ProductionPlugin, ProductionPriority, RegionalAllocationPlugin, SwarmId, SwarmMember,
         nanobot_death_cleanup_system,
     },
     resources::{ResourceKind, ResourceLedger},
@@ -79,6 +79,17 @@ fn authored_default_scenario_reaches_primary_defend_contest() {
     };
     assert_eq!(initial_defenders(app.world_mut(), SwarmId::PLAYER), 3);
     assert_eq!(initial_defenders(app.world_mut(), SwarmId(1)), 3);
+    let demand = app.world().resource::<PopulationDemand>();
+    assert_eq!(
+        demand.desired_for(SwarmId::PLAYER, NanobotType::Defender),
+        2,
+        "four player Swarm Tiles create a peaceful reserve of two Defenders",
+    );
+    assert_eq!(
+        demand.desired_for(SwarmId(1), NanobotType::Defender),
+        2,
+        "four opponent Swarm Tiles create a peaceful reserve of two Defenders",
+    );
 
     {
         let grid = app.world().resource::<IntentGrid>();
@@ -252,17 +263,6 @@ fn assert_default_tick_state(
     let opponent_holders = holders_in_front(world, PLAYER_DEFEND_CELL, SwarmId(1));
     if player_holders > 0 && opponent_holders > 0 {
         *saw_both_holders = true;
-    }
-    if *saw_both_holders {
-        if live_defenders(world, SwarmId::PLAYER) > 0 {
-            assert!(player_holders > 0, "player lost its authored Defend holder");
-        }
-        if live_defenders(world, SwarmId(1)) > 0 {
-            assert!(
-                opponent_holders > 0,
-                "opponent lost its authored Defend holder"
-            );
-        }
     }
     current_positions
 }

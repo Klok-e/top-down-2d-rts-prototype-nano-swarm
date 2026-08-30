@@ -4,6 +4,7 @@ pub mod allocator;
 pub mod lease;
 pub mod projection;
 pub mod runtime;
+pub mod territory;
 
 use bevy::prelude::{Entity, IVec2};
 
@@ -14,6 +15,7 @@ pub use allocator::*;
 pub use lease::*;
 pub use projection::{ActionableProjection, project_actionable_opportunities_system};
 pub use runtime::*;
+pub use territory::*;
 
 /// Intent cells per deterministic allocation region axis.
 pub const ALLOCATION_REGION_CELLS: i32 = 8;
