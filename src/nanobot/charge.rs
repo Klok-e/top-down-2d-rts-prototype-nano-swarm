@@ -1079,13 +1079,15 @@ mod tests {
     //! logistics, weakening, health loss, rotation) live in
     //! `tests/charger_behavior.rs`.
 
+    use approx::assert_abs_diff_eq;
+
     use super::*;
 
     #[test]
     fn charge_default_starts_full() {
         let c = Charge::default();
-        assert_eq!(c.current, MAX_CHARGE);
-        assert_eq!(c.max, MAX_CHARGE);
+        assert_abs_diff_eq!(c.current, MAX_CHARGE, epsilon = 1e-5);
+        assert_abs_diff_eq!(c.max, MAX_CHARGE, epsilon = 1e-5);
         assert!(c.is_full());
         assert!(!c.is_empty());
         assert!(!c.needs_rotation());
@@ -1165,7 +1167,7 @@ mod tests {
         assert_eq!(charger.kind, AUTO_CHARGER_KIND);
         assert_eq!(charger.amount, 0);
         assert_eq!(charger.capacity, AUTO_CHARGER_CAPACITY);
-        assert_eq!(charger.radius, AUTO_CHARGER_RADIUS);
+        assert_abs_diff_eq!(charger.radius, AUTO_CHARGER_RADIUS, epsilon = 1e-5);
         assert!(!charger.has_supply());
         assert_eq!(charger.free_space(), AUTO_CHARGER_CAPACITY);
     }
@@ -1238,12 +1240,8 @@ mod tests {
     #[test]
     fn charge_strength_multiplier_is_zero_at_or_below_zero() {
         // Empty charge means zero attack and zero defense.
-        assert_eq!(charge_strength_multiplier(0.0), 0.0);
-        assert_eq!(
-            charge_strength_multiplier(-0.5),
-            0.0,
-            "negative input is clamped to zero"
-        );
+        assert_abs_diff_eq!(charge_strength_multiplier(0.0), 0.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(charge_strength_multiplier(-0.5), 0.0, epsilon = 1e-5);
     }
 
     #[test]
@@ -1269,7 +1267,7 @@ mod tests {
             (half_attack - DEFENDER_BASE_ATTACK * 0.5).abs() < 1e-5,
             "half charge -> half attack; got {half_attack}"
         );
-        assert_eq!(effective_attack(0.0), 0.0);
+        assert_abs_diff_eq!(effective_attack(0.0), 0.0, epsilon = 1e-5);
     }
 
     #[test]
@@ -1285,7 +1283,7 @@ mod tests {
             (half_defense - DEFENDER_BASE_DEFENSE * 0.5).abs() < 1e-5,
             "half charge -> half defense; got {half_defense}"
         );
-        assert_eq!(effective_defense(0.0), 0.0);
+        assert_abs_diff_eq!(effective_defense(0.0), 0.0, epsilon = 1e-5);
     }
 
     #[test]

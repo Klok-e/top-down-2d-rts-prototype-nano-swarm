@@ -80,7 +80,7 @@ fn spawn_placement_examples(world: &mut World) {
         let kind_seed = if index.is_multiple_of(2) { 27 } else { 26 };
         let (_, position) = find_build_zone_placement(&[cell], &[], kind_seed)
             .expect("an empty Build cell has available placement");
-        assert_ne!(position, center);
+        assert!(position.distance(center) > 0.01);
         assert!(!overlaps_any_obstacle(
             position,
             BUILDING_FOOTPRINT_RADIUS,

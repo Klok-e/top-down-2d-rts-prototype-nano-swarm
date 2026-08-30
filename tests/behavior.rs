@@ -36,8 +36,6 @@ mod idle_spread;
 mod intent_brush;
 #[path = "behavior/maintenance.rs"]
 mod maintenance;
-#[path = "behavior/nanobot_autonomy.rs"]
-mod nanobot_autonomy;
 #[path = "behavior/nanobot_presentation.rs"]
 mod nanobot_presentation;
 #[path = "behavior/no_instant_spawning.rs"]
@@ -82,5 +80,3 @@ mod terminal_logistics_priority;
 mod world_space_nanobots;
 #[path = "behavior/zone_brush_ui_capture.rs"]
 mod zone_brush_ui_capture;
-#[path = "behavior/zone_overlay_draw_order.rs"]
-mod zone_overlay_draw_order;

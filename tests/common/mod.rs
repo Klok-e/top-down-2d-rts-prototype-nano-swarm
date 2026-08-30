@@ -492,35 +492,26 @@ pub fn spawn_hauler_at(app: &mut App, world_pos: Vec2) -> Entity {
         .id()
 }
 
-/// Spawn a [`ResourceDeposit`] of `ResourceKind::Minerals` at
-/// `world_pos` with `amount` units, a `capacity` that matches
-/// `amount`, and the standard gather-test `radius` of `32.0`.
-/// Tests that need a different `radius` (e.g. the issue #22
-/// overlap suite, where the deposit's circle is the eligibility
-/// geometry) call [`spawn_deposit_with_radius`] instead.
-pub fn spawn_deposit(app: &mut App, world_pos: Vec2, amount: u32) -> Entity {
-    spawn_deposit_with_radius(app, world_pos, amount, 32.0)
+/// Scenario-relevant values for one mineral [`ResourceDeposit`].
+/// No field defaults: amount, capacity, and eligibility geometry stay visible
+/// in every test that relies on the fixture.
+pub struct DepositFixture {
+    pub world_pos: Vec2,
+    pub amount: u32,
+    pub capacity: u32,
+    pub radius: f32,
 }
 
-/// Spawn a [`ResourceDeposit`] of `ResourceKind::Minerals` at
-/// `world_pos` with an explicit `radius`. The `capacity` matches
-/// `amount`, mirroring [`spawn_deposit`]; tests that need a
-/// different cap override the field after the spawn.
-pub fn spawn_deposit_with_radius(
-    app: &mut App,
-    world_pos: Vec2,
-    amount: u32,
-    radius: f32,
-) -> Entity {
+pub fn spawn_deposit(app: &mut App, fixture: DepositFixture) -> Entity {
     app.world_mut()
         .spawn((
             ResourceDeposit {
                 kind: ResourceKind::Minerals,
-                amount,
-                capacity: amount.max(1000),
-                radius,
+                amount: fixture.amount,
+                capacity: fixture.capacity,
+                radius: fixture.radius,
             },
-            Transform::from_translation(world_pos.extend(0.0)),
+            Transform::from_translation(fixture.world_pos.extend(0.0)),
         ))
         .id()
 }

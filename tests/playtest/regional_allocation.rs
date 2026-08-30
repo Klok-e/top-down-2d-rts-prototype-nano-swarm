@@ -21,7 +21,15 @@ fn exhausted_gather_zone_persists_without_invalid_worker_retries() {
     let mut app = common::sim_app_with_gather();
     let gather_cell = IVec2::new(0, 0);
     let deposit_pos = common::cell_world_center(gather_cell);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 1);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 1,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let _stockpile = common::spawn_stockpile(&mut app, deposit_pos + Vec2::new(96.0, 0.0), 0, 100);
     let worker = common::spawn_worker_at(&mut app, deposit_pos);
     paint_gather(&mut app, gather_cell);

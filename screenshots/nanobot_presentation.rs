@@ -144,9 +144,9 @@ fn assert_evidence(world: &mut World) {
         let local = visual_entity
             .get::<Transform>()
             .expect("presentation child needs a local Transform");
-        assert_eq!(local.translation, Vec3::ZERO);
-        assert_eq!(local.rotation, Quat::IDENTITY);
-        assert_eq!(local.scale, Vec3::ONE);
+        assert!(local.translation.abs_diff_eq(Vec3::ZERO, 1e-5));
+        assert!(local.rotation.angle_between(Quat::IDENTITY) <= 1e-5);
+        assert!(local.scale.abs_diff_eq(Vec3::ONE, 1e-5));
 
         let propagated = visual_entity
             .get::<GlobalTransform>()

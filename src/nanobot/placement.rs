@@ -422,6 +422,8 @@ mod tests {
     //! candidate exists") are covered by
     //! `tests/behavior/source_stockpile_placement.rs`.
 
+    use approx::assert_abs_diff_eq;
+
     use super::*;
 
     const EPS: f32 = 1e-3;
@@ -464,8 +466,8 @@ mod tests {
         assert!((north - Vec2::new(10.0, 120.0)).length() < EPS);
         // The candidate is exactly at the configured radius
         // from the deposit.
-        assert!((east - deposit).length() - 100.0 < EPS);
-        assert!((north - deposit).length() - 100.0 < EPS);
+        assert_abs_diff_eq!((east - deposit).length(), 100.0, epsilon = EPS);
+        assert_abs_diff_eq!((north - deposit).length(), 100.0, epsilon = EPS);
     }
 
     #[test]
@@ -510,8 +512,13 @@ mod tests {
         // offset. Useful for tests that want the ring
         // positions only.
         let cell = IVec2::new(1, 2);
-        assert_eq!(deterministic_jitter(0, cell, 0.0), Vec2::ZERO);
-        assert_eq!(deterministic_jitter(5, cell, -1.0), Vec2::ZERO);
+        for jitter in [
+            deterministic_jitter(0, cell, 0.0),
+            deterministic_jitter(5, cell, -1.0),
+        ] {
+            assert_abs_diff_eq!(jitter.x, 0.0, epsilon = EPS);
+            assert_abs_diff_eq!(jitter.y, 0.0, epsilon = EPS);
+        }
     }
 
     #[test]

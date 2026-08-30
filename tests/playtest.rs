@@ -22,5 +22,3 @@ mod regional_allocation;
 mod typed_population_demand;
 #[path = "playtest/world_space_nanobots.rs"]
 mod world_space_nanobots;
-#[path = "playtest/zone_shader_compiles.rs"]
-mod zone_shader_compiles;

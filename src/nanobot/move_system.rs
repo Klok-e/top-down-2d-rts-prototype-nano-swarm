@@ -207,6 +207,7 @@ pub fn velocity_system(
 mod tests {
     use std::f32::consts::{FRAC_PI_2, PI};
 
+    use approx::assert_abs_diff_eq;
     use bevy::prelude::EulerRot;
 
     use super::*;
@@ -218,10 +219,7 @@ mod tests {
     }
 
     fn assert_angle_close(actual: f32, expected: f32) {
-        assert!(
-            (actual - expected).abs() < 0.0001,
-            "expected {expected}, got {actual}"
-        );
+        assert_abs_diff_eq!(actual, expected, epsilon = 0.0001);
     }
 
     #[test]
@@ -246,11 +244,13 @@ mod tests {
 
     #[test]
     fn velocity_clamp_zeroes_non_finite_input() {
-        assert_eq!(clamp_velocity(Vec2::new(f32::NAN, 1.0), 5.0), Vec2::ZERO);
-        assert_eq!(
+        for clamped in [
+            clamp_velocity(Vec2::new(f32::NAN, 1.0), 5.0),
             clamp_velocity(Vec2::new(f32::INFINITY, 0.0), 5.0),
-            Vec2::ZERO
-        );
+        ] {
+            assert_abs_diff_eq!(clamped.x, 0.0, epsilon = 1e-5);
+            assert_abs_diff_eq!(clamped.y, 0.0, epsilon = 1e-5);
+        }
     }
 
     #[test]
@@ -287,9 +287,12 @@ mod tests {
         let first_delta = deltas.iter().find(|(id, _)| *id == first).unwrap().1;
         let second_delta = deltas.iter().find(|(id, _)| *id == second).unwrap().1;
         let distant_delta = deltas.iter().find(|(id, _)| *id == distant).unwrap().1;
-        assert_eq!(first_delta, -Vec2::X * BOT_SEPARATION_FORCE);
-        assert_eq!(second_delta, Vec2::X * BOT_SEPARATION_FORCE);
-        assert_eq!(distant_delta, Vec2::ZERO);
+        assert_abs_diff_eq!(first_delta.x, -BOT_SEPARATION_FORCE, epsilon = 1e-5);
+        assert_abs_diff_eq!(first_delta.y, 0.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(second_delta.x, BOT_SEPARATION_FORCE, epsilon = 1e-5);
+        assert_abs_diff_eq!(second_delta.y, 0.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(distant_delta.x, 0.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(distant_delta.y, 0.0, epsilon = 1e-5);
     }
 
     #[test]

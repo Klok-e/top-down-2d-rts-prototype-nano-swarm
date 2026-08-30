@@ -53,7 +53,15 @@ fn deposit_overlapping_painted_cell_is_eligible_when_center_in_other_cell() {
     // cell (0, 0) (the closest point on cell (0, 0)'s rect is
     // (512, 256); distance 256 <= 300).
     let deposit_center = Vec2::new(768.0, ZONE_BLOCK_SIZE * 0.5);
-    let deposit = common::spawn_deposit_with_radius(&mut app, deposit_center, 100, 300.0);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_center,
+            amount: 100,
+            capacity: 1000,
+            radius: 300.0,
+        },
+    );
     // Worker at the painted cell center so scoring picks it.
     let worker_pos = common::cell_world_center(painted_cell);
     let worker = common::spawn_worker_at(&mut app, worker_pos);
@@ -96,7 +104,15 @@ fn deposit_with_no_visual_overlap_remains_ineligible() {
     // well within cell (3, 0); the closest point on cell (0, 0)'s
     // rect to (1792, 256) is (512, 256), distance 1280.
     let deposit_center = Vec2::new(1792.0, ZONE_BLOCK_SIZE * 0.5);
-    let deposit = common::spawn_deposit_with_radius(&mut app, deposit_center, 100, 32.0);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_center,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let worker_pos = common::cell_world_center(painted_cell);
     let worker = common::spawn_worker_at(&mut app, worker_pos);
 
@@ -138,7 +154,15 @@ fn deposit_overlapping_two_painted_cells_uses_canonical_anchor() {
     // (cell (1, 0) center) with radius 300 reaches both cell
     // (0, 0) (distance 256) and cell (1, 0) (distance 0).
     let deposit_center = Vec2::new(768.0, ZONE_BLOCK_SIZE * 0.5);
-    let deposit = common::spawn_deposit_with_radius(&mut app, deposit_center, 100, 300.0);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_center,
+            amount: 100,
+            capacity: 1000,
+            radius: 300.0,
+        },
+    );
     // Worker starts closer to the noncanonical cell; anchor selection remains
     // deterministic and independent from worker position.
     let worker_pos = Vec2::new(1_100.0, ZONE_BLOCK_SIZE * 0.5);
@@ -180,7 +204,15 @@ fn opponent_overlap_eligibility_does_not_leak_to_player_workers() {
     // gather target. The per-swarm filter is the gate that keeps
     // it out of player workers' hands.
     let deposit_center = Vec2::new(300.0, ZONE_BLOCK_SIZE * 0.5);
-    let deposit = common::spawn_deposit_with_radius(&mut app, deposit_center, 100, 300.0);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_center,
+            amount: 100,
+            capacity: 1000,
+            radius: 300.0,
+        },
+    );
     let worker_pos = common::cell_world_center(opponent_cell);
     let worker = common::spawn_worker_at(&mut app, worker_pos);
 

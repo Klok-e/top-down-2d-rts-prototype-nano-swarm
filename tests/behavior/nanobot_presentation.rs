@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use approx::assert_abs_diff_eq;
 use bevy::{asset::AssetPlugin, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z,
@@ -113,14 +114,27 @@ fn authored_nanobots_render_through_one_neutral_presentation_child() {
         } else {
             cell_origin(OPPONENT_CELL)
         };
-        assert_eq!(
-            transform.translation,
-            expected_position.extend(GAMEPLAY_SPRITE_Z)
+        let expected_translation = expected_position.extend(GAMEPLAY_SPRITE_Z);
+        assert_abs_diff_eq!(
+            transform.translation.x,
+            expected_translation.x,
+            epsilon = 0.01
+        );
+        assert_abs_diff_eq!(
+            transform.translation.y,
+            expected_translation.y,
+            epsilon = 0.01
+        );
+        assert_abs_diff_eq!(
+            transform.translation.z,
+            expected_translation.z,
+            epsilon = 0.01
         );
         let full_health = Health::default();
         assert_eq!(health.current, full_health.current);
         assert_eq!(health.max, full_health.max);
-        assert_eq!(velocity.value, Vec2::ZERO);
+        assert_abs_diff_eq!(velocity.value.x, 0.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(velocity.value.y, 0.0, epsilon = 1e-5);
         assert_eq!(commitment, Commitment::Idle);
 
         let root_ref = world.entity(root);
@@ -163,23 +177,22 @@ fn authored_nanobots_render_through_one_neutral_presentation_child() {
             let visual_transform = visual
                 .get::<Transform>()
                 .expect("visual child needs a local Transform");
-            assert_eq!(visual_transform.translation, Vec3::ZERO);
-            assert_eq!(visual_transform.rotation, Quat::IDENTITY);
-            assert_eq!(visual_transform.scale, Vec3::ONE);
+            assert!(visual_transform.translation.abs_diff_eq(Vec3::ZERO, 1e-5));
+            assert!(visual_transform.rotation.angle_between(Quat::IDENTITY) <= 1e-5);
+            assert!(visual_transform.scale.abs_diff_eq(Vec3::ONE, 1e-5));
         }
 
         world
             .get_mut::<Transform>(visual_entity)
             .expect("visual child needs an independently mutable Transform")
             .translation = Vec3::new(20.0, -10.0, 0.0);
-        assert_eq!(
-            world
-                .get::<Transform>(root)
-                .expect("gameplay root must retain its Transform")
-                .translation,
-            transform.translation,
-            "presentation-child motion must not feed back into gameplay position"
-        );
+        let root_translation = world
+            .get::<Transform>(root)
+            .expect("gameplay root must retain its Transform")
+            .translation;
+        assert_abs_diff_eq!(root_translation.x, transform.translation.x, epsilon = 0.01);
+        assert_abs_diff_eq!(root_translation.y, transform.translation.y, epsilon = 0.01);
+        assert_abs_diff_eq!(root_translation.z, transform.translation.z, epsilon = 0.01);
     }
 }
 

@@ -897,10 +897,15 @@ mod tests {
     #[test]
     fn aggregate_direction_handles_empty_single_and_cancelling_inputs() {
         assert_eq!(aggregate_direction(&mut []), None);
-        assert_eq!(aggregate_direction(&mut [Vec2::X]), Some(Vec2::X));
-        assert_eq!(
-            aggregate_direction(&mut [Vec2::X, Vec2::NEG_X]),
-            Some(Vec2::NEG_X),
+        assert!(
+            aggregate_direction(&mut [Vec2::X])
+                .unwrap()
+                .abs_diff_eq(Vec2::X, 1e-5)
+        );
+        assert!(
+            aggregate_direction(&mut [Vec2::X, Vec2::NEG_X])
+                .unwrap()
+                .abs_diff_eq(Vec2::NEG_X, 1e-5)
         );
     }
 

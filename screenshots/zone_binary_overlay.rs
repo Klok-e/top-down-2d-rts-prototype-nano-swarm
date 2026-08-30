@@ -1,5 +1,7 @@
 //! Offscreen evidence for binary zone presence, colours, overlap, and opacity.
 
+use std::path::Path;
+
 use bevy::{prelude::*, render::storage::ShaderStorageBuffer};
 use top_down_2d_rts_prototype_nano_swarm::{
     MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
@@ -25,6 +27,10 @@ const ABSENT_CELL: IVec2 = IVec2::new(4, 5);
 const DISPLAY_VALUES: [u32; 6] = [0, 17, 130, 772, 8, 1375];
 const CAPTURE_FRAME: u32 = 60;
 const FRAMING_SCALE: f32 = 2.8;
+const PATCH_SIZE: u32 = 32;
+const PIXEL_TOLERANCE: u8 = 20;
+const MIN_SOLID_MATCHING_PIXELS: usize = 920;
+const MIN_STRIPE_MATCHING_PIXELS: usize = 256;
 
 pub fn zone_binary_overlay(ctx: &mut TestContext) -> TestFlow {
     if ctx.frame == 2 {
@@ -42,6 +48,102 @@ pub fn zone_binary_overlay(ctx: &mut TestContext) -> TestFlow {
         return TestFlow::Screenshot("zone_binary_overlay".to_string());
     }
     TestFlow::Exit
+}
+
+pub fn validate_zone_binary_overlay(path: &Path) -> Result<(), String> {
+    let image = image::open(path)
+        .map_err(|error| format!("decode zone screenshot {}: {error}", path.display()))?
+        .to_rgba8();
+    let cell_width = ZONE_BLOCK_SIZE / FRAMING_SCALE;
+    let first_center_x =
+        image.width() as f32 / 2.0 - (DISPLAY_VALUES.len() as f32 - 1.0) * cell_width / 2.0;
+    let center_y = image.height() as f32 / 2.0;
+    let center = |index: usize| Vec2::new(first_center_x + index as f32 * cell_width, center_y);
+
+    require_solid_patch(&image, center(0), [20, 20, 26], "absent zone")?;
+    require_solid_patch(&image, center(1), [231, 5, 7], "player Gather zone")?;
+    require_striped_patch(
+        &image,
+        center(2),
+        [221, 53, 179],
+        [170, 39, 137],
+        "opponent Build zone",
+    )?;
+    require_striped_patch(
+        &image,
+        center(3),
+        [88, 162, 231],
+        [231, 88, 73],
+        "contested Defend zone",
+    )?;
+    require_solid_patch(&image, center(4), [214, 214, 133], "shared Corridor zone")?;
+    require_solid_patch(
+        &image,
+        center(5),
+        [204, 124, 170],
+        "overlapping player zones",
+    )
+}
+
+fn require_solid_patch(
+    image: &image::RgbaImage,
+    center: Vec2,
+    expected: [u8; 3],
+    label: &str,
+) -> Result<(), String> {
+    let pixels = patch_pixels(image, center);
+    let matching = matching_pixels(&pixels, expected);
+    if matching < MIN_SOLID_MATCHING_PIXELS {
+        return Err(format!(
+            "{label} rendered the wrong color: expected at least {MIN_SOLID_MATCHING_PIXELS}/{} pixels near {expected:?} within ±{PIXEL_TOLERANCE}, got {matching}",
+            pixels.len()
+        ));
+    }
+    Ok(())
+}
+
+fn require_striped_patch(
+    image: &image::RgbaImage,
+    center: Vec2,
+    first: [u8; 3],
+    second: [u8; 3],
+    label: &str,
+) -> Result<(), String> {
+    let pixels = patch_pixels(image, center);
+    let first_matching = matching_pixels(&pixels, first);
+    let second_matching = matching_pixels(&pixels, second);
+    if first_matching < MIN_STRIPE_MATCHING_PIXELS || second_matching < MIN_STRIPE_MATCHING_PIXELS {
+        return Err(format!(
+            "{label} did not render both stripe colors: expected at least {MIN_STRIPE_MATCHING_PIXELS}/{} pixels near {first:?} and {second:?} within ±{PIXEL_TOLERANCE}, got {first_matching} and {second_matching}",
+            pixels.len()
+        ));
+    }
+    Ok(())
+}
+
+fn patch_pixels(image: &image::RgbaImage, center: Vec2) -> Vec<[u8; 3]> {
+    let left = center.x.round() as u32 - PATCH_SIZE / 2;
+    let top = center.y.round() as u32 - PATCH_SIZE / 2;
+    (top..top + PATCH_SIZE)
+        .flat_map(|y| {
+            (left..left + PATCH_SIZE).map(move |x| {
+                let pixel = image.get_pixel(x, y).0;
+                [pixel[0], pixel[1], pixel[2]]
+            })
+        })
+        .collect()
+}
+
+fn matching_pixels(pixels: &[[u8; 3]], expected: [u8; 3]) -> usize {
+    pixels
+        .iter()
+        .filter(|pixel| {
+            pixel
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| actual.abs_diff(expected) <= PIXEL_TOLERANCE)
+        })
+        .count()
 }
 
 fn paint_examples(world: &mut World) {

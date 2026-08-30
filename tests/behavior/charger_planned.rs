@@ -622,28 +622,3 @@ fn plan_does_not_pile_under_repeated_demand_ticks() {
         "no completed Charger must appear without a Worker building the plan"
     );
 }
-
-#[test]
-fn planned_kind_includes_charger() {
-    // Pin the `PlannedKind::ALL` / `PlannedKind::COUNT`
-    // contract: the new variant shows up in the
-    // foundation's stable iteration list with a stable
-    // index distinct from the Source Stockpile, Sink
-    // Stockpile, and Production Facility variants.
-    let kinds: Vec<PlannedKind> = PlannedKind::ALL.to_vec();
-    assert_eq!(kinds.len(), PlannedKind::COUNT);
-    assert!(kinds.contains(&PlannedKind::SourceStockpile));
-    assert!(kinds.contains(&PlannedKind::SinkStockpile));
-    assert!(kinds.contains(&PlannedKind::ProductionFacility));
-    assert!(
-        kinds.contains(&PlannedKind::Charger),
-        "PlannedKind::ALL must include Charger"
-    );
-    let charger_index = PlannedKind::Charger.index();
-    let source_index = PlannedKind::SourceStockpile.index();
-    let sink_index = PlannedKind::SinkStockpile.index();
-    let production_index = PlannedKind::ProductionFacility.index();
-    assert_ne!(charger_index, source_index);
-    assert_ne!(charger_index, sink_index);
-    assert_ne!(charger_index, production_index);
-}

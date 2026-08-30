@@ -920,6 +920,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn planned_kind_iteration_and_indexes_cover_every_kind_in_order() {
+        assert_eq!(
+            PlannedKind::ALL,
+            [
+                PlannedKind::SourceStockpile,
+                PlannedKind::SinkStockpile,
+                PlannedKind::ProductionFacility,
+                PlannedKind::Charger,
+            ]
+        );
+        assert_eq!(PlannedKind::COUNT, 4);
+        assert_eq!(PlannedKind::default(), PlannedKind::SourceStockpile);
+        for (expected_index, kind) in PlannedKind::ALL.into_iter().enumerate() {
+            assert_eq!(kind.index(), expected_index);
+        }
+    }
+
+    #[test]
     fn planned_structure_starts_unclaimed_with_full_budget() {
         let cell = IVec2::new(0, 0);
         let p = PlannedStructure::new(PlannedKind::SourceStockpile, cell);

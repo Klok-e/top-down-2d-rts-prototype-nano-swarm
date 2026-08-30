@@ -4,11 +4,9 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
-    nanobot::{Charger, NanobotType, OpponentSwarm, PlannedKind, PlannedStructure, Swarm, SwarmId},
-    resources::{ResourceDeposit, Stockpile},
+    nanobot::{OpponentSwarm, PlannedKind, Swarm, SwarmId},
     tactical_overlay::{
         TACTICAL_MARKER_ALPHA, TacticalClusterKey, TacticalMarker, TacticalMarkerKind,
-        TacticalOverlayPlugin, TacticalOverlaySettings, UNOWNED_SWARM_ID, cluster_radius_for_zoom,
     },
 };
 
@@ -70,14 +68,6 @@ fn marker_keys(app: &mut App) -> Vec<TacticalClusterKey> {
     let world = app.world_mut();
     let mut q = world.query::<&TacticalClusterKey>();
     q.iter(world).copied().collect()
-}
-
-fn unowned_key(kind: TacticalMarkerKind) -> TacticalClusterKey {
-    TacticalClusterKey {
-        kind,
-        owner: UNOWNED_SWARM_ID,
-        slot: (0, 0),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -161,7 +151,15 @@ fn one_marker_per_category_per_owner() {
             Transform::from_translation(opponent_pos.extend(0.0)),
         ))
         .id();
-    let _deposit = common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(0.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let _stockpile = common::spawn_stockpile(&mut app, Vec2::new(200.0, 0.0), 50, 200);
     let _facility = common::spawn_idle_facility_at(&mut app, Vec2::new(400.0, 0.0));
     let _planned = common::spawn_planned_structure_of_kind_at_cell(
@@ -242,8 +240,24 @@ fn multiple_separate_deposit_clusters_can_coexist() {
     // (slot size is 6000), so the two clusters must
     // both produce a marker entity.
     let mut app = build_app();
-    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
-    common::spawn_deposit(&mut app, Vec2::new(20_000.0, 0.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(0.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(20_000.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     set_zoom(&mut app, 8.0);
     app.update();
@@ -278,8 +292,24 @@ fn multiple_separate_deposit_clusters_can_coexist() {
 #[test]
 fn same_slot_clusters_both_survive_reconciliation() {
     let mut app = build_app();
-    common::spawn_deposit(&mut app, Vec2::new(100.0, 100.0), 1000);
-    common::spawn_deposit(&mut app, Vec2::new(5_900.0, 5_900.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(100.0, 100.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(5_900.0, 5_900.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     set_zoom(&mut app, 16.0);
 
     app.update();
@@ -299,8 +329,24 @@ fn close_same_kind_deposits_still_merge_into_one_cluster() {
     // step: two deposits well within the merge radius
     // must still collapse to one cluster / one marker.
     let mut app = build_app();
-    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
-    common::spawn_deposit(&mut app, Vec2::new(200.0, 0.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(0.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(200.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     set_zoom(&mut app, 4.0);
     app.update();
@@ -318,7 +364,15 @@ fn marker_key_uses_spatial_slot_not_just_kind_and_owner() {
     let mut app = build_app();
     // 20,000 world units east => slot (3, 0) with the
     // default 6,000-unit slot size.
-    common::spawn_deposit(&mut app, Vec2::new(20_000.0, 0.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(20_000.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     set_zoom(&mut app, 8.0);
     app.update();
 
@@ -341,8 +395,24 @@ fn nearby_deposits_merge_into_single_marker() {
     // zoom (4.0) and a moderate merge radius (2048).
     // They must collapse into a single marker whose
     // body sits at the cluster centroid (100, 0).
-    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
-    common::spawn_deposit(&mut app, Vec2::new(200.0, 0.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(0.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(200.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     set_zoom(&mut app, 4.0);
     app.update();
     let transforms = body_transforms(&mut app);
@@ -359,8 +429,24 @@ fn far_apart_deposits_stay_separate_at_moderate_zoom() {
     let mut app = build_app();
     // Two deposits 5000 world units apart with a moderate
     // merge radius (2048). They must stay separate.
-    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
-    common::spawn_deposit(&mut app, Vec2::new(5_000.0, 0.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(0.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(5_000.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     set_zoom(&mut app, 4.0);
     app.update();
     assert_eq!(count_markers(&mut app), 2);
@@ -369,8 +455,24 @@ fn far_apart_deposits_stay_separate_at_moderate_zoom() {
 #[test]
 fn merge_radius_grows_with_zoom_to_collapse_far_landmarks() {
     let mut app = build_app();
-    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
-    common::spawn_deposit(&mut app, Vec2::new(5_000.0, 0.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(0.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(5_000.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
 
     // At zoom 4.0 the two deposits stay separate.
     set_zoom(&mut app, 4.0);
@@ -392,8 +494,24 @@ fn merge_radius_grows_with_zoom_to_collapse_far_landmarks() {
 #[test]
 fn far_apart_deposits_collapse_at_far_zoom() {
     let mut app = build_app();
-    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
-    common::spawn_deposit(&mut app, Vec2::new(4_000.0, 0.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(0.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(4_000.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     set_zoom(&mut app, 16.0);
     app.update();
     let transforms = body_transforms(&mut app);
@@ -413,7 +531,15 @@ fn far_apart_deposits_collapse_at_far_zoom() {
 #[test]
 fn marker_world_scale_grows_as_zoom_grows() {
     let mut app = build_app();
-    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(0.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     set_zoom(&mut app, 4.0);
     app.update();
     let moderate_zoom_scale = body_transforms(&mut app)
@@ -475,7 +601,15 @@ fn marker_on_screen_size_is_constant_across_zoom() {
     // footprint at three zooms and asserts they all
     // equal `marker_screen_size` (32 pixels).
     let mut app = build_app();
-    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(0.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     set_zoom(&mut app, 8.0);
     app.update();
     let size_at_8 = marker_on_screen_size(&mut app);
@@ -507,7 +641,15 @@ fn marker_sprite_is_50_percent_alpha() {
     // color's alpha must be 50%.
     let mut app = build_app();
     common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
-    common::spawn_deposit(&mut app, Vec2::new(10_000.0, 0.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(10_000.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let facility_owner = common::spawn_swarm_at(&mut app, Vec2::new(-10_000.0, 0.0));
     common::spawn_facility_at(&mut app, facility_owner, Vec2::new(-10_000.0, 0.0));
     set_zoom(&mut app, 8.0);
@@ -534,7 +676,15 @@ fn marker_has_no_text_label_child() {
     // `Text2d` child and no `Text2d` component on the
     // marker entity itself.
     let mut app = build_app();
-    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(0.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     set_zoom(&mut app, 8.0);
     app.update();
 
@@ -573,7 +723,15 @@ fn marker_sprite_has_unit_custom_size() {
     // shape the transform scale multiplies to produce
     // the on-screen footprint.
     let mut app = build_app();
-    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(0.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     set_zoom(&mut app, 8.0);
     app.update();
 
@@ -595,8 +753,24 @@ fn marker_sprite_has_unit_custom_size() {
 #[test]
 fn marker_position_tracks_cluster_centroid() {
     let mut app = build_app();
-    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
-    common::spawn_deposit(&mut app, Vec2::new(200.0, 0.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(0.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(200.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     set_zoom(&mut app, 4.0);
     app.update();
     let transform = body_transforms(&mut app)
@@ -622,7 +796,15 @@ fn deoverlap_pushes_co_located_clusters_apart() {
     // 4.0). The de-overlap pass must push them apart
     // to at least 4.0 world units.
     let mut app = build_app();
-    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(0.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     common::spawn_idle_facility_at(&mut app, Vec2::new(0.0, 0.0));
     set_zoom(&mut app, 8.0);
     app.update();
@@ -642,7 +824,15 @@ fn deoverlap_leaves_far_apart_clusters_in_place() {
     // are well above the min world distance of 4.0.
     // The de-overlap pass must not move them.
     let mut app = build_app();
-    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(0.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     common::spawn_idle_facility_at(&mut app, Vec2::new(1000.0, 0.0));
     set_zoom(&mut app, 8.0);
     app.update();
@@ -671,7 +861,15 @@ fn deoverlap_separates_three_co_located_clusters() {
     // pass: no two of them may be within the min world
     // distance after `app.update()`.
     let mut app = build_app();
-    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(0.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     common::spawn_idle_facility_at(&mut app, Vec2::new(0.0, 0.0));
     common::spawn_charger_at(&mut app, IVec2::new(0, 0), 0);
     set_zoom(&mut app, 8.0);
@@ -697,7 +895,15 @@ fn deoverlap_preserves_center_of_mass() {
     // around the original midpoint. (Each icon moves by
     // half the overlap, so the midpoint is unchanged.)
     let mut app = build_app();
-    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(0.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     common::spawn_idle_facility_at(&mut app, Vec2::new(0.0, 0.0));
     set_zoom(&mut app, 8.0);
     app.update();
@@ -717,7 +923,15 @@ fn deoverlap_preserves_center_of_mass() {
 #[test]
 fn stale_marker_is_despawned_when_source_disappears() {
     let mut app = build_app();
-    let deposit = common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(0.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     set_zoom(&mut app, 5.0);
     app.update();
     assert_eq!(count_markers(&mut app), 1);
@@ -741,7 +955,15 @@ fn stale_marker_is_despawned_when_source_disappears() {
 #[test]
 fn marker_count_is_stable_across_ticks() {
     let mut app = build_app();
-    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(0.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     set_zoom(&mut app, 5.0);
     app.update();
     let n0 = count_markers(&mut app);
@@ -759,8 +981,24 @@ fn multiple_clusters_survive_across_ticks() {
     // the same zoom (the existing entity per cluster
     // gets patched, neither is despawned).
     let mut app = build_app();
-    common::spawn_deposit(&mut app, Vec2::new(0.0, 0.0), 1000);
-    common::spawn_deposit(&mut app, Vec2::new(20_000.0, 0.0), 1000);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(0.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(20_000.0, 0.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     set_zoom(&mut app, 8.0);
     app.update();
     let n0 = count_markers(&mut app);
@@ -772,35 +1010,4 @@ fn multiple_clusters_survive_across_ticks() {
         n1, 2,
         "two separate clusters must both survive across ticks"
     );
-}
-
-// ---------------------------------------------------------------------------
-// Pure helper reachable from integration tests
-// ---------------------------------------------------------------------------
-
-#[test]
-fn cluster_radius_for_zoom_helper_is_reachable() {
-    // This is a smoke test: the integration crate
-    // consumes the helper indirectly through the
-    // plugin. Pin the helper signature here so a sweep
-    // that drops the export surfaces as a build error
-    // rather than a silent behavior change.
-    let s = TacticalOverlaySettings::default();
-    let r = cluster_radius_for_zoom(s.show_zoom_threshold, &s);
-    assert!(r > 0.0);
-}
-
-// Reference public types so a refactor that drops a
-// re-export surfaces as a compile error here rather than
-// a missing-import failure in an unrelated test.
-#[allow(dead_code)]
-fn _exports() {
-    let _: TacticalOverlayPlugin = TacticalOverlayPlugin;
-    let _: TacticalMarker = TacticalMarker;
-    let _: TacticalClusterKey = unowned_key(TacticalMarkerKind::Deposit);
-    let _: PlannedStructure = PlannedStructure::new(PlannedKind::Charger, IVec2::ZERO);
-    let _: Charger = Charger::new(IVec2::ZERO);
-    let _: NanobotType = NanobotType::Worker;
-    let _: ResourceDeposit = ResourceDeposit::default();
-    let _: Stockpile = Stockpile::default();
 }

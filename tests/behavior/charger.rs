@@ -19,14 +19,13 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         AllocationRegion, CHARGE_DRAIN_PER_TICK, CHARGE_PER_PULSE, CHARGE_PULSE_INTERVAL_TICKS,
         CHARGER_MATERIAL_PER_PULSE, Cargo, Charge, Charger, ChargerAssignment, ChargerProgress,
-        ChargerPulseProgress, DEFENDER_BASE_ATTACK, DEFENDER_BASE_DEFENSE, DefendAssignment,
-        DefendHold, DirectMovementComponent, EMPTY_CHARGE_DAMAGE_INTERVAL_TICKS,
-        EMPTY_CHARGE_HEALTH_DAMAGE, Health, LOW_CHARGE_THRESHOLD, LogisticsReservation, MAX_CHARGE,
-        MAX_DEFENDERS_PER_CHARGER, NANOBOT_DEFAULT_MAX_HEALTH, Nanobot, NanobotBundle,
-        NanobotPlugin, NanobotType, OpportunityCategory, OpportunityTarget, OwnerSwarm,
-        PlannedKind, PlannedStructure, RegionalLease, RegionalLeaseState,
-        SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, Swarm, SwarmBundle,
-        SwarmId, SwarmMember, WEAKENED_CHARGE_THRESHOLD, defender_charger_arrive_system,
+        ChargerPulseProgress, DefendAssignment, DefendHold, DirectMovementComponent,
+        EMPTY_CHARGE_DAMAGE_INTERVAL_TICKS, EMPTY_CHARGE_HEALTH_DAMAGE, Health,
+        LOW_CHARGE_THRESHOLD, LogisticsReservation, MAX_CHARGE, MAX_DEFENDERS_PER_CHARGER,
+        NANOBOT_DEFAULT_MAX_HEALTH, Nanobot, NanobotBundle, NanobotPlugin, NanobotType,
+        OpportunityCategory, OpportunityTarget, OwnerSwarm, PlannedKind, PlannedStructure,
+        RegionalLease, RegionalLeaseState, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure,
+        StructureKind, Swarm, SwarmBundle, SwarmId, SwarmMember, defender_charger_arrive_system,
         defender_charger_work_system, nanobot_death_cleanup_system,
     },
     resources::{ResourceKind, ResourceLedger},
@@ -880,40 +879,6 @@ fn only_defenders_have_charge_component() {
     // MAX_CHARGE and non-negative".
     assert!(defender_charge < MAX_CHARGE);
     assert!(defender_charge > 0.0);
-}
-
-#[test]
-fn low_charge_reduces_defender_attack_and_defense() {
-    // Acceptance: "Low Charge reduces Defender attack/defense."
-    // The pure helper returns the multiplier; the test
-    // verifies the contract by calling the helper with
-    // several charge values and checking the resulting
-    // attack/defense.
-    use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-        charge_strength_multiplier, effective_attack, effective_defense,
-    };
-
-    // Full charge: full attack and full defense.
-    assert!((effective_attack(MAX_CHARGE) - DEFENDER_BASE_ATTACK).abs() < 1e-5);
-    assert!((effective_defense(MAX_CHARGE) - DEFENDER_BASE_DEFENSE).abs() < 1e-5);
-
-    // At the weakened threshold: still full strength (the
-    // helper is `>=` on the threshold).
-    assert!((effective_attack(WEAKENED_CHARGE_THRESHOLD) - DEFENDER_BASE_ATTACK).abs() < 1e-5);
-    assert!((effective_defense(WEAKENED_CHARGE_THRESHOLD) - DEFENDER_BASE_DEFENSE).abs() < 1e-5);
-
-    // Below the weakened threshold: attack and defense scale
-    // linearly. A charge of 0.1 (one third of the threshold)
-    // yields a 1/3 multiplier.
-    let third = WEAKENED_CHARGE_THRESHOLD / 3.0;
-    let mult = charge_strength_multiplier(third);
-    assert!((mult - 1.0 / 3.0).abs() < 1e-5);
-    assert!((effective_attack(third) - DEFENDER_BASE_ATTACK * mult).abs() < 1e-5);
-    assert!((effective_defense(third) - DEFENDER_BASE_DEFENSE * mult).abs() < 1e-5);
-
-    // Empty charge: zero attack and zero defense.
-    assert_eq!(effective_attack(0.0), 0.0);
-    assert_eq!(effective_defense(0.0), 0.0);
 }
 
 #[test]

@@ -10,6 +10,8 @@ The finished default skirmish must show a battle developing over seconds, stagge
 
 Complete as of 2026-08-03. The hard cutover, focused behavior tests, authored-default headless flow, offscreen screenshot evidence, real-process headless playtest, and performance validation are complete. The baseline symptoms below are retained as historical context for the decisions and acceptance ranges.
 
+[ADR 0015](../adr/0015-territory-wide-defender-response.md) supersedes this plan's stable cell-holder and same-cell Charger doctrine for subsequent Defender work. The completion evidence remains a historical record of the implemented 2026-08-03 baseline.
+
 ## Completion Evidence (2026-08-03)
 
 - Focused behavior coverage passes for combat, charge pulses, local Charger capacity, lease suspension/resumption, exact flank paint, and final movement speed. The full suite currently reports 442 passing tests; the playtest target reports 21 passing tests and one GPU-only ignored test.

@@ -288,6 +288,8 @@ mod tests {
     //! Pure-resource tests. End-to-end Defender contracts live in
     //! `tests/behavior/defend_zone.rs`.
 
+    use approx::assert_abs_diff_eq;
+
     use super::*;
 
     #[test]
@@ -297,15 +299,27 @@ mod tests {
         // entry overrides only that cell.
         let pressure = DefendPressure::default();
         assert!(pressure.is_empty());
-        assert_eq!(pressure.get(IVec2::new(1, 1)), DEFEND_PRESSURE_BASELINE);
+        assert_abs_diff_eq!(
+            pressure.get(IVec2::new(1, 1)),
+            DEFEND_PRESSURE_BASELINE,
+            epsilon = 1e-5
+        );
         let mut pressure = pressure;
         pressure.set(IVec2::new(1, 1), 2.5);
         assert_eq!(pressure.len(), 1);
-        assert_eq!(pressure.get(IVec2::new(1, 1)), 2.5);
+        assert_abs_diff_eq!(pressure.get(IVec2::new(1, 1)), 2.5, epsilon = 1e-5);
         // Other cells are untouched.
-        assert_eq!(pressure.get(IVec2::new(2, 2)), DEFEND_PRESSURE_BASELINE);
+        assert_abs_diff_eq!(
+            pressure.get(IVec2::new(2, 2)),
+            DEFEND_PRESSURE_BASELINE,
+            epsilon = 1e-5
+        );
         pressure.remove(IVec2::new(1, 1));
         assert!(pressure.is_empty());
-        assert_eq!(pressure.get(IVec2::new(1, 1)), DEFEND_PRESSURE_BASELINE);
+        assert_abs_diff_eq!(
+            pressure.get(IVec2::new(1, 1)),
+            DEFEND_PRESSURE_BASELINE,
+            epsilon = 1e-5
+        );
     }
 }

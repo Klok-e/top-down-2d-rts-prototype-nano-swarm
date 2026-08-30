@@ -212,7 +212,15 @@ fn source_stockpile_placement_rejects_production_facility_overlap() {
     paint_gather(&mut app, cell);
     let _swarm = common::spawn_swarm_at(&mut app, center);
     let _worker = common::spawn_worker_at(&mut app, center);
-    let _deposit = common::spawn_deposit(&mut app, center, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: center,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     // Production Facility at the east-of-deposit candidate
     // (96 world units east of the deposit, no jitter). The
     // facility's footprint is `BUILDING_FOOTPRINT_RADIUS`
@@ -253,7 +261,15 @@ fn source_stockpile_placement_respects_scaled_facility_footprint() {
     paint_gather(&mut app, cell);
     common::spawn_swarm_at(&mut app, center);
     common::spawn_worker_at(&mut app, center);
-    common::spawn_deposit(&mut app, center, 100);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: center,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let facility_pos = center + Vec2::X * 196.0;
     let facility = common::spawn_idle_facility_at(&mut app, facility_pos);
     app.world_mut()
@@ -289,7 +305,15 @@ fn source_stockpile_placement_rejects_charger_overlap() {
     paint_gather(&mut app, cell);
     let _swarm = common::spawn_swarm_at(&mut app, center);
     let _worker = common::spawn_worker_at(&mut app, center);
-    let _deposit = common::spawn_deposit(&mut app, center, 100);
+    let _deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: center,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let charger_pos = center + Vec2::new(96.0, 0.0);
     let charger = common::spawn_charger_at(&mut app, IVec2::new(0, 0), 0);
     app.world_mut()

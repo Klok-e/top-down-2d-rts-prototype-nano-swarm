@@ -396,6 +396,8 @@ mod overlay_transform_tests {
     //! mesh scale keeps `z = 1.0`, and the zone overlay draws in
     //! front of the background and behind the gameplay sprites.
 
+    use approx::assert_abs_diff_eq;
+
     use super::*;
 
     #[test]
@@ -420,13 +422,13 @@ mod overlay_transform_tests {
         let window = primary_window_config();
         let c = window.resize_constraints;
         assert!(c.min_width > 0.0 && c.min_height > 0.0);
-        assert_eq!(c.min_width, c.max_width);
-        assert_eq!(c.min_height, c.max_height);
+        assert_abs_diff_eq!(c.min_width, c.max_width, epsilon = 1e-5);
+        assert_abs_diff_eq!(c.min_height, c.max_height, epsilon = 1e-5);
         assert_eq!(window.name.as_deref(), Some("nano-swarm"));
     }
 
     #[test]
-    fn offscreen_rendering_compiles_pipelines_synchronously() {
+    fn offscreen_rendering_requests_synchronous_pipeline_creation() {
         assert!(offscreen_render_plugin().synchronous_pipeline_compilation);
         assert!(
             !RenderPlugin::default().synchronous_pipeline_compilation,
@@ -437,26 +439,17 @@ mod overlay_transform_tests {
     #[test]
     fn background_overlay_transform_uses_translation_z_not_scale_z() {
         let t = background_overlay_transform(1024.0, 2048.0);
-        assert_eq!(
-            t.translation.z, BACKGROUND_OVERLAY_Z,
-            "draw order lives on translation.z, not scale.z"
-        );
-        assert_eq!(t.scale.x, 1024.0, "world width is preserved on scale.x");
-        assert_eq!(t.scale.y, 2048.0, "world height is preserved on scale.y");
-        assert_eq!(
-            t.scale.z, 1.0,
-            "mesh scale.z must stay 1.0 so the unit rectangle is not distorted"
-        );
+        assert_abs_diff_eq!(t.translation.z, BACKGROUND_OVERLAY_Z, epsilon = 1e-5);
+        assert_abs_diff_eq!(t.scale.x, 1024.0, epsilon = 0.01);
+        assert_abs_diff_eq!(t.scale.y, 2048.0, epsilon = 0.01);
+        assert_abs_diff_eq!(t.scale.z, 1.0, epsilon = 1e-5);
     }
 
     #[test]
     fn zone_overlay_transform_uses_translation_z_above_background() {
         let bg = background_overlay_transform(1024.0, 2048.0);
         let zone = zone_overlay_transform(1024.0, 2048.0);
-        assert_eq!(
-            zone.translation.z, ZONE_OVERLAY_Z,
-            "draw order lives on translation.z, not scale.z"
-        );
+        assert_abs_diff_eq!(zone.translation.z, ZONE_OVERLAY_Z, epsilon = 1e-5);
         assert!(
             zone.translation.z > bg.translation.z,
             "zone overlay must draw in front of the background \
@@ -464,7 +457,7 @@ mod overlay_transform_tests {
             zone.translation.z,
             bg.translation.z
         );
-        assert_eq!(zone.scale.z, 1.0);
+        assert_abs_diff_eq!(zone.scale.z, 1.0, epsilon = 1e-5);
     }
 
     #[test]

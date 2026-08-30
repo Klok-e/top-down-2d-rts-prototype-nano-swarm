@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0015
+---
+
 # Defender cell ownership and local pressure
 
 Regional intent allocation from [ADR 0009](./0009-regional-intent-allocation.md) is the sole source of Defender work claims. It projects Defend demand and threat pressure from the Intent Grid, then gives each Defender a regional lease for one supported Defend cell. A supported holder remains attached to that cell while its paint and ownership remain valid; threat pressure attracts idle, new, or replacement Defenders without retargeting a valid active holder.

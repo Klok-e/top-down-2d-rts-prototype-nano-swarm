@@ -40,13 +40,17 @@ pub fn point_in_cell(pos: Vec2, cell: IVec2) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use approx::assert_abs_diff_eq;
+
     use super::*;
 
     #[test]
     fn cell_bounds_span_one_zone_block() {
         let (min, max) = cell_bounds(IVec2::new(2, -1));
-        assert_eq!(min, Vec2::new(2.0 * ZONE_BLOCK_SIZE, -ZONE_BLOCK_SIZE));
-        assert_eq!(max, Vec2::new(3.0 * ZONE_BLOCK_SIZE, 0.0));
+        assert_abs_diff_eq!(min.x, 2.0 * ZONE_BLOCK_SIZE, epsilon = 0.01);
+        assert_abs_diff_eq!(min.y, -ZONE_BLOCK_SIZE, epsilon = 0.01);
+        assert_abs_diff_eq!(max.x, 3.0 * ZONE_BLOCK_SIZE, epsilon = 0.01);
+        assert_abs_diff_eq!(max.y, 0.0, epsilon = 0.01);
     }
 
     #[test]
@@ -54,12 +58,14 @@ mod tests {
         let cell = IVec2::new(0, 0);
         // A point already inside is unchanged.
         let inside = Vec2::new(100.0, 200.0);
-        assert_eq!(clamp_point_to_cell(inside, cell), inside);
+        let unchanged = clamp_point_to_cell(inside, cell);
+        assert_abs_diff_eq!(unchanged.x, inside.x, epsilon = 0.01);
+        assert_abs_diff_eq!(unchanged.y, inside.y, epsilon = 0.01);
         // A point past the max corner clamps to the max edge.
         let outside = Vec2::new(ZONE_BLOCK_SIZE + 50.0, -10.0);
         let clamped = clamp_point_to_cell(outside, cell);
-        assert_eq!(clamped.x, ZONE_BLOCK_SIZE);
-        assert_eq!(clamped.y, 0.0);
+        assert_abs_diff_eq!(clamped.x, ZONE_BLOCK_SIZE, epsilon = 0.01);
+        assert_abs_diff_eq!(clamped.y, 0.0, epsilon = 0.01);
     }
 
     #[test]

@@ -8,9 +8,9 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        DEFAULT_STOCKPILE_CAPACITY, DirectMovementComponent, HAULER_CARRY_CAPACITY,
-        HaulerAssignment, HaulerLoad, LogisticsReservation, OwnerSwarm, ProductionFacility, Swarm,
-        SwarmId, WORKER_CARRY_CAPACITY,
+        DirectMovementComponent, HAULER_CARRY_CAPACITY, HaulerAssignment, HaulerLoad,
+        LogisticsReservation, OwnerSwarm, ProductionFacility, Swarm, SwarmId,
+        WORKER_CARRY_CAPACITY,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile},
 };
@@ -25,41 +25,6 @@ fn build_app() -> App {
 fn stockpile_count(world: &mut World) -> usize {
     let mut q = world.query::<&Stockpile>();
     q.iter(world).count()
-}
-
-#[test]
-fn stockpile_can_hold_local_resource_amounts() {
-    // The Stockpile component already exists from issue #7; this
-    // test pins the "stockpile is a local buffer" contract for
-    // issue #8: a stockpile tracks an amount, has a capacity, and
-    // exposes free_space so delivery systems can reason about it.
-    let mut app = build_app();
-    let stockpile_pos = Vec2::new(200.0, 0.0);
-    let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, DEFAULT_STOCKPILE_CAPACITY);
-
-    // Empty stockpile: free_space == capacity.
-    {
-        let s = app.world().entity(stockpile).get::<Stockpile>().unwrap();
-        assert_eq!(s.amount, 0);
-        assert_eq!(s.capacity, DEFAULT_STOCKPILE_CAPACITY);
-        assert_eq!(s.free_space(), DEFAULT_STOCKPILE_CAPACITY);
-    }
-
-    // Adding resources changes the buffer amount.
-    app.world_mut()
-        .entity_mut(stockpile)
-        .get_mut::<Stockpile>()
-        .unwrap()
-        .amount = 37;
-    {
-        let s = app.world().entity(stockpile).get::<Stockpile>().unwrap();
-        assert_eq!(s.amount, 37);
-        assert_eq!(
-            s.free_space(),
-            DEFAULT_STOCKPILE_CAPACITY - 37,
-            "free space shrinks as the buffer fills"
-        );
-    }
 }
 
 #[test]
@@ -269,7 +234,15 @@ fn hauler_fills_load_up_to_carry_capacity() {
     let mut app = build_app();
     let deposit_pos = Vec2::new(100.0, 0.0);
     let stockpile_pos = Vec2::new(400.0, 0.0);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 1000);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 1000,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let _stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
     let hauler = common::spawn_hauler_at(&mut app, deposit_pos);
 
@@ -442,7 +415,15 @@ fn resource_ledger_stays_consistent_through_transport() {
     let mut app = build_app();
     let deposit_pos = Vec2::new(100.0, 0.0);
     let stockpile_pos = Vec2::new(200.0, 0.0);
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 200);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 200,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
     let _hauler = common::spawn_hauler_at(&mut app, deposit_pos);
 

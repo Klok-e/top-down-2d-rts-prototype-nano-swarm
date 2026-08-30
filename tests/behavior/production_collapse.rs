@@ -577,7 +577,15 @@ fn blocked_source_ring_cannot_turn_gather_paint_into_a_material_path() {
         IntentKind::Gather,
         Some(SwarmId::PLAYER),
     );
-    let deposit = common::spawn_deposit(&mut app, deposit_pos, 100);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_pos,
+            amount: 100,
+            capacity: 1000,
+            radius: 32.0,
+        },
+    );
     let facility_pos = common::cell_world_center(IVec2::new(3, 0));
     app.world_mut().spawn((
         ProductionFacility::new(),

@@ -137,9 +137,8 @@ fn demand_pressure_creates_planned_production_facility() {
         .expect("Planned Production Facility carries a position")
         .translation
         .truncate();
-    assert_ne!(
-        plan_position,
-        common::cell_world_center(IVec2::ZERO),
+    assert!(
+        plan_position.distance(common::cell_world_center(IVec2::ZERO)) > 0.01,
         "Build-Zone placement must not privilege the cell center",
     );
     assert_eq!(
@@ -689,29 +688,6 @@ fn zero_priority_typed_shortage_still_creates_production_pressure() {
         1,
         "a required zero-priority Defender still drives capacity pressure",
     );
-}
-
-#[test]
-fn planned_kind_includes_production_facility() {
-    // Pin the `PlannedKind::ALL` / `PlannedKind::COUNT`
-    // contract: the new variant shows up in the
-    // foundation's stable iteration list, with a stable
-    // index distinct from the Source and Sink
-    // Stockpile variants.
-    let kinds: Vec<PlannedKind> = PlannedKind::ALL.to_vec();
-    assert_eq!(kinds.len(), PlannedKind::COUNT);
-    assert!(kinds.contains(&PlannedKind::SourceStockpile));
-    assert!(kinds.contains(&PlannedKind::SinkStockpile));
-    assert!(
-        kinds.contains(&PlannedKind::ProductionFacility),
-        "PlannedKind::ALL must include ProductionFacility"
-    );
-    let production_index = PlannedKind::ProductionFacility.index();
-    let source_index = PlannedKind::SourceStockpile.index();
-    let sink_index = PlannedKind::SinkStockpile.index();
-    assert_ne!(production_index, source_index);
-    assert_ne!(production_index, sink_index);
-    assert_ne!(source_index, sink_index);
 }
 
 #[test]

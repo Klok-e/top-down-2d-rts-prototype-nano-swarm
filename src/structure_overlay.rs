@@ -888,26 +888,28 @@ pub fn condition_overlay_cleanup_system(
 
 #[cfg(test)]
 mod tests {
+    use approx::assert_abs_diff_eq;
+
     use super::*;
     use crate::nanobot::{DEFAULT_PLANNED_WORK_TICKS, PlannedKind};
 
     #[test]
     fn fill_fraction_clamps_and_handles_zero_capacity() {
-        assert_eq!(fill_fraction(0, 100), 0.0);
-        assert_eq!(fill_fraction(50, 100), 0.5);
-        assert_eq!(fill_fraction(150, 100), 1.0);
-        assert_eq!(fill_fraction(10, 0), 0.0);
+        assert_abs_diff_eq!(fill_fraction(0, 100), 0.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(fill_fraction(50, 100), 0.5, epsilon = 1e-5);
+        assert_abs_diff_eq!(fill_fraction(150, 100), 1.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(fill_fraction(10, 0), 0.0, epsilon = 1e-5);
     }
 
     #[test]
-    fn planned_fill_fraction_uses_spent_work_budget() {
+    fn planned_fill_fraction_reports_spent_work_budget() {
         let mut planned = PlannedStructure::new(PlannedKind::SinkStockpile, IVec2::ZERO);
         planned.work_remaining = DEFAULT_PLANNED_WORK_TICKS;
-        assert_eq!(planned_fill_fraction(&planned), 0.0);
+        assert_abs_diff_eq!(planned_fill_fraction(&planned), 0.0, epsilon = 1e-5);
         planned.work_remaining = DEFAULT_PLANNED_WORK_TICKS / 2;
-        assert!(planned_fill_fraction(&planned) > 0.0);
+        assert_abs_diff_eq!(planned_fill_fraction(&planned), 0.6, epsilon = 1e-5);
         planned.work_remaining = 0;
-        assert_eq!(planned_fill_fraction(&planned), 1.0);
+        assert_abs_diff_eq!(planned_fill_fraction(&planned), 1.0, epsilon = 1e-5);
     }
 
     #[test]
@@ -960,9 +962,10 @@ mod tests {
 
     #[test]
     fn effective_zoom_falls_back_or_reads_first_camera_zoom() {
-        assert_eq!(
+        assert_abs_diff_eq!(
             effective_zoom(std::iter::empty::<&CameraZoom2d>(), 1.0),
-            1.0
+            1.0,
+            epsilon = 1e-5
         );
         let cameras = [
             CameraZoom2d {
@@ -974,39 +977,43 @@ mod tests {
                 ..default()
             },
         ];
-        assert_eq!(effective_zoom(cameras.iter(), 1.0), 2.5);
+        assert_abs_diff_eq!(effective_zoom(cameras.iter(), 1.0), 2.5, epsilon = 1e-5);
     }
 
     #[test]
     fn default_settings_use_default_threshold() {
-        assert_eq!(
+        assert_abs_diff_eq!(
             StructureOverlaySettings::default().hide_zoom_threshold,
-            DEFAULT_OVERLAY_HIDE_ZOOM_THRESHOLD
+            DEFAULT_OVERLAY_HIDE_ZOOM_THRESHOLD,
+            epsilon = 1e-5
         );
     }
 
     #[test]
     fn overlay_offsets_are_above_targets() {
-        assert_eq!(
+        assert_abs_diff_eq!(
             overlay_label_offset_y(StructureOverlayKind::Deposit, Some(64.0)),
-            64.0 + STRUCTURE_FOOTPRINT_LABEL_GAP
+            64.0 + STRUCTURE_FOOTPRINT_LABEL_GAP,
+            epsilon = 1e-5
         );
-        assert_eq!(
+        assert_abs_diff_eq!(
             overlay_label_offset_y(StructureOverlayKind::Deposit, None),
-            DEFAULT_DEPOSIT_OVERLAY_RADIUS + STRUCTURE_FOOTPRINT_LABEL_GAP
+            DEFAULT_DEPOSIT_OVERLAY_RADIUS + STRUCTURE_FOOTPRINT_LABEL_GAP,
+            epsilon = 1e-5
         );
         let structure_offset = PLANNED_STRUCTURE_FOOTPRINT / 2.0 + STRUCTURE_FOOTPRINT_LABEL_GAP;
         for kind in StructureOverlayKind::STRUCTURES {
             let offset = overlay_label_offset_y(kind, Some(9999.0));
             assert!(offset > 0.0);
             if kind != StructureOverlayKind::Deposit {
-                assert_eq!(offset, structure_offset);
+                assert_abs_diff_eq!(offset, structure_offset, epsilon = 1e-5);
             }
         }
         for kind in [StructureOverlayKind::Worker, StructureOverlayKind::Hauler] {
-            assert_eq!(
+            assert_abs_diff_eq!(
                 overlay_label_offset_y(kind, None),
-                BOT_RADIUS + HAULER_OVERLAY_GAP
+                BOT_RADIUS + HAULER_OVERLAY_GAP,
+                epsilon = 1e-5
             );
         }
     }

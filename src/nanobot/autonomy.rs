@@ -304,6 +304,8 @@ pub fn best_candidate(
 
 #[cfg(test)]
 mod tests {
+    use approx::assert_abs_diff_eq;
+
     use super::*;
     use crate::intent::IntentGrid;
     use bevy::prelude::IVec2;
@@ -334,9 +336,9 @@ mod tests {
         let worker = NanobotType::Worker;
         assert!(worker.fit_for(IntentKind::Gather) > 0.0);
         assert!(worker.fit_for(IntentKind::Build) > 0.0);
-        assert_eq!(worker.fit_for(IntentKind::Defend), 0.0);
+        assert_abs_diff_eq!(worker.fit_for(IntentKind::Defend), 0.0, epsilon = 1e-5);
         // Corridor is hauler path guidance, not work -- no type fits.
-        assert_eq!(worker.fit_for(IntentKind::Corridor), 0.0);
+        assert_abs_diff_eq!(worker.fit_for(IntentKind::Corridor), 0.0, epsilon = 1e-5);
     }
 
     #[test]
@@ -345,17 +347,17 @@ mod tests {
         // Corridor is the hauler's main guidance layer.
         assert!(hauler.fit_for(IntentKind::Corridor) > hauler.fit_for(IntentKind::Build));
         assert!(hauler.fit_for(IntentKind::Build) > 0.0);
-        assert_eq!(hauler.fit_for(IntentKind::Gather), 0.0);
-        assert_eq!(hauler.fit_for(IntentKind::Defend), 0.0);
+        assert_abs_diff_eq!(hauler.fit_for(IntentKind::Gather), 0.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(hauler.fit_for(IntentKind::Defend), 0.0, epsilon = 1e-5);
     }
 
     #[test]
     fn defender_fits_defend_only() {
         let defender = NanobotType::Defender;
         assert!(defender.fit_for(IntentKind::Defend) > 0.0);
-        assert_eq!(defender.fit_for(IntentKind::Gather), 0.0);
-        assert_eq!(defender.fit_for(IntentKind::Build), 0.0);
-        assert_eq!(defender.fit_for(IntentKind::Corridor), 0.0);
+        assert_abs_diff_eq!(defender.fit_for(IntentKind::Gather), 0.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(defender.fit_for(IntentKind::Build), 0.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(defender.fit_for(IntentKind::Corridor), 0.0, epsilon = 1e-5);
     }
 
     #[test]
@@ -365,7 +367,7 @@ mod tests {
 
     #[test]
     fn idle_responds_fully_to_new_intent() {
-        assert_eq!(Commitment::Idle.reassess_factor(), 1.0);
+        assert_abs_diff_eq!(Commitment::Idle.reassess_factor(), 1.0, epsilon = 1e-5);
     }
 
     #[test]
@@ -468,7 +470,7 @@ mod tests {
             0,
         );
         assert!(base > 0.0);
-        assert_eq!(
+        assert_abs_diff_eq!(
             score(
                 NanobotType::Defender,
                 Commitment::Idle,
@@ -478,9 +480,10 @@ mod tests {
                 1.0,
                 0,
             ),
-            0.0
+            0.0,
+            epsilon = 1e-5
         );
-        assert_eq!(
+        assert_abs_diff_eq!(
             score(
                 NanobotType::Worker,
                 Commitment::Idle,
@@ -490,7 +493,8 @@ mod tests {
                 0.0,
                 0,
             ),
-            0.0
+            0.0,
+            epsilon = 1e-5
         );
         let crowded = score(
             NanobotType::Worker,
@@ -560,6 +564,29 @@ mod tests {
         )
         .unwrap();
         assert_eq!(picked.cell, empty);
+    }
+
+    #[test]
+    fn global_awareness_breaks_equal_scores_by_cell_order() {
+        let mut grid = IntentGrid::new(4, 4);
+        let first = IVec2::new(-1, 0);
+        let second = IVec2::new(1, 0);
+        grid.paint(first, IntentKind::Gather);
+        grid.paint(second, IntentKind::Gather);
+
+        let picked = best_candidate(
+            &grid,
+            NanobotType::Worker,
+            Commitment::Idle,
+            Vec2::ZERO,
+            &SoftWorkSlots::new(),
+            cell_size(),
+            &IntentKind::ALL,
+            SwarmId::PLAYER,
+        )
+        .expect("equal-score painted cells must remain selectable");
+
+        assert_eq!(picked.cell, first);
     }
 
     #[test]
