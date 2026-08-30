@@ -1,6 +1,7 @@
-use std::collections::BTreeMap;
-
-use bevy::prelude::{IVec2, Vec2};
+use bevy::{
+    platform::collections::HashMap,
+    prelude::{IVec2, Vec2},
+};
 
 /// Deterministic fixed-size spatial buckets.
 ///
@@ -10,7 +11,7 @@ use bevy::prelude::{IVec2, Vec2};
 #[derive(Debug, Clone)]
 pub struct FixedSpatialBuckets<T> {
     bucket_size: f32,
-    buckets: BTreeMap<(i32, i32), Vec<T>>,
+    buckets: HashMap<(i32, i32), Vec<T>>,
 }
 
 impl<T> FixedSpatialBuckets<T> {
@@ -18,7 +19,7 @@ impl<T> FixedSpatialBuckets<T> {
         assert!(bucket_size.is_finite() && bucket_size > 0.0);
         Self {
             bucket_size,
-            buckets: BTreeMap::new(),
+            buckets: HashMap::default(),
         }
     }
 

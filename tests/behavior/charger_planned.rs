@@ -409,12 +409,12 @@ fn no_planned_charger_without_demand() {
     assert_eq!(
         planned_charger_count(app.world_mut()),
         0,
-        "no Planned Charger must emerge without defender demand"
+        "no Planned Charger must emerge without low-Charge service need"
     );
     assert_eq!(
         charger_count(app.world_mut()),
         0,
-        "no Charger must emerge without defender demand"
+        "no Charger must emerge without low-Charge service need"
     );
 }
 

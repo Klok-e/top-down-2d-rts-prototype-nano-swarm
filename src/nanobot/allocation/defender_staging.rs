@@ -1,8 +1,8 @@
 //! Responsive staging and continuous local roaming for unengaged Defenders.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
-use bevy::prelude::*;
+use bevy::{ecs::entity::EntityHashMap, prelude::*};
 
 mod flow;
 
@@ -132,11 +132,8 @@ fn component_extra_bounds(
         .collect()
 }
 
-fn balanced_assignments(
-    defenders: &[DefenderSnapshot],
-    cells: &[IVec2],
-) -> BTreeMap<Entity, IVec2> {
-    let mut assignments = BTreeMap::new();
+fn balanced_assignments(defenders: &[DefenderSnapshot], cells: &[IVec2]) -> EntityHashMap<IVec2> {
+    let mut assignments = EntityHashMap::default();
     if cells.is_empty() {
         for defender in defenders {
             assignments.insert(defender.entity, defender.current_cell);
@@ -320,7 +317,7 @@ pub(super) fn reconcile_defender_staging_system(
     }
 
     snapshots.sort_by_key(|defender| (defender.swarm, defender.entity.to_bits()));
-    let mut assignments = BTreeMap::new();
+    let mut assignments = EntityHashMap::default();
     let mut start = 0;
     while start < snapshots.len() {
         let swarm = snapshots[start].swarm;

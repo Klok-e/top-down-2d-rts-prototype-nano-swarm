@@ -10,7 +10,7 @@
 //! ProductionFacility, Charger, or the legacy `BuildSite`).
 //!
 //! Each test isolates one demand source -- Gather paint, Build
-//! paint, production demand, and Defend demand -- and asserts
+//! paint, production demand, and low-Charge Charger service need -- and asserts
 //! that no completed structure of any kind appears without a
 //! Worker building a planned structure first. The last test
 //! covers the "scenario seed structures remain valid" half of
@@ -40,7 +40,7 @@ enum DemandSource {
     GatherPaint,
     BuildPaint,
     ProductionDemand,
-    DefendDemand,
+    ChargerServiceNeed,
 }
 
 impl DemandSource {
@@ -50,7 +50,7 @@ impl DemandSource {
             DemandSource::GatherPaint => "Gather paint",
             DemandSource::BuildPaint => "Build paint",
             DemandSource::ProductionDemand => "production demand",
-            DemandSource::DefendDemand => "defender support demand",
+            DemandSource::ChargerServiceNeed => "low-Charge Charger service need",
         }
     }
 }
@@ -349,24 +349,24 @@ fn low_charge_need_does_not_instant_spawn_completed_charger() {
         chargers,
         0,
         "{} must not spawn a completed Charger; got {chargers}",
-        DemandSource::DefendDemand.name()
+        DemandSource::ChargerServiceNeed.name()
     );
     assert_eq!(
         stockpiles,
         0,
         "{} must not spawn a completed Stockpile",
-        DemandSource::DefendDemand.name()
+        DemandSource::ChargerServiceNeed.name()
     );
     assert_eq!(
         facilities,
         0,
         "{} must not spawn a completed ProductionFacility",
-        DemandSource::DefendDemand.name()
+        DemandSource::ChargerServiceNeed.name()
     );
     assert!(
         plans >= 1,
         "{} should plan a Charger in the Defend cell; got {plans} plans",
-        DemandSource::DefendDemand.name()
+        DemandSource::ChargerServiceNeed.name()
     );
 }
 

@@ -283,7 +283,7 @@ fn erasing_defend_paint_retargets_only_the_now_displaced_defender() {
             .entity(west_defender)
             .get::<DirectMovementComponent>()
             .is_none(),
-        "the Defender already filling the remaining cell should keep its post",
+        "the Defender already filling the remaining staging cell should stay there",
     );
 }
 

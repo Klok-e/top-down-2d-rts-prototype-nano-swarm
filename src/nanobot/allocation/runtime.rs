@@ -260,6 +260,15 @@ pub fn regional_allocation_acquisition_system(
     stockpiles: Query<(&Stockpile, &Transform)>,
     mut terminal: TerminalLogisticsParams,
 ) {
+    if projection
+        .iter_regions()
+        .all(|(_, opportunities)| opportunities.is_empty())
+    {
+        region_ages.waiting.clear();
+        terminal.ages.waiting.clear();
+        return;
+    }
+
     let facilities = &terminal.facilities;
     let chargers = &terminal.chargers;
 
