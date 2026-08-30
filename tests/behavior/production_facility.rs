@@ -11,7 +11,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Charge, NanobotType, OwnerSwarm, PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT,
-        PopulationDemandPlugin, ProductionFacility, ProductionPriority,
+        PopulationDemand, PopulationDemandPlugin, ProductionFacility, ProductionPriority,
         SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, SwarmBundle, SwarmId,
         SwarmMember, production_facility_pick_target_system,
     },
@@ -357,7 +357,7 @@ fn positive_health_facility_keeps_operating() {
 }
 
 #[test]
-fn defend_work_produces_missing_defender_despite_excess_haulers() {
+fn swarm_tile_reserve_produces_missing_defenders_despite_excess_haulers() {
     let mut app = build_app();
     app.add_plugins(PopulationDemandPlugin);
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
@@ -373,11 +373,13 @@ fn defend_work_produces_missing_defender_despite_excess_haulers() {
         priority.set_weight(NanobotType::Hauler, 60);
         priority.set_weight(NanobotType::Defender, 15);
     }
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        IVec2::ZERO,
-        IntentKind::Defend,
-        Some(SwarmId::PLAYER),
-    );
+    for (x, kind) in IntentKind::ALL.into_iter().enumerate() {
+        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+            IVec2::new(x as i32, 0),
+            kind,
+            Some(SwarmId::PLAYER),
+        );
+    }
     let first = common::spawn_facility_at(&mut app, swarm, Vec2::ZERO);
     let second = common::spawn_facility_at(&mut app, swarm, Vec2::new(100.0, 0.0));
     common::fill_facility_input(&mut app, first);
@@ -397,9 +399,78 @@ fn defend_work_produces_missing_defender_despite_excess_haulers() {
         .collect::<Vec<_>>();
     assert_eq!(
         targets,
-        vec![NanobotType::Defender],
-        "one Defend cell commits exactly one Defender cycle; excess Haulers cannot satisfy it",
+        vec![NanobotType::Defender, NanobotType::Defender],
+        "four unique Swarm Tiles commit two Defender cycles; excess Haulers cannot satisfy them",
     );
+}
+
+#[test]
+fn existing_and_in_production_defenders_satisfy_swarm_tile_demand() {
+    let mut app = build_app();
+    app.add_plugins(PopulationDemandPlugin);
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    common::spawn_defender_at(&mut app, Vec2::ZERO);
+    for x in 0..4 {
+        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+            IVec2::new(x, 0),
+            IntentKind::Corridor,
+            Some(SwarmId::PLAYER),
+        );
+    }
+    let producing = common::spawn_facility_at(&mut app, swarm, Vec2::ZERO);
+    app.world_mut()
+        .entity_mut(producing)
+        .get_mut::<ProductionFacility>()
+        .unwrap()
+        .current_target = Some(NanobotType::Defender);
+    let idle = common::spawn_facility_at(&mut app, swarm, Vec2::new(100.0, 0.0));
+    common::fill_facility_input(&mut app, idle);
+
+    app.update();
+
+    assert_eq!(
+        app.world()
+            .entity(idle)
+            .get::<ProductionFacility>()
+            .unwrap()
+            .current_target,
+        None,
+        "one living and one in-production Defender satisfy the two-Defender reserve",
+    );
+}
+
+#[test]
+fn falling_swarm_tile_demand_retains_excess_defenders() {
+    let mut app = build_app();
+    app.add_plugins(PopulationDemandPlugin);
+    common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let first = common::spawn_defender_at(&mut app, Vec2::ZERO);
+    let second = common::spawn_defender_at(&mut app, Vec2::ZERO);
+    for x in 0..4 {
+        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+            IVec2::new(x, 0),
+            IntentKind::Corridor,
+            Some(SwarmId::PLAYER),
+        );
+    }
+    app.update();
+
+    for x in 1..4 {
+        app.world_mut().resource_mut::<IntentGrid>().erase_owned(
+            IVec2::new(x, 0),
+            IntentKind::Corridor,
+            Some(SwarmId::PLAYER),
+        );
+    }
+    app.update();
+
+    let demand = app.world().resource::<PopulationDemand>();
+    assert_eq!(
+        demand.desired_for(SwarmId::PLAYER, NanobotType::Defender),
+        1,
+    );
+    assert!(app.world().get_entity(first).is_ok());
+    assert!(app.world().get_entity(second).is_ok());
 }
 
 #[test]

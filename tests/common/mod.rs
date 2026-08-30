@@ -44,14 +44,14 @@ use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
     intent::IntentGrid,
     nanobot::{
-        Charge, ChargePlugin, Charger, CollapsePlugin, Commitment, DefendPlugin, GatherPlugin,
-        HaulPlugin, Health, MaintenancePlugin, Nanobot, NanobotBundle, NanobotSimulationSet,
-        NanobotType, NanobotVisual, OpponentSwarm, OwnerSwarm, PRODUCTION_TICKS_PER_BOT,
-        PlannedStructure, PlannedStructurePlugin, ProductionFacility, ProductionPlugin,
-        RegionalAllocationPlugin, SoftWorkSlots, Structure, StructureKind, Swarm, SwarmId,
-        SwarmMember, VelocityComponent, bot_debug_circle_system, idle_spread_system,
-        initialize_nanobot_type_components, move_velocity_system, separation_system,
-        velocity_system,
+        Charge, ChargePlugin, Charger, CollapsePlugin, Commitment, DefendPlugin, DefendPressure,
+        GatherPlugin, HaulPlugin, Health, MaintenancePlugin, Nanobot, NanobotBundle,
+        NanobotSimulationSet, NanobotType, NanobotVisual, OpponentSwarm, OwnerSwarm,
+        PRODUCTION_TICKS_PER_BOT, PlannedStructure, PlannedStructurePlugin, PopulationDemandPlugin,
+        ProductionFacility, ProductionPlugin, RegionalAllocationPlugin, SoftWorkSlots, Structure,
+        StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent, bot_debug_circle_system,
+        idle_spread_system, initialize_nanobot_type_components, move_velocity_system,
+        separation_system, velocity_system,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole},
     structure_overlay::StructureOverlayPlugin,
@@ -145,6 +145,16 @@ pub fn sim_app() -> App {
     let mut app = minimal_app();
     register_movement_systems(&mut app);
     app.add_plugins(RegionalAllocationPlugin);
+    app
+}
+
+/// `sim_app` + the typed population-demand projection. The explicit
+/// `DefendPressure` resource supports Defend opportunity projection; Defender
+/// population reads the territory snapshot.
+pub fn sim_app_with_population_demand() -> App {
+    let mut app = sim_app();
+    app.init_resource::<DefendPressure>();
+    app.add_plugins(PopulationDemandPlugin);
     app
 }
 

@@ -107,6 +107,7 @@ pub struct RegionalAllocationPlugin;
 impl Plugin for RegionalAllocationPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ActionableProjection>()
+            .init_resource::<super::TerritorySnapshot>()
             .init_resource::<AllocationClock>()
             .init_resource::<RegionalLeaseConfig>()
             .init_resource::<AllocationTickDue>()
@@ -123,7 +124,12 @@ impl Plugin for RegionalAllocationPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                super::project_actionable_opportunities_system
+                (
+                    super::project_actionable_opportunities_system,
+                    super::project_territory_snapshot_system
+                        .after(crate::nanobot::NanobotSimulationSet::Movement),
+                )
+                    .chain()
                     .in_set(RegionalAllocationSet::Project),
             )
             .add_systems(

@@ -431,6 +431,25 @@ impl IntentGrid {
             .map(|point| (point, &self.cells[self.index(point)]))
     }
 
+    /// Unique territory cells claimed by `swarm`, in deterministic row-major
+    /// order. Owned intent layers and Defend Contest participation establish a
+    /// claim; shared unowned paint does not.
+    pub fn swarm_tiles(&self, swarm: SwarmId) -> Vec<IVec2> {
+        self.iter_active_cells()
+            .filter_map(|(point, cell)| {
+                let owns_layer = IntentKind::ALL
+                    .into_iter()
+                    .any(|kind| cell.owner(kind) == Some(swarm));
+                let participates_in_contest =
+                    self.defend_contest(point)
+                        .is_some_and(|(incumbent, challenger)| {
+                            incumbent == swarm || challenger == swarm
+                        });
+                (owns_layer || participates_in_contest).then_some(point)
+            })
+            .collect()
+    }
+
     fn set_owned(&mut self, point: IVec2, kind: IntentKind, owner: Option<SwarmId>) -> bool {
         if !self.in_bounds(point) {
             return false;
@@ -560,6 +579,45 @@ mod tests {
         assert!(cell.has(IntentKind::Defend));
         assert_eq!(cell.owner(IntentKind::Gather), Some(SwarmId::PLAYER));
         assert_eq!(cell.owner(IntentKind::Defend), Some(SwarmId(7)));
+    }
+
+    #[test]
+    fn swarm_tiles_include_owned_layers_once_and_exclude_shared_paint() {
+        let mut grid = IntentGrid::new(8, 8);
+        let player_only = IVec2::new(-1, 0);
+        let overlapping_claims = IVec2::ZERO;
+        let shared = IVec2::new(1, 0);
+        let opponent = SwarmId(7);
+
+        for kind in IntentKind::ALL {
+            grid.paint_owned(player_only, kind, Some(SwarmId::PLAYER));
+        }
+        grid.paint_owned(
+            overlapping_claims,
+            IntentKind::Gather,
+            Some(SwarmId::PLAYER),
+        );
+        grid.paint_owned(overlapping_claims, IntentKind::Build, Some(opponent));
+        grid.paint(shared, IntentKind::Defend);
+
+        assert_eq!(
+            grid.swarm_tiles(SwarmId::PLAYER),
+            vec![player_only, overlapping_claims]
+        );
+        assert_eq!(grid.swarm_tiles(opponent), vec![overlapping_claims]);
+    }
+
+    #[test]
+    fn swarm_tiles_include_defend_contests_for_both_participants() {
+        let mut grid = IntentGrid::new(4, 4);
+        let cell = IVec2::ZERO;
+        let opponent = SwarmId(7);
+        grid.paint_owned(cell, IntentKind::Defend, Some(SwarmId::PLAYER));
+        grid.contest_defend(cell, opponent);
+
+        assert_eq!(grid.swarm_tiles(SwarmId::PLAYER), vec![cell]);
+        assert_eq!(grid.swarm_tiles(opponent), vec![cell]);
+        assert!(grid.swarm_tiles(SwarmId(9)).is_empty());
     }
 
     #[test]
