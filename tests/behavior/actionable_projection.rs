@@ -3,7 +3,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         ActionableOpportunity, ActionableProjection, AllocationRegion, Charger, ChargerAssignment,
-        ChargerProgress, DefendPressure, Health, MAINTENANCE_NEEDS_THRESHOLD, Nanobot, NanobotType,
+        ChargerProgress, Health, MAINTENANCE_NEEDS_THRESHOLD, Nanobot, NanobotType,
         OpportunityCategory, OpportunityTarget, OwnerSwarm, PlannedKind, PlannedStructure,
         SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, Swarm, SwarmId,
         SwarmMember, project_actionable_opportunities_system,
@@ -101,7 +101,7 @@ fn unclaimed_planned_structure_projects_remaining_build_work() {
 }
 
 #[test]
-fn build_and_defend_intent_project_maintenance_and_defend_work() {
+fn stale_structure_projects_maintenance_without_defend_work() {
     let mut app = projection_app();
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
@@ -122,12 +122,9 @@ fn build_and_defend_intent_project_maintenance_and_defend_work() {
             .iter()
             .map(|opportunity| opportunity.category)
             .collect::<Vec<_>>(),
-        vec![
-            OpportunityCategory::Maintenance,
-            OpportunityCategory::Defend
-        ]
+        vec![OpportunityCategory::Maintenance]
     );
-    assert_eq!(opportunities[1].available_work, 1);
+    assert_eq!(opportunities[0].available_work, 1);
 }
 
 #[test]
@@ -302,31 +299,6 @@ fn assigned_en_route_or_charging_defender_projects_charger_maintenance() {
 }
 
 #[test]
-fn defend_pressure_changes_projected_defender_capacity() {
-    let mut app = projection_app();
-    app.init_resource::<DefendPressure>();
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        IVec2::ZERO,
-        IntentKind::Defend,
-        Some(SwarmId::PLAYER),
-    );
-    app.world_mut()
-        .resource_mut::<DefendPressure>()
-        .set(IVec2::ZERO, 3.0);
-
-    app.update();
-
-    let defend = app
-        .world()
-        .resource::<ActionableProjection>()
-        .opportunities(AllocationRegion::for_cell(IVec2::ZERO))
-        .iter()
-        .find(|opportunity| opportunity.category == OpportunityCategory::Defend)
-        .expect("Defend opportunity projected");
-    assert_eq!(defend.available_work, 3);
-}
-
-#[test]
 fn haul_opportunity_is_indexed_by_source_region() {
     let mut app = projection_app();
     let swarm = app.world_mut().spawn(SwarmId::PLAYER).id();
@@ -464,14 +436,27 @@ fn projection_replaces_only_regions_dirtied_by_intent_changes() {
     let second = IVec2::new(9, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        grid.add(first, IntentKind::Defend);
-        grid.add(second, IntentKind::Defend);
+        grid.add(first, IntentKind::Gather);
+        grid.add(second, IntentKind::Gather);
+    }
+    for cell in [first, second] {
+        app.world_mut().spawn((
+            ResourceDeposit {
+                kind: ResourceKind::Minerals,
+                amount: 20,
+                capacity: 20,
+                radius: 16.0,
+            },
+            Transform::from_translation(
+                top_down_2d_rts_prototype_nano_swarm::ai::get_world_from_zone(cell).extend(0.0),
+            ),
+        ));
     }
     app.update();
 
     app.world_mut()
         .resource_mut::<IntentGrid>()
-        .remove(first, IntentKind::Defend);
+        .remove(first, IntentKind::Gather);
     app.update();
 
     let projection = app.world().resource::<ActionableProjection>();

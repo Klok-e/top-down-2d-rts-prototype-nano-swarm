@@ -7,9 +7,9 @@ use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z, ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Charge, Charger, ChargerAssignment, Commitment, DefendHold, Health, Nanobot, NanobotType,
-        OpponentSwarm, OwnerSwarm, Structure, StructureKind, Swarm, SwarmId, SwarmMember,
-        VelocityComponent,
+        Charge, Charger, ChargerAssignment, Commitment, DefenderResponse, Health, Nanobot,
+        NanobotType, OpponentSwarm, OwnerSwarm, Structure, StructureKind, Swarm, SwarmId,
+        SwarmMember, VelocityComponent,
     },
 };
 
@@ -48,13 +48,7 @@ fn focus_camera(world: &mut World) {
     }
 }
 
-fn spawn_defender(
-    world: &mut World,
-    position: Vec2,
-    swarm: SwarmId,
-    hold: DefendHold,
-    charge: f32,
-) {
+fn spawn_defender(world: &mut World, position: Vec2, swarm: SwarmId, charge: f32) {
     let entity = world
         .spawn((
             FeelDefender,
@@ -64,7 +58,6 @@ fn spawn_defender(
             VelocityComponent::default(),
             Health::default(),
             SwarmMember::new(swarm),
-            hold,
             Transform::from_translation(position.extend(GAMEPLAY_SPRITE_Z)),
         ))
         .id();
@@ -113,7 +106,6 @@ fn setup_scene(world: &mut World) {
             world,
             center + offset,
             SwarmId::PLAYER,
-            DefendHold { cell: CENTER_CELL },
             if index < 2 { 0.5 } else { 1.0 },
         );
     }
@@ -129,7 +121,6 @@ fn setup_scene(world: &mut World) {
             world,
             center + offset,
             opponent_swarm_id,
-            DefendHold { cell: CENTER_CELL },
             if index == 0 { 0.5 } else { 1.0 },
         );
     }
@@ -166,15 +157,15 @@ fn setup_scene(world: &mut World) {
 }
 
 fn assert_front_state(world: &mut World, require_rotation: bool) {
-    let mut player_holders = 0;
-    let mut opponent_holders = 0;
+    let mut player_responders = 0;
+    let mut opponent_responders = 0;
     let mut charger_loads = HashMap::<Entity, usize>::new();
     let mut living_by_swarm = HashMap::<SwarmId, u32>::new();
     let mut rotating_by_swarm = HashMap::<SwarmId, u32>::new();
     let mut low_charge = 0;
-    for (hold, assignment, member, health, charge, transform) in world
+    for (response, assignment, member, health, charge, transform) in world
         .query_filtered::<(
-            Option<&DefendHold>,
+            Option<&DefenderResponse>,
             Option<&ChargerAssignment>,
             &SwarmMember,
             &Health,
@@ -190,12 +181,12 @@ fn assert_front_state(world: &mut World, require_rotation: bool) {
         if charge.needs_rotation() {
             low_charge += 1;
         }
-        if let Some(hold) = hold {
-            if member.0 == SwarmId::PLAYER && hold.cell == CENTER_CELL {
-                player_holders += 1;
+        if response.is_some() {
+            if member.0 == SwarmId::PLAYER {
+                player_responders += 1;
             }
-            if member.0 != SwarmId::PLAYER && hold.cell == CENTER_CELL {
-                opponent_holders += 1;
+            if member.0 != SwarmId::PLAYER {
+                opponent_responders += 1;
             }
         }
         if let Some(assignment) = assignment {
@@ -226,7 +217,7 @@ fn assert_front_state(world: &mut World, require_rotation: bool) {
     if require_rotation {
         assert!(
             total_assignments > 0,
-            "focused Defender scene must show active Charge rotation; low={low_charge}, player_holders={player_holders}, opponent_holders={opponent_holders}"
+            "focused Defender scene must show active Charge rotation; low={low_charge}, player_responders={player_responders}, opponent_responders={opponent_responders}"
         );
     }
     let total_living = living_by_swarm.values().sum::<u32>();

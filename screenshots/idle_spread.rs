@@ -87,8 +87,7 @@ const HAULER_COUNT: usize = 3;
 
 /// Camera look-at point: the midpoint between spawn and corridor, on
 /// the corridor row. Frames the whole drift in the default
-/// orthographic scale (2.0), which the `defender_spread` test shows
-/// frames ~5 cells.
+/// orthographic scale (2.0), which frames roughly five cells.
 fn camera_target() -> Vec2 {
     cell_center(IVec2::new(0, CORRIDOR_ROW))
 }
@@ -190,8 +189,7 @@ pub fn idle_spread(ctx: &mut TestContext) -> TestFlow {
     TestFlow::Exit
 }
 
-/// Public entry point used by the harness. Mirrors the pattern in
-/// `screenshots::defender_spread`.
+/// Public entry point used by the harness.
 #[allow(dead_code)]
 pub fn run() -> Result<std::path::PathBuf, String> {
     run_screenshot_test(idle_spread)

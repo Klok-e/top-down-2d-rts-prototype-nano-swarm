@@ -8,12 +8,12 @@ use top_down_2d_rts_prototype_nano_swarm::{
     ai::AiPlugin,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Charge, ChargePlugin, ChargerAssignment, CollapsePlugin, CombatPlugin, DefendHold,
-        DefendPlugin, GatherPlugin, HaulPlugin, Health, MaintenancePlugin, MatchOutcome, Nanobot,
-        NanobotPlugin, NanobotType, OpponentIntentPlugin, OpponentSwarmIdAlloc, OwnerSwarm,
-        PlannedStructurePlugin, PopulationDemand, PopulationDemandPlugin, ProductionCollapseState,
-        ProductionPlugin, ProductionPriority, RegionalAllocationPlugin, SwarmId, SwarmMember,
-        nanobot_death_cleanup_system,
+        Charge, ChargePlugin, ChargerAssignment, CollapsePlugin, CombatPlugin, GatherPlugin,
+        HaulPlugin, Health, MaintenancePlugin, MatchOutcome, Nanobot, NanobotPlugin, NanobotType,
+        OpponentIntentPlugin, OpponentSwarmIdAlloc, OwnerSwarm, PlannedStructurePlugin,
+        PopulationDemand, PopulationDemandPlugin, ProductionCollapseState, ProductionPlugin,
+        ProductionPriority, RegionalAllocationPlugin, SwarmId, SwarmMember,
+        nanobot_death_cleanup_system, world_to_cell,
     },
     resources::{ResourceKind, ResourceLedger},
     scenario::{
@@ -54,7 +54,6 @@ fn default_headless_app() -> App {
         .add_plugins(MaintenancePlugin)
         .add_plugins(ProductionPlugin)
         .add_plugins(CollapsePlugin)
-        .add_plugins(DefendPlugin)
         .add_plugins(ChargePlugin)
         .add_plugins(CombatPlugin)
         .add_plugins(OpponentIntentPlugin)
@@ -134,16 +133,22 @@ fn authored_default_scenario_reaches_primary_defend_contest() {
     let initial_player_health = aggregate_defender_health(app.world_mut(), SwarmId::PLAYER);
     let initial_opponent_health = aggregate_defender_health(app.world_mut(), SwarmId(1));
     let mut previous_positions = positions(app.world_mut());
-    let mut saw_both_holders = false;
+    let mut saw_both_participants = false;
     for _ in 0..301 {
         app.update();
-        previous_positions =
-            assert_default_tick_state(app.world_mut(), &previous_positions, &mut saw_both_holders);
+        previous_positions = assert_default_tick_state(
+            app.world_mut(),
+            &previous_positions,
+            &mut saw_both_participants,
+        );
     }
     for tick in 0..900 {
         app.update();
-        previous_positions =
-            assert_default_tick_state(app.world_mut(), &previous_positions, &mut saw_both_holders);
+        previous_positions = assert_default_tick_state(
+            app.world_mut(),
+            &previous_positions,
+            &mut saw_both_participants,
+        );
         if tick == 179 {
             assert!(
                 live_defenders(app.world_mut(), SwarmId::PLAYER) > 0,
@@ -173,8 +178,8 @@ fn authored_default_scenario_reaches_primary_defend_contest() {
         MatchOutcome::Victory
     );
     assert!(
-        saw_both_holders,
-        "default fronts never established both holders"
+        saw_both_participants,
+        "default fronts never established physical participants from both swarms"
     );
 }
 
@@ -255,18 +260,23 @@ fn assert_swarm_rotation_caps(world: &mut World) {
     }
 }
 
-fn holders_in_front(world: &mut World, cell: IVec2, swarm: SwarmId) -> usize {
+fn participants_in_front(world: &mut World, cell: IVec2, swarm: SwarmId) -> usize {
     world
-        .query::<(&DefendHold, &SwarmMember)>()
+        .query_filtered::<(&Transform, &SwarmMember, &NanobotType, &Health), With<Nanobot>>()
         .iter(world)
-        .filter(|(hold, member)| hold.cell == cell && member.0 == swarm)
+        .filter(|(transform, member, kind, health)| {
+            member.0 == swarm
+                && **kind == NanobotType::Defender
+                && health.current > 0
+                && world_to_cell(transform.translation.truncate()) == cell
+        })
         .count()
 }
 
 fn assert_default_tick_state(
     world: &mut World,
     previous_positions: &HashMap<Entity, Vec2>,
-    saw_both_holders: &mut bool,
+    saw_both_participants: &mut bool,
 ) -> HashMap<Entity, Vec2> {
     let current_positions = positions(world);
     for (entity, position) in &current_positions {
@@ -288,10 +298,10 @@ fn assert_default_tick_state(
     }
     assert_swarm_rotation_caps(world);
 
-    let player_holders = holders_in_front(world, PLAYER_DEFEND_CELL, SwarmId::PLAYER);
-    let opponent_holders = holders_in_front(world, PLAYER_DEFEND_CELL, SwarmId(1));
-    if player_holders > 0 && opponent_holders > 0 {
-        *saw_both_holders = true;
+    let player_participants = participants_in_front(world, PLAYER_DEFEND_CELL, SwarmId::PLAYER);
+    let opponent_participants = participants_in_front(world, PLAYER_DEFEND_CELL, SwarmId(1));
+    if player_participants > 0 && opponent_participants > 0 {
+        *saw_both_participants = true;
     }
     current_positions
 }
@@ -416,7 +426,7 @@ fn default_front_has_readable_combat_and_staggered_sustain() {
     let mut previous_positions = positions(app.world_mut());
     let mut contact_tick = None;
     let mut checked_survival_window = false;
-    let mut saw_holders = false;
+    let mut saw_both_participants = false;
 
     for tick in 0..(MAX_CONTACT_TICKS + MAX_TICKS_AFTER_CONTACT) {
         app.update();
@@ -441,10 +451,10 @@ fn default_front_has_readable_combat_and_staggered_sustain() {
         }
         assert_swarm_rotation_caps(app.world_mut());
 
-        let player_holders = holders_in_front(app.world_mut(), front, SwarmId::PLAYER);
-        let opponent_holders = holders_in_front(app.world_mut(), front, OPPONENT_SWARM);
-        if player_holders > 0 && opponent_holders > 0 {
-            saw_holders = true;
+        let player_participants = participants_in_front(app.world_mut(), front, SwarmId::PLAYER);
+        let opponent_participants = participants_in_front(app.world_mut(), front, OPPONENT_SWARM);
+        if player_participants > 0 && opponent_participants > 0 {
+            saw_both_participants = true;
         }
 
         if contact_tick.is_none()
@@ -474,7 +484,10 @@ fn default_front_has_readable_combat_and_staggered_sustain() {
         "front contact arrived too late"
     );
     assert!(checked_survival_window, "survival window was not reached");
-    assert!(saw_holders, "front never established active holders");
+    assert!(
+        saw_both_participants,
+        "front never established physical participants from both swarms"
+    );
     assert_eq!(
         *app.world().resource::<MatchOutcome>(),
         MatchOutcome::InProgress,

@@ -43,13 +43,13 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::intent::{IntentGrid, IntentKind};
+use crate::nanobot::allocation::DefenderResponse;
 use crate::nanobot::allocation::RegionalLease;
 use crate::nanobot::allocation::runtime::RegionalAllocationWake;
 use crate::nanobot::autonomy::NanobotType;
 use crate::nanobot::components::{
     DirectMovementComponent, Health, Nanobot, Swarm, SwarmId, SwarmMember,
 };
-use crate::nanobot::defend::{DefendAssignment, DefendHold};
 use crate::nanobot::maintenance::SupportCondition;
 use crate::nanobot::placement::{
     BUILDING_FOOTPRINT_RADIUS, find_nearest_defend_zone_placement, scaled_building_footprint_radius,
@@ -227,8 +227,8 @@ impl Default for Charge {
 
 impl Charge {
     /// True when `current` has reached or exceeded `max`. The
-    /// work system uses this to decide when to release a
-    /// defender back to the defend pool.
+    /// work system uses this to return a Defender through the
+    /// current response and staging allocation.
     pub fn is_full(&self) -> bool {
         self.current >= self.max
     }
@@ -699,7 +699,7 @@ pub fn defender_rotation_to_charger_system(
             &NanobotType,
             &SwarmMember,
             Option<&Health>,
-            Option<&DefendHold>,
+            Option<&DefenderResponse>,
         ),
         (
             With<Nanobot>,
@@ -752,13 +752,13 @@ pub fn defender_rotation_to_charger_system(
                 && !health.is_some_and(|health| health.current == 0)
         })
         .filter(|(_, _, charge, _, _, _, _)| charge.needs_rotation())
-        .map(|(entity, transform, charge, _, member, _, hold)| {
+        .map(|(entity, transform, charge, _, member, _, response)| {
             (
                 member.0,
                 DefenderRotationCandidate {
                     entity,
                     charge: charge.current,
-                    duty: if hold.is_some() {
+                    duty: if response.is_some() {
                         DefenderRotationDuty::Tactical
                     } else {
                         DefenderRotationDuty::Staged
@@ -812,8 +812,7 @@ pub fn defender_rotation_to_charger_system(
             commands
                 .entity(entity)
                 .remove::<RegionalLease>()
-                .remove::<DefendAssignment>()
-                .remove::<DefendHold>()
+                .remove::<DefenderResponse>()
                 .remove::<DirectMovementComponent>()
                 .insert((
                     ChargerAssignment {
@@ -920,15 +919,15 @@ pub fn defender_charger_arrive_system(
 /// Defender charging work system. For every defender with a
 /// `ChargerProgress`, grant [`CHARGE_PER_PULSE`] every
 /// [`CHARGE_PULSE_INTERVAL_TICKS`] fixed ticks, and drain one mineral from the
-/// Charger. The defender is released back to the defend assignment pool when
-/// the charge is full or the charger runs out of supply.
+/// Charger. The Defender is released back to current allocation when the
+/// Charge is full or the Charger runs out of supply.
 ///
 /// The system always runs in the same chain as the rotation
 /// and arrive systems; a defender at a fresh charger with
 /// empty charge refills on the same tick it arrives, and a
-/// defender whose charger empties mid-charge is released on
-/// the same tick. The release is a marker remove; the defend
-/// allocator may pick the defender during the current allocation pass.
+/// Defender whose Charger empties mid-charge is released on
+/// the same tick. The release is a marker remove; current response allocation
+/// may pick the Defender during the same pass.
 #[allow(clippy::type_complexity)]
 pub fn defender_charger_work_system(
     mut commands: Commands,
@@ -1005,8 +1004,8 @@ pub fn defender_charger_work_system(
 /// staging after acquisition. Consumer state settles before regional projection
 /// so Charge lifecycle changes are visible to the current acquisition pass.
 ///
-/// Demand chain (single system, ordered after Defend hold
-/// state and before planned-structure work):
+/// Demand chain (single system, ordered after current regional acquisition
+/// and before planned-structure work):
 ///
 /// 1. [`charger_auto_creation_system`] -- spawn new planned
 ///    Chargers from unmet low-Charge service need. The regional allocator sees
@@ -1040,8 +1039,7 @@ impl Plugin for ChargePlugin {
         app.add_systems(
             FixedUpdate,
             charger_auto_creation_system
-                .after(crate::nanobot::NanobotSimulationSet::Movement)
-                .after(crate::nanobot::defend::defender_hold_system)
+                .after(crate::nanobot::RegionalAllocationSet::Acquire)
                 .before(crate::nanobot::planned::worker_planned_structure_work_system),
         );
         // Consumer state settles before regional projection so Charge departure,

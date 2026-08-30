@@ -6,8 +6,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        CombatPlugin, Commitment, DefendHold, DefendPlugin, Health, Nanobot, NanobotBundle,
-        NanobotPlugin, NanobotType, RegionalAllocationPlugin, SwarmId, SwarmMember, world_to_cell,
+        CombatPlugin, Commitment, DefenderResponse, Health, Nanobot, NanobotBundle, NanobotPlugin,
+        NanobotType, RegionalAllocationPlugin, SwarmId, SwarmMember,
     },
     resources::ResourceLedger,
 };
@@ -31,23 +31,17 @@ fn app_with_bots(defend_work: bool) -> App {
         })
         .init_resource::<ResourceLedger>()
         .add_plugins(NanobotPlugin::default())
-        .add_plugins(DefendPlugin)
         .add_plugins(CombatPlugin)
         .add_plugins(RegionalAllocationPlugin);
 
     {
-        let kind = if defend_work {
-            IntentKind::Defend
-        } else {
-            IntentKind::Gather
-        };
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
         for y in -8..8 {
             for x in -8..8 {
                 if defend_work {
-                    grid.add(IVec2::new(x, y), kind);
+                    grid.add_owned(IVec2::new(x, y), IntentKind::Defend, Some(SwarmId::PLAYER));
                 } else {
-                    grid.add_owned(IVec2::new(x, y), kind, Some(SwarmId::PLAYER));
+                    grid.add_owned(IVec2::new(x, y), IntentKind::Gather, Some(SwarmId::PLAYER));
                 }
             }
         }
@@ -70,14 +64,8 @@ fn app_with_bots(defend_work: bool) -> App {
             health: Health::full(u32::MAX / 2),
             ..Default::default()
         };
-        let mut entity =
-            app.world_mut()
-                .spawn((bundle, Commitment::Idle, Transform::from_xyz(x, y, 0.0)));
-        if defend_work {
-            entity.insert(DefendHold {
-                cell: world_to_cell(Vec2::new(x, y)),
-            });
-        }
+        app.world_mut()
+            .spawn((bundle, Commitment::Idle, Transform::from_xyz(x, y, 0.0)));
     }
     app
 }
@@ -93,6 +81,19 @@ fn warmed_app(defend_work: bool) -> App {
         .iter(app.world())
         .count();
     assert_eq!(population, BOT_COUNT, "benchmark warmup must preserve load");
+    if defend_work {
+        let responses = app
+            .world_mut()
+            .query::<&DefenderResponse>()
+            .iter(app.world())
+            .map(|response| response.target)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            responses.len(),
+            BOT_COUNT / 2,
+            "benchmark warmup must cover every hostile Defender exactly once",
+        );
+    }
     app
 }
 
@@ -119,7 +120,9 @@ fn swarm_acceptance(c: &mut Criterion) {
     group.throughput(Throughput::Elements(BOT_COUNT as u64));
 
     let mut steady = warmed_app(true);
-    group.bench_function("steady_defend_frame", |b| b.iter(|| steady.update()));
+    group.bench_function("steady_threat_response_frame", |b| {
+        b.iter(|| steady.update())
+    });
 
     let mut exhausted = warmed_app(false);
     group.bench_function("exhausted_gather_frame", |b| b.iter(|| exhausted.update()));

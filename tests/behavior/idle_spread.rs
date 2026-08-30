@@ -29,7 +29,7 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Commitment, DefendHold, DirectMovementComponent, SwarmId, VelocityComponent,
+        Commitment, DefenderResponse, DirectMovementComponent, SwarmId, VelocityComponent,
         idle_spread_system,
     },
 };
@@ -196,14 +196,16 @@ fn defender_ignores_gather_paint() {
 }
 
 #[test]
-fn spread_does_not_move_defender_holding_assigned_cell() {
+fn spread_does_not_move_active_responder() {
     let mut app = spread_only_app();
     paint(&mut app, IVec2::ZERO, IntentKind::Defend);
     paint(&mut app, IVec2::X, IntentKind::Defend);
     let defender = common::spawn_defender_at(&mut app, center(IVec2::ZERO));
     app.world_mut()
         .entity_mut(defender)
-        .insert(DefendHold { cell: IVec2::ZERO });
+        .insert(DefenderResponse {
+            target: Entity::PLACEHOLDER,
+        });
 
     app.update();
 
@@ -215,7 +217,7 @@ fn spread_does_not_move_defender_holding_assigned_cell() {
         .value;
     assert!(
         velocity.length() <= 1e-5,
-        "idle cosmetic spread must not own active DefendHold movement",
+        "idle cosmetic spread must not own active response movement",
     );
 }
 

@@ -2,32 +2,37 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    intent::{IntentGrid, IntentKind},
+    intent::IntentGrid,
     nanobot::{
         ActionableOpportunity, ActionableProjection, AllocationCandidate, AllocationClock,
-        AllocationRegion, CandidateBounds, CategoryEligibility, CategoryValues, DefendAssignment,
-        DefendHold, LeaseDecision, OpportunityCategory, OpportunityTarget,
+        AllocationRegion, CandidateBounds, CategoryEligibility, CategoryValues, LeaseDecision,
+        OpportunityCategory, OpportunityTarget, PlannedKind, PlannedStructure,
         REGIONAL_FAIRNESS_PROMOTION_TICKS, RUNTIME_MAX_CANDIDATES, ReassignmentPolicy,
         RegionalLease, RegionalLeaseConfig, RegionalPressure, allocate_category_budget,
         allocate_regional_candidates, choose_bounded_candidate,
         choose_bounded_candidate_with_claims, evaluate_lease, maintain_regional_leases_system,
         outward_pull_budget, project_actionable_opportunities_system, region_fairness_sort_key,
     },
+    resources::ResourceKind,
 };
 
 fn region(x: i32, y: i32) -> AllocationRegion {
     AllocationRegion { x, y }
 }
 
-fn defend_opportunity(
+fn haul_opportunity(
     region: AllocationRegion,
     cell: IVec2,
     available_work: u32,
 ) -> ActionableOpportunity {
     ActionableOpportunity {
         region,
-        category: OpportunityCategory::Defend,
-        target: OpportunityTarget::Defend { cell },
+        category: OpportunityCategory::Haul,
+        target: OpportunityTarget::Haul {
+            source: Entity::from_bits(1),
+            sink: Entity::from_bits(2),
+            kind: ResourceKind::Minerals,
+        },
         cell,
         owner: None,
         available_work,
@@ -48,17 +53,16 @@ fn allocation_clock_advances_at_exact_deterministic_ten_hertz_boundaries() {
 }
 
 #[test]
-fn minimum_activation_covers_all_five_categories_before_weighted_pressure() {
-    let pressure = CategoryValues::new([100, 1, 1, 1, 1]);
+fn minimum_activation_covers_all_four_categories_before_weighted_pressure() {
+    let pressure = CategoryValues::new([100, 1, 1, 1]);
 
-    let budget = allocate_category_budget(9, pressure);
+    let budget = allocate_category_budget(4, pressure);
 
-    assert_eq!(budget.total(), 9);
-    assert_eq!(budget.get(OpportunityCategory::Gather), 5);
+    assert_eq!(budget.total(), 4);
     for category in [
+        OpportunityCategory::Gather,
         OpportunityCategory::PlannedBuild,
         OpportunityCategory::Maintenance,
-        OpportunityCategory::Defend,
         OpportunityCategory::Haul,
     ] {
         assert_eq!(budget.get(category), 1);
@@ -67,7 +71,7 @@ fn minimum_activation_covers_all_five_categories_before_weighted_pressure() {
 
 #[test]
 fn one_worker_activates_planned_build_before_gather_pressure() {
-    let pressure = CategoryValues::new([100, 1, 0, 0, 0]);
+    let pressure = CategoryValues::new([100, 1, 0, 0]);
 
     let budget = allocate_category_budget(1, pressure);
 
@@ -80,7 +84,7 @@ fn one_worker_activates_planned_build_before_gather_pressure() {
 fn distant_valid_work_pulls_capacity_outward_within_the_bound() {
     let pressure = RegionalPressure {
         region: region(2, 0),
-        categories: CategoryValues::new([0, 0, 0, 0, 1]),
+        categories: CategoryValues::new([0, 0, 0, 1]),
     };
 
     let in_range = outward_pull_budget(region(0, 0), 3, &[pressure], 2);
@@ -92,14 +96,14 @@ fn distant_valid_work_pulls_capacity_outward_within_the_bound() {
 
 #[test]
 fn local_choice_obeys_region_candidate_owner_and_category_bounds() {
-    let local = [defend_opportunity(region(0, 0), IVec2::ZERO, 1)];
-    let far = [defend_opportunity(region(2, 0), IVec2::new(16, 0), 9)];
+    let local = [haul_opportunity(region(0, 0), IVec2::ZERO, 1)];
+    let far = [haul_opportunity(region(2, 0), IVec2::new(16, 0), 9)];
     let pull = outward_pull_budget(
         region(0, 0),
         1,
         &[RegionalPressure {
             region: region(0, 0),
-            categories: CategoryValues::new([0, 0, 0, 1, 0]),
+            categories: CategoryValues::new([0, 0, 0, 1]),
         }],
         0,
     );
@@ -107,7 +111,7 @@ fn local_choice_obeys_region_candidate_owner_and_category_bounds() {
         entity_bits: 7,
         region: region(0, 0),
         owner: None,
-        eligibility: CategoryEligibility::only(OpportunityCategory::Defend),
+        eligibility: CategoryEligibility::only(OpportunityCategory::Haul),
     };
 
     let decision = choose_bounded_candidate(
@@ -122,7 +126,7 @@ fn local_choice_obeys_region_candidate_owner_and_category_bounds() {
             max_candidates: 1,
         },
     )
-    .expect("local defend work is eligible");
+    .expect("local Haul work is eligible");
 
     assert_eq!(decision.opportunity.cell, IVec2::ZERO);
     assert_eq!(decision.regions_examined, 1);
@@ -130,54 +134,16 @@ fn local_choice_obeys_region_candidate_owner_and_category_bounds() {
 }
 
 #[test]
-fn defend_threat_pressure_beats_distance_after_claims() {
-    let calm = [defend_opportunity(region(0, 0), IVec2::ZERO, 1)];
-    let hot = [defend_opportunity(region(1, 0), IVec2::new(8, 0), 3)];
-    let pull = outward_pull_budget(
-        region(0, 0),
-        1,
-        &[RegionalPressure {
-            region: region(0, 0),
-            categories: CategoryValues::new([0, 0, 0, 1, 0]),
-        }],
-        1,
-    );
-    let bot = AllocationCandidate {
-        entity_bits: 7,
-        region: region(0, 0),
-        owner: None,
-        eligibility: CategoryEligibility::only(OpportunityCategory::Defend),
-    };
-
-    let decision = choose_bounded_candidate_with_claims(
-        bot,
-        pull,
-        [
-            (region(0, 0), calm.as_slice()),
-            (region(1, 0), hot.as_slice()),
-        ],
-        CandidateBounds {
-            max_regions: 2,
-            max_candidates: 2,
-        },
-        |_| Some(0),
-    )
-    .expect("Defend work available");
-
-    assert_eq!(decision.opportunity.cell, IVec2::new(8, 0));
-}
-
-#[test]
 fn bounded_choice_falls_back_from_full_exact_claims_within_runtime_limit() {
     let work = (0..256)
-        .map(|x| defend_opportunity(region(0, 0), IVec2::new(x, 0), 1))
+        .map(|x| haul_opportunity(region(0, 0), IVec2::new(x, 0), 1))
         .collect::<Vec<_>>();
     let pull = outward_pull_budget(
         region(0, 0),
         1,
         &[RegionalPressure {
             region: region(0, 0),
-            categories: CategoryValues::new([0, 0, 0, 1, 0]),
+            categories: CategoryValues::new([0, 0, 0, 1]),
         }],
         0,
     );
@@ -185,7 +151,7 @@ fn bounded_choice_falls_back_from_full_exact_claims_within_runtime_limit() {
         entity_bits: 7,
         region: region(0, 0),
         owner: None,
-        eligibility: CategoryEligibility::only(OpportunityCategory::Defend),
+        eligibility: CategoryEligibility::only(OpportunityCategory::Haul),
     };
     let mut examined_by_adapter = 0;
 
@@ -226,7 +192,7 @@ fn reassignment_burst_uses_percentage_with_a_small_floor() {
 
 #[test]
 fn regional_pass_uses_stable_bot_order_and_reassignment_limit() {
-    let work = [defend_opportunity(region(0, 0), IVec2::ZERO, 1)];
+    let work = [haul_opportunity(region(0, 0), IVec2::ZERO, 1)];
     let candidates = [
         AllocationCandidate {
             entity_bits: 9,
@@ -246,7 +212,7 @@ fn regional_pass_uses_stable_bot_order_and_reassignment_limit() {
         2,
         &[RegionalPressure {
             region: region(0, 0),
-            categories: CategoryValues::new([0, 0, 0, 2, 0]),
+            categories: CategoryValues::new([0, 0, 0, 2]),
         }],
         0,
     );
@@ -272,7 +238,7 @@ fn regional_pass_uses_stable_bot_order_and_reassignment_limit() {
 
 #[test]
 fn progress_renews_a_lease_and_no_progress_expires_it() {
-    let opportunity = defend_opportunity(region(0, 0), IVec2::ZERO, 1);
+    let opportunity = haul_opportunity(region(0, 0), IVec2::ZERO, 1);
     let mut lease = RegionalLease::new(
         opportunity.region,
         opportunity.category,
@@ -313,9 +279,10 @@ fn unsupported_opportunity_revokes_lease_in_the_same_app_update() {
             )
                 .chain(),
         );
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .add(IVec2::ZERO, IntentKind::Defend);
+    let plan = app
+        .world_mut()
+        .spawn(PlannedStructure::new(PlannedKind::Charger, IVec2::ZERO))
+        .id();
     app.update();
 
     let opportunity = app
@@ -337,16 +304,14 @@ fn unsupported_opportunity_revokes_lease_in_the_same_app_update() {
     app.update();
     assert!(app.world().entity(bot).contains::<RegionalLease>());
 
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .remove(IVec2::ZERO, IntentKind::Defend);
+    app.world_mut().despawn(plan);
     app.update();
 
     assert!(!app.world().entity(bot).contains::<RegionalLease>());
 }
 
 #[test]
-fn supported_assignment_without_motion_or_work_expires() {
+fn supported_lease_without_motion_or_work_expires() {
     let mut app = App::new();
     app.insert_resource(IntentGrid::new(16, 16))
         .init_resource::<ActionableProjection>()
@@ -363,8 +328,7 @@ fn supported_assignment_without_motion_or_work_expires() {
                 .chain(),
         );
     app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .add(IVec2::ZERO, IntentKind::Defend);
+        .spawn(PlannedStructure::new(PlannedKind::Charger, IVec2::ZERO));
     app.update();
     let opportunity = app
         .world()
@@ -372,32 +336,14 @@ fn supported_assignment_without_motion_or_work_expires() {
         .opportunities(region(0, 0))[0];
     let bot = app
         .world_mut()
-        .spawn((
-            RegionalLease::new(
-                opportunity.region,
-                opportunity.category,
-                opportunity.target,
-                None,
-                0,
-                0,
-                2,
-            ),
-            DefendAssignment { cell: IVec2::ZERO },
-        ))
-        .id();
-    let holder = app
-        .world_mut()
-        .spawn((
-            RegionalLease::new(
-                opportunity.region,
-                opportunity.category,
-                opportunity.target,
-                None,
-                0,
-                0,
-                2,
-            ),
-            DefendHold { cell: IVec2::ZERO },
+        .spawn(RegionalLease::new(
+            opportunity.region,
+            opportunity.category,
+            opportunity.target,
+            None,
+            0,
+            0,
+            2,
         ))
         .id();
 
@@ -410,11 +356,7 @@ fn supported_assignment_without_motion_or_work_expires() {
 
     assert!(
         !app.world().entity(bot).contains::<RegionalLease>(),
-        "an assignment marker alone is not measurable lease progress",
-    );
-    assert!(
-        app.world().entity(holder).contains::<RegionalLease>(),
-        "holding a supported Defend cell remains active work",
+        "projection support without measurable work must not keep a stalled lease alive",
     );
 }
 

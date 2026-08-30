@@ -4,16 +4,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bevy::prelude::*;
 
-use super::{
-    ALLOCATION_REGION_CELLS, ActionableOpportunity, AllocationRegion, OpportunityCategory,
-    OpportunityTarget,
-};
+use super::{ActionableOpportunity, AllocationRegion, OpportunityCategory, OpportunityTarget};
 use crate::ZONE_BLOCK_SIZE;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::{
-    Charger, ChargerAssignment, ChargerProgress, DefendPressure, Health, Nanobot, NanobotType,
-    OwnerSwarm, PlannedStructure, ProductionFacility, Structure, SupportCondition, SwarmId,
-    SwarmMember, cell_overlaps_circle, charger_can_serve_in_owned_zone,
+    Charger, ChargerAssignment, ChargerProgress, Health, Nanobot, NanobotType, OwnerSwarm,
+    PlannedStructure, ProductionFacility, Structure, SupportCondition, SwarmId, SwarmMember,
+    cell_overlaps_circle, charger_can_serve_in_owned_zone,
 };
 use crate::resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole};
 
@@ -97,7 +94,6 @@ enum SourceRole {
 pub fn project_actionable_opportunities_system(
     mut grid: ResMut<IntentGrid>,
     mut projection: ResMut<ActionableProjection>,
-    pressure: Option<Res<DefendPressure>>,
     deposits: Query<(
         Entity,
         Ref<ResourceDeposit>,
@@ -143,17 +139,6 @@ pub fn project_actionable_opportunities_system(
     swarms: Query<&SwarmId>,
     entities: Query<Entity>,
 ) {
-    if pressure
-        .as_ref()
-        .is_some_and(|pressure| pressure.is_changed())
-    {
-        for (cell, _intent) in grid
-            .iter_active_cells()
-            .filter(|(_, intent)| intent.has(IntentKind::Defend))
-        {
-            projection.invalidate_cell(cell);
-        }
-    }
     for cell in grid.drain_projection_dirty() {
         projection.invalidate_cell(cell);
         for (_, deposit, transform, _) in &deposits {
@@ -188,7 +173,6 @@ pub fn project_actionable_opportunities_system(
                     OpportunityTarget::Maintenance { structure } => {
                         structures.get(structure).is_err()
                     }
-                    OpportunityTarget::Defend { .. } => false,
                     OpportunityTarget::Haul { source, sink, .. } => {
                         entities.get(source).is_err() || entities.get(sink).is_err()
                     }
@@ -403,14 +387,7 @@ pub fn project_actionable_opportunities_system(
     let dirty_regions = projection.take_dirty_regions();
     for region in dirty_regions {
         let mut opportunities = Vec::new();
-        project_intent_work(
-            region,
-            &grid,
-            &deposits,
-            &swarms,
-            pressure.as_deref(),
-            &mut opportunities,
-        );
+        project_intent_work(region, &grid, &deposits, &swarms, &mut opportunities);
         project_maintenance_work(
             region,
             &grid,
@@ -438,7 +415,6 @@ fn project_intent_work(
         Option<Ref<OwnerSwarm>>,
     )>,
     swarms: &Query<&SwarmId>,
-    pressure: Option<&DefendPressure>,
     out: &mut Vec<ActionableOpportunity>,
 ) {
     for (entity, deposit, transform, owner) in deposits.iter() {
@@ -486,40 +462,6 @@ fn project_intent_work(
                     owner,
                     available_work: deposit.amount,
                 });
-            }
-        }
-    }
-
-    let min = region.min_cell();
-    for dy in 0..ALLOCATION_REGION_CELLS {
-        for dx in 0..ALLOCATION_REGION_CELLS {
-            let cell = min + IVec2::new(dx, dy);
-            let Some(intent) = grid.cell(cell) else {
-                continue;
-            };
-
-            if intent.has(IntentKind::Defend) {
-                let mut project_defend = |owner| {
-                    out.push(ActionableOpportunity {
-                        region,
-                        category: OpportunityCategory::Defend,
-                        target: OpportunityTarget::Defend { cell },
-                        cell,
-                        owner,
-                        available_work: owner
-                            .and_then(|owner| {
-                                pressure.map(|pressure| pressure.get_for(owner, cell).ceil() as u32)
-                            })
-                            .unwrap_or(1)
-                            .max(1),
-                    });
-                };
-                if let Some((incumbent, challenger)) = grid.defend_contest(cell) {
-                    project_defend(Some(incumbent));
-                    project_defend(Some(challenger));
-                } else {
-                    project_defend(intent.owner(IntentKind::Defend));
-                }
             }
         }
     }
@@ -702,15 +644,13 @@ fn opportunity_sort_key(opportunity: &ActionableOpportunity) -> (u8, u8, u64, u6
         OpportunityCategory::PlannedBuild => 0,
         OpportunityCategory::Maintenance => 1,
         OpportunityCategory::Gather => 2,
-        OpportunityCategory::Defend => 3,
-        OpportunityCategory::Haul => 4,
+        OpportunityCategory::Haul => 3,
     };
     let (target_kind, first, second) = match opportunity.target {
         OpportunityTarget::Gather { deposit, .. } => (0, deposit.to_bits(), 0),
         OpportunityTarget::PlannedBuild { structure, .. } => (1, structure.to_bits(), 0),
         OpportunityTarget::Maintenance { structure } => (2, structure.to_bits(), 0),
-        OpportunityTarget::Defend { .. } => (3, 0, 0),
-        OpportunityTarget::Haul { source, sink, .. } => (4, source.to_bits(), sink.to_bits()),
+        OpportunityTarget::Haul { source, sink, .. } => (3, source.to_bits(), sink.to_bits()),
     };
     (
         category,

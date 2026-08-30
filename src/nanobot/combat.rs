@@ -1,14 +1,13 @@
-//! Deterministic Defender combat and Defend-cell threat pressure.
+//! Deterministic Defender combat and physical Defend Contest presence.
 
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
-use crate::intent::{IntentGrid, IntentKind};
+use crate::intent::IntentGrid;
 use crate::nanobot::{
-    Charge, DefendHold, DefendPressure, DirectMovementComponent, Health, Nanobot, NanobotType,
-    OwnerSwarm, Structure, StructureKind, Swarm, SwarmId, SwarmMember, effective_attack,
-    effective_defense, world_to_cell,
+    Charge, DefenderResponse, Health, Nanobot, NanobotType, OwnerSwarm, Structure, StructureKind,
+    Swarm, SwarmId, SwarmMember, effective_attack, effective_defense, world_to_cell,
 };
 use crate::spatial::FixedSpatialBuckets;
 use crate::structure_sprites::StructureVisual;
@@ -82,7 +81,7 @@ struct Combatant {
     swarm: SwarmId,
     kind: NanobotType,
     charge: Option<f32>,
-    hold: Option<IVec2>,
+    responding: bool,
     cooldown: Option<u16>,
 }
 
@@ -120,17 +119,46 @@ impl StructureTarget {
     }
 }
 
-/// Resolve tracked Defend contests after both swarms have reached the cell.
-/// Zero-health Defenders no longer count as holders, allowing the survivor to
-/// claim the existing Defend layer before the next allocation projection.
+#[derive(Clone, Copy)]
+enum CombatTarget {
+    Nanobot(Combatant),
+    Structure(StructureTarget),
+}
+
+impl CombatTarget {
+    fn entity(self) -> Entity {
+        match self {
+            Self::Nanobot(target) => target.entity,
+            Self::Structure(target) => target.entity,
+        }
+    }
+
+    fn position(self) -> Vec2 {
+        match self {
+            Self::Nanobot(target) => target.position,
+            Self::Structure(target) => target.position,
+        }
+    }
+
+    fn swarm(self) -> SwarmId {
+        match self {
+            Self::Nanobot(target) => target.swarm,
+            Self::Structure(target) => target.swarm,
+        }
+    }
+}
+
+/// Resolve tracked Defend contests from physical living Defender presence.
 pub fn defend_contest_resolution_system(
     mut grid: ResMut<IntentGrid>,
-    defenders: Query<(&DefendHold, &SwarmMember, &Health), With<Nanobot>>,
+    defenders: Query<(&Transform, &NanobotType, &SwarmMember, &Health), With<Nanobot>>,
 ) {
     let occupants = defenders
         .iter()
-        .filter(|(_, _, health)| health.current > 0)
-        .map(|(hold, member, _)| (hold.cell, member.0))
+        .filter(|(_, kind, _, health)| **kind == NanobotType::Defender && health.current > 0)
+        .map(|(transform, _, member, _)| {
+            (world_to_cell(transform.translation.truncate()), member.0)
+        })
         .collect::<HashSet<_>>();
     for (cell, incumbent, challenger) in grid.defend_contests() {
         grid.update_defend_contest_presence(
@@ -152,46 +180,9 @@ fn structure_hit_damage(attack: f32) -> u32 {
     damage_after_defense(attack * DEFENDER_STRUCTURE_DAMAGE_FACTOR, 0.0)
 }
 
-/// Rebuild pressure from hostile nanobots physically occupying owned Defend cells.
-pub fn defend_threat_pressure_system(
-    grid: Res<IntentGrid>,
-    nanobots: Query<(&Transform, &SwarmMember), With<Nanobot>>,
-    mut pressure: ResMut<DefendPressure>,
-) {
-    let mut hostile_counts = HashMap::<(SwarmId, IVec2), u32>::new();
-    for (transform, member) in &nanobots {
-        let cell = world_to_cell(transform.translation.truncate());
-        let Some(intent) = grid.cell(cell) else {
-            continue;
-        };
-        if let Some((incumbent, challenger)) = grid.defend_contest(cell) {
-            for owner in [incumbent, challenger] {
-                if member.0 != owner {
-                    *hostile_counts.entry((owner, cell)).or_default() += 1;
-                }
-            }
-            continue;
-        }
-        let Some(owner) = intent.owner(IntentKind::Defend) else {
-            continue;
-        };
-        if member.0 != owner {
-            *hostile_counts.entry((owner, cell)).or_default() += 1;
-        }
-    }
-
-    let mut next = DefendPressure::default();
-    for ((owner, cell), hostile_count) in hostile_counts {
-        next.set_for(owner, cell, 1.0 + hostile_count as f32);
-    }
-    if *pressure != next {
-        *pressure = next;
-    }
-}
-
-/// Resolve one simultaneous attack snapshot. Every holding Defender chooses a
-/// hostile nanobot first, then a hostile support structure; damage is applied
-/// after target selection so entity iteration order cannot change the exchange.
+/// Resolve one simultaneous attack snapshot. Every responding Defender chooses
+/// the nearest hostile in range independently of its pursuit claim; damage is
+/// applied after target selection so entity iteration order cannot change the exchange.
 #[allow(clippy::type_complexity)]
 pub fn defender_combat_system(
     mut combatants: ParamSet<(
@@ -201,8 +192,9 @@ pub fn defender_combat_system(
                 &Transform,
                 &SwarmMember,
                 &NanobotType,
+                &Health,
                 Option<&Charge>,
-                Option<&DefendHold>,
+                Option<&DefenderResponse>,
                 Option<&DefenderAttackCooldown>,
             ),
             With<Nanobot>,
@@ -224,14 +216,15 @@ pub fn defender_combat_system(
     let snapshot = combatants
         .p0()
         .iter()
+        .filter(|(_, _, _, _, health, _, _, _)| health.current > 0)
         .map(
-            |(entity, transform, member, kind, charge, hold, cooldown)| Combatant {
+            |(entity, transform, member, kind, _, charge, response, cooldown)| Combatant {
                 entity,
                 position: transform.translation.truncate(),
                 swarm: member.0,
                 kind: *kind,
                 charge: charge.map(|charge| charge.current),
-                hold: hold.map(|hold| hold.cell),
+                responding: response.is_some(),
                 cooldown: cooldown.map(|cooldown| cooldown.ticks_remaining),
             },
         )
@@ -240,6 +233,9 @@ pub fn defender_combat_system(
         .p1()
         .iter()
         .filter_map(|(entity, transform, owner, structure, visual)| {
+            if !structure.is_operational() {
+                return None;
+            }
             Some(StructureTarget {
                 entity,
                 position: transform.translation.truncate(),
@@ -249,23 +245,9 @@ pub fn defender_combat_system(
             })
         })
         .collect::<Vec<_>>();
-    let mut structures_by_cell = HashMap::<IVec2, Vec<StructureTarget>>::new();
-    for target in structures.iter().copied() {
-        structures_by_cell
-            .entry(world_to_cell(target.position))
-            .or_default()
-            .push(target);
-    }
     let mut nanobot_buckets = FixedSpatialBuckets::new(DEFENDER_ATTACK_RANGE);
     for target in snapshot.iter().copied() {
         nanobot_buckets.insert(target.position, target);
-    }
-    let mut nanobots_by_cell = HashMap::<IVec2, Vec<Combatant>>::new();
-    for target in snapshot.iter().copied() {
-        nanobots_by_cell
-            .entry(world_to_cell(target.position))
-            .or_default()
-            .push(target);
     }
     let mut structure_buckets = FixedSpatialBuckets::new(DEFENDER_ATTACK_RANGE);
     for target in structures.iter().copied() {
@@ -277,115 +259,68 @@ pub fn defender_combat_system(
     let mut resolved_hits = Vec::<ResolvedCombatHit>::new();
     for attacker in snapshot
         .iter()
-        .filter(|combatant| combatant.kind == NanobotType::Defender && combatant.hold.is_some())
+        .filter(|combatant| combatant.kind == NanobotType::Defender && combatant.responding)
     {
         let attack = effective_attack(attacker.charge.unwrap_or_default());
         let cooldown_ready = attacker.cooldown.is_none_or(|ticks| ticks == 0);
         let mut delivered_attack = false;
         let attacker_bucket = nanobot_buckets.bucket_for_position(attacker.position);
-        let nanobot_target = nanobot_buckets
+        let nearest_target = nanobot_buckets
             .neighbourhood(attacker_bucket, 1)
             .flat_map(|(_, targets)| targets)
-            .filter(|target| target.swarm != attacker.swarm)
+            .map(|target| CombatTarget::Nanobot(*target))
+            .chain(
+                structure_buckets
+                    .neighbourhood(attacker_bucket, 1)
+                    .flat_map(|(_, targets)| targets)
+                    .map(|target| CombatTarget::Structure(*target)),
+            )
+            .filter(|target| target.swarm() != attacker.swarm)
             .filter_map(|target| {
-                let distance = attacker.position.distance(target.position);
+                let distance = attacker.position.distance(target.position());
                 (distance <= DEFENDER_ATTACK_RANGE).then_some((distance, target))
             })
             .min_by(|(left_distance, left), (right_distance, right)| {
                 left_distance
                     .total_cmp(right_distance)
-                    .then_with(|| left.entity.to_bits().cmp(&right.entity.to_bits()))
+                    .then_with(|| left.entity().to_bits().cmp(&right.entity().to_bits()))
             })
             .map(|(_, target)| target);
-        if let Some(target) = nanobot_target {
-            let defense = if target.kind == NanobotType::Defender {
-                effective_defense(target.charge.unwrap_or_default())
-            } else {
-                0.0
-            };
-            if cooldown_ready {
-                let damage = damage_after_defense(attack, defense);
-                if damage > 0 {
-                    *nanobot_damage.entry(target.entity).or_default() += damage;
-                    resolved_hits.push(ResolvedCombatHit {
-                        attacker: attacker.presentation_snapshot(),
-                        target: target.presentation_snapshot(),
-                        damage,
-                        target_destroyed: false,
-                    });
-                    delivered_attack = true;
-                }
-            }
-        } else {
-            let held_cell = attacker.hold.expect("holding attacker has a Defend cell");
-            let approach_target = nanobots_by_cell
-                .get(&held_cell)
-                .into_iter()
-                .flatten()
-                .filter(|target| target.swarm != attacker.swarm)
-                .min_by(|left, right| {
-                    attacker
-                        .position
-                        .distance(left.position)
-                        .total_cmp(&attacker.position.distance(right.position))
-                        .then_with(|| left.entity.to_bits().cmp(&right.entity.to_bits()))
-                });
-            if let Some(target) = approach_target {
-                commands
-                    .entity(attacker.entity)
-                    .insert(DirectMovementComponent {
-                        xy: target.position,
-                        stop_radius: DEFENDER_ATTACK_RANGE,
-                    });
-            } else {
-                let structure_target = structure_buckets
-                    .neighbourhood(attacker_bucket, 1)
-                    .flat_map(|(_, targets)| targets)
-                    .filter(|target| target.swarm != attacker.swarm)
-                    .filter_map(|target| {
-                        let distance = attacker.position.distance(target.position);
-                        (distance <= DEFENDER_ATTACK_RANGE).then_some((distance, target))
-                    })
-                    .min_by(|(left_distance, left), (right_distance, right)| {
-                        left_distance
-                            .total_cmp(right_distance)
-                            .then_with(|| left.entity.to_bits().cmp(&right.entity.to_bits()))
-                    })
-                    .map(|(_, target)| target);
-                if let Some(target) = structure_target {
-                    if cooldown_ready {
-                        let damage = structure_hit_damage(attack);
-                        if damage > 0 {
-                            *structure_damage.entry(target.entity).or_default() += damage;
-                            resolved_hits.push(ResolvedCombatHit {
-                                attacker: attacker.presentation_snapshot(),
-                                target: target.presentation_snapshot(),
-                                damage,
-                                target_destroyed: false,
-                            });
-                            delivered_attack = true;
-                        }
-                    }
-                } else if let Some(target) = structures_by_cell
-                    .get(&held_cell)
-                    .into_iter()
-                    .flatten()
-                    .filter(|target| target.swarm != attacker.swarm)
-                    .min_by(|left, right| {
-                        attacker
-                            .position
-                            .distance(left.position)
-                            .total_cmp(&attacker.position.distance(right.position))
-                            .then_with(|| left.entity.to_bits().cmp(&right.entity.to_bits()))
-                    })
-                {
-                    commands
-                        .entity(attacker.entity)
-                        .insert(DirectMovementComponent {
-                            xy: target.position,
-                            stop_radius: DEFENDER_ATTACK_RANGE,
+
+        if cooldown_ready {
+            match nearest_target {
+                Some(CombatTarget::Nanobot(target)) => {
+                    let defense = if target.kind == NanobotType::Defender {
+                        effective_defense(target.charge.unwrap_or_default())
+                    } else {
+                        0.0
+                    };
+                    let damage = damage_after_defense(attack, defense);
+                    if damage > 0 {
+                        *nanobot_damage.entry(target.entity).or_default() += damage;
+                        resolved_hits.push(ResolvedCombatHit {
+                            attacker: attacker.presentation_snapshot(),
+                            target: target.presentation_snapshot(),
+                            damage,
+                            target_destroyed: false,
                         });
+                        delivered_attack = true;
+                    }
                 }
+                Some(CombatTarget::Structure(target)) => {
+                    let damage = structure_hit_damage(attack);
+                    if damage > 0 {
+                        *structure_damage.entry(target.entity).or_default() += damage;
+                        resolved_hits.push(ResolvedCombatHit {
+                            attacker: attacker.presentation_snapshot(),
+                            target: target.presentation_snapshot(),
+                            damage,
+                            target_destroyed: false,
+                        });
+                        delivered_attack = true;
+                    }
+                }
+                None => {}
             }
         }
 
@@ -468,18 +403,10 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<DefendPressure>()
-            .add_message::<ResolvedCombatFact>()
+        app.add_message::<ResolvedCombatFact>()
             .add_systems(
                 FixedUpdate,
                 defend_contest_resolution_system
-                    .in_set(crate::nanobot::NanobotSimulationSet::Threat)
-                    .before(defend_threat_pressure_system)
-                    .before(crate::nanobot::RegionalAllocationSet::Project),
-            )
-            .add_systems(
-                FixedUpdate,
-                defend_threat_pressure_system
                     .in_set(crate::nanobot::NanobotSimulationSet::Threat)
                     .before(crate::nanobot::RegionalAllocationSet::Project),
             )
@@ -487,7 +414,7 @@ impl Plugin for CombatPlugin {
                 FixedUpdate,
                 defender_combat_system
                     .in_set(crate::nanobot::NanobotSimulationSet::Combat)
-                    .after(crate::nanobot::defender_hold_system)
+                    .after(crate::nanobot::RegionalAllocationSet::Acquire)
                     .after(crate::nanobot::defender_charger_work_system),
             );
     }

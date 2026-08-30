@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
-    nanobot::{DefendPressure, NanobotType, PopulationDemand, Swarm, SwarmId, SwarmMember},
+    nanobot::{NanobotType, PopulationDemand, Swarm, SwarmId, SwarmMember},
     resources::{ResourceDeposit, ResourceKind},
 };
 
@@ -9,7 +9,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
 mod common;
 
 #[test]
-fn swarm_tiles_create_rounded_reserve_without_defend_pressure_multiplier() {
+fn swarm_tiles_create_rounded_reserve() {
     let mut app = common::sim_app_with_population_demand();
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
     {
@@ -18,10 +18,6 @@ fn swarm_tiles_create_rounded_reserve_without_defend_pressure_multiplier() {
         grid.paint_owned(IVec2::new(1, 0), IntentKind::Build, Some(SwarmId::PLAYER));
         grid.paint_owned(IVec2::new(2, 0), IntentKind::Defend, Some(SwarmId::PLAYER));
     }
-    app.world_mut()
-        .resource_mut::<DefendPressure>()
-        .set(IVec2::new(2, 0), 9.0);
-
     app.update();
 
     let demand = app.world().resource::<PopulationDemand>();
@@ -66,12 +62,6 @@ fn contested_defend_cell_creates_one_swarm_tile_for_each_participant() {
         grid.paint_owned(cell, IntentKind::Defend, Some(SwarmId::PLAYER));
         grid.contest_defend(cell, opponent);
     }
-    {
-        let mut pressure = app.world_mut().resource_mut::<DefendPressure>();
-        pressure.set_for(SwarmId::PLAYER, cell, 3.0);
-        pressure.set_for(opponent, cell, 5.0);
-    }
-
     app.update();
 
     let demand = app.world().resource::<PopulationDemand>();
@@ -93,11 +83,6 @@ fn replacing_contest_with_shared_defend_reprojects_baseline_demand() {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
         grid.paint_owned(cell, IntentKind::Defend, Some(SwarmId::PLAYER));
         grid.contest_defend(cell, opponent);
-    }
-    {
-        let mut pressure = app.world_mut().resource_mut::<DefendPressure>();
-        pressure.set_for(SwarmId::PLAYER, cell, 3.0);
-        pressure.set_for(opponent, cell, 5.0);
     }
     app.update();
 

@@ -60,8 +60,8 @@ use crate::nanobot::components::{
 };
 use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::{
-    Cargo, ChargerAssignment, ChargerProgress, DefendAssignment, DefendHold, ExtractProgress,
-    GatherAssignment, HaulerAssignment, HaulerLoading, MaintenanceAssignment, MaintenanceProgress,
+    Cargo, ChargerAssignment, ChargerProgress, DefenderResponse, ExtractProgress, GatherAssignment,
+    HaulerAssignment, HaulerLoading, MaintenanceAssignment, MaintenanceProgress,
     PlannedStructureClaim, PlannedStructureProgress, ReturningToStockpile,
 };
 
@@ -321,8 +321,7 @@ pub fn idle_spread_system(
             With<PlannedStructureProgress>,
             With<MaintenanceAssignment>,
             With<MaintenanceProgress>,
-            With<DefendAssignment>,
-            With<DefendHold>,
+            With<DefenderResponse>,
             With<HaulerAssignment>,
             With<HaulerLoading>,
             With<ChargerAssignment>,

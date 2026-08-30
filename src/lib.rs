@@ -198,20 +198,15 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
         // check sees the post-work state, not the pre-work
         // state of the same tick.
         .add_plugins(CollapsePlugin)
-        // DefendPlugin chains after `move_velocity_system` so
-        // the arrive system sees the pruned
-        // DirectMovementComponent, the same signal the rest of
-        // the per-role systems use.
-        .add_plugins(nanobot::DefendPlugin)
         // ChargePlugin settles consumer state after movement and before regional
         // acquisition so rotation releases current allocation immediately.
         .add_plugins(nanobot::ChargePlugin)
-        // Combat consumes Defend holds and Charge-scaled stats after sustain updates.
+        // Combat consumes territory-wide responses and Charge-scaled stats.
         .add_plugins(CombatPlugin)
         // The authored opponent changes only its own Defend intent; normal
         // allocation and role systems execute the resulting pressure.
         .add_plugins(OpponentIntentPlugin)
-        // Single allocator for Gather, Planned Build, Maintenance, Defend, and Haul.
+        // Single allocator for regional work and territory-wide Defender responses.
         .add_plugins(RegionalAllocationPlugin)
         // Typed workload chooses required capacity; Production Priority orders shortages.
         .add_plugins(PopulationDemandPlugin)

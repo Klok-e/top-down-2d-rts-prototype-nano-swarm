@@ -23,6 +23,36 @@ pub enum ThreatKind {
     Structure,
 }
 
+/// Ordered response priority for one kind of territory Threat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ThreatPriority {
+    HostileDefender,
+    HostileNanobot,
+    HostileStructure,
+}
+
+/// Stable danger ordering for Defender response work.
+pub const fn threat_danger_rank(kind: ThreatKind) -> ThreatPriority {
+    match kind {
+        ThreatKind::DefenderNanobot => ThreatPriority::HostileDefender,
+        ThreatKind::OtherNanobot => ThreatPriority::HostileNanobot,
+        ThreatKind::Structure => ThreatPriority::HostileStructure,
+    }
+}
+
+/// A response changes targets only when newly available work is more dangerous.
+pub fn higher_tier_threat_preempts(current: ThreatKind, candidate: ThreatKind) -> bool {
+    threat_danger_rank(candidate) < threat_danger_rank(current)
+}
+
+/// Whether an existing response target is on a Swarm Tile or in its one-cell
+/// Chebyshev Pursuit Halo.
+pub fn pursuit_claim_is_spatially_valid(target: IVec2, territory_tiles: &[IVec2]) -> bool {
+    territory_tiles
+        .iter()
+        .any(|tile| (target - *tile).abs().max_element() <= 1)
+}
+
 /// Stable entity identity and current physical state for one territory Threat.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThreatSnapshot {
@@ -102,6 +132,17 @@ impl TerritorySnapshot {
             .get(&swarm)
             .and_then(|territory| territory.regions.get(&region))
             .map_or(&[], |region| region.threats.as_slice())
+    }
+
+    /// Whether `cell` is one of `swarm`'s current Swarm Tiles.
+    pub fn is_swarm_tile(&self, swarm: SwarmId, cell: IVec2) -> bool {
+        self.tiles_in_region(swarm, AllocationRegion::for_cell(cell))
+            .contains(&cell)
+    }
+
+    /// Whether an existing claim may continue pursuing a target in `cell`.
+    pub fn pursuit_claim_is_spatially_valid(&self, swarm: SwarmId, cell: IVec2) -> bool {
+        (-1..=1).any(|dy| (-1..=1).any(|dx| self.is_swarm_tile(swarm, cell + IVec2::new(dx, dy))))
     }
 }
 
@@ -224,7 +265,11 @@ pub fn project_territory_snapshot_system(
 
 #[cfg(test)]
 mod tests {
-    use super::defender_population_demand;
+    use super::{
+        ThreatKind, defender_population_demand, higher_tier_threat_preempts,
+        pursuit_claim_is_spatially_valid, threat_danger_rank,
+    };
+    use bevy::prelude::IVec2;
 
     #[test]
     fn defender_population_demand_uses_reserve_until_threats_exceed_it() {
@@ -244,5 +289,54 @@ mod tests {
                 "tile_count={tile_count}, threat_count={threat_count}",
             );
         }
+    }
+
+    #[test]
+    fn threat_response_decisions_follow_danger_and_pursuit_boundaries() {
+        assert!(
+            threat_danger_rank(ThreatKind::DefenderNanobot)
+                < threat_danger_rank(ThreatKind::OtherNanobot)
+        );
+        assert!(
+            threat_danger_rank(ThreatKind::OtherNanobot)
+                < threat_danger_rank(ThreatKind::Structure)
+        );
+
+        assert!(higher_tier_threat_preempts(
+            ThreatKind::Structure,
+            ThreatKind::OtherNanobot,
+        ));
+        assert!(!higher_tier_threat_preempts(
+            ThreatKind::OtherNanobot,
+            ThreatKind::OtherNanobot,
+        ));
+        assert!(!higher_tier_threat_preempts(
+            ThreatKind::DefenderNanobot,
+            ThreatKind::Structure,
+        ));
+
+        let territory = [IVec2::new(3, 4), IVec2::new(-2, 7)];
+        for target in [
+            IVec2::new(3, 4),
+            IVec2::new(4, 4),
+            IVec2::new(2, 4),
+            IVec2::new(3, 5),
+            IVec2::new(3, 3),
+            IVec2::new(4, 5),
+            IVec2::new(2, 3),
+        ] {
+            assert!(
+                pursuit_claim_is_spatially_valid(target, &territory),
+                "target {target:?} should remain within pursuit reach",
+            );
+        }
+        assert!(!pursuit_claim_is_spatially_valid(
+            IVec2::new(5, 4),
+            &territory,
+        ));
+        assert!(!pursuit_claim_is_spatially_valid(
+            IVec2::new(5, 6),
+            &territory,
+        ));
     }
 }

@@ -218,6 +218,10 @@ pub struct CandidateBounds {
 pub struct CategoryEligibility([bool; OpportunityCategory::COUNT]);
 
 impl CategoryEligibility {
+    pub const fn none() -> Self {
+        Self([false; OpportunityCategory::COUNT])
+    }
+
     pub const fn all() -> Self {
         Self([true; OpportunityCategory::COUNT])
     }
@@ -312,7 +316,7 @@ where
     }
 
     let mut examined = 0;
-    let mut best: Option<((usize, usize, u32, u64, usize), ActionableOpportunity)> = None;
+    let mut best: Option<((usize, usize, u64, usize), ActionableOpportunity)> = None;
     let mut regions_examined = 0;
     for (region, opportunities) in ordered_regions.into_iter().take(bounds.max_regions) {
         regions_examined += 1;
@@ -331,15 +335,9 @@ where
             let Some(claims) = claim_count(*opportunity) else {
                 continue;
             };
-            let pressure_priority = if opportunity.category == OpportunityCategory::Defend {
-                u32::MAX - opportunity.available_work
-            } else {
-                0
-            };
             let score = (
                 category_priority(opportunity.category),
                 claims,
-                pressure_priority,
                 u64::from(distance),
                 examined,
             );
@@ -363,8 +361,7 @@ fn category_priority(category: OpportunityCategory) -> usize {
         OpportunityCategory::PlannedBuild => 0,
         OpportunityCategory::Maintenance => 1,
         OpportunityCategory::Gather => 2,
-        OpportunityCategory::Defend => 3,
-        OpportunityCategory::Haul => 4,
+        OpportunityCategory::Haul => 3,
     }
 }
 

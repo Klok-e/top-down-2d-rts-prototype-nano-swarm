@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        CollapsePlugin, CombatPlugin, DefendPlugin, MaintenancePlugin, MatchOutcome, NanobotType,
+        CollapsePlugin, CombatPlugin, MaintenancePlugin, MatchOutcome, NanobotType,
         OpponentIntentController, OpponentIntentPlugin, PopulationDemandPlugin,
         ProductionCollapseState, ProductionPlugin, ProductionPriority, SwarmId,
         nanobot_death_cleanup_system,
@@ -16,8 +16,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
 fn scripted_counter_assault_can_cause_opponent_production_collapse() {
     let mut app = common::sim_app();
     app.insert_resource(ProductionPriority::default());
-    app.add_plugins(DefendPlugin)
-        .add_plugins(MaintenancePlugin)
+    app.add_plugins(MaintenancePlugin)
         .add_plugins(ProductionPlugin)
         .add_plugins(PopulationDemandPlugin)
         .add_plugins(CombatPlugin)
