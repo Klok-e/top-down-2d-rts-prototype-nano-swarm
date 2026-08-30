@@ -164,6 +164,8 @@ impl Plugin for RegionalAllocationPlugin {
                 FixedUpdate,
                 (
                     super::reconcile_defender_responses_system,
+                    ApplyDeferred,
+                    super::defender_staging::reconcile_defender_staging_system,
                     regional_allocation_acquisition_system.run_if(allocation_tick_due),
                 )
                     .chain()

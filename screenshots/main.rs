@@ -27,6 +27,7 @@ mod background_checkerboard;
 mod build_zone_placement;
 mod combat_presentation;
 mod defender_combat_readability;
+mod defender_staging;
 mod fill_indicators;
 mod harness;
 mod idle_spread;
@@ -129,6 +130,10 @@ fn main() -> std::process::ExitCode {
         .with_ignored_flag(true),
         Trial::test("defender_combat_readability", || {
             run(defender_combat_readability::defender_combat_readability)
+        })
+        .with_ignored_flag(true),
+        Trial::test("defender_staging", || {
+            run(defender_staging::defender_staging)
         })
         .with_ignored_flag(true),
         Trial::test("idle_spread", || run(idle_spread::idle_spread)).with_ignored_flag(true),
