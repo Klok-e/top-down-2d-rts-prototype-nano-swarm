@@ -4,8 +4,8 @@
 //! resupply defenders with `Charge`. Defenders use Charge, low
 //! Charge weakens their attack and defense, empty/ignored
 //! Charge causes defender health loss, and defenders rotate to
-//! working chargers automatically. Chargers emerge from Defend
-//! Zone load and existing charger busyness, and require
+//! working chargers automatically. Unserved low Charge creates
+//! owner-scoped Charger plans in eligible Defend paint, and Chargers require
 //! logistics support via physical resources so isolated defenses
 //! degrade when haulers cannot reach them.
 //!
@@ -52,7 +52,7 @@ use crate::nanobot::components::{
 use crate::nanobot::defend::{DefendAssignment, DefendHold};
 use crate::nanobot::maintenance::SupportCondition;
 use crate::nanobot::placement::{
-    BUILDING_FOOTPRINT_RADIUS, find_defend_zone_placement, scaled_building_footprint_radius,
+    BUILDING_FOOTPRINT_RADIUS, find_nearest_defend_zone_placement, scaled_building_footprint_radius,
 };
 use crate::nanobot::planned::{PlannedKind, PlannedStructure, planned_visual_components};
 use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
@@ -128,20 +128,10 @@ pub const AUTO_CHARGER_RADIUS: f32 = 64.0;
 /// empty so all minerals enter through physical logistics.
 pub const AUTO_CHARGER_INITIAL_AMOUNT: u32 = 0;
 
-/// Maximum defenders that can be actively charging from a
-/// single charger at once before a new charger is allowed to
-/// emerge. The "busyness" half of the issue's charger
-/// auto-creation contract: a cell whose existing charger is
-/// already at this cap spawns an additional charger.
+/// Maximum Defenders that one completed or pending Charger reserves in the
+/// swarm-wide service pool. An unserved low-Charge Defender creates another
+/// plan only after all reserved slots are consumed.
 pub const MAX_DEFENDERS_PER_CHARGER: u32 = 3;
-
-/// Maximum chargers a single Defend cell can hold. The
-/// emergence rule spawns chargers to satisfy
-/// `ceil(load / MAX_DEFENDERS_PER_CHARGER)` up to this cap,
-/// so a cell with 8 defenders can hold 3 chargers; a cell
-/// with 20 defenders can also hold 3 chargers (the cap is the
-/// ceiling, not the floor).
-pub const MAX_CHARGERS_PER_CELL: u32 = 3;
 
 // ---------------------------------------------------------------------------
 // Components
@@ -158,11 +148,8 @@ pub const MAX_CHARGERS_PER_CELL: u32 = 3;
 /// caps the buffer; freshly completed chargers begin empty.
 #[derive(Debug, Component, Clone, Copy)]
 pub struct Charger {
-    /// Defend cell the charger lives in. Used by the
-    /// auto-creation system to find existing chargers in a
-    /// cell and by the rotation system to check "is this
-    /// charger actually in the cell the defender is
-    /// defending?".
+    /// Physical cell used to require matching owner-scoped Defend paint for
+    /// Defender service and Charger-specific Maintenance.
     pub cell: IVec2,
     /// Resource backing the charger. Always
     /// [`ResourceKind::Minerals`] in the first implementation;
@@ -467,76 +454,47 @@ pub fn defender_health_loss_when_empty_system(
     }
 }
 
-/// Walk the [`IntentGrid`] and ensure every Defend cell with
-/// load (defenders committed to that cell) has enough
-/// chargers to cover the demand. As of issue #28 the demand
-/// is satisfied through the Planned Structure lifecycle: a
-/// new [`PlannedStructure`] of [`PlannedKind::Charger`]
-/// emerges in a cell when:
-///
-/// 1. the cell is painted with `IntentKind::Defend`,
-/// 2. the cell has at least one defender holding or assigned
-///    to it, AND
-/// 3. the cell's current `(chargers + planned_chargers) *
-///    MAX_DEFENDERS_PER_CHARGER` is below the load.
-///
-/// The "existing charger busyness" half of the issue lives
-/// here: a cell with a single charger and 4 defenders spawns
-/// a second (planned) charger, so the existing charger is
-/// not asked to serve more than [`MAX_DEFENDERS_PER_CHARGER`]
-/// defenders at once. The busyness count INCLUDES planned
-/// chargers in the same cell: a cell with one built charger
-/// and a pending plan must not pile a second plan, otherwise
-/// the auto-creation loop would emit one plan per tick.
-///
-/// A cell whose existing chargers + planned chargers are
-/// already at [`MAX_CHARGERS_PER_CELL`] does not get more
-/// plans; the cap is the hard ceiling and a follow-up issue
-/// can revisit it if defenders starve in practice.
-///
-/// Ownership: the plan is stamped with [`OwnerSwarm`] from
-/// the Defend cell's intent owner. A tracked contest evaluates
-/// each participant's defender load independently, while legacy
-/// unowned Defend paint falls back to the player swarm. The
-/// promotion path preserves [`OwnerSwarm`] on the completed
-/// charger.
+/// Plan owner-scoped Charger capacity for low-Charge Defenders that cannot use
+/// a valid completed or pending Charger. Each plan reserves the same three-user
+/// capacity as a completed Charger, keeping repeated fixed steps idempotent.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn charger_auto_creation_system(
     mut commands: Commands,
     grid: Res<IntentGrid>,
     structure_sprites: Res<StructureSprites>,
-    chargers: Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
+    chargers: Query<(
+        Entity,
+        &Charger,
+        &Transform,
+        Option<&OwnerSwarm>,
+        Option<&SupportCondition>,
+    )>,
     planned_chargers: Query<
         (&PlannedStructure, &Transform, Option<&OwnerSwarm>),
         With<PlannedStructure>,
     >,
     structure_obstacles: Query<&Transform, Or<(With<Stockpile>, With<ProductionFacility>)>>,
     deposits: Query<(&ResourceDeposit, &Transform)>,
-    defenders_in_cell: Query<
+    defenders: Query<
         (
+            Entity,
             &Transform,
+            &Charge,
             &NanobotType,
             &SwarmMember,
-            Option<&DefendHold>,
-            Option<&DefendAssignment>,
+            Option<&Health>,
+            Option<&ChargerAssignment>,
+            Option<&ChargerProgress>,
         ),
-        Or<(With<DefendHold>, With<DefendAssignment>)>,
+        (With<Nanobot>, With<Charge>),
     >,
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,
 ) {
-    let swarm_by_id: std::collections::HashMap<SwarmId, Entity> =
+    let swarm_by_id: HashMap<SwarmId, Entity> =
         swarms.iter().map(|(entity, id)| (*id, entity)).collect();
-    let swarm_id_by_entity: std::collections::HashMap<Entity, SwarmId> =
+    let swarm_id_by_entity: HashMap<Entity, SwarmId> =
         swarms.iter().map(|(entity, id)| (entity, *id)).collect();
-    let fallback_owner = swarm_by_id.get(&SwarmId::PLAYER).copied();
-    let owner_id = |owner: Option<&OwnerSwarm>| {
-        owner
-            .and_then(|owner| swarm_id_by_entity.get(&owner.0).copied())
-            .unwrap_or(SwarmId::PLAYER)
-    };
 
-    let mut chargers_per_cell: std::collections::HashMap<(IVec2, SwarmId), u32> =
-        std::collections::HashMap::new();
     let mut obstacles: Vec<(Vec2, f32)> = deposits
         .iter()
         .map(|(deposit, transform)| (transform.translation.truncate(), deposit.radius))
@@ -547,91 +505,126 @@ pub fn charger_auto_creation_system(
             scaled_building_footprint_radius(transform),
         ));
     }
-    for (_, charger, transform, owner) in &chargers {
-        *chargers_per_cell
-            .entry((charger.cell, owner_id(owner)))
-            .or_insert(0) += 1;
+    for (_, _, transform, _, _) in &chargers {
         obstacles.push((
             transform.translation.truncate(),
             scaled_building_footprint_radius(transform),
         ));
     }
-    for (planned, transform, owner) in &planned_chargers {
+    for (_, transform, _) in &planned_chargers {
         obstacles.push((
             transform.translation.truncate(),
             scaled_building_footprint_radius(transform),
         ));
-        if planned.kind == PlannedKind::Charger {
-            *chargers_per_cell
-                .entry((planned.cell, owner_id(owner)))
-                .or_insert(0) += 1;
+    }
+
+    let mut charger_loads = HashMap::<Entity, u32>::new();
+    for (_, _, _, kind, _, health, assignment, progress) in &defenders {
+        if *kind != NanobotType::Defender || health.is_some_and(|health| health.current == 0) {
+            continue;
+        }
+        if let Some(charger) = assignment
+            .map(|assignment| assignment.charger)
+            .or_else(|| progress.map(|progress| progress.charger))
+        {
+            *charger_loads.entry(charger).or_default() += 1;
         }
     }
 
-    let mut defenders_per_cell: std::collections::HashMap<(IVec2, SwarmId), u32> =
-        std::collections::HashMap::new();
-    for (transform, kind, member, hold, assignment) in &defenders_in_cell {
-        if *kind != NanobotType::Defender {
+    let mut available_capacity = HashMap::<SwarmId, u32>::new();
+    for (entity, charger, _, owner, condition) in &chargers {
+        let Some(swarm) = owner.and_then(|owner| swarm_id_by_entity.get(&owner.0).copied()) else {
             continue;
+        };
+        let valid = charger_can_serve_in_owned_zone(charger, swarm, condition, &grid);
+        if valid {
+            let spare = MAX_DEFENDERS_PER_CHARGER
+                .saturating_sub(charger_loads.get(&entity).copied().unwrap_or_default());
+            *available_capacity.entry(swarm).or_default() += spare;
         }
-        let cell = hold
-            .map(|hold| hold.cell)
-            .or_else(|| assignment.map(|assignment| assignment.cell))
-            .unwrap_or_else(|| {
-                crate::nanobot::gather::world_to_cell(transform.translation.truncate())
-            });
-        *defenders_per_cell.entry((cell, member.0)).or_insert(0) += 1;
     }
 
-    for (cell, intent_cell) in grid.iter_active_cells() {
-        if !intent_cell.has(IntentKind::Defend) {
+    for (planned, _, owner) in &planned_chargers {
+        if planned.kind != PlannedKind::Charger {
             continue;
         }
-        let (first_owner, second_owner) = grid.defend_contest(cell).map_or_else(
-            || {
-                (
-                    intent_cell
-                        .owner(IntentKind::Defend)
-                        .unwrap_or(SwarmId::PLAYER),
-                    None,
-                )
-            },
-            |(incumbent, challenger)| (incumbent, Some(challenger)),
-        );
-        for swarm_id in std::iter::once(first_owner).chain(second_owner) {
-            let key = (cell, swarm_id);
-            let load = *defenders_per_cell.get(&key).unwrap_or(&0);
-            if load == 0 {
-                continue;
-            }
-            let existing = *chargers_per_cell.get(&key).unwrap_or(&0);
-            let target_chargers = load
-                .div_ceil(MAX_DEFENDERS_PER_CHARGER)
-                .min(MAX_CHARGERS_PER_CELL);
-            if existing >= target_chargers {
-                continue;
-            }
-            let to_spawn = (target_chargers - existing).min(MAX_CHARGERS_PER_CELL - existing);
-            let owner = swarm_by_id.get(&swarm_id).copied().or(fallback_owner);
-            for _ in 0..to_spawn {
-                let Some(placement_pos) = find_defend_zone_placement(cell, &obstacles, 28) else {
-                    break;
-                };
-                let mut entity_commands = commands.spawn((
-                    PlannedStructure::new(PlannedKind::Charger, cell),
-                    planned_visual_components(
-                        PlannedKind::Charger,
-                        &structure_sprites,
-                        placement_pos,
-                    ),
-                ));
-                obstacles.push((placement_pos, BUILDING_FOOTPRINT_RADIUS));
-                if let Some(swarm_entity) = owner {
-                    entity_commands.insert(OwnerSwarm(swarm_entity));
-                }
-            }
+        let Some(swarm) = owner.and_then(|owner| swarm_id_by_entity.get(&owner.0).copied()) else {
+            continue;
+        };
+        if grid
+            .cell(planned.cell)
+            .is_some_and(|cell| cell.owner(IntentKind::Defend) == Some(swarm))
+        {
+            *available_capacity.entry(swarm).or_default() += MAX_DEFENDERS_PER_CHARGER;
         }
     }
+
+    let mut candidates = defenders
+        .iter()
+        .filter(|(_, _, charge, kind, _, health, assignment, progress)| {
+            **kind == NanobotType::Defender
+                && !health.is_some_and(|health| health.current == 0)
+                && charge.needs_rotation()
+                && assignment.is_none()
+                && progress.is_none()
+        })
+        .map(|(entity, transform, charge, _, member, _, _, _)| {
+            (
+                member.0,
+                charge.current,
+                entity,
+                transform.translation.truncate(),
+            )
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.total_cmp(&right.1))
+            .then_with(|| left.2.to_bits().cmp(&right.2.to_bits()))
+    });
+
+    for (swarm, _, _, defender_pos) in candidates {
+        let capacity = available_capacity.entry(swarm).or_default();
+        if *capacity > 0 {
+            *capacity -= 1;
+            continue;
+        }
+        let Some(owner) = swarm_by_id.get(&swarm).copied() else {
+            continue;
+        };
+        let defend_cells = grid
+            .iter_active_cells()
+            .filter_map(|(cell, intent)| {
+                (intent.owner(IntentKind::Defend) == Some(swarm)).then_some(cell)
+            })
+            .collect::<Vec<_>>();
+        let Some((cell, placement_pos)) =
+            find_nearest_defend_zone_placement(&defend_cells, &obstacles, defender_pos)
+        else {
+            continue;
+        };
+        commands.spawn((
+            PlannedStructure::new(PlannedKind::Charger, cell),
+            OwnerSwarm(owner),
+            planned_visual_components(PlannedKind::Charger, &structure_sprites, placement_pos),
+        ));
+        obstacles.push((placement_pos, BUILDING_FOOTPRINT_RADIUS));
+        *capacity = MAX_DEFENDERS_PER_CHARGER - 1;
+    }
+}
+
+/// Whether a Charger can serve its owner from its current physical state.
+pub(crate) fn charger_can_serve_in_owned_zone(
+    charger: &Charger,
+    swarm: SwarmId,
+    condition: Option<&SupportCondition>,
+    grid: &IntentGrid,
+) -> bool {
+    grid.cell(charger.cell)
+        .is_some_and(|cell| cell.owner(IntentKind::Defend) == Some(swarm))
+        && charger.has_supply()
+        && condition.is_some_and(SupportCondition::is_operational)
 }
 
 /// Apply the shared service-validity rule used throughout a Charge trip.
@@ -644,12 +637,7 @@ fn charger_is_eligible(
     swarms: &Query<&SwarmId, With<Swarm>>,
 ) -> bool {
     let charger_swarm = owner.and_then(|owner| swarms.get(owner.0).ok()).copied();
-    charger_swarm == Some(swarm)
-        && grid
-            .cell(charger.cell)
-            .is_some_and(|cell| cell.owner(IntentKind::Defend) == Some(swarm))
-        && charger.has_supply()
-        && condition.is_some_and(SupportCondition::is_operational)
+    charger_swarm == Some(swarm) && charger_can_serve_in_owned_zone(charger, swarm, condition, grid)
 }
 
 /// Find the nearest eligible Charger in the Defender's swarm.
@@ -1021,7 +1009,7 @@ pub fn defender_charger_work_system(
 /// state and before planned-structure work):
 ///
 /// 1. [`charger_auto_creation_system`] -- spawn new planned
-///    chargers from current load. The regional allocator sees
+///    Chargers from unmet low-Charge service need. The regional allocator sees
 ///    the plan on its next projection/acquisition pass; a
 ///    Worker then builds it through the planned-structure
 ///    lifecycle.
@@ -1043,9 +1031,8 @@ pub struct ChargePlugin;
 
 impl Plugin for ChargePlugin {
     fn build(&self, app: &mut App) {
-        // Demand: spawn planned chargers from current load
-        // after regional acquisition and the Defend hold
-        // transition, so load is counted correctly. The
+        // Demand: spawn planned Chargers from unmet service need
+        // after movement and current Charge state settle. The
         // regional allocator projects and claims the new plan
         // on a later allocation pass; no legacy worker-claim
         // system is registered. Run before planned work so
@@ -1301,11 +1288,7 @@ mod tests {
     }
 
     #[test]
-    fn cell_charger_cap_is_positive() {
-        // Sanity: a cell with no chargers can spawn at
-        // least one, otherwise the auto-creation system
-        // would do nothing for every defended cell.
-        const { assert!(MAX_CHARGERS_PER_CELL >= 1) };
+    fn charger_service_capacity_is_positive() {
         const { assert!(MAX_DEFENDERS_PER_CHARGER >= 1) };
     }
 

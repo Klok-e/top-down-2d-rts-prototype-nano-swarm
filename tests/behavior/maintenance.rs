@@ -11,10 +11,12 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Cargo, DEGRADATION_INTERVAL_TICKS, MAINTENANCE_BUFFER_TICKS, MAINTENANCE_NEEDS_THRESHOLD,
-        MAINTENANCE_WORK_DURATION_TICKS, MaintenanceAssignment, MaintenanceProgress, NanobotBundle,
-        ReturningToStockpile, STRUCTURE_MAX_HEALTH, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD,
-        Structure, StructureKind, worker_gather_delivery_system,
+        Cargo, Charge, ChargerAssignment, DEGRADATION_INTERVAL_TICKS, DirectMovementComponent,
+        LOW_CHARGE_THRESHOLD, MAINTENANCE_BUFFER_TICKS, MAINTENANCE_NEEDS_THRESHOLD,
+        MAINTENANCE_WORK_DURATION_TICKS, MaintenanceAssignment, MaintenancePlugin,
+        MaintenanceProgress, NanobotBundle, OwnerSwarm, ReturningToStockpile, STRUCTURE_MAX_HEALTH,
+        SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, SwarmId,
+        worker_gather_delivery_system,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
 };
@@ -350,6 +352,170 @@ fn real_structure_requests_maintenance_without_build_paint() {
         worker.get::<MaintenanceAssignment>().is_some()
             || worker.get::<MaintenanceProgress>().is_some(),
         "maintenance originates from the real structure, not Build paint",
+    );
+}
+
+#[test]
+fn unattended_valid_charger_rejects_worker_upkeep_and_degrades() {
+    let mut app = common::sim_app_with_charge_planned();
+    app.add_plugins(MaintenancePlugin);
+    let cell = IVec2::ZERO;
+    let center = common::cell_world_center(cell);
+    let swarm = common::spawn_swarm_at(&mut app, center);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 20);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
+    app.world_mut()
+        .entity_mut(charger)
+        .get_mut::<Structure>()
+        .expect("Charger has shared condition")
+        .ticks_since_maintained = MAINTENANCE_BUFFER_TICKS + DEGRADATION_INTERVAL_TICKS - 1;
+    let worker = common::spawn_worker_at(&mut app, center);
+
+    app.update();
+
+    let world = app.world();
+    assert!(
+        world
+            .entity(worker)
+            .get::<MaintenanceAssignment>()
+            .is_none()
+            && world.entity(worker).get::<MaintenanceProgress>().is_none(),
+        "unattended Charger capacity must not consume Worker upkeep",
+    );
+    assert_eq!(
+        world
+            .entity(charger)
+            .get::<Structure>()
+            .expect("unattended Charger remains a structure")
+            .health,
+        STRUCTURE_MAX_HEALTH - 1,
+        "unattended valid Charger must degrade through shared condition rules",
+    );
+}
+
+#[test]
+fn erased_defend_paint_leaves_charger_inactive_and_degrading() {
+    let mut app = common::sim_app_with_charge_planned();
+    app.add_plugins(MaintenancePlugin);
+    let cell = IVec2::ZERO;
+    let center = common::cell_world_center(cell);
+    let swarm = common::spawn_swarm_at(&mut app, center);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 20);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
+    let defender = common::spawn_defender_at(&mut app, center);
+
+    app.update();
+
+    assert!(
+        app.world_mut()
+            .resource_mut::<IntentGrid>()
+            .remove(cell, IntentKind::Defend),
+    );
+    {
+        let mut charger_entity = app.world_mut().entity_mut(charger);
+        let mut condition = charger_entity
+            .get_mut::<Structure>()
+            .expect("Charger has shared condition");
+        condition.ticks_since_maintained =
+            MAINTENANCE_BUFFER_TICKS + DEGRADATION_INTERVAL_TICKS - 1;
+    }
+    app.world_mut()
+        .entity_mut(defender)
+        .get_mut::<Charge>()
+        .expect("Defender has Charge")
+        .current = LOW_CHARGE_THRESHOLD;
+    let worker = common::spawn_worker_at(&mut app, center);
+
+    app.update();
+
+    let world = app.world();
+    assert!(
+        world.get_entity(charger).is_ok(),
+        "paint erasure must not despawn the completed Charger",
+    );
+    assert!(
+        world.entity(defender).get::<ChargerAssignment>().is_none(),
+        "a Charger outside owned Defend paint must be inactive for service",
+    );
+    assert!(
+        world
+            .entity(worker)
+            .get::<MaintenanceAssignment>()
+            .is_none()
+            && world.entity(worker).get::<MaintenanceProgress>().is_none(),
+        "a Charger outside owned Defend paint must not receive Worker upkeep",
+    );
+    assert_eq!(
+        world
+            .entity(charger)
+            .get::<Structure>()
+            .expect("Charger remains a structure")
+            .health,
+        STRUCTURE_MAX_HEALTH - 1,
+        "unmaintained Charger must degrade through the existing condition rules",
+    );
+}
+
+#[test]
+fn en_route_service_assigns_worker_to_stale_charger() {
+    let mut app = common::sim_app_with_charge_planned();
+    app.add_plugins(MaintenancePlugin);
+    let charger_cell = IVec2::ZERO;
+    let charger_center = common::cell_world_center(charger_cell);
+    let swarm = common::spawn_swarm_at(&mut app, charger_center);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        charger_cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let charger = common::spawn_operational_charger_at(&mut app, charger_cell, 20);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
+    app.world_mut()
+        .entity_mut(charger)
+        .get_mut::<Structure>()
+        .expect("Charger has shared condition")
+        .ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
+    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(IVec2::new(3, 0)));
+    app.world_mut().entity_mut(defender).insert((
+        ChargerAssignment { charger },
+        DirectMovementComponent {
+            xy: charger_center,
+            stop_radius: 32.0,
+        },
+    ));
+    let worker = common::spawn_worker_at(&mut app, charger_center);
+
+    app.update();
+
+    let worker = app.world().entity(worker);
+    let target = worker
+        .get::<MaintenanceAssignment>()
+        .map(|assignment| assignment.target)
+        .or_else(|| {
+            worker
+                .get::<MaintenanceProgress>()
+                .map(|progress| progress.target)
+        });
+    assert_eq!(
+        target,
+        Some(charger),
+        "active Charger service must produce assignable Worker upkeep",
     );
 }
 

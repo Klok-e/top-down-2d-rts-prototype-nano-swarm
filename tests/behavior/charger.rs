@@ -2,8 +2,7 @@
 //! Charge sustain loop.
 //!
 //! Each test isolates one behavior so a failure points at a
-//! single contract: charger auto-emergence from Defend Zone
-//! load, charger emergence respecting existing busyness,
+//! single contract: Charger planning from unmet low Charge,
 //! logistics dependence (a charger without material is not a
 //! working rotation target), weakening of attack/defense on
 //! low charge, health loss on empty/ignored charge, and the
@@ -634,44 +633,27 @@ fn released_charger_slot_is_claimed_deterministically() {
 }
 
 #[test]
-fn charger_auto_emerges_in_defend_cell_with_defender_load() {
-    // Acceptance: "Chargers emerge from Defend Zone load..."
-    // As of issue #28, demand creates a Planned Charger
-    // (not a completed Charger). A Defend-painted cell
-    // with a holding defender must gain a Planned Charger
-    // on the next tick. The plan lives in the cell so the
-    // player can see the support structure co-located with
-    // the defense; the completed Charger only appears
-    // after a Worker builds the plan.
+fn low_charge_defender_plans_charger_in_owned_defend_paint() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(1, 0);
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
     let cell_center = common::cell_world_center(cell);
-    // Spawn the defender and then plant it in a DefendHold
-    // below; the auto-creation system reads "holding or
-    // assigned" so a bare idle defender would not show up
-    // in the load count.
-    common::spawn_defender_at(&mut app, cell_center);
+    let defender = common::spawn_defender_at(&mut app, cell_center);
+    app.world_mut()
+        .entity_mut(defender)
+        .get_mut::<Charge>()
+        .expect("Defender has Charge")
+        .current = LOW_CHARGE_THRESHOLD;
 
     // Pre-condition: zero chargers and zero planned
     // chargers.
     assert_eq!(charger_count(app.world_mut()), 0);
     assert_eq!(planned_charger_count(app.world_mut()), 0);
-
-    // Place a defender into hold on the same cell so the
-    // auto-creation system sees load.
-    {
-        let w = app.world_mut();
-        let entity = w
-            .query_filtered::<Entity, With<Nanobot>>()
-            .iter(w)
-            .next()
-            .expect("defender was just spawned");
-        w.entity_mut(entity).insert(DefendHold { cell });
-    }
 
     app.update();
 
@@ -681,15 +663,14 @@ fn charger_auto_emerges_in_defend_cell_with_defender_load() {
     assert_eq!(
         planned_charger_count(app.world_mut()),
         1,
-        "one planned charger must emerge from a Defend cell with a holding defender"
+        "one planned Charger must emerge for unserved low Charge"
     );
     assert_eq!(
         charger_count(app.world_mut()),
         0,
         "no completed charger must exist before a Worker builds the plan"
     );
-    // The plan is in the painted cell and at the cell's
-    // world center.
+    // The plan is in eligible owned Defend paint.
     let world = app.world_mut();
     let mut q = world.query::<(&PlannedStructure, &Transform)>();
     let (planned, transform) = q
@@ -699,16 +680,12 @@ fn charger_auto_emerges_in_defend_cell_with_defender_load() {
     assert_eq!(planned.cell, cell);
     assert!(
         (transform.translation.truncate() - cell_center).length() < 1.0,
-        "Planned Charger must be at the cell's world center"
+        "with no obstacle, the nearest placement is the Defend cell center"
     );
 }
 
 #[test]
-fn charger_does_not_emerge_in_cell_without_load() {
-    // Sanity: a Defend cell with no defenders must not
-    // spawn a charger (planned or completed). The "load"
-    // half of the emergence contract requires at least one
-    // defender committed to the cell.
+fn defend_paint_without_low_charge_does_not_plan_charger() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(1, 0);
@@ -721,12 +698,12 @@ fn charger_does_not_emerge_in_cell_without_load() {
     assert_eq!(
         charger_count(app.world_mut()),
         0,
-        "no charger without a holding defender"
+        "Defend paint alone does not create a completed Charger"
     );
     assert_eq!(
         planned_charger_count(app.world_mut()),
         0,
-        "no planned charger without a holding defender"
+        "Defend paint alone does not create a Charger plan"
     );
 }
 
@@ -744,6 +721,11 @@ fn enemy_defender_does_not_create_player_charger_demand() {
     app.world_mut()
         .entity_mut(defender)
         .insert((SwarmMember::new(SwarmId(11)), DefendHold { cell }));
+    app.world_mut()
+        .entity_mut(defender)
+        .get_mut::<Charge>()
+        .expect("Defender has Charge")
+        .current = LOW_CHARGE_THRESHOLD;
 
     app.update();
 
@@ -751,112 +733,6 @@ fn enemy_defender_does_not_create_player_charger_demand() {
         planned_charger_count(app.world_mut()),
         0,
         "hostile defenders must not count toward player charger demand",
-    );
-}
-
-#[test]
-fn charger_emergence_respects_existing_charger_busyness() {
-    // Acceptance: "Chargers emerge from Defend Zone load AND
-    // existing charger busyness." A cell with one charger
-    // and many defenders must spawn additional chargers; a
-    // cell with one charger and few defenders must not.
-    //
-    // The MAX_DEFENDERS_PER_CHARGER threshold drives the
-    // emergence: 1 charger covers up to 3 defenders; 4+
-    // defenders ask for a second charger. The test plants
-    // 5 holding defenders in one cell, then asserts that
-    // a second (planned) charger appears and the first
-    // charger is still there (the existing one is not
-    // destroyed).
-    //
-    // As of issue #28 the additional charger emerges as a
-    // Planned Charger (the demand path produces a plan, a
-    // Worker builds it, the completed Charger takes over).
-    // The busyness count includes BOTH completed Chargers
-    // AND Planned Chargers in the same cell so the
-    // auto-creation loop does not pile plans.
-    let mut app = build_app();
-    let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
-    let cell = IVec2::new(0, 0);
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend);
-    let cell_center = common::cell_world_center(cell);
-    let _charger = common::spawn_operational_charger_at(&mut app, cell, 100);
-
-    // Plant 5 holding defenders in the same cell. The cell
-    // already has 1 charger; with MAX_DEFENDERS_PER_CHARGER
-    // = 3 the demand is 2 chargers.
-    for i in 0..5 {
-        // Spread them out a tiny bit so separation forces
-        // do not pile them on top of each other. The cell
-        // is much larger than a bot radius so a few-pixel
-        // jitter is invisible to the cell-classification
-        // step.
-        let jitter = (i as f32 - 2.0) * 2.0;
-        let d = common::spawn_defender_at(&mut app, cell_center + Vec2::new(jitter, 0.0));
-        app.world_mut().entity_mut(d).insert(DefendHold { cell });
-    }
-
-    app.update();
-
-    let completed = charger_count(app.world_mut());
-    let planned = planned_charger_count(app.world_mut());
-    let total = completed + planned;
-    assert!(
-        total >= 2,
-        "busy cell must spawn an additional charger (completed={completed}, planned={planned})"
-    );
-    // The completed charger is still there (not destroyed).
-    assert_eq!(
-        completed, 1,
-        "pre-existing completed charger must not be destroyed by the demand loop"
-    );
-    // And the demand produced at least one more plan.
-    assert!(
-        planned >= 1,
-        "busy cell must plan at least one additional charger; got {planned}"
-    );
-    // All chargers (planned and completed) are in the
-    // same cell.
-    let world = app.world_mut();
-    let mut q = world.query::<&Charger>();
-    for c in q.iter(world) {
-        assert_eq!(c.cell, cell);
-    }
-    let mut qp = world.query::<&PlannedStructure>();
-    for p in qp.iter(world).filter(|p| p.kind == PlannedKind::Charger) {
-        assert_eq!(p.cell, cell);
-    }
-}
-
-#[test]
-fn charger_does_not_emerge_extra_when_load_below_busy_threshold() {
-    // Companion to the busyness test: a cell with one charger
-    // and fewer defenders than MAX_DEFENDERS_PER_CHARGER must
-    // not spawn a second charger. The existing one is enough.
-    let mut app = build_app();
-    let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
-    let cell = IVec2::new(0, 0);
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend);
-    let cell_center = common::cell_world_center(cell);
-    let _charger = common::spawn_operational_charger_at(&mut app, cell, 100);
-    // 1 charger and 2 defenders: 2 < MAX_DEFENDERS_PER_CHARGER
-    // (3), so the demand is still 1 charger. No second one.
-    for i in 0..2 {
-        let jitter = (i as f32 - 0.5) * 4.0;
-        let d = common::spawn_defender_at(&mut app, cell_center + Vec2::new(jitter, 0.0));
-        app.world_mut().entity_mut(d).insert(DefendHold { cell });
-    }
-
-    app.update();
-
-    assert_eq!(
-        charger_count(app.world_mut()),
-        1,
-        "no extra charger when load is below the busyness threshold"
     );
 }
 
@@ -1932,14 +1808,8 @@ fn charger_requires_logistics_support_via_physical_resources() {
 
 #[test]
 fn hauler_delivers_minerals_to_a_charger_with_free_space() {
-    // The "logistics support" half of the contract is the
-    // physical resource flow: haulers can deliver minerals
-    // to a charger with free space. A stocked-up charger
-    // (via hauler delivery) is what keeps a defended cell
-    // supplied when the player is not actively painting
-    // intent. The test plants a deposit, a hauler, and a
-    // charger with zero amount, then asserts the hauler
-    // routes to the charger and the charger's amount grows.
+    // Physical logistics can fill owner-compatible Charger capacity without
+    // Defend paint; paint independently controls Defender service eligibility.
     let mut app = build_app();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let source_pos = Vec2::new(100.0, 0.0);
@@ -1953,15 +1823,6 @@ fn hauler_delivers_minerals_to_a_charger_with_free_space() {
         .entity_mut(charger)
         .insert(OwnerSwarm(swarm));
     let _hauler = common::spawn_hauler_at(&mut app, source_pos);
-    // Paint a Defend cell so the charger auto-creation
-    // system would not also create one (we have a manual
-    // charger). The system only creates chargers in cells
-    // with a holding defender; without a defender the
-    // system does nothing.
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend);
-
     // Drive enough ticks for the hauler to load (5 ticks at
     // HAULER_EXTRACT_PER_TICK) and walk from the deposit at
     // (100, 0) to the charger at the cell (2, 0) center

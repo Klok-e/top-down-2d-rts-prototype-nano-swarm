@@ -11,8 +11,9 @@ use super::{
 use crate::ZONE_BLOCK_SIZE;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::{
-    Charger, DefendPressure, OwnerSwarm, PlannedStructure, ProductionFacility, Structure,
-    SupportCondition, SwarmId, cell_overlaps_circle,
+    Charger, ChargerAssignment, ChargerProgress, DefendPressure, Health, Nanobot, NanobotType,
+    OwnerSwarm, PlannedStructure, ProductionFacility, Structure, SupportCondition, SwarmId,
+    SwarmMember, cell_overlaps_circle, charger_can_serve_in_owned_zone,
 };
 use crate::resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole};
 
@@ -77,6 +78,13 @@ struct SinkSnapshot {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+struct DefenderMaintenanceSnapshot {
+    swarm: SwarmId,
+    cell: IVec2,
+    active_charger: Option<Entity>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum SourceRole {
     Source,
     Sink,
@@ -119,6 +127,19 @@ pub fn project_actionable_opportunities_system(
         Option<Ref<OwnerSwarm>>,
         Option<Ref<SupportCondition>>,
     )>,
+    defenders: Query<
+        (
+            Entity,
+            Ref<NanobotType>,
+            Ref<SwarmMember>,
+            Option<Ref<Health>>,
+            Ref<Transform>,
+            Option<Ref<ChargerAssignment>>,
+            Option<Ref<ChargerProgress>>,
+        ),
+        With<Nanobot>,
+    >,
+    mut previous_maintenance_defenders: Local<BTreeMap<Entity, (SwarmId, IVec2, Option<Entity>)>>,
     swarms: Query<&SwarmId>,
     entities: Query<Entity>,
 ) {
@@ -213,6 +234,67 @@ pub fn project_actionable_opportunities_system(
         }
     }
 
+    let maintenance_defenders = defenders
+        .iter()
+        .filter(|(_, kind, _, health, _, _, _)| {
+            **kind == NanobotType::Defender
+                && !health.as_ref().is_some_and(|health| health.current == 0)
+        })
+        .map(|(entity, _, member, _, transform, assignment, progress)| {
+            (
+                entity,
+                (
+                    member.0,
+                    crate::nanobot::world_to_cell(transform.translation.truncate()),
+                    assignment
+                        .as_ref()
+                        .map(|assignment| assignment.charger)
+                        .or_else(|| progress.as_ref().map(|progress| progress.charger)),
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut changed_defenders = Vec::new();
+    for (entity, previous) in previous_maintenance_defenders.iter() {
+        let current = maintenance_defenders.get(entity);
+        if current != Some(previous) {
+            changed_defenders.push(*previous);
+            if let Some(current) = current {
+                changed_defenders.push(*current);
+            }
+        }
+    }
+    for (entity, current) in &maintenance_defenders {
+        if !previous_maintenance_defenders.contains_key(entity) {
+            changed_defenders.push(*current);
+        }
+    }
+    for defender in changed_defenders {
+        for (charger_entity, charger, owner, _) in &chargers {
+            let charger_swarm = owner
+                .as_deref()
+                .and_then(|owner| swarms.get(owner.0).ok())
+                .copied();
+            if charger_swarm == Some(defender.0)
+                && (defender.2 == Some(charger_entity)
+                    || (defender.1 - charger.cell).abs().max_element() <= 1)
+            {
+                projection.invalidate_cell(charger.cell);
+            }
+        }
+    }
+    *previous_maintenance_defenders = maintenance_defenders;
+    let maintenance_defenders = previous_maintenance_defenders
+        .values()
+        .map(
+            |(swarm, cell, active_charger)| DefenderMaintenanceSnapshot {
+                swarm: *swarm,
+                cell: *cell,
+                active_charger: *active_charger,
+            },
+        )
+        .collect::<Vec<_>>();
+
     let mut haul_sinks_changed = false;
     for (_, stockpile, transform, role, owner, condition) in &stockpiles {
         if stockpile.is_changed()
@@ -236,13 +318,17 @@ pub fn project_actionable_opportunities_system(
                 .as_ref()
                 .is_some_and(|condition| condition.is_changed())
     });
-    haul_sinks_changed |= chargers.iter().any(|(_, charger, owner, condition)| {
-        charger.is_changed()
+    for (_, charger, owner, condition) in &chargers {
+        if charger.is_changed()
             || owner.as_ref().is_some_and(|owner| owner.is_changed())
             || condition
                 .as_ref()
                 .is_some_and(|condition| condition.is_changed())
-    });
+        {
+            projection.invalidate_cell(charger.cell);
+            haul_sinks_changed = true;
+        }
+    }
     if haul_sinks_changed {
         for (_, stockpile, transform, _, _, _) in &stockpiles {
             if stockpile.amount > 0 {
@@ -321,9 +407,17 @@ pub fn project_actionable_opportunities_system(
             region,
             &grid,
             &deposits,
-            &structures,
             &swarms,
             pressure.as_deref(),
+            &mut opportunities,
+        );
+        project_maintenance_work(
+            region,
+            &grid,
+            &structures,
+            &chargers,
+            &maintenance_defenders,
+            &swarms,
             &mut opportunities,
         );
         project_planned_work(region, &planned, &swarms, &mut opportunities);
@@ -343,7 +437,6 @@ fn project_intent_work(
         Ref<Transform>,
         Option<Ref<OwnerSwarm>>,
     )>,
-    structures: &Query<(Entity, Ref<Structure>, Ref<Transform>, Option<&OwnerSwarm>)>,
     swarms: &Query<&SwarmId>,
     pressure: Option<&DefendPressure>,
     out: &mut Vec<ActionableOpportunity>,
@@ -397,27 +490,6 @@ fn project_intent_work(
         }
     }
 
-    for (entity, structure, transform, owner) in structures.iter() {
-        if !structure.needs_maintenance() {
-            continue;
-        }
-        let cell = crate::nanobot::world_to_cell(transform.translation.truncate());
-        if AllocationRegion::for_cell(cell) != region {
-            continue;
-        }
-        let Some(owner) = resolve_owner(owner, swarms) else {
-            continue;
-        };
-        out.push(ActionableOpportunity {
-            region,
-            category: OpportunityCategory::Maintenance,
-            target: OpportunityTarget::Maintenance { structure: entity },
-            cell,
-            owner,
-            available_work: 1,
-        });
-    }
-
     let min = region.min_cell();
     for dy in 0..ALLOCATION_REGION_CELLS {
         for dx in 0..ALLOCATION_REGION_CELLS {
@@ -451,6 +523,79 @@ fn project_intent_work(
             }
         }
     }
+}
+
+#[allow(clippy::type_complexity)]
+fn project_maintenance_work(
+    region: AllocationRegion,
+    grid: &IntentGrid,
+    structures: &Query<(Entity, Ref<Structure>, Ref<Transform>, Option<&OwnerSwarm>)>,
+    chargers: &Query<(
+        Entity,
+        Ref<Charger>,
+        Option<Ref<OwnerSwarm>>,
+        Option<Ref<SupportCondition>>,
+    )>,
+    maintenance_defenders: &[DefenderMaintenanceSnapshot],
+    swarms: &Query<&SwarmId>,
+    out: &mut Vec<ActionableOpportunity>,
+) {
+    for (entity, structure, transform, owner) in structures.iter() {
+        if !structure.needs_maintenance() {
+            continue;
+        }
+        if let Ok((_, charger, charger_owner, condition)) = chargers.get(entity)
+            && !charger_requests_maintenance(
+                entity,
+                &charger,
+                charger_owner.as_deref(),
+                condition.as_deref(),
+                grid,
+                swarms,
+                maintenance_defenders,
+            )
+        {
+            continue;
+        }
+        let cell = crate::nanobot::world_to_cell(transform.translation.truncate());
+        if AllocationRegion::for_cell(cell) != region {
+            continue;
+        }
+        let Some(owner) = resolve_owner(owner, swarms) else {
+            continue;
+        };
+        out.push(ActionableOpportunity {
+            region,
+            category: OpportunityCategory::Maintenance,
+            target: OpportunityTarget::Maintenance { structure: entity },
+            cell,
+            owner,
+            available_work: 1,
+        });
+    }
+}
+
+fn charger_requests_maintenance(
+    entity: Entity,
+    charger: &Charger,
+    owner: Option<&OwnerSwarm>,
+    condition: Option<&SupportCondition>,
+    grid: &IntentGrid,
+    swarms: &Query<&SwarmId>,
+    defenders: &[DefenderMaintenanceSnapshot],
+) -> bool {
+    let Some(swarm) = owner.and_then(|owner| swarms.get(owner.0).ok()).copied() else {
+        return false;
+    };
+    if !charger_can_serve_in_owned_zone(charger, swarm, condition, grid) {
+        return false;
+    }
+
+    defenders.iter().any(|defender| {
+        defender.swarm == swarm
+            && (defender.active_charger == Some(entity)
+                || (defender.cell - charger.cell).abs().max_element() <= 1)
+    })
 }
 
 fn project_planned_work(

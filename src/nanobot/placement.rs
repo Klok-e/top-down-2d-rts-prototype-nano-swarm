@@ -315,7 +315,7 @@ fn find_dense_build_zone_placement(
     obstacles: &[(Vec2, f32)],
     kind_seed: u32,
 ) -> Option<(IVec2, Vec2)> {
-    let side = (BUILD_ZONE_PLACEMENT_MAX_OFFSET * 2.0 / BUILD_ZONE_DENSE_STEP).floor() as u32 + 1;
+    let side = dense_build_zone_side();
     let candidate_count = side * side;
     let mut cells = build_cells.to_vec();
     cells.sort_unstable_by_key(|cell| {
@@ -331,13 +331,7 @@ fn find_dense_build_zone_placement(
         for step in 0..candidate_count {
             // 353 is coprime with the 27x27 lattice, so every point is visited.
             let index = (start + step * 353) % candidate_count;
-            let x = index % side;
-            let y = index / side;
-            let offset = Vec2::new(
-                -BUILD_ZONE_PLACEMENT_MAX_OFFSET + x as f32 * BUILD_ZONE_DENSE_STEP,
-                -BUILD_ZONE_PLACEMENT_MAX_OFFSET + y as f32 * BUILD_ZONE_DENSE_STEP,
-            );
-            let pos = center + offset;
+            let pos = dense_build_zone_position(center, side, index);
             if !overlaps_any_obstacle(
                 pos,
                 BUILDING_FOOTPRINT_RADIUS,
@@ -349,6 +343,20 @@ fn find_dense_build_zone_placement(
         }
     }
     None
+}
+
+fn dense_build_zone_side() -> u32 {
+    (BUILD_ZONE_PLACEMENT_MAX_OFFSET * 2.0 / BUILD_ZONE_DENSE_STEP).floor() as u32 + 1
+}
+
+fn dense_build_zone_position(center: Vec2, side: u32, index: u32) -> Vec2 {
+    let x = index % side;
+    let y = index / side;
+    center
+        + Vec2::new(
+            -BUILD_ZONE_PLACEMENT_MAX_OFFSET + x as f32 * BUILD_ZONE_DENSE_STEP,
+            -BUILD_ZONE_PLACEMENT_MAX_OFFSET + y as f32 * BUILD_ZONE_DENSE_STEP,
+        )
 }
 
 /// Pick a stable, non-overlapping support-structure placement inside one of
@@ -374,44 +382,48 @@ pub fn find_build_zone_placement(
     find_dense_build_zone_placement(build_cells, obstacles, kind_seed)
 }
 
-/// Preserve the center-first placement behavior used by Defend-Zone Chargers.
-pub fn find_defend_zone_placement(
-    cell: IVec2,
+/// Pick the nearest stable, non-overlapping Charger placement from the shared
+/// dense in-cell lattice across owned Defend cells. Distance from `origin`
+/// wins; cell and position coordinates provide deterministic tie-breakers.
+pub fn find_nearest_defend_zone_placement(
+    defend_cells: &[IVec2],
     obstacles: &[(Vec2, f32)],
-    kind_seed: u32,
-) -> Option<Vec2> {
-    let center = crate::ai::get_world_from_zone(cell);
-    let radii = [0.0, 96.0, 160.0, BUILD_ZONE_PLACEMENT_MAX_OFFSET];
-    let angles = placement_angles(8);
-    for (radius_index, radius) in radii.iter().enumerate() {
-        if *radius <= 0.0 {
-            if !overlaps_any_obstacle(
-                center,
+    origin: Vec2,
+) -> Option<(IVec2, Vec2)> {
+    let side = dense_build_zone_side();
+    let candidate_count = side * side;
+    let mut cells = defend_cells.to_vec();
+    cells.sort_unstable_by_key(|cell| (cell.x, cell.y));
+    let mut best: Option<(f32, IVec2, Vec2)> = None;
+
+    for cell in cells {
+        let center = crate::ai::get_world_from_zone(cell);
+        for index in 0..candidate_count {
+            let pos = dense_build_zone_position(center, side, index);
+            if overlaps_any_obstacle(
+                pos,
                 BUILDING_FOOTPRINT_RADIUS,
                 BUILDING_FOOTPRINT_PADDING,
                 obstacles,
             ) {
-                return Some(center);
+                continue;
             }
-            continue;
-        }
-        let phase = deterministic_jitter(kind_seed + radius_index as u32, cell, 1.0).x
-            * std::f32::consts::TAU;
-        for angle in &angles {
-            let pos = center + Vec2::new((angle + phase).cos(), (angle + phase).sin()) * *radius;
-            if world_to_cell(pos) == cell
-                && !overlaps_any_obstacle(
-                    pos,
-                    BUILDING_FOOTPRINT_RADIUS,
-                    BUILDING_FOOTPRINT_PADDING,
-                    obstacles,
-                )
-            {
-                return Some(pos);
+            let distance = origin.distance_squared(pos);
+            let better = best.is_none_or(|(best_distance, best_cell, best_pos)| {
+                distance
+                    .total_cmp(&best_distance)
+                    .then_with(|| cell.x.cmp(&best_cell.x))
+                    .then_with(|| cell.y.cmp(&best_cell.y))
+                    .then_with(|| pos.x.total_cmp(&best_pos.x))
+                    .then_with(|| pos.y.total_cmp(&best_pos.y))
+                    .is_lt()
+            });
+            if better {
+                best = Some((distance, cell, pos));
             }
         }
     }
-    None
+    best.map(|(_, cell, pos)| (cell, pos))
 }
 
 #[cfg(test)]
@@ -995,5 +1007,65 @@ mod tests {
             BUILDING_FOOTPRINT_PADDING,
             &obstacles,
         ));
+    }
+
+    #[test]
+    fn nearest_defend_placement_breaks_equal_distance_by_cell() {
+        let left = IVec2::new(-1, 0);
+        let right = IVec2::ZERO;
+        let left_center = crate::ai::get_world_from_zone(left);
+        let right_center = crate::ai::get_world_from_zone(right);
+        let origin = (left_center + right_center) / 2.0;
+        let chosen = find_nearest_defend_zone_placement(&[right, left], &[], origin).unwrap();
+
+        assert_eq!(
+            chosen,
+            (
+                left,
+                left_center + Vec2::new(BUILD_ZONE_PLACEMENT_MAX_OFFSET, 0.0)
+            )
+        );
+    }
+
+    #[test]
+    fn nearest_defend_placement_uses_dense_space_beyond_ring_samples() {
+        let cell = IVec2::ZERO;
+        let center = crate::ai::get_world_from_zone(cell);
+        let kind_seed = 28;
+        let mut obstacles = vec![(center, 0.0)];
+        for (radius_index, radius) in [96.0, 160.0, BUILD_ZONE_PLACEMENT_MAX_OFFSET]
+            .into_iter()
+            .enumerate()
+        {
+            let phase = deterministic_jitter(kind_seed + radius_index as u32 + 1, cell, 1.0).x
+                * std::f32::consts::TAU;
+            obstacles.extend(placement_angles(8).into_iter().map(|angle| {
+                (
+                    center + Vec2::new((angle + phase).cos(), (angle + phase).sin()) * radius,
+                    0.0,
+                )
+            }));
+        }
+
+        let (_, chosen) = find_nearest_defend_zone_placement(&[cell], &obstacles, center)
+            .expect("open dense in-cell space must remain usable");
+
+        assert!(!overlaps_any_obstacle(
+            chosen,
+            BUILDING_FOOTPRINT_RADIUS,
+            BUILDING_FOOTPRINT_PADDING,
+            &obstacles,
+        ));
+    }
+
+    #[test]
+    fn nearest_defend_placement_ranks_dense_sites_from_off_center_origin() {
+        let cell = IVec2::ZERO;
+        let center = crate::ai::get_world_from_zone(cell);
+        let origin = center + Vec2::new(83.0, 51.0);
+
+        let chosen = find_nearest_defend_zone_placement(&[cell], &[], origin).unwrap();
+
+        assert_eq!(chosen, (cell, center + Vec2::new(80.0, 48.0)));
     }
 }

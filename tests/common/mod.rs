@@ -44,14 +44,14 @@ use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
     intent::IntentGrid,
     nanobot::{
-        Charge, ChargePlugin, Charger, CollapsePlugin, Commitment, DefendPlugin, DefendPressure,
-        GatherPlugin, HaulPlugin, Health, MaintenancePlugin, Nanobot, NanobotBundle,
-        NanobotSimulationSet, NanobotType, NanobotVisual, OpponentSwarm, OwnerSwarm,
-        PRODUCTION_TICKS_PER_BOT, PlannedStructure, PlannedStructurePlugin, PopulationDemandPlugin,
-        ProductionFacility, ProductionPlugin, RegionalAllocationPlugin, SoftWorkSlots, Structure,
-        StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent, bot_debug_circle_system,
-        idle_spread_system, initialize_nanobot_type_components, move_velocity_system,
-        separation_system, velocity_system,
+        Charge, ChargePlugin, Charger, CollapsePlugin, Commitment, DefendHold, DefendPlugin,
+        DefendPressure, GatherPlugin, HaulPlugin, Health, LOW_CHARGE_THRESHOLD, MaintenancePlugin,
+        Nanobot, NanobotBundle, NanobotSimulationSet, NanobotType, NanobotVisual, OpponentSwarm,
+        OwnerSwarm, PRODUCTION_TICKS_PER_BOT, PlannedStructure, PlannedStructurePlugin,
+        PopulationDemandPlugin, ProductionFacility, ProductionPlugin, RegionalAllocationPlugin,
+        SoftWorkSlots, Structure, StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent,
+        bot_debug_circle_system, idle_spread_system, initialize_nanobot_type_components,
+        move_velocity_system, separation_system, velocity_system,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole},
     structure_overlay::StructureOverlayPlugin,
@@ -279,7 +279,7 @@ pub fn sim_app_with_production_planned() -> App {
 }
 
 /// `sim_app` + charge + planned structure. The issue #28
-/// flow: Defend cell demand creates a Planned Charger, a
+/// flow: unmet low-Charge service need creates a Planned Charger, a
 /// Worker builds it, the completed charger then runs
 /// through the existing charge sustain loop (drain, health
 /// loss, rotation, arrive, work). Use this builder for any
@@ -482,6 +482,27 @@ pub fn spawn_defender_at(app: &mut App, world_pos: Vec2) -> Entity {
             Transform::from_translation(world_pos.extend(0.0)),
         ))
         .id()
+}
+
+/// Spawn a full-Charge player Defender physically holding `cell`.
+pub fn spawn_defender_in_hold_at(app: &mut App, cell: IVec2) -> Entity {
+    let defender = spawn_defender_at(app, cell_world_center(cell));
+    app.world_mut()
+        .entity_mut(defender)
+        .insert(DefendHold { cell });
+    defender
+}
+
+/// Spawn a player Defender at the low-Charge rotation threshold while it
+/// physically holds `cell`.
+pub fn spawn_low_charge_defender_in_hold_at(app: &mut App, cell: IVec2) -> Entity {
+    let defender = spawn_defender_in_hold_at(app, cell);
+    app.world_mut()
+        .entity_mut(defender)
+        .get_mut::<Charge>()
+        .expect("Defender has Charge")
+        .current = LOW_CHARGE_THRESHOLD;
+    defender
 }
 
 /// Spawn a Hauler nanobot at `world_pos` with an idle commitment,

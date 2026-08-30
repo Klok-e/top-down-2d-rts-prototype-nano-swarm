@@ -4,7 +4,7 @@
 //! Each test isolates one behaviour so a failure points at a
 //! single contract:
 //!
-//!   1. Defend cell demand creates a Planned Charger
+//!   1. Unserved low Charge creates a Planned Charger
 //!      instead of an instant completed Charger.
 //!   2. The plan uses the planned visual color so the
 //!      player can tell the structure is not yet built.
@@ -24,10 +24,8 @@
 //!      resources remains intact after completion: a
 //!      Hauler can deliver minerals to a completed
 //!      charger.
-//!   8. The plan does not pile up across repeated demand
-//!      ticks: the auto-creation system sees a planned
-//!      Charger in the cell and does not spawn a second
-//!      one.
+//!   8. Pending capacity prevents duplicate plans across
+//!      repeated demand ticks.
 //!   9. `PlannedKind::ALL` and `PlannedKind::COUNT`
 //!      include the new Charger variant.
 
@@ -35,10 +33,11 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Charge, Charger, ChargerAssignment, ChargerProgress, DEFAULT_PLANNED_WORK_TICKS,
-        DefendHold, Health, LOW_CHARGE_THRESHOLD, MaintenancePlugin, NANOBOT_DEFAULT_MAX_HEALTH,
-        OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructureClaim, Swarm, SwarmId,
-        SwarmMember, completed_visual_color, planned_visual_color,
+        BUILDING_FOOTPRINT_PADDING, BUILDING_FOOTPRINT_RADIUS, Charge, ChargePlugin, Charger,
+        ChargerAssignment, ChargerProgress, DEFAULT_PLANNED_WORK_TICKS, DefendHold, Health,
+        LOW_CHARGE_THRESHOLD, MaintenancePlugin, NANOBOT_DEFAULT_MAX_HEALTH, OwnerSwarm,
+        PlannedKind, PlannedStructure, PlannedStructureClaim, Swarm, SwarmId, SwarmMember,
+        completed_visual_color, planned_visual_color,
     },
     resources::{ResourceKind, ResourceLedger},
 };
@@ -48,6 +47,12 @@ mod common;
 
 fn build_app() -> App {
     common::sim_app_with_charge_planned()
+}
+
+fn planning_app() -> App {
+    let mut app = common::minimal_app();
+    app.add_plugins(ChargePlugin);
+    app
 }
 
 fn paint_defend_owned(app: &mut App, cell: IVec2) {
@@ -67,34 +72,25 @@ fn charger_count(world: &mut World) -> usize {
     q.iter(world).count()
 }
 
-fn place_defender_in_hold(app: &mut App, cell: IVec2) -> Entity {
-    let cell_center = common::cell_world_center(cell);
-    let defender = common::spawn_defender_at(app, cell_center);
-    app.world_mut()
-        .entity_mut(defender)
-        .insert(DefendHold { cell });
-    defender
-}
-
 #[test]
-fn demand_creates_planned_charger_not_instant_charger() {
-    // Acceptance: "Charger demand creates a Planned Charger
-    // instead of an instant completed Charger." A Defend
-    // cell with defender load produces a
-    // `PlannedStructure` of `PlannedKind::Charger` after
-    // one tick. No `Charger` entity exists yet.
-    let mut app = build_app();
+fn unassigned_low_charge_defender_creates_planned_charger() {
+    let mut app = planning_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::new(0, 0);
     paint_defend_owned(&mut app, cell);
-    let _defender = place_defender_in_hold(&mut app, cell);
+    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
+    app.world_mut()
+        .entity_mut(defender)
+        .get_mut::<Charge>()
+        .expect("Defender has Charge")
+        .current = LOW_CHARGE_THRESHOLD;
 
     app.update();
 
     assert_eq!(
         planned_charger_count(app.world_mut()),
         1,
-        "Defend cell demand must create a Planned Charger"
+        "an unassigned low-Charge Defender must create a Planned Charger"
     );
     assert_eq!(
         charger_count(app.world_mut()),
@@ -104,12 +100,157 @@ fn demand_creates_planned_charger_not_instant_charger() {
 }
 
 #[test]
+fn full_charge_defender_does_not_create_planned_charger() {
+    let mut app = planning_app();
+    let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let cell = IVec2::ZERO;
+    paint_defend_owned(&mut app, cell);
+    let _defender = common::spawn_defender_in_hold_at(&mut app, cell);
+
+    app.update();
+
+    assert_eq!(
+        planned_charger_count(app.world_mut()),
+        0,
+        "a full-Charge Defender must not create Charger capacity",
+    );
+}
+
+#[test]
+fn remote_available_charger_capacity_suppresses_plan() {
+    let mut app = planning_app();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let defender_cell = IVec2::ZERO;
+    let charger_cell = IVec2::new(3, 0);
+    paint_defend_owned(&mut app, defender_cell);
+    paint_defend_owned(&mut app, charger_cell);
+    let defender = common::spawn_defender_in_hold_at(&mut app, defender_cell);
+    app.world_mut()
+        .entity_mut(defender)
+        .get_mut::<Charge>()
+        .expect("Defender has Charge")
+        .current = LOW_CHARGE_THRESHOLD;
+    let charger = common::spawn_operational_charger_at(&mut app, charger_cell, 12);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
+
+    app.update();
+
+    assert_eq!(
+        planned_charger_count(app.world_mut()),
+        0,
+        "available swarm-wide Charger capacity must suppress a new plan",
+    );
+}
+
+#[test]
+fn remote_pending_capacity_prevents_duplicate_plans_across_ticks() {
+    let mut app = planning_app();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let defender_cell = IVec2::ZERO;
+    let plan_cell = IVec2::new(3, 0);
+    paint_defend_owned(&mut app, defender_cell);
+    paint_defend_owned(&mut app, plan_cell);
+    let defender = common::spawn_defender_in_hold_at(&mut app, defender_cell);
+    app.world_mut()
+        .entity_mut(defender)
+        .get_mut::<Charge>()
+        .expect("Defender has Charge")
+        .current = LOW_CHARGE_THRESHOLD;
+    let plan = common::spawn_planned_charger_at_cell(&mut app, plan_cell);
+    app.world_mut().entity_mut(plan).insert(OwnerSwarm(swarm));
+
+    for _ in 0..5 {
+        app.update();
+    }
+
+    assert_eq!(
+        planned_charger_count(app.world_mut()),
+        1,
+        "pending swarm-wide capacity must remain idempotent across fixed steps",
+    );
+}
+
+#[test]
+fn fourth_low_charge_defender_exceeds_one_pending_chargers_capacity() {
+    let mut app = planning_app();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let cell = IVec2::ZERO;
+    paint_defend_owned(&mut app, cell);
+    let plan = common::spawn_planned_charger_at_cell(&mut app, cell);
+    app.world_mut().entity_mut(plan).insert(OwnerSwarm(swarm));
+    for _ in 0..4 {
+        let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
+        app.world_mut()
+            .entity_mut(defender)
+            .get_mut::<Charge>()
+            .expect("Defender has Charge")
+            .current = LOW_CHARGE_THRESHOLD;
+    }
+
+    app.update();
+
+    assert_eq!(
+        planned_charger_count(app.world_mut()),
+        2,
+        "one pending Charger covers three low-Charge Defenders, not four",
+    );
+}
+
+#[test]
+fn plan_uses_nearest_non_overlapping_owned_defend_site() {
+    let mut app = planning_app();
+    let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let legacy_hold_cell = IVec2::ZERO;
+    let nearest_cell = IVec2::new(3, 0);
+    paint_defend_owned(&mut app, legacy_hold_cell);
+    paint_defend_owned(&mut app, nearest_cell);
+    let defender = common::spawn_defender_in_hold_at(&mut app, legacy_hold_cell);
+    let nearest_center = common::cell_world_center(nearest_cell);
+    app.world_mut()
+        .entity_mut(defender)
+        .insert(Transform::from_translation(nearest_center.extend(0.0)))
+        .get_mut::<Charge>()
+        .expect("Defender has Charge")
+        .current = LOW_CHARGE_THRESHOLD;
+    let deposit_radius = 32.0;
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: nearest_center,
+            amount: 20,
+            capacity: 20,
+            radius: deposit_radius,
+        },
+    );
+
+    app.update();
+
+    let world = app.world_mut();
+    let (planned, transform) = world
+        .query::<(&PlannedStructure, &Transform)>()
+        .iter(world)
+        .find(|(planned, _)| planned.kind == PlannedKind::Charger)
+        .expect("low-Charge Defender creates a Charger plan");
+    assert_eq!(
+        planned.cell, nearest_cell,
+        "physical Defender proximity, not a legacy hold, chooses the Defend cell",
+    );
+    assert!(
+        transform.translation.truncate().distance(nearest_center)
+            >= deposit_radius + BUILDING_FOOTPRINT_RADIUS + BUILDING_FOOTPRINT_PADDING,
+        "planned Charger must not overlap the Resource Deposit",
+    );
+}
+
+#[test]
 fn newly_planned_charger_waits_for_next_regional_allocation_pass() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
     paint_defend_owned(&mut app, cell);
-    let _defender = place_defender_in_hold(&mut app, cell);
+    let _defender = common::spawn_low_charge_defender_in_hold_at(&mut app, cell);
     let worker = common::spawn_worker_at(&mut app, common::cell_world_center(cell));
 
     // Charger demand runs after the current allocation acquisition, so the
@@ -121,7 +262,7 @@ fn newly_planned_charger_waits_for_next_regional_allocation_pass() {
             .query::<(Entity, &PlannedStructure)>()
             .iter(world)
             .find_map(|(entity, planned)| (planned.kind == PlannedKind::Charger).then_some(entity))
-            .expect("Defend load must create a planned Charger")
+            .expect("unserved low Charge must create a planned Charger")
     };
     assert!(
         app.world()
@@ -163,7 +304,7 @@ fn planned_charger_uses_planned_visual_color() {
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::new(0, 0);
     paint_defend_owned(&mut app, cell);
-    let _defender = place_defender_in_hold(&mut app, cell);
+    let _defender = common::spawn_low_charge_defender_in_hold_at(&mut app, cell);
 
     app.update();
 
@@ -187,14 +328,12 @@ fn planned_charger_is_owned_by_swarm_that_painted_defend_cell() {
     // owned-space constraints suitable for defense
     // support." The plan is stamped with the
     // `OwnerSwarm` of the swarm that painted the Defend
-    // cell. Unowned paint falls back to the first swarm
-    // in the world; player-painted cells produce
-    // player-owned plans.
+    // cell. Player-painted cells produce player-owned plans.
     let mut app = build_app();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::new(0, 0);
     paint_defend_owned(&mut app, cell);
-    let _defender = place_defender_in_hold(&mut app, cell);
+    let _defender = common::spawn_low_charge_defender_in_hold_at(&mut app, cell);
 
     app.update();
 
@@ -212,25 +351,38 @@ fn planned_charger_is_owned_by_swarm_that_painted_defend_cell() {
 }
 
 #[test]
-fn contested_defend_cell_plans_charger_for_each_participant() {
-    let mut app = build_app();
+fn each_swarm_plans_only_in_its_owned_defend_paint() {
+    let mut app = planning_app();
     let player = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let opponent_id = SwarmId(11);
     let opponent = app
         .world_mut()
         .spawn((Swarm {}, opponent_id, Transform::default()))
         .id();
-    let cell = IVec2::ZERO;
+    let player_cell = IVec2::new(-1, 0);
+    let opponent_cell = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        grid.paint_owned(cell, IntentKind::Defend, Some(SwarmId::PLAYER));
-        grid.contest_defend(cell, opponent_id);
+        grid.paint_owned(player_cell, IntentKind::Defend, Some(SwarmId::PLAYER));
+        grid.paint_owned(opponent_cell, IntentKind::Defend, Some(opponent_id));
     }
-    place_defender_in_hold(&mut app, cell);
-    let opponent_defender = place_defender_in_hold(&mut app, cell);
+    let player_defender =
+        common::spawn_defender_at(&mut app, common::cell_world_center(player_cell));
+    app.world_mut()
+        .entity_mut(player_defender)
+        .get_mut::<Charge>()
+        .expect("player Defender has Charge")
+        .current = LOW_CHARGE_THRESHOLD;
+    let opponent_defender =
+        common::spawn_defender_at(&mut app, common::cell_world_center(opponent_cell));
     app.world_mut()
         .entity_mut(opponent_defender)
         .insert(SwarmMember::new(opponent_id));
+    app.world_mut()
+        .entity_mut(opponent_defender)
+        .get_mut::<Charge>()
+        .expect("opponent Defender has Charge")
+        .current = LOW_CHARGE_THRESHOLD;
 
     app.update();
 
@@ -245,15 +397,12 @@ fn contested_defend_cell_plans_charger_for_each_participant() {
 
 #[test]
 fn no_planned_charger_without_demand() {
-    // Sanity: a Defend-painted cell with no defender load
-    // does NOT spawn a planned Charger. The "load" half
-    // of the emergence contract still applies to the
-    // planned path.
+    // Defend paint alone does not create Charger service need.
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::new(0, 0);
     paint_defend_owned(&mut app, cell);
-    // No defender is placed in hold; the demand is zero.
+    // No low-Charge Defender exists.
 
     app.update();
 
@@ -566,14 +715,6 @@ fn hauler_delivers_to_completed_planned_charger() {
         app.update();
     }
 
-    // The hauler needs the defend intent to be present so
-    // the charger is a "real" sink in the sink selection.
-    // (The hauler system does not actually need Defend
-    // paint; the charger is a sink by its buffer shape.
-    // We paint Defend anyway so the charger would be
-    // useful in this scenario.)
-    paint_defend_owned(&mut app, cell);
-
     // Drive enough ticks for the hauler to walk to the
     // deposit, load, walk to the charger, and deliver.
     // The distance is ~120 world units; at bot_speed
@@ -597,17 +738,12 @@ fn hauler_delivers_to_completed_planned_charger() {
 
 #[test]
 fn plan_does_not_pile_under_repeated_demand_ticks() {
-    // Robustness: even when demand stays high across many
-    // ticks, the auto-creation system does not pile a
-    // second plan in the same cell, and does not plan
-    // elsewhere while the first plan is still pending.
-    // The busyness count includes the planned charger, so
-    // the system sees the cell as already covered.
+    // Pending capacity remains reserved across repeated demand ticks.
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::new(0, 0);
     paint_defend_owned(&mut app, cell);
-    let _defender = place_defender_in_hold(&mut app, cell);
+    let _defender = common::spawn_low_charge_defender_in_hold_at(&mut app, cell);
 
     for _ in 0..20 {
         app.update();
@@ -616,7 +752,7 @@ fn plan_does_not_pile_under_repeated_demand_ticks() {
     assert_eq!(
         planned_charger_count(app.world_mut()),
         1,
-        "auto-creation must not pile multiple Planned Chargers in the same cell"
+        "auto-creation must not pile plans while pending capacity is sufficient"
     );
     assert_eq!(
         charger_count(app.world_mut()),

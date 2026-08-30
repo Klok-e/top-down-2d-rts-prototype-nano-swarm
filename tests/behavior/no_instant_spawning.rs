@@ -21,8 +21,8 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Charger, DefendHold, NanobotType, PRODUCTION_PRESSURE_TICKS, PlannedStructure,
-        ProductionFacility, ProductionPriority, SwarmId,
+        Charge, Charger, LOW_CHARGE_THRESHOLD, NanobotType, PRODUCTION_PRESSURE_TICKS,
+        PlannedStructure, ProductionFacility, ProductionPriority, SwarmId,
     },
     resources::Stockpile,
 };
@@ -319,10 +319,8 @@ fn production_demand_does_not_instant_spawn_completed_facility() {
 }
 
 #[test]
-fn defend_demand_does_not_instant_spawn_completed_charger() {
-    // Acceptance: "Defender support pressure no longer
-    // instantly creates completed Chargers." A Defend cell
-    // with a holding defender plans a Charger, not a
+fn low_charge_need_does_not_instant_spawn_completed_charger() {
+    // Unserved low Charge plans a Charger, not a
     // completed one. No other completed support structure
     // appears as a side effect.
     let mut app = common::sim_app_with_charge_planned();
@@ -332,7 +330,11 @@ fn defend_demand_does_not_instant_spawn_completed_charger() {
     paint_owned(&mut app, cell, IntentKind::Defend);
     let _defender = {
         let d = common::spawn_defender_at(&mut app, cell_center);
-        app.world_mut().entity_mut(d).insert(DefendHold { cell });
+        app.world_mut()
+            .entity_mut(d)
+            .get_mut::<Charge>()
+            .expect("Defender has Charge")
+            .current = LOW_CHARGE_THRESHOLD;
         d
     };
 
@@ -398,9 +400,9 @@ fn all_demand_sources_share_zero_completed_structures() {
     app.add_plugins(top_down_2d_rts_prototype_nano_swarm::nanobot::ChargePlugin);
     app.insert_resource(ProductionPriority::new());
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    // Gather cell (with deposit + worker) and Build cell
-    // (no swarm demand) and Defend cell (with a defender in
-    // hold). The test paints all three before the first
+    // Gather cell (with deposit + worker), Build cell
+    // (no swarm demand), and Defend cell (with an unserved
+    // low-Charge Defender). The test paints all three before the first
     // tick so every demand source has a chance to fire on
     // the same update.
     let gather_cell = IVec2::new(0, 0);
@@ -425,7 +427,9 @@ fn all_demand_sources_share_zero_completed_structures() {
         let d = common::spawn_defender_at(&mut app, defend_center);
         app.world_mut()
             .entity_mut(d)
-            .insert(DefendHold { cell: defend_cell });
+            .get_mut::<Charge>()
+            .expect("Defender has Charge")
+            .current = LOW_CHARGE_THRESHOLD;
         d
     };
     // High production demand so the Build cell could also
