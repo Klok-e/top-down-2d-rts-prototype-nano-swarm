@@ -7,6 +7,7 @@ use bevy::{asset::AssetPlugin, math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     MAP_HEIGHT, MAP_WIDTH,
     ai::AiPlugin,
+    game_settings::GameSettings,
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Charge, ChargePlugin, Charger, ChargerAssignment, ChargerProgress, CollapsePlugin,
@@ -48,6 +49,7 @@ fn spawn_default_scenario_startup(
 
 fn default_headless_app() -> App {
     let mut app = common::minimal_app();
+    app.world_mut().resource_mut::<GameSettings>().bot_speed = 5.25;
     app.insert_resource(IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32))
         .add_plugins(TaskPoolPlugin::default())
         .add_plugins(AssetPlugin::default())
@@ -738,8 +740,7 @@ fn assert_default_tick_state(
         if let Some(previous) = previous_positions.get(entity) {
             let displacement = position.distance(*previous);
             assert!(
-                displacement
-                    <= common::default_game_settings().bot_speed + MOVEMENT_DISTANCE_TOLERANCE,
+                displacement <= 5.25 + MOVEMENT_DISTANCE_TOLERANCE,
                 "authored default nanobot {entity:?} exceeded fixed-tick speed limit: {displacement}"
             );
         }
@@ -763,6 +764,7 @@ fn assert_default_tick_state(
 
 fn spawn_runtime_front() -> (App, IVec2, Entity, Entity) {
     let mut app = common::sim_app_with_charge();
+    app.world_mut().resource_mut::<GameSettings>().bot_speed = 5.25;
     app.insert_resource(ProductionPriority::default());
     app.add_plugins(CombatPlugin);
     app.add_plugins(CollapsePlugin);
@@ -892,8 +894,7 @@ fn default_front_has_readable_combat_and_staggered_sustain() {
             if let Some(previous) = previous_positions.get(entity) {
                 let displacement = position.distance(*previous);
                 assert!(
-                    displacement
-                        <= common::default_game_settings().bot_speed + MOVEMENT_DISTANCE_TOLERANCE,
+                    displacement <= 5.25 + MOVEMENT_DISTANCE_TOLERANCE,
                     "nanobot {entity:?} exceeded fixed-tick speed limit: {displacement}"
                 );
             }

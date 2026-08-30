@@ -42,16 +42,17 @@ use std::time::Duration;
 use bevy::{math::Vec2, prelude::*, time::TimeUpdateStrategy};
 use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
-    intent::IntentGrid,
+    intent::{IntentGrid, IntentKind},
     nanobot::{
-        Charge, ChargePlugin, Charger, CollapsePlugin, CombatPlugin, Commitment, GatherPlugin,
-        HaulPlugin, Health, LOW_CHARGE_THRESHOLD, MaintenancePlugin, Nanobot, NanobotBundle,
-        NanobotSimulationSet, NanobotType, NanobotVisual, OpponentSwarm, OwnerSwarm,
-        PRODUCTION_TICKS_PER_BOT, PlannedStructure, PlannedStructurePlugin, PopulationDemandPlugin,
-        ProductionFacility, ProductionPlugin, RegionalAllocationPlugin, SoftWorkSlots, Structure,
-        StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent, bot_debug_circle_system,
-        idle_spread_system, initialize_nanobot_type_components, move_velocity_system,
-        separation_system, velocity_system,
+        ActionableProjection, Charge, ChargePlugin, Charger, CollapsePlugin, CombatPlugin,
+        Commitment, GatherPlugin, HaulPlugin, Health, LOW_CHARGE_THRESHOLD, MaintenancePlugin,
+        Nanobot, NanobotBundle, NanobotSimulationSet, NanobotType, NanobotVisual, OpponentSwarm,
+        OwnerSwarm, PRODUCTION_TICKS_PER_BOT, PlannedStructure, PlannedStructurePlugin,
+        PopulationDemandPlugin, ProductionFacility, ProductionPlugin, RegionalAllocationPlugin,
+        SoftWorkSlots, Structure, StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent,
+        bot_debug_circle_system, idle_spread_system, initialize_nanobot_type_components,
+        move_velocity_system, project_actionable_opportunities_system, separation_system,
+        velocity_system,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole},
     structure_overlay::StructureOverlayPlugin,
@@ -133,6 +134,17 @@ pub fn minimal_app() -> App {
     app.world_mut()
         .resource_mut::<Time<bevy::time::Real>>()
         .update_with_duration(Duration::ZERO);
+    app
+}
+
+/// `minimal_app` + the actionable-work projection system. Tests using this
+/// builder inspect the derived projection directly without movement or the
+/// regional allocator changing the authored ECS state.
+pub fn minimal_app_with_actionable_projection() -> App {
+    let mut app = minimal_app();
+    app.insert_resource(IntentGrid::new(32, 32))
+        .init_resource::<ActionableProjection>()
+        .add_systems(Update, project_actionable_opportunities_system);
     app
 }
 
@@ -573,20 +585,77 @@ pub fn spawn_sink_stockpile(app: &mut App, world_pos: Vec2, amount: u32, capacit
         .id()
 }
 
+/// Scenario-relevant state for a completed [`Charger`]. Supply and stale
+/// condition have no defaults so tests that rely on either keep them visible.
+pub struct ChargerFixture {
+    pub cell: IVec2,
+    pub amount: u32,
+    pub ticks_since_maintained: u32,
+}
+
+/// Spawn a completed Charger from explicit supply and condition state.
+/// Ownership and Defend paint remain separate because both are scenario
+/// decisions rather than intrinsic Charger construction.
+pub fn spawn_charger(app: &mut App, fixture: ChargerFixture) -> Entity {
+    let mut charger = Charger::new(fixture.cell);
+    charger.amount = fixture.amount;
+    let mut condition = Structure::new(StructureKind::Basic);
+    condition.ticks_since_maintained = fixture.ticks_since_maintained;
+    app.world_mut()
+        .spawn((
+            charger,
+            condition,
+            Transform::from_translation(cell_world_center(fixture.cell).extend(0.0)),
+        ))
+        .id()
+}
+
+/// Scenario-relevant ownership and paint around a completed Charger projected
+/// as Maintenance work. Every validity input remains visible at the call site.
+pub struct ProjectedChargerFixture {
+    pub cell: IVec2,
+    pub amount: u32,
+    pub ticks_since_maintained: u32,
+    pub owner: SwarmId,
+    pub defend_paint_owner: SwarmId,
+}
+
+/// Spawn the owning Swarm, authored Defend paint, and completed Charger needed
+/// for an actionable-projection scenario.
+pub fn spawn_projected_charger(app: &mut App, fixture: ProjectedChargerFixture) -> Entity {
+    let owner = app.world_mut().spawn((Swarm {}, fixture.owner)).id();
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        fixture.cell,
+        IntentKind::Defend,
+        Some(fixture.defend_paint_owner),
+    );
+    let charger = spawn_charger(
+        app,
+        ChargerFixture {
+            cell: fixture.cell,
+            amount: fixture.amount,
+            ticks_since_maintained: fixture.ticks_since_maintained,
+        },
+    );
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(owner));
+    charger
+}
+
 /// Spawn a completed, operational [`Charger`] in `cell` with the given
 /// `amount` of minerals. The charger lives at the cell's world centre, so
 /// tests that assert "the charger is in the cell" can compare the
 /// transform without doing the cell-to-world math themselves.
 pub fn spawn_operational_charger_at(app: &mut App, cell: IVec2, amount: u32) -> Entity {
-    let mut c = Charger::new(cell);
-    c.amount = amount;
-    app.world_mut()
-        .spawn((
-            c,
-            Structure::new(StructureKind::Basic),
-            Transform::from_translation(cell_world_center(cell).extend(0.0)),
-        ))
-        .id()
+    spawn_charger(
+        app,
+        ChargerFixture {
+            cell,
+            amount,
+            ticks_since_maintained: 0,
+        },
+    )
 }
 
 /// Spawn an idle [`ProductionFacility`] at `world_pos`. The

@@ -7,6 +7,9 @@ mod common;
 #[test]
 fn combined_direct_and_separation_velocity_is_clamped_to_bot_speed() {
     let mut app = common::sim_app();
+    app.world_mut()
+        .resource_mut::<top_down_2d_rts_prototype_nano_swarm::game_settings::GameSettings>()
+        .bot_speed = 5.25;
     let mover = common::spawn_defender_at(&mut app, Vec2::ZERO);
     common::spawn_worker_at(&mut app, Vec2::X);
     app.world_mut()
@@ -25,10 +28,9 @@ fn combined_direct_and_separation_velocity_is_clamped_to_bot_speed() {
         .expect("mover transform")
         .translation
         .truncate();
-    assert!(position.x < -4.9);
     assert!(
-        position.length() <= common::default_game_settings().bot_speed + 1e-4,
-        "combined velocity must not exceed bot speed; displacement={position}",
+        position.distance(Vec2::new(-5.25, 0.0)) <= 1e-4,
+        "combined velocity must clamp to the configured 5.25 speed; displacement={position}",
     );
 }
 

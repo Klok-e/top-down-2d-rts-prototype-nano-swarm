@@ -2,65 +2,20 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        ActionableOpportunity, ActionableProjection, AllocationRegion, Charger, ChargerAssignment,
-        ChargerProgress, Health, MAINTENANCE_NEEDS_THRESHOLD, Nanobot, NanobotType,
-        OpportunityCategory, OpportunityTarget, OwnerSwarm, PlannedKind, PlannedStructure,
-        SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, Swarm, SwarmId,
-        SwarmMember, project_actionable_opportunities_system,
+        ActionableOpportunity, ActionableProjection, AllocationRegion, ChargerAssignment,
+        ChargerProgress, Health, MAINTENANCE_NEEDS_THRESHOLD, OpportunityCategory,
+        OpportunityTarget, OwnerSwarm, PlannedKind, PlannedStructure,
+        SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, SwarmId, SwarmMember,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole},
 };
 
-fn projection_app() -> App {
-    let mut app = App::new();
-    app.insert_resource(IntentGrid::new(32, 32))
-        .init_resource::<ActionableProjection>()
-        .add_systems(Update, project_actionable_opportunities_system);
-    app
-}
-
-fn spawn_stale_owned_charger(app: &mut App, cell: IVec2) -> (Entity, Entity) {
-    let swarm = app.world_mut().spawn((Swarm {}, SwarmId::PLAYER)).id();
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        cell,
-        IntentKind::Defend,
-        Some(SwarmId::PLAYER),
-    );
-    let mut charger = Charger::new(cell);
-    charger.amount = 10;
-    let mut condition = Structure::new(StructureKind::Basic);
-    condition.ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
-    let charger = app
-        .world_mut()
-        .spawn((
-            charger,
-            condition,
-            OwnerSwarm(swarm),
-            Transform::from_translation(
-                top_down_2d_rts_prototype_nano_swarm::ai::get_world_from_zone(cell).extend(0.0),
-            ),
-        ))
-        .id();
-    (swarm, charger)
-}
-
-fn spawn_projection_defender(app: &mut App, swarm: SwarmId, cell: IVec2) -> Entity {
-    app.world_mut()
-        .spawn((
-            Nanobot {},
-            NanobotType::Defender,
-            SwarmMember::new(swarm),
-            Health::default(),
-            Transform::from_translation(
-                top_down_2d_rts_prototype_nano_swarm::ai::get_world_from_zone(cell).extend(0.0),
-            ),
-        ))
-        .id()
-}
+#[path = "../common/mod.rs"]
+mod common;
 
 #[test]
 fn gather_paint_projects_only_live_overlapping_deposit_work() {
-    let mut app = projection_app();
+    let mut app = common::minimal_app_with_actionable_projection();
     app.world_mut()
         .resource_mut::<IntentGrid>()
         .add(IVec2::ZERO, IntentKind::Gather);
@@ -85,7 +40,7 @@ fn gather_paint_projects_only_live_overlapping_deposit_work() {
 
 #[test]
 fn unclaimed_planned_structure_projects_remaining_build_work() {
-    let mut app = projection_app();
+    let mut app = common::minimal_app_with_actionable_projection();
     app.world_mut().spawn(PlannedStructure::new(
         PlannedKind::ProductionFacility,
         IVec2::new(9, 1),
@@ -102,7 +57,7 @@ fn unclaimed_planned_structure_projects_remaining_build_work() {
 
 #[test]
 fn stale_structure_projects_maintenance_without_defend_work() {
-    let mut app = projection_app();
+    let mut app = common::minimal_app_with_actionable_projection();
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
         grid.add(IVec2::ZERO, IntentKind::Build);
@@ -129,8 +84,17 @@ fn stale_structure_projects_maintenance_without_defend_work() {
 
 #[test]
 fn unattended_valid_charger_does_not_project_maintenance() {
-    let mut app = projection_app();
-    let (_, charger) = spawn_stale_owned_charger(&mut app, IVec2::ZERO);
+    let mut app = common::minimal_app_with_actionable_projection();
+    let charger = common::spawn_projected_charger(
+        &mut app,
+        common::ProjectedChargerFixture {
+            cell: IVec2::ZERO,
+            amount: 10,
+            ticks_since_maintained: MAINTENANCE_NEEDS_THRESHOLD,
+            owner: SwarmId::PLAYER,
+            defend_paint_owner: SwarmId::PLAYER,
+        },
+    );
 
     app.update();
 
@@ -165,9 +129,21 @@ fn friendly_defender_in_charger_or_adjacent_cell_projects_maintenance() {
     ];
 
     for offset in offsets {
-        let mut app = projection_app();
-        let (_, charger) = spawn_stale_owned_charger(&mut app, IVec2::ZERO);
-        spawn_projection_defender(&mut app, SwarmId::PLAYER, offset);
+        let mut app = common::minimal_app_with_actionable_projection();
+        let charger = common::spawn_projected_charger(
+            &mut app,
+            common::ProjectedChargerFixture {
+                cell: IVec2::ZERO,
+                amount: 10,
+                ticks_since_maintained: MAINTENANCE_NEEDS_THRESHOLD,
+                owner: SwarmId::PLAYER,
+                defend_paint_owner: SwarmId::PLAYER,
+            },
+        );
+        let defender = common::spawn_defender_at(&mut app, common::cell_world_center(offset));
+        app.world_mut()
+            .entity_mut(defender)
+            .insert(SwarmMember::new(SwarmId::PLAYER));
 
         app.update();
 
@@ -188,9 +164,21 @@ fn friendly_defender_in_charger_or_adjacent_cell_projects_maintenance() {
 
 #[test]
 fn despawned_nearby_defender_removes_cached_charger_maintenance() {
-    let mut app = projection_app();
-    let (_, charger) = spawn_stale_owned_charger(&mut app, IVec2::ZERO);
-    let defender = spawn_projection_defender(&mut app, SwarmId::PLAYER, IVec2::new(1, 0));
+    let mut app = common::minimal_app_with_actionable_projection();
+    let charger = common::spawn_projected_charger(
+        &mut app,
+        common::ProjectedChargerFixture {
+            cell: IVec2::ZERO,
+            amount: 10,
+            ticks_since_maintained: MAINTENANCE_NEEDS_THRESHOLD,
+            owner: SwarmId::PLAYER,
+            defend_paint_owner: SwarmId::PLAYER,
+        },
+    );
+    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(IVec2::new(1, 0)));
+    app.world_mut()
+        .entity_mut(defender)
+        .insert(SwarmMember::new(SwarmId::PLAYER));
     app.update();
     assert!(
         app.world()
@@ -227,9 +215,22 @@ fn distant_foreign_or_dead_defender_does_not_project_charger_maintenance() {
     ];
 
     for (label, swarm, defender_cell, alive) in cases {
-        let mut app = projection_app();
-        let (_, charger) = spawn_stale_owned_charger(&mut app, IVec2::ZERO);
-        let defender = spawn_projection_defender(&mut app, swarm, defender_cell);
+        let mut app = common::minimal_app_with_actionable_projection();
+        let charger = common::spawn_projected_charger(
+            &mut app,
+            common::ProjectedChargerFixture {
+                cell: IVec2::ZERO,
+                amount: 10,
+                ticks_since_maintained: MAINTENANCE_NEEDS_THRESHOLD,
+                owner: SwarmId::PLAYER,
+                defend_paint_owner: SwarmId::PLAYER,
+            },
+        );
+        let defender =
+            common::spawn_defender_at(&mut app, common::cell_world_center(defender_cell));
+        app.world_mut()
+            .entity_mut(defender)
+            .insert(SwarmMember::new(swarm));
         if !alive {
             app.world_mut()
                 .entity_mut(defender)
@@ -255,9 +256,22 @@ fn distant_foreign_or_dead_defender_does_not_project_charger_maintenance() {
 #[test]
 fn assigned_en_route_or_charging_defender_projects_charger_maintenance() {
     for service_state in ["assigned", "en-route", "charging"] {
-        let mut app = projection_app();
-        let (_, charger) = spawn_stale_owned_charger(&mut app, IVec2::ZERO);
-        let defender = spawn_projection_defender(&mut app, SwarmId::PLAYER, IVec2::new(3, 0));
+        let mut app = common::minimal_app_with_actionable_projection();
+        let charger = common::spawn_projected_charger(
+            &mut app,
+            common::ProjectedChargerFixture {
+                cell: IVec2::ZERO,
+                amount: 10,
+                ticks_since_maintained: MAINTENANCE_NEEDS_THRESHOLD,
+                owner: SwarmId::PLAYER,
+                defend_paint_owner: SwarmId::PLAYER,
+            },
+        );
+        let defender =
+            common::spawn_defender_at(&mut app, common::cell_world_center(IVec2::new(3, 0)));
+        app.world_mut()
+            .entity_mut(defender)
+            .insert(SwarmMember::new(SwarmId::PLAYER));
         match service_state {
             "assigned" => {
                 app.world_mut()
@@ -300,7 +314,7 @@ fn assigned_en_route_or_charging_defender_projects_charger_maintenance() {
 
 #[test]
 fn haul_opportunity_is_indexed_by_source_region() {
-    let mut app = projection_app();
+    let mut app = common::minimal_app_with_actionable_projection();
     let swarm = app.world_mut().spawn(SwarmId::PLAYER).id();
     let source_cell = IVec2::new(9, 0);
     app.world_mut().spawn((
@@ -344,7 +358,7 @@ fn haul_opportunity_is_indexed_by_source_region() {
 
 #[test]
 fn degraded_stockpile_does_not_project_haul_work() {
-    let mut app = projection_app();
+    let mut app = common::minimal_app_with_actionable_projection();
     let swarm = app.world_mut().spawn(SwarmId::PLAYER).id();
     let mut condition = Structure::new(StructureKind::Basic);
     condition.health = SUPPORT_OPERATIONAL_HEALTH_THRESHOLD - 1;
@@ -386,7 +400,7 @@ fn degraded_stockpile_does_not_project_haul_work() {
 
 #[test]
 fn haul_projection_rejects_unowned_and_cross_swarm_pairs() {
-    let mut app = projection_app();
+    let mut app = common::minimal_app_with_actionable_projection();
     let player = app.world_mut().spawn(SwarmId::PLAYER).id();
     let enemy = app.world_mut().spawn(SwarmId(9)).id();
     let source = Stockpile {
@@ -431,7 +445,7 @@ fn haul_projection_rejects_unowned_and_cross_swarm_pairs() {
 
 #[test]
 fn projection_replaces_only_regions_dirtied_by_intent_changes() {
-    let mut app = projection_app();
+    let mut app = common::minimal_app_with_actionable_projection();
     let first = IVec2::ZERO;
     let second = IVec2::new(9, 0);
     {
@@ -484,7 +498,7 @@ fn gather_opportunities(projection: &ActionableProjection) -> Vec<ActionableOppo
 
 #[test]
 fn deposit_projects_once_across_overlapping_allocation_regions() {
-    let mut app = projection_app();
+    let mut app = common::minimal_app_with_actionable_projection();
     let left = IVec2::new(7, 0);
     let right = IVec2::new(8, 0);
     {
@@ -529,7 +543,7 @@ fn deposit_projects_once_across_overlapping_allocation_regions() {
 
 #[test]
 fn unowned_deposit_projects_once_for_each_distinct_painted_owner() {
-    let mut app = projection_app();
+    let mut app = common::minimal_app_with_actionable_projection();
     let first_owner = SwarmId::PLAYER;
     let second_owner = SwarmId(7);
     let left = IVec2::ZERO;
@@ -571,7 +585,7 @@ fn unowned_deposit_projects_once_for_each_distinct_painted_owner() {
 
 #[test]
 fn unowned_gather_paint_suppresses_owned_groups_for_unowned_deposit() {
-    let mut app = projection_app();
+    let mut app = common::minimal_app_with_actionable_projection();
     let shared = IVec2::ZERO;
     let owned = IVec2::X;
     {
@@ -599,7 +613,7 @@ fn unowned_gather_paint_suppresses_owned_groups_for_unowned_deposit() {
 
 #[test]
 fn deposit_owner_changes_and_removal_reproject_gather_opportunity() {
-    let mut app = projection_app();
+    let mut app = common::minimal_app_with_actionable_projection();
     let first_swarm = app.world_mut().spawn(SwarmId::PLAYER).id();
     let second_id = SwarmId(7);
     let second_swarm = app.world_mut().spawn(second_id).id();

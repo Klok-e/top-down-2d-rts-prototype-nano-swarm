@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
+    game_settings::GameSettings,
     intent::{IntentGrid, IntentKind},
     nanobot::{
         ChargerAssignment, DefenderResponse, DirectMovementComponent, SwarmId, SwarmMember,
@@ -93,6 +94,118 @@ fn clumped_defenders_redistribute_to_balanced_painted_cells() {
         .count();
     let empty_count = defenders.len() - crowded_count;
     assert_eq!((crowded_count, empty_count), (2, 1));
+}
+
+#[test]
+fn large_cohort_rebalances_once_and_keeps_the_observable_layout_stable() {
+    let mut app = common::sim_app();
+    app.world_mut().resource_mut::<GameSettings>().width = 4096.0;
+    app.world_mut().resource_mut::<GameSettings>().height = 4096.0;
+    let west = IVec2::ZERO;
+    let east = IVec2::X;
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        west,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let cohort_center = common::cell_world_center(IVec2::new(2, 2));
+    let defenders = (0..130)
+        .map(|index| {
+            let position =
+                cohort_center + Vec2::new((index % 13) as f32 * 8.0, (index / 13) as f32 * 8.0);
+            common::spawn_defender_at(&mut app, position)
+        })
+        .collect::<Vec<_>>();
+    app.update();
+
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        east,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    app.update();
+
+    let assignments = defenders
+        .iter()
+        .map(|defender| {
+            let movement = app
+                .world()
+                .entity(*defender)
+                .get::<DirectMovementComponent>()
+                .expect("every off-paint Defender should travel to its balanced staging cell");
+            (*defender, world_to_cell(movement.xy))
+        })
+        .collect::<Vec<_>>();
+    let west_count = assignments.iter().filter(|(_, cell)| *cell == west).count();
+    let east_count = assignments.iter().filter(|(_, cell)| *cell == east).count();
+    assert_eq!((west_count, east_count), (65, 65));
+
+    app.update();
+    let unchanged_assignments = defenders
+        .iter()
+        .map(|defender| {
+            let movement = app
+                .world()
+                .entity(*defender)
+                .get::<DirectMovementComponent>()
+                .expect("the unchanged staging layout should keep each travel assignment");
+            (*defender, world_to_cell(movement.xy))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(unchanged_assignments, assignments);
+}
+
+#[test]
+fn large_cohort_avoids_crossed_travel_when_local_balanced_slots_exist() {
+    let mut app = common::sim_app();
+    app.world_mut().resource_mut::<GameSettings>().width = 4096.0;
+    app.world_mut().resource_mut::<GameSettings>().height = 4096.0;
+    let prior = IVec2::new(1, 3);
+    let west = IVec2::new(0, 1);
+    let east = IVec2::new(3, 1);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        prior,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let mut defenders = Vec::new();
+    for (cell, count) in [(west, 66), (east, 65)] {
+        let center = common::cell_world_center(cell);
+        defenders.extend((0..count).map(|index| {
+            let offset = Vec2::new((index % 11) as f32 * 4.0, (index / 11) as f32 * 4.0);
+            common::spawn_defender_at(&mut app, center + offset)
+        }));
+    }
+    app.update();
+
+    {
+        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
+        grid.remove(prior, IntentKind::Defend);
+        for cell in [west, east] {
+            grid.paint_owned(cell, IntentKind::Defend, Some(SwarmId::PLAYER));
+        }
+    }
+    app.update();
+
+    for defender in &defenders {
+        assert!(
+            app.world()
+                .entity(*defender)
+                .get::<DirectMovementComponent>()
+                .is_none(),
+            "the 66-to-65 physical split already fills the balanced local layout",
+        );
+    }
+    app.update();
+    for defender in defenders {
+        assert!(
+            app.world()
+                .entity(defender)
+                .get::<DirectMovementComponent>()
+                .is_none(),
+            "the unchanged large-cohort layout should not introduce crossed travel",
+        );
+    }
 }
 
 #[test]
@@ -290,6 +403,7 @@ fn erasing_defend_paint_retargets_only_the_now_displaced_defender() {
 #[test]
 fn cross_cell_redistribution_uses_normal_travel_speed() {
     let mut app = common::sim_app();
+    app.world_mut().resource_mut::<GameSettings>().bot_speed = 5.25;
     let start_cell = IVec2::ZERO;
     let target_cell = IVec2::X;
     app.world_mut().resource_mut::<IntentGrid>().paint_owned(
@@ -318,8 +432,8 @@ fn cross_cell_redistribution_uses_normal_travel_speed() {
         .truncate();
     let distance = before.distance(after);
     assert!(
-        (distance - common::default_game_settings().bot_speed).abs() <= 1e-4,
-        "cross-cell travel should use the normal speed cap; moved {distance}",
+        (distance - 5.25).abs() <= 1e-4,
+        "cross-cell travel should use the configured 5.25 speed cap; moved {distance}",
     );
 }
 

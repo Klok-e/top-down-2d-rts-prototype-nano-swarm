@@ -485,6 +485,7 @@ pub fn charger_auto_creation_system(
             Option<&Health>,
             Option<&ChargerAssignment>,
             Option<&ChargerProgress>,
+            Option<&DefenderResponse>,
         ),
         (With<Nanobot>, With<Charge>),
     >,
@@ -518,16 +519,20 @@ pub fn charger_auto_creation_system(
         ));
     }
 
+    let mut living_by_swarm = HashMap::<SwarmId, u32>::new();
+    let mut rotating_by_swarm = HashMap::<SwarmId, u32>::new();
     let mut charger_loads = HashMap::<Entity, u32>::new();
-    for (_, _, _, kind, _, health, assignment, progress) in &defenders {
+    for (_, _, _, kind, member, health, assignment, progress, _) in &defenders {
         if *kind != NanobotType::Defender || health.is_some_and(|health| health.current == 0) {
             continue;
         }
+        *living_by_swarm.entry(member.0).or_default() += 1;
         if let Some(charger) = assignment
             .map(|assignment| assignment.charger)
             .or_else(|| progress.map(|progress| progress.charger))
         {
             *charger_loads.entry(charger).or_default() += 1;
+            *rotating_by_swarm.entry(member.0).or_default() += 1;
         }
     }
 
@@ -559,32 +564,63 @@ pub fn charger_auto_creation_system(
         }
     }
 
-    let mut candidates = defenders
+    let candidates = defenders
         .iter()
-        .filter(|(_, _, charge, kind, _, health, assignment, progress)| {
+        .filter(|(_, _, charge, kind, _, health, assignment, progress, _)| {
             **kind == NanobotType::Defender
                 && !health.is_some_and(|health| health.current == 0)
                 && charge.needs_rotation()
                 && assignment.is_none()
                 && progress.is_none()
         })
-        .map(|(entity, transform, charge, _, member, _, _, _)| {
-            (
-                member.0,
-                charge.current,
-                entity,
-                transform.translation.truncate(),
-            )
-        })
+        .map(
+            |(entity, transform, charge, _, member, _, _, _, response)| {
+                (
+                    member.0,
+                    DefenderRotationCandidate {
+                        entity,
+                        charge: charge.current,
+                        duty: if response.is_some() {
+                            DefenderRotationDuty::Tactical
+                        } else {
+                            DefenderRotationDuty::Staged
+                        },
+                    },
+                    transform.translation.truncate(),
+                )
+            },
+        )
         .collect::<Vec<_>>();
-    candidates.sort_by(|left, right| {
-        left.0
-            .cmp(&right.0)
-            .then_with(|| left.1.total_cmp(&right.1))
-            .then_with(|| left.2.to_bits().cmp(&right.2.to_bits()))
-    });
+    let candidate_positions = candidates
+        .iter()
+        .map(|(_, candidate, position)| (candidate.entity, *position))
+        .collect::<HashMap<_, _>>();
+    let mut candidate_swarms = candidates
+        .iter()
+        .map(|(swarm, _, _)| *swarm)
+        .collect::<Vec<_>>();
+    candidate_swarms.sort_unstable();
+    candidate_swarms.dedup();
+    let mut selected_candidates = Vec::new();
+    for swarm in candidate_swarms {
+        let swarm_candidates = candidates
+            .iter()
+            .filter_map(|(candidate_swarm, candidate, _)| {
+                (*candidate_swarm == swarm).then_some(*candidate)
+            })
+            .collect::<Vec<_>>();
+        for entity in select_defenders_for_rotation(
+            &swarm_candidates,
+            living_by_swarm.get(&swarm).copied().unwrap_or_default(),
+            rotating_by_swarm.get(&swarm).copied().unwrap_or_default(),
+        ) {
+            if let Some(position) = candidate_positions.get(&entity) {
+                selected_candidates.push((swarm, *position));
+            }
+        }
+    }
 
-    for (swarm, _, _, defender_pos) in candidates {
+    for (swarm, defender_pos) in selected_candidates {
         let capacity = available_capacity.entry(swarm).or_default();
         if *capacity > 0 {
             *capacity -= 1;
@@ -1283,11 +1319,6 @@ mod tests {
         // New chargers rely on physical logistics for all material.
         const { assert!(AUTO_CHARGER_INITIAL_AMOUNT == 0) };
         const { assert!(AUTO_CHARGER_INITIAL_AMOUNT < AUTO_CHARGER_CAPACITY) };
-    }
-
-    #[test]
-    fn charger_service_capacity_is_positive() {
-        const { assert!(MAX_DEFENDERS_PER_CHARGER >= 1) };
     }
 
     #[test]
