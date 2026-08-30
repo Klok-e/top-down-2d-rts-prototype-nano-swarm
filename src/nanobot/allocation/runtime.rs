@@ -123,6 +123,7 @@ impl Plugin for RegionalAllocationPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ActionableProjection>()
             .init_resource::<super::TerritorySnapshot>()
+            .init_resource::<super::defender_staging::DefenderStagingLayouts>()
             .init_resource::<AllocationClock>()
             .init_resource::<RegionalLeaseConfig>()
             .init_resource::<AllocationTickDue>()

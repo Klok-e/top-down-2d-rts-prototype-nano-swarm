@@ -6,9 +6,10 @@ use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        CombatPlugin, Commitment, DefenderResponse, Health, Nanobot, NanobotBundle, NanobotPlugin,
-        NanobotSimulationSet, NanobotType, RegionalAllocationPlugin, RegionalAllocationSet,
-        SwarmId, SwarmMember, idle_spread_system, move_velocity_system, separation_system,
+        CombatPlugin, Commitment, DefenderResponse, DirectMovementComponent, Health, Nanobot,
+        NanobotBundle, NanobotPlugin, NanobotSimulationSet, NanobotType, RegionalAllocationPlugin,
+        RegionalAllocationSet, SwarmId, SwarmMember, idle_spread_system, move_velocity_system,
+        separation_system, world_to_cell,
     },
     resources::ResourceLedger,
 };
@@ -20,6 +21,13 @@ const FRAME_P95_BUDGET: Duration = Duration::from_micros(16_700);
 const ALLOCATION_P95_BUDGET: Duration = Duration::from_millis(2);
 const SEPARATION_P95_BUDGET: Duration = Duration::from_millis(3);
 const PROOF_ONLY_ENV: &str = "NANO_SWARM_ACCEPTANCE_PROOF_ONLY";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AcceptanceScenario {
+    ThreatResponse,
+    UnengagedStaging,
+    ExhaustedGather,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, SystemSet)]
 enum AcceptanceTimingSet {
@@ -151,7 +159,7 @@ fn add_acceptance_timing(app: &mut App) {
         );
 }
 
-fn app_with_bots(defend_work: bool) -> App {
+fn app_with_bots(scenario: AcceptanceScenario) -> App {
     let mut app = App::new();
     app.add_plugins(bevy::time::TimePlugin)
         .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_micros(
@@ -172,13 +180,21 @@ fn app_with_bots(defend_work: bool) -> App {
 
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        for y in -8..8 {
-            for x in -8..8 {
-                if defend_work {
-                    grid.add_owned(IVec2::new(x, y), IntentKind::Defend, Some(SwarmId::PLAYER));
-                } else {
-                    grid.add_owned(IVec2::new(x, y), IntentKind::Gather, Some(SwarmId::PLAYER));
+        match scenario {
+            AcceptanceScenario::ThreatResponse | AcceptanceScenario::ExhaustedGather => {
+                for y in -8..8 {
+                    for x in -8..8 {
+                        let kind = if scenario == AcceptanceScenario::ThreatResponse {
+                            IntentKind::Defend
+                        } else {
+                            IntentKind::Gather
+                        };
+                        grid.add_owned(IVec2::new(x, y), kind, Some(SwarmId::PLAYER));
+                    }
                 }
+            }
+            AcceptanceScenario::UnengagedStaging => {
+                grid.add_owned(IVec2::new(-8, 0), IntentKind::Defend, Some(SwarmId::PLAYER));
             }
         }
     }
@@ -187,16 +203,18 @@ fn app_with_bots(defend_work: bool) -> App {
         let x = (i % 100) as f32 * 40.0;
         let y = (i / 100) as f32 * 40.0;
         let bundle = NanobotBundle {
-            nanobot_type: if defend_work {
-                NanobotType::Defender
-            } else {
+            nanobot_type: if scenario == AcceptanceScenario::ExhaustedGather {
                 NanobotType::Worker
-            },
-            swarm_member: SwarmMember::new(if defend_work && i % 2 == 1 {
-                SwarmId(11)
             } else {
-                SwarmId::PLAYER
-            }),
+                NanobotType::Defender
+            },
+            swarm_member: SwarmMember::new(
+                if scenario == AcceptanceScenario::ThreatResponse && i % 2 == 1 {
+                    SwarmId(11)
+                } else {
+                    SwarmId::PLAYER
+                },
+            ),
             health: Health::full(u32::MAX / 2),
             ..Default::default()
         };
@@ -206,14 +224,14 @@ fn app_with_bots(defend_work: bool) -> App {
     app
 }
 
-fn assert_warmed_load(app: &mut App, defend_work: bool) {
+fn assert_warmed_load(app: &mut App, scenario: AcceptanceScenario) {
     let population = app
         .world_mut()
         .query_filtered::<Entity, With<Nanobot>>()
         .iter(app.world())
         .count();
     assert_eq!(population, BOT_COUNT, "benchmark warmup must preserve load");
-    if defend_work {
+    if scenario == AcceptanceScenario::ThreatResponse {
         let responses = app
             .world_mut()
             .query::<&DefenderResponse>()
@@ -225,20 +243,27 @@ fn assert_warmed_load(app: &mut App, defend_work: bool) {
             BOT_COUNT / 2,
             "benchmark warmup must cover every hostile Defender exactly once",
         );
+    } else if scenario == AcceptanceScenario::UnengagedStaging {
+        let responses = app
+            .world_mut()
+            .query::<&DefenderResponse>()
+            .iter(app.world())
+            .count();
+        assert_eq!(responses, 0, "same-swarm Defenders must remain unengaged");
     }
 }
 
-fn warmed_app(defend_work: bool) -> App {
-    let mut app = app_with_bots(defend_work);
+fn warmed_app(scenario: AcceptanceScenario) -> App {
+    let mut app = app_with_bots(scenario);
     for _ in 0..WARMUP_FRAMES {
         app.update();
     }
-    assert_warmed_load(&mut app, defend_work);
+    assert_warmed_load(&mut app, scenario);
     app
 }
 
 fn warmed_sparse_stranded_app() -> App {
-    let mut app = app_with_bots(false);
+    let mut app = app_with_bots(AcceptanceScenario::ExhaustedGather);
     let mut grid = IntentGrid::new(1000, 1000);
     grid.add_owned(
         IVec2::new(400, 400),
@@ -274,12 +299,12 @@ fn assert_within_budget(metric: &str, actual: Duration, budget: Duration) {
 }
 
 fn defender_acceptance_p95_proof() {
-    let mut app = app_with_bots(true);
+    let mut app = app_with_bots(AcceptanceScenario::ThreatResponse);
     add_acceptance_timing(&mut app);
     for _ in 0..WARMUP_FRAMES {
         app.update();
     }
-    assert_warmed_load(&mut app, true);
+    assert_warmed_load(&mut app, AcceptanceScenario::ThreatResponse);
 
     {
         let mut timings = app.world_mut().resource_mut::<AcceptanceTimings>();
@@ -356,6 +381,82 @@ fn defender_acceptance_p95_proof() {
     assert_within_budget("local separation", separation_p95, SEPARATION_P95_BUDGET);
 }
 
+fn unengaged_staging_edit_proof() {
+    let mut app = app_with_bots(AcceptanceScenario::UnengagedStaging);
+    add_acceptance_timing(&mut app);
+    for _ in 0..WARMUP_FRAMES {
+        app.update();
+    }
+    assert_warmed_load(&mut app, AcceptanceScenario::UnengagedStaging);
+    {
+        let mut timings = app.world_mut().resource_mut::<AcceptanceTimings>();
+        timings.allocation.clear();
+        timings.project.clear();
+        timings.invalidate.clear();
+        timings.acquire.clear();
+        timings.separation.clear();
+    }
+
+    let target_cell = IVec2::new(8, 0);
+    app.world_mut().resource_mut::<IntentGrid>().add_owned(
+        target_cell,
+        IntentKind::Defend,
+        Some(SwarmId::PLAYER),
+    );
+    let started = Instant::now();
+    app.update();
+    let frame = started.elapsed();
+    let allocation = app.world().resource::<AcceptanceTimings>().allocation[0];
+    let target_counts = app
+        .world_mut()
+        .query::<&DirectMovementComponent>()
+        .iter(app.world())
+        .fold([0_usize; 2], |mut counts, movement| {
+            match world_to_cell(movement.xy) {
+                IVec2 { x: -8, y: 0 } => counts[0] += 1,
+                cell if cell == target_cell => counts[1] += 1,
+                _ => {}
+            }
+            counts
+        });
+    assert_eq!(
+        target_counts,
+        [BOT_COUNT / 2, BOT_COUNT / 2],
+        "adding a second Defend cell must balance all 5,000 unengaged Defenders",
+    );
+    let mut assignments = app
+        .world_mut()
+        .query::<(Entity, &DirectMovementComponent)>()
+        .iter(app.world())
+        .map(|(entity, movement)| (entity.to_bits(), world_to_cell(movement.xy)))
+        .collect::<Vec<_>>();
+    assignments.sort_unstable_by_key(|(entity, _)| *entity);
+    println!(
+        "acceptance_edit unengaged_staging_retarget bots={} frame={:.4}ms/{:.4}ms regional_allocation_project_invalidate_acquire={:.4}ms/{:.4}ms",
+        BOT_COUNT,
+        duration_ms(frame),
+        duration_ms(FRAME_P95_BUDGET),
+        duration_ms(allocation),
+        duration_ms(ALLOCATION_P95_BUDGET),
+    );
+    assert_within_budget("unengaged staging repaint frame", frame, FRAME_P95_BUDGET);
+    assert_within_budget(
+        "unengaged staging repaint allocation",
+        allocation,
+        ALLOCATION_P95_BUDGET,
+    );
+
+    app.update();
+    let mut unchanged_assignments = app
+        .world_mut()
+        .query::<(Entity, &DirectMovementComponent)>()
+        .iter(app.world())
+        .map(|(entity, movement)| (entity.to_bits(), world_to_cell(movement.xy)))
+        .collect::<Vec<_>>();
+    unchanged_assignments.sort_unstable_by_key(|(entity, _)| *entity);
+    assert_eq!(unchanged_assignments, assignments);
+}
+
 fn swarm_acceptance(c: &mut Criterion) {
     let mut group = c.benchmark_group("swarm_acceptance_5000_bots");
     group.sample_size(10);
@@ -363,12 +464,15 @@ fn swarm_acceptance(c: &mut Criterion) {
     group.warm_up_time(Duration::from_secs(2));
     group.throughput(Throughput::Elements(BOT_COUNT as u64));
 
-    let mut steady = warmed_app(true);
+    let mut steady = warmed_app(AcceptanceScenario::ThreatResponse);
     group.bench_function("steady_threat_response_frame", |b| {
         b.iter(|| steady.update())
     });
 
-    let mut exhausted = warmed_app(false);
+    let mut staging = warmed_app(AcceptanceScenario::UnengagedStaging);
+    group.bench_function("unengaged_staging_frame", |b| b.iter(|| staging.update()));
+
+    let mut exhausted = warmed_app(AcceptanceScenario::ExhaustedGather);
     group.bench_function("exhausted_gather_frame", |b| b.iter(|| exhausted.update()));
 
     let mut sparse_stranded = warmed_sparse_stranded_app();
@@ -381,6 +485,7 @@ fn swarm_acceptance(c: &mut Criterion) {
 
 fn main() {
     defender_acceptance_p95_proof();
+    unengaged_staging_edit_proof();
     if std::env::var_os(PROOF_ONLY_ENV).is_some() {
         return;
     }

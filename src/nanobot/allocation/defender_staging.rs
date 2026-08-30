@@ -1,12 +1,20 @@
 //! Responsive staging and continuous local roaming for unengaged Defenders.
+//!
+//! Layouts retain exact balance and minimize incumbent and returner relocation.
+//! Small cohorts then minimize total travel exactly; large cohorts assign the
+//! remaining travel through deterministic bounded-nearest matching.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use bevy::{ecs::entity::EntityHashMap, prelude::*};
 
 mod flow;
 
 use flow::BoundedMinCostFlow;
+
+const EXACT_STAGING_MAX_DEFENDERS: usize = 128;
+const EXACT_STAGING_MAX_ASSIGNMENT_EDGES: usize = 16_384;
+const BOUNDED_STAGING_AXIS_CANDIDATES: usize = 32;
 
 use super::TerritorySnapshot;
 use crate::{
@@ -27,6 +35,18 @@ pub(super) struct DefenderStaging {
     waypoint: Vec2,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StagingLayoutInput {
+    defenders: Vec<Entity>,
+    cells: Vec<IVec2>,
+}
+
+/// Cache of the current owner-scoped Defender staging layout.
+#[derive(Debug, Default, Resource)]
+pub(super) struct DefenderStagingLayouts {
+    by_swarm: BTreeMap<SwarmId, StagingLayoutInput>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct DefenderSnapshot {
     entity: Entity,
@@ -34,6 +54,71 @@ struct DefenderSnapshot {
     current_cell: IVec2,
     swarm: SwarmId,
     staging: Option<DefenderStaging>,
+}
+
+struct BoundedStagingTargets {
+    by_x: BTreeSet<(i32, i32, usize)>,
+    by_y: BTreeSet<(i32, i32, usize)>,
+}
+
+impl BoundedStagingTargets {
+    fn new(cells: &[IVec2], capacities: &[usize]) -> Self {
+        let mut targets = Self {
+            by_x: BTreeSet::new(),
+            by_y: BTreeSet::new(),
+        };
+        for (index, (cell, capacity)) in cells.iter().zip(capacities).enumerate() {
+            if *capacity > 0 {
+                targets.by_x.insert((cell.x, cell.y, index));
+                targets.by_y.insert((cell.y, cell.x, index));
+            }
+        }
+        targets
+    }
+
+    fn nearest(&self, cells: &[IVec2], position: Vec2) -> Option<usize> {
+        let current = world_to_cell(position);
+        let x_pivot = (current.x, current.y, 0);
+        let y_pivot = (current.y, current.x, 0);
+        let mut candidates = self
+            .by_x
+            .range(x_pivot..)
+            .take(BOUNDED_STAGING_AXIS_CANDIDATES)
+            .chain(
+                self.by_x
+                    .range(..x_pivot)
+                    .rev()
+                    .take(BOUNDED_STAGING_AXIS_CANDIDATES),
+            )
+            .map(|(_, _, index)| *index)
+            .chain(
+                self.by_y
+                    .range(y_pivot..)
+                    .take(BOUNDED_STAGING_AXIS_CANDIDATES)
+                    .chain(
+                        self.by_y
+                            .range(..y_pivot)
+                            .rev()
+                            .take(BOUNDED_STAGING_AXIS_CANDIDATES),
+                    )
+                    .map(|(_, _, index)| *index),
+            )
+            .collect::<Vec<_>>();
+        candidates.sort_unstable();
+        candidates.dedup();
+        candidates.into_iter().min_by(|left, right| {
+            position
+                .distance_squared(get_world_from_zone(cells[*left]))
+                .total_cmp(&position.distance_squared(get_world_from_zone(cells[*right])))
+                .then_with(|| cells[*left].y.cmp(&cells[*right].y))
+                .then_with(|| cells[*left].x.cmp(&cells[*right].x))
+        })
+    }
+
+    fn remove(&mut self, cell: IVec2, index: usize) {
+        self.by_x.remove(&(cell.x, cell.y, index));
+        self.by_y.remove(&(cell.y, cell.x, index));
+    }
 }
 
 fn owned_defend_cells(grid: &IntentGrid, swarm: SwarmId) -> Vec<IVec2> {
@@ -132,6 +217,192 @@ fn component_extra_bounds(
         .collect()
 }
 
+fn bounded_balanced_assignments(
+    defenders: &[DefenderSnapshot],
+    cells: &[IVec2],
+) -> EntityHashMap<IVec2> {
+    let base = defenders.len() / cells.len();
+    let remainder = defenders.len() % cells.len();
+    let cell_indexes = cells
+        .iter()
+        .enumerate()
+        .map(|(index, cell)| (*cell, index))
+        .collect::<HashMap<_, _>>();
+    let components = connected_components(cells);
+    let extra_bounds = component_extra_bounds(&components, remainder, cells.len());
+    let component_by_cell = components
+        .iter()
+        .enumerate()
+        .flat_map(|(component, cells)| cells.iter().map(move |cell| (*cell, component)))
+        .collect::<HashMap<_, _>>();
+
+    let mut incumbent_counts = vec![0_usize; cells.len()];
+    let mut returner_counts = vec![0_usize; cells.len()];
+    for defender in defenders {
+        let valid_staging = defender
+            .staging
+            .and_then(|staging| cell_indexes.get(&staging.cell).copied());
+        if let Some(index) = valid_staging {
+            incumbent_counts[index] += 1;
+        } else if let Some(index) = cell_indexes.get(&defender.current_cell).copied() {
+            returner_counts[index] += 1;
+        }
+    }
+
+    let extra_preference = |left: &usize, right: &usize| {
+        let score = |index: usize| {
+            let incumbent_saved = incumbent_counts[index] > base;
+            let returner_saved = !incumbent_saved
+                && returner_counts[index] > base.saturating_sub(incumbent_counts[index]);
+            (incumbent_saved, returner_saved)
+        };
+        let left_score = score(*left);
+        let right_score = score(*right);
+        right_score
+            .cmp(&left_score)
+            .then_with(|| cells[*left].y.cmp(&cells[*right].y))
+            .then_with(|| cells[*left].x.cmp(&cells[*right].x))
+    };
+
+    let mut capacities = vec![base; cells.len()];
+    let mut has_extra = vec![false; cells.len()];
+    let mut component_extras = vec![0_usize; components.len()];
+    for (component_index, component) in components.iter().enumerate() {
+        let mut candidates = component
+            .iter()
+            .map(|cell| cell_indexes[cell])
+            .collect::<Vec<_>>();
+        candidates.sort_by(extra_preference);
+        for cell_index in candidates.into_iter().take(extra_bounds[component_index].0) {
+            capacities[cell_index] += 1;
+            has_extra[cell_index] = true;
+            component_extras[component_index] += 1;
+        }
+    }
+
+    let mut extras_remaining = remainder.saturating_sub(component_extras.iter().sum());
+    let mut candidates = (0..cells.len())
+        .filter(|index| !has_extra[*index])
+        .collect::<Vec<_>>();
+    candidates.sort_by(extra_preference);
+    for cell_index in candidates {
+        if extras_remaining == 0 {
+            break;
+        }
+        let component = component_by_cell[&cells[cell_index]];
+        if component_extras[component] >= extra_bounds[component].1 {
+            continue;
+        }
+        capacities[cell_index] += 1;
+        component_extras[component] += 1;
+        extras_remaining -= 1;
+    }
+    assert_eq!(
+        extras_remaining, 0,
+        "component bounds must admit every balanced staging remainder",
+    );
+
+    let mut assignments = EntityHashMap::default();
+    let mut assigned = HashSet::new();
+    let mut incumbents_by_cell = vec![Vec::new(); cells.len()];
+    for defender in defenders {
+        if let Some(index) = defender
+            .staging
+            .and_then(|staging| cell_indexes.get(&staging.cell).copied())
+        {
+            incumbents_by_cell[index].push(defender);
+        }
+    }
+    for (cell_index, incumbents) in incumbents_by_cell.iter_mut().enumerate() {
+        incumbents.sort_by(|left, right| {
+            left.position
+                .distance_squared(get_world_from_zone(cells[cell_index]))
+                .total_cmp(
+                    &right
+                        .position
+                        .distance_squared(get_world_from_zone(cells[cell_index])),
+                )
+                .then_with(|| left.entity.to_bits().cmp(&right.entity.to_bits()))
+        });
+        for defender in incumbents.iter().take(capacities[cell_index]) {
+            assignments.insert(defender.entity, cells[cell_index]);
+            assigned.insert(defender.entity);
+            capacities[cell_index] -= 1;
+        }
+    }
+    let mut returners_by_cell = vec![Vec::new(); cells.len()];
+    for defender in defenders {
+        if !assigned.contains(&defender.entity)
+            && let Some(index) = cell_indexes.get(&defender.current_cell).copied()
+        {
+            returners_by_cell[index].push(defender);
+        }
+    }
+    for (cell_index, returners) in returners_by_cell.iter_mut().enumerate() {
+        returners.sort_by(|left, right| {
+            left.position
+                .distance_squared(get_world_from_zone(cells[cell_index]))
+                .total_cmp(
+                    &right
+                        .position
+                        .distance_squared(get_world_from_zone(cells[cell_index])),
+                )
+                .then_with(|| left.entity.to_bits().cmp(&right.entity.to_bits()))
+        });
+        for defender in returners.iter().take(capacities[cell_index]) {
+            assignments.insert(defender.entity, cells[cell_index]);
+            assigned.insert(defender.entity);
+            capacities[cell_index] -= 1;
+        }
+    }
+
+    let mut remaining_defenders = defenders
+        .iter()
+        .filter(|defender| !assigned.contains(&defender.entity))
+        .collect::<Vec<_>>();
+    remaining_defenders.sort_by(|left, right| {
+        left.current_cell
+            .y
+            .cmp(&right.current_cell.y)
+            .then_with(|| left.current_cell.x.cmp(&right.current_cell.x))
+            .then_with(|| left.position.y.total_cmp(&right.position.y))
+            .then_with(|| left.position.x.total_cmp(&right.position.x))
+            .then_with(|| left.entity.to_bits().cmp(&right.entity.to_bits()))
+    });
+    let remaining_capacity = capacities.iter().sum::<usize>();
+    assert_eq!(
+        remaining_defenders.len(),
+        remaining_capacity,
+        "balanced staging capacity must cover the full cohort",
+    );
+    let active_cells = capacities
+        .iter()
+        .enumerate()
+        .filter_map(|(index, capacity)| (*capacity > 0).then_some(index))
+        .collect::<Vec<_>>();
+    if let [cell_index] = active_cells.as_slice() {
+        assignments.extend(
+            remaining_defenders
+                .into_iter()
+                .map(|defender| (defender.entity, cells[*cell_index])),
+        );
+        return assignments;
+    }
+
+    let mut targets = BoundedStagingTargets::new(cells, &capacities);
+    for defender in remaining_defenders {
+        let cell_index = targets
+            .nearest(cells, defender.position)
+            .expect("remaining staging capacity provides a bounded-nearest target");
+        assignments.insert(defender.entity, cells[cell_index]);
+        capacities[cell_index] -= 1;
+        if capacities[cell_index] == 0 {
+            targets.remove(cells[cell_index], cell_index);
+        }
+    }
+    assignments
+}
+
 fn balanced_assignments(defenders: &[DefenderSnapshot], cells: &[IVec2]) -> EntityHashMap<IVec2> {
     let mut assignments = EntityHashMap::default();
     if cells.is_empty() {
@@ -139,6 +410,18 @@ fn balanced_assignments(defenders: &[DefenderSnapshot], cells: &[IVec2]) -> Enti
             assignments.insert(defender.entity, defender.current_cell);
         }
         return assignments;
+    }
+    if let [cell] = cells {
+        for defender in defenders {
+            assignments.insert(defender.entity, *cell);
+        }
+        return assignments;
+    }
+    let assignment_edges = defenders.len().saturating_mul(cells.len());
+    if defenders.len() > EXACT_STAGING_MAX_DEFENDERS
+        || assignment_edges > EXACT_STAGING_MAX_ASSIGNMENT_EDGES
+    {
+        return bounded_balanced_assignments(defenders, cells);
     }
 
     let cell_set = cells.iter().copied().collect::<HashSet<_>>();
@@ -259,6 +542,7 @@ pub(super) fn reconcile_defender_staging_system(
     mut commands: Commands,
     grid: Res<IntentGrid>,
     territory: Res<TerritorySnapshot>,
+    mut layouts: ResMut<DefenderStagingLayouts>,
     mut defenders: Query<
         (
             Entity,
@@ -318,9 +602,11 @@ pub(super) fn reconcile_defender_staging_system(
 
     snapshots.sort_by_key(|defender| (defender.swarm, defender.entity.to_bits()));
     let mut assignments = EntityHashMap::default();
+    let mut seen_swarms = HashSet::new();
     let mut start = 0;
     while start < snapshots.len() {
         let swarm = snapshots[start].swarm;
+        seen_swarms.insert(swarm);
         let end = snapshots[start..]
             .iter()
             .position(|defender| defender.swarm != swarm)
@@ -337,9 +623,39 @@ pub(super) fn reconcile_defender_staging_system(
         } else {
             &defend_cells
         };
-        assignments.extend(balanced_assignments(cohort, cells));
+        let input = StagingLayoutInput {
+            defenders: cohort.iter().map(|defender| defender.entity).collect(),
+            cells: cells.clone(),
+        };
+        let reusable = layouts.by_swarm.get(&swarm) == Some(&input)
+            && cohort.iter().all(|defender| {
+                defender.staging.is_some_and(|staging| {
+                    if cells.is_empty() {
+                        staging.cell == defender.current_cell
+                    } else {
+                        cells.contains(&staging.cell)
+                    }
+                })
+            });
+        if reusable {
+            assignments.extend(cohort.iter().map(|defender| {
+                (
+                    defender.entity,
+                    defender
+                        .staging
+                        .expect("a reusable staging layout has every assignment")
+                        .cell,
+                )
+            }));
+        } else {
+            assignments.extend(balanced_assignments(cohort, cells));
+            layouts.by_swarm.insert(swarm, input);
+        }
         start = end;
     }
+    layouts
+        .by_swarm
+        .retain(|swarm, _| seen_swarms.contains(swarm));
 
     for (entity, transform, _, _, _, _, _, _, _, staging, movement, mut velocity) in &mut defenders
     {

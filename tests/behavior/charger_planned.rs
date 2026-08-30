@@ -173,7 +173,7 @@ fn remote_pending_capacity_prevents_duplicate_plans_across_ticks() {
 }
 
 #[test]
-fn fourth_low_charge_defender_exceeds_one_pending_chargers_capacity() {
+fn pending_capacity_beyond_rotation_cap_suppresses_another_plan() {
     let mut app = planning_app();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
@@ -193,8 +193,34 @@ fn fourth_low_charge_defender_exceeds_one_pending_chargers_capacity() {
 
     assert_eq!(
         planned_charger_count(app.world_mut()),
+        1,
+        "two simultaneous rotation slots fit within one pending three-user Charger",
+    );
+}
+
+#[test]
+fn rotation_cap_limits_pending_charger_capacity() {
+    let mut app = planning_app();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let cell = IVec2::ZERO;
+    paint_defend_owned(&mut app, cell);
+    let plan = common::spawn_planned_charger_at_cell(&mut app, cell);
+    app.world_mut().entity_mut(plan).insert(OwnerSwarm(swarm));
+    for _ in 0..8 {
+        let defender = common::spawn_defender_in_cell(&mut app, cell);
+        app.world_mut()
+            .entity_mut(defender)
+            .get_mut::<Charge>()
+            .expect("Defender has Charge")
+            .current = LOW_CHARGE_THRESHOLD;
+    }
+
+    app.update();
+
+    assert_eq!(
+        planned_charger_count(app.world_mut()),
         2,
-        "one pending Charger covers three low-Charge Defenders, not four",
+        "four simultaneous rotation slots need two three-user Chargers, not capacity for all eight low-Charge Defenders",
     );
 }
 

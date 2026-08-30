@@ -142,7 +142,20 @@ impl TerritorySnapshot {
 
     /// Whether an existing claim may continue pursuing a target in `cell`.
     pub fn pursuit_claim_is_spatially_valid(&self, swarm: SwarmId, cell: IVec2) -> bool {
-        (-1..=1).any(|dy| (-1..=1).any(|dx| self.is_swarm_tile(swarm, cell + IVec2::new(dx, dy))))
+        let Some(territory) = self.by_swarm.get(&swarm) else {
+            return false;
+        };
+        (-1..=1).any(|dy| {
+            (-1..=1).any(|dx| {
+                let nearby = cell + IVec2::new(dx, dy);
+                territory
+                    .regions
+                    .get(&AllocationRegion::for_cell(nearby))
+                    .is_some_and(|region| {
+                        pursuit_claim_is_spatially_valid(cell, region.tiles.as_slice())
+                    })
+            })
+        })
     }
 }
 
@@ -292,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn threat_response_decisions_follow_danger_and_pursuit_boundaries() {
+    fn threat_danger_rank_orders_hostile_defenders_before_nanobots_before_structures() {
         assert!(
             threat_danger_rank(ThreatKind::DefenderNanobot)
                 < threat_danger_rank(ThreatKind::OtherNanobot)
@@ -301,7 +314,10 @@ mod tests {
             threat_danger_rank(ThreatKind::OtherNanobot)
                 < threat_danger_rank(ThreatKind::Structure)
         );
+    }
 
+    #[test]
+    fn higher_tier_threats_preempt_current_responses() {
         assert!(higher_tier_threat_preempts(
             ThreatKind::Structure,
             ThreatKind::OtherNanobot,
@@ -314,7 +330,10 @@ mod tests {
             ThreatKind::DefenderNanobot,
             ThreatKind::Structure,
         ));
+    }
 
+    #[test]
+    fn pursuit_claim_remains_valid_only_on_territory_or_its_one_cell_halo() {
         let territory = [IVec2::new(3, 4), IVec2::new(-2, 7)];
         for target in [
             IVec2::new(3, 4),
