@@ -9,10 +9,10 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         ActiveCombatDecorations, ActiveCombatPulses, ActiveNanobotDeathGhosts,
-        ActiveStructureDeathGhosts, Charge, CombatPresentationSettings, Commitment, DefendHold,
-        DefenderAttackCooldown, Health, Nanobot, NanobotDeathGhost, NanobotType, NanobotVisual,
-        OpponentSwarm, OwnerSwarm, PLANNED_STRUCTURE_FOOTPRINT, PlannedKind, Structure,
-        StructureKind, Swarm, SwarmId, SwarmMember, completed_visual_color,
+        ActiveStructureDeathGhosts, Charge, CombatPresentationSettings, Commitment,
+        DefenderAttackCooldown, DefenderResponse, Health, Nanobot, NanobotDeathGhost, NanobotType,
+        NanobotVisual, OpponentSwarm, OwnerSwarm, PLANNED_STRUCTURE_FOOTPRINT, PlannedKind,
+        Structure, StructureKind, Swarm, SwarmId, SwarmMember, completed_visual_color,
     },
     structure_sprites::{StructureSprites, StructureVisual, StructureVisualState},
 };
@@ -20,7 +20,6 @@ use top_down_2d_rts_prototype_nano_swarm::{
 use crate::harness::{TestContext, TestFlow, clear_nanobots_and_sprite_entities};
 
 const SCENE_CELL: IVec2 = IVec2::new(0, 5);
-const HOLD_CELL: IVec2 = IVec2::ZERO;
 const ZONE_BLOCK_SIZE: f32 = top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE;
 
 #[derive(Clone, Copy, Resource)]
@@ -95,11 +94,6 @@ fn prepare_combat_scene(world: &mut World) -> Vec2 {
 
 fn setup_scene(world: &mut World) {
     let center = prepare_combat_scene(world);
-    world.resource_mut::<IntentGrid>().paint_owned(
-        HOLD_CELL,
-        IntentKind::Defend,
-        Some(SwarmId::PLAYER),
-    );
     let opponent = world
         .query_filtered::<&SwarmId, (With<Swarm>, With<OpponentSwarm>)>()
         .single(world)
@@ -186,10 +180,17 @@ pub fn combat_presentation(ctx: &mut TestContext) -> TestFlow {
     }
 
     if ctx.frame == 2 {
-        let attacker = ctx.world.resource::<CombatEvidence>().attacker;
+        let evidence = *ctx.world.resource::<CombatEvidence>();
+        ctx.world.resource_mut::<IntentGrid>().paint_owned(
+            SCENE_CELL,
+            IntentKind::Defend,
+            Some(SwarmId::PLAYER),
+        );
         ctx.world
-            .entity_mut(attacker)
-            .insert(DefendHold { cell: HOLD_CELL });
+            .entity_mut(evidence.attacker)
+            .insert(DefenderResponse {
+                target: evidence.target,
+            });
         ctx.world.resource_mut::<Time<Virtual>>().unpause();
         return TestFlow::Continue;
     }
@@ -298,11 +299,6 @@ struct LethalCombatEvidence {
 
 fn setup_lethal_scene(world: &mut World) {
     let center = prepare_combat_scene(world);
-    world.resource_mut::<IntentGrid>().paint_owned(
-        HOLD_CELL,
-        IntentKind::Defend,
-        Some(SwarmId::PLAYER),
-    );
     let opponent = *world
         .query_filtered::<&SwarmId, (With<Swarm>, With<OpponentSwarm>)>()
         .single(world)
@@ -362,9 +358,16 @@ pub fn nanobot_combat_death(ctx: &mut TestContext) -> TestFlow {
     match evidence.phase {
         LethalEvidencePhase::AwaitVisuals => {
             let attacker_visual = visual_child(ctx.world, evidence.attacker);
+            ctx.world.resource_mut::<IntentGrid>().paint_owned(
+                SCENE_CELL,
+                IntentKind::Defend,
+                Some(SwarmId::PLAYER),
+            );
             ctx.world
                 .entity_mut(evidence.attacker)
-                .insert(DefendHold { cell: HOLD_CELL });
+                .insert(DefenderResponse {
+                    target: evidence.victim,
+                });
             let mut next = ctx.world.resource_mut::<LethalCombatEvidence>();
             next.attacker_visual = attacker_visual;
             next.phase = LethalEvidencePhase::AwaitImpact;
@@ -527,14 +530,6 @@ fn setup_dense_scene(world: &mut World) {
         .query_filtered::<&SwarmId, (With<Swarm>, With<OpponentSwarm>)>()
         .single(world)
         .expect("authored scene needs an Opponent Swarm");
-    world.resource_mut::<IntentGrid>().paint_owned(
-        HOLD_CELL,
-        IntentKind::Defend,
-        Some(SwarmId::PLAYER),
-    );
-    world
-        .resource_mut::<IntentGrid>()
-        .contest_defend(HOLD_CELL, opponent);
     let left_target_position = center + Vec2::new(-180.0, 0.0);
     let right_target_position = center + Vec2::new(180.0, 0.0);
     let targets = vec![
@@ -593,6 +588,16 @@ pub fn combat_presentation_density_and_zoom(ctx: &mut TestContext) -> TestFlow {
     let phase = ctx.world.resource::<DenseCombatEvidence>().phase;
     match phase {
         DenseCombatPhase::AwaitVisuals => {
+            let opponent = *ctx
+                .world
+                .query_filtered::<&SwarmId, (With<Swarm>, With<OpponentSwarm>)>()
+                .single(ctx.world)
+                .expect("authored scene needs an Opponent Swarm");
+            {
+                let mut grid = ctx.world.resource_mut::<IntentGrid>();
+                grid.paint_owned(SCENE_CELL, IntentKind::Defend, Some(SwarmId::PLAYER));
+                grid.contest_defend(SCENE_CELL, opponent);
+            }
             let attackers = ctx
                 .world
                 .resource::<DenseCombatEvidence>()
@@ -602,9 +607,6 @@ pub fn combat_presentation_density_and_zoom(ctx: &mut TestContext) -> TestFlow {
                 .collect::<Vec<_>>();
             for attacker in attackers {
                 let _ = visual_child(ctx.world, attacker);
-                ctx.world
-                    .entity_mut(attacker)
-                    .insert(DefendHold { cell: HOLD_CELL });
             }
             for (target, _) in &ctx.world.resource::<DenseCombatEvidence>().targets {
                 let _ = visual_child(ctx.world, *target);
@@ -627,9 +629,14 @@ pub fn combat_presentation_density_and_zoom(ctx: &mut TestContext) -> TestFlow {
                             .map(|health| health.current)
                     })
                     .collect::<Vec<_>>();
+                let responses = ctx
+                    .world
+                    .query::<&DefenderResponse>()
+                    .iter(ctx.world)
+                    .count();
                 assert!(
                     ctx.frame < 12,
-                    "dense combat did not resolve on schedule: {pulse_count} pulses, target health {target_health:?}",
+                    "dense combat did not resolve on schedule: {pulse_count} pulses, {responses} responses, target health {target_health:?}",
                 );
                 return TestFlow::Continue;
             }
@@ -797,11 +804,6 @@ struct StructureCombatEvidence {
 
 fn setup_structure_combat_scene(world: &mut World) {
     let center = prepare_combat_scene(world);
-    world.resource_mut::<IntentGrid>().paint_owned(
-        HOLD_CELL,
-        IntentKind::Defend,
-        Some(SwarmId::PLAYER),
-    );
     let opponent_entity = world
         .query_filtered::<Entity, (With<Swarm>, With<OpponentSwarm>)>()
         .single(world)
@@ -859,9 +861,16 @@ pub fn support_structure_combat_presentation(ctx: &mut TestContext) -> TestFlow 
     match evidence.phase {
         StructureCombatPhase::AwaitVisuals => {
             let attacker_visual = visual_child(ctx.world, evidence.attacker);
+            ctx.world.resource_mut::<IntentGrid>().paint_owned(
+                SCENE_CELL,
+                IntentKind::Defend,
+                Some(SwarmId::PLAYER),
+            );
             ctx.world
                 .entity_mut(evidence.attacker)
-                .insert(DefendHold { cell: HOLD_CELL });
+                .insert(DefenderResponse {
+                    target: evidence.structure,
+                });
             let mut next = ctx.world.resource_mut::<StructureCombatEvidence>();
             next.attacker_visual = attacker_visual;
             next.phase = StructureCombatPhase::AwaitOrdinaryHit;

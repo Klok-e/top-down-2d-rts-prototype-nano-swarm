@@ -1,6 +1,7 @@
 //! Regional work allocation and production ECS adapter.
 
 pub mod allocator;
+pub mod defender_response;
 pub mod lease;
 pub mod projection;
 pub mod runtime;
@@ -12,6 +13,7 @@ use crate::nanobot::{PlannedKind, SwarmId};
 use crate::resources::ResourceKind;
 
 pub use allocator::*;
+pub use defender_response::*;
 pub use lease::*;
 pub use projection::{ActionableProjection, project_actionable_opportunities_system};
 pub use runtime::*;
@@ -46,17 +48,15 @@ pub enum OpportunityCategory {
     Gather,
     PlannedBuild,
     Maintenance,
-    Defend,
     Haul,
 }
 
 impl OpportunityCategory {
-    pub const COUNT: usize = 5;
+    pub const COUNT: usize = 4;
     pub const ALL: [Self; Self::COUNT] = [
         Self::PlannedBuild,
         Self::Maintenance,
         Self::Gather,
-        Self::Defend,
         Self::Haul,
     ];
 
@@ -65,8 +65,7 @@ impl OpportunityCategory {
             Self::Gather => 0,
             Self::PlannedBuild => 1,
             Self::Maintenance => 2,
-            Self::Defend => 3,
-            Self::Haul => 4,
+            Self::Haul => 3,
         }
     }
 }
@@ -84,9 +83,6 @@ pub enum OpportunityTarget {
     },
     Maintenance {
         structure: Entity,
-    },
-    Defend {
-        cell: IVec2,
     },
     Haul {
         source: Entity,

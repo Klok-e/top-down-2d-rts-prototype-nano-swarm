@@ -44,14 +44,14 @@ use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
     intent::IntentGrid,
     nanobot::{
-        Charge, ChargePlugin, Charger, CollapsePlugin, Commitment, DefendHold, DefendPlugin,
-        DefendPressure, GatherPlugin, HaulPlugin, Health, LOW_CHARGE_THRESHOLD, MaintenancePlugin,
-        Nanobot, NanobotBundle, NanobotSimulationSet, NanobotType, NanobotVisual, OpponentSwarm,
-        OwnerSwarm, PRODUCTION_TICKS_PER_BOT, PlannedStructure, PlannedStructurePlugin,
-        PopulationDemandPlugin, ProductionFacility, ProductionPlugin, RegionalAllocationPlugin,
-        SoftWorkSlots, Structure, StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent,
-        bot_debug_circle_system, idle_spread_system, initialize_nanobot_type_components,
-        move_velocity_system, separation_system, velocity_system,
+        Charge, ChargePlugin, Charger, CollapsePlugin, CombatPlugin, Commitment, GatherPlugin,
+        HaulPlugin, Health, LOW_CHARGE_THRESHOLD, MaintenancePlugin, Nanobot, NanobotBundle,
+        NanobotSimulationSet, NanobotType, NanobotVisual, OpponentSwarm, OwnerSwarm,
+        PRODUCTION_TICKS_PER_BOT, PlannedStructure, PlannedStructurePlugin, PopulationDemandPlugin,
+        ProductionFacility, ProductionPlugin, RegionalAllocationPlugin, SoftWorkSlots, Structure,
+        StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent, bot_debug_circle_system,
+        idle_spread_system, initialize_nanobot_type_components, move_velocity_system,
+        separation_system, velocity_system,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole},
     structure_overlay::StructureOverlayPlugin,
@@ -148,13 +148,17 @@ pub fn sim_app() -> App {
     app
 }
 
-/// `sim_app` + the typed population-demand projection. The explicit
-/// `DefendPressure` resource supports Defend opportunity projection; Defender
-/// population reads the territory snapshot.
+/// `sim_app` + the typed population-demand projection.
 pub fn sim_app_with_population_demand() -> App {
     let mut app = sim_app();
-    app.init_resource::<DefendPressure>();
     app.add_plugins(PopulationDemandPlugin);
+    app
+}
+
+/// `sim_app` + deterministic Defender combat and physical contest presence.
+pub fn sim_app_with_combat() -> App {
+    let mut app = sim_app();
+    app.add_plugins(CombatPlugin);
     app
 }
 
@@ -235,23 +239,13 @@ pub fn sim_app_with_maintenance() -> App {
     app
 }
 
-/// `sim_app` + defend. The defend plugin brings its own assignment,
-/// hold, and home-cell systems; tests that exercise it can use
-/// this builder as-is.
-pub fn sim_app_with_defend() -> App {
-    let mut app = sim_app();
-    app.add_plugins(DefendPlugin);
-    app
-}
-
-/// `sim_app` + gather + haul + defend + charge. The full
-/// defend/charge loop: Defenders drain, rotate through swarm-wide
+/// `sim_app` + gather + haul + charge. The full sustain loop: Defenders drain,
+/// release responses, rotate through swarm-wide
 /// working Chargers, and re-enter current allocation. Haul is registered so a hauler
 /// can deliver to a charger (the logistics support half of the
 /// charge contract).
 pub fn sim_app_with_charge() -> App {
     let mut app = sim_app_with_gather_haul();
-    app.add_plugins(DefendPlugin);
     app.add_plugins(ChargePlugin);
     app
 }
@@ -284,12 +278,11 @@ pub fn sim_app_with_production_planned() -> App {
 /// through the existing charge sustain loop (drain, health
 /// loss, rotation, arrive, work). Use this builder for any
 /// test that exercises the
-/// defend -> plan -> build -> charge chain.
+/// response -> plan -> build -> charge chain.
 pub fn sim_app_with_charge_planned() -> App {
     let mut app = sim_app();
     app.add_plugins(GatherPlugin);
     app.add_plugins(HaulPlugin);
-    app.add_plugins(DefendPlugin);
     app.add_plugins(ChargePlugin);
     app.add_plugins(PlannedStructurePlugin);
     app
@@ -484,19 +477,15 @@ pub fn spawn_defender_at(app: &mut App, world_pos: Vec2) -> Entity {
         .id()
 }
 
-/// Spawn a full-Charge player Defender physically holding `cell`.
-pub fn spawn_defender_in_hold_at(app: &mut App, cell: IVec2) -> Entity {
-    let defender = spawn_defender_at(app, cell_world_center(cell));
-    app.world_mut()
-        .entity_mut(defender)
-        .insert(DefendHold { cell });
-    defender
+/// Spawn a full-Charge player Defender physically inside `cell`.
+pub fn spawn_defender_in_cell(app: &mut App, cell: IVec2) -> Entity {
+    spawn_defender_at(app, cell_world_center(cell))
 }
 
 /// Spawn a player Defender at the low-Charge rotation threshold while it
-/// physically holds `cell`.
-pub fn spawn_low_charge_defender_in_hold_at(app: &mut App, cell: IVec2) -> Entity {
-    let defender = spawn_defender_in_hold_at(app, cell);
+/// physically occupies `cell`.
+pub fn spawn_low_charge_defender_in_cell(app: &mut App, cell: IVec2) -> Entity {
+    let defender = spawn_defender_in_cell(app, cell);
     app.world_mut()
         .entity_mut(defender)
         .get_mut::<Charge>()

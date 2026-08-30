@@ -396,7 +396,6 @@ fn all_demand_sources_share_zero_completed_structures() {
     // `sim_app_with_build_planned`.
     app.add_plugins(top_down_2d_rts_prototype_nano_swarm::nanobot::ProductionPlugin);
     app.add_plugins(top_down_2d_rts_prototype_nano_swarm::nanobot::HaulPlugin);
-    app.add_plugins(top_down_2d_rts_prototype_nano_swarm::nanobot::DefendPlugin);
     app.add_plugins(top_down_2d_rts_prototype_nano_swarm::nanobot::ChargePlugin);
     app.insert_resource(ProductionPriority::new());
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);

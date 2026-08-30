@@ -15,16 +15,14 @@ use super::{
     choose_bounded_candidate_from_ordered_regions_with_claims, outward_pull_budgets, pressure_map,
 };
 use crate::{
-    ZONE_BLOCK_SIZE,
     intent::IntentGrid,
     nanobot::{
-        BUILDING_FOOTPRINT_RADIUS, Commitment, DEFEND_IN_CELL_STOP_RADIUS, DefendAssignment,
-        DefendHold, DirectMovementComponent, ExtractProgress, GatherAssignment,
-        HAULER_CARRY_CAPACITY, HaulerAssignment, HaulerLoad, HaulerLoading, Health,
-        LogisticsReservation, MaintenanceAssignment, MaintenanceProgress, Nanobot, NanobotType,
-        PRODUCTION_COST_PER_BOT, PlannedStructure, PlannedStructureClaim, PlannedStructureProgress,
-        ProductionFacility, ReturningToStockpile, SwarmId, SwarmMember, WORKER_CARRY_CAPACITY,
-        WorkerLoad,
+        BUILDING_FOOTPRINT_RADIUS, Commitment, DirectMovementComponent, ExtractProgress,
+        GatherAssignment, HAULER_CARRY_CAPACITY, HaulerAssignment, HaulerLoad, HaulerLoading,
+        Health, LogisticsReservation, MaintenanceAssignment, MaintenanceProgress, Nanobot,
+        NanobotType, PRODUCTION_COST_PER_BOT, PlannedStructure, PlannedStructureClaim,
+        PlannedStructureProgress, ProductionFacility, ReturningToStockpile, SwarmId, SwarmMember,
+        WORKER_CARRY_CAPACITY, WorkerLoad,
         charge::{
             Charge, Charger, ChargerAssignment, ChargerProgress, LOW_CHARGE_THRESHOLD,
             WEAKENED_CHARGE_THRESHOLD, minerals_to_fully_charge,
@@ -164,8 +162,11 @@ impl Plugin for RegionalAllocationPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                regional_allocation_acquisition_system
-                    .run_if(allocation_tick_due)
+                (
+                    super::reconcile_defender_responses_system,
+                    regional_allocation_acquisition_system.run_if(allocation_tick_due),
+                )
+                    .chain()
                     .in_set(RegionalAllocationSet::Acquire),
             );
     }
@@ -245,8 +246,6 @@ pub fn regional_allocation_acquisition_system(
             With<PlannedStructureProgress>,
             With<MaintenanceAssignment>,
             With<MaintenanceProgress>,
-            With<DefendAssignment>,
-            With<DefendHold>,
             With<HaulerAssignment>,
             With<HaulerLoading>,
             With<HaulerLoad>,
@@ -497,14 +496,7 @@ pub fn regional_allocation_acquisition_system(
                 bounds,
                 |work| {
                     let claims = claim_counts
-                        .get(&claim_key(
-                            work.target,
-                            if work.category == OpportunityCategory::Defend {
-                                Some(bot.swarm)
-                            } else {
-                                work.owner
-                            },
-                        ))
+                        .get(&claim_key(work.target, work.owner))
                         .copied()
                         .unwrap_or(0);
                     if !target_available(
@@ -551,11 +543,7 @@ pub fn regional_allocation_acquisition_system(
         region_ages
             .waiting
             .insert((bot.swarm, work.region, kind_index(bot.kind)), 0);
-        let lease_owner = if work.category == OpportunityCategory::Defend {
-            Some(bot.swarm)
-        } else {
-            work.owner
-        };
+        let lease_owner = work.owner;
         let lease = RegionalLease::new(
             work.region,
             work.category,
@@ -730,7 +718,6 @@ fn kind_allows(kind: NanobotType, category: OpportunityCategory) -> bool {
         (NanobotType::Worker, OpportunityCategory::Gather)
             | (NanobotType::Worker, OpportunityCategory::PlannedBuild)
             | (NanobotType::Worker, OpportunityCategory::Maintenance)
-            | (NanobotType::Defender, OpportunityCategory::Defend)
             | (NanobotType::Hauler, OpportunityCategory::Haul)
     )
 }
@@ -738,7 +725,7 @@ fn kind_allows(kind: NanobotType, category: OpportunityCategory) -> bool {
 fn allocation_candidate(bot: BotSnapshot) -> AllocationCandidate {
     let eligibility = match bot.kind {
         NanobotType::Worker => CategoryEligibility::worker(),
-        NanobotType::Defender => CategoryEligibility::only(OpportunityCategory::Defend),
+        NanobotType::Defender => CategoryEligibility::none(),
         NanobotType::Hauler => CategoryEligibility::only(OpportunityCategory::Haul),
     };
     AllocationCandidate {
@@ -759,7 +746,7 @@ fn target_available(
     structures: &Query<&Transform>,
     stockpiles: &Query<(&Stockpile, &Transform)>,
 ) -> bool {
-    if work.category != OpportunityCategory::Defend && claims >= opportunity_capacity(work) {
+    if claims >= opportunity_capacity(work) {
         return false;
     }
     match work.target {
@@ -768,7 +755,6 @@ fn target_available(
             .get(&structure.to_bits())
             .is_some_and(|worker| worker.is_none() || *worker == Some(bot.entity.to_bits())),
         OpportunityTarget::Maintenance { structure } => structures.get(structure).is_ok(),
-        OpportunityTarget::Defend { .. } => true,
         OpportunityTarget::Haul { source, .. } => stockpiles
             .get(source)
             .is_ok_and(|(stockpile, _)| stockpile.amount > 0 && work.available_work > 0),
@@ -779,7 +765,6 @@ fn opportunity_capacity(work: ActionableOpportunity) -> usize {
     let units = match work.category {
         OpportunityCategory::Gather => work.available_work.div_ceil(WORKER_CARRY_CAPACITY),
         OpportunityCategory::PlannedBuild | OpportunityCategory::Maintenance => 1,
-        OpportunityCategory::Defend => work.available_work,
         OpportunityCategory::Haul => work.available_work.div_ceil(HAULER_CARRY_CAPACITY),
     };
     units.max(1) as usize
@@ -847,19 +832,6 @@ fn adapt_decision(
                 DirectMovementComponent {
                     xy: transform.translation.truncate(),
                     stop_radius: BUILDING_FOOTPRINT_RADIUS,
-                },
-            ));
-        }
-        OpportunityTarget::Defend { cell } => {
-            let target = Vec2::new(
-                (cell.x as f32 + 0.5) * ZONE_BLOCK_SIZE,
-                (cell.y as f32 + 0.5) * ZONE_BLOCK_SIZE,
-            );
-            commands.entity(bot.entity).insert((
-                DefendAssignment { cell },
-                DirectMovementComponent {
-                    xy: target,
-                    stop_radius: DEFEND_IN_CELL_STOP_RADIUS,
                 },
             ));
         }
@@ -933,15 +905,8 @@ fn claim_key(
         OpportunityTarget::Gather { deposit, .. } => (0, deposit.to_bits(), 0, 0, owner),
         OpportunityTarget::PlannedBuild { structure, .. } => (1, structure.to_bits(), 0, 0, owner),
         OpportunityTarget::Maintenance { structure } => (2, structure.to_bits(), 0, 0, owner),
-        OpportunityTarget::Defend { cell } => (
-            3,
-            i64::from(cell.x) as u64,
-            i64::from(cell.y) as u64,
-            0,
-            owner,
-        ),
         OpportunityTarget::Haul { source, sink, .. } => {
-            (4, source.to_bits(), sink.to_bits(), 0, owner)
+            (3, source.to_bits(), sink.to_bits(), 0, owner)
         }
     }
 }

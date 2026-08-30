@@ -14,8 +14,8 @@ mod collapse_banner;
 mod combat;
 #[path = "behavior/combat_presentation.rs"]
 mod combat_presentation;
-#[path = "behavior/defend_zone.rs"]
-mod defend_zone;
+#[path = "behavior/defender_response.rs"]
+mod defender_response;
 #[path = "behavior/fixed_simulation.rs"]
 mod fixed_simulation;
 #[path = "behavior/full_source_stockpile.rs"]
@@ -36,6 +36,8 @@ mod idle_spread;
 mod intent_brush;
 #[path = "behavior/maintenance.rs"]
 mod maintenance;
+#[path = "behavior/movement.rs"]
+mod movement;
 #[path = "behavior/nanobot_presentation.rs"]
 mod nanobot_presentation;
 #[path = "behavior/no_instant_spawning.rs"]

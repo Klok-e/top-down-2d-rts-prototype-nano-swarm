@@ -65,7 +65,6 @@ pub fn population_demand_system(
                     OpportunityCategory::Gather
                     | OpportunityCategory::PlannedBuild
                     | OpportunityCategory::Maintenance => (NanobotType::Worker, 1),
-                    OpportunityCategory::Defend => continue,
                     OpportunityCategory::Haul => {
                         let OpportunityTarget::Haul { source, .. } = opportunity.target else {
                             continue;

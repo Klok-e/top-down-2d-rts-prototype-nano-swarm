@@ -5,8 +5,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         ActiveCombatPulses, ActiveNanobotDeathGhosts, ActiveStructureDeathGhosts, CombatPlugin,
-        CombatPresentationSettings, DefendHold, Health, NanobotPresentationPlugin, OpponentSwarm,
-        PlannedKind, Structure, Swarm, SwarmId, SwarmMember, completed_visual_color,
+        CombatPresentationSettings, DefenderResponse, Health, NanobotPresentationPlugin,
+        OpponentSwarm, PlannedKind, Structure, Swarm, SwarmId, SwarmMember, completed_visual_color,
         nanobot_death_cleanup_system,
     },
 };
@@ -16,7 +16,7 @@ mod common;
 
 #[test]
 fn real_combat_fact_reaches_runtime_presentation_and_recovers() {
-    let mut app = common::sim_app_with_defend();
+    let mut app = common::sim_app();
     app.add_plugins(TaskPoolPlugin::default())
         .add_plugins(AssetPlugin::default())
         .init_asset::<Image>()
@@ -36,13 +36,13 @@ fn real_combat_fact_reaches_runtime_presentation_and_recovers() {
         Some(SwarmId::PLAYER),
     );
     let attacker = common::spawn_defender_at(&mut app, center + Vec2::new(-16.0, 0.0));
-    app.world_mut()
-        .entity_mut(attacker)
-        .insert(DefendHold { cell });
     let target = common::spawn_worker_at(&mut app, center + Vec2::new(16.0, 0.0));
     app.world_mut()
         .entity_mut(target)
         .insert(SwarmMember::new(opponent));
+    app.world_mut()
+        .entity_mut(attacker)
+        .insert(DefenderResponse { target });
     let attacker_root = *app.world().get::<Transform>(attacker).unwrap();
     let target_root = *app.world().get::<Transform>(target).unwrap();
 
@@ -100,7 +100,7 @@ fn real_combat_fact_reaches_runtime_presentation_and_recovers() {
 
 #[test]
 fn lethal_real_combat_removes_the_target_while_its_pulse_and_ghost_finish() {
-    let mut app = common::sim_app_with_defend();
+    let mut app = common::sim_app();
     app.add_plugins(TaskPoolPlugin::default())
         .add_plugins(AssetPlugin::default())
         .init_asset::<Image>()
@@ -121,9 +121,6 @@ fn lethal_real_combat_removes_the_target_while_its_pulse_and_ghost_finish() {
         Some(SwarmId::PLAYER),
     );
     let attacker = common::spawn_defender_at(&mut app, center + Vec2::new(-16.0, 0.0));
-    app.world_mut()
-        .entity_mut(attacker)
-        .insert(DefendHold { cell });
     let target = common::spawn_worker_at(&mut app, center + Vec2::new(16.0, 0.0));
     app.world_mut().entity_mut(target).insert((
         SwarmMember::new(opponent),
@@ -132,6 +129,9 @@ fn lethal_real_combat_removes_the_target_while_its_pulse_and_ghost_finish() {
             max: 100,
         },
     ));
+    app.world_mut()
+        .entity_mut(attacker)
+        .insert(DefenderResponse { target });
     let attacker_root = *app.world().get::<Transform>(attacker).unwrap();
 
     app.update();
@@ -165,8 +165,8 @@ fn lethal_real_combat_removes_the_target_while_its_pulse_and_ghost_finish() {
 }
 
 #[test]
-fn simultaneous_real_attacks_keep_every_pulse_and_one_bounded_target_reaction() {
-    let mut app = common::sim_app_with_defend();
+fn surplus_defenders_leave_one_response_pulse_and_one_bounded_target_reaction() {
+    let mut app = common::sim_app();
     app.add_plugins(TaskPoolPlugin::default())
         .add_plugins(AssetPlugin::default())
         .init_asset::<Image>()
@@ -190,17 +190,17 @@ fn simultaneous_real_attacks_keep_every_pulse_and_one_bounded_target_reaction() 
         center + Vec2::new(-64.0, 32.0),
         center + Vec2::new(0.0, -64.0),
     ];
-    let attackers = attacker_positions.map(|position| {
-        let attacker = common::spawn_defender_at(&mut app, position);
-        app.world_mut()
-            .entity_mut(attacker)
-            .insert(DefendHold { cell });
-        attacker
-    });
+    let attackers =
+        attacker_positions.map(|position| common::spawn_defender_at(&mut app, position));
     let target = common::spawn_worker_at(&mut app, center);
     app.world_mut()
         .entity_mut(target)
         .insert(SwarmMember::new(opponent));
+    for attacker in attackers {
+        app.world_mut()
+            .entity_mut(attacker)
+            .insert(DefenderResponse { target });
+    }
     let attacker_roots = attackers.map(|attacker| *app.world().get::<Transform>(attacker).unwrap());
     let target_root = *app.world().get::<Transform>(target).unwrap();
 
@@ -208,10 +208,10 @@ fn simultaneous_real_attacks_keep_every_pulse_and_one_bounded_target_reaction() 
 
     assert_eq!(
         app.world().get::<Health>(target).unwrap().current,
-        70,
-        "presentation must not change simultaneous combat damage",
+        90,
+        "presentation must not change one-claim combat damage",
     );
-    assert_eq!(app.world().resource::<ActiveCombatPulses>().len(), 3);
+    assert_eq!(app.world().resource::<ActiveCombatPulses>().len(), 1);
     let settings = *app.world().resource::<CombatPresentationSettings>();
     let target_visual = common::nanobot_visual_child(app.world(), target);
     let reaction = app
@@ -227,23 +227,27 @@ fn simultaneous_real_attacks_keep_every_pulse_and_one_bounded_target_reaction() 
         Color::WHITE,
     );
     assert_eq!(app.world().get::<Transform>(target), Some(&target_root));
+    let mut active_attacker_visuals = 0;
     for (attacker, root) in attackers.into_iter().zip(attacker_roots) {
         assert_eq!(app.world().get::<Transform>(attacker), Some(&root));
         let attacker_visual = common::nanobot_visual_child(app.world(), attacker);
-        assert!(
-            app.world()
-                .get::<Transform>(attacker_visual)
-                .unwrap()
-                .translation
-                .length()
-                > 0.0,
-        );
+        if app
+            .world()
+            .get::<Transform>(attacker_visual)
+            .unwrap()
+            .translation
+            .length()
+            > 0.0
+        {
+            active_attacker_visuals += 1;
+        }
     }
+    assert_eq!(active_attacker_visuals, 1);
 }
 
 #[test]
 fn real_support_structure_combat_flashes_in_place_and_recovers() {
-    let mut app = common::sim_app_with_defend();
+    let mut app = common::sim_app();
     app.add_plugins(TaskPoolPlugin::default())
         .add_plugins(AssetPlugin::default())
         .init_asset::<Image>()
@@ -265,9 +269,6 @@ fn real_support_structure_combat_flashes_in_place_and_recovers() {
         Some(SwarmId::PLAYER),
     );
     let attacker = common::spawn_defender_at(&mut app, center + Vec2::new(-16.0, 0.0));
-    app.world_mut()
-        .entity_mut(attacker)
-        .insert(DefendHold { cell });
     let kind = PlannedKind::Charger;
     let structure_transform =
         Transform::from_translation((center + Vec2::new(16.0, 0.0)).extend(1.0))
@@ -279,6 +280,9 @@ fn real_support_structure_combat_flashes_in_place_and_recovers() {
         structure_transform,
         None,
     );
+    app.world_mut()
+        .entity_mut(attacker)
+        .insert(DefenderResponse { target: structure });
     let before_health = app.world().get::<Structure>(structure).unwrap().health;
 
     app.update();
@@ -313,7 +317,7 @@ fn real_support_structure_combat_flashes_in_place_and_recovers() {
 
 #[test]
 fn lethal_real_support_structure_combat_removes_gameplay_entity_while_effects_finish() {
-    let mut app = common::sim_app_with_defend();
+    let mut app = common::sim_app();
     app.add_plugins(TaskPoolPlugin::default())
         .add_plugins(AssetPlugin::default())
         .init_asset::<Image>()
@@ -335,9 +339,6 @@ fn lethal_real_support_structure_combat_removes_gameplay_entity_while_effects_fi
         Some(SwarmId::PLAYER),
     );
     let attacker = common::spawn_defender_at(&mut app, center + Vec2::new(-16.0, 0.0));
-    app.world_mut()
-        .entity_mut(attacker)
-        .insert(DefendHold { cell });
     let kind = PlannedKind::ProductionFacility;
     let structure = common::spawn_owned_completed_structure(
         &mut app,
@@ -346,6 +347,9 @@ fn lethal_real_support_structure_combat_removes_gameplay_entity_while_effects_fi
         Transform::from_translation((center + Vec2::new(16.0, 0.0)).extend(1.0)),
         Some(1),
     );
+    app.world_mut()
+        .entity_mut(attacker)
+        .insert(DefenderResponse { target: structure });
 
     app.update();
 

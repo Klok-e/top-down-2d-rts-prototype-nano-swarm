@@ -6,9 +6,9 @@ use super::{
     ActionableProjection, AllocationClock, AllocationRegion, OpportunityCategory, OpportunityTarget,
 };
 use crate::nanobot::{
-    DefendAssignment, DefendHold, DirectMovementComponent, ExtractProgress, GatherAssignment,
-    HaulerAssignment, HaulerLoading, HaulerRoute, LogisticsReservation, MaintenanceAssignment,
-    MaintenanceProgress, PlannedStructureClaim, PlannedStructureProgress, SwarmId,
+    DirectMovementComponent, ExtractProgress, GatherAssignment, HaulerAssignment, HaulerLoading,
+    HaulerRoute, LogisticsReservation, MaintenanceAssignment, MaintenanceProgress,
+    PlannedStructureClaim, PlannedStructureProgress, SwarmId,
 };
 
 /// Temporary ownership of projected capacity, not ownership of authoritative
@@ -134,7 +134,6 @@ pub fn maintain_regional_leases_system(
             With<ExtractProgress>,
             With<PlannedStructureProgress>,
             With<MaintenanceProgress>,
-            With<DefendHold>,
             With<HaulerLoading>,
         )>,
     >,
@@ -179,11 +178,6 @@ pub fn maintain_regional_leases_system(
                         .remove::<MaintenanceAssignment>()
                         .remove::<MaintenanceProgress>();
                 }
-                OpportunityCategory::Defend => {
-                    entity_commands
-                        .remove::<DefendAssignment>()
-                        .remove::<DefendHold>();
-                }
                 OpportunityCategory::Haul => {
                     entity_commands
                         .remove::<HaulerAssignment>()
@@ -206,17 +200,14 @@ pub fn release_finished_regional_leases_system(
         Option<&GatherAssignment>,
         Option<&PlannedStructureClaim>,
         Option<&MaintenanceAssignment>,
-        Option<&DefendAssignment>,
-        Option<&DefendHold>,
         Option<&HaulerAssignment>,
     )>,
 ) {
-    for (entity, lease, gather, planned, maintenance, defend, hold, haul) in &leases {
+    for (entity, lease, gather, planned, maintenance, haul) in &leases {
         let active = match lease.category {
             OpportunityCategory::Gather => gather.is_some(),
             OpportunityCategory::PlannedBuild => planned.is_some(),
             OpportunityCategory::Maintenance => maintenance.is_some(),
-            OpportunityCategory::Defend => defend.is_some() || hold.is_some(),
             OpportunityCategory::Haul => haul.is_some(),
         };
         if !active {

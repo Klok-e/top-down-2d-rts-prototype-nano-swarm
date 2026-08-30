@@ -10,7 +10,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     Presentation, build_app_with_presentation,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        ActiveCombatPulses, DefendHold, Health, Nanobot, NanobotSprites, NanobotType,
+        ActiveCombatPulses, DefenderResponse, Health, Nanobot, NanobotSprites, NanobotType,
         OpponentSwarm, Swarm, SwarmId, SwarmMember, VelocityComponent,
     },
 };
@@ -171,13 +171,15 @@ fn full_app_offscreen_combat_uses_real_facts_and_keeps_gameplay_roots_fixed() {
     let attacker = common::spawn_defender_at(&mut app, center + Vec2::new(-44.0, 0.0));
     app.world_mut()
         .entity_mut(attacker)
-        .insert(DefendHold { cell })
         .remove::<VelocityComponent>();
     let target = common::spawn_worker_at(&mut app, center + Vec2::new(44.0, 0.0));
     app.world_mut()
         .entity_mut(target)
         .insert(SwarmMember::new(opponent))
         .remove::<VelocityComponent>();
+    app.world_mut()
+        .entity_mut(attacker)
+        .insert(DefenderResponse { target });
     let attacker_root = *app.world().get::<Transform>(attacker).unwrap();
     let target_root = *app.world().get::<Transform>(target).unwrap();
     app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(

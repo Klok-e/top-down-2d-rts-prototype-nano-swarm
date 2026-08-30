@@ -34,7 +34,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         BUILDING_FOOTPRINT_PADDING, BUILDING_FOOTPRINT_RADIUS, Charge, ChargePlugin, Charger,
-        ChargerAssignment, ChargerProgress, DEFAULT_PLANNED_WORK_TICKS, DefendHold, Health,
+        ChargerAssignment, ChargerProgress, DEFAULT_PLANNED_WORK_TICKS, Health,
         LOW_CHARGE_THRESHOLD, MaintenancePlugin, NANOBOT_DEFAULT_MAX_HEALTH, OwnerSwarm,
         PlannedKind, PlannedStructure, PlannedStructureClaim, Swarm, SwarmId, SwarmMember,
         completed_visual_color, planned_visual_color,
@@ -105,7 +105,7 @@ fn full_charge_defender_does_not_create_planned_charger() {
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
     paint_defend_owned(&mut app, cell);
-    let _defender = common::spawn_defender_in_hold_at(&mut app, cell);
+    let _defender = common::spawn_defender_in_cell(&mut app, cell);
 
     app.update();
 
@@ -124,7 +124,7 @@ fn remote_available_charger_capacity_suppresses_plan() {
     let charger_cell = IVec2::new(3, 0);
     paint_defend_owned(&mut app, defender_cell);
     paint_defend_owned(&mut app, charger_cell);
-    let defender = common::spawn_defender_in_hold_at(&mut app, defender_cell);
+    let defender = common::spawn_defender_in_cell(&mut app, defender_cell);
     app.world_mut()
         .entity_mut(defender)
         .get_mut::<Charge>()
@@ -152,7 +152,7 @@ fn remote_pending_capacity_prevents_duplicate_plans_across_ticks() {
     let plan_cell = IVec2::new(3, 0);
     paint_defend_owned(&mut app, defender_cell);
     paint_defend_owned(&mut app, plan_cell);
-    let defender = common::spawn_defender_in_hold_at(&mut app, defender_cell);
+    let defender = common::spawn_defender_in_cell(&mut app, defender_cell);
     app.world_mut()
         .entity_mut(defender)
         .get_mut::<Charge>()
@@ -202,11 +202,11 @@ fn fourth_low_charge_defender_exceeds_one_pending_chargers_capacity() {
 fn plan_uses_nearest_non_overlapping_owned_defend_site() {
     let mut app = planning_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    let legacy_hold_cell = IVec2::ZERO;
+    let initial_cell = IVec2::ZERO;
     let nearest_cell = IVec2::new(3, 0);
-    paint_defend_owned(&mut app, legacy_hold_cell);
+    paint_defend_owned(&mut app, initial_cell);
     paint_defend_owned(&mut app, nearest_cell);
-    let defender = common::spawn_defender_in_hold_at(&mut app, legacy_hold_cell);
+    let defender = common::spawn_defender_in_cell(&mut app, initial_cell);
     let nearest_center = common::cell_world_center(nearest_cell);
     app.world_mut()
         .entity_mut(defender)
@@ -250,7 +250,7 @@ fn newly_planned_charger_waits_for_next_regional_allocation_pass() {
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
     paint_defend_owned(&mut app, cell);
-    let _defender = common::spawn_low_charge_defender_in_hold_at(&mut app, cell);
+    let _defender = common::spawn_low_charge_defender_in_cell(&mut app, cell);
     let worker = common::spawn_worker_at(&mut app, common::cell_world_center(cell));
 
     // Charger demand runs after the current allocation acquisition, so the
@@ -304,7 +304,7 @@ fn planned_charger_uses_planned_visual_color() {
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::new(0, 0);
     paint_defend_owned(&mut app, cell);
-    let _defender = common::spawn_low_charge_defender_in_hold_at(&mut app, cell);
+    let _defender = common::spawn_low_charge_defender_in_cell(&mut app, cell);
 
     app.update();
 
@@ -333,7 +333,7 @@ fn planned_charger_is_owned_by_swarm_that_painted_defend_cell() {
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::new(0, 0);
     paint_defend_owned(&mut app, cell);
-    let _defender = common::spawn_low_charge_defender_in_hold_at(&mut app, cell);
+    let _defender = common::spawn_low_charge_defender_in_cell(&mut app, cell);
 
     app.update();
 
@@ -573,9 +573,8 @@ fn completed_planned_charger_provides_charge_to_defenders() {
     // Acceptance: "Completed Chargers provide charge
     // resupply through existing Charger behavior." A
     // Planned Charger is built by a Worker, then a
-    // low-charge defender in a Defend-hold on the same
-    // cell rotates to the completed Charger, refills its
-    // charge, and returns to hold. The end-to-end
+    // low-charge Defender in the same cell rotates to the completed Charger,
+    // refills its charge, and returns to current allocation. The end-to-end
     // sustain loop runs through the existing charge
     // systems (rotation, arrive, work) without any new
     // wiring.
@@ -588,11 +587,8 @@ fn completed_planned_charger_provides_charge_to_defenders() {
     app.world_mut().entity_mut(plan).insert(OwnerSwarm(swarm));
     let _worker = common::spawn_worker_at(&mut app, cell_center);
     let defender = common::spawn_defender_at(&mut app, cell_center);
-    // Paint the Defend cell so the hold system keeps the
-    // defender in hold after the rotation chain releases
-    // them. The test-driven flow (spawn plan / build /
-    // charge) bypasses the auto-creation system's paint,
-    // so the test paints the cell directly.
+    // The test-driven flow bypasses automatic planning, so paint the Defend
+    // cell directly to make the completed Charger operational.
     paint_defend_owned(&mut app, cell);
 
     // Build the plan first. 1 tick claim+arrive,
@@ -622,30 +618,22 @@ fn completed_planned_charger_provides_charge_to_defenders() {
             .expect("completed Charger entity must exist")
     };
 
-    // Put the defender into a low-charge state and into
-    // a DefendHold so the rotation chain picks it up.
+    // Put the Defender into a low-Charge state so the rotation chain picks it up.
     {
         let w = &mut app.world_mut();
         let mut entity = w.entity_mut(defender);
         let mut c = entity.get_mut::<Charge>().expect("defender has Charge");
         c.current = LOW_CHARGE_THRESHOLD;
-        entity.insert(DefendHold { cell });
     }
 
     // Drive enough ticks for rotation, 19 supplied pulses, and
-    // re-entry through current Defend allocation.
+    // re-entry through current allocation.
     for _ in 0..300 {
         app.update();
     }
 
-    // The defender is back in DefendHold with a charge
-    // above the rotation threshold (the rotation chain
-    // released them after the refill).
+    // The Defender has left Charger duty with Charge above the rotation threshold.
     let world = app.world();
-    assert!(
-        world.entity(defender).get::<DefendHold>().is_some(),
-        "defender must return to DefendHold after charging from a completed Charger"
-    );
     assert!(
         world.entity(defender).get::<ChargerAssignment>().is_none(),
         "ChargerAssignment must be cleared after charging"
@@ -743,7 +731,7 @@ fn plan_does_not_pile_under_repeated_demand_ticks() {
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::new(0, 0);
     paint_defend_owned(&mut app, cell);
-    let _defender = common::spawn_low_charge_defender_in_hold_at(&mut app, cell);
+    let _defender = common::spawn_low_charge_defender_in_cell(&mut app, cell);
 
     for _ in 0..20 {
         app.update();
