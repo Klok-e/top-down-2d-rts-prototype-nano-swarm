@@ -138,17 +138,17 @@ pub const MAX_DEFENDERS_PER_CHARGER: u32 = 3;
 // ---------------------------------------------------------------------------
 
 /// A local support structure that refills defender Charge.
-/// Spawned automatically in Defend cells by
-/// [`charger_auto_creation_system`] and refilled physically by
-/// haulers (the hauler's sink selection includes chargers
-/// with free space).
+/// Planned automatically in owned Defend paint by
+/// [`charger_auto_creation_system`] when observed low-Charge service need
+/// exceeds available capacity, then refilled physically by haulers (the
+/// hauler's sink selection includes chargers with free space).
 ///
 /// `amount` is the physical resource buffer; when `amount == 0` the
 /// charger is "empty" and is not a valid rotation target. `capacity`
 /// caps the buffer; freshly completed chargers begin empty.
 #[derive(Debug, Component, Clone, Copy)]
 pub struct Charger {
-    /// Physical cell used to require matching owner-scoped Defend paint for
+    /// Physical cell used to validate matching owner-scoped Defend paint for
     /// Defender service and Charger-specific Maintenance.
     pub cell: IVec2,
     /// Resource backing the charger. Always
@@ -395,7 +395,7 @@ pub const DEFENDER_BASE_DEFENSE: f32 = 10.0;
 /// Drain Charge by [`CHARGE_DRAIN_PER_TICK`] for every
 /// defender that has a `Charge` component. The system runs
 /// every tick so the drain is uniform regardless of the
-/// defender's current state (holding, in transit, charging).
+/// defender's current state (staging, responding, in transit, or charging).
 /// A defender that is currently charging from a supplied charger recovers
 /// through discrete pulses while the charge trends downward everywhere else.
 ///

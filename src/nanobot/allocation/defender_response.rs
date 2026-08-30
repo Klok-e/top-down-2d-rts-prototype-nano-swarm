@@ -5,7 +5,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
-use bevy::prelude::*;
+use bevy::{
+    ecs::entity::{EntityHashMap, EntityHashSet},
+    prelude::*,
+};
 
 use super::{
     AllocationRegion, CandidateBounds, RUNTIME_MAX_CANDIDATE_REGIONS, RUNTIME_MAX_CANDIDATES,
@@ -70,10 +73,14 @@ struct ThreatOccurrence {
 #[derive(Debug, Default)]
 struct ResponseWorkIndex {
     by_swarm: BTreeMap<SwarmId, ThreatsByTier>,
-    occurrences: BTreeMap<Entity, Vec<ThreatOccurrence>>,
+    occurrences: EntityHashMap<Vec<ThreatOccurrence>>,
 }
 
 impl ResponseWorkIndex {
+    fn is_empty(&self) -> bool {
+        self.by_swarm.is_empty()
+    }
+
     fn from_territory(territory: &TerritorySnapshot, claimed: &BTreeSet<Entity>) -> Self {
         let mut index = Self::default();
         for swarm in territory.swarms() {
@@ -285,6 +292,17 @@ fn response_bounds() -> CandidateBounds {
     }
 }
 
+fn has_unclaimed_threats(territory: &TerritorySnapshot, claimed: &EntityHashSet) -> bool {
+    territory.swarms().any(|swarm| {
+        territory.regions(swarm).any(|region| {
+            territory
+                .threats_in_region(swarm, region)
+                .iter()
+                .any(|threat| !claimed.contains(&threat.entity))
+        })
+    })
+}
+
 /// One possible higher-tier response replacement considered by reconciliation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ResponsePreemptionOption {
@@ -358,6 +376,7 @@ pub fn reconcile_defender_responses_system(
     >,
     structure_targets: Query<(&Transform, &OwnerSwarm, &Structure)>,
     swarms: Query<&SwarmId, With<Swarm>>,
+    mut response_movement: Query<&mut DirectMovementComponent, With<DefenderResponse>>,
 ) {
     let live_target = |entity: Entity| -> Option<LiveTarget> {
         if let Ok((transform, kind, member, health)) = nanobot_targets.get(entity) {
@@ -411,7 +430,7 @@ pub fn reconcile_defender_responses_system(
         .collect::<Vec<_>>();
     states.sort_by_key(|state| state.entity.to_bits());
 
-    let mut claimed = BTreeSet::new();
+    let mut claimed = EntityHashSet::default();
     let mut active = Vec::new();
     for state in &mut states {
         let Some(response) = state.response else {
@@ -432,17 +451,17 @@ pub fn reconcile_defender_responses_system(
             state.response = None;
             continue;
         };
-        let response = DefenderResponse {
-            target: response.target,
-        };
-        commands.entity(state.entity).insert((
-            response,
-            DirectMovementComponent {
-                xy: target.position,
-                stop_radius: DEFENDER_ATTACK_RANGE,
-            },
-        ));
-        state.response = Some(response);
+        if let Ok(mut movement) = response_movement.get_mut(state.entity) {
+            movement.xy = target.position;
+            movement.stop_radius = DEFENDER_ATTACK_RANGE;
+        } else {
+            commands
+                .entity(state.entity)
+                .insert(DirectMovementComponent {
+                    xy: target.position,
+                    stop_radius: DEFENDER_ATTACK_RANGE,
+                });
+        }
         active.push(ActiveResponse {
             defender: state.entity,
             position: state.position,
@@ -453,7 +472,15 @@ pub fn reconcile_defender_responses_system(
         });
     }
 
-    let mut work = ResponseWorkIndex::from_territory(&territory, &claimed);
+    if !has_unclaimed_threats(&territory, &claimed) {
+        return;
+    }
+
+    let ordered_claimed = claimed.iter().copied().collect::<BTreeSet<_>>();
+    let mut work = ResponseWorkIndex::from_territory(&territory, &ordered_claimed);
+    if work.is_empty() {
+        return;
+    }
 
     for state in states
         .iter_mut()
@@ -519,13 +546,18 @@ pub fn reconcile_defender_responses_system(
             target: target.entity,
         };
         response.threat_kind = target.kind;
-        commands.entity(response.defender).insert((
-            response.response,
-            DirectMovementComponent {
-                xy: target.position,
-                stop_radius: DEFENDER_ATTACK_RANGE,
-            },
-        ));
+        commands.entity(response.defender).insert(response.response);
+        if let Ok(mut movement) = response_movement.get_mut(response.defender) {
+            movement.xy = target.position;
+            movement.stop_radius = DEFENDER_ATTACK_RANGE;
+        } else {
+            commands
+                .entity(response.defender)
+                .insert(DirectMovementComponent {
+                    xy: target.position,
+                    stop_radius: DEFENDER_ATTACK_RANGE,
+                });
+        }
     }
 }
 

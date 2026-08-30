@@ -846,23 +846,23 @@ fn defender_ignores_closer_enemy_charger() {
         .world_mut()
         .spawn((Swarm {}, SwarmId(11), Transform::default()))
         .id();
-    let hold_cell = IVec2::ZERO;
+    let charger_cell = IVec2::ZERO;
     app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        hold_cell,
+        charger_cell,
         IntentKind::Defend,
         Some(SwarmId::PLAYER),
     );
 
-    let enemy_charger = common::spawn_operational_charger_at(&mut app, hold_cell, 100);
+    let enemy_charger = common::spawn_operational_charger_at(&mut app, charger_cell, 100);
     app.world_mut()
         .entity_mut(enemy_charger)
         .insert(OwnerSwarm(enemy));
-    let owned_charger = common::spawn_operational_charger_at(&mut app, hold_cell, 100);
+    let owned_charger = common::spawn_operational_charger_at(&mut app, charger_cell, 100);
     app.world_mut()
         .entity_mut(owned_charger)
         .insert(OwnerSwarm(player));
 
-    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(hold_cell));
+    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(charger_cell));
     app.world_mut()
         .entity_mut(defender)
         .insert(SwarmMember::new(SwarmId::PLAYER));
@@ -888,10 +888,10 @@ fn defender_ignores_closer_enemy_charger() {
 fn defender_uses_nearest_eligible_charger_across_owned_defend_paint() {
     let mut app = build_app();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    let source_cell = IVec2::ZERO;
+    let defender_cell = IVec2::ZERO;
     let near_cell = IVec2::new(1, 0);
     let far_cell = IVec2::new(3, 0);
-    for cell in [source_cell, near_cell, far_cell] {
+    for cell in [defender_cell, near_cell, far_cell] {
         app.world_mut().resource_mut::<IntentGrid>().paint_owned(
             cell,
             IntentKind::Defend,
@@ -902,7 +902,7 @@ fn defender_uses_nearest_eligible_charger_across_owned_defend_paint() {
     app.world_mut().entity_mut(far).insert(OwnerSwarm(swarm));
     let near = common::spawn_operational_charger_at(&mut app, near_cell, 100);
     app.world_mut().entity_mut(near).insert(OwnerSwarm(swarm));
-    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(source_cell));
+    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(defender_cell));
     app.world_mut()
         .entity_mut(defender)
         .get_mut::<Charge>()
