@@ -12,9 +12,8 @@
 //! - A spread nudge never inserts a `DirectMovementComponent` or
 //!   changes `Commitment` -- an idle bot stays fully grabbable by
 //!   the demand allocator.
-//! - A Worker spreads across the merged Gather+Build region; a
-//!   Defender ignores Gather paint (Defend-only); the region
-//!   boundary follows `fit_for == 1.0`.
+//! - A Worker spreads across the merged Gather+Build region while
+//!   Defender staging remains under regional allocation authority.
 //! - A stranded idle bot drifts toward the nearest type-fit cell.
 //!
 //! The isolated-nudge tests register `idle_spread_system` alone on a
@@ -166,18 +165,10 @@ fn player_worker_ignores_opponent_gather_paint() {
 }
 
 #[test]
-fn defender_ignores_gather_paint() {
-    // A Defender fits Defend only. Surrounded by Gather paint it has
-    // no type-fit region, so it receives no nudge. This pins the
-    // "Defender over Defend only" boundary from the acceptance
-    // criteria.
+fn generic_idle_spread_does_not_own_defender_staging() {
     let mut app = spread_only_app();
-    // Saturate the bot's cell and all 8 neighbours with Gather.
-    for dx in -1..=1 {
-        for dy in -1..=1 {
-            paint(&mut app, IVec2::new(dx, dy), IntentKind::Gather);
-        }
-    }
+    paint(&mut app, IVec2::ZERO, IntentKind::Defend);
+    paint(&mut app, IVec2::X, IntentKind::Defend);
     let bot = common::spawn_defender_at(&mut app, center(IVec2::new(0, 0)));
 
     app.update();
@@ -190,7 +181,7 @@ fn defender_ignores_gather_paint() {
         .value;
     assert!(
         velocity.length() <= 1e-5,
-        "defender surrounded by Gather paint must not be nudged; got {:?}",
+        "generic spread must leave Defender staging to regional allocation; got {:?}",
         velocity
     );
 }

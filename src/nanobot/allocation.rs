@@ -2,6 +2,7 @@
 
 pub mod allocator;
 pub mod defender_response;
+mod defender_staging;
 pub mod lease;
 pub mod projection;
 pub mod runtime;

@@ -50,10 +50,10 @@ pub fn world_space_nanobots(ctx: &mut TestContext) -> TestFlow {
         let deposit = deposit_pos();
         let corner = cell_corner_pos();
         let expected_facility = cell_origin(PLAYER_CELL) + SEED_FACILITY_OFFSET;
-        let player_facility = world
+        let player_facilities = world
             .query::<(&ProductionFacility, &OwnerSwarm, &Transform, &Structure)>()
             .iter(world)
-            .find(|(_, owner, _, _)| {
+            .filter(|(_, owner, _, _)| {
                 world
                     .entity(owner.0)
                     .get::<SwarmId>()
@@ -62,13 +62,17 @@ pub fn world_space_nanobots(ctx: &mut TestContext) -> TestFlow {
             .map(|(_, _, transform, condition)| {
                 (transform.translation.truncate(), condition.health)
             })
-            .expect("default player Production Facility must survive 900 fixed ticks");
-        assert!(
-            player_facility.0.abs_diff_eq(expected_facility, 0.01),
-            "maintained seed facility must remain at its visible authored position"
-        );
+            .collect::<Vec<_>>();
+        let seed_facility = player_facilities
+            .iter()
+            .find(|(position, _)| position.abs_diff_eq(expected_facility, 0.01))
+            .unwrap_or_else(|| {
+                panic!(
+                    "maintained seed facility must remain at its visible authored position; found {player_facilities:?}",
+                )
+            });
         assert_eq!(
-            player_facility.1, STRUCTURE_MAX_HEALTH,
+            seed_facility.1, STRUCTURE_MAX_HEALTH,
             "default Worker allocation must keep the seed facility fully maintained"
         );
 

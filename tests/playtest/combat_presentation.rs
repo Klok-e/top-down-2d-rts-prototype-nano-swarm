@@ -7,7 +7,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         ActiveCombatPulses, ActiveNanobotDeathGhosts, ActiveStructureDeathGhosts, CombatPlugin,
         CombatPresentationSettings, DefenderResponse, Health, NanobotPresentationPlugin,
         OpponentSwarm, PlannedKind, Structure, Swarm, SwarmId, SwarmMember, completed_visual_color,
-        nanobot_death_cleanup_system,
+        nanobot_death_cleanup_system, world_to_cell,
     },
 };
 
@@ -161,7 +161,16 @@ fn lethal_real_combat_removes_the_target_while_its_pulse_and_ghost_finish() {
             .is_empty()
     );
     assert!(app.world().resource::<ActiveCombatPulses>().is_empty());
-    assert_eq!(app.world().get::<Transform>(attacker), Some(&attacker_root));
+    let returned_root = app.world().get::<Transform>(attacker).unwrap();
+    assert_eq!(
+        world_to_cell(returned_root.translation.truncate()),
+        cell,
+        "the released Defender should rejoin local staging",
+    );
+    assert_ne!(
+        returned_root, &attacker_root,
+        "a Defender released from lethal response duty should resume roaming",
+    );
 }
 
 #[test]

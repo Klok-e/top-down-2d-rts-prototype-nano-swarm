@@ -1,6 +1,6 @@
 //! Idle cosmetic spread (issue #39).
 //!
-//! Idle nanobots (`Commitment::Idle`) standing inside a type-fit intent
+//! Idle Workers and Haulers (`Commitment::Idle`) standing inside a type-fit intent
 //! zone redistribute across that zone so the swarm looks alive instead
 //! of stacking. The nudge is purely cosmetic: it writes only to
 //! [`VelocityComponent`], never inserts a [`DirectMovementComponent`],
@@ -17,8 +17,8 @@
 //!    [`NanobotType::fit_for`] scores `1.0`. Region membership is
 //!    decided per-step by checking the neighbour cell's paint; no
 //!    flood-fill is computed. A Worker treats Gather and Build cells
-//!    as one region; a Hauler spreads over Corridor only; a Defender
-//!    over Defend only.
+//!    as one region; a Hauler spreads over Corridor only. Defender
+//!    staging is owned by regional allocation.
 //! 2. **Stranded bots seek nearest fit-paint.** An idle bot whose
 //!    current cell has none of its type-fit paint drifts toward the
 //!    nearest fit-paint cell instead of doing a gradient step. If no
@@ -60,9 +60,9 @@ use crate::nanobot::components::{
 };
 use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::{
-    Cargo, ChargerAssignment, ChargerProgress, DefenderResponse, ExtractProgress, GatherAssignment,
-    HaulerAssignment, HaulerLoading, MaintenanceAssignment, MaintenanceProgress,
-    PlannedStructureClaim, PlannedStructureProgress, ReturningToStockpile,
+    Cargo, ExtractProgress, GatherAssignment, HaulerAssignment, HaulerLoading,
+    MaintenanceAssignment, MaintenanceProgress, PlannedStructureClaim, PlannedStructureProgress,
+    ReturningToStockpile,
 };
 
 /// Per-tick velocity nudge magnitude applied to idle bots spreading
@@ -79,9 +79,12 @@ pub const BOT_SPREAD_FORCE: f32 = 1.5;
 /// [`NanobotType::fit_for`] scores exactly `1.0`. The `0.5`
 /// Hauler/Build partial-fit score is excluded -- spread uses
 /// `== 1.0` only, matching the locked-in model. Derived from
-/// `fit_for` so the spread region tracks any future fit-table
-/// change automatically.
-pub fn fit_kinds(ntype: NanobotType) -> Vec<IntentKind> {
+/// `fit_for`; generic spread applies to Worker and Hauler fit
+/// semantics, while Defender staging has its own policy.
+pub fn spread_kinds(ntype: NanobotType) -> Vec<IntentKind> {
+    if ntype == NanobotType::Defender {
+        return Vec::new();
+    }
     IntentKind::ALL
         .into_iter()
         .filter(|k| ntype.fit_for(*k) == 1.0)
@@ -91,8 +94,8 @@ pub fn fit_kinds(ntype: NanobotType) -> Vec<IntentKind> {
 /// True when `cell` carries at least one type-fit paint layer for
 /// `ntype`. Region membership is per-cell paint, not flood-fill: a
 /// cell is in-region iff it has at least one kind scoring `1.0`.
-pub fn cell_is_fit_for(ntype: NanobotType, cell: &IntentCell) -> bool {
-    fit_kinds(ntype).iter().any(|k| cell.has(*k))
+pub fn cell_is_eligible_for_generic_spread(ntype: NanobotType, cell: &IntentCell) -> bool {
+    spread_kinds(ntype).iter().any(|k| cell.has(*k))
 }
 
 /// The 8 king-move (Chebyshev-1) neighbours of `cell`, in a fixed
@@ -120,7 +123,7 @@ pub fn fit_neighbour_cells(ntype: NanobotType, cell: IVec2, grid: &IntentGrid) -
         .into_iter()
         .filter_map(|n| {
             let neighbour = grid.cell(n)?;
-            cell_is_fit_for(ntype, neighbour).then_some(n)
+            cell_is_eligible_for_generic_spread(ntype, neighbour).then_some(n)
         })
         .collect()
 }
@@ -291,7 +294,7 @@ fn type_index(ntype: NanobotType) -> usize {
 /// [`crate::nanobot::SoftWorkSlots`] model). `idle_bots` then nudges
 /// only `Commitment::Idle` bots that have no
 /// [`DirectMovementComponent`] or active task marker (carrying,
-/// working, holding, charging, and moving bots are never nudged).
+/// working, hauling, and moving bots are never nudged).
 /// The two queries read `Transform` together (read-
 /// read compatible) and only `idle_bots` writes `VelocityComponent`,
 /// so they do not conflict.
@@ -321,11 +324,8 @@ pub fn idle_spread_system(
             With<PlannedStructureProgress>,
             With<MaintenanceAssignment>,
             With<MaintenanceProgress>,
-            With<DefenderResponse>,
             With<HaulerAssignment>,
             With<HaulerLoading>,
-            With<ChargerAssignment>,
-            With<ChargerProgress>,
         )>,
     >,
     mut spread_tick: Local<u64>,
@@ -333,7 +333,7 @@ pub fn idle_spread_system(
     // Per-swarm, per-type fit-cell lists are rebuilt every tick so
     // opponent paint cannot attract another swarm's idle nanobots.
     let kind_sets: [Vec<IntentKind>; NanobotType::COUNT] =
-        std::array::from_fn(|i| fit_kinds(NanobotType::ALL[i]));
+        std::array::from_fn(|i| spread_kinds(NanobotType::ALL[i]));
 
     // Density counts every nanobot, while the map keys also identify
     // the swarms that need their own visible-intent index.
@@ -437,10 +437,10 @@ mod tests {
     }
 
     #[test]
-    fn fit_kinds_match_exactly_one_dot_zero_score() {
+    fn spread_kinds_match_generic_role_regions_and_exclude_defenders() {
         // Worker: Gather + Build (both 1.0). The 0.0 Defend/Corridor
         // scores are excluded.
-        let worker = fit_kinds(NanobotType::Worker);
+        let worker = spread_kinds(NanobotType::Worker);
         assert!(worker.contains(&IntentKind::Gather));
         assert!(worker.contains(&IntentKind::Build));
         assert!(!worker.contains(&IntentKind::Defend));
@@ -448,42 +448,61 @@ mod tests {
 
         // Hauler: Corridor only. The 0.5 Build partial-fit is the
         // critical exclusion -- spread uses == 1.0, not > 0.
-        let hauler = fit_kinds(NanobotType::Hauler);
+        let hauler = spread_kinds(NanobotType::Hauler);
         assert_eq!(hauler, vec![IntentKind::Corridor]);
 
-        // Defender: Defend only.
-        let defender = fit_kinds(NanobotType::Defender);
-        assert_eq!(defender, vec![IntentKind::Defend]);
+        assert!(spread_kinds(NanobotType::Defender).is_empty());
     }
 
     #[test]
-    fn cell_is_fit_for_merges_worker_gather_and_build() {
+    fn cell_is_eligible_for_generic_spread_merges_worker_gather_and_build() {
         // A cell with Gather only is fit for a Worker; a cell with
         // Build only is also fit for a Worker. The merged worker
         // region is the union of both kinds.
         let mut gather_only = IntentCell::default();
         gather_only.add(IntentKind::Gather);
-        assert!(cell_is_fit_for(NanobotType::Worker, &gather_only));
-        assert!(!cell_is_fit_for(NanobotType::Hauler, &gather_only));
+        assert!(cell_is_eligible_for_generic_spread(
+            NanobotType::Worker,
+            &gather_only
+        ));
+        assert!(!cell_is_eligible_for_generic_spread(
+            NanobotType::Hauler,
+            &gather_only
+        ));
 
         let mut build_only = IntentCell::default();
         build_only.add(IntentKind::Build);
-        assert!(cell_is_fit_for(NanobotType::Worker, &build_only));
-        assert!(!cell_is_fit_for(NanobotType::Defender, &build_only));
+        assert!(cell_is_eligible_for_generic_spread(
+            NanobotType::Worker,
+            &build_only
+        ));
+        assert!(!cell_is_eligible_for_generic_spread(
+            NanobotType::Defender,
+            &build_only
+        ));
 
         // A Hauler partial-fit Build cell (0.5 score) is NOT fit for
         // a Hauler under the == 1.0 spread rule, and not fit for a
         // Worker either (Worker scores Build 1.0 -- so this cell IS
         // fit for a Worker, proving the union).
-        assert!(cell_is_fit_for(NanobotType::Worker, &build_only));
+        assert!(cell_is_eligible_for_generic_spread(
+            NanobotType::Worker,
+            &build_only
+        ));
 
         let mut corridor = IntentCell::default();
         corridor.add(IntentKind::Corridor);
-        assert!(cell_is_fit_for(NanobotType::Hauler, &corridor));
-        assert!(!cell_is_fit_for(NanobotType::Worker, &corridor));
+        assert!(cell_is_eligible_for_generic_spread(
+            NanobotType::Hauler,
+            &corridor
+        ));
+        assert!(!cell_is_eligible_for_generic_spread(
+            NanobotType::Worker,
+            &corridor
+        ));
 
         // Empty cell fits nobody.
-        assert!(!cell_is_fit_for(
+        assert!(!cell_is_eligible_for_generic_spread(
             NanobotType::Worker,
             &IntentCell::default()
         ));
