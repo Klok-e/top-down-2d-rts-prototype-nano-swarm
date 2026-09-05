@@ -353,6 +353,7 @@ pub fn worker_build_arrive_system(
     workers: Query<
         (Entity, &Transform, &BuildAssignment),
         (
+            Without<super::WorkBlocked>,
             With<Nanobot>,
             With<BuildAssignment>,
             Without<DirectMovementComponent>,
@@ -401,7 +402,14 @@ pub fn worker_build_arrive_system(
 pub fn worker_build_work_system(
     mut commands: Commands,
     mut slots: ResMut<SoftWorkSlots>,
-    mut workers: Query<(Entity, &Transform, &BuildProgress), (With<Nanobot>, With<BuildProgress>)>,
+    mut workers: Query<
+        (Entity, &Transform, &BuildProgress),
+        (
+            Without<super::WorkBlocked>,
+            With<Nanobot>,
+            With<BuildProgress>,
+        ),
+    >,
     mut build_sites: Query<(Entity, &mut BuildSite, &Transform)>,
     mut structures: Query<(&mut Structure, &Transform)>,
     mut stockpiles: Query<(Entity, &mut Stockpile, &Transform)>,

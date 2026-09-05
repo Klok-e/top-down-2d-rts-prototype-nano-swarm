@@ -233,6 +233,7 @@ pub fn regional_allocation_acquisition_system(
             &Commitment,
             &SwarmMember,
             Option<&RegionalLease>,
+            Option<&crate::nanobot::work_navigation::RejectedWorkGoal>,
         ),
         With<Nanobot>,
     >,
@@ -346,7 +347,7 @@ pub fn regional_allocation_acquisition_system(
 
     let mut candidates = bots
         .iter()
-        .filter_map(|(entity, transform, kind, commitment, swarm, lease)| {
+        .filter_map(|(entity, transform, kind, commitment, swarm, lease, _)| {
             if *commitment != Commitment::Idle {
                 return None;
             }
@@ -481,12 +482,17 @@ pub fn regional_allocation_acquisition_system(
         let Some(ordered) = ordered_regions.get(&bot_key) else {
             continue;
         };
+        let rejected = bots
+            .get(bot.entity)
+            .ok()
+            .and_then(|(_, _, _, _, _, _, rejected)| rejected);
         let decision = if bot.kind == NanobotType::Hauler {
             choose_terminal_logistics_work(
                 bot,
                 pull,
                 ordered,
                 bounds,
+                rejected.map(|rejected| rejected.region),
                 &stockpiles,
                 facilities,
                 chargers,
@@ -537,6 +543,9 @@ pub fn regional_allocation_acquisition_system(
                             .map(InteractionRegion::structure),
                         OpportunityTarget::Haul { .. } => None,
                     }?;
+                    if rejected.is_some_and(|rejected| rejected.region == region) {
+                        return None;
+                    }
                     matches!(
                         navigation.query_interaction(bot.position, region, &grid, bot.swarm, false),
                         RouteStatus::Found(_)
@@ -622,6 +631,7 @@ fn choose_terminal_logistics_work(
     pull: super::RegionalPullBudget,
     ordered: &[(AllocationRegion, &[ActionableOpportunity])],
     bounds: CandidateBounds,
+    rejected: Option<InteractionRegion>,
     stockpiles: &Query<(&Stockpile, &Transform)>,
     facilities: &Query<(&ProductionFacility, &Transform)>,
     chargers: &Query<(&Charger, &Transform)>,
@@ -652,6 +662,9 @@ fn choose_terminal_logistics_work(
             let Ok((source_state, source_transform)) = stockpiles.get(source) else {
                 continue;
             };
+            if rejected == Some(InteractionRegion::structure(source_transform)) {
+                continue;
+            }
             let source_available = source_state
                 .amount
                 .saturating_sub(reserved_source.get(&source).copied().unwrap_or_default());

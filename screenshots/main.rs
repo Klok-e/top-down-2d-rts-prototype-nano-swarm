@@ -26,6 +26,7 @@ use libtest_mimic::{Arguments, Conclusion, Failed, Trial};
 mod background_checkerboard;
 mod build_zone_placement;
 mod combat_presentation;
+mod congested_work;
 mod construction_access;
 mod construction_lifecycle;
 mod defender_combat_readability;
@@ -75,6 +76,8 @@ fn main() -> std::process::ExitCode {
     // Each test is ignored so default run skips GPU setup. `--ignored` runs
     // only ignored tests, matching standard `cargo test` convention.
     let tests = vec![
+        Trial::test("congested_work", || run(congested_work::congested_work))
+            .with_ignored_flag(true),
         Trial::test("startup_formations", || {
             run(local_avoidance::startup_formations)
         })

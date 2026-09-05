@@ -52,7 +52,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         SoftWorkSlots, Structure, StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent,
         bot_debug_circle_system, idle_spread_system, initialize_nanobot_type_components,
         move_velocity_system, project_actionable_opportunities_system, separation_system,
-        velocity_system,
+        velocity_system, work_standing_system,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole},
     structure_overlay::StructureOverlayPlugin,
@@ -101,6 +101,7 @@ fn register_movement_systems(app: &mut App) {
             separation_system,
             idle_spread_system,
             velocity_system,
+            work_standing_system,
         )
             .chain()
             .in_set(NanobotSimulationSet::Movement),

@@ -1,188 +1,32 @@
-use bevy::prelude::{
-    Commands, Component, Entity, Local, ParamSet, Quat, Query, Res, Transform, Vec2, With,
-};
+use bevy::{ecs::system::SystemParam, prelude::*};
 
+use super::{DirectMovementComponent, Nanobot, SwarmId, SwarmMember, VelocityComponent};
 use crate::{
     game_settings::GameSettings, nanobot::consts::BOT_SEPARATION_FORCE,
     spatial::FixedSpatialBuckets,
 };
 
-use super::{
-    components::{DirectMovementComponent, Nanobot, ProgressChecker, VelocityComponent},
-    consts::STOP_THRESHOLD,
-};
+/// A stalled traveller may temporarily pass through friendly bodies, never world geometry.
+#[derive(Component, Debug)]
+pub struct CongestionRecovery;
 
-pub struct ActiveRoute {
-    destination: Vec2,
-    stop_radius: f32,
-    interaction: Option<super::InteractionRegion>,
-    waypoints: Vec<Vec2>,
-    current: usize,
-    revision: u64,
-    pending: Option<crate::navigation::RouteRequestId>,
+#[derive(Default)]
+pub struct TravelProgress {
+    goal: Vec2,
+    best_distance: f32,
+    last_progress: f64,
+    recovering: bool,
+    crossed: bool,
 }
 
-#[allow(clippy::type_complexity)]
-pub fn move_velocity_system(
-    mut commands: Commands,
-    mut routes: Local<std::collections::HashMap<Entity, ActiveRoute>>,
-    mut bots: Query<(
-        Entity,
-        &DirectMovementComponent,
-        &Transform,
-        &mut VelocityComponent,
-        Option<&super::NanobotType>,
-        Option<&super::SwarmMember>,
-        Option<&super::ClearingEvacuation>,
-        Option<&TrafficYield>,
-    )>,
-    game_settings: Res<GameSettings>,
-    navigation: Res<crate::navigation::Navigation>,
-) {
-    use crate::navigation::{RouteGoal, RoutePriority, RouteStatus};
-    routes.retain(|entity, route| {
-        if bots.contains(*entity) {
-            true
-        } else {
-            if let Some(id) = route.pending {
-                navigation.cancel(id);
-            }
-            false
-        }
-    });
-    for (entity, destination, transform, mut velocity, kind, member, evacuation, yielding) in
-        &mut bots
-    {
-        let evacuation_destination = evacuation.map(|evacuation| DirectMovementComponent {
-            xy: evacuation.goal,
-            stop_radius: 0.0,
-            interaction: None,
-            speed: None,
-        });
-        let destination = evacuation_destination.as_ref().unwrap_or(destination);
-        let position = transform.translation.truncate();
-        let stop = destination.stop_radius.max(STOP_THRESHOLD);
-        if destination
-            .interaction
-            .map_or(position.distance(destination.xy) <= stop, |region| {
-                region.contains(position)
-            })
-            && navigation.point_clear(position)
-        {
-            commands
-                .entity(entity)
-                .remove::<DirectMovementComponent>()
-                .remove::<ProgressChecker>();
-            if let Some(route) = routes.remove(&entity)
-                && let Some(id) = route.pending
-            {
-                navigation.cancel(id);
-            }
-            continue;
-        }
-        let needs_route = routes.get(&entity).is_none_or(|route| {
-            (route.pending.is_none()
-                && route.destination != destination.xy
-                && (route.destination.distance(destination.xy) > crate::navigation::CELL_WIDTH
-                    || route.current >= route.waypoints.len()))
-                || route.stop_radius != stop
-                || route.interaction != destination.interaction
-                || (route.waypoints.is_empty() && route.revision != navigation.revision())
-                || yielding.is_none()
-                    && route
-                        .waypoints
-                        .get(route.current)
-                        .is_some_and(|next| !navigation.segment_clear(position, *next))
-        });
-        if needs_route {
-            let swarm = member.map_or(super::SwarmId::PLAYER, |member| member.0);
-            let hauler = kind == Some(&super::NanobotType::Hauler);
-            let priority = if evacuation.is_some() {
-                RoutePriority::Clearing
-            } else if routes.contains_key(&entity) {
-                RoutePriority::Invalidated
-            } else {
-                RoutePriority::Routine
-            };
-            if let Some(route) = routes.get(&entity)
-                && let Some(id) = route.pending
-            {
-                navigation.cancel(id);
-            }
-            let goal = if let Some(region) = destination.interaction {
-                RouteGoal::Interaction(region)
-            } else if stop > STOP_THRESHOLD {
-                RouteGoal::Range {
-                    center: destination.xy,
-                    radius: stop,
-                }
-            } else {
-                RouteGoal::Point(destination.xy)
-            };
-            let pending = Some(navigation.request(position, goal, swarm, hauler, priority));
-            let (waypoints, current) = routes
-                .get(&entity)
-                .filter(|route| {
-                    route.interaction == destination.interaction
-                        && route
-                            .waypoints
-                            .get(route.current)
-                            .is_some_and(|next| navigation.segment_clear(position, *next))
-                })
-                .map_or_else(
-                    || (Vec::new(), 0),
-                    |route| (route.waypoints.clone(), route.current),
-                );
-            routes.insert(
-                entity,
-                ActiveRoute {
-                    destination: destination.xy,
-                    stop_radius: stop,
-                    waypoints,
-                    interaction: destination.interaction,
-                    current,
-                    revision: navigation.revision(),
-                    pending,
-                },
-            );
-        }
-        let route = routes.get_mut(&entity).expect("route was resolved");
-        if let Some(id) = route.pending {
-            match navigation.poll(id) {
-                RouteStatus::Pending => {}
-                RouteStatus::Found(found) => {
-                    route.waypoints = found.waypoints;
-                    route.current = 0;
-                    route.pending = None;
-                    navigation.cancel(id);
-                }
-                RouteStatus::Unreachable => {
-                    route.waypoints.clear();
-                    route.current = 0;
-                    route.pending = None;
-                    navigation.cancel(id);
-                }
-            }
-        }
-        while route
-            .waypoints
-            .get(route.current)
-            .is_some_and(|point| position.distance(*point) < 0.01)
-        {
-            route.current += 1;
-        }
-        if let Some(next) = route.waypoints.get(route.current) {
-            if yielding.is_some() {
-                commands.entity(entity).insert(TrafficYield {
-                    rejoin: Some(*next),
-                });
-            }
-            let delta = *next - position;
-            let speed = destination.speed.unwrap_or(game_settings.bot_speed);
-            velocity.value += delta.normalize_or_zero() * speed.min(delta.length());
-        }
-    }
-}
+type ActiveWork = Or<(
+    With<super::ExtractProgress>,
+    With<super::HaulerLoading>,
+    With<super::BuildProgress>,
+    With<super::PlannedStructureProgress>,
+    With<super::MaintenanceProgress>,
+    With<super::ChargerProgress>,
+)>;
 
 #[derive(Clone, Copy)]
 struct SeparationEntry {
@@ -242,9 +86,18 @@ fn separation_deltas(entries: &[SeparationEntry]) -> Vec<(Entity, Vec2)> {
     deltas
 }
 
+#[allow(clippy::type_complexity)]
 pub fn separation_system(
     snapshots: Query<(Entity, &Transform), With<Nanobot>>,
-    mut velocities: Query<&mut VelocityComponent, With<Nanobot>>,
+    mut velocities: Query<
+        (
+            &mut VelocityComponent,
+            Has<CongestionRecovery>,
+            Has<super::RemainingTravel>,
+            Has<super::WaitingForWork>,
+        ),
+        With<Nanobot>,
+    >,
 ) {
     let entries: Vec<_> = snapshots
         .iter()
@@ -255,7 +108,9 @@ pub fn separation_system(
         .collect();
 
     for (entity, delta) in separation_deltas(&entries) {
-        if let Ok(mut velocity) = velocities.get_mut(entity) {
+        if let Ok((mut velocity, recovering, travelling, queued)) = velocities.get_mut(entity)
+            && (!recovering || !travelling || queued)
+        {
             velocity.value += delta;
         }
     }
@@ -295,7 +150,7 @@ struct TrafficBody {
 
 #[derive(Component, Debug)]
 pub struct TrafficYield {
-    rejoin: Option<Vec2>,
+    pub(super) rejoin: Option<Vec2>,
 }
 
 #[derive(Debug)]
@@ -319,6 +174,16 @@ fn swept_separation(start: Vec2, delta: Vec2, other: TrafficBody) -> f32 {
     (relative + travel * t).length()
 }
 
+#[derive(SystemParam)]
+pub struct TrafficContext<'w, 's> {
+    time: Res<'w, Time<Fixed>>,
+    members: Query<'w, 's, &'static SwarmMember>,
+    remaining_travel: Query<'w, 's, &'static super::RemainingTravel>,
+    active_work: Query<'w, 's, (), ActiveWork>,
+    commitments: Query<'w, 's, &'static super::Commitment>,
+    queued: Query<'w, 's, (), With<super::WaitingForWork>>,
+}
+
 #[allow(clippy::type_complexity)]
 pub fn velocity_system(
     mut commands: Commands,
@@ -334,9 +199,19 @@ pub fn velocity_system(
         )>,
     )>,
     mut yielding: Local<std::collections::HashMap<Entity, Yielding>>,
+    mut progress: Local<std::collections::HashMap<Entity, TravelProgress>>,
+    traffic: TrafficContext,
     game_settings: Res<GameSettings>,
     navigation: Res<crate::navigation::Navigation>,
 ) {
+    let TrafficContext {
+        time,
+        members,
+        remaining_travel,
+        active_work,
+        commitments,
+        queued,
+    } = traffic;
     let physical = world.p0().snapshot();
     let mut query = world.p1();
     let diameter = crate::navigation::BODY_RADIUS * 2.0;
@@ -364,6 +239,122 @@ pub fn velocity_system(
     for (i, (body, _)) in bodies.iter().enumerate() {
         lookup.insert(body.start, i);
     }
+    let now = time.elapsed_secs_f64();
+    progress.retain(|entity, _| indices.contains_key(entity));
+    let friendly = |a: Entity, b: Entity| {
+        members.get(a).map_or(SwarmId::PLAYER, |member| member.0)
+            == members.get(b).map_or(SwarmId::PLAYER, |member| member.0)
+    };
+    let pinned: std::collections::HashSet<_> = bodies
+        .iter()
+        .filter_map(|(body, _)| {
+            ((active_work.contains(body.entity)
+                || commitments
+                    .get(body.entity)
+                    .is_ok_and(|value| *value == super::Commitment::Working))
+                && query.get(body.entity).unwrap().5.is_none()
+                && !queued.contains(body.entity))
+            .then_some(body.entity)
+        })
+        .collect();
+    for i in 0..bodies.len() {
+        let (body, _) = bodies[i];
+        let movement = query
+            .get(body.entity)
+            .unwrap()
+            .5
+            .map(|movement| movement.xy);
+        if pinned.contains(&body.entity) {
+            bodies[i].1 = Vec2::ZERO;
+        } else if movement.is_none() || queued.contains(body.entity) {
+            // Step sideways before an approaching friendly reaches the waiting body's space.
+            let approaching = lookup
+                .neighbourhood(lookup.bucket_for_position(body.start), 1)
+                .flat_map(|(_, entries)| entries.iter().copied())
+                .filter(|j| *j != i)
+                .filter(|j| friendly(body.entity, bodies[*j].0.entity))
+                .find(|j| {
+                    let (other, wanted) = bodies[*j];
+                    query.get(other.entity).unwrap().5.is_some()
+                        && !queued.contains(other.entity)
+                        && wanted.dot(body.start - other.start) > 0.0
+                        && swept_separation(
+                            body.start,
+                            Vec2::ZERO,
+                            TrafficBody {
+                                delta: wanted.normalize_or_zero() * diameter * 2.0,
+                                ..other
+                            },
+                        ) < diameter + 2.0
+                });
+            if let Some(j) = approaching {
+                let heading = bodies[j].1.normalize_or_zero();
+                let side = Vec2::new(-heading.y, heading.x);
+                let offset = body.start - bodies[j].0.start;
+                let preferred = if offset.dot(side) >= 0.0 { side } else { -side };
+                bodies[i].1 = [preferred, -preferred]
+                    .into_iter()
+                    .find_map(|direction| {
+                        let delta = direction * game_settings.bot_speed;
+                        physical
+                            .movement_clear(body.start, body.start + direction * diameter)
+                            .then_some(delta)
+                    })
+                    .unwrap_or(Vec2::ZERO);
+            }
+        }
+        let overlapping = lookup
+            .neighbourhood(lookup.bucket_for_position(body.start), 1)
+            .flat_map(|(_, entries)| entries.iter().copied())
+            .any(|j| j != i && body.start.distance(bodies[j].0.start) < diameter - 0.001);
+        let Some(movement) = movement.filter(|_| !queued.contains(body.entity)) else {
+            let recovering_overlap = overlapping
+                && progress
+                    .get(&body.entity)
+                    .is_some_and(|state| state.recovering);
+            if recovering_overlap {
+                progress.get_mut(&body.entity).unwrap().crossed = true;
+            } else if progress.remove(&body.entity).is_some() {
+                commands.entity(body.entity).remove::<CongestionRecovery>();
+            }
+            continue;
+        };
+        let Ok(remaining) = remaining_travel.get(body.entity) else {
+            let recovering_overlap = overlapping
+                && progress
+                    .get(&body.entity)
+                    .is_some_and(|state| state.recovering);
+            if recovering_overlap {
+                progress.get_mut(&body.entity).unwrap().crossed = true;
+            } else if progress.remove(&body.entity).is_some() {
+                commands.entity(body.entity).remove::<CongestionRecovery>();
+            }
+            continue;
+        };
+        let distance = remaining.0;
+        let state = progress.entry(body.entity).or_insert(TravelProgress {
+            goal: movement,
+            best_distance: distance,
+            last_progress: now,
+            ..Default::default()
+        });
+        if state.goal != movement {
+            state.goal = movement;
+            state.best_distance = distance;
+            state.last_progress = now;
+        } else if distance + 2.0 < state.best_distance {
+            state.best_distance = distance;
+            state.last_progress = now;
+        }
+        state.crossed |= state.recovering && overlapping;
+        if state.recovering && (state.crossed || state.last_progress == now) && !overlapping {
+            state.recovering = false;
+            state.crossed = false;
+            state.best_distance = distance;
+            state.last_progress = now;
+            commands.entity(body.entity).remove::<CongestionRecovery>();
+        }
+    }
     yielding.retain(|entity, state| {
         let retain = indices.contains_key(entity) && indices.contains_key(&state.to);
         if !retain && indices.contains_key(entity) {
@@ -374,11 +365,38 @@ pub fn velocity_system(
     // Earlier bodies reserve swept motion; later bodies remain stationary until resolved.
     for i in 0..bodies.len() {
         let (body, desired) = bodies[i];
+        if pinned.contains(&body.entity) {
+            yielding.remove(&body.entity);
+            commands.entity(body.entity).remove::<TrafficYield>();
+            continue;
+        }
         let nearby: Vec<_> = lookup
             .neighbourhood(lookup.bucket_for_position(body.start), 1)
             .flat_map(|(_, entries)| entries.iter().copied())
             .filter(|j| *j != i)
             .collect();
+        if let Some(state) = progress.get_mut(&body.entity) {
+            let obstructed_by_friend = remaining_travel
+                .get(body.entity)
+                .is_ok_and(|remaining| remaining.0 > 0.01)
+                && nearby.iter().any(|j| {
+                    let other = bodies[*j].0;
+                    friendly(body.entity, other.entity)
+                        && swept_separation(body.start, desired, other) < diameter
+                });
+            if !state.recovering && now - state.last_progress >= 1.0 && obstructed_by_friend {
+                state.recovering = true;
+                state.crossed = false;
+                commands.entity(body.entity).insert(CongestionRecovery);
+            }
+            if state.recovering {
+                yielding.remove(&body.entity);
+                commands.entity(body.entity).remove::<TrafficYield>();
+            }
+        }
+        let recovering = progress
+            .get(&body.entity)
+            .is_some_and(|state| state.recovering);
         if let Some(state) = yielding.get_mut(&body.entity) {
             let (other, other_wanted) = bodies[indices[&state.to]];
             let following = nearby.iter().any(|j| {
@@ -395,7 +413,8 @@ pub fn velocity_system(
                 state.returning = true;
             }
         }
-        if !yielding.contains_key(&body.entity)
+        if !recovering
+            && !yielding.contains_key(&body.entity)
             && desired.length_squared() > 0.01
             && query.get(body.entity).unwrap().5.is_some()
         {
@@ -441,7 +460,7 @@ pub fn velocity_system(
                     .insert(TrafficYield { rejoin: None });
             }
         }
-        if !yielding.contains_key(&body.entity) {
+        if !recovering && !yielding.contains_key(&body.entity) {
             let inherited = nearby.iter().find_map(|j| {
                 let other = bodies[*j].0;
                 let state = yielding.get(&other.entity)?;
@@ -486,7 +505,16 @@ pub fn velocity_system(
                 && nearby.iter().all(|j| {
                     let other = bodies[*j].0;
                     // Invalid initial overlaps may separate, but cannot deepen.
-                    let required = diameter.min(body.start.distance(other.start));
+                    let passing_friend = friendly(body.entity, other.entity)
+                        && (recovering
+                            || progress
+                                .get(&other.entity)
+                                .is_some_and(|state| state.recovering));
+                    let required = if passing_friend {
+                        0.0
+                    } else {
+                        diameter.min(body.start.distance(other.start))
+                    };
                     swept_separation(body.start, delta, other) + 0.001 >= required
                 })
         };

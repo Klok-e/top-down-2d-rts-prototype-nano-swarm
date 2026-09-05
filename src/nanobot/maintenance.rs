@@ -331,6 +331,7 @@ pub fn worker_maintenance_arrive_system(
     workers: Query<
         (Entity, &Transform, &MaintenanceAssignment),
         (
+            Without<super::WorkBlocked>,
             With<Nanobot>,
             With<MaintenanceAssignment>,
             Without<DirectMovementComponent>,
@@ -384,7 +385,10 @@ pub fn worker_maintenance_arrive_system(
 #[allow(clippy::type_complexity)]
 pub fn worker_maintenance_work_system(
     mut commands: Commands,
-    mut workers: Query<(Entity, &Transform, &mut MaintenanceProgress), With<Nanobot>>,
+    mut workers: Query<
+        (Entity, &Transform, &mut MaintenanceProgress),
+        (With<Nanobot>, Without<super::WorkBlocked>),
+    >,
     mut structures: Query<(&mut Structure, &Transform)>,
 ) {
     for (entity, transform, mut progress) in &mut workers {

@@ -501,6 +501,7 @@ pub fn worker_planned_structure_arrive_system(
     workers: Query<
         (Entity, &Transform, &PlannedStructureClaim),
         (
+            Without<super::WorkBlocked>,
             With<Nanobot>,
             With<PlannedStructureClaim>,
             Without<DirectMovementComponent>,
@@ -540,7 +541,10 @@ pub fn worker_planned_structure_arrive_system(
 #[allow(clippy::type_complexity)]
 pub fn worker_planned_structure_work_system(
     mut commands: Commands,
-    workers: Query<(Entity, &Transform, &PlannedStructureProgress), With<Nanobot>>,
+    workers: Query<
+        (Entity, &Transform, &PlannedStructureProgress),
+        (With<Nanobot>, Without<super::WorkBlocked>),
+    >,
     mut planned: Query<(&mut PlannedStructure, &Transform)>,
 ) {
     for (worker, transform, progress) in &workers {
