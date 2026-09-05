@@ -33,7 +33,7 @@ An intent zone where nanobots extract resources from available deposits. Each Re
 _Avoid_: Mining zone, resource zone
 
 **Resource Deposit**:
-A map object that contains extractable resources for gather work. It is separate from the resource kind it contains, so a mineral-bearing deposit is still a resource deposit.
+A physical map object containing extractable resources for gather work, distinct from the resource kind it contains. It blocks Nanobot movement while the object exists, including when depleted; gathering happens from reachable space outside its footprint.
 _Avoid_: Mineral node, mineral patch, resource pile
 
 **Build Zone**:
@@ -101,12 +101,16 @@ When an intent category has valid work and available eligible nanobots, the swar
 _Avoid_: Manual assignment, hard quota, perfect allocation
 
 **Planned Structure**:
-A stable, owner-scoped commitment to build one support structure at one location. It persists when the demand that triggered it recedes and resolves only by completion or destruction.
+A stable, owner-scoped commitment to build one support structure at one location, persisting when its triggering demand recedes. It remains traversable until clearing for completion and resolves by completion, destruction, or cancellation when the final access check fails.
 _Avoid_: Blueprint, ghost building, construction order
 
 **Building Footprint**:
-The world area visibly occupied by a planned or completed support structure. Planned and completed forms reserve the same kind-specific footprint, which cannot overlap other structures or resource deposits; nanobots do not block it.
+The visible world area reserved by a planned or completed support structure, identical for both forms and excluding overlap with other structures or Resource Deposits. Completed footprints block Nanobot movement; Planned Structures allow passage until clearing, and transient Nanobot occupancy is handled by clearing rather than placement exclusion.
 _Avoid_: Generic sprite size, unit collision
+
+**Structure Clearing**:
+The phase after construction work and access validation in which a Planned Structure bars new entrants while existing occupants leave its Building Footprint. It becomes operational only after the footprint is empty.
+_Avoid_: Forced eviction, instant completion
 
 **Maintenance**:
 Ongoing worker time required to prevent structure collapse. A structure remains fully functional while any health remains and is destroyed at zero; overexpansion or cut-off worker access creates collapse risk rather than partial shutdown.
