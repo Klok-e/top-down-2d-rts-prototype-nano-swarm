@@ -168,7 +168,7 @@ fn worker_delivers_carry_to_nearest_stockpile() {
     // was carrying.
     let mut app = build_app();
     let deposit_pos = Vec2::new(100.0, 0.0);
-    let stockpile_pos = Vec2::new(150.0, 0.0); // very close, within radius
+    let stockpile_pos = Vec2::new(244.0, 0.0); // Separate footprints, within delivery search radius
     let deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -190,11 +190,19 @@ fn worker_delivers_carry_to_nearest_stockpile() {
     for _ in 0..(WORKER_CARRY_CAPACITY as usize) {
         app.update();
     }
-    // Travel from the deposit at (100, 0) to the stockpile at
-    // (150, 0) at bot_speed 5.0 = 10 ticks, plus one tick for the
-    // arrival + delivery. 20 ticks is a safe margin.
-    for _ in 0..20 {
+    // Allow the exterior route around the deposit, and stop at delivery.
+    for _ in 0..120 {
         app.update();
+        if app
+            .world()
+            .entity(stockpile)
+            .get::<Stockpile>()
+            .unwrap()
+            .amount
+            >= WORKER_CARRY_CAPACITY
+        {
+            break;
+        }
     }
 
     let world = app.world();
@@ -295,7 +303,7 @@ fn idle_worker_reactivates_when_deposit_refills() {
     // visible end of the "persist + reactivate" contract.
     let mut app = build_app();
     let deposit_pos = Vec2::new(100.0, 0.0);
-    let stockpile_pos = Vec2::new(150.0, 0.0);
+    let stockpile_pos = Vec2::new(244.0, 0.0);
     let deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -305,7 +313,7 @@ fn idle_worker_reactivates_when_deposit_refills() {
             radius: 32.0,
         },
     );
-    let _stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
+    let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
     let worker = common::spawn_worker_at(&mut app, deposit_pos - Vec2::new(68.0, 0.0));
 
     {
@@ -313,11 +321,29 @@ fn idle_worker_reactivates_when_deposit_refills() {
         assert!(grid.paint(IVec2::new(0, 0), IntentKind::Gather));
     }
 
-    // Drain the deposit. 4 extraction ticks at the deposit (no
-    // travel) plus a handful of transport + delivery ticks.
-    for _ in 0..20 {
+    // Finish extraction and the exterior delivery route before refilling.
+    for _ in 0..120 {
         app.update();
+        if app
+            .world()
+            .entity(stockpile)
+            .get::<Stockpile>()
+            .unwrap()
+            .amount
+            == 4
+        {
+            break;
+        }
     }
+    assert_eq!(
+        app.world()
+            .entity(stockpile)
+            .get::<Stockpile>()
+            .unwrap()
+            .amount,
+        4
+    );
+    assert!(app.world().entity(worker).get::<WorkerLoad>().is_none());
     {
         let deposit_state = app
             .world()
@@ -399,7 +425,7 @@ fn idle_worker_chooses_gather_via_autonomy_scoring() {
     // Place the worker close to the cell so the assignment system
     // picks it (the scoring is global, but the test wants the
     // assignment to clearly land on this cell).
-    let worker = common::spawn_worker_at(&mut app, cell_world_center);
+    let worker = common::spawn_worker_at(&mut app, cell_world_center + Vec2::new(0.0, -100.0));
 
     // Sanity: the global scoring function picks this cell for an
     // idle Worker; this is the contract the assignment system

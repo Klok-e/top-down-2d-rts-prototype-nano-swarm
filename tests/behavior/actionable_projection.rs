@@ -282,6 +282,8 @@ fn assigned_en_route_or_charging_defender_projects_charger_maintenance() {
                 app.world_mut().entity_mut(defender).insert((
                     ChargerAssignment { charger },
                     top_down_2d_rts_prototype_nano_swarm::nanobot::DirectMovementComponent {
+                        speed: None,
+                        interaction: None,
                         xy: Vec2::ZERO,
                         stop_radius: 1.0,
                     },

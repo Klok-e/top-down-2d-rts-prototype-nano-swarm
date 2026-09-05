@@ -18,7 +18,9 @@ fn moving_nanobot_app(frame_ticks: u32) -> App {
         NanobotBundle::default(),
         Transform::default(),
         DirectMovementComponent {
-            xy: Vec2::new(10_000.0, 0.0),
+            speed: None,
+            interaction: None,
+            xy: Vec2::new(1_000.0, 0.0),
             stop_radius: 0.0,
         },
     ));

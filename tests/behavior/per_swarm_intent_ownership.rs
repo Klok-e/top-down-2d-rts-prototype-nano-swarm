@@ -105,7 +105,7 @@ fn player_painted_gather_drives_player_worker() {
             radius: 32.0,
         },
     );
-    let worker = common::spawn_worker_at(&mut app, cell_center);
+    let worker = common::spawn_worker_at(&mut app, cell_center + Vec2::new(0.0, -100.0));
 
     for _ in 0..5 {
         app.update();
@@ -233,7 +233,7 @@ fn player_worker_ignores_opponent_gather_zone() {
             radius: 32.0,
         },
     );
-    let worker = common::spawn_worker_at(&mut app, cell_center);
+    let worker = common::spawn_worker_at(&mut app, cell_center + Vec2::new(0.0, -100.0));
 
     for _ in 0..5 {
         app.update();
@@ -292,7 +292,7 @@ fn opponent_worker_ignores_player_gather_zone() {
             VelocityComponent::default(),
             Health::default(),
             SwarmMember::new(opponent_id),
-            Transform::from_translation(cell_center.extend(0.0)),
+            Transform::from_translation((cell_center + Vec2::new(0.0, -100.0)).extend(0.0)),
         ))
         .id();
 

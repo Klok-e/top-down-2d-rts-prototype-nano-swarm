@@ -237,6 +237,9 @@ fn best_source_for_sink(
             continue;
         }
         let trip = travel_cost(hauler.pos, source.pos) + travel_cost(source.pos, sink_pos);
+        if !trip.is_finite() {
+            continue;
+        }
         if best.is_none_or(|(best_trip, _, _)| trip < best_trip) {
             best = Some((trip, source.entity, carried_amount));
         }
@@ -418,6 +421,20 @@ mod tests {
         }];
 
         assert!(pick_logistics_leg(hauler(Vec2::ZERO), &stockpiles, &terminals).is_none());
+    }
+
+    #[test]
+    fn unreachable_logistics_leg_is_not_assigned() {
+        let stockpiles = [
+            source(1, Vec2::new(10.0, 0.0), 100),
+            sink(2, Vec2::new(20.0, 0.0), 0, 100),
+        ];
+        assert!(
+            pick_logistics_leg_with_cost(hauler(Vec2::ZERO), &stockpiles, &[], |_, _| {
+                f32::INFINITY
+            })
+            .is_none()
+        );
     }
 
     #[test]

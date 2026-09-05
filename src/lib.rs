@@ -7,6 +7,7 @@ pub mod intent;
 pub mod materials;
 pub mod nanobot;
 pub mod navigation;
+pub mod navigation_runtime;
 pub mod resources;
 pub mod runtime;
 pub mod scenario;

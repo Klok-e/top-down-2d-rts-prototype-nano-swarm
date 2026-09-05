@@ -38,6 +38,7 @@ mod opponent_gameplay_loop;
 mod physical_logistics;
 mod production_priority_panel;
 mod regional_allocation;
+mod shared_navigation;
 mod smoke;
 mod world_space_nanobots;
 mod zone_binary_overlay;
@@ -158,6 +159,10 @@ fn main() -> std::process::ExitCode {
         .with_ignored_flag(true),
         Trial::test("fill_indicators", || run(fill_indicators::fill_indicators))
             .with_ignored_flag(true),
+        Trial::test("shared_navigation", || {
+            run(shared_navigation::shared_navigation)
+        })
+        .with_ignored_flag(true),
         Trial::test("smoke", || run(smoke::smoke)).with_ignored_flag(true),
         Trial::test("physical_logistics", || {
             run(physical_logistics::physical_logistics)

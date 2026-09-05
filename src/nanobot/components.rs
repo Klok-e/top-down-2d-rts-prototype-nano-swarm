@@ -63,6 +63,9 @@ impl SwarmMember {
 pub struct DirectMovementComponent {
     pub xy: Vec2,
     pub stop_radius: f32,
+    /// Optional per-tick pace for procedural roaming.
+    pub speed: Option<f32>,
+    pub interaction: Option<super::InteractionRegion>,
 }
 
 #[derive(Debug, Component, Clone, Copy, Default)]

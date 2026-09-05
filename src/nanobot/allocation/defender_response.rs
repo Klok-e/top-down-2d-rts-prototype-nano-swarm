@@ -454,10 +454,14 @@ pub fn reconcile_defender_responses_system(
         if let Ok(mut movement) = response_movement.get_mut(state.entity) {
             movement.xy = target.position;
             movement.stop_radius = DEFENDER_ATTACK_RANGE;
+            movement.interaction = None;
+            movement.speed = None;
         } else {
             commands
                 .entity(state.entity)
                 .insert(DirectMovementComponent {
+                    speed: None,
+                    interaction: None,
                     xy: target.position,
                     stop_radius: DEFENDER_ATTACK_RANGE,
                 });
@@ -500,6 +504,8 @@ pub fn reconcile_defender_responses_system(
             .insert((
                 response,
                 DirectMovementComponent {
+                    speed: None,
+                    interaction: None,
                     xy: target.position,
                     stop_radius: DEFENDER_ATTACK_RANGE,
                 },
@@ -550,10 +556,14 @@ pub fn reconcile_defender_responses_system(
         if let Ok(mut movement) = response_movement.get_mut(response.defender) {
             movement.xy = target.position;
             movement.stop_radius = DEFENDER_ATTACK_RANGE;
+            movement.interaction = None;
+            movement.speed = None;
         } else {
             commands
                 .entity(response.defender)
                 .insert(DirectMovementComponent {
+                    speed: None,
+                    interaction: None,
                     xy: target.position,
                     stop_radius: DEFENDER_ATTACK_RANGE,
                 });

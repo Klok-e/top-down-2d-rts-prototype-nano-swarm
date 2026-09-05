@@ -22,9 +22,8 @@ use crate::{
     ai::get_world_from_zone,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        BOT_SPREAD_FORCE, ChargerAssignment, ChargerProgress, Commitment, DefenderResponse,
-        DirectMovementComponent, Health, Nanobot, NanobotType, ProgressChecker, SwarmId,
-        SwarmMember, VelocityComponent, world_to_cell,
+        ChargerAssignment, ChargerProgress, Commitment, DefenderResponse, DirectMovementComponent,
+        Health, Nanobot, NanobotType, SwarmId, SwarmMember, world_to_cell,
     },
 };
 
@@ -537,10 +536,50 @@ fn procedural_waypoint(entity: Entity, cell: IVec2, index: u64) -> Vec2 {
     get_world_from_zone(cell) + offset
 }
 
+fn clear_roaming_waypoint(
+    entity: Entity,
+    cell: IVec2,
+    mut index: u64,
+    navigation: &crate::navigation::Navigation,
+) -> (u64, Vec2) {
+    let fallback_index = index;
+    for _ in 0..64 {
+        let waypoint = procedural_waypoint(entity, cell, index);
+        if navigation.point_clear(waypoint) {
+            return (index, waypoint);
+        }
+        index = index.wrapping_add(1);
+    }
+    let width = crate::navigation::CELL_WIDTH;
+    let lower = cell.as_vec2() * ZONE_BLOCK_SIZE;
+    let min = (lower / width).floor().as_ivec2();
+    let max = ((lower + Vec2::splat(ZONE_BLOCK_SIZE)) / width)
+        .ceil()
+        .as_ivec2();
+    let mut free = Vec::new();
+    for y in min.y..max.y {
+        for x in min.x..max.x {
+            let point = (IVec2::new(x, y).as_vec2() + Vec2::splat(0.5)) * width;
+            if world_to_cell(point) == cell && navigation.point_clear(point) {
+                free.push(point);
+            }
+        }
+    }
+    if free.is_empty() {
+        (
+            fallback_index,
+            procedural_waypoint(entity, cell, fallback_index),
+        )
+    } else {
+        (fallback_index, free[fallback_index as usize % free.len()])
+    }
+}
+
 #[allow(clippy::type_complexity)]
 pub(super) fn reconcile_defender_staging_system(
     mut commands: Commands,
     grid: Res<IntentGrid>,
+    navigation: Res<crate::navigation::Navigation>,
     territory: Res<TerritorySnapshot>,
     mut layouts: ResMut<DefenderStagingLayouts>,
     mut defenders: Query<
@@ -556,7 +595,6 @@ pub(super) fn reconcile_defender_staging_system(
             Option<&ChargerProgress>,
             Option<&DefenderStaging>,
             Option<&DirectMovementComponent>,
-            &mut VelocityComponent,
         ),
         With<Nanobot>,
     >,
@@ -573,7 +611,6 @@ pub(super) fn reconcile_defender_staging_system(
         charger_assignment,
         charger_progress,
         staging,
-        _,
         _,
     ) in &mut defenders
     {
@@ -657,49 +694,31 @@ pub(super) fn reconcile_defender_staging_system(
         .by_swarm
         .retain(|swarm, _| seen_swarms.contains(swarm));
 
-    for (entity, transform, _, _, _, _, _, _, _, staging, movement, mut velocity) in &mut defenders
-    {
+    for (entity, transform, _, _, _, _, _, _, _, staging, movement) in &mut defenders {
         let Some(&target_cell) = assignments.get(&entity) else {
             continue;
         };
         let position = transform.translation.truncate();
         let current_cell = world_to_cell(position);
-        let (waypoint_index, waypoint) = staging
+        let (mut waypoint_index, prior_waypoint) = staging
             .filter(|staging| staging.cell == target_cell)
             .map(|staging| (staging.waypoint_index, staging.waypoint))
             .unwrap_or_else(|| (0, procedural_waypoint(entity, target_cell, 0)));
-
-        if current_cell != target_cell {
-            commands.entity(entity).insert((
-                DefenderStaging {
-                    cell: target_cell,
-                    waypoint_index,
-                    waypoint,
-                },
-                DirectMovementComponent {
-                    xy: waypoint,
-                    stop_radius: 0.0,
-                },
-            ));
-            continue;
+        if current_cell == target_cell
+            && position.distance(prior_waypoint) <= crate::nanobot::STOP_THRESHOLD
+        {
+            waypoint_index = waypoint_index.wrapping_add(1);
         }
-
-        let reached = position.distance_squared(waypoint) <= BOT_SPREAD_FORCE.powi(2);
-        let (waypoint_index, waypoint) = if reached {
-            let next = waypoint_index.wrapping_add(1);
-            (next, procedural_waypoint(entity, target_cell, next))
-        } else {
-            (waypoint_index, waypoint)
-        };
-        if movement.is_some() {
-            commands
-                .entity(entity)
-                .remove::<DirectMovementComponent>()
-                .remove::<ProgressChecker>();
-        }
-        let direction = waypoint - position;
-        if direction.length_squared() > f32::EPSILON {
-            velocity.value += direction.normalize() * BOT_SPREAD_FORCE;
+        let (waypoint_index, waypoint) =
+            clear_roaming_waypoint(entity, target_cell, waypoint_index, &navigation);
+        let speed = (current_cell == target_cell).then_some(crate::nanobot::BOT_SPREAD_FORCE);
+        if movement.is_none_or(|movement| movement.xy != waypoint || movement.speed != speed) {
+            commands.entity(entity).insert(DirectMovementComponent {
+                xy: waypoint,
+                stop_radius: 0.0,
+                interaction: None,
+                speed,
+            });
         }
         commands.entity(entity).insert(DefenderStaging {
             cell: target_cell,

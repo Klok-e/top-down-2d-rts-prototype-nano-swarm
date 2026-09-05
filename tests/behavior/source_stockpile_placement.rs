@@ -83,7 +83,7 @@ fn candidate_placements_lie_on_the_configured_ring() {
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
-    let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
+    let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos + Vec2::new(0.0, -100.0));
     let _deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -127,7 +127,7 @@ fn placement_jitter_is_stable_across_ticks() {
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
-    let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
+    let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos + Vec2::new(0.0, -100.0));
     let _deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -195,7 +195,7 @@ fn candidates_outside_the_gather_zone_are_rejected() {
     let gather_cell = IVec2::new(-2, 0);
     paint_gather(&mut app, gather_cell);
     let deposit_pos = common::cell_world_center(deposit_cell);
-    let (_swarm, worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
+    let (_swarm, worker) = spawn_swarm_and_worker(&mut app, deposit_pos + Vec2::new(0.0, -100.0));
     let deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -250,7 +250,7 @@ fn haul_direction_bias_picks_aligned_candidate() {
     // the haul direction is unambiguously east.
     let build_cell = IVec2::new(2, 0);
     paint_build(&mut app, build_cell);
-    let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
+    let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos + Vec2::new(0.0, -100.0));
     let _deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -310,7 +310,7 @@ fn no_planned_source_stockpile_when_gather_cell_is_wrong() {
     let gather_cell = IVec2::new(-2, 0);
     paint_gather(&mut app, gather_cell);
     let deposit_pos = common::cell_world_center(deposit_cell);
-    let (_swarm, worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
+    let (_swarm, worker) = spawn_swarm_and_worker(&mut app, deposit_pos + Vec2::new(0.0, -100.0));
     let deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -354,7 +354,7 @@ fn placement_replaces_planned_structure_with_completed_stockpile() {
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
-    let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
+    let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos + Vec2::new(0.0, -100.0));
     let _deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -397,7 +397,7 @@ fn no_floating_planned_source_stockpile_after_demand_satisfied() {
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
-    let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
+    let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos + Vec2::new(0.0, -100.0));
     let _deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {

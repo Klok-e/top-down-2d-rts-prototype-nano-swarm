@@ -355,7 +355,7 @@ fn hauler_unloads_into_charger_gradually() {
 fn loaded_hauler_from_source_reroutes_only_to_same_swarm_sink() {
     let mut app = common::sim_app_with_gather_haul();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    let source = common::spawn_stockpile(&mut app, Vec2::new(-100.0, 0.0), 0, 100);
+    let source = common::spawn_stockpile(&mut app, Vec2::new(-200.0, 0.0), 0, 100);
     let full_sink = common::spawn_sink_stockpile(&mut app, Vec2::ZERO, 100, 100);
     let replacement_pos = Vec2::new(250.0, 0.0);
     let replacement = common::spawn_sink_stockpile(&mut app, replacement_pos, 0, 100);
@@ -369,20 +369,20 @@ fn loaded_hauler_from_source_reroutes_only_to_same_swarm_sink() {
         .spawn((
             ProductionFacility::new(),
             OwnerSwarm(swarm),
-            Transform::from_translation(Vec2::new(200.0, 0.0).extend(0.0)),
+            Transform::from_translation(Vec2::new(400.0, 0.0).extend(0.0)),
         ))
         .id();
     let enemy_swarm = app.world_mut().spawn(SwarmId(99)).id();
     app.world_mut().spawn((
         ProductionFacility::new(),
         OwnerSwarm(enemy_swarm),
-        Transform::from_translation(Vec2::new(50.0, 0.0).extend(0.0)),
+        Transform::from_translation(Vec2::new(0.0, 200.0).extend(0.0)),
     ));
     app.update();
     let mut condition = Structure::new(StructureKind::Basic);
     condition.health = SUPPORT_OPERATIONAL_HEALTH_THRESHOLD - 1;
     app.world_mut().entity_mut(source).insert(condition);
-    let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(100.0, 0.0));
     let mut reservation = LogisticsReservation::new(source, full_sink, ResourceKind::Minerals, 10);
     reservation.source_remaining = 0;
     app.world_mut().entity_mut(hauler).insert((
@@ -554,17 +554,17 @@ fn owned_hauler_waits_and_releases_claim_when_only_foreign_or_unowned_destinatio
 fn same_tick_reroutes_cannot_overbook_replacement_capacity() {
     let mut app = common::sim_app_with_gather_haul();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    let source = common::spawn_sink_stockpile(&mut app, Vec2::ZERO, 0, 0);
+    let source = common::spawn_sink_stockpile(&mut app, Vec2::new(-200.0, 0.0), 0, 0);
     let full = common::spawn_sink_stockpile(&mut app, Vec2::ZERO, 100, 100);
-    let replacement = common::spawn_sink_stockpile(&mut app, Vec2::new(100.0, 0.0), 0, 15);
+    let replacement = common::spawn_sink_stockpile(&mut app, Vec2::new(200.0, 0.0), 0, 15);
     for stockpile in [source, full, replacement] {
         app.world_mut()
             .entity_mut(stockpile)
             .insert(OwnerSwarm(swarm));
     }
     let haulers = [
-        common::spawn_hauler_at(&mut app, Vec2::ZERO),
-        common::spawn_hauler_at(&mut app, Vec2::ZERO),
+        common::spawn_hauler_at(&mut app, Vec2::new(100.0, -40.0)),
+        common::spawn_hauler_at(&mut app, Vec2::new(100.0, 40.0)),
     ];
     for hauler in haulers {
         let mut reservation = LogisticsReservation::new(source, full, ResourceKind::Minerals, 10);

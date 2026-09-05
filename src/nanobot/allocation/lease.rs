@@ -7,8 +7,8 @@ use super::{
 };
 use crate::nanobot::{
     DirectMovementComponent, ExtractProgress, GatherAssignment, HaulerAssignment, HaulerLoading,
-    HaulerRoute, LogisticsReservation, MaintenanceAssignment, MaintenanceProgress,
-    PlannedStructureClaim, PlannedStructureProgress, SwarmId,
+    LogisticsReservation, MaintenanceAssignment, MaintenanceProgress, PlannedStructureClaim,
+    PlannedStructureProgress, SwarmId,
 };
 
 /// Temporary ownership of projected capacity, not ownership of authoritative
@@ -182,8 +182,7 @@ pub fn maintain_regional_leases_system(
                     entity_commands
                         .remove::<HaulerAssignment>()
                         .remove::<HaulerLoading>()
-                        .remove::<LogisticsReservation>()
-                        .remove::<HaulerRoute>();
+                        .remove::<LogisticsReservation>();
                 }
             }
         }

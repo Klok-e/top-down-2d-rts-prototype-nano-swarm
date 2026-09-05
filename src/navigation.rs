@@ -1,6 +1,9 @@
-//! Shared fine-grid geometry. Navigation cells are independent of intent paint.
+//! Shared physical geometry and hierarchical routes, independent of intent paint.
 
 use bevy::prelude::*;
+
+mod routing;
+pub use routing::{Navigation, Route, RouteOutcome};
 
 /// A 68-unit body fits a 72-unit passage with two units of clearance per side.
 pub const CELL_WIDTH: f32 = 72.0;
@@ -25,7 +28,7 @@ pub fn align_structure(mut transform: Transform) -> Transform {
 }
 
 /// Physical shapes retain their world geometry rather than occupying intent cells.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Obstacle {
     Rectangle { center: Vec2, half: Vec2 },
     Circle { center: Vec2, radius: f32 },
@@ -156,5 +159,188 @@ mod tests {
         );
         assert!((aligned.translation - Vec3::new(-144.0, -108.0, 5.0)).length() < 0.001);
         assert!((aligned.scale.truncate() * 64.0 - Vec2::new(144.0, 216.0)).length() < 0.001);
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+    use crate::{intent::IntentGrid, nanobot::SwarmId};
+
+    #[test]
+    fn shared_route_detours_around_a_wall_across_chunks() {
+        let grid = IntentGrid::new(6, 6);
+        let navigation = Navigation::new(
+            &grid,
+            vec![Obstacle::Rectangle {
+                center: Vec2::ZERO,
+                half: Vec2::new(36.0, 600.0),
+            }],
+        );
+        let RouteOutcome::Found(route) = navigation.route(
+            Vec2::new(-500.0, 0.0),
+            Vec2::new(500.0, 0.0),
+            &grid,
+            SwarmId::PLAYER,
+            false,
+        ) else {
+            panic!("wall has open ends")
+        };
+        assert!(route.waypoints.iter().any(|point| point.y.abs() >= 634.0));
+        assert!(route.cost >= 1600.0, "detour must account for wall height");
+    }
+    #[test]
+    fn swept_body_rejects_circle_tunnelling_and_rectangle_corner_cutting() {
+        let grid = IntentGrid::new(4, 4);
+        let circle = Navigation::new(&grid, vec![Obstacle::deposit(Vec2::ZERO, 10.0)]);
+        assert!(!circle.segment_clear(Vec2::new(-60.0, 0.0), Vec2::new(60.0, 0.0)));
+        assert!(circle.segment_clear(Vec2::new(-60.0, 44.0), Vec2::new(60.0, 44.0)));
+        let rectangle = Navigation::new(&grid, vec![Obstacle::planned(Vec2::ZERO)]);
+        assert!(!rectangle.segment_clear(Vec2::new(36.0, 72.0), Vec2::new(72.0, 36.0)));
+        assert!(rectangle.segment_clear(Vec2::new(36.0, 90.0), Vec2::new(90.0, 36.0)));
+    }
+
+    #[test]
+    fn same_fine_cell_endpoints_cannot_hide_a_deposit() {
+        let grid = IntentGrid::new(2, 2);
+        let navigation =
+            Navigation::new(&grid, vec![Obstacle::deposit(Vec2::new(36.0, 36.0), 1.0)]);
+        let start = Vec2::new(0.0, 36.0);
+        let end = Vec2::new(71.0, 36.0);
+        assert!(!navigation.segment_clear(start, end));
+        let RouteOutcome::Found(route) =
+            navigation.route(start, end, &grid, SwarmId::PLAYER, false)
+        else {
+            panic!("deposit has a route around it")
+        };
+        assert!(route.cost > 100.0);
+    }
+
+    #[test]
+    fn sealed_wall_is_unreachable_but_one_cell_passage_connects_both_sides() {
+        let grid = IntentGrid::new(4, 4);
+        let start = Vec2::new(-180.0, 36.0);
+        let end = Vec2::new(180.0, 36.0);
+        let sealed = Navigation::new(
+            &grid,
+            vec![Obstacle::Rectangle {
+                center: Vec2::ZERO,
+                half: Vec2::new(36.0, 1100.0),
+            }],
+        );
+        assert!(matches!(
+            sealed.route(start, end, &grid, SwarmId::PLAYER, false),
+            RouteOutcome::Unreachable
+        ));
+        let passage = Navigation::new(
+            &grid,
+            vec![
+                Obstacle::Rectangle {
+                    center: Vec2::new(0.0, -550.0),
+                    half: Vec2::new(36.0, 550.0),
+                },
+                Obstacle::Rectangle {
+                    center: Vec2::new(0.0, 622.0),
+                    half: Vec2::new(36.0, 550.0),
+                },
+            ],
+        );
+        let RouteOutcome::Found(route) = passage.route(start, end, &grid, SwarmId(7), false) else {
+            panic!("72-unit gap admits a 68-unit body")
+        };
+        assert!((route.cost - 360.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn only_haulers_follow_visible_corridor_for_lower_cost() {
+        use crate::intent::IntentKind;
+        let mut grid = IntentGrid::new(6, 6);
+        for x in -2..=1 {
+            grid.paint_owned(
+                IVec2::new(x, 1),
+                IntentKind::Corridor,
+                Some(SwarmId::PLAYER),
+            );
+        }
+        let navigation = Navigation::new(&grid, vec![]);
+        let start = Vec2::new(-900.0, 400.0);
+        let end = Vec2::new(900.0, 400.0);
+        let RouteOutcome::Found(hauler) =
+            navigation.route(start, end, &grid, SwarmId::PLAYER, true)
+        else {
+            panic!("open map")
+        };
+        let RouteOutcome::Found(worker) =
+            navigation.route(start, end, &grid, SwarmId::PLAYER, false)
+        else {
+            panic!("open map")
+        };
+        let RouteOutcome::Found(enemy) = navigation.route(start, end, &grid, SwarmId(7), true)
+        else {
+            panic!("open map")
+        };
+        assert!(hauler.waypoints.iter().any(|p| p.y >= 512.0));
+        assert!(
+            hauler.cost < worker.cost * 0.8,
+            "hauler={},worker={}",
+            hauler.cost,
+            worker.cost
+        );
+        assert!((worker.cost - 1800.0).abs() < 0.001);
+        assert!(
+            (enemy.cost - 1800.0).abs() < 0.01,
+            "enemy cost={}",
+            enemy.cost
+        );
+    }
+    #[test]
+    fn interaction_routes_to_a_reachable_face_when_nearest_face_is_blocked() {
+        use crate::nanobot::InteractionRegion;
+        let grid = IntentGrid::new(4, 4);
+        let transform = Transform::from_xyz(0.0, 0.0, 0.0).with_scale(Vec3::splat(1.125));
+        let region = InteractionRegion::structure(&transform);
+        let navigation = Navigation::new(
+            &grid,
+            vec![
+                Obstacle::structure(&transform),
+                Obstacle::Rectangle {
+                    center: Vec2::new(-72.0, 0.0),
+                    half: Vec2::new(36.0, 180.0),
+                },
+            ],
+        );
+        let start = Vec2::new(-300.0, 0.0);
+        let RouteOutcome::Found(route) =
+            navigation.route_to_interaction(start, region, &grid, SwarmId::PLAYER, false)
+        else {
+            panic!("other structure faces remain accessible")
+        };
+        let endpoint = *route.waypoints.last().unwrap();
+        assert!(region.contains(endpoint));
+        assert!(
+            endpoint.x >= 0.0,
+            "blocked west face must be bypassed: {endpoint:?}"
+        );
+    }
+    #[test]
+    fn disconnected_regions_in_one_chunk_can_connect_through_neighbor_chunks() {
+        let grid = IntentGrid::new(4, 4);
+        let navigation = Navigation::new(
+            &grid,
+            vec![Obstacle::Rectangle {
+                center: Vec2::new(288.0, 288.0),
+                half: Vec2::new(36.0, 288.0),
+            }],
+        );
+        let RouteOutcome::Found(route) = navigation.route(
+            Vec2::new(180.0, 180.0),
+            Vec2::new(396.0, 180.0),
+            &grid,
+            SwarmId::PLAYER,
+            false,
+        ) else {
+            panic!("both sides connect below the chunk")
+        };
+        assert!(route.waypoints.iter().any(|p| p.y <= -34.0 || p.y >= 610.0));
     }
 }

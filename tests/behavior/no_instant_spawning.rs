@@ -108,7 +108,7 @@ fn gather_paint_does_not_instant_spawn_any_support_structure() {
     let cell = IVec2::new(0, 0);
     let center = common::cell_world_center(cell);
     let _swarm = common::spawn_swarm_at(&mut app, center);
-    let _worker = common::spawn_worker_at(&mut app, center);
+    let _worker = common::spawn_worker_at(&mut app, center + Vec2::new(0.0, -100.0));
     let _deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -406,7 +406,7 @@ fn all_demand_sources_share_zero_completed_structures() {
     // the same update.
     let gather_cell = IVec2::new(0, 0);
     let gather_center = common::cell_world_center(gather_cell);
-    let _worker = common::spawn_worker_at(&mut app, gather_center);
+    let _worker = common::spawn_worker_at(&mut app, gather_center + Vec2::new(0.0, -100.0));
     let _deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {

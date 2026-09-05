@@ -12,8 +12,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     },
     scenario::{
         OPPONENT_CELL, OPPONENT_START_DEFENDERS, OPPONENT_START_HAULERS, OPPONENT_START_WORKERS,
-        PLAYER_CELL, PLAYER_START_DEFENDERS, PLAYER_START_HAULERS, PLAYER_START_WORKERS,
-        cell_origin, spawn_default_opponent_scenario, spawn_default_player_scenario,
+        PLAYER_START_DEFENDERS, PLAYER_START_HAULERS, PLAYER_START_WORKERS, cell_origin,
+        spawn_default_opponent_scenario, spawn_default_player_scenario,
     },
 };
 
@@ -110,7 +110,7 @@ fn authored_nanobots_render_through_one_neutral_presentation_child() {
 
     for (root, kind, swarm, transform, health, velocity, commitment) in roots {
         let expected_position = if swarm == SwarmId::PLAYER {
-            cell_origin(PLAYER_CELL)
+            Vec2::new(220.0, 256.0)
         } else {
             cell_origin(OPPONENT_CELL)
         };

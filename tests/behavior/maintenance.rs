@@ -173,7 +173,7 @@ fn worker_travels_to_and_maintains_stale_structure() {
         .get_mut::<Structure>()
         .unwrap()
         .ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
-    let _worker = common::spawn_worker_at(&mut app, center);
+    let _worker = common::spawn_worker_at(&mut app, center + Vec2::new(-100.0, 0.0));
 
     // Run long enough for one full maintenance cycle plus a
     // buffer to elapse, so we can be sure the worker is not
@@ -220,7 +220,7 @@ fn maintenance_does_not_consume_stockpile_resources() {
     // Stockpile in the same cell with material that must NOT
     // be drained by the maintenance work.
     let stockpile = common::spawn_stockpile(&mut app, center, 100, 1000);
-    common::spawn_worker_at(&mut app, center);
+    common::spawn_worker_at(&mut app, center + Vec2::new(-100.0, 0.0));
 
     // Run long enough to cover at least one full maintenance
     // shift plus the worker's return visit. Any pull from the
@@ -268,7 +268,7 @@ fn sufficient_worker_time_keeps_structure_stable() {
         .paint(cell, IntentKind::Build);
     let center = common::cell_world_center(cell);
     let structure = common::spawn_structure_at(&mut app, center);
-    common::spawn_worker_at(&mut app, center);
+    common::spawn_worker_at(&mut app, center + Vec2::new(-100.0, 0.0));
 
     // Run long enough for several maintenance cycles. The cycle
     // is `MAINTENANCE_WORK_DURATION_TICKS` work + a few idle
@@ -314,7 +314,7 @@ fn idle_worker_picks_maintenance_over_idling_when_structure_is_stale() {
         .get_mut::<Structure>()
         .unwrap()
         .ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
-    let worker = common::spawn_worker_at(&mut app, center);
+    let worker = common::spawn_worker_at(&mut app, center + Vec2::new(-100.0, 0.0));
 
     // One tick is enough for the assignment system to fire
     // because the worker starts at the structure's position.
@@ -343,7 +343,7 @@ fn real_structure_requests_maintenance_without_build_paint() {
         .get_mut::<Structure>()
         .expect("stockpile has shared condition")
         .ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
-    let worker = common::spawn_worker_at(&mut app, center);
+    let worker = common::spawn_worker_at(&mut app, center + Vec2::new(-100.0, 0.0));
 
     app.update();
 
@@ -376,7 +376,7 @@ fn unattended_valid_charger_rejects_worker_upkeep_and_degrades() {
         .get_mut::<Structure>()
         .expect("Charger has shared condition")
         .ticks_since_maintained = MAINTENANCE_BUFFER_TICKS + DEGRADATION_INTERVAL_TICKS - 1;
-    let worker = common::spawn_worker_at(&mut app, center);
+    let worker = common::spawn_worker_at(&mut app, center + Vec2::new(-100.0, 0.0));
 
     app.update();
 
@@ -438,7 +438,7 @@ fn erased_defend_paint_leaves_charger_inactive_and_degrading() {
         .get_mut::<Charge>()
         .expect("Defender has Charge")
         .current = LOW_CHARGE_THRESHOLD;
-    let worker = common::spawn_worker_at(&mut app, center);
+    let worker = common::spawn_worker_at(&mut app, center + Vec2::new(-100.0, 0.0));
 
     app.update();
 
@@ -495,11 +495,13 @@ fn en_route_service_assigns_worker_to_stale_charger() {
     app.world_mut().entity_mut(defender).insert((
         ChargerAssignment { charger },
         DirectMovementComponent {
+            speed: None,
+            interaction: None,
             xy: charger_center,
             stop_radius: 32.0,
         },
     ));
-    let worker = common::spawn_worker_at(&mut app, charger_center);
+    let worker = common::spawn_worker_at(&mut app, charger_center + Vec2::new(-100.0, 0.0));
 
     app.update();
 

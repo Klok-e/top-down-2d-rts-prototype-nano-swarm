@@ -1,7 +1,4 @@
-use bevy::{
-    prelude::{Commands, Entity, Quat, Query, Res, Transform, Vec2, Vec3, With},
-    time::Time,
-};
+use bevy::prelude::{Commands, Entity, Local, Quat, Query, Res, Transform, Vec2, With};
 
 use crate::{
     game_settings::GameSettings,
@@ -14,66 +11,98 @@ use super::{
     consts::STOP_THRESHOLD,
 };
 
+pub struct ActiveRoute {
+    destination: Vec2,
+    stop_radius: f32,
+    interaction: Option<super::InteractionRegion>,
+    waypoints: Vec<Vec2>,
+    current: usize,
+    revision: u64,
+}
+
+#[allow(clippy::type_complexity)]
 pub fn move_velocity_system(
-    time: Res<Time>,
     mut commands: Commands,
+    mut routes: Local<std::collections::HashMap<Entity, ActiveRoute>>,
     mut bots: Query<(
         Entity,
         &DirectMovementComponent,
         &Transform,
         &mut VelocityComponent,
-        Option<&mut ProgressChecker>,
+        Option<&super::NanobotType>,
+        Option<&super::SwarmMember>,
     )>,
     game_settings: Res<GameSettings>,
+    navigation: Res<crate::navigation::Navigation>,
+    grid: Res<crate::intent::IntentGrid>,
 ) {
-    let speed = game_settings.bot_speed;
-    for (entity, bot_destination, transform, mut velocity, progress_checker) in bots.iter_mut() {
-        let dest: Vec3 = [bot_destination.xy.x, bot_destination.xy.y, 0.].into();
-        let translation = transform.translation;
-        let direction = dest - translation;
-
-        let stop_threshold = if bot_destination.stop_radius > 0.0 {
-            bot_destination.stop_radius.max(STOP_THRESHOLD)
-        } else {
-            STOP_THRESHOLD
-        };
-
-        // Check if the distance is less than the threshold
-        let distance = dest.distance(translation);
-        if distance > stop_threshold {
-            let new_velocity = direction.normalize() * speed.min(distance);
-            velocity.value += new_velocity.truncate();
-
-            // If the bot is not already moving, add a ProgressChecker
-            if progress_checker.is_none() {
-                commands.entity(entity).insert(ProgressChecker {
-                    last_position: translation.truncate(),
-                    last_update_time: time.elapsed_secs_f64(),
-                });
-            }
-        } else {
-            commands.entity(entity).remove::<DirectMovementComponent>();
-            commands.entity(entity).remove::<ProgressChecker>();
+    use crate::navigation::RouteOutcome;
+    routes.retain(|entity, _| bots.contains(*entity));
+    for (entity, destination, transform, mut velocity, kind, member) in &mut bots {
+        let position = transform.translation.truncate();
+        let stop = destination.stop_radius.max(STOP_THRESHOLD);
+        if destination
+            .interaction
+            .map_or(position.distance(destination.xy) <= stop, |region| {
+                region.contains(position)
+            })
+            && navigation.point_clear(position)
+        {
+            commands
+                .entity(entity)
+                .remove::<DirectMovementComponent>()
+                .remove::<ProgressChecker>();
+            routes.remove(&entity);
+            continue;
         }
-
-        // Check if the bot has not made any significant progress for a long time
-        if let Some(mut checker) = progress_checker {
-            let current_time = time.elapsed_secs_f64();
-            const MAX_TIME_WITHOUT_PROGRESS: f64 = 2.0; // Maximum time without significant progress
-            const MIN_PROGRESS: f32 = 1.0; // Minimum progress to reset the timer
-
-            let progress = (checker.last_position - translation.truncate()).length();
-            if progress < MIN_PROGRESS
-                && current_time - checker.last_update_time > MAX_TIME_WITHOUT_PROGRESS
-            {
-                // The bot has not made significant progress for a long time, remove the destination
-                commands.entity(entity).remove::<DirectMovementComponent>();
-                commands.entity(entity).remove::<ProgressChecker>();
-            } else if progress >= MIN_PROGRESS {
-                // The bot has made significant progress, update the checker
-                checker.last_position = translation.truncate();
-                checker.last_update_time = current_time;
-            }
+        let needs_route = routes.get(&entity).is_none_or(|route| {
+            route.destination != destination.xy
+                || route.stop_radius != stop
+                || route.interaction != destination.interaction
+                || (route.waypoints.is_empty() && route.revision != navigation.revision())
+                || route
+                    .waypoints
+                    .get(route.current)
+                    .is_some_and(|next| !navigation.segment_clear(position, *next))
+        });
+        if needs_route {
+            let swarm = member.map_or(super::SwarmId::PLAYER, |member| member.0);
+            let hauler = kind == Some(&super::NanobotType::Hauler);
+            let outcome = if let Some(region) = destination.interaction {
+                navigation.route_to_interaction(position, region, &grid, swarm, hauler)
+            } else if stop > STOP_THRESHOLD {
+                navigation.route_within_range(position, destination.xy, stop, &grid, swarm, hauler)
+            } else {
+                navigation.route(position, destination.xy, &grid, swarm, hauler)
+            };
+            let waypoints = match outcome {
+                RouteOutcome::Found(route) => route.waypoints,
+                RouteOutcome::Unreachable => Vec::new(),
+            };
+            routes.insert(
+                entity,
+                ActiveRoute {
+                    destination: destination.xy,
+                    stop_radius: stop,
+                    waypoints,
+                    interaction: destination.interaction,
+                    current: 0,
+                    revision: navigation.revision(),
+                },
+            );
+        }
+        let route = routes.get_mut(&entity).expect("route was resolved");
+        while route
+            .waypoints
+            .get(route.current)
+            .is_some_and(|point| position.distance(*point) < 0.01)
+        {
+            route.current += 1;
+        }
+        if let Some(next) = route.waypoints.get(route.current) {
+            let delta = *next - position;
+            let speed = destination.speed.unwrap_or(game_settings.bot_speed);
+            velocity.value += delta.normalize_or_zero() * speed.min(delta.length());
         }
     }
 }
@@ -183,9 +212,16 @@ pub fn rotation_for_direction(direction: Vec2) -> Option<Quat> {
 pub fn velocity_system(
     mut query: Query<(&mut VelocityComponent, &mut Transform)>,
     game_settings: Res<GameSettings>,
+    navigation: Res<crate::navigation::Navigation>,
 ) {
     for (mut velocity, mut transform) in query.iter_mut() {
-        let applied_velocity = clamp_velocity(velocity.value, game_settings.bot_speed);
+        let proposed = clamp_velocity(velocity.value, game_settings.bot_speed);
+        let start = transform.translation.truncate();
+        let applied_velocity = if navigation.segment_clear(start, start + proposed) {
+            proposed
+        } else {
+            Vec2::ZERO
+        };
         transform.translation += applied_velocity.extend(0.);
         if let Some(rotation) = rotation_for_direction(applied_velocity) {
             transform.rotation = rotation;

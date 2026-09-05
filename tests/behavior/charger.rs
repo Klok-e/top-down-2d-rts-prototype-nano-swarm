@@ -133,7 +133,8 @@ fn low_defender_recharges_in_readable_bounded_time() {
     app.world_mut()
         .entity_mut(charger)
         .insert(OwnerSwarm(swarm));
-    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
+    let defender =
+        common::spawn_defender_at(&mut app, common::cell_world_center(cell) + Vec2::X * 68.0);
     app.world_mut().entity_mut(defender).insert((
         ChargerAssignment { charger },
         ChargerProgress { charger },
@@ -275,7 +276,7 @@ fn empty_unsupported_defender_dies_after_grace_period() {
 fn swarm_rotation_cap_counts_defenders_across_staging_cells() {
     let mut app = build_app();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    for index in 0..6 {
+    for index in -3..3 {
         let cell = IVec2::new(index, 0);
         app.world_mut().resource_mut::<IntentGrid>().paint_owned(
             cell,
@@ -286,7 +287,8 @@ fn swarm_rotation_cap_counts_defenders_across_staging_cells() {
         app.world_mut()
             .entity_mut(charger)
             .insert(OwnerSwarm(swarm));
-        let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
+        let defender =
+            common::spawn_defender_at(&mut app, common::cell_world_center(cell) + Vec2::X * 68.0);
         app.world_mut()
             .entity_mut(defender)
             .get_mut::<Charge>()
@@ -319,7 +321,7 @@ fn swarm_rotation_keeps_half_of_defenders_on_duty() {
     for index in 0..3 {
         let defender = common::spawn_defender_at(
             &mut app,
-            center + Vec2::new((index as f32 - 1.0) * 8.0, 0.0),
+            center + Vec2::new(100.0, (index as f32 - 1.0) * 72.0),
         );
         app.world_mut()
             .entity_mut(defender)
@@ -504,7 +506,7 @@ fn released_charger_slot_is_claimed_deterministically() {
     for index in 0..4 {
         let defender = common::spawn_defender_at(
             &mut app,
-            center + Vec2::new((index as f32 - 1.5) * 8.0, 0.0),
+            center + Vec2::new(100.0, (index as f32 - 1.5) * 72.0),
         );
         app.world_mut()
             .entity_mut(defender)
@@ -813,7 +815,7 @@ fn defender_uses_eligible_charger_in_owned_defend_paint() {
     app.world_mut()
         .entity_mut(charger)
         .insert(OwnerSwarm(swarm));
-    let defender = common::spawn_defender_at(&mut app, cell_center);
+    let defender = common::spawn_defender_at(&mut app, cell_center + Vec2::X * 68.0);
     {
         let w = app.world_mut();
         // Charge at exactly the low threshold: must trigger rotation.
@@ -865,7 +867,16 @@ fn defender_ignores_closer_enemy_charger() {
         .entity_mut(owned_charger)
         .insert(OwnerSwarm(player));
 
-    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(charger_cell));
+    app.world_mut()
+        .entity_mut(owned_charger)
+        .get_mut::<Transform>()
+        .unwrap()
+        .translation
+        .x += 200.0;
+    let defender = common::spawn_defender_at(
+        &mut app,
+        common::cell_world_center(charger_cell) - Vec2::X * 68.0,
+    );
     app.world_mut()
         .entity_mut(defender)
         .insert(SwarmMember::new(SwarmId::PLAYER));
@@ -1043,21 +1054,23 @@ fn en_route_and_charging_defenders_share_charger_capacity() {
         .entity_mut(charger)
         .insert(OwnerSwarm(swarm));
     let center = common::cell_world_center(cell);
-    let en_route = common::spawn_defender_at(&mut app, center + Vec2::new(-16.0, 0.0));
+    let en_route = common::spawn_defender_at(&mut app, center + Vec2::new(-140.0, 0.0));
     app.world_mut().entity_mut(en_route).insert((
         ChargerAssignment { charger },
         DirectMovementComponent {
-            xy: center,
+            speed: None,
+            interaction: None,
+            xy: center - Vec2::X * 68.0,
             stop_radius: 0.0,
         },
     ));
-    let charging = common::spawn_defender_at(&mut app, center);
+    let charging = common::spawn_defender_at(&mut app, center + Vec2::X * 68.0);
     app.world_mut().entity_mut(charging).insert((
         ChargerAssignment { charger },
         ChargerProgress { charger },
         ChargerPulseProgress::default(),
     ));
-    for offset in [24.0, 32.0, 40.0, 48.0] {
+    for offset in [140.0, 212.0, 284.0, 356.0] {
         let defender = common::spawn_defender_at(&mut app, center + Vec2::new(offset, 0.0));
         app.world_mut()
             .entity_mut(defender)
@@ -1096,11 +1109,16 @@ fn charge_departure_releases_response_for_same_step_replacement() {
     app.world_mut()
         .entity_mut(charger)
         .insert(OwnerSwarm(swarm));
-    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
-    let replacement =
-        common::spawn_defender_at(&mut app, common::cell_world_center(cell) + Vec2::X * 8.0);
-    let threat =
-        common::spawn_worker_at(&mut app, common::cell_world_center(cell) + Vec2::X * 32.0);
+    let defender =
+        common::spawn_defender_at(&mut app, common::cell_world_center(cell) + Vec2::X * 68.0);
+    let replacement = common::spawn_defender_at(
+        &mut app,
+        common::cell_world_center(cell) + Vec2::new(68.0, 72.0),
+    );
+    let threat = common::spawn_worker_at(
+        &mut app,
+        common::cell_world_center(cell) + Vec2::new(140.0, 72.0),
+    );
     app.world_mut()
         .entity_mut(threat)
         .insert(SwarmMember::new(SwarmId(11)));
@@ -1148,9 +1166,12 @@ fn equal_charge_prefers_staged_defender_over_current_tactical_duty() {
     app.world_mut()
         .entity_mut(charger)
         .insert(OwnerSwarm(swarm));
-    let first = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
-    let second =
-        common::spawn_defender_at(&mut app, common::cell_world_center(cell) + Vec2::X * 8.0);
+    let first =
+        common::spawn_defender_at(&mut app, common::cell_world_center(cell) + Vec2::X * 68.0);
+    let second = common::spawn_defender_at(
+        &mut app,
+        common::cell_world_center(cell) + Vec2::new(68.0, 72.0),
+    );
     let (tactical, staged) = if first.to_bits() < second.to_bits() {
         (first, second)
     } else {
@@ -1244,6 +1265,8 @@ fn emptied_charger_cancels_en_route_assignment_before_arrival() {
             Transform::from_translation(Vec2::ZERO.extend(0.0)),
             ChargerAssignment { charger },
             DirectMovementComponent {
+                speed: None,
+                interaction: None,
                 xy: common::cell_world_center(cell),
                 stop_radius: 0.0,
             },
@@ -1349,9 +1372,9 @@ fn completed_rotation_reenters_current_allocation_without_old_ownership() {
         .entity_mut(charger)
         .insert(OwnerSwarm(swarm));
     let center = common::cell_world_center(cell);
-    let defender = common::spawn_defender_at(&mut app, center);
-    let replacement = common::spawn_defender_at(&mut app, center + Vec2::X * 8.0);
-    let threat = common::spawn_worker_at(&mut app, center + Vec2::X * 32.0);
+    let defender = common::spawn_defender_at(&mut app, center + Vec2::X * 68.0);
+    let replacement = common::spawn_defender_at(&mut app, center + Vec2::new(68.0, 72.0));
+    let threat = common::spawn_worker_at(&mut app, center + Vec2::new(140.0, 72.0));
     app.world_mut()
         .entity_mut(threat)
         .insert(SwarmMember::new(SwarmId(11)));
@@ -1445,6 +1468,8 @@ fn invalid_charger_cleanup_reenters_current_allocation_in_the_same_tick() {
     app.world_mut().entity_mut(defender).insert((
         ChargerAssignment { charger },
         DirectMovementComponent {
+            speed: None,
+            interaction: None,
             xy: common::cell_world_center(inactive_charger_cell),
             stop_radius: 0.0,
         },
@@ -1494,6 +1519,8 @@ fn invalid_charger_cleanup_wakes_allocation_between_regular_ten_hertz_ticks() {
     app.world_mut().entity_mut(defender).insert((
         ChargerAssignment { charger },
         DirectMovementComponent {
+            speed: None,
+            interaction: None,
             xy: common::cell_world_center(inactive_charger_cell),
             stop_radius: 0.0,
         },
@@ -1668,7 +1695,7 @@ fn hauler_delivers_minerals_to_a_charger_with_free_space() {
     app.world_mut()
         .entity_mut(charger)
         .insert(OwnerSwarm(swarm));
-    let _hauler = common::spawn_hauler_at(&mut app, source_pos);
+    let _hauler = common::spawn_hauler_at(&mut app, source_pos + Vec2::X * 68.0);
     // Drive enough ticks for the hauler to load (5 ticks at
     // HAULER_EXTRACT_PER_TICK) and walk from the deposit at
     // (100, 0) to the charger at the cell (2, 0) center

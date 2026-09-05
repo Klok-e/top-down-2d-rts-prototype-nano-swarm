@@ -612,7 +612,7 @@ fn completed_planned_charger_provides_charge_to_defenders() {
     let plan = common::spawn_planned_charger_at_cell(&mut app, cell);
     app.world_mut().entity_mut(plan).insert(OwnerSwarm(swarm));
     let _worker = common::spawn_worker_at(&mut app, cell_center + Vec2::X * 68.0);
-    let defender = common::spawn_defender_at(&mut app, cell_center);
+    let defender = common::spawn_defender_at(&mut app, cell_center - Vec2::X * 68.0);
     // The test-driven flow bypasses automatic planning, so paint the Defend
     // cell directly to make the completed Charger operational.
     paint_defend_owned(&mut app, cell);
@@ -721,7 +721,7 @@ fn hauler_delivers_to_completed_planned_charger() {
     let source_pos = Vec2::new(120.0, 0.0);
     let source = common::spawn_sink_stockpile(&mut app, source_pos, 1000, 1000);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
-    let _hauler = common::spawn_hauler_at(&mut app, source_pos);
+    let _hauler = common::spawn_hauler_at(&mut app, source_pos + Vec2::X * 68.0);
 
     // Build the plan first.
     let build_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize + 1;

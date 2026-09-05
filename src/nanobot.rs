@@ -20,7 +20,6 @@ mod placement;
 mod planned;
 mod population;
 mod production;
-mod route;
 mod spread;
 mod sprites;
 
@@ -45,7 +44,6 @@ pub use placement::*;
 pub use planned::*;
 pub use population::*;
 pub use production::*;
-pub use route::*;
 pub use spread::*;
 pub use sprites::*;
 
@@ -138,6 +136,9 @@ impl Plugin for NanobotPlugin {
     fn build(&self, app: &mut App) {
         // Movement intent, local steering, and integration form one deterministic
         // fixed-tick pipeline. Presentation-only debug drawing remains frame-driven.
+        if !app.is_plugin_added::<crate::navigation_runtime::NavigationPlugin>() {
+            app.add_plugins(crate::navigation_runtime::NavigationPlugin);
+        }
         app.add_observer(initialize_nanobot_type_components)
             .configure_sets(
                 FixedUpdate,

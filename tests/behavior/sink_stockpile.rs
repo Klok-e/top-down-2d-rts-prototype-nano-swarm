@@ -209,7 +209,7 @@ fn completed_sink_stockpile_receives_hauled_resources() {
     let source_pos = center + Vec2::new(-200.0, 0.0);
     let source = common::spawn_stockpile(&mut app, source_pos, 200, 200);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
-    let hauler = common::spawn_hauler_at(&mut app, source_pos);
+    let hauler = common::spawn_hauler_at(&mut app, source_pos + Vec2::new(68.0, 0.0));
     app.world_mut()
         .entity_mut(hauler)
         .insert(HaulerAssignment { source, sink });
@@ -333,7 +333,7 @@ fn source_stockpile_demand_ignores_sink_stockpile_in_same_cell() {
         assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
     }
     let _swarm = common::spawn_swarm_at(&mut app, center);
-    let _worker = common::spawn_worker_at(&mut app, center);
+    let _worker = common::spawn_worker_at(&mut app, center + Vec2::new(-68.0, 0.0));
     let _deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -354,7 +354,7 @@ fn source_stockpile_demand_ignores_sink_stockpile_in_same_cell() {
             radius: 64.0,
         },
         StockpileRole::Sink,
-        Transform::from_translation(center.extend(0.0)),
+        Transform::from_translation((center + Vec2::new(180.0, 0.0)).extend(0.0)),
     ));
 
     for _ in 0..5 {
