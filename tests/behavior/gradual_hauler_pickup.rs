@@ -68,7 +68,7 @@ fn hauler_reserves_partial_terminal_load_then_picks_it_up_gradually() {
 
     app.world_mut()
         .entity_mut(hauler)
-        .insert(Transform::from_translation(source_pos.extend(0.0)))
+        .insert(Transform::from_translation(Vec3::new(32.0, 0.0, 0.0)))
         .remove::<DirectMovementComponent>();
     app.update();
 
@@ -156,7 +156,7 @@ fn hauler_unloads_into_stockpile_gradually_and_ledger_neutrally() {
     let sink = common::spawn_sink_stockpile(&mut app, Vec2::ZERO, 3, 100);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
     app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
-    let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(68.0, 0.0));
     let mut reservation = LogisticsReservation::new(source, sink, ResourceKind::Minerals, 10);
     reservation.source_remaining = 0;
     app.world_mut().entity_mut(hauler).insert((
@@ -205,7 +205,7 @@ fn simultaneous_hauler_unloads_into_stockpile_conserve_all_cargo() {
 
     let mut haulers = Vec::new();
     for _ in 0..2 {
-        let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
+        let hauler = common::spawn_hauler_at(&mut app, Vec2::new(68.0, 0.0));
         let mut reservation = LogisticsReservation::new(source, sink, ResourceKind::Minerals, 10);
         reservation.source_remaining = 0;
         app.world_mut().entity_mut(hauler).insert((
@@ -248,8 +248,8 @@ fn simultaneous_haulers_unload_against_exact_independent_reservations() {
     app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
 
     let haulers = [
-        common::spawn_hauler_at(&mut app, Vec2::ZERO),
-        common::spawn_hauler_at(&mut app, Vec2::ZERO),
+        common::spawn_hauler_at(&mut app, Vec2::new(68.0, 0.0)),
+        common::spawn_hauler_at(&mut app, Vec2::new(68.0, 0.0)),
     ];
     for hauler in haulers {
         let mut reservation = LogisticsReservation::new(source, sink, ResourceKind::Minerals, 10);
@@ -293,7 +293,7 @@ fn hauler_unloads_into_facility_gradually() {
             Transform::default(),
         ))
         .id();
-    let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(68.0, 0.0));
     let mut reservation = LogisticsReservation::new(source, sink, ResourceKind::Minerals, 10);
     reservation.source_remaining = 0;
     app.world_mut().entity_mut(hauler).insert((
@@ -330,7 +330,7 @@ fn hauler_unloads_into_charger_gradually() {
         .world_mut()
         .spawn((charger, OwnerSwarm(swarm), Transform::default()))
         .id();
-    let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(68.0, 0.0));
     let mut reservation = LogisticsReservation::new(source, sink, ResourceKind::Minerals, 10);
     reservation.source_remaining = 0;
     app.world_mut().entity_mut(hauler).insert((
@@ -423,7 +423,7 @@ fn loaded_hauler_from_source_reroutes_only_to_same_swarm_sink() {
         .entity(hauler)
         .get::<DirectMovementComponent>()
         .expect("hauler physically travels to replacement Sink stockpile");
-    assert_eq!(movement.xy, replacement_pos);
+    assert!(movement.xy.distance(Vec2::new(182.0, 0.0)) < 0.001);
     let reservation = app
         .world()
         .entity(hauler)
@@ -471,14 +471,15 @@ fn loaded_hauler_returns_to_source_when_destination_is_missing_and_no_terminal_e
         app.world().entity(hauler).get::<Cargo>().unwrap().amount,
         10
     );
-    assert_eq!(
-        app.world()
-            .entity(hauler)
-            .get::<DirectMovementComponent>()
-            .unwrap()
-            .xy,
-        source_pos,
-        "fallback remains a physical return trip",
+    let return_goal = app
+        .world()
+        .entity(hauler)
+        .get::<DirectMovementComponent>()
+        .unwrap()
+        .xy;
+    assert!(
+        return_goal.distance(Vec2::new(-32.0, 0.0)) < 0.001,
+        "fallback remains a physical return trip"
     );
 }
 

@@ -97,11 +97,8 @@ fn scripted_gather_bot_lands_at_deposit_world_position() {
         .truncate();
     let dist_to_deposit = bot_pos.distance(deposit_pos);
     assert!(
-        dist_to_deposit <= 50.0,
-        "worker Transform should land within the deposit's physical extent + 1-tick margin ({:?} +/- 50); got {:?}, distance to deposit = {}",
-        deposit_pos,
-        bot_pos,
-        dist_to_deposit
+        (66.0..=70.01).contains(&dist_to_deposit),
+        "worker body must stay outside the radius32 deposit at its world position: {bot_pos:?}"
     );
     // The pre-fix failure mode put the bot at the cell
     // corner (deposit + (256, 256)). The fix moves the

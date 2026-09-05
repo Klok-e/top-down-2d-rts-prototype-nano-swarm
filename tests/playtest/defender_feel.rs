@@ -527,7 +527,7 @@ fn authored_charger_planning_and_maintenance_follow_observed_service_need() {
         .get_mut::<Charge>()
         .expect("authored Defender has Charge")
         .current = LOW_CHARGE_THRESHOLD;
-    let builder = common::spawn_worker_at(&mut app, center);
+    let builder = common::spawn_worker_at(&mut app, center + Vec2::X * 68.0);
 
     app.update();
 

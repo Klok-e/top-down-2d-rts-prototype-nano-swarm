@@ -105,7 +105,7 @@ fn player_worker_ignores_enemy_owned_planned_structure() {
     app.world_mut()
         .entity_mut(planned)
         .insert(OwnerSwarm(enemy_swarm));
-    let worker = common::spawn_worker_at(&mut app, center);
+    let worker = common::spawn_worker_at(&mut app, center + Vec2::X * 68.0);
 
     app.update();
 
@@ -134,7 +134,7 @@ fn idle_worker_claims_one_unclaimed_planned_structure() {
     let cell = IVec2::new(0, 0);
     let center = common::cell_world_center(cell);
     let planned = common::spawn_planned_structure_at_cell(&mut app, cell);
-    let worker = common::spawn_worker_at(&mut app, center);
+    let worker = common::spawn_worker_at(&mut app, center + Vec2::X * 68.0);
 
     app.update();
 
@@ -162,8 +162,8 @@ fn only_one_worker_can_claim_a_planned_structure() {
     let cell = IVec2::new(0, 0);
     let center = common::cell_world_center(cell);
     let planned = common::spawn_planned_structure_at_cell(&mut app, cell);
-    let worker_a = common::spawn_worker_at(&mut app, center);
-    let worker_b = common::spawn_worker_at(&mut app, center);
+    let worker_a = common::spawn_worker_at(&mut app, center + Vec2::X * 68.0);
+    let worker_b = common::spawn_worker_at(&mut app, center - Vec2::X * 68.0);
 
     app.update();
 
@@ -200,8 +200,8 @@ fn surviving_worker_finishes_plan_after_claiming_worker_dies() {
     let center = common::cell_world_center(cell);
     let planned = common::spawn_planned_structure_at_cell(&mut app, cell);
     let workers = [
-        common::spawn_worker_at(&mut app, center),
-        common::spawn_worker_at(&mut app, center),
+        common::spawn_worker_at(&mut app, center + Vec2::X * 68.0),
+        common::spawn_worker_at(&mut app, center - Vec2::X * 68.0),
     ];
 
     app.update();
@@ -239,7 +239,7 @@ fn replacement_worker_finishes_plan_after_live_claim_is_revoked() {
     let mut app = build_app();
     let cell = IVec2::ZERO;
     let center = common::cell_world_center(cell);
-    let replacement = common::spawn_worker_at(&mut app, center);
+    let replacement = common::spawn_worker_at(&mut app, center + Vec2::X * 68.0);
     let former_claimant =
         common::spawn_worker_at(&mut app, center + Vec2::splat(10.0 * ZONE_BLOCK_SIZE));
     app.world_mut()
@@ -298,7 +298,7 @@ fn claimed_planned_structure_is_skipped_by_other_workers() {
     let planned = common::spawn_planned_structure_at_cell(&mut app, cell);
     // Pre-claim the planned structure with both sides of the reservation. The
     // test focuses on the "skip claimed" half of the contract.
-    let claiming_worker = common::spawn_worker_at(&mut app, center);
+    let claiming_worker = common::spawn_worker_at(&mut app, center + Vec2::X * 68.0);
     {
         let world = app.world_mut();
         let mut state = *world.entity(planned).get::<PlannedStructure>().unwrap();
@@ -312,7 +312,7 @@ fn claimed_planned_structure_is_skipped_by_other_workers() {
             });
     }
     // Late worker that tries to claim after the first.
-    let late_worker = common::spawn_worker_at(&mut app, center);
+    let late_worker = common::spawn_worker_at(&mut app, center + Vec2::X * 68.0);
 
     for _ in 0..3 {
         app.update();
@@ -350,7 +350,7 @@ fn worker_time_advances_build_progress() {
     // Place the worker inside the planned structure's stop
     // threshold so the arrive system promotes it to progress
     // on the same tick the claim system fires.
-    let _worker = common::spawn_worker_at(&mut app, center);
+    let _worker = common::spawn_worker_at(&mut app, center + Vec2::X * 68.0);
 
     // 1 tick for claim + arrive (worker is already at the
     // cell center), then DEFAULT ticks to consume the budget.
@@ -387,7 +387,7 @@ fn completion_replaces_planned_with_stockpile() {
     let cell = IVec2::new(0, 0);
     let center = common::cell_world_center(cell);
     let planned = common::spawn_planned_structure_at_cell(&mut app, cell);
-    let _worker = common::spawn_worker_at(&mut app, center);
+    let _worker = common::spawn_worker_at(&mut app, center + Vec2::X * 68.0);
 
     // 1 tick for claim + arrive, then the work budget, then
     // a buffer. The build should be done well before the loop
@@ -433,7 +433,7 @@ fn completion_does_not_consume_any_minerals() {
     // No stockpiles anywhere. The build must not require any
     // material source; if it did, the build would block on an
     // empty ledger and never complete.
-    let _worker = common::spawn_worker_at(&mut app, center);
+    let _worker = common::spawn_worker_at(&mut app, center + Vec2::X * 68.0);
 
     let total_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize + 5;
     for _ in 0..total_ticks {
@@ -500,7 +500,7 @@ fn demand_spawned_planned_structure_preserves_swarm_ownership() {
     app.world_mut()
         .entity_mut(planned)
         .insert(OwnerSwarm(swarm));
-    let _worker = common::spawn_worker_at(&mut app, center);
+    let _worker = common::spawn_worker_at(&mut app, center + Vec2::X * 68.0);
 
     let total_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize + 5;
     for _ in 0..total_ticks {
@@ -541,7 +541,7 @@ fn planned_structure_visual_flip_is_observable_via_sprite_color() {
     let cell = IVec2::new(0, 0);
     let center = common::cell_world_center(cell);
     let planned = common::spawn_planned_structure_at_cell(&mut app, cell);
-    let _worker = common::spawn_worker_at(&mut app, center);
+    let _worker = common::spawn_worker_at(&mut app, center + Vec2::X * 68.0);
 
     // Capture the planned visual before the build runs.
     app.update();

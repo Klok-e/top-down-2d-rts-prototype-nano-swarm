@@ -124,22 +124,13 @@ fn gather_bot_lands_at_deposit_world_position_not_cell_corner() {
         .expect("worker must have a Transform")
         .translation
         .truncate();
-    let dx = (bot_pos.x - deposit_pos.x).abs();
-    let dy = (bot_pos.y - deposit_pos.y).abs();
     let offset_x = bot_pos.x - (deposit_pos.x + 256.0);
     let offset_y = bot_pos.y - (deposit_pos.y + 256.0);
-    // The worker must land within the deposit's physical
-    // extent (radius 32) plus a small overshoot margin
-    // (one tick of bot_speed = 5). The pre-fix code put
-    // the bot at the cell corner (deposit + (256, 256)),
-    // which is much further than the 32+5 = 37 bound.
+    // Radius 32 plus body clearance 34 and at most four units of work reach.
+    let distance = bot_pos.distance(deposit_pos);
     assert!(
-        dx <= 40.0 && dy <= 40.0,
-        "worker Transform should land within the deposit's physical extent + 1-tick margin ({:?} +/- 40); got {:?} (dx={}, dy={})",
-        deposit_pos,
-        bot_pos,
-        dx,
-        dy
+        (66.0..=70.01).contains(&distance),
+        "worker must work outside the deposit at its actual world position; got {bot_pos:?}"
     );
     // The pre-fix failure mode put the bot at the cell
     // corner (deposit + (256, 256)). The fix moves the

@@ -39,6 +39,8 @@
 
 use bevy::prelude::*;
 
+use crate::nanobot::InteractionRegion;
+
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::{Commitment, NanobotType, SoftWorkSlots, best_candidate};
 use crate::nanobot::components::SwarmMember;
@@ -50,7 +52,6 @@ use crate::ZONE_BLOCK_SIZE;
 use crate::nanobot::build::{Structure, StructureKind};
 use crate::nanobot::components::{DirectMovementComponent, Nanobot};
 use crate::nanobot::gather::world_to_cell;
-use crate::nanobot::placement::BUILDING_FOOTPRINT_RADIUS;
 use crate::nanobot::{Charger, ProductionFacility};
 use crate::resources::Stockpile;
 
@@ -277,27 +278,22 @@ pub fn worker_maintenance_assignment_system(
         // needs maintenance, the worker stays idle -- the
         // build assignment system will run next tick and may
         // pick a build site or a damaged structure.
-        let Some((target_entity, target_pos)) =
+        let Some((target_entity, _target_pos)) =
             find_nearest_needy_structure(candidate.cell, worker_pos, &structures)
         else {
             continue;
         };
 
+        let Ok((_, target_transform, _)) = structures.get(target_entity) else {
+            continue;
+        };
         slots.occupy(candidate.cell, IntentKind::Build);
         commands.entity(entity).insert((
             MaintenanceAssignment {
                 cell: candidate.cell,
                 target: target_entity,
             },
-            // Issue #38 / ADR-0004: stop on the
-            // building footprint's physical edge
-            // so the worker lands at the
-            // structure's centre, matching the
-            // arrive guard.
-            DirectMovementComponent {
-                xy: target_pos,
-                stop_radius: BUILDING_FOOTPRINT_RADIUS,
-            },
+            InteractionRegion::structure(target_transform).movement_from(worker_pos),
         ));
     }
 }
@@ -327,14 +323,8 @@ fn find_nearest_needy_structure(
 /// Detect a worker that has arrived at its assigned maintenance
 /// target and start the work phase. The `Without<MaintenanceProgress>`
 /// filter makes arrival idempotent: the same tick cannot fire
-/// twice. The trigger is the same as the build chain: the
-/// movement system removes `DirectMovementComponent` when the
-/// bot is close enough to its target. The arrival threshold
-/// matches the building footprint (issue #38 / ADR-0004) so
-/// the worker lands at the structure's centre, not at
-/// `centre + STOP_THRESHOLD`. The guard mirrors the
-/// `DirectMovementComponent::stop_radius` the assignment
-/// system passes.
+/// twice. Movement, arrival, and ongoing maintenance share the target's
+/// exterior interaction region.
 #[allow(clippy::type_complexity)]
 pub fn worker_maintenance_arrive_system(
     mut commands: Commands,
@@ -357,30 +347,18 @@ pub fn worker_maintenance_arrive_system(
             commands.entity(entity).remove::<MaintenanceAssignment>();
             continue;
         };
-        let distance = transform
-            .translation
-            .truncate()
-            .distance(target_transform.translation.truncate());
-        if distance <= BUILDING_FOOTPRINT_RADIUS {
+        let region = InteractionRegion::structure(target_transform);
+        let position = transform.translation.truncate();
+        if region.contains(position) {
             commands.entity(entity).insert(MaintenanceProgress {
                 cell: assignment.cell,
                 target: assignment.target,
                 ticks_worked: 0,
             });
         } else {
-            // Resume branch (issue #38 / ADR-0004):
-            // the `Without<DirectMovementComponent>`
-            // filter guarantees the worker has no
-            // DMC, so re-issue one with the same
-            // extent the assignment path uses. A
-            // bot nudged past the footprint by
-            // separation force walks back instead
-            // of stalling without a movement
-            // command.
-            commands.entity(entity).insert(DirectMovementComponent {
-                xy: target_transform.translation.truncate(),
-                stop_radius: BUILDING_FOOTPRINT_RADIUS,
-            });
+            commands
+                .entity(entity)
+                .insert(region.movement_from(position));
         }
     }
 }
@@ -406,11 +384,11 @@ pub fn worker_maintenance_arrive_system(
 #[allow(clippy::type_complexity)]
 pub fn worker_maintenance_work_system(
     mut commands: Commands,
-    mut workers: Query<(Entity, &mut MaintenanceProgress), With<Nanobot>>,
-    mut structures: Query<&mut Structure>,
+    mut workers: Query<(Entity, &Transform, &mut MaintenanceProgress), With<Nanobot>>,
+    mut structures: Query<(&mut Structure, &Transform)>,
 ) {
-    for (entity, mut progress) in &mut workers {
-        let Ok(mut structure) = structures.get_mut(progress.target) else {
+    for (entity, transform, mut progress) in &mut workers {
+        let Ok((mut structure, target_transform)) = structures.get_mut(progress.target) else {
             // Target collapsed between arrival and work (e.g.
             // a previous test or a future system despawned it).
             // Release the worker; the cell becomes a valid
@@ -418,6 +396,15 @@ pub fn worker_maintenance_work_system(
             release_maintenance_worker(&mut commands, entity);
             continue;
         };
+
+        let region = InteractionRegion::structure(target_transform);
+        let position = transform.translation.truncate();
+        if !region.contains(position) {
+            commands
+                .entity(entity)
+                .insert(region.movement_from(position));
+            continue;
+        }
 
         // Reset the buffer counter to 0 BEFORE the
         // degradation system runs. The worker's "I just

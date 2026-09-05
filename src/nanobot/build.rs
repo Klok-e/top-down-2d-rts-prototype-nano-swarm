@@ -38,10 +38,10 @@ use bevy::prelude::*;
 use crate::ZONE_BLOCK_SIZE;
 use crate::ai::get_world_from_zone;
 use crate::intent::{IntentGrid, IntentKind};
+use crate::nanobot::InteractionRegion;
 use crate::nanobot::autonomy::{Commitment, NanobotType, SoftWorkSlots, best_candidate};
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, SwarmMember};
 use crate::nanobot::gather::world_to_cell;
-use crate::nanobot::placement::BUILDING_FOOTPRINT_RADIUS;
 use crate::resources::{ResourceKind, ResourceLedger, Stockpile};
 
 /// Maximum health a `Structure` can have. Repair and construction
@@ -288,10 +288,10 @@ pub fn worker_build_assignment_system(
 
         // Resolve the world position of the target so the
         // worker can walk to it.
-        let target_pos = if let Ok((_, t, _)) = build_sites.get(target) {
-            t.translation.truncate()
+        let target_transform = if let Ok((_, t, _)) = build_sites.get(target) {
+            t
         } else if let Ok((_, t, _)) = damaged_structures.get(target) {
-            t.translation.truncate()
+            t
         } else {
             continue;
         };
@@ -302,16 +302,7 @@ pub fn worker_build_assignment_system(
                 cell: candidate.cell,
                 target,
             },
-            DirectMovementComponent {
-                xy: target_pos,
-                // Stop on the building footprint's
-                // physical edge so the worker lands at
-                // the structure's centre, not at
-                // `centre + STOP_THRESHOLD`. Issue #38 /
-                // ADR-0004: same extent as the arrive
-                // guard in `worker_build_arrive_system`.
-                stop_radius: BUILDING_FOOTPRINT_RADIUS,
-            },
+            InteractionRegion::structure(target_transform).movement_from(worker_pos),
         ));
     }
 }
@@ -354,19 +345,8 @@ fn find_nearest_build_target(
         .or_else(|| best_damaged.map(|(_, e)| e))
 }
 
-/// Detect a worker that has arrived at its assigned build target
-/// and start the work phase. The `Without<BuildProgress>` filter
-/// makes arrival idempotent: the same tick cannot fire twice.
-///
-/// The arrival threshold matches the building footprint so the
-/// worker lands at the structure's centre, not at
-/// `centre + STOP_THRESHOLD`. The guard mirrors the
-/// `DirectMovementComponent::stop_radius` the assignment system
-/// passes; a bot nudged past the edge by separation force is
-/// re-routed by the resume branch below, and a bot whose
-/// `DirectMovementComponent` was stripped elsewhere (e.g. the
-/// `ProgressChecker` stuck-timeout) cannot produce a false
-/// arrival past the physical extent. Issue #38 / ADR-0004.
+/// Begin building only from the shared exterior work region, resuming approach
+/// if displacement or a removed movement command leaves the worker out of reach.
 #[allow(clippy::type_complexity)]
 pub fn worker_build_arrive_system(
     mut commands: Commands,
@@ -394,31 +374,16 @@ pub fn worker_build_arrive_system(
             commands.entity(entity).remove::<BuildAssignment>();
             continue;
         };
-        let distance = transform
-            .translation
-            .truncate()
-            .distance(target_transform.translation.truncate());
-        if distance <= BUILDING_FOOTPRINT_RADIUS {
-            // Arrived on the structure's footprint. Promote
-            // to working state.
+        let region = InteractionRegion::structure(target_transform);
+        if region.contains(transform.translation.truncate()) {
             commands.entity(entity).insert(BuildProgress {
                 cell: assignment.cell,
                 target: assignment.target,
             });
         } else {
-            // Resume branch (issue #38 / ADR-0004):
-            // a worker nudged past the footprint by
-            // separation force still has a
-            // `BuildAssignment` but no
-            // `DirectMovementComponent` (the
-            // `Without<DirectMovementComponent>` filter
-            // guarantees that). Re-issue the command with
-            // the same extent the assignment path uses so
-            // a brief overshoot is self-correcting.
-            commands.entity(entity).insert(DirectMovementComponent {
-                xy: target_transform.translation.truncate(),
-                stop_radius: BUILDING_FOOTPRINT_RADIUS,
-            });
+            commands
+                .entity(entity)
+                .insert(region.movement_from(transform.translation.truncate()));
         }
     }
 }
@@ -437,8 +402,8 @@ pub fn worker_build_work_system(
     mut commands: Commands,
     mut slots: ResMut<SoftWorkSlots>,
     mut workers: Query<(Entity, &Transform, &BuildProgress), (With<Nanobot>, With<BuildProgress>)>,
-    mut build_sites: Query<(Entity, &mut BuildSite)>,
-    mut structures: Query<&mut Structure>,
+    mut build_sites: Query<(Entity, &mut BuildSite, &Transform)>,
+    mut structures: Query<(&mut Structure, &Transform)>,
     mut stockpiles: Query<(Entity, &mut Stockpile, &Transform)>,
     mut ledger: ResMut<ResourceLedger>,
 ) {
@@ -447,7 +412,14 @@ pub fn worker_build_work_system(
 
         // Construction branch: a worker at a BuildSite consumes
         // material and the site tracks progress.
-        if let Ok((site_entity, mut site)) = build_sites.get_mut(progress.target) {
+        if let Ok((site_entity, mut site, target)) = build_sites.get_mut(progress.target) {
+            let region = InteractionRegion::structure(target);
+            if !region.contains(worker_pos) {
+                commands
+                    .entity(entity)
+                    .insert(region.movement_from(worker_pos));
+                continue;
+            }
             if site.is_complete() {
                 // Another worker finished the site between
                 // ticks.
@@ -475,7 +447,14 @@ pub fn worker_build_work_system(
 
         // Repair branch: a worker at a damaged Structure
         // consumes material and adds to health.
-        if let Ok(mut structure) = structures.get_mut(progress.target) {
+        if let Ok((mut structure, target)) = structures.get_mut(progress.target) {
+            let region = InteractionRegion::structure(target);
+            if !region.contains(worker_pos) {
+                commands
+                    .entity(entity)
+                    .insert(region.movement_from(worker_pos));
+                continue;
+            }
             if structure.is_full_health() {
                 release_build_worker(&mut commands, &mut slots, entity, progress.cell);
                 continue;

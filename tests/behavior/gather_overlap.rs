@@ -165,7 +165,7 @@ fn deposit_overlapping_two_painted_cells_uses_canonical_anchor() {
     );
     // Worker starts closer to the noncanonical cell; anchor selection remains
     // deterministic and independent from worker position.
-    let worker_pos = Vec2::new(1_100.0, ZONE_BLOCK_SIZE * 0.5);
+    let worker_pos = Vec2::new(1_200.0, ZONE_BLOCK_SIZE * 0.5);
     let worker = common::spawn_worker_at(&mut app, worker_pos);
 
     for _ in 0..5 {

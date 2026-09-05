@@ -10,15 +10,14 @@ use bevy::prelude::*;
 
 use crate::intent::IntentGrid;
 use crate::nanobot::{
-    Cargo, LogisticsReservation, NanobotType, OwnerSwarm, ProductionFacility, STOP_THRESHOLD,
-    SupportCondition,
+    Cargo, InteractionRegion, LogisticsReservation, NanobotType, OwnerSwarm, ProductionFacility,
+    STOP_THRESHOLD, SupportCondition,
     charge::Charger,
     components::{DirectMovementComponent, Nanobot, SwarmId, SwarmMember},
     hauler_route_cost,
     logistics_leg::{
         HaulerContext, StockpileCandidate, TerminalCandidate, pick_logistics_leg_with_cost,
     },
-    placement::BUILDING_FOOTPRINT_RADIUS,
     plan_hauler_route,
 };
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole};
@@ -191,46 +190,6 @@ fn endpoint_is_operational(entity: Entity, conditions: &Query<&SupportCondition>
         .map_or(true, |condition| condition.is_operational())
 }
 
-/// World position of a hauler source stockpile. A hauler source
-/// is always a stockpile under the tiered model, so this is a
-/// plain component lookup.
-#[allow(clippy::type_complexity)]
-fn stockpile_pos(
-    entity: Entity,
-    stockpiles: &Query<(
-        Entity,
-        &Stockpile,
-        &Transform,
-        Option<&StockpileRole>,
-        Option<&OwnerSwarm>,
-    )>,
-) -> Option<Vec2> {
-    stockpiles
-        .get(entity)
-        .ok()
-        .map(|(_, _, t, _, _)| t.translation.truncate())
-}
-
-/// Physical extent of a hauler source stockpile, used as the
-/// arrival stop radius so the movement system halts on the
-/// stockpile's edge (matching the arrive-source guard).
-#[allow(clippy::type_complexity)]
-fn stockpile_radius_of(
-    entity: Entity,
-    stockpiles: &Query<(
-        Entity,
-        &Stockpile,
-        &Transform,
-        Option<&StockpileRole>,
-        Option<&OwnerSwarm>,
-    )>,
-) -> f32 {
-    stockpiles
-        .get(entity)
-        .map(|(_, s, _, _, _)| s.radius)
-        .unwrap_or(0.0)
-}
-
 /// For each idle Hauler with no in-flight transport work, pick a
 /// `(source, sink)` pair from the resource economy and head to the
 /// source. The hauler keeps a single [`HaulerAssignment`] for the
@@ -334,21 +293,11 @@ pub fn hauler_assignment_system(
         };
         let source = leg.source;
         let sink = leg.sink;
-        let Some(source_pos) = stockpile_pos(source, &stockpiles) else {
+        let Ok((_, _, source_transform, _, _)) = stockpiles.get(source) else {
             continue;
         };
-
-        // Source-side stop radius: the source stockpile's own
-        // physical extent. A hauler source is always a stockpile
-        // under the tiered model (deposits are a worker-only
-        // source), so the lookup never falls through. Issue #38
-        // / ADR-0004: same extent as the hauler-arrive-source
-        // guard so the movement system and the arrive system
-        // stop on the same edge.
-        let source_radius = stockpile_radius_of(source, &stockpiles);
-
-        let (route, movement) =
-            planned_route_movement(hauler_pos, source_pos, &grid, swarm, source_radius);
+        let goal = InteractionRegion::structure(source_transform).approach(hauler_pos);
+        let (route, movement) = planned_route_movement(hauler_pos, goal, &grid, swarm, 0.0);
 
         commands.entity(entity).insert((
             HaulerAssignment { source, sink },
@@ -360,8 +309,7 @@ pub fn hauler_assignment_system(
 }
 
 /// Detect a hauler that has arrived at its assigned source and
-/// start the loading phase. The arrival threshold is the source's
-/// own radius (deposit or stockpile), matching the gather chain.
+/// start loading from its exterior interaction region.
 /// The `Without<HaulerLoading>` filter makes arrival idempotent; the
 /// `Without<HaulerLoad>` filter keeps a Carrying hauler from being
 /// re-loaded when it happens to be at the source between trips.
@@ -398,12 +346,12 @@ pub fn hauler_arrive_source_system(
                 .remove::<HaulerRoute>();
             continue;
         }
-        let (source_pos, source_radius) = if let Ok((d, t)) = deposits.get(assignment.source) {
-            (t.translation.truncate(), d.radius)
-        } else if let Ok((s, t)) = stockpiles.get(assignment.source) {
-            (t.translation.truncate(), s.radius)
-        } else if let Ok((c, t)) = chargers.get(assignment.source) {
-            (t.translation.truncate(), c.radius)
+        let region = if let Ok((d, t)) = deposits.get(assignment.source) {
+            InteractionRegion::deposit(t, d.radius)
+        } else if let Ok((_, t)) = stockpiles.get(assignment.source) {
+            InteractionRegion::structure(t)
+        } else if let Ok((_, t)) = chargers.get(assignment.source) {
+            InteractionRegion::structure(t)
         } else {
             // Source entity disappeared; drop the assignment and
             // let a later tick reassign.
@@ -414,7 +362,7 @@ pub fn hauler_arrive_source_system(
                 .remove::<HaulerRoute>();
             continue;
         };
-        if transform.translation.truncate().distance(source_pos) <= source_radius {
+        if region.contains(transform.translation.truncate()) {
             let kind = reservation
                 .map(|reservation| reservation.kind)
                 .unwrap_or(ResourceKind::Minerals);
@@ -432,10 +380,9 @@ pub fn hauler_arrive_source_system(
             // commitment alive and restore movement instead of
             // marooning the hauler with `HaulerAssignment` and no
             // velocity.
-            commands.entity(entity).insert(DirectMovementComponent {
-                xy: source_pos,
-                stop_radius: source_radius,
-            });
+            commands
+                .entity(entity)
+                .insert(region.movement_from(transform.translation.truncate()));
         }
     }
 }
@@ -451,19 +398,20 @@ pub fn hauler_load_system(
         (
             Entity,
             &mut Cargo,
+            &Transform,
             &HaulerAssignment,
             Option<&mut LogisticsReservation>,
             &SwarmMember,
         ),
         (With<Nanobot>, With<HaulerLoading>),
     >,
-    mut deposits: Query<&mut ResourceDeposit>,
-    mut source_stockpiles: Query<&mut Stockpile>,
-    source_chargers: Query<&mut Charger>,
+    mut deposits: Query<(&mut ResourceDeposit, &Transform)>,
+    mut source_stockpiles: Query<(&mut Stockpile, &Transform)>,
+    source_chargers: Query<(&Charger, &Transform)>,
     conditions: Query<&SupportCondition>,
     mut ledger: ResMut<ResourceLedger>,
 ) {
-    for (entity, mut cargo, assignment, mut reservation, swarm) in &mut haulers {
+    for (entity, mut cargo, transform, assignment, mut reservation, swarm) in &mut haulers {
         let target_amount = reservation
             .as_ref()
             .map(|reservation| reservation.amount)
@@ -480,7 +428,26 @@ pub fn hauler_load_system(
             continue;
         }
 
-        if let Ok(mut deposit) = deposits.get_mut(assignment.source) {
+        let region = if let Ok((deposit, target)) = deposits.get(assignment.source) {
+            Some(InteractionRegion::deposit(target, deposit.radius))
+        } else if let Ok((_, target)) = source_stockpiles.get(assignment.source) {
+            Some(InteractionRegion::structure(target))
+        } else {
+            source_chargers
+                .get(assignment.source)
+                .ok()
+                .map(|(_, target)| InteractionRegion::structure(target))
+        };
+        if let Some(region) = region
+            && !region.contains(transform.translation.truncate())
+        {
+            commands
+                .entity(entity)
+                .insert(region.movement_from(transform.translation.truncate()));
+            continue;
+        }
+
+        if let Ok((mut deposit, _)) = deposits.get_mut(assignment.source) {
             if deposit.amount == 0 {
                 finish_reservation(reservation.as_deref_mut(), cargo.amount);
                 transition_to_carrying(&mut commands, entity, cargo.amount);
@@ -504,7 +471,7 @@ pub fn hauler_load_system(
             transition_to_carrying(&mut commands, entity, cargo.amount);
             continue;
         }
-        if let Ok(mut stockpile) = source_stockpiles.get_mut(assignment.source) {
+        if let Ok((mut stockpile, _)) = source_stockpiles.get_mut(assignment.source) {
             if stockpile.amount == 0 {
                 finish_reservation(reservation.as_deref_mut(), cargo.amount);
                 transition_to_carrying(&mut commands, entity, cargo.amount);
@@ -547,8 +514,7 @@ fn transition_to_carrying(commands: &mut Commands, entity: Entity, amount: u32) 
 /// Snapshot of a validated destination endpoint.
 #[derive(Debug, Clone, Copy)]
 struct SinkEndpointSnapshot {
-    pos: Vec2,
-    radius: f32,
+    region: InteractionRegion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -640,8 +606,7 @@ fn valid_destination_snapshot(
             && owner_is_swarm(owner, swarms, swarm)
             && stockpile.free_space().saturating_sub(incoming_claims) >= amount)
             .then_some(SinkEndpointSnapshot {
-                pos: transform.translation.truncate(),
-                radius: stockpile.radius,
+                region: InteractionRegion::structure(transform),
             });
     }
     if tier != HaulSourceTier::Sink {
@@ -652,8 +617,7 @@ fn valid_destination_snapshot(
             && owner_is_swarm(owner, swarms, swarm)
             && facility.input_free_space().saturating_sub(incoming_claims) >= amount)
             .then_some(SinkEndpointSnapshot {
-                pos: transform.translation.truncate(),
-                radius: BUILDING_FOOTPRINT_RADIUS,
+                region: InteractionRegion::structure(transform),
             });
     }
     if let Ok((_, charger, transform, owner)) = chargers.get(destination) {
@@ -661,8 +625,7 @@ fn valid_destination_snapshot(
             && owner_is_swarm(owner, swarms, swarm)
             && charger.free_space().saturating_sub(incoming_claims) >= amount)
             .then_some(SinkEndpointSnapshot {
-                pos: transform.translation.truncate(),
-                radius: charger.radius,
+                region: InteractionRegion::structure(transform),
             });
     }
     None
@@ -873,10 +836,10 @@ pub fn hauler_reroute_system(
         redirected.destination_remaining = cargo.amount;
         let (route, movement) = planned_route_movement(
             hauler_pos,
-            endpoint.pos,
+            endpoint.region.approach(hauler_pos),
             &grid,
             swarm_member.0,
-            endpoint.radius,
+            0.0,
         );
         commands
             .entity(entity)
@@ -971,11 +934,16 @@ pub fn hauler_carry_assign_system(
             continue;
         };
         let hauler_pos = transform.translation.truncate();
-        if hauler_pos.distance(sink.pos) <= sink.radius || route.is_some() {
+        if sink.region.contains(hauler_pos) || route.is_some() {
             continue;
         }
-        let (route, movement) =
-            planned_route_movement(hauler_pos, sink.pos, &grid, swarm_member.0, sink.radius);
+        let (route, movement) = planned_route_movement(
+            hauler_pos,
+            sink.region.approach(hauler_pos),
+            &grid,
+            swarm_member.0,
+            0.0,
+        );
         commands.entity(entity).insert((route, movement));
     }
 }
@@ -1064,7 +1032,7 @@ pub fn hauler_delivery_system(
         ) else {
             continue;
         };
-        if transform.translation.truncate().distance(endpoint.pos) > endpoint.radius {
+        if !endpoint.region.contains(transform.translation.truncate()) {
             continue;
         }
         let transfer_limit = load.amount.min(HAULER_TRANSFER_PER_TICK);

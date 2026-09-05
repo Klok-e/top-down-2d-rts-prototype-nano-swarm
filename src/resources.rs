@@ -44,8 +44,8 @@ impl ResourceKind {
 
 /// Physical resource deposit on the map. The entity carrying this
 /// component is the deposit; its world position comes from
-/// `Transform`. Workers within `radius` world units of the position
-/// can extract from it.
+/// `Transform`. Workers extract from the exterior interaction region around
+/// its world-space footprint.
 #[derive(Debug, Component, Default, Clone, Copy)]
 pub struct ResourceDeposit {
     pub kind: ResourceKind,
@@ -55,8 +55,7 @@ pub struct ResourceDeposit {
     /// not auto-respawn deposits in the first implementation; the
     /// `amount` is allowed to go to zero and stay there.
     pub capacity: u32,
-    /// Worker reach radius in world units. A worker within
-    /// `radius` of the deposit's `Transform` may extract.
+    /// Physical world-space footprint radius, including authored visual scale.
     pub radius: f32,
 }
 

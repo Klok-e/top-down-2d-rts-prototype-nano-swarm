@@ -86,3 +86,10 @@ mod territory_projection;
 mod world_space_nanobots;
 #[path = "behavior/zone_brush_ui_capture.rs"]
 mod zone_brush_ui_capture;
+
+#[path = "behavior/exterior_haul.rs"]
+mod exterior_haul;
+#[path = "behavior/exterior_movement.rs"]
+mod exterior_movement;
+#[path = "behavior/exterior_work.rs"]
+mod exterior_work;

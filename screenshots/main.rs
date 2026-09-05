@@ -28,6 +28,7 @@ mod build_zone_placement;
 mod combat_presentation;
 mod defender_combat_readability;
 mod defender_staging;
+mod exterior_work;
 mod fill_indicators;
 mod harness;
 mod idle_spread;
@@ -136,6 +137,15 @@ fn main() -> std::process::ExitCode {
             run(defender_staging::defender_staging)
         })
         .with_ignored_flag(true),
+        Trial::test("exterior_hauler_delivery", || {
+            run(exterior_work::exterior_hauler_delivery)
+        })
+        .with_ignored_flag(true),
+        Trial::test("exterior_defender_charging", || {
+            run(exterior_work::exterior_defender_charging)
+        })
+        .with_ignored_flag(true),
+        Trial::test("exterior_work", || run(exterior_work::exterior_work)).with_ignored_flag(true),
         Trial::test("idle_spread", || run(idle_spread::idle_spread)).with_ignored_flag(true),
         Trial::test("nanobot_presentation", || {
             run(nanobot_presentation::nanobot_presentation)

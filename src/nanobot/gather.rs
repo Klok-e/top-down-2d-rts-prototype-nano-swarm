@@ -24,6 +24,8 @@
 
 use bevy::prelude::*;
 
+use crate::nanobot::InteractionRegion;
+
 use crate::ZONE_BLOCK_SIZE;
 use crate::ai::get_world_from_zone;
 use crate::intent::{IntentGrid, IntentKind};
@@ -729,15 +731,7 @@ pub fn worker_gather_assignment_system(
         slots.occupy(candidate.cell, IntentKind::Gather);
         commands.entity(entity).insert((
             GatherAssignment::new(candidate.cell, deposit_entity),
-            DirectMovementComponent {
-                xy: deposit_transform.translation.truncate(),
-                // Stop on the deposit's physical edge so the
-                // bot lands at the deposit center, not at
-                // `center + STOP_THRESHOLD`. Issue #38 /
-                // ADR-0004: paired with the arrive guard that
-                // compares against the same `deposit.radius`.
-                stop_radius: deposit.radius,
-            },
+            InteractionRegion::deposit(deposit_transform, deposit.radius).movement_from(worker_pos),
         ));
     }
 }
@@ -816,12 +810,11 @@ pub fn worker_gather_arrive_system(
         }
 
         let worker_pos = transform.translation.truncate();
-        let deposit_pos = deposit_transform.translation.truncate();
-        if worker_pos.distance(deposit_pos) > deposit.radius {
-            commands.entity(entity).insert(DirectMovementComponent {
-                xy: deposit_pos,
-                stop_radius: deposit.radius,
-            });
+        let region = InteractionRegion::deposit(deposit_transform, deposit.radius);
+        if !region.contains(worker_pos) {
+            commands
+                .entity(entity)
+                .insert(region.movement_from(worker_pos));
             continue;
         }
 
@@ -873,6 +866,7 @@ pub fn worker_gather_extract_system(
         (
             Entity,
             &mut ExtractProgress,
+            &Transform,
             &GatherAssignment,
             &mut Cargo,
             &mut LogisticsReservation,
@@ -880,10 +874,12 @@ pub fn worker_gather_extract_system(
         ),
         With<Nanobot>,
     >,
-    mut deposits: Query<&mut ResourceDeposit>,
+    mut deposits: Query<(&mut ResourceDeposit, &Transform)>,
     mut ledger: ResMut<ResourceLedger>,
 ) {
-    for (entity, mut progress, assignment, mut cargo, mut reservation, swarm) in &mut workers {
+    for (entity, mut progress, transform, assignment, mut cargo, mut reservation, swarm) in
+        &mut workers
+    {
         if reservation.is_added() {
             continue;
         }
@@ -891,12 +887,20 @@ pub fn worker_gather_extract_system(
             transition_worker_to_carrying(&mut commands, entity, cargo.amount);
             continue;
         }
-        let Ok(mut deposit) = deposits.get_mut(assignment.deposit) else {
+        let Ok((mut deposit, deposit_transform)) = deposits.get_mut(assignment.deposit) else {
             reservation.source_remaining = 0;
             reservation.destination_remaining = cargo.amount;
             transition_worker_to_carrying(&mut commands, entity, cargo.amount);
             continue;
         };
+        let region = InteractionRegion::deposit(deposit_transform, deposit.radius);
+        let position = transform.translation.truncate();
+        if !region.contains(position) {
+            commands
+                .entity(entity)
+                .insert(region.movement_from(position));
+            continue;
+        }
         let actual = EXTRACT_PER_TICK
             .min(deposit.amount)
             .min(reservation.source_remaining)
@@ -1008,7 +1012,7 @@ pub fn worker_gather_reroute_system(
             continue;
         };
         *same_tick_claims.entry(destination).or_default() += cargo.amount;
-        let Ok((_, stockpile, stockpile_transform, _, _, _)) = stockpiles.get(destination) else {
+        let Ok((_, _stockpile, stockpile_transform, _, _, _)) = stockpiles.get(destination) else {
             continue;
         };
         let mut redirected = *reservation;
@@ -1019,10 +1023,8 @@ pub fn worker_gather_reroute_system(
             ReturningToStockpile {
                 stockpile: destination,
             },
-            DirectMovementComponent {
-                xy: stockpile_transform.translation.truncate(),
-                stop_radius: stockpile.radius,
-            },
+            InteractionRegion::structure(stockpile_transform)
+                .movement_from(transform.translation.truncate()),
         ));
     }
 }
@@ -1110,7 +1112,7 @@ pub fn worker_gather_carry_assign_system(
                     .map(|(_, stockpile, transform, _, _, _)| (destination, stockpile, transform))
             })
         };
-        let Some((stockpile_entity, stockpile, stockpile_transform)) = selected else {
+        let Some((stockpile_entity, _stockpile, stockpile_transform)) = selected else {
             continue;
         };
         *same_tick_claims.entry(stockpile_entity).or_default() += load.amount;
@@ -1118,10 +1120,8 @@ pub fn worker_gather_carry_assign_system(
             ReturningToStockpile {
                 stockpile: stockpile_entity,
             },
-            DirectMovementComponent {
-                xy: stockpile_transform.translation.truncate(),
-                stop_radius: stockpile.radius,
-            },
+            InteractionRegion::structure(stockpile_transform)
+                .movement_from(transform.translation.truncate()),
         ));
     }
 }
@@ -1182,18 +1182,15 @@ pub fn worker_gather_delivery_system(
             }
             continue;
         }
-        if transform
-            .translation
-            .truncate()
-            .distance(stockpile_transform.translation.truncate())
-            > stockpile.radius
-        {
-            commands.entity(entity).insert(DirectMovementComponent {
-                xy: stockpile_transform.translation.truncate(),
-                stop_radius: stockpile.radius,
-            });
+        let region = InteractionRegion::structure(stockpile_transform);
+        let position = transform.translation.truncate();
+        if !region.contains(position) {
+            commands
+                .entity(entity)
+                .insert(region.movement_from(position));
             continue;
         }
+
         let delivered = load
             .amount
             .min(HAULER_TRANSFER_PER_TICK)

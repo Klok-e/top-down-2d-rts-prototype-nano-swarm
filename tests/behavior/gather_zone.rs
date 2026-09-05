@@ -64,7 +64,7 @@ fn worker_extracts_one_unit_per_tick_when_at_deposit() {
         0,
         1000,
     );
-    let worker = common::spawn_worker_at(&mut app, deposit_pos);
+    let worker = common::spawn_worker_at(&mut app, deposit_pos - Vec2::new(68.0, 0.0));
 
     // Pre-seed a GatherAssignment so the test isolates extraction
     // from the assignment algorithm. The assignment algorithm has its
@@ -112,7 +112,7 @@ fn worker_fills_small_load_then_head_to_stockpile() {
         },
     );
     let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 100);
-    let worker = common::spawn_worker_at(&mut app, deposit_pos);
+    let worker = common::spawn_worker_at(&mut app, deposit_pos - Vec2::new(68.0, 0.0));
 
     app.world_mut()
         .entity_mut(worker)
@@ -179,7 +179,7 @@ fn worker_delivers_carry_to_nearest_stockpile() {
         },
     );
     let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 100);
-    let worker = common::spawn_worker_at(&mut app, deposit_pos);
+    let worker = common::spawn_worker_at(&mut app, deposit_pos - Vec2::new(68.0, 0.0));
 
     app.world_mut()
         .entity_mut(worker)
@@ -246,7 +246,7 @@ fn worker_delivery_reissues_movement_when_timeout_strips_dmc_before_arrival() {
         .entity(worker)
         .get::<DirectMovementComponent>()
         .expect("worker still outside stockpile should resume movement after DMC timeout");
-    assert_eq!(dmc.xy, stockpile_pos);
+    assert!((dmc.xy - Vec2::new(232.0, 0.0)).length() < 0.001);
     assert!(
         app.world().entity(worker).get::<WorkerLoad>().is_some(),
         "worker keeps load while resuming delivery"
@@ -306,7 +306,7 @@ fn idle_worker_reactivates_when_deposit_refills() {
         },
     );
     let _stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
-    let worker = common::spawn_worker_at(&mut app, deposit_pos);
+    let worker = common::spawn_worker_at(&mut app, deposit_pos - Vec2::new(68.0, 0.0));
 
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
@@ -338,7 +338,7 @@ fn idle_worker_reactivates_when_deposit_refills() {
         .entity_mut(worker)
         .get_mut::<Transform>()
         .unwrap()
-        .translation = deposit_pos.extend(0.0);
+        .translation = (deposit_pos - Vec2::new(68.0, 0.0)).extend(0.0);
     app.world_mut()
         .entity_mut(deposit)
         .get_mut::<ResourceDeposit>()

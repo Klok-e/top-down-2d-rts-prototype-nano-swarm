@@ -455,7 +455,7 @@ fn idle_worker_claims_planned_charger() {
     let cell = IVec2::new(0, 0);
     let cell_center = common::cell_world_center(cell);
     let plan = common::spawn_planned_charger_at_cell(&mut app, cell);
-    let worker = common::spawn_worker_at(&mut app, cell_center);
+    let worker = common::spawn_worker_at(&mut app, cell_center + Vec2::X * 68.0);
 
     app.update();
 
@@ -484,8 +484,8 @@ fn only_one_worker_claims_a_planned_charger() {
     let cell = IVec2::new(0, 0);
     let cell_center = common::cell_world_center(cell);
     let plan = common::spawn_planned_charger_at_cell(&mut app, cell);
-    let worker_a = common::spawn_worker_at(&mut app, cell_center);
-    let worker_b = common::spawn_worker_at(&mut app, cell_center);
+    let worker_a = common::spawn_worker_at(&mut app, cell_center + Vec2::X * 68.0);
+    let worker_b = common::spawn_worker_at(&mut app, cell_center - Vec2::X * 68.0);
 
     app.update();
 
@@ -530,7 +530,7 @@ fn worker_builds_planned_charger_to_completion() {
     // ourselves so the promotion path's preservation
     // contract is exercised.
     app.world_mut().entity_mut(plan).insert(OwnerSwarm(swarm));
-    let _worker = common::spawn_worker_at(&mut app, cell_center);
+    let _worker = common::spawn_worker_at(&mut app, cell_center + Vec2::X * 68.0);
     let ledger_before = app
         .world()
         .resource::<ResourceLedger>()
@@ -611,7 +611,7 @@ fn completed_planned_charger_provides_charge_to_defenders() {
     let swarm = common::spawn_swarm_at(&mut app, cell_center);
     let plan = common::spawn_planned_charger_at_cell(&mut app, cell);
     app.world_mut().entity_mut(plan).insert(OwnerSwarm(swarm));
-    let _worker = common::spawn_worker_at(&mut app, cell_center);
+    let _worker = common::spawn_worker_at(&mut app, cell_center + Vec2::X * 68.0);
     let defender = common::spawn_defender_at(&mut app, cell_center);
     // The test-driven flow bypasses automatic planning, so paint the Defend
     // cell directly to make the completed Charger operational.
@@ -716,7 +716,7 @@ fn hauler_delivers_to_completed_planned_charger() {
     let cell_center = common::cell_world_center(cell);
     let plan = common::spawn_planned_charger_at_cell(&mut app, cell);
     app.world_mut().entity_mut(plan).insert(OwnerSwarm(swarm));
-    let _worker = common::spawn_worker_at(&mut app, cell_center);
+    let _worker = common::spawn_worker_at(&mut app, cell_center + Vec2::X * 68.0);
     // Terminal legs source only from same-swarm Sink stockpiles.
     let source_pos = Vec2::new(120.0, 0.0);
     let source = common::spawn_sink_stockpile(&mut app, source_pos, 1000, 1000);
