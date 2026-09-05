@@ -41,6 +41,7 @@ mod opponent_gameplay_loop;
 mod physical_logistics;
 mod production_priority_panel;
 mod regional_allocation;
+mod route_recovery;
 mod shared_navigation;
 mod smoke;
 mod world_space_nanobots;
@@ -189,6 +190,8 @@ fn main() -> std::process::ExitCode {
         })
         .with_ignored_flag(true),
         Trial::test("smoke", || run(smoke::smoke)).with_ignored_flag(true),
+        Trial::test("route_recovery", || run(route_recovery::route_recovery))
+            .with_ignored_flag(true),
         Trial::test("physical_logistics", || {
             run(physical_logistics::physical_logistics)
         })

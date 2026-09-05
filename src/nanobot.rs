@@ -23,6 +23,7 @@ mod population;
 mod production;
 mod spread;
 mod sprites;
+mod work_access;
 
 pub use allocation::*;
 pub use autonomy::*;

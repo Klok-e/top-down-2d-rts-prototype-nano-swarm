@@ -635,7 +635,6 @@ fn choose_terminal_logistics_work(
     if pull.categories.get(OpportunityCategory::Haul) == 0 {
         return None;
     }
-    let mut pending_navigation = false;
     let mut examined = 0;
     let mut best: Option<(TerminalLogisticsScore, ActionableOpportunity)> = None;
     for (_, opportunities) in ordered.iter().take(bounds.max_regions) {
@@ -724,10 +723,7 @@ fn choose_terminal_logistics_work(
             );
             let source_route = match outcome {
                 RouteStatus::Found(route) => route,
-                RouteStatus::Pending => {
-                    pending_navigation = true;
-                    continue;
-                }
+                RouteStatus::Pending => continue,
                 RouteStatus::Unreachable => continue,
             };
             let source_pos = *source_route.waypoints.last().unwrap_or(&bot.position);
@@ -739,10 +735,7 @@ fn choose_terminal_logistics_work(
                 true,
             ) {
                 RouteStatus::Found(route) => route,
-                RouteStatus::Pending => {
-                    pending_navigation = true;
-                    continue;
-                }
+                RouteStatus::Pending => continue,
                 RouteStatus::Unreachable => continue,
             };
             let route_cost = source_route.cost + sink_route.cost;
@@ -764,9 +757,6 @@ fn choose_terminal_logistics_work(
                 best = Some((score, *work));
             }
         }
-    }
-    if pending_navigation {
-        return None;
     }
     best.map(|(_, work)| work)
 }

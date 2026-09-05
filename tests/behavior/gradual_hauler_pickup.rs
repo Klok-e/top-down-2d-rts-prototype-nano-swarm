@@ -612,7 +612,11 @@ fn same_tick_reroutes_cannot_overbook_replacement_capacity() {
 
     for _ in 0..120 {
         app.update();
-        if haulers.iter().all(|entity| {
+        if haulers.iter().any(|entity| {
+            app.world()
+                .get::<LogisticsReservation>(*entity)
+                .is_some_and(|r| r.destination == replacement && r.destination_remaining > 0)
+        }) && haulers.iter().all(|entity| {
             app.world()
                 .get::<LogisticsReservation>(*entity)
                 .is_some_and(|r| r.destination == replacement || r.destination_remaining == 0)

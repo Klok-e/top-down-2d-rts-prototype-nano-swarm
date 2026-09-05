@@ -211,3 +211,293 @@ fn assert_custody_and_ledger(app: &App, source: Entity, hauler: Entity, terminal
         "transfers preserve owning swarm ledger"
     );
 }
+
+#[test]
+fn blocked_delivery_returns_cargo_to_source_stockpile_physically() {
+    use top_down_2d_rts_prototype_nano_swarm::intent::IntentGrid;
+    let mut app = common::sim_app_with_gather_haul();
+    app.world_mut().insert_resource(IntentGrid::new(2, 2));
+    let owner = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let source = common::spawn_stockpile(&mut app, Vec2::new(-350.0, 0.0), 0, 100);
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(350.0, 0.0), 0, 100);
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(owner));
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(owner));
+    let wall = common::spawn_stockpile(&mut app, Vec2::ZERO, 0, 0);
+    app.world_mut().get_mut::<Transform>(wall).unwrap().scale = Vec3::new(1.0, 40.0, 1.0);
+    let bot = common::spawn_hauler_at(&mut app, Vec2::new(-180.0, 0.0));
+    let mut reservation = LogisticsReservation::new(source, sink, ResourceKind::Minerals, 12);
+    reservation.source_remaining = 0;
+    app.world_mut().entity_mut(bot).insert((
+        Cargo {
+            kind: ResourceKind::Minerals,
+            amount: 12,
+        },
+        HaulerAssignment { source, sink },
+        reservation,
+    ));
+    app.world_mut().resource_mut::<ResourceLedger>().add_for(
+        SwarmId::PLAYER,
+        ResourceKind::Minerals,
+        12,
+    );
+    for _ in 0..100 {
+        app.update();
+        let carried = app
+            .world()
+            .get::<Cargo>(bot)
+            .map_or(0, |cargo| cargo.amount);
+        assert_eq!(
+            carried + stockpile_amount(&app, source) + stockpile_amount(&app, sink),
+            12
+        );
+        assert_eq!(stockpile_amount(&app, sink), 0);
+        assert!(app.world().get::<Transform>(bot).unwrap().translation.x < -65.9);
+        if carried == 0 {
+            break;
+        }
+    }
+    assert_eq!(
+        stockpile_amount(&app, source),
+        12,
+        "blocked delivery must physically return to a reachable compatible source"
+    );
+    assert!(app.world().get::<LogisticsReservation>(bot).is_none());
+    assert_eq!(
+        app.world()
+            .resource::<ResourceLedger>()
+            .total_for(SwarmId::PLAYER, ResourceKind::Minerals),
+        12
+    );
+}
+
+#[test]
+fn blocked_delivery_waits_with_cargo_then_reopens_without_duplicate_transfer() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        intent::IntentGrid, navigation_runtime::NavigationBudget,
+    };
+    let mut app = common::sim_app_with_gather_haul();
+    app.world_mut().insert_resource(IntentGrid::new(2, 2));
+    let owner = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let source = common::spawn_stockpile(&mut app, Vec2::new(-350.0, 0.0), 0, 0);
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(350.0, 0.0), 0, 100);
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(owner));
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(owner));
+    let wall = common::spawn_stockpile(&mut app, Vec2::ZERO, 0, 0);
+    app.world_mut().get_mut::<Transform>(wall).unwrap().scale = Vec3::new(1.0, 40.0, 1.0);
+    let bot = common::spawn_hauler_at(&mut app, Vec2::new(-180.0, 0.0));
+    let mut reservation = LogisticsReservation::new(source, sink, ResourceKind::Minerals, 12);
+    reservation.source_remaining = 0;
+    app.world_mut().entity_mut(bot).insert((
+        Cargo {
+            kind: ResourceKind::Minerals,
+            amount: 12,
+        },
+        HaulerAssignment { source, sink },
+        reservation,
+    ));
+    app.world_mut().resource_mut::<ResourceLedger>().add_for(
+        SwarmId::PLAYER,
+        ResourceKind::Minerals,
+        12,
+    );
+    app.world_mut().resource_mut::<NavigationBudget>().0 = 0;
+    for _ in 0..4 {
+        app.update();
+    }
+    assert_eq!(
+        app.world()
+            .get::<LogisticsReservation>(bot)
+            .unwrap()
+            .destination_remaining,
+        12,
+        "pending access preserves the commitment"
+    );
+    app.world_mut().resource_mut::<NavigationBudget>().0 = 32768;
+    for _ in 0..30 {
+        app.update();
+    }
+    assert_eq!(app.world().get::<Cargo>(bot).unwrap().amount, 12);
+    assert_eq!(
+        app.world()
+            .get::<LogisticsReservation>(bot)
+            .unwrap()
+            .destination_remaining,
+        0,
+        "proven blocked destination releases its capacity"
+    );
+    assert_eq!(stockpile_amount(&app, sink), 0);
+    assert!(app.world().get::<Transform>(bot).unwrap().translation.x < -65.9);
+    app.world_mut().despawn(wall);
+    for _ in 0..180 {
+        app.update();
+        assert_eq!(
+            app.world().get::<Cargo>(bot).map_or(0, |c| c.amount) + stockpile_amount(&app, sink),
+            12
+        );
+    }
+    assert_eq!(stockpile_amount(&app, sink), 12);
+    assert!(app.world().get::<Cargo>(bot).is_none());
+    assert!(app.world().get::<LogisticsReservation>(bot).is_none());
+    assert_eq!(
+        app.world()
+            .resource::<ResourceLedger>()
+            .total_for(SwarmId::PLAYER, ResourceKind::Minerals),
+        12
+    );
+}
+
+#[test]
+fn blocked_delivery_prefers_another_sink_before_returning_to_source_for_both_swarms() {
+    use top_down_2d_rts_prototype_nano_swarm::{intent::IntentGrid, nanobot::SwarmMember};
+    for swarm in [SwarmId::PLAYER, SwarmId(7)] {
+        let mut app = common::sim_app_with_gather_haul();
+        app.world_mut().insert_resource(IntentGrid::new(2, 2));
+        let owner = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+        app.world_mut().entity_mut(owner).insert(swarm);
+        let source = common::spawn_stockpile(&mut app, Vec2::new(-350.0, 0.0), 0, 100);
+        let blocked = common::spawn_sink_stockpile(&mut app, Vec2::new(350.0, 0.0), 0, 100);
+        let alternate = common::spawn_sink_stockpile(&mut app, Vec2::new(-250.0, 250.0), 0, 100);
+        for endpoint in [source, blocked, alternate] {
+            app.world_mut()
+                .entity_mut(endpoint)
+                .insert(OwnerSwarm(owner));
+        }
+        let wall = common::spawn_stockpile(&mut app, Vec2::ZERO, 0, 0);
+        app.world_mut().get_mut::<Transform>(wall).unwrap().scale = Vec3::new(1.0, 40.0, 1.0);
+        let bot = common::spawn_hauler_at(&mut app, Vec2::new(-180.0, 0.0));
+        let mut reservation =
+            LogisticsReservation::new(source, blocked, ResourceKind::Minerals, 12);
+        reservation.source_remaining = 0;
+        app.world_mut().entity_mut(bot).insert((
+            SwarmMember::new(swarm),
+            Cargo {
+                kind: ResourceKind::Minerals,
+                amount: 12,
+            },
+            HaulerAssignment {
+                source,
+                sink: blocked,
+            },
+            reservation,
+        ));
+        app.world_mut()
+            .resource_mut::<ResourceLedger>()
+            .add_for(swarm, ResourceKind::Minerals, 12);
+        for _ in 0..150 {
+            app.update();
+            assert_eq!(
+                stockpile_amount(&app, source),
+                0,
+                "reachable sink precedes physical return"
+            );
+            assert_eq!(stockpile_amount(&app, blocked), 0);
+            assert_eq!(
+                app.world().get::<Cargo>(bot).map_or(0, |c| c.amount)
+                    + stockpile_amount(&app, alternate),
+                12
+            );
+        }
+        assert_eq!(stockpile_amount(&app, alternate), 12);
+        assert_eq!(
+            app.world()
+                .resource::<ResourceLedger>()
+                .total_for(swarm, ResourceKind::Minerals),
+            12
+        );
+    }
+}
+
+#[test]
+fn interrupted_partial_pickup_delivers_only_the_cargo_already_loaded() {
+    use top_down_2d_rts_prototype_nano_swarm::intent::IntentGrid;
+    let mut app = common::sim_app_with_gather_haul();
+    app.world_mut().insert_resource(IntentGrid::new(2, 2));
+    let owner = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let source = common::spawn_stockpile(&mut app, Vec2::new(350.0, 0.0), 16, 100);
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(-350.0, 0.0), 0, 100);
+    for endpoint in [source, sink] {
+        app.world_mut()
+            .entity_mut(endpoint)
+            .insert(OwnerSwarm(owner));
+    }
+    let wall = common::spawn_stockpile(&mut app, Vec2::ZERO, 0, 0);
+    app.world_mut().get_mut::<Transform>(wall).unwrap().scale = Vec3::new(1.0, 40.0, 1.0);
+    let bot = common::spawn_hauler_at(&mut app, Vec2::new(-180.0, 0.0));
+    let mut reservation = LogisticsReservation::new(source, sink, ResourceKind::Minerals, 20);
+    reservation.source_remaining = 16;
+    app.world_mut().entity_mut(bot).insert((
+        Cargo {
+            kind: ResourceKind::Minerals,
+            amount: 4,
+        },
+        HaulerAssignment { source, sink },
+        HaulerLoading,
+        reservation,
+    ));
+    for _ in 0..100 {
+        app.update();
+        assert_eq!(
+            app.world().get::<Cargo>(bot).map_or(0, |c| c.amount) + stockpile_amount(&app, sink),
+            4
+        );
+        assert_eq!(stockpile_amount(&app, source), 16);
+    }
+    assert_eq!(
+        stockpile_amount(&app, sink),
+        4,
+        "failed remaining pickup must not strand a partial load"
+    );
+    assert!(app.world().get::<LogisticsReservation>(bot).is_none());
+}
+
+#[test]
+fn terminal_delivery_tries_another_terminal_before_returning_to_pickup_sink() {
+    use top_down_2d_rts_prototype_nano_swarm::intent::IntentGrid;
+    let mut app = common::sim_app_with_gather_haul();
+    app.world_mut().insert_resource(IntentGrid::new(2, 2));
+    let owner = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let source = common::spawn_sink_stockpile(&mut app, Vec2::new(-350.0, 0.0), 0, 100);
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(owner));
+    let blocked = common::spawn_facility_at(&mut app, owner, Vec2::new(350.0, 0.0));
+    let alternate = common::spawn_facility_at(&mut app, owner, Vec2::new(-250.0, 250.0));
+    for facility in [blocked, alternate] {
+        app.world_mut()
+            .get_mut::<ProductionFacility>(facility)
+            .unwrap()
+            .input_amount = 0;
+    }
+    let wall = common::spawn_stockpile(&mut app, Vec2::ZERO, 0, 0);
+    app.world_mut().get_mut::<Transform>(wall).unwrap().scale = Vec3::new(1.0, 40.0, 1.0);
+    let bot = common::spawn_hauler_at(&mut app, Vec2::new(-180.0, 0.0));
+    let mut reservation = LogisticsReservation::new(source, blocked, ResourceKind::Minerals, 12);
+    reservation.source_remaining = 0;
+    app.world_mut().entity_mut(bot).insert((
+        Cargo {
+            kind: ResourceKind::Minerals,
+            amount: 12,
+        },
+        HaulerAssignment {
+            source,
+            sink: blocked,
+        },
+        reservation,
+    ));
+    for _ in 0..150 {
+        app.update();
+        assert_eq!(
+            stockpile_amount(&app, source),
+            0,
+            "reachable alternate terminal precedes return to pickup Sink"
+        );
+        assert_eq!(facility_amount(&app, blocked), 0);
+        assert_eq!(
+            app.world().get::<Cargo>(bot).map_or(0, |c| c.amount)
+                + facility_amount(&app, alternate),
+            12
+        );
+        if facility_amount(&app, alternate) == 12 {
+            break;
+        }
+    }
+    assert_eq!(facility_amount(&app, alternate), 12);
+}

@@ -1,5 +1,7 @@
 //! Category-neutral regional lease lifecycle and ECS adapter.
 
+use crate::nanobot::work_access::{WorkAccess, WorkReachability};
+use crate::nanobot::{Cargo, NanobotType, SwarmMember};
 use bevy::prelude::*;
 
 use super::{
@@ -115,12 +117,14 @@ pub fn projection_supports_lease(projection: &ActionableProjection, lease: &Regi
 }
 
 /// Revoke unsupported or stalled leases after projection refresh.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn maintain_regional_leases_system(
     mut commands: Commands,
     clock: Res<AllocationClock>,
     config: Res<RegionalLeaseConfig>,
     projection: Res<ActionableProjection>,
+    access: WorkAccess,
+    bodies: Query<(&Transform, &SwarmMember, &NanobotType, Option<&Cargo>)>,
     mut leases: Query<(
         Entity,
         &mut RegionalLease,
@@ -139,6 +143,50 @@ pub fn maintain_regional_leases_system(
     >,
 ) {
     for (entity, mut lease, progress, reservation) in &mut leases {
+        let reachability = bodies
+            .get(entity)
+            .ok()
+            .and_then(|(transform, member, kind, cargo)| {
+                if cargo.is_some_and(|cargo| cargo.amount > 0) {
+                    return None;
+                }
+                let target = match lease.target {
+                    OpportunityTarget::Gather { deposit, .. } => deposit,
+                    OpportunityTarget::PlannedBuild { structure, .. }
+                    | OpportunityTarget::Maintenance { structure } => structure,
+                    OpportunityTarget::Haul { source, .. } => source,
+                };
+                let Some(region) = access.region(target) else {
+                    return Some(WorkReachability::Unreachable);
+                };
+                let approach =
+                    access.route_from(member.0, *kind, transform.translation.truncate(), region);
+                if approach == WorkReachability::Unreachable {
+                    return Some(approach);
+                }
+                if let OpportunityTarget::Haul { sink, .. } = lease.target {
+                    let Some(destination) = access.region(sink) else {
+                        return Some(WorkReachability::Unreachable);
+                    };
+                    let delivery = access.chain_from(
+                        member.0,
+                        transform.translation.truncate(),
+                        region,
+                        destination,
+                    );
+                    if delivery == WorkReachability::Unreachable {
+                        return Some(delivery);
+                    }
+                }
+                Some(approach)
+            });
+        // Physical loads outlive task leases; their delivery systems retain custody.
+        if bodies
+            .get(entity)
+            .is_ok_and(|(_, _, _, cargo)| cargo.is_some_and(|cargo| cargo.amount > 0))
+        {
+            continue;
+        }
         let observed_progress = progress.map_or_else(
             || {
                 lease
@@ -147,7 +195,8 @@ pub fn maintain_regional_leases_system(
             },
             |value| value.0,
         );
-        let supported = reservation.is_some() || projection_supports_lease(&projection, &lease);
+        let supported = reachability != Some(WorkReachability::Unreachable)
+            && (reservation.is_some() || projection_supports_lease(&projection, &lease));
         let decision = evaluate_lease(
             &mut lease,
             clock.tick(),
@@ -160,7 +209,8 @@ pub fn maintain_regional_leases_system(
             let mut entity_commands = commands.entity(entity);
             entity_commands
                 .remove::<RegionalLease>()
-                .remove::<DirectMovementComponent>();
+                .remove::<DirectMovementComponent>()
+                .insert(crate::nanobot::Commitment::Idle);
             match category {
                 OpportunityCategory::Gather => {
                     entity_commands

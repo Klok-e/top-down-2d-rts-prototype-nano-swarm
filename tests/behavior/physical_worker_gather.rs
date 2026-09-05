@@ -35,7 +35,12 @@ fn worker_reserves_exact_partial_trip_without_moving_minerals() {
         .entity_mut(worker)
         .insert(GatherAssignment::new(IVec2::ZERO, deposit));
 
-    app.update();
+    for _ in 0..120 {
+        app.update();
+        if app.world().get::<LogisticsReservation>(worker).is_some() {
+            break;
+        }
+    }
 
     let reservation = app
         .world()
@@ -101,7 +106,12 @@ fn extraction_moves_only_new_minerals_into_cargo_and_ledger() {
         .entity_mut(worker)
         .insert(GatherAssignment::new(IVec2::ZERO, deposit));
 
-    app.update();
+    for _ in 0..120 {
+        app.update();
+        if app.world().get::<LogisticsReservation>(worker).is_some() {
+            break;
+        }
+    }
     app.update();
 
     assert_eq!(app.world().entity(worker).get::<Cargo>().unwrap().amount, 1);
@@ -165,7 +175,15 @@ fn same_tick_workers_cannot_overbook_deposit_or_source_capacity() {
             .insert(GatherAssignment::new(IVec2::ZERO, deposit));
     }
 
-    app.update();
+    for _ in 0..120 {
+        app.update();
+        if workers
+            .iter()
+            .all(|worker| app.world().get::<LogisticsReservation>(*worker).is_some())
+        {
+            break;
+        }
+    }
 
     let reservations = workers
         .into_iter()
@@ -280,17 +298,17 @@ fn loaded_worker_reroutes_from_wrong_owner_without_losing_cargo() {
     let source = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
-            world_pos: Vec2::ZERO,
+            world_pos: Vec2::new(-300.0, 0.0),
             amount: 0,
             capacity: 1000,
             radius: 32.0,
         },
     );
-    let wrong = common::spawn_stockpile(&mut app, Vec2::ZERO, 0, 100);
+    let wrong = common::spawn_stockpile(&mut app, Vec2::new(-150.0, 0.0), 0, 100);
     app.world_mut()
         .entity_mut(wrong)
         .insert((StockpileRole::Source, OwnerSwarm(enemy_swarm)));
-    let replacement_pos = Vec2::new(100.0, 0.0);
+    let replacement_pos = Vec2::new(300.0, 0.0);
     let replacement = common::spawn_stockpile(&mut app, replacement_pos, 0, 100);
     app.world_mut()
         .entity_mut(replacement)
@@ -306,7 +324,16 @@ fn loaded_worker_reroutes_from_wrong_owner_without_losing_cargo() {
         ReturningToStockpile { stockpile: wrong },
     ));
 
-    app.update();
+    for _ in 0..120 {
+        app.update();
+        if app
+            .world()
+            .get::<ReturningToStockpile>(worker)
+            .is_some_and(|returning| returning.stockpile == replacement)
+        {
+            break;
+        }
+    }
 
     assert_eq!(app.world().entity(worker).get::<Cargo>().unwrap().amount, 4);
     assert_eq!(

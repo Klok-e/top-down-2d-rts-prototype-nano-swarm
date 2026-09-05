@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::work_access::{WorkAccess, WorkReachability};
 use bevy::prelude::*;
 
 use crate::nanobot::{
@@ -50,6 +51,7 @@ pub fn population_demand_system(
     projection: Res<ActionableProjection>,
     territory: Res<TerritorySnapshot>,
     mut demand: ResMut<PopulationDemand>,
+    access: WorkAccess,
 ) {
     demand.desired.clear();
     let mut haul_slots = HashMap::<(SwarmId, Entity), u32>::new();
@@ -61,6 +63,9 @@ pub fn population_demand_system(
                 .map(|owner| vec![owner])
                 .unwrap_or_else(|| live_swarms.iter().copied().collect());
             for swarm in owners {
+                if access.opportunity(swarm, opportunity.target) == WorkReachability::Unreachable {
+                    continue;
+                }
                 let (kind, slots) = match opportunity.category {
                     OpportunityCategory::Gather
                     | OpportunityCategory::PlannedBuild

@@ -22,7 +22,7 @@
 //! pressure stays in sync with the number of workers actually
 //! working a given cell.
 
-use crate::navigation::Obstacle;
+use crate::navigation::{Navigation, Obstacle, RouteStatus};
 use bevy::prelude::*;
 
 use crate::nanobot::InteractionRegion;
@@ -223,6 +223,7 @@ fn find_nearest_stockpile(
     swarms: &Query<&SwarmId, With<Swarm>>,
     reservations: &Query<(Entity, &LogisticsReservation)>,
     same_tick_reserved: &std::collections::HashMap<Entity, u32>,
+    mut reachable: impl FnMut(&Transform) -> bool,
 ) -> Option<(Entity, u32)> {
     let mut best: Option<(f32, Entity, u32)> = None;
     for (entity, stockpile, transform, role, owner, condition) in stockpiles.iter() {
@@ -238,6 +239,9 @@ fn find_nearest_stockpile(
             .saturating_add(same_tick_reserved.get(&entity).copied().unwrap_or(0));
         let available = stockpile.free_space().saturating_sub(reserved);
         if available < minimum_capacity || available == 0 {
+            continue;
+        }
+        if !reachable(transform) {
             continue;
         }
         let distance = worker_pos.distance(transform.translation.truncate());
@@ -770,9 +774,11 @@ pub fn worker_gather_assignment_system(
 /// the movement system routes it there. This is the "resume
 /// extraction after the Source Stockpile exists" half of the
 /// contract.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn worker_gather_arrive_system(
     mut commands: Commands,
+    navigation: Res<Navigation>,
+    grid: Res<IntentGrid>,
     workers: Query<
         (Entity, &Transform, &GatherAssignment, &SwarmMember),
         (
@@ -826,6 +832,7 @@ pub fn worker_gather_arrive_system(
             continue;
         }
 
+        let mut pending_navigation = false;
         let destination = find_nearest_stockpile(
             deposit.kind,
             worker_pos,
@@ -837,8 +844,25 @@ pub fn worker_gather_arrive_system(
             &swarms,
             &reservations,
             &same_tick_destinations,
+            |destination_transform| match navigation.query_interaction(
+                worker_pos,
+                InteractionRegion::structure(destination_transform),
+                &grid,
+                swarm_member.0,
+                false,
+            ) {
+                RouteStatus::Found(_) => true,
+                RouteStatus::Pending => {
+                    pending_navigation = true;
+                    false
+                }
+                RouteStatus::Unreachable => false,
+            },
         );
         let Some((destination, destination_available)) = destination else {
+            if pending_navigation {
+                continue;
+            }
             let support_plan_exists = planned_structures.iter().any(|planned| {
                 planned.cell == assignment.cell && planned.kind == PlannedKind::SourceStockpile
             });
@@ -870,6 +894,8 @@ pub fn worker_gather_arrive_system(
 #[allow(clippy::type_complexity)]
 pub fn worker_gather_extract_system(
     mut commands: Commands,
+    navigation: Res<Navigation>,
+    grid: Res<IntentGrid>,
     mut workers: Query<
         (
             Entity,
@@ -904,6 +930,16 @@ pub fn worker_gather_extract_system(
         let region = InteractionRegion::deposit(deposit_transform, deposit.radius);
         let position = transform.translation.truncate();
         if !region.contains(position) {
+            if matches!(
+                navigation.query_interaction(position, region, &grid, swarm.0, false),
+                RouteStatus::Unreachable
+            ) {
+                reservation.source_remaining = 0;
+                reservation.destination_remaining = cargo.amount;
+                commands.entity(entity).remove::<DirectMovementComponent>();
+                transition_worker_to_carrying(&mut commands, entity, cargo.amount);
+                continue;
+            }
             commands
                 .entity(entity)
                 .insert(region.movement_from(position));
@@ -940,13 +976,14 @@ fn transition_worker_to_carrying(commands: &mut Commands, entity: Entity, amount
     }
 }
 
-/// For each Worker that has a [`WorkerLoad`] but no destination
-/// yet, find the nearest matching stockpile with free space and
-/// start the delivery trip. Only [`ResourceKind::Minerals`] is
-/// supported; multi-kind support is a follow-up.
+/// Keep loaded Workers routed to reachable, compatible stockpiles. A pending
+/// route preserves the current claim; a confirmed invalid destination releases
+/// capacity while the Worker retains its cargo and searches for a replacement.
 #[allow(clippy::type_complexity)]
 pub fn worker_gather_reroute_system(
     mut commands: Commands,
+    navigation: Res<Navigation>,
+    grid: Res<IntentGrid>,
     workers: Query<
         (
             Entity,
@@ -995,7 +1032,18 @@ pub fn worker_gather_reroute_system(
             },
         );
         if current_valid {
-            continue;
+            let (_, _, destination_transform, _, _, _) =
+                stockpiles.get(reservation.destination).unwrap();
+            match navigation.query_interaction(
+                transform.translation.truncate(),
+                InteractionRegion::structure(destination_transform),
+                &grid,
+                swarm_member.0,
+                false,
+            ) {
+                RouteStatus::Found(_) | RouteStatus::Pending => continue,
+                RouteStatus::Unreachable => {}
+            }
         }
         let replacement = find_nearest_stockpile(
             cargo.kind,
@@ -1008,6 +1056,18 @@ pub fn worker_gather_reroute_system(
             &swarms,
             &reservations,
             &same_tick_claims,
+            |destination_transform| {
+                matches!(
+                    navigation.query_interaction(
+                        transform.translation.truncate(),
+                        InteractionRegion::structure(destination_transform),
+                        &grid,
+                        swarm_member.0,
+                        false,
+                    ),
+                    RouteStatus::Found(_)
+                )
+            },
         );
         let Some((destination, _)) = replacement else {
             let mut released = *reservation;
@@ -1040,6 +1100,8 @@ pub fn worker_gather_reroute_system(
 #[allow(clippy::type_complexity)]
 pub fn worker_gather_carry_assign_system(
     mut commands: Commands,
+    navigation: Res<Navigation>,
+    grid: Res<IntentGrid>,
     workers: Query<
         (
             Entity,
@@ -1112,6 +1174,18 @@ pub fn worker_gather_carry_assign_system(
                 &swarms,
                 &reservations,
                 &same_tick_claims,
+                |destination_transform| {
+                    matches!(
+                        navigation.query_interaction(
+                            transform.translation.truncate(),
+                            InteractionRegion::structure(destination_transform),
+                            &grid,
+                            swarm_member.0,
+                            false,
+                        ),
+                        RouteStatus::Found(_)
+                    )
+                },
             )
             .and_then(|(destination, _)| {
                 stockpiles

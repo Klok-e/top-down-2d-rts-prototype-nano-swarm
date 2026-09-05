@@ -73,7 +73,12 @@ fn worker_extracts_one_unit_per_tick_when_at_deposit() {
         .entity_mut(worker)
         .insert(GatherAssignment::new(IVec2::new(0, 0), deposit));
 
-    app.update(); // reserve exact deposit minerals and destination capacity
+    for _ in 0..120 {
+        app.update();
+        if app.world().get::<ExtractProgress>(worker).is_some() {
+            break;
+        }
+    }
     app.update(); // transfer first physical unit into Cargo
 
     let world = app.world();
@@ -118,10 +123,11 @@ fn worker_fills_small_load_then_head_to_stockpile() {
         .entity_mut(worker)
         .insert(GatherAssignment::new(IVec2::new(0, 0), deposit));
 
-    // Run enough updates to fill the load.
-    let ticks = (WORKER_CARRY_CAPACITY + 2) as usize;
-    for _ in 0..ticks {
+    for _ in 0..120 {
         app.update();
+        if app.world().get::<ReturningToStockpile>(worker).is_some() {
+            break;
+        }
     }
 
     let world = app.world();
@@ -371,12 +377,11 @@ fn idle_worker_reactivates_when_deposit_refills() {
         .unwrap()
         .amount = 8;
 
-    // The worker must re-engage within a few ticks of the refill.
-    // After EXTRACT_PER_TICK ticks of extraction the deposit is
-    // observably smaller, which is the cleanest signal that the
-    // worker is extracting from the refilled deposit.
-    for _ in 0..(EXTRACT_PER_TICK as usize + 2) {
+    for _ in 0..120 {
         app.update();
+        if app.world().get::<ResourceDeposit>(deposit).unwrap().amount < 8 {
+            break;
+        }
     }
     let deposit_state = app
         .world()

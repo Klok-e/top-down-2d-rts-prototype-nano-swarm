@@ -268,6 +268,7 @@ fn progress_renews_a_lease_and_no_progress_expires_it() {
 fn unsupported_opportunity_revokes_lease_in_the_same_app_update() {
     let mut app = App::new();
     app.insert_resource(IntentGrid::new(16, 16))
+        .init_resource::<top_down_2d_rts_prototype_nano_swarm::navigation::Navigation>()
         .init_resource::<ActionableProjection>()
         .init_resource::<AllocationClock>()
         .init_resource::<RegionalLeaseConfig>()
@@ -314,6 +315,7 @@ fn unsupported_opportunity_revokes_lease_in_the_same_app_update() {
 fn supported_lease_without_motion_or_work_expires() {
     let mut app = App::new();
     app.insert_resource(IntentGrid::new(16, 16))
+        .init_resource::<top_down_2d_rts_prototype_nano_swarm::navigation::Navigation>()
         .init_resource::<ActionableProjection>()
         .init_resource::<AllocationClock>()
         .insert_resource(RegionalLeaseConfig {

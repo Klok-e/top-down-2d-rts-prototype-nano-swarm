@@ -108,3 +108,8 @@ mod navigation_budget;
 
 #[path = "behavior/physical_world.rs"]
 mod physical_world;
+
+#[path = "behavior/task_reachability.rs"]
+mod task_reachability;
+#[path = "behavior/worker_route_recovery.rs"]
+mod worker_route_recovery;

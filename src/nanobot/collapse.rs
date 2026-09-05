@@ -5,6 +5,8 @@
 //! owned plan or Build space, Worker/Hauler capability, infrastructure condition,
 //! and a material source. Crew counts alone never imply recoverability.
 
+use super::InteractionRegion;
+use super::work_access::{WorkAccess, WorkReachability};
 use crate::navigation::Obstacle;
 use std::collections::{HashMap, HashSet};
 
@@ -213,6 +215,7 @@ pub fn production_collapse_detection_system(
     cargo: Query<
         (
             &Cargo,
+            Option<&Transform>,
             &SwarmMember,
             &NanobotType,
             Option<&HaulerAssignment>,
@@ -232,7 +235,7 @@ pub fn production_collapse_detection_system(
     mut state: ResMut<ProductionCollapseState>,
     grid: Res<IntentGrid>,
     projection: Option<Res<ActionableProjection>>,
-    population_demand: Option<Res<PopulationDemand>>,
+    (population_demand, access): (Option<Res<PopulationDemand>>, WorkAccess),
 ) {
     state.player_collapsed = false;
     state.opponent_collapsed = false;
@@ -261,18 +264,40 @@ pub fn production_collapse_detection_system(
                 && condition.is_none_or(|condition| condition.is_operational())
                 && (facility.is_busy() || facility.input_amount >= PRODUCTION_COST_PER_BOT)
         });
-        let recoverable_existing_facility = facilities.iter().any(|(_, owner, _, condition)| {
-            owner.is_some_and(|owner| owner.0 == swarm_entity)
-                && condition.is_none_or(|condition| condition.health > 0)
-        });
-        let funded_existing_facility = facilities.iter().any(|(facility, owner, _, condition)| {
-            facility_belongs_to_swarm(owner, swarm_entity, swarm_id)
-                && condition.is_none_or(|condition| condition.health > 0)
-                && (facility.is_busy() || facility.input_amount >= PRODUCTION_COST_PER_BOT)
-        });
-        let viable_planned_facility = planned.iter().any(|(planned, _, owner)| {
+        let recoverable_existing_facility =
+            facilities.iter().any(|(_, owner, transform, condition)| {
+                owner.is_some_and(|owner| owner.0 == swarm_entity)
+                    && condition.is_none_or(|condition| condition.health > 0)
+                    && access.crew(
+                        swarm_id,
+                        NanobotType::Worker,
+                        InteractionRegion::structure(transform),
+                        false,
+                    ) != WorkReachability::Unreachable
+            });
+        let funded_existing_facility =
+            facilities
+                .iter()
+                .any(|(facility, owner, transform, condition)| {
+                    facility_belongs_to_swarm(owner, swarm_entity, swarm_id)
+                        && access.crew(
+                            swarm_id,
+                            NanobotType::Worker,
+                            InteractionRegion::structure(transform),
+                            false,
+                        ) != WorkReachability::Unreachable
+                        && condition.is_none_or(|condition| condition.health > 0)
+                        && (facility.is_busy() || facility.input_amount >= PRODUCTION_COST_PER_BOT)
+                });
+        let viable_planned_facility = planned.iter().any(|(planned, transform, owner)| {
             planned.kind == PlannedKind::ProductionFacility
                 && owner.is_some_and(|owner| owner.0 == swarm_entity)
+                && access.crew(
+                    swarm_id,
+                    NanobotType::Worker,
+                    InteractionRegion::structure(transform),
+                    false,
+                ) != WorkReachability::Unreachable
         });
         let viable_planned_sink = planned.iter().any(|(planned, _, owner)| {
             planned.kind == PlannedKind::SinkStockpile
@@ -299,7 +324,40 @@ pub fn production_collapse_detection_system(
             Obstacle::deposit(transform.translation.truncate(), deposit.radius)
         }));
         let facility_placement = find_build_zone_placement(&build_cells, &obstacles, 27);
-        let has_build_space = facility_placement.is_some();
+        let has_build_space = facility_placement.is_some_and(|(_, position)| {
+            access.crew(
+                swarm_id,
+                NanobotType::Worker,
+                InteractionRegion::structure(&Transform::from_translation(position.extend(0.0))),
+                false,
+            ) != WorkReachability::Unreachable
+        });
+        let mut recovery_destinations = facilities
+            .iter()
+            .filter_map(|(_, owner, transform, condition)| {
+                (owner.is_some_and(|owner| owner.0 == swarm_entity)
+                    && condition.is_none_or(|condition| condition.health > 0))
+                .then_some(InteractionRegion::structure(transform))
+            })
+            .collect::<Vec<_>>();
+        recovery_destinations.extend(planned.iter().filter_map(|(plan, transform, owner)| {
+            (plan.kind == PlannedKind::ProductionFacility
+                && owner.is_some_and(|owner| owner.0 == swarm_entity))
+            .then_some(InteractionRegion::structure(transform))
+        }));
+        if has_build_space && let Some((_, position)) = facility_placement {
+            recovery_destinations.push(InteractionRegion::structure(&Transform::from_translation(
+                position.extend(0.0),
+            )));
+        }
+        let can_supply_recovery = |transform: &Transform| {
+            let region = InteractionRegion::structure(transform);
+            access.crew(swarm_id, NanobotType::Hauler, region, false)
+                != WorkReachability::Unreachable
+                && recovery_destinations.iter().any(|destination| {
+                    access.between(swarm_id, region, *destination) != WorkReachability::Unreachable
+                })
+        };
         let sink_placement_exists =
             |consumer_cell: IVec2, consumer_owner: Option<Entity>, obstacles: &[Obstacle]| {
                 let zone_cells =
@@ -361,6 +419,8 @@ pub fn production_collapse_detection_system(
                     if opportunity.category != OpportunityCategory::Gather
                         || opportunity.owner.is_some_and(|owner| owner != swarm_id)
                         || opportunity.available_work == 0
+                        || access.opportunity(swarm_id, opportunity.target)
+                            == WorkReachability::Unreachable
                     {
                         return false;
                     }
@@ -370,7 +430,15 @@ pub fn production_collapse_detection_system(
                     let Ok((_, deposit, transform)) = deposits.get(deposit) else {
                         return false;
                     };
-                    if deposit.kind != ResourceKind::Minerals || deposit.amount == 0 {
+                    if deposit.kind != ResourceKind::Minerals
+                        || deposit.amount == 0
+                        || access.crew(
+                            swarm_id,
+                            NanobotType::Worker,
+                            InteractionRegion::deposit(transform, deposit.radius),
+                            false,
+                        ) == WorkReachability::Unreachable
+                    {
                         return false;
                     }
                     let deposit_pos = transform.translation.truncate();
@@ -378,6 +446,7 @@ pub fn production_collapse_detection_system(
                         |(_, stockpile, transform, role, owner, condition)| {
                             stockpile.kind == ResourceKind::Minerals
                                 && stockpile.capacity > 0
+                                && can_supply_recovery(transform)
                                 && !matches!(role, Some(StockpileRole::Sink))
                                 && stockpile_belongs_to_swarm(owner)
                                 && condition.is_none_or(|condition| condition.is_operational())
@@ -387,6 +456,7 @@ pub fn production_collapse_detection_system(
                     );
                     let planned_source = planned.iter().any(|(planned, transform, owner)| {
                         planned.kind == PlannedKind::SourceStockpile
+                            && can_supply_recovery(transform)
                             && stockpile_belongs_to_swarm(owner)
                             && transform.translation.truncate().distance(deposit_pos)
                                 <= SOURCE_STOCKPILE_PROXIMITY_RADIUS
@@ -401,7 +471,9 @@ pub fn production_collapse_detection_system(
                             &source_obstacles,
                             swarm_origin,
                         )
-                        .is_some()
+                        .is_some_and(|position| {
+                            can_supply_recovery(&Transform::from_translation(position.extend(0.0)))
+                        })
                 })
             })
         });
@@ -409,9 +481,10 @@ pub fn production_collapse_detection_system(
         let mut sink_material = 0u32;
         let mut has_source_stockpile = false;
         let mut has_sink_stockpile = false;
-        for (_, stockpile, _, role, owner, condition) in &material_stockpiles {
+        for (_, stockpile, transform, role, owner, condition) in &material_stockpiles {
             if stockpile.kind != ResourceKind::Minerals
                 || !stockpile_belongs_to_swarm(owner)
+                || !can_supply_recovery(transform)
                 || condition.is_some_and(|condition| !condition.is_operational())
             {
                 continue;
@@ -427,8 +500,20 @@ pub fn production_collapse_detection_system(
                 }
             }
         }
-        for (load, member, kind, assignment, reservation) in &cargo {
+        for (load, transform, member, kind, assignment, reservation) in &cargo {
             if member.0 != swarm_id || load.kind != ResourceKind::Minerals || load.amount == 0 {
+                continue;
+            }
+            if transform.is_some_and(|transform| {
+                !recovery_destinations.iter().any(|destination| {
+                    access.route_from(
+                        swarm_id,
+                        *kind,
+                        transform.translation.truncate(),
+                        *destination,
+                    ) != WorkReachability::Unreachable
+                })
+            }) {
                 continue;
             }
             let Some(reservation) = reservation.filter(|reservation| {
