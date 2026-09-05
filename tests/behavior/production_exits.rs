@@ -7,6 +7,108 @@ use top_down_2d_rts_prototype_nano_swarm::nanobot::{
 mod common;
 
 #[test]
+fn retained_output_satisfies_typed_demand_without_funding_a_duplicate() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        game_settings::GameSettings,
+        intent::{IntentGrid, IntentKind},
+        nanobot::{Commitment, PopulationDemandPlugin, ProductionPriority, SwarmId},
+        resources::{ResourceKind, ResourceLedger},
+    };
+    let mut app = common::sim_app_with_production();
+    app.add_plugins(PopulationDemandPlugin);
+    app.world_mut().resource_mut::<GameSettings>().bot_speed = 0.;
+    let mut priority = ProductionPriority::new();
+    priority.set_weight(NanobotType::Defender, 100);
+    app.insert_resource(priority);
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        IVec2::new(2, 2),
+        IntentKind::Corridor,
+        Some(SwarmId::PLAYER),
+    );
+    let retained = app
+        .world_mut()
+        .spawn((ProductionFacility::new(), Transform::from_xyz(36., 36., 0.)))
+        .id();
+    app.world_mut().entity_mut(retained).insert(
+        top_down_2d_rts_prototype_nano_swarm::nanobot::OwnerSwarm(swarm),
+    );
+    app.world_mut()
+        .get_mut::<Transform>(retained)
+        .unwrap()
+        .scale = Vec3::new(1.125, 1.125, 1.);
+    app.world_mut()
+        .get_mut::<ProductionFacility>(retained)
+        .unwrap()
+        .input_amount = 20;
+    app.world_mut().resource_mut::<ResourceLedger>().add_for(
+        SwarmId::PLAYER,
+        ResourceKind::Minerals,
+        20,
+    );
+    for y in -1..=1 {
+        for x in -1..=1 {
+            if x != 0 || y != 0 {
+                let bot = common::spawn_worker_at(
+                    &mut app,
+                    Vec2::new(36. + x as f32 * 72., 36. + y as f32 * 72.),
+                );
+                app.world_mut().entity_mut(bot).insert(Commitment::Working);
+            }
+        }
+    }
+    for _ in 0..250 {
+        app.update();
+    }
+    let waiting = app.world().get::<ProductionFacility>(retained).unwrap();
+    assert_eq!(waiting.current_target, Some(NanobotType::Defender));
+    assert_eq!(waiting.progress, 120);
+    let idle = app
+        .world_mut()
+        .spawn((
+            ProductionFacility::new(),
+            Transform::from_xyz(756., 36., 0.),
+        ))
+        .id();
+    app.world_mut().entity_mut(idle).insert(
+        top_down_2d_rts_prototype_nano_swarm::nanobot::OwnerSwarm(swarm),
+    );
+    app.world_mut()
+        .get_mut::<ProductionFacility>(idle)
+        .unwrap()
+        .input_amount = 40;
+    app.world_mut().resource_mut::<ResourceLedger>().add_for(
+        SwarmId::PLAYER,
+        ResourceKind::Minerals,
+        40,
+    );
+    for _ in 0..250 {
+        app.update();
+    }
+    let spare = app.world().get::<ProductionFacility>(idle).unwrap();
+    assert_eq!(
+        spare.current_target, None,
+        "retained Defender already covers the one-tile reserve"
+    );
+    assert_eq!(spare.input_amount, 40);
+    assert_eq!(
+        app.world()
+            .resource::<ResourceLedger>()
+            .total_for(SwarmId::PLAYER, ResourceKind::Minerals),
+        40
+    );
+    assert_eq!(
+        app.world_mut()
+            .query_filtered::<&NanobotType, With<Nanobot>>()
+            .iter(app.world())
+            .filter(|kind| **kind == NanobotType::Defender)
+            .count(),
+        0,
+        "retained output counts toward demand but is not available in the world"
+    );
+}
+
+#[test]
 fn completed_output_waits_for_an_exterior_cell_and_releases_once() {
     let mut app = common::minimal_app();
     app.add_systems(Update, production_facility_work_system);

@@ -16,6 +16,8 @@ mod offscreen_presentation;
 mod opponent_gameplay_loop;
 #[path = "playtest/physical_logistics_flow.rs"]
 mod physical_logistics_flow;
+#[path = "playtest/production_exits.rs"]
+mod production_exits;
 #[path = "playtest/production_priority_drag.rs"]
 mod production_priority_drag;
 #[path = "playtest/regional_allocation.rs"]
