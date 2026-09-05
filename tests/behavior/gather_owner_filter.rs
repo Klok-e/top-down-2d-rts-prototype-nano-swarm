@@ -63,7 +63,7 @@ fn worker_carry_assign_skips_enemy_owned_stockpile() {
     // candidate, so the worker would route to it.
     let enemy_swarm = spawn_swarm_with_id(&mut app, SwarmId(7));
     let _enemy_stockpile =
-        spawn_owned_source_stockpile(&mut app, worker_pos + Vec2::new(50.0, 0.0), enemy_swarm);
+        spawn_owned_source_stockpile(&mut app, worker_pos + Vec2::new(150.0, 0.0), enemy_swarm);
 
     for _ in 0..5 {
         app.update();
@@ -91,15 +91,19 @@ fn worker_carry_assign_prefers_own_stockpile_over_enemy() {
 
     let enemy_swarm = spawn_swarm_with_id(&mut app, SwarmId(7));
     let _enemy_stockpile =
-        spawn_owned_source_stockpile(&mut app, worker_pos + Vec2::new(40.0, 0.0), enemy_swarm);
+        spawn_owned_source_stockpile(&mut app, worker_pos + Vec2::new(150.0, 0.0), enemy_swarm);
 
     let player_swarm = spawn_swarm_with_id(&mut app, SwarmId::PLAYER);
     let allied_stockpile =
-        spawn_owned_source_stockpile(&mut app, worker_pos + Vec2::new(120.0, 0.0), player_swarm);
+        spawn_owned_source_stockpile(&mut app, worker_pos + Vec2::new(300.0, 0.0), player_swarm);
 
-    for _ in 0..5 {
+    for _ in 0..120 {
         app.update();
+        if app.world().get::<ReturningToStockpile>(worker).is_some() {
+            break;
+        }
     }
+    assert_eq!(app.world().get::<WorkerLoad>(worker).unwrap().amount, 4);
 
     let returning = app
         .world()
@@ -135,11 +139,17 @@ fn unowned_stockpile_still_usable_by_any_worker() {
                 capacity: 100,
                 radius: 32.0,
             },
-            Transform::from_translation((worker_pos + Vec2::new(50.0, 0.0)).extend(0.0)),
+            Transform::from_translation((worker_pos + Vec2::new(150.0, 0.0)).extend(0.0)),
         ))
         .id();
 
-    app.update();
+    for _ in 0..120 {
+        app.update();
+        if app.world().get::<ReturningToStockpile>(worker).is_some() {
+            break;
+        }
+    }
+    assert_eq!(app.world().get::<WorkerLoad>(worker).unwrap().amount, 4);
 
     let returning = app.world().entity(worker).get::<ReturningToStockpile>();
     assert!(

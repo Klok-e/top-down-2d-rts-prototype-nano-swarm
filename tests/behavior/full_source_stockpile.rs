@@ -480,7 +480,17 @@ fn worker_carry_assign_prefers_free_stockpile_over_full_one() {
     let free_stockpile =
         common::spawn_stockpile(&mut app, worker_pos + Vec2::new(200.0, 0.0), 0, 1000);
 
-    app.update();
+    for _ in 0..120 {
+        app.update();
+        if app
+            .world()
+            .get::<top_down_2d_rts_prototype_nano_swarm::nanobot::ReturningToStockpile>(worker)
+            .is_some()
+        {
+            break;
+        }
+    }
+    assert_eq!(app.world().get::<WorkerLoad>(worker).unwrap().amount, 4);
 
     let world = app.world_mut();
     let returning = world

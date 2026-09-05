@@ -91,8 +91,16 @@ fn gathering_preserves_cargo_on_displacement_then_unloads_outside_owned_scaled_s
             SwarmMember(swarm_id),
             GatherAssignment::new(IVec2::ZERO, deposit),
         ));
-        app.update();
-        app.update();
+        for _ in 0..120 {
+            app.update();
+            if app
+                .world()
+                .get::<Cargo>(worker)
+                .is_some_and(|cargo| cargo.amount == 1)
+            {
+                break;
+            }
+        }
         assert_eq!(
             app.world().get::<ResourceDeposit>(deposit).unwrap().amount,
             19
