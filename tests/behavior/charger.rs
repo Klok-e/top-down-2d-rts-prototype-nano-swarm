@@ -26,7 +26,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
         Nanobot, NanobotBundle, NanobotPlugin, NanobotType, OwnerSwarm, PlannedKind,
         PlannedStructure, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, Swarm,
         SwarmBundle, SwarmId, SwarmMember, defender_charger_arrive_system,
-        defender_charger_work_system, nanobot_death_cleanup_system,
+        defender_charger_work_system, defender_rotation_to_charger_system,
+        nanobot_death_cleanup_system,
     },
     resources::{ResourceKind, ResourceLedger},
 };
@@ -301,6 +302,205 @@ fn swarm_rotation_cap_counts_defenders_across_staging_cells() {
     let world = app.world_mut();
     let mut assignments = world.query::<&ChargerAssignment>();
     assert_eq!(assignments.iter(world).count(), 3);
+}
+
+#[test]
+fn casualty_preserves_accepted_travel_and_charging_until_completion() {
+    let mut app = common::sim_app_with_movement();
+    app.add_systems(
+        Update,
+        (
+            defender_rotation_to_charger_system,
+            defender_charger_arrive_system,
+            defender_charger_work_system,
+        )
+            .chain(),
+    );
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let mut accepted = Vec::new();
+    for (cell, distance) in [
+        (IVec2::new(-2, 0), 68.0),
+        (IVec2::ZERO, 400.0),
+        (IVec2::new(2, 0), 400.0),
+    ] {
+        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+            cell,
+            IntentKind::Defend,
+            Some(SwarmId::PLAYER),
+        );
+        let charger = common::spawn_operational_charger_at(&mut app, cell, 100);
+        app.world_mut()
+            .entity_mut(charger)
+            .insert(OwnerSwarm(swarm));
+        let defender = common::spawn_defender_at(
+            &mut app,
+            common::cell_world_center(cell) + Vec2::Y * distance,
+        );
+        app.world_mut()
+            .entity_mut(defender)
+            .get_mut::<Charge>()
+            .unwrap()
+            .current = 0.5;
+        accepted.push(defender);
+    }
+    let casualty = common::spawn_defender_at(&mut app, Vec2::new(-1000.0, -1000.0));
+    let waiting = common::spawn_defender_at(&mut app, Vec2::new(0.0, -1000.0));
+    common::spawn_defender_at(&mut app, Vec2::new(1000.0, -1000.0));
+
+    app.update();
+    app.update();
+    for &defender in &accepted {
+        assert!(app.world().entity(defender).contains::<ChargerAssignment>());
+    }
+    assert!(
+        app.world()
+            .entity(accepted[0])
+            .contains::<ChargerProgress>()
+    );
+    assert!(
+        !app.world()
+            .entity(accepted[1])
+            .contains::<ChargerProgress>()
+    );
+    assert!(
+        app.world()
+            .entity(accepted[1])
+            .contains::<DirectMovementComponent>()
+    );
+
+    app.world_mut().despawn(casualty);
+    app.world_mut()
+        .entity_mut(waiting)
+        .get_mut::<Charge>()
+        .unwrap()
+        .current = 0.5;
+    let mut completed = [false; 3];
+    let mut waited_at_capacity = false;
+    for _ in 0..400 {
+        let active_before = accepted
+            .iter()
+            .filter(|&&defender| app.world().entity(defender).contains::<ChargerAssignment>())
+            .count();
+        let waiting_before = app.world().entity(waiting).contains::<ChargerAssignment>();
+        app.update();
+        if active_before >= 2 && !waiting_before {
+            waited_at_capacity |= active_before == 2;
+            assert!(
+                !app.world().entity(waiting).contains::<ChargerAssignment>(),
+                "five living Defenders cannot admit another rotation with two or more active",
+            );
+        }
+        for (index, &defender) in accepted.iter().enumerate() {
+            if !app.world().entity(defender).contains::<ChargerAssignment>() {
+                assert!(
+                    (read_charge(&app, defender).unwrap() - 1.0).abs() < 1e-6,
+                    "an accepted trip or recharge must finish, not be cancelled by the casualty",
+                );
+                completed[index] = true;
+            }
+        }
+        if completed == [true; 3] {
+            break;
+        }
+    }
+    assert_eq!(completed, [true; 3], "all accepted rotations must finish");
+    assert!(
+        waited_at_capacity,
+        "new admissions must also wait at exactly two active rotations"
+    );
+    app.update();
+    assert!(
+        app.world().entity(waiting).contains::<ChargerAssignment>(),
+        "fresh admission resumes once fewer than two rotations remain",
+    );
+}
+
+#[test]
+fn destroyed_charger_ends_rotation_without_grandfathering_replacement_admission() {
+    let mut app = common::sim_app_with_movement();
+    app.add_systems(
+        Update,
+        (
+            defender_rotation_to_charger_system,
+            defender_charger_arrive_system,
+            defender_charger_work_system,
+        )
+            .chain(),
+    );
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let mut accepted = Vec::new();
+    let mut chargers = Vec::new();
+    for cell in [IVec2::new(-2, 0), IVec2::ZERO, IVec2::new(2, 0)] {
+        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+            cell,
+            IntentKind::Defend,
+            Some(SwarmId::PLAYER),
+        );
+        let charger = common::spawn_operational_charger_at(&mut app, cell, 100);
+        app.world_mut()
+            .entity_mut(charger)
+            .insert(OwnerSwarm(swarm));
+        chargers.push(charger);
+        let defender =
+            common::spawn_defender_at(&mut app, common::cell_world_center(cell) + Vec2::Y * 68.0);
+        app.world_mut()
+            .entity_mut(defender)
+            .get_mut::<Charge>()
+            .unwrap()
+            .current = 0.5;
+        accepted.push(defender);
+    }
+    let casualty = common::spawn_defender_at(&mut app, Vec2::new(-1000.0, -1000.0));
+    common::spawn_defender_at(&mut app, Vec2::new(0.0, -1000.0));
+    common::spawn_defender_at(&mut app, Vec2::new(1000.0, -1000.0));
+    app.update();
+    app.update();
+    for (&defender, &charger) in accepted.iter().zip(&chargers) {
+        assert_eq!(
+            app.world()
+                .entity(defender)
+                .get::<ChargerAssignment>()
+                .unwrap()
+                .charger,
+            charger
+        );
+        assert!(app.world().entity(defender).contains::<ChargerProgress>());
+    }
+
+    app.world_mut().despawn(casualty);
+    app.world_mut().despawn(chargers[0]);
+    for _ in 0..3 {
+        app.update();
+        let released = app.world().entity(accepted[0]);
+        assert!(!released.contains::<ChargerAssignment>());
+        assert!(!released.contains::<ChargerProgress>());
+        assert!(!released.contains::<ChargerPulseProgress>());
+        assert!(!released.contains::<DirectMovementComponent>());
+        assert!(read_charge(&app, accepted[0]).unwrap() < 0.51);
+    }
+    for &defender in &accepted[1..] {
+        assert!(app.world().entity(defender).contains::<ChargerAssignment>());
+    }
+
+    app.world_mut()
+        .entity_mut(accepted[1])
+        .get_mut::<Charge>()
+        .unwrap()
+        .current = 0.99;
+    for _ in 0..12 {
+        app.update();
+    }
+    assert!(
+        !app.world()
+            .entity(accepted[1])
+            .contains::<ChargerAssignment>()
+    );
+    let replacement = app
+        .world()
+        .entity(accepted[0])
+        .get::<ChargerAssignment>()
+        .expect("the released Defender can seek another Charger after capacity opens");
+    assert_ne!(replacement.charger, chargers[0]);
 }
 
 #[test]

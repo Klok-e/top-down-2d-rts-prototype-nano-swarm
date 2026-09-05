@@ -73,7 +73,7 @@ A carrying nanobot's temporary claim on source minerals and destination capacity
 _Avoid_: Resource transfer, inventory deduction, delivery
 
 **Charge**:
-A Defender sustain resource restored by the nearest valid supplied Charger in owned Defend paint. Rotation is capacity-limited and releases any Threat response; unsupported Defenders continue duty while weakening, and recharged Defenders re-enter current allocation without reclaiming prior work.
+A Defender sustain resource restored by the nearest valid supplied Charger in owned Defend paint. New rotations are capacity-limited and release any Threat response; accepted rotations may finish travel and charging after casualties reduce the cap, unsupported Defenders continue duty while weakening, and recharged Defenders re-enter current allocation without reclaiming prior work.
 _Avoid_: Ammo, mana, stamina
 
 **Charger**:
