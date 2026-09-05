@@ -29,8 +29,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         Cargo, Commitment, DEFAULT_PLANNED_WORK_TICKS, ExtractProgress, GatherAssignment, Health,
         Nanobot, NanobotType, OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructureClaim,
-        PlannedStructureProgress, SOURCE_STOCKPILE_JITTER_AMPLITUDE,
-        SOURCE_STOCKPILE_PLACEMENT_RADIUS, Swarm, SwarmId, SwarmMember, VelocityComponent,
+        PlannedStructureProgress, Swarm, SwarmId, SwarmMember, VelocityComponent,
         completed_visual_color,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile},
@@ -46,14 +45,13 @@ const BOT_SPEED: f32 = 5.0;
 /// Distance the gather worker has to walk to reach the planned
 /// Source Stockpile from the deposit (or back). The demand
 /// system places the planned structure on the placement ring
-/// at [`SOURCE_STOCKPILE_PLACEMENT_RADIUS`] from the deposit,
+/// at `96 world units` from the deposit,
 /// plus a deterministic jitter of up to
-/// [`SOURCE_STOCKPILE_JITTER_AMPLITUDE`]. The travel-time math
+/// `16 world units per axis`, followed by whole-cell snapping. The travel-time math
 /// uses the worst case (ring radius + max jitter) so the
 /// worker has arrived by the time the test checks for the
 /// completed build, regardless of the specific jitter draw.
-const PLANNED_TRAVEL_DISTANCE: f32 =
-    SOURCE_STOCKPILE_PLACEMENT_RADIUS + SOURCE_STOCKPILE_JITTER_AMPLITUDE;
+const PLANNED_TRAVEL_DISTANCE: f32 = 170.0;
 
 /// Ticks of simulation needed for the worker to walk
 /// `distance` world units at `BOT_SPEED`. The arrival is
@@ -259,11 +257,12 @@ fn gather_assignment_triggers_planned_source_stockpile() {
     // new "inside the gather zone, at the ring distance"
     // contract rather than the v0 "exact offset" contract.
     let ring_distance = (planned_pos - deposit_pos).length();
-    let min_distance = SOURCE_STOCKPILE_PLACEMENT_RADIUS - SOURCE_STOCKPILE_JITTER_AMPLITUDE;
-    let max_distance = SOURCE_STOCKPILE_PLACEMENT_RADIUS + SOURCE_STOCKPILE_JITTER_AMPLITUDE;
+    // Per-axis jitter16 plus snap36 changes radial distance by at most74.
+    let min_distance = 22.0;
+    let max_distance = 170.0;
     assert!(
         ring_distance >= min_distance - 1.0 && ring_distance <= max_distance + 1.0,
-        "Planned Source Stockpile must be placed on the placement ring within jitter; \
+        "Planned Source Stockpile must be placed near the placement ring after jitter and whole-cell snapping; \
          got distance={ring_distance} from deposit (expected in [{min_distance}, {max_distance}])"
     );
     assert_eq!(

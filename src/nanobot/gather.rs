@@ -22,6 +22,7 @@
 //! pressure stays in sync with the number of workers actually
 //! working a given cell.
 
+use crate::navigation::Obstacle;
 use bevy::prelude::*;
 
 use crate::nanobot::InteractionRegion;
@@ -37,7 +38,7 @@ use crate::nanobot::haul::HAULER_TRANSFER_PER_TICK;
 use crate::nanobot::placement::{
     SOURCE_STOCKPILE_FOOTPRINT_RADIUS, SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PADDING,
     SOURCE_STOCKPILE_PLACEMENT_COUNT, SOURCE_STOCKPILE_PLACEMENT_RADIUS,
-    find_source_stockpile_placement, scaled_building_footprint_radius,
+    find_source_stockpile_placement,
 };
 use crate::nanobot::planned::{
     PlannedKind, PlannedStructure, PlannedStructureClaim, PlannedStructureProgress,
@@ -389,7 +390,7 @@ pub(crate) fn find_source_stockpile_placement_for_demand(
     deposit_pos: Vec2,
     demand_swarm: SwarmId,
     grid: &IntentGrid,
-    obstacles: &[(Vec2, f32)],
+    obstacles: &[Obstacle],
     swarm_origin: Option<Vec2>,
 ) -> Option<Vec2> {
     let mut gather_cells = Vec::new();
@@ -540,52 +541,22 @@ pub fn source_stockpile_demand_system(
         ) {
             continue;
         }
-        // Build the obstacle list for this deposit: every
-        // existing Source Stockpile and every planned
-        // structure, plus any in-tick positions from this
-        // loop. Each entry carries its own center and
-        // half-footprint so the placement algorithm can
-        // generalize to mixed-size obstacles in the future.
-        // The issue #34 "shared footprint" contract widens
-        // the list to also include completed Production
-        // Facilities and Chargers: a candidate whose centre
-        // is within `BUILDING_FOOTPRINT_RADIUS +
-        // BUILDING_FOOTPRINT_PADDING + half_footprint` of
-        // any support structure is rejected, so Source
-        // Stockpiles can never overlap another support
-        // structure in any kind of cell.
-        let mut obstacles: Vec<(Vec2, f32)> = Vec::new();
+        // Reserve actual deposit circles and scaled structure rectangles,
+        // including structures planned earlier in this tick.
+        let mut obstacles: Vec<Obstacle> = Vec::new();
         obstacles.extend(
             deposits
                 .iter()
-                .map(|(deposit, t)| (t.translation.truncate(), deposit.radius)),
+                .map(|(deposit, t)| Obstacle::deposit(t.translation.truncate(), deposit.radius)),
         );
-        obstacles.extend(
-            stockpiles
-                .iter()
-                .map(|(_, t, _, _)| (t.translation.truncate(), SOURCE_STOCKPILE_FOOTPRINT_RADIUS)),
-        );
-        obstacles.extend(
-            planned
-                .iter()
-                .map(|(_, t, _)| (t.translation.truncate(), SOURCE_STOCKPILE_FOOTPRINT_RADIUS)),
-        );
-        obstacles.extend(facility_obstacles.iter().map(|t| {
-            (
-                t.translation.truncate(),
-                scaled_building_footprint_radius(t),
-            )
-        }));
-        obstacles.extend(charger_obstacles.iter().map(|t| {
-            (
-                t.translation.truncate(),
-                scaled_building_footprint_radius(t),
-            )
-        }));
+        obstacles.extend(stockpiles.iter().map(|(_, t, _, _)| Obstacle::structure(t)));
+        obstacles.extend(planned.iter().map(|(_, t, _)| Obstacle::structure(t)));
+        obstacles.extend(facility_obstacles.iter().map(Obstacle::structure));
+        obstacles.extend(charger_obstacles.iter().map(Obstacle::structure));
         obstacles.extend(
             newly_planned_positions
                 .iter()
-                .map(|p| (*p, SOURCE_STOCKPILE_FOOTPRINT_RADIUS)),
+                .map(|p| Obstacle::planned(*p)),
         );
         let swarm_origin = swarm_by_id.get(&demand_swarm).map(|(_, pos)| *pos);
         // Find a valid placement for the planned structure.

@@ -175,11 +175,15 @@ fn planned_production_facility_uses_planned_visual() {
     advance_pressure(&mut app);
 
     let world = app.world_mut();
-    let mut q = world.query::<(&PlannedStructure, &Sprite)>();
-    let (planned, sprite) = q
+    let mut q = world.query::<(&PlannedStructure, &Sprite, &Transform)>();
+    let (planned, sprite, transform) = q
         .iter(world)
-        .find(|(p, _)| p.kind == PlannedKind::ProductionFacility)
+        .find(|(p, _, _)| p.kind == PlannedKind::ProductionFacility)
         .expect("Planned Production Facility must exist");
+    let size = sprite.custom_size.unwrap() * transform.scale.truncate();
+    assert!((size - Vec2::splat(72.0)).length() < 0.001);
+    let min = transform.translation.truncate() - size / 2.0;
+    assert!((min / 72.0 - (min / 72.0).round()).length() < 0.001);
     assert_eq!(planned.cell, IVec2::new(0, 0));
     assert_eq!(
         sprite.color,

@@ -14,7 +14,7 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{OwnerSwarm, ProductionFacility, STRUCTURE_MAX_HEALTH, Structure, SwarmId},
-    scenario::{PLAYER_CELL, PLAYER_DEPOSIT_CELL, SEED_FACILITY_OFFSET, cell_origin},
+    scenario::{PLAYER_DEPOSIT_CELL, cell_origin},
 };
 
 use super::harness::{TestContext, TestFlow, run_screenshot_test};
@@ -49,7 +49,8 @@ pub fn world_space_nanobots(ctx: &mut TestContext) -> TestFlow {
         let world = &mut *ctx.world;
         let deposit = deposit_pos();
         let corner = cell_corner_pos();
-        let expected_facility = cell_origin(PLAYER_CELL) + SEED_FACILITY_OFFSET;
+        // Authored 192-unit square snaps to x288..504, y144..360.
+        let expected_facility = Vec2::new(396.0, 252.0);
         let player_facilities = world
             .query::<(&ProductionFacility, &OwnerSwarm, &Transform, &Structure)>()
             .iter(world)

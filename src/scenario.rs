@@ -274,11 +274,20 @@ fn spawn_production_facility(
     commands.spawn((
         ProductionFacility::new(),
         ProcessingFacility {},
+        crate::structure_sprites::StructureVisual::completed(
+            crate::nanobot::PlannedKind::ProductionFacility,
+        ),
         OwnerSwarm(owner),
         (
-            Sprite::from_image(texture.clone()),
-            Transform::from_translation(vec3(world_pos.x, world_pos.y, GAMEPLAY_SPRITE_Z))
-                .with_scale(vec3(3., 3., 1.)),
+            Sprite {
+                image: texture.clone(),
+                custom_size: Some(Vec2::splat(crate::navigation::STRUCTURE_SPRITE_SIZE)),
+                ..default()
+            },
+            crate::navigation::align_structure(
+                Transform::from_translation(vec3(world_pos.x, world_pos.y, GAMEPLAY_SPRITE_Z))
+                    .with_scale(vec3(3., 3., 1.)),
+            ),
         ),
     ));
 }

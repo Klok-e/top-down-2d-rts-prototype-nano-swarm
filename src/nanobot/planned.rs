@@ -55,6 +55,7 @@
 //! channel, or by reading the component (`PlannedStructure`
 //! vs `Stockpile` + `StockpileRole`).
 
+use crate::navigation::Obstacle;
 use std::collections::HashMap;
 
 use bevy::prelude::*;
@@ -66,9 +67,7 @@ use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::NanobotType;
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm, SwarmId, SwarmMember};
 use crate::nanobot::gather::world_to_cell;
-use crate::nanobot::placement::{
-    BUILDING_FOOTPRINT_RADIUS, find_build_zone_placement, scaled_building_footprint_radius,
-};
+use crate::nanobot::placement::find_build_zone_placement;
 use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
 use crate::resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole};
 use crate::structure_sprites::{StructureSprites, StructureVisual, StructureVisualState};
@@ -81,11 +80,9 @@ use crate::structure_sprites::{StructureSprites, StructureVisual, StructureVisua
 /// the test math is obvious.
 pub const DEFAULT_PLANNED_WORK_TICKS: u32 = 5;
 
-/// Footprint (world units) used for both the planned and
-/// completed visuals. A square so the structure is clearly
-/// bounded on the map and tests can compare positions without
-/// doing per-axis math.
-pub const PLANNED_STRUCTURE_FOOTPRINT: f32 = 64.0;
+/// Local sprite size shared by planned and completed visuals. The aligned
+/// transform determines the physical whole-cell rectangle.
+pub const PLANNED_STRUCTURE_FOOTPRINT: f32 = crate::navigation::STRUCTURE_SPRITE_SIZE;
 
 /// Planned kind the foundation slice implements.
 ///
@@ -359,15 +356,14 @@ pub fn sink_stockpile_demand_system(
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,
 ) {
     let swarm_by_id: HashMap<SwarmId, Entity> = swarms.iter().map(|(e, id)| (*id, e)).collect();
-    let mut obstacles: Vec<(Vec2, f32)> = deposits
+    let mut obstacles: Vec<Obstacle> = deposits
         .iter()
-        .map(|(deposit, transform)| (transform.translation.truncate(), deposit.radius))
+        .map(|(deposit, transform)| {
+            Obstacle::deposit(transform.translation.truncate(), deposit.radius)
+        })
         .collect();
     for (_, transform, _, _) in &stockpiles {
-        obstacles.push((
-            transform.translation.truncate(),
-            scaled_building_footprint_radius(transform),
-        ));
+        obstacles.push(Obstacle::structure(transform));
     }
     // Planned Structures of any kind are in the obstacle
     // list so a fresh Sink Stockpile cannot overlap a
@@ -377,10 +373,7 @@ pub fn sink_stockpile_demand_system(
     // auto-plan Sink Stockpiles (ADR-0005).
     let mut demand_sites: Vec<(IVec2, Option<Entity>)> = Vec::new();
     for (planned_structure, transform, owner) in &planned {
-        obstacles.push((
-            transform.translation.truncate(),
-            scaled_building_footprint_radius(transform),
-        ));
+        obstacles.push(Obstacle::structure(transform));
         if planned_structure.kind == PlannedKind::ProductionFacility {
             demand_sites.push((
                 world_to_cell(transform.translation.truncate()),
@@ -389,16 +382,10 @@ pub fn sink_stockpile_demand_system(
         }
     }
     for (transform, _) in &facilities {
-        obstacles.push((
-            transform.translation.truncate(),
-            scaled_building_footprint_radius(transform),
-        ));
+        obstacles.push(Obstacle::structure(transform));
     }
     for (transform, _) in &chargers {
-        obstacles.push((
-            transform.translation.truncate(),
-            scaled_building_footprint_radius(transform),
-        ));
+        obstacles.push(Obstacle::structure(transform));
     }
 
     for (transform, owner) in &facilities {
@@ -443,11 +430,7 @@ pub fn sink_stockpile_demand_system(
             continue;
         }
         let mut local_obstacles = obstacles.clone();
-        local_obstacles.extend(
-            newly_planned
-                .iter()
-                .map(|pos| (*pos, BUILDING_FOOTPRINT_RADIUS)),
-        );
+        local_obstacles.extend(newly_planned.iter().map(|pos| Obstacle::planned(*pos)));
         let Some((placement_cell, placement_pos)) =
             find_build_zone_placement(&zone_cells, &local_obstacles, 26)
         else {
@@ -678,7 +661,7 @@ pub fn worker_planned_structure_work_system(
                 &mut commands,
                 planned_entity,
                 planned_state.kind,
-                planned_transform.translation.truncate(),
+                *planned_transform,
                 planned_state.cell,
                 first_target,
                 &structure_sprites,
@@ -693,7 +676,7 @@ pub fn worker_planned_structure_work_system(
                 &mut commands,
                 planned_entity,
                 planned_state.kind,
-                planned_transform.translation.truncate(),
+                *planned_transform,
                 planned_state.cell,
                 first_target,
                 &structure_sprites,
@@ -748,12 +731,12 @@ fn promote_planned_to_completion(
     commands: &mut Commands,
     planned_entity: Entity,
     kind: PlannedKind,
-    world_pos: Vec2,
+    transform: Transform,
     cell: IVec2,
     _first_target: Option<NanobotType>,
     structure_sprites: &StructureSprites,
 ) {
-    let visual = completed_visual_bundle(kind, structure_sprites, world_pos);
+    let visual = completed_visual_bundle(kind, structure_sprites, transform);
     match kind {
         PlannedKind::SourceStockpile => {
             commands.entity(planned_entity).remove::<PlannedStructure>();
@@ -819,7 +802,9 @@ pub(crate) fn planned_visual_components(
     sprite.custom_size = Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT));
     (
         sprite,
-        Transform::from_translation(world_pos.extend(GAMEPLAY_SPRITE_Z)),
+        crate::navigation::align_structure(Transform::from_translation(
+            world_pos.extend(GAMEPLAY_SPRITE_Z),
+        )),
         StructureVisual::planned(kind),
     )
 }
@@ -831,16 +816,12 @@ pub(crate) fn planned_visual_components(
 fn completed_visual_bundle(
     kind: PlannedKind,
     structure_sprites: &StructureSprites,
-    world_pos: Vec2,
+    transform: Transform,
 ) -> (Sprite, Transform, StructureVisual) {
     let mut sprite = structure_sprites.sprite(kind, StructureVisualState::Completed);
     sprite.color = completed_visual_color();
     sprite.custom_size = Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT));
-    (
-        sprite,
-        Transform::from_translation(world_pos.extend(GAMEPLAY_SPRITE_Z)),
-        StructureVisual::completed(kind),
-    )
+    (sprite, transform, StructureVisual::completed(kind))
 }
 
 /// Default capacity for completed Source and Sink Stockpiles.

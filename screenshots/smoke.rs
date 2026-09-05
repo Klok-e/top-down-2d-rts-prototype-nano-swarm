@@ -13,7 +13,7 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::ProductionFacility,
-    scenario::{PLAYER_CELL, SEED_FACILITY_OFFSET, cell_origin},
+    scenario::{PLAYER_CELL, cell_origin},
 };
 
 use crate::harness::{TestContext, TestFlow};
@@ -35,9 +35,12 @@ pub fn smoke(ctx: &mut TestContext) -> TestFlow {
             .iter(ctx.world)
             .map(|transform| transform.translation.truncate())
             .collect::<Vec<_>>();
-        let expected_facility = cell_origin(PLAYER_CELL) + SEED_FACILITY_OFFSET;
+        // Authored 192-unit square snaps to x288..504, y144..360.
+        let expected_facility = Vec2::new(396.0, 252.0);
         assert!(
-            facility_positions.contains(&expected_facility),
+            facility_positions
+                .iter()
+                .any(|pos| pos.abs_diff_eq(expected_facility, 0.001)),
             "default player Production Facility must spawn at its visible authored position"
         );
         assert_ne!(

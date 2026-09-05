@@ -38,6 +38,7 @@
 //! stays charged. A defended cell with no haulers reaching it
 //! gradually loses charger material and the defenders degrade.
 
+use crate::navigation::Obstacle;
 use std::collections::HashMap;
 
 use bevy::prelude::*;
@@ -53,9 +54,7 @@ use crate::nanobot::components::{
     DirectMovementComponent, Health, Nanobot, Swarm, SwarmId, SwarmMember,
 };
 use crate::nanobot::maintenance::SupportCondition;
-use crate::nanobot::placement::{
-    BUILDING_FOOTPRINT_RADIUS, find_nearest_defend_zone_placement, scaled_building_footprint_radius,
-};
+use crate::nanobot::placement::find_nearest_defend_zone_placement;
 use crate::nanobot::planned::{PlannedKind, PlannedStructure, planned_visual_components};
 use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
@@ -498,27 +497,20 @@ pub fn charger_auto_creation_system(
     let swarm_id_by_entity: HashMap<Entity, SwarmId> =
         swarms.iter().map(|(entity, id)| (entity, *id)).collect();
 
-    let mut obstacles: Vec<(Vec2, f32)> = deposits
+    let mut obstacles: Vec<Obstacle> = deposits
         .iter()
-        .map(|(deposit, transform)| (transform.translation.truncate(), deposit.radius))
+        .map(|(deposit, transform)| {
+            Obstacle::deposit(transform.translation.truncate(), deposit.radius)
+        })
         .collect();
     for transform in &structure_obstacles {
-        obstacles.push((
-            transform.translation.truncate(),
-            scaled_building_footprint_radius(transform),
-        ));
+        obstacles.push(Obstacle::structure(transform));
     }
     for (_, _, transform, _, _) in &chargers {
-        obstacles.push((
-            transform.translation.truncate(),
-            scaled_building_footprint_radius(transform),
-        ));
+        obstacles.push(Obstacle::structure(transform));
     }
     for (_, transform, _) in &planned_chargers {
-        obstacles.push((
-            transform.translation.truncate(),
-            scaled_building_footprint_radius(transform),
-        ));
+        obstacles.push(Obstacle::structure(transform));
     }
 
     let mut living_by_swarm = HashMap::<SwarmId, u32>::new();
@@ -647,7 +639,7 @@ pub fn charger_auto_creation_system(
             OwnerSwarm(owner),
             planned_visual_components(PlannedKind::Charger, &structure_sprites, placement_pos),
         ));
-        obstacles.push((placement_pos, BUILDING_FOOTPRINT_RADIUS));
+        obstacles.push(Obstacle::planned(placement_pos));
         *capacity = MAX_DEFENDERS_PER_CHARGER - 1;
     }
 }

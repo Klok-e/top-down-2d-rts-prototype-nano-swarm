@@ -100,12 +100,16 @@ fn candidate_placements_lie_on_the_configured_ring() {
 
     let pos = planned_source_stockpile_position(&mut app)
         .expect("Planned Source Stockpile must be created for a gather-overlapped deposit");
+    let min = pos - Vec2::splat(36.0);
+    assert!((min / 72.0 - (min / 72.0).round()).length() < 0.001);
+    assert!(min.min_element() >= 0.0 && (min + Vec2::splat(72.0)).max_element() <= 512.0);
     let distance = (pos - deposit_pos).length();
-    let min_d = SOURCE_STOCKPILE_PLACEMENT_RADIUS - SOURCE_STOCKPILE_JITTER_AMPLITUDE;
-    let max_d = SOURCE_STOCKPILE_PLACEMENT_RADIUS + SOURCE_STOCKPILE_JITTER_AMPLITUDE;
+    // Per-axis jitter16 plus snap36 changes radial distance by at most74.
+    let min_d = 22.0;
+    let max_d = 170.0;
     assert!(
         (min_d..=max_d).contains(&distance),
-        "planned position must be on the placement ring within jitter; \
+        "planned position must be near the placement ring after jitter and whole-cell snapping; \
          got distance={distance}, expected in [{min_d}, {max_d}]"
     );
 }
@@ -275,8 +279,8 @@ fn haul_direction_bias_picks_aligned_candidate() {
     let expected_mag = SOURCE_STOCKPILE_PLACEMENT_RADIUS;
     let actual_mag = offset.length();
     assert!(
-        (actual_mag - expected_mag).abs() <= SOURCE_STOCKPILE_JITTER_AMPLITUDE + 1.0,
-        "chosen position must be on the ring within jitter; got magnitude={actual_mag}, \
+        (actual_mag - expected_mag).abs() <= 74.0,
+        "chosen position must be near the ring after jitter and whole-cell snapping; got magnitude={actual_mag}, \
          expected near {expected_mag}"
     );
 }

@@ -121,3 +121,26 @@ impl StructureSprites {
         Sprite::from_image(self.handle(kind, state))
     }
 }
+
+/// Texture transparency does not hide the physical footprint boundary.
+pub(crate) fn attach_footprint_outline(
+    added: bevy::prelude::On<bevy::prelude::Add, StructureVisual>,
+    mut commands: bevy::prelude::Commands,
+) {
+    use bevy::prelude::*;
+    let size = crate::navigation::STRUCTURE_SPRITE_SIZE;
+    let edge = size / 2.0 - 0.5;
+    commands.entity(added.entity).with_children(|parent| {
+        for (position, dimensions) in [
+            (Vec2::new(-edge, 0.0), Vec2::new(1.0, size)),
+            (Vec2::new(edge, 0.0), Vec2::new(1.0, size)),
+            (Vec2::new(0.0, -edge), Vec2::new(size, 1.0)),
+            (Vec2::new(0.0, edge), Vec2::new(size, 1.0)),
+        ] {
+            parent.spawn((
+                Sprite::from_color(Color::srgba(0.7, 0.85, 0.9, 0.7), dimensions),
+                Transform::from_translation(position.extend(0.01)),
+            ));
+        }
+    });
+}

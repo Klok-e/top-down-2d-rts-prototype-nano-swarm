@@ -658,15 +658,23 @@ pub fn structure_overlay_update_system(
     >,
 ) {
     for (overlay, mut transform) in &mut overlays {
-        let Ok(target_pos) = target_transforms
-            .get(overlay.target)
-            .map(|t| t.translation.truncate())
-        else {
+        let Ok(target_transform) = target_transforms.get(overlay.target) else {
             continue;
         };
         let deposit_radius = deposits.get(overlay.target).ok().map(|d| d.radius);
-        let offset_y = overlay_label_offset_y(overlay.kind, deposit_radius);
-        transform.translation = (target_pos + Vec2::new(0.0, offset_y)).extend(STRUCTURE_OVERLAY_Z);
+        let mut offset_y = overlay_label_offset_y(overlay.kind, deposit_radius);
+        if matches!(
+            overlay.kind,
+            StructureOverlayKind::Stockpile
+                | StructureOverlayKind::Facility
+                | StructureOverlayKind::Planned
+                | StructureOverlayKind::Charger
+        ) {
+            offset_y += PLANNED_STRUCTURE_FOOTPRINT / 2.0 * (target_transform.scale.y.abs() - 1.0);
+        }
+        transform.translation = (target_transform.translation.truncate()
+            + Vec2::new(0.0, offset_y))
+        .extend(STRUCTURE_OVERLAY_Z);
 
         let amounts = compute_overlay_amounts(
             overlay.kind,
