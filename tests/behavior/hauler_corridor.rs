@@ -72,7 +72,12 @@ fn leg_selection_uses_corridor_biased_route_cost() {
     paint_corridor(&mut app, IVec2::new(2, 0));
     paint_corridor(&mut app, IVec2::new(3, 0));
 
-    app.update();
+    for _ in 0..120 {
+        app.update();
+        if app.world().get::<HaulerAssignment>(hauler).is_some() {
+            break;
+        }
+    }
 
     let assignment = app
         .world()
@@ -219,8 +224,22 @@ fn erasing_corridor_preserves_active_leg_but_changes_the_next_leg() {
         for x in 0..4 {
             paint_corridor(&mut app, IVec2::new(x, 1));
         }
-        app.update();
-        app.update();
+        for _ in 0..240 {
+            let before = app.world().get::<Transform>(hauler).unwrap().translation;
+            let travelling = app.world().get::<DirectMovementComponent>(hauler).is_some();
+            app.update();
+            if travelling
+                && app
+                    .world()
+                    .get::<Transform>(hauler)
+                    .unwrap()
+                    .translation
+                    .distance(before)
+                    > 0.001
+            {
+                break;
+            }
+        }
         assert!(
             app.world()
                 .entity(hauler)

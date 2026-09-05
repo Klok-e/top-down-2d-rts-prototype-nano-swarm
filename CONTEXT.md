@@ -169,11 +169,11 @@ A player-set relative weighting that orders unmet Worker, Hauler, and Defender d
 _Avoid_: Build queue, manual unit training
 
 **Population Demand**:
-The per-Nanobot-Type capacity justified by actionable workload: gathering, construction, and maintenance require Workers, while physical transport requires Haulers. Defender demand is the greater of half the swarm's unique Swarm Tile count rounded up and its active Threat count; Defend Zones only position that capacity. Existing and in-production nanobots of one type cannot satisfy another type's demand. Excess nanobots remain in the swarm when demand falls. A pending Production Facility may increase Worker demand but is never evidence for committing another Production Facility.
+The per-Nanobot-Type capacity justified by actionable workload: gathering, construction, and maintenance require Workers, while physical transport requires Haulers. Defender demand is the greater of half the swarm's unique Swarm Tile count rounded up and its active Threat count; Defend Zones only position that capacity. Existing and in-production nanobots of one type cannot satisfy another type's demand; finished output waiting for an exit remains committed population but is unavailable for work. Excess nanobots remain in the swarm when demand falls. A pending Production Facility may increase Worker demand but is never evidence for committing another Production Facility.
 _Avoid_: Population cap, unit quota
 
 **Production Pressure**:
-Consecutive unmet Population Demand of any type while every operational Production Facility remains busy. Production Priority, including a zero weight, never suppresses pressure from required work. Pressure also accumulates when no Production Facility is operational, while resolved demand or idle operational capacity clears it. Brief demand spikes and a facility's internal cycle progress do not establish Production Pressure.
+Consecutive unmet Population Demand of any type while every operational Production Facility remains busy producing; waiting for exit space does not qualify as busy production. Production Priority, including a zero weight, never suppresses pressure from required work. Pressure also accumulates when no Production Facility is operational, while resolved demand or idle operational capacity clears it. Brief demand spikes and a facility's internal cycle progress do not establish Production Pressure.
 _Avoid_: Build-zone size, instantaneous deficit
 
 **Production Facility**:

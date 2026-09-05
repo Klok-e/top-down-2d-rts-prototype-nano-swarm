@@ -1,8 +1,7 @@
-use bevy::prelude::{Commands, Entity, Local, Quat, Query, Res, Transform, Vec2, With};
+use bevy::prelude::{Commands, Component, Entity, Local, Quat, Query, Res, Transform, Vec2, With};
 
 use crate::{
-    game_settings::GameSettings,
-    nanobot::consts::{BOT_RADIUS, BOT_SEPARATION_FORCE},
+    game_settings::GameSettings, nanobot::consts::BOT_SEPARATION_FORCE,
     spatial::FixedSpatialBuckets,
 };
 
@@ -18,6 +17,7 @@ pub struct ActiveRoute {
     waypoints: Vec<Vec2>,
     current: usize,
     revision: u64,
+    pending: Option<crate::navigation::RouteRequestId>,
 }
 
 #[allow(clippy::type_complexity)]
@@ -31,14 +31,33 @@ pub fn move_velocity_system(
         &mut VelocityComponent,
         Option<&super::NanobotType>,
         Option<&super::SwarmMember>,
+        Option<&super::ClearingEvacuation>,
+        Option<&TrafficYield>,
     )>,
     game_settings: Res<GameSettings>,
     navigation: Res<crate::navigation::Navigation>,
-    grid: Res<crate::intent::IntentGrid>,
 ) {
-    use crate::navigation::RouteOutcome;
-    routes.retain(|entity, _| bots.contains(*entity));
-    for (entity, destination, transform, mut velocity, kind, member) in &mut bots {
+    use crate::navigation::{RouteGoal, RoutePriority, RouteStatus};
+    routes.retain(|entity, route| {
+        if bots.contains(*entity) {
+            true
+        } else {
+            if let Some(id) = route.pending {
+                navigation.cancel(id);
+            }
+            false
+        }
+    });
+    for (entity, destination, transform, mut velocity, kind, member, evacuation, yielding) in
+        &mut bots
+    {
+        let evacuation_destination = evacuation.map(|evacuation| DirectMovementComponent {
+            xy: evacuation.goal,
+            stop_radius: 0.0,
+            interaction: None,
+            speed: None,
+        });
+        let destination = evacuation_destination.as_ref().unwrap_or(destination);
         let position = transform.translation.truncate();
         let stop = destination.stop_radius.max(STOP_THRESHOLD);
         if destination
@@ -52,33 +71,66 @@ pub fn move_velocity_system(
                 .entity(entity)
                 .remove::<DirectMovementComponent>()
                 .remove::<ProgressChecker>();
-            routes.remove(&entity);
+            if let Some(route) = routes.remove(&entity)
+                && let Some(id) = route.pending
+            {
+                navigation.cancel(id);
+            }
             continue;
         }
         let needs_route = routes.get(&entity).is_none_or(|route| {
-            route.destination != destination.xy
+            (route.pending.is_none()
+                && route.destination != destination.xy
+                && (route.destination.distance(destination.xy) > crate::navigation::CELL_WIDTH
+                    || route.current >= route.waypoints.len()))
                 || route.stop_radius != stop
                 || route.interaction != destination.interaction
                 || (route.waypoints.is_empty() && route.revision != navigation.revision())
-                || route
-                    .waypoints
-                    .get(route.current)
-                    .is_some_and(|next| !navigation.segment_clear(position, *next))
+                || yielding.is_none()
+                    && route
+                        .waypoints
+                        .get(route.current)
+                        .is_some_and(|next| !navigation.segment_clear(position, *next))
         });
         if needs_route {
             let swarm = member.map_or(super::SwarmId::PLAYER, |member| member.0);
             let hauler = kind == Some(&super::NanobotType::Hauler);
-            let outcome = if let Some(region) = destination.interaction {
-                navigation.route_to_interaction(position, region, &grid, swarm, hauler)
-            } else if stop > STOP_THRESHOLD {
-                navigation.route_within_range(position, destination.xy, stop, &grid, swarm, hauler)
+            let priority = if evacuation.is_some() {
+                RoutePriority::Clearing
+            } else if routes.contains_key(&entity) {
+                RoutePriority::Invalidated
             } else {
-                navigation.route(position, destination.xy, &grid, swarm, hauler)
+                RoutePriority::Routine
             };
-            let waypoints = match outcome {
-                RouteOutcome::Found(route) => route.waypoints,
-                RouteOutcome::Unreachable => Vec::new(),
+            if let Some(route) = routes.get(&entity)
+                && let Some(id) = route.pending
+            {
+                navigation.cancel(id);
+            }
+            let goal = if let Some(region) = destination.interaction {
+                RouteGoal::Interaction(region)
+            } else if stop > STOP_THRESHOLD {
+                RouteGoal::Range {
+                    center: destination.xy,
+                    radius: stop,
+                }
+            } else {
+                RouteGoal::Point(destination.xy)
             };
+            let pending = Some(navigation.request(position, goal, swarm, hauler, priority));
+            let (waypoints, current) = routes
+                .get(&entity)
+                .filter(|route| {
+                    route.interaction == destination.interaction
+                        && route
+                            .waypoints
+                            .get(route.current)
+                            .is_some_and(|next| navigation.segment_clear(position, *next))
+                })
+                .map_or_else(
+                    || (Vec::new(), 0),
+                    |route| (route.waypoints.clone(), route.current),
+                );
             routes.insert(
                 entity,
                 ActiveRoute {
@@ -86,12 +138,30 @@ pub fn move_velocity_system(
                     stop_radius: stop,
                     waypoints,
                     interaction: destination.interaction,
-                    current: 0,
+                    current,
                     revision: navigation.revision(),
+                    pending,
                 },
             );
         }
         let route = routes.get_mut(&entity).expect("route was resolved");
+        if let Some(id) = route.pending {
+            match navigation.poll(id) {
+                RouteStatus::Pending => {}
+                RouteStatus::Found(found) => {
+                    route.waypoints = found.waypoints;
+                    route.current = 0;
+                    route.pending = None;
+                    navigation.cancel(id);
+                }
+                RouteStatus::Unreachable => {
+                    route.waypoints.clear();
+                    route.current = 0;
+                    route.pending = None;
+                    navigation.cancel(id);
+                }
+            }
+        }
         while route
             .waypoints
             .get(route.current)
@@ -100,6 +170,11 @@ pub fn move_velocity_system(
             route.current += 1;
         }
         if let Some(next) = route.waypoints.get(route.current) {
+            if yielding.is_some() {
+                commands.entity(entity).insert(TrafficYield {
+                    rejoin: Some(*next),
+                });
+            }
             let delta = *next - position;
             let speed = destination.speed.unwrap_or(game_settings.bot_speed);
             velocity.value += delta.normalize_or_zero() * speed.min(delta.length());
@@ -124,7 +199,7 @@ fn separation_deltas(entries: &[SeparationEntry]) -> Vec<(Entity, Vec2)> {
     let mut sorted = entries.to_vec();
     sorted.sort_by_key(|entry| entry.entity.to_bits());
 
-    let mut buckets = FixedSpatialBuckets::new(BOT_RADIUS * 2.0);
+    let mut buckets = FixedSpatialBuckets::new(crate::navigation::BODY_RADIUS * 2.0);
     for entry in &sorted {
         buckets.insert(entry.position, *entry);
     }
@@ -142,7 +217,7 @@ fn separation_deltas(entries: &[SeparationEntry]) -> Vec<(Entity, Vec2)> {
                     continue;
                 }
                 let offset = entry.position - other.position;
-                if offset.length_squared() >= (BOT_RADIUS * 2.0).powi(2) {
+                if offset.length_squared() >= (crate::navigation::BODY_RADIUS * 2.0).powi(2) {
                     continue;
                 }
                 let direction = if offset.length_squared() < 1e-6 {
@@ -209,18 +284,299 @@ pub fn rotation_for_direction(direction: Vec2) -> Option<Quat> {
     Some(Quat::from_rotation_z(-normalized.x.atan2(normalized.y)))
 }
 
+#[derive(Clone, Copy)]
+struct TrafficBody {
+    entity: Entity,
+    start: Vec2,
+    delta: Vec2,
+}
+
+#[derive(Component, Debug)]
+pub struct TrafficYield {
+    rejoin: Option<Vec2>,
+}
+
+#[derive(Debug)]
+pub struct Yielding {
+    to: Entity,
+    retreat: Vec2,
+    // Retracing local motion rejoins the retained route without a crowd detour.
+    trail: Vec<Vec2>,
+    returning: bool,
+    side: Option<Vec2>,
+}
+
+fn swept_separation(start: Vec2, delta: Vec2, other: TrafficBody) -> f32 {
+    let relative = start - other.start;
+    let travel = delta - other.delta;
+    let t = if travel.length_squared() > 1e-8 {
+        (-relative.dot(travel) / travel.length_squared()).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (relative + travel * t).length()
+}
+
+#[allow(clippy::type_complexity)]
 pub fn velocity_system(
-    mut query: Query<(&mut VelocityComponent, &mut Transform)>,
+    mut commands: Commands,
+    mut query: Query<
+        (
+            Entity,
+            &mut VelocityComponent,
+            &mut Transform,
+            Option<&Nanobot>,
+            Option<&TrafficYield>,
+            Option<&DirectMovementComponent>,
+        ),
+        bevy::prelude::Without<super::StructureClearing>,
+    >,
+    mut yielding: Local<std::collections::HashMap<Entity, Yielding>>,
+    clearing: Query<(&Transform, &super::StructureClearing)>,
     game_settings: Res<GameSettings>,
     navigation: Res<crate::navigation::Navigation>,
 ) {
-    for (mut velocity, mut transform) in query.iter_mut() {
-        let proposed = clamp_velocity(velocity.value, game_settings.bot_speed);
-        let start = transform.translation.truncate();
-        let applied_velocity = if navigation.segment_clear(start, start + proposed) {
-            proposed
+    let diameter = crate::navigation::BODY_RADIUS * 2.0;
+    let mut bodies: Vec<_> = query
+        .iter()
+        .filter(|(_, _, _, bot, _, _)| bot.is_some())
+        .map(|(entity, velocity, transform, _, _, _)| {
+            (
+                TrafficBody {
+                    entity,
+                    start: transform.translation.truncate(),
+                    delta: Vec2::ZERO,
+                },
+                clamp_velocity(velocity.value, game_settings.bot_speed),
+            )
+        })
+        .collect();
+    bodies.sort_by_key(|(body, _)| body.entity.to_bits());
+    let mut lookup = FixedSpatialBuckets::new(diameter * 2.0 + game_settings.bot_speed * 2.0);
+    let indices: std::collections::HashMap<_, _> = bodies
+        .iter()
+        .enumerate()
+        .map(|(i, (body, _))| (body.entity, i))
+        .collect();
+    for (i, (body, _)) in bodies.iter().enumerate() {
+        lookup.insert(body.start, i);
+    }
+    yielding.retain(|entity, state| {
+        let retain = indices.contains_key(entity) && indices.contains_key(&state.to);
+        if !retain && indices.contains_key(entity) {
+            commands.entity(*entity).remove::<TrafficYield>();
+        }
+        retain
+    });
+    // Earlier bodies reserve swept motion; later bodies remain stationary until resolved.
+    for i in 0..bodies.len() {
+        let (body, desired) = bodies[i];
+        let nearby: Vec<_> = lookup
+            .neighbourhood(lookup.bucket_for_position(body.start), 1)
+            .flat_map(|(_, entries)| entries.iter().copied())
+            .filter(|j| *j != i)
+            .collect();
+        if let Some(state) = yielding.get_mut(&body.entity) {
+            let (other, other_wanted) = bodies[indices[&state.to]];
+            let following = nearby.iter().any(|j| {
+                let (other, wanted) = bodies[*j];
+                wanted.dot(state.retreat) > 0.01
+                    && (other.start - body.start).dot(state.retreat) <= diameter
+                    && other.start.distance(body.start) < diameter * 6.0
+            });
+            if !following
+                && (other_wanted.dot(state.retreat) <= 0.01
+                    || (other.start - body.start).dot(state.retreat) > diameter
+                    || other.start.distance(body.start) > diameter * 6.0)
+            {
+                state.returning = true;
+            }
+        }
+        if !yielding.contains_key(&body.entity)
+            && desired.length_squared() > 0.01
+            && query.get(body.entity).unwrap().5.is_some()
+        {
+            let conflict = nearby.iter().copied().find(|j| {
+                let (other, wanted) = bodies[*j];
+                let toward = other.start - body.start;
+                let heading = desired.normalize_or_zero();
+                let other_heading = wanted.normalize_or_zero();
+                let other_precedes = other_heading
+                    .x
+                    .total_cmp(&heading.x)
+                    .then_with(|| other_heading.y.total_cmp(&heading.y))
+                    .then_with(|| body.entity.to_bits().cmp(&other.entity.to_bits()))
+                    .is_gt();
+                other_precedes
+                    && query.get(other.entity).unwrap().5.is_some()
+                    && toward.length() >= diameter - 0.01
+                    && toward.length() < diameter + game_settings.bot_speed * 4.0
+                    && desired.dot(wanted) < 0.0
+                    && toward.dot(desired) > 0.0
+                    && swept_separation(
+                        body.start,
+                        desired.normalize_or_zero() * diameter,
+                        TrafficBody {
+                            delta: wanted.normalize_or_zero() * diameter,
+                            ..other
+                        },
+                    ) < diameter
+            });
+            if let Some(j) = conflict {
+                yielding.insert(
+                    body.entity,
+                    Yielding {
+                        to: bodies[j].0.entity,
+                        retreat: -desired.normalize(),
+                        trail: vec![body.start],
+                        returning: false,
+                        side: None,
+                    },
+                );
+                commands
+                    .entity(body.entity)
+                    .insert(TrafficYield { rejoin: None });
+            }
+        }
+        if !yielding.contains_key(&body.entity) {
+            let inherited = nearby.iter().find_map(|j| {
+                let other = bodies[*j].0;
+                let state = yielding.get(&other.entity)?;
+                let offset = body.start - other.start;
+                (!state.returning
+                    && body.entity != state.to
+                    && desired.dot(bodies[indices[&state.to]].1) <= 0.0
+                    && offset.length() < diameter + game_settings.bot_speed * 4.0
+                    && offset.dot(state.retreat) > 0.0)
+                    .then_some((state.to, state.retreat))
+            });
+            if let Some((to, retreat)) = inherited {
+                yielding.insert(
+                    body.entity,
+                    Yielding {
+                        to,
+                        retreat,
+                        trail: vec![body.start],
+                        returning: false,
+                        side: None,
+                    },
+                );
+                commands
+                    .entity(body.entity)
+                    .insert(TrafficYield { rejoin: None });
+            }
+        }
+        if yielding
+            .get(&body.entity)
+            .is_some_and(|state| state.returning)
+            && query
+                .get(body.entity)
+                .ok()
+                .and_then(|(_, _, _, _, marker, _)| marker.and_then(|marker| marker.rejoin))
+                .is_some_and(|point| navigation.segment_clear(body.start, point))
+        {
+            yielding.remove(&body.entity);
+            commands.entity(body.entity).remove::<TrafficYield>();
+        }
+        let safe = |delta: Vec2| {
+            navigation.segment_clear(body.start, body.start + delta)
+                && clearing
+                    .iter()
+                    .filter(|(_, clearing)| clearing.validated_layout.is_some())
+                    .all(|(transform, _)| {
+                        let shape = crate::navigation::Obstacle::structure(transform);
+                        let distance = shape.surface_distance(body.start);
+                        if distance < crate::navigation::BODY_RADIUS {
+                            true
+                        } else {
+                            shape.segment_clear(body.start, body.start + delta)
+                        }
+                    })
+                && nearby.iter().all(|j| {
+                    let other = bodies[*j].0;
+                    // Invalid initial overlaps may separate, but cannot deepen.
+                    let required = diameter.min(body.start.distance(other.start));
+                    swept_separation(body.start, delta, other) + 0.001 >= required
+                })
+        };
+        let speed = game_settings.bot_speed;
+        let applied = if let Some(state) = yielding.get_mut(&body.entity) {
+            while state.returning
+                && state
+                    .trail
+                    .last()
+                    .is_some_and(|point| point.distance(body.start) < 0.01)
+            {
+                state.trail.pop();
+            }
+            if state.returning {
+                let delta = state.trail.last().map_or(Vec2::ZERO, |point| {
+                    clamp_velocity(*point - body.start, speed)
+                });
+                if safe(delta) { delta } else { Vec2::ZERO }
+            } else {
+                let side = Vec2::new(-state.retreat.y, state.retreat.x);
+                let choices = state.side.map_or(vec![side, -side, state.retreat], |side| {
+                    vec![side, state.retreat]
+                });
+                choices
+                    .into_iter()
+                    .find_map(|direction| {
+                        let delta = direction * speed;
+                        if navigation
+                            .segment_clear(body.start, body.start + direction * (diameter + 2.0))
+                            && safe(delta)
+                        {
+                            if direction != state.retreat {
+                                state.side = Some(direction);
+                            }
+                            Some(delta)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(Vec2::ZERO)
+            }
+        } else if safe(desired) {
+            desired
         } else {
-            Vec2::ZERO
+            let direction = desired.normalize_or_zero();
+            let side = Vec2::new(-direction.y, direction.x);
+            [
+                (direction + side).normalize_or_zero(),
+                (direction - side).normalize_or_zero(),
+                side,
+                -side,
+            ]
+            .into_iter()
+            .find_map(|direction| {
+                let delta = direction * desired.length();
+                safe(delta).then_some(delta)
+            })
+            .unwrap_or(Vec2::ZERO)
+        };
+        if let Some(state) = yielding.get_mut(&body.entity) {
+            if !state.returning && applied.length_squared() > 0.0 {
+                state.trail.push(body.start + applied);
+            }
+            if state.returning && state.trail.is_empty() {
+                yielding.remove(&body.entity);
+                commands.entity(body.entity).remove::<TrafficYield>();
+            }
+        }
+        bodies[i].0.delta = applied;
+    }
+    for (entity, mut velocity, mut transform, bot, _, _) in &mut query {
+        let start = transform.translation.truncate();
+        let applied_velocity = if bot.is_some() {
+            bodies[indices[&entity]].0.delta
+        } else {
+            let proposed = clamp_velocity(velocity.value, game_settings.bot_speed);
+            if navigation.segment_clear(start, start + proposed) {
+                proposed
+            } else {
+                Vec2::ZERO
+            }
         };
         transform.translation += applied_velocity.extend(0.);
         if let Some(rotation) = rotation_for_direction(applied_velocity) {
@@ -307,7 +663,7 @@ mod tests {
             },
             SeparationEntry {
                 entity: distant,
-                position: Vec2::splat(BOT_RADIUS * 10.0),
+                position: Vec2::splat(crate::nanobot::consts::BOT_RADIUS * 10.0),
             },
         ]);
 

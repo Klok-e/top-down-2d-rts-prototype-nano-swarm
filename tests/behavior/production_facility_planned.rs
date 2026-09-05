@@ -76,6 +76,7 @@ fn demand_pressure_creates_planned_production_facility() {
     // `ProductionFacility`. The plan is the visible
     // "demand noticed, build scheduled" state.
     let mut app = build_app();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
@@ -104,6 +105,12 @@ fn demand_pressure_creates_planned_production_facility() {
         "a facility plan must not emerge before 60 consecutive pressure ticks",
     );
     app.update();
+    for _ in 0..100 {
+        if production_plan_count(&mut app) > 0 {
+            break;
+        }
+        app.update();
+    }
 
     let world = app.world_mut();
     // The plan exists.
@@ -118,8 +125,8 @@ fn demand_pressure_creates_planned_production_facility() {
     );
     // The plan carries the sidecar recording the first
     // target the completed facility should produce. With
-    // all three types at equal deficit, the picker's
-    // stable tie-break order picks Worker.
+    // a Worker already present, Haulers and Defenders have equal
+    // shortages; stable type order picks Hauler.
     let plan_entity = world
         .query::<(Entity, &PlannedStructure)>()
         .iter(world)
@@ -143,7 +150,7 @@ fn demand_pressure_creates_planned_production_facility() {
     );
     assert_eq!(
         plan_target,
-        NanobotType::Worker,
+        NanobotType::Hauler,
         "deficit tie-break must land on Worker (first in NanobotType::ALL)"
     );
     // No completed Production Facility exists yet: the
@@ -163,6 +170,7 @@ fn planned_production_facility_uses_planned_visual() {
     // color so the player can tell the structure is not
     // yet built.
     let mut app = build_app();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
@@ -173,6 +181,12 @@ fn planned_production_facility_uses_planned_visual() {
     paint_build(&mut app, IVec2::new(0, 0));
 
     advance_pressure(&mut app);
+    for _ in 0..100 {
+        if production_plan_count(&mut app) > 0 {
+            break;
+        }
+        app.update();
+    }
 
     let world = app.world_mut();
     let mut q = world.query::<(&PlannedStructure, &Sprite, &Transform)>();
@@ -201,6 +215,7 @@ fn planned_production_facility_is_owned_by_swarm_that_painted_build_cell() {
     // `OwnerSwarm`. The completed facility keeps the
     // same ownership.
     let mut app = build_app();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     let center = common::cell_world_center(IVec2::new(0, 0));
     let swarm = common::spawn_swarm_at(&mut app, center);
     {
@@ -212,6 +227,12 @@ fn planned_production_facility_is_owned_by_swarm_that_painted_build_cell() {
     paint_build(&mut app, IVec2::new(0, 0));
 
     advance_pressure(&mut app);
+    for _ in 0..100 {
+        if production_plan_count(&mut app) > 0 {
+            break;
+        }
+        app.update();
+    }
 
     let world = app.world_mut();
     let mut q = world.query::<(&PlannedStructure, &OwnerSwarm)>();
@@ -280,7 +301,16 @@ fn worker_claims_planned_production_facility() {
         common::spawn_planned_production_facility_at_cell(&mut app, cell, NanobotType::Worker);
     let _worker = common::spawn_worker_at(&mut app, center);
 
-    app.update();
+    for _ in 0..20 {
+        app.update();
+        if app
+            .world()
+            .get::<PlannedStructure>(plan)
+            .is_some_and(|plan| plan.active_worker.is_some())
+        {
+            break;
+        }
+    }
 
     let world = app.world();
     let claim = world
@@ -312,7 +342,16 @@ fn only_one_worker_claims_a_planned_production_facility() {
     let worker_a = common::spawn_worker_at(&mut app, center);
     let worker_b = common::spawn_worker_at(&mut app, center);
 
-    app.update();
+    for _ in 0..20 {
+        app.update();
+        if app
+            .world()
+            .get::<PlannedStructure>(plan)
+            .is_some_and(|plan| plan.active_worker.is_some())
+        {
+            break;
+        }
+    }
 
     let world = app.world();
     let planned = world.entity(plan).get::<PlannedStructure>().unwrap();
@@ -354,10 +393,12 @@ fn worker_builds_planned_production_facility_to_completion() {
         common::spawn_planned_production_facility_at_cell(&mut app, cell, NanobotType::Hauler);
     let _worker = common::spawn_worker_at(&mut app, center + Vec2::new(68.0, 0.0));
 
-    // Start within exterior work reach and allow claim plus the full build duration.
-    let build_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize;
-    for _ in 0..build_ticks {
+    // Allow bounded route acquisition, construction work, and safe activation.
+    for _ in 0..40 {
         app.update();
+        if app.world().get::<PlannedStructure>(plan).is_none() {
+            break;
+        }
     }
 
     let world = app.world_mut();
@@ -555,6 +596,7 @@ fn plan_does_not_pile_under_repeated_demand_ticks() {
     // cell, and does not plan a second facility
     // elsewhere while the first plan is still pending.
     let mut app = build_app();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
         let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
@@ -580,7 +622,7 @@ fn plan_does_not_pile_under_repeated_demand_ticks() {
         "auto-creation must not pile multiple Planned Production Facilities in the same cell"
     );
     // The completed facility count is 0 (the plan has
-    // not been built by any worker in this test).
+    // its distant builder has not reached the site).
     let facility_count = world.query::<&ProductionFacility>().iter(world).count();
     assert_eq!(
         facility_count, 0,
@@ -591,10 +633,11 @@ fn plan_does_not_pile_under_repeated_demand_ticks() {
 #[test]
 fn interrupted_production_pressure_restarts_from_zero() {
     let mut app = build_app();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     common::spawn_swarm_at(&mut app, Vec2::ZERO);
     app.world_mut()
         .resource_mut::<ProductionPriority>()
-        .set_weight(NanobotType::Worker, 10);
+        .set_weight(NanobotType::Hauler, 10);
     paint_build(&mut app, IVec2::ZERO);
 
     for _ in 0..PRODUCTION_PRESSURE_TICKS - 1 {
@@ -612,26 +655,39 @@ fn interrupted_production_pressure_restarts_from_zero() {
 
     app.world_mut()
         .resource_mut::<ProductionPriority>()
-        .set_weight(NanobotType::Worker, 10);
+        .set_weight(NanobotType::Hauler, 10);
     for _ in 0..PRODUCTION_PRESSURE_TICKS - 1 {
         app.update();
     }
     assert_eq!(production_plan_count(&mut app), 0);
     app.update();
+    for _ in 0..100 {
+        if production_plan_count(&mut app) > 0 {
+            break;
+        }
+        app.update();
+    }
     assert_eq!(production_plan_count(&mut app), 1);
 }
 
 #[test]
 fn lost_facility_plan_requires_fresh_production_pressure() {
     let mut app = build_app();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     common::spawn_swarm_at(&mut app, Vec2::ZERO);
     app.world_mut()
         .resource_mut::<ProductionPriority>()
-        .set_weight(NanobotType::Worker, 10);
+        .set_weight(NanobotType::Hauler, 10);
     paint_build(&mut app, IVec2::ZERO);
     paint_build(&mut app, IVec2::new(1, 0));
 
     advance_pressure(&mut app);
+    for _ in 0..100 {
+        if production_plan_count(&mut app) > 0 {
+            break;
+        }
+        app.update();
+    }
     let plan = {
         let world = app.world_mut();
         world
@@ -661,6 +717,7 @@ fn zero_priority_typed_shortage_still_creates_production_pressure() {
     use top_down_2d_rts_prototype_nano_swarm::nanobot::PopulationDemandPlugin;
 
     let mut app = build_app();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     app.add_plugins(PopulationDemandPlugin);
     common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
@@ -677,6 +734,12 @@ fn zero_priority_typed_shortage_still_creates_production_pressure() {
     common::spawn_busy_facility_at(&mut app, Vec2::ZERO, NanobotType::Worker);
 
     advance_pressure(&mut app);
+    for _ in 0..100 {
+        if production_plan_count(&mut app) > 0 {
+            break;
+        }
+        app.update();
+    }
 
     assert_eq!(
         production_plan_count(&mut app),

@@ -47,7 +47,6 @@ use crate::nanobot::autonomy::{Commitment, NanobotType};
 use crate::nanobot::components::{Health, Nanobot, Swarm, SwarmId, SwarmMember, VelocityComponent};
 use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::maintenance::SupportCondition;
-use crate::nanobot::placement::find_build_zone_placement;
 use crate::nanobot::planned::{
     PlannedKind, PlannedProductionTarget, PlannedStructure, planned_visual_components,
 };
@@ -283,6 +282,8 @@ pub struct ProductionFacility {
     /// to 0 when a new cycle starts; reaches
     /// [`PRODUCTION_TICKS_PER_BOT`] to finish the cycle.
     pub progress: u32,
+    /// Simulation tick when output finished; retained until a free exterior exit exists.
+    pub finished_at: Option<u64>,
     /// Type currently being produced, or `None` if the facility
     /// is idle and waiting to pick its next target.
     pub current_target: Option<NanobotType>,
@@ -319,6 +320,7 @@ impl ProductionFacility {
     pub fn new() -> Self {
         Self {
             progress: 0,
+            finished_at: None,
             current_target: None,
             blocked_types: HashSet::new(),
             input_kind: ResourceKind::Minerals,
@@ -331,7 +333,7 @@ impl ProductionFacility {
     /// Used by the auto-creation system to detect "all existing
     /// facilities are too busy".
     pub fn is_busy(&self) -> bool {
-        self.current_target.is_some()
+        self.current_target.is_some() && self.progress < PRODUCTION_TICKS_PER_BOT
     }
 
     /// True when `kind` is currently in the blocked set.
@@ -560,6 +562,7 @@ pub fn count_swarm_nanobots_by_type(
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn production_facility_auto_creation_system(
     mut commands: Commands,
+    access: super::construction_access::ConstructionAccess,
     grid: Res<IntentGrid>,
     structure_sprites: Res<StructureSprites>,
     global_priority: Res<ProductionPriority>,
@@ -586,6 +589,7 @@ pub fn production_facility_auto_creation_system(
     swarm_productions: Query<&SwarmProduction>,
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,
 ) {
+    let mut access_layout = access.snapshot();
     // Build the set of cells already occupied by any
     // planned or completed structure. A planned
     // Production Facility is in this set, so subsequent
@@ -688,12 +692,32 @@ pub fn production_facility_auto_creation_system(
         // own at least one free Build cell. Without it,
         // the swarm cannot plan a new facility and the
         // system is a no-op for this swarm this tick.
-        let Some((build_cell, placement_pos)) = build_cells_by_swarm
-            .get(swarm_id)
-            .and_then(|cells| find_build_zone_placement(cells, &obstacles, 27))
+        let Some((build_cell, placement_pos)) =
+            build_cells_by_swarm.get(swarm_id).and_then(|cells| {
+                crate::nanobot::placement::find_build_zone_placement_accepting(
+                    cells,
+                    &obstacles,
+                    27,
+                    |position| {
+                        access.accepts(
+                            &access_layout,
+                            &grid,
+                            *swarm_id,
+                            PlannedKind::ProductionFacility,
+                            position,
+                        )
+                    },
+                )
+            })
         else {
             continue;
         };
+        access_layout.reserve(
+            *swarm_id,
+            crate::navigation::align_structure(Transform::from_translation(
+                placement_pos.extend(0.0),
+            )),
+        );
         commands.spawn((
             PlannedStructure::new(PlannedKind::ProductionFacility, build_cell),
             PlannedProductionTarget(target),
@@ -771,7 +795,7 @@ pub fn production_facility_pick_target_system(
         if condition.is_some_and(|condition| !condition.is_operational()) {
             continue;
         }
-        if facility.is_busy() {
+        if facility.current_target.is_some() {
             continue;
         }
 
@@ -859,97 +883,133 @@ pub fn production_facility_pick_target_system(
     }
 }
 
-/// Advance each busy facility's progress counter. When progress
-/// reaches [`PRODUCTION_TICKS_PER_BOT`], spawn a new nanobot of
-/// the facility's `current_target` for the owning
-/// [`Swarm`] (or the player swarm for unowned facilities), then
-/// reset the facility to idle and clear the blocked set so the
-/// next cycle re-tries blocked types.
+/// Advance production and release finished output once a body-clear exterior cell
+/// is free. Output retains its funded type and cycle until release or destruction.
 #[allow(clippy::type_complexity)]
 pub fn production_facility_work_system(
     mut commands: Commands,
+    mut tick: Local<u64>,
     mut facilities: Query<(
+        Entity,
         &mut ProductionFacility,
         &Transform,
         Option<&OwnerSwarm>,
         Option<&SupportCondition>,
     )>,
     swarms: Query<(Entity, Option<&SwarmId>), With<Swarm>>,
+    nanobots: Query<&Transform, With<Nanobot>>,
+    objects: Query<
+        (
+            &Transform,
+            Option<&ResourceDeposit>,
+            Option<&PlannedStructure>,
+            Option<&crate::nanobot::StructureClearing>,
+        ),
+        Or<(
+            With<ResourceDeposit>,
+            With<crate::nanobot::Structure>,
+            With<Stockpile>,
+            With<ProductionFacility>,
+            With<crate::nanobot::Charger>,
+            With<crate::nanobot::StructureClearing>,
+        )>,
+    >,
+    grid: Res<IntentGrid>,
 ) {
-    for (mut facility, transform, owner, condition) in &mut facilities {
-        if condition.is_some_and(|condition| !condition.is_operational()) {
+    use crate::navigation::{BODY_RADIUS, CELL_WIDTH, Obstacle};
+    *tick = tick.saturating_add(1);
+    let mut occupied: Vec<_> = nanobots.iter().map(|t| t.translation.truncate()).collect();
+    let obstacles: Vec<_> = objects
+        .iter()
+        .filter_map(|(transform, deposit, planned, clearing)| {
+            if planned.is_some()
+                && !clearing.is_some_and(|clearing| clearing.validated_layout.is_some())
+            {
+                return None;
+            }
+            Some(deposit.map_or_else(
+                || Obstacle::structure(transform),
+                |d| Obstacle::deposit(transform.translation.truncate(), d.radius),
+            ))
+        })
+        .collect();
+    let mut ready = Vec::new();
+    for (entity, mut facility, _, _, condition) in &mut facilities {
+        if condition.is_some_and(|c| !c.is_operational()) || facility.current_target.is_none() {
             continue;
         }
-        let Some(target) = facility.current_target else {
+        facility.progress = facility
+            .progress
+            .saturating_add(1)
+            .min(PRODUCTION_TICKS_PER_BOT);
+        if facility.progress == PRODUCTION_TICKS_PER_BOT {
+            let finished = *facility.finished_at.get_or_insert(*tick);
+            ready.push((finished, entity));
+        }
+    }
+    ready.sort_by_key(|(finished, entity)| (*finished, entity.to_bits()));
+    for (_, entity) in ready {
+        let Ok((_, mut facility, transform, owner, _)) = facilities.get_mut(entity) else {
             continue;
         };
-        facility.progress = facility.progress.saturating_add(1);
-        if facility.progress < PRODUCTION_TICKS_PER_BOT {
-            continue;
-        }
-        // Cycle complete: spawn the nanobot. The owning swarm supplies
-        // its membership identity. Unowned facilities use the player
-        // swarm, with an untagged legacy swarm as compatibility
-        // fallback. If no compatible swarm exists, the spawn is
-        // dropped.
-        //
-        // Issue #38 / ADR-0004: produced nanobots are
-        // top-level entities with world `Transform`s, not
-        // children of the swarm. The previous
-        // `local_pos = pos - swarm_pos` math ended up with
-        // the bot at the right world position only when
-        // nothing ever re-read the swarm's `Transform`;
-        // every other system reads `transform.translation`
-        // as a world coordinate, so parented bots walked to
-        // `local_destination + swarm_pos` -- the cell
-        // center + half-cell offset that drove the
-        // "top-right corner / bottom-left structure" bug.
-        // The swarm's own `Transform` is preserved here
-        // only as a spawn-origin / ownership marker; the
-        // bot ends up at `pos` (the facility's world
-        // position) directly.
-        let owner_swarm = owner.map(|OwnerSwarm(entity)| *entity).or_else(|| {
+        let owner_swarm = owner.map(|OwnerSwarm(e)| *e).or_else(|| {
             swarms
                 .iter()
-                .find_map(|(entity, id)| (id == Some(&SwarmId::PLAYER)).then_some(entity))
-                .or_else(|| {
-                    swarms
-                        .iter()
-                        .find_map(|(entity, id)| id.is_none().then_some(entity))
-                })
+                .find_map(|(e, id)| (id == Some(&SwarmId::PLAYER)).then_some(e))
+                .or_else(|| swarms.iter().find_map(|(e, id)| id.is_none().then_some(e)))
         });
-        if let Some(swarm_entity) = owner_swarm {
-            let pos = transform.translation.truncate();
-            // Look up the owning swarm's `SwarmId` so the new
-            // nanobot carries the right ownership marker.
-            // Pre-multi-swarm tests that spawn a Swarm
-            // without a `SwarmId` fall back to the player id;
-            // the per-swarm filter is `None == None` for the
-            // default `swarm_member` value, so the legacy
-            // unowned-paint tests still pass.
-            let swarm_id = swarms
-                .get(swarm_entity)
-                .map(|(_, id)| id.copied().unwrap_or(SwarmId::PLAYER))
-                .unwrap_or(SwarmId::PLAYER);
-            commands.spawn((
-                NanobotBundle {
-                    nanobot: Nanobot {},
-                    nanobot_type: target,
-                    velocity: VelocityComponent::default(),
-                    ai_state: AiStateComponent::new(),
-                    health: Health::default(),
-                    swarm_member: SwarmMember::new(swarm_id),
-                },
-                Commitment::Idle,
-                Transform::from_translation(pos.extend(0.0)),
-            ));
+        let Some(owner_swarm) = owner_swarm else {
+            continue;
+        };
+        let Ok((_, id)) = swarms.get(owner_swarm) else {
+            continue;
+        };
+        let swarm_id = id.copied().unwrap_or(SwarmId::PLAYER);
+        let shape = Obstacle::structure(transform);
+        let Obstacle::Rectangle { center, half } = shape else {
+            unreachable!()
+        };
+        let min = ((center - half) / CELL_WIDTH).floor().as_ivec2() - IVec2::ONE;
+        let max = ((center + half) / CELL_WIDTH).ceil().as_ivec2();
+        let mut exit = None;
+        'cells: for y in min.y..=max.y {
+            for x in min.x..=max.x {
+                let position = (IVec2::new(x, y).as_vec2() + Vec2::splat(0.5)) * CELL_WIDTH;
+                if !grid.in_bounds(world_to_cell(position)) || !shape.admits_body(position) {
+                    continue;
+                }
+                if obstacles.iter().all(|shape| shape.admits_body(position))
+                    && occupied.iter().all(|other| {
+                        position.distance_squared(*other) >= (2.0 * BODY_RADIUS).powi(2)
+                    })
+                {
+                    exit = Some(position);
+                    break 'cells;
+                }
+            }
         }
-        // Reset for the next cycle. Clearing the blocked set
-        // is the "blocked types are skipped temporarily"
-        // half of the contract: a type that could not be
-        // produced this cycle is re-evaluated next cycle.
-        facility.current_target = None;
+        let Some(position) = exit else {
+            continue;
+        };
+        let target = facility
+            .current_target
+            .take()
+            .expect("ready output retains its type");
+        commands.spawn((
+            NanobotBundle {
+                nanobot: Nanobot {},
+                nanobot_type: target,
+                velocity: VelocityComponent::default(),
+                ai_state: AiStateComponent::new(),
+                health: Health::default(),
+                swarm_member: SwarmMember::new(swarm_id),
+            },
+            Commitment::Idle,
+            Transform::from_translation(position.extend(0.0)),
+        ));
+        occupied.push(position);
         facility.progress = 0;
+        facility.finished_at = None;
         facility.blocked_types.clear();
     }
 }

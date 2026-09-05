@@ -136,7 +136,16 @@ fn idle_worker_claims_one_unclaimed_planned_structure() {
     let planned = common::spawn_planned_structure_at_cell(&mut app, cell);
     let worker = common::spawn_worker_at(&mut app, center + Vec2::X * 68.0);
 
-    app.update();
+    for _ in 0..40 {
+        app.update();
+        if app
+            .world()
+            .get::<PlannedStructure>(planned)
+            .is_some_and(|plan| plan.active_worker.is_some())
+        {
+            break;
+        }
+    }
 
     let world = app.world();
     let claim = world
@@ -165,7 +174,16 @@ fn only_one_worker_can_claim_a_planned_structure() {
     let worker_a = common::spawn_worker_at(&mut app, center + Vec2::X * 68.0);
     let worker_b = common::spawn_worker_at(&mut app, center - Vec2::X * 68.0);
 
-    app.update();
+    for _ in 0..40 {
+        app.update();
+        if app
+            .world()
+            .get::<PlannedStructure>(planned)
+            .is_some_and(|plan| plan.active_worker.is_some())
+        {
+            break;
+        }
+    }
 
     let world = app.world();
     let planned_state = world.entity(planned).get::<PlannedStructure>().unwrap();
@@ -204,7 +222,16 @@ fn surviving_worker_finishes_plan_after_claiming_worker_dies() {
         common::spawn_worker_at(&mut app, center - Vec2::X * 68.0),
     ];
 
-    app.update();
+    for _ in 0..40 {
+        app.update();
+        if app
+            .world()
+            .get::<PlannedStructure>(planned)
+            .is_some_and(|plan| plan.active_worker.is_some())
+        {
+            break;
+        }
+    }
     let claiming_worker = app
         .world()
         .entity(planned)
@@ -602,8 +629,11 @@ fn every_kind_preserves_aligned_authored_rectangle_through_completion() {
             .unwrap()
             .work_remaining = 1;
         let worker = common::spawn_worker_at(&mut app, Vec2::new(-36.0, 108.0));
-        for _ in 0..3 {
+        for _ in 0..100 {
             app.update();
+            if app.world().get::<PlannedStructure>(entity).is_none() {
+                break;
+            }
         }
         let completed = app.world().entity(entity);
         assert!(

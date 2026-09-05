@@ -3,7 +3,10 @@
 use bevy::prelude::*;
 
 mod routing;
-pub use routing::{Navigation, Route, RouteOutcome};
+pub use routing::{
+    AccessCheck, AccessStatus, Navigation, NavigationWork, Route, RouteGoal, RouteOutcome,
+    RoutePriority, RouteRequestId, RouteStatus,
+};
 
 /// A 68-unit body fits a 72-unit passage with two units of clearance per side.
 pub const CELL_WIDTH: f32 = 72.0;

@@ -297,7 +297,7 @@ fn swarm_rotation_cap_counts_defenders_across_staging_cells() {
             .current = LOW_CHARGE_THRESHOLD;
     }
 
-    app.update();
+    wait_for_rotations(&mut app, 3);
 
     let world = app.world_mut();
     let mut assignments = world.query::<&ChargerAssignment>();
@@ -347,7 +347,7 @@ fn casualty_preserves_accepted_travel_and_charging_until_completion() {
     let waiting = common::spawn_defender_at(&mut app, Vec2::new(0.0, -1000.0));
     common::spawn_defender_at(&mut app, Vec2::new(1000.0, -1000.0));
 
-    app.update();
+    wait_for_rotations(&mut app, 3);
     app.update();
     for &defender in &accepted {
         assert!(app.world().entity(defender).contains::<ChargerAssignment>());
@@ -408,7 +408,12 @@ fn casualty_preserves_accepted_travel_and_charging_until_completion() {
         waited_at_capacity,
         "new admissions must also wait at exactly two active rotations"
     );
-    app.update();
+    for _ in 0..120 {
+        app.update();
+        if app.world().get::<ChargerAssignment>(waiting).is_some() {
+            break;
+        }
+    }
     assert!(
         app.world().entity(waiting).contains::<ChargerAssignment>(),
         "fresh admission resumes once fewer than two rotations remain",
@@ -453,7 +458,7 @@ fn destroyed_charger_ends_rotation_without_grandfathering_replacement_admission(
     let casualty = common::spawn_defender_at(&mut app, Vec2::new(-1000.0, -1000.0));
     common::spawn_defender_at(&mut app, Vec2::new(0.0, -1000.0));
     common::spawn_defender_at(&mut app, Vec2::new(1000.0, -1000.0));
-    app.update();
+    wait_for_rotations(&mut app, 3);
     app.update();
     for (&defender, &charger) in accepted.iter().zip(&chargers) {
         assert_eq!(
@@ -530,7 +535,7 @@ fn swarm_rotation_keeps_half_of_defenders_on_duty() {
             .current = LOW_CHARGE_THRESHOLD;
     }
 
-    app.update();
+    wait_for_rotations(&mut app, 1);
 
     let world = app.world_mut();
     let mut assignments = world.query::<&ChargerAssignment>();
@@ -715,7 +720,7 @@ fn released_charger_slot_is_claimed_deterministically() {
             .current = LOW_CHARGE_THRESHOLD;
     }
 
-    app.update();
+    wait_for_rotations(&mut app, 2);
     let released = {
         let world = app.world_mut();
         let mut query = world.query::<(Entity, &ChargerAssignment)>();
@@ -759,6 +764,7 @@ fn released_charger_slot_is_claimed_deterministically() {
 #[test]
 fn low_charge_defender_plans_charger_in_owned_defend_paint() {
     let mut app = build_app();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(1, 0);
     app.world_mut().resource_mut::<IntentGrid>().paint_owned(
@@ -779,7 +785,17 @@ fn low_charge_defender_plans_charger_in_owned_defend_paint() {
     assert_eq!(charger_count(app.world_mut()), 0);
     assert_eq!(planned_charger_count(app.world_mut()), 0);
 
-    app.update();
+    for _ in 0..120 {
+        for _ in 0..100 {
+            app.update();
+            if planned_charger_count(app.world_mut()) > 0 {
+                break;
+            }
+        }
+        if planned_charger_count(app.world_mut()) > 0 {
+            break;
+        }
+    }
 
     // Demand created a planned charger; the completed
     // Charger does NOT exist yet (a Worker must build the
@@ -1025,7 +1041,7 @@ fn defender_uses_eligible_charger_in_owned_defend_paint() {
         });
     }
 
-    app.update();
+    wait_for_rotations(&mut app, 1);
 
     // Post-rotation: the Defender has a ChargerAssignment and no response.
     let world = app.world();
@@ -1086,7 +1102,7 @@ fn defender_ignores_closer_enemy_charger() {
         .unwrap()
         .current = LOW_CHARGE_THRESHOLD;
 
-    app.update();
+    wait_for_rotations(&mut app, 1);
 
     assert_eq!(
         app.world()
@@ -1123,7 +1139,7 @@ fn defender_uses_nearest_eligible_charger_across_owned_defend_paint() {
         .unwrap()
         .current = LOW_CHARGE_THRESHOLD;
 
-    app.update();
+    wait_for_rotations(&mut app, 1);
 
     assert_eq!(
         app.world()
@@ -1279,7 +1295,7 @@ fn en_route_and_charging_defenders_share_charger_capacity() {
             .current = LOW_CHARGE_THRESHOLD;
     }
 
-    app.update();
+    wait_for_rotations(&mut app, 3);
 
     let world = app.world_mut();
     let mut assignments = world.query::<&ChargerAssignment>();
@@ -1331,7 +1347,7 @@ fn charge_departure_releases_response_for_same_step_replacement() {
         .unwrap()
         .current = LOW_CHARGE_THRESHOLD;
 
-    app.update();
+    wait_for_rotations(&mut app, 1);
 
     let defender = app.world().entity(defender);
     assert_eq!(
@@ -1377,11 +1393,16 @@ fn equal_charge_prefers_staged_defender_over_current_tactical_duty() {
     } else {
         (second, first)
     };
+    let threat = common::spawn_worker_at(
+        &mut app,
+        common::cell_world_center(cell) + Vec2::new(140.0, 72.0),
+    );
+    app.world_mut()
+        .entity_mut(threat)
+        .insert(SwarmMember::new(SwarmId(11)));
     app.world_mut()
         .entity_mut(tactical)
-        .insert(DefenderResponse {
-            target: Entity::PLACEHOLDER,
-        });
+        .insert(DefenderResponse { target: threat });
     app.world_mut()
         .entity_mut(tactical)
         .get_mut::<Charge>()
@@ -1393,7 +1414,7 @@ fn equal_charge_prefers_staged_defender_over_current_tactical_duty() {
         .unwrap()
         .current = 0.2;
 
-    app.update();
+    wait_for_rotations(&mut app, 1);
 
     assert!(
         app.world()
@@ -1585,7 +1606,7 @@ fn completed_rotation_reenters_current_allocation_without_old_ownership() {
             .insert(DefenderResponse { target: threat });
     }
 
-    app.update();
+    wait_for_rotations(&mut app, 1);
     assert!(
         app.world()
             .entity(defender)
@@ -2228,4 +2249,15 @@ fn nanobot_plugin_cleans_dead_bot_after_ai_deferred_commands() {
             .total_for(SwarmId::PLAYER, ResourceKind::Minerals),
         0,
     );
+}
+
+fn wait_for_rotations(app: &mut App, count: usize) {
+    for _ in 0..120 {
+        app.update();
+        let world = app.world_mut();
+        if world.query::<&ChargerAssignment>().iter(world).count() >= count {
+            return;
+        }
+    }
+    panic!("expected {count} admitted Charge rotations within 120 navigation ticks");
 }

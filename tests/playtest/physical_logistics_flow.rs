@@ -38,7 +38,12 @@ fn assignment_load_transit_and_terminal_unload_preserve_physical_custody() {
         INITIAL_MINERALS,
     );
 
-    app.update();
+    for _ in 0..80 {
+        app.update();
+        if app.world().get::<HaulerAssignment>(hauler).is_some() {
+            break;
+        }
+    }
 
     let assignment = app
         .world()

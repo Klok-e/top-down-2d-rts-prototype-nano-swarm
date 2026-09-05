@@ -75,6 +75,7 @@ fn charger_count(world: &mut World) -> usize {
 #[test]
 fn unassigned_low_charge_defender_creates_planned_charger() {
     let mut app = planning_app();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::new(0, 0);
     paint_defend_owned(&mut app, cell);
@@ -85,7 +86,12 @@ fn unassigned_low_charge_defender_creates_planned_charger() {
         .expect("Defender has Charge")
         .current = LOW_CHARGE_THRESHOLD;
 
-    app.update();
+    for _ in 0..100 {
+        app.update();
+        if planned_charger_count(app.world_mut()) >= 1 {
+            break;
+        }
+    }
 
     assert_eq!(
         planned_charger_count(app.world_mut()),
@@ -201,6 +207,7 @@ fn pending_capacity_beyond_rotation_cap_suppresses_another_plan() {
 #[test]
 fn rotation_cap_limits_pending_charger_capacity() {
     let mut app = planning_app();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
     paint_defend_owned(&mut app, cell);
@@ -215,7 +222,12 @@ fn rotation_cap_limits_pending_charger_capacity() {
             .current = LOW_CHARGE_THRESHOLD;
     }
 
-    app.update();
+    for _ in 0..100 {
+        app.update();
+        if planned_charger_count(app.world_mut()) >= 2 {
+            break;
+        }
+    }
 
     assert_eq!(
         planned_charger_count(app.world_mut()),
@@ -227,6 +239,7 @@ fn rotation_cap_limits_pending_charger_capacity() {
 #[test]
 fn plan_uses_nearest_non_overlapping_owned_defend_site() {
     let mut app = planning_app();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let initial_cell = IVec2::ZERO;
     let nearest_cell = IVec2::new(3, 0);
@@ -251,7 +264,12 @@ fn plan_uses_nearest_non_overlapping_owned_defend_site() {
         },
     );
 
-    app.update();
+    for _ in 0..100 {
+        app.update();
+        if planned_charger_count(app.world_mut()) >= 1 {
+            break;
+        }
+    }
 
     let world = app.world_mut();
     let (planned, transform) = world
@@ -281,7 +299,12 @@ fn newly_planned_charger_waits_for_next_regional_allocation_pass() {
 
     // Charger demand runs after the current allocation acquisition, so the
     // newly created plan cannot be claimed until the next projection pass.
-    app.update();
+    for _ in 0..100 {
+        app.update();
+        if planned_charger_count(app.world_mut()) >= 1 {
+            break;
+        }
+    }
     let plan = {
         let world = app.world_mut();
         world
@@ -298,7 +321,16 @@ fn newly_planned_charger_waits_for_next_regional_allocation_pass() {
         "the new plan must not be claimed during the creation tick"
     );
 
-    app.update();
+    for _ in 0..20 {
+        app.update();
+        if app
+            .world()
+            .get::<PlannedStructure>(plan)
+            .is_some_and(|plan| plan.active_worker.is_some())
+        {
+            break;
+        }
+    }
 
     assert_eq!(
         app.world()
@@ -307,7 +339,7 @@ fn newly_planned_charger_waits_for_next_regional_allocation_pass() {
             .unwrap()
             .active_worker,
         Some(worker),
-        "regional acquisition must claim the plan on the next pass"
+        "regional acquisition must claim the plan once its budgeted route resolves"
     );
     assert_eq!(
         app.world()
@@ -327,12 +359,18 @@ fn planned_charger_uses_planned_visual_color() {
     // freshly planned Charger must use the planned visual
     // color so the player can tell it is not yet built.
     let mut app = build_app();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::new(0, 0);
     paint_defend_owned(&mut app, cell);
     let _defender = common::spawn_low_charge_defender_in_cell(&mut app, cell);
 
-    app.update();
+    for _ in 0..100 {
+        app.update();
+        if planned_charger_count(app.world_mut()) >= 1 {
+            break;
+        }
+    }
 
     let world = app.world_mut();
     let mut q = world.query::<(&PlannedStructure, &Sprite)>();
@@ -356,12 +394,18 @@ fn planned_charger_is_owned_by_swarm_that_painted_defend_cell() {
     // `OwnerSwarm` of the swarm that painted the Defend
     // cell. Player-painted cells produce player-owned plans.
     let mut app = build_app();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::new(0, 0);
     paint_defend_owned(&mut app, cell);
     let _defender = common::spawn_low_charge_defender_in_cell(&mut app, cell);
 
-    app.update();
+    for _ in 0..100 {
+        app.update();
+        if planned_charger_count(app.world_mut()) >= 1 {
+            break;
+        }
+    }
 
     let world = app.world_mut();
     let mut q = world.query::<(&PlannedStructure, &OwnerSwarm)>();
@@ -379,8 +423,13 @@ fn planned_charger_is_owned_by_swarm_that_painted_defend_cell() {
 #[test]
 fn each_swarm_plans_only_in_its_owned_defend_paint() {
     let mut app = planning_app();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     let player = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let opponent_id = SwarmId(11);
+    let opponent_builder = common::spawn_worker_at(&mut app, Vec2::new(1024.0, -1024.0));
+    app.world_mut()
+        .entity_mut(opponent_builder)
+        .insert(SwarmMember::new(opponent_id));
     let opponent = app
         .world_mut()
         .spawn((Swarm {}, opponent_id, Transform::default()))
@@ -410,7 +459,12 @@ fn each_swarm_plans_only_in_its_owned_defend_paint() {
         .expect("opponent Defender has Charge")
         .current = LOW_CHARGE_THRESHOLD;
 
-    app.update();
+    for _ in 0..100 {
+        app.update();
+        if planned_charger_count(app.world_mut()) >= 2 {
+            break;
+        }
+    }
 
     let world = app.world_mut();
     let owners = world
@@ -457,7 +511,16 @@ fn idle_worker_claims_planned_charger() {
     let plan = common::spawn_planned_charger_at_cell(&mut app, cell);
     let worker = common::spawn_worker_at(&mut app, cell_center + Vec2::X * 68.0);
 
-    app.update();
+    for _ in 0..20 {
+        app.update();
+        if app
+            .world()
+            .get::<PlannedStructure>(plan)
+            .is_some_and(|plan| plan.active_worker.is_some())
+        {
+            break;
+        }
+    }
 
     let world = app.world();
     let claim = world
@@ -487,7 +550,16 @@ fn only_one_worker_claims_a_planned_charger() {
     let worker_a = common::spawn_worker_at(&mut app, cell_center + Vec2::X * 68.0);
     let worker_b = common::spawn_worker_at(&mut app, cell_center - Vec2::X * 68.0);
 
-    app.update();
+    for _ in 0..20 {
+        app.update();
+        if app
+            .world()
+            .get::<PlannedStructure>(plan)
+            .is_some_and(|plan| plan.active_worker.is_some())
+        {
+            break;
+        }
+    }
 
     let world = app.world();
     let planned = world.entity(plan).get::<PlannedStructure>().unwrap();
@@ -536,13 +608,13 @@ fn worker_builds_planned_charger_to_completion() {
         .resource::<ResourceLedger>()
         .total_for(SwarmId::PLAYER, ResourceKind::Minerals);
 
-    // 1 tick for claim + arrive (worker is at the cell so
-    // arrive fires on the same tick as claim), then
-    // DEFAULT_PLANNED_WORK_TICKS ticks of work, then the
-    // promotion tick. We add 1 buffer tick for safety.
+    // Allow queued access validation after the Worker finishes construction.
     let build_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize + 1;
-    for _ in 0..build_ticks {
+    for _ in 0..build_ticks + 100 {
         app.update();
+        if app.world().get::<PlannedStructure>(plan).is_none() {
+            break;
+        }
     }
 
     let world = app.world();
@@ -621,8 +693,11 @@ fn completed_planned_charger_provides_charge_to_defenders() {
     // DEFAULT_PLANNED_WORK_TICKS ticks of work, +1 for
     // the promotion tick.
     let build_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize + 1;
-    for _ in 0..build_ticks {
+    for _ in 0..build_ticks + 100 {
         app.update();
+        if app.world().get::<PlannedStructure>(plan).is_none() {
+            break;
+        }
     }
     // Completed chargers begin empty. Top up this focused charge-loop
     // fixture directly; logistics delivery is covered below.
@@ -754,6 +829,7 @@ fn hauler_delivers_to_completed_planned_charger() {
 fn plan_does_not_pile_under_repeated_demand_ticks() {
     // Pending capacity remains reserved across repeated demand ticks.
     let mut app = build_app();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::new(0, 0);
     paint_defend_owned(&mut app, cell);

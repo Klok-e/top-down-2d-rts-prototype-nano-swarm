@@ -37,7 +37,7 @@ fn empty_committed_defender_makes_charger_beat_startable_production() {
     ));
     let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-600.0, -200.0));
 
-    app.update();
+    wait_for_assignment(&mut app, hauler);
 
     let assignment = app
         .world()
@@ -76,7 +76,7 @@ fn charger_emergency_reserves_only_uncovered_committed_charge_need() {
     ));
     let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-600.0, -200.0));
 
-    app.update();
+    wait_for_assignment(&mut app, hauler);
 
     let reservation = app
         .world()
@@ -106,7 +106,7 @@ fn owned_terminal_ignores_shared_sink_stockpile() {
         .id();
     let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-600.0, -200.0));
 
-    app.update();
+    wait_for_assignment(&mut app, hauler);
 
     let assignment = app
         .world()
@@ -147,7 +147,7 @@ fn waiting_production_eventually_beats_continuous_charger_emergency() {
     let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-600.0, -200.0));
 
     let mut production_selected = false;
-    for _ in 0..32 {
+    for _ in 0..120 {
         app.update();
         let sink = app
             .world()
@@ -157,6 +157,9 @@ fn waiting_production_eventually_beats_continuous_charger_emergency() {
         if sink == Some(facility) {
             production_selected = true;
             break;
+        }
+        if sink.is_none() {
+            continue;
         }
         assert_eq!(sink, Some(charger));
         app.world_mut()
@@ -195,7 +198,7 @@ fn startable_production_beats_nearer_ordinary_charger_refill() {
         .id();
     let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-600.0, -200.0));
 
-    app.update();
+    wait_for_assignment(&mut app, hauler);
 
     assert_eq!(
         app.world()
@@ -223,7 +226,7 @@ fn larger_proportional_terminal_deficit_beats_shorter_route() {
         .insert(OwnerSwarm(swarm));
     let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-600.0, -200.0));
 
-    app.update();
+    wait_for_assignment(&mut app, hauler);
 
     assert_eq!(
         app.world()
@@ -247,7 +250,7 @@ fn route_cost_breaks_equal_terminal_demand_ties() {
     app.world_mut().entity_mut(far).insert(OwnerSwarm(swarm));
     let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-600.0, -200.0));
 
-    app.update();
+    wait_for_assignment(&mut app, hauler);
 
     assert_eq!(
         app.world()
@@ -271,7 +274,7 @@ fn entity_id_breaks_fully_equal_terminal_ties() {
     app.world_mut().entity_mut(second).insert(OwnerSwarm(swarm));
     let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-600.0, -200.0));
 
-    app.update();
+    wait_for_assignment(&mut app, hauler);
 
     let stable_min = if first.to_bits() < second.to_bits() {
         first
@@ -286,4 +289,14 @@ fn entity_id_breaks_fully_equal_terminal_ties() {
             .sink,
         stable_min
     );
+}
+
+fn wait_for_assignment(app: &mut App, hauler: Entity) {
+    for _ in 0..120 {
+        app.update();
+        if app.world().get::<HaulerAssignment>(hauler).is_some() {
+            return;
+        }
+    }
+    panic!("terminal request remained unresolved after 120 navigation ticks");
 }

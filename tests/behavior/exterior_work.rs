@@ -148,11 +148,13 @@ fn gathering_preserves_cargo_on_displacement_then_unloads_outside_owned_scaled_s
 #[test]
 fn construction_pauses_after_displacement_and_finishes_from_exterior() {
     let mut app = common::sim_app();
+    app.init_resource::<top_down_2d_rts_prototype_nano_swarm::nanobot::construction_access::CancelledSites>();
     app.add_systems(
         Update,
         (
             worker_planned_structure_arrive_system,
             worker_planned_structure_work_system,
+            top_down_2d_rts_prototype_nano_swarm::nanobot::clearing::clear_finished_structures_system,
         )
             .chain(),
     );

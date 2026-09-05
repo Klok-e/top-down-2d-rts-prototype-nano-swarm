@@ -273,6 +273,7 @@ fn production_demand_does_not_instant_spawn_completed_facility() {
     // other completed support structure appears as a side
     // effect either.
     let mut app = common::sim_app_with_production_planned();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     app.insert_resource(ProductionPriority::new());
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
@@ -284,8 +285,11 @@ fn production_demand_does_not_instant_spawn_completed_facility() {
     let cell = IVec2::new(0, 0);
     paint_owned(&mut app, cell, IntentKind::Build);
 
-    for _ in 0..PRODUCTION_PRESSURE_TICKS {
+    for _ in 0..PRODUCTION_PRESSURE_TICKS + 100 {
         app.update();
+        if planned_count(app.world_mut()) > 0 {
+            break;
+        }
     }
 
     let world = app.world_mut();
@@ -324,6 +328,7 @@ fn low_charge_need_does_not_instant_spawn_completed_charger() {
     // completed one. No other completed support structure
     // appears as a side effect.
     let mut app = common::sim_app_with_charge_planned();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::new(0, 0);
     let cell_center = common::cell_world_center(cell);
@@ -338,7 +343,12 @@ fn low_charge_need_does_not_instant_spawn_completed_charger() {
         d
     };
 
-    app.update();
+    for _ in 0..100 {
+        app.update();
+        if planned_count(app.world_mut()) > 0 {
+            break;
+        }
+    }
 
     let world = app.world_mut();
     let chargers = completed_charger_count(world);

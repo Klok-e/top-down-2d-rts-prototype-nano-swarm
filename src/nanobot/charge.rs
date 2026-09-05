@@ -54,7 +54,6 @@ use crate::nanobot::components::{
     DirectMovementComponent, Health, Nanobot, Swarm, SwarmId, SwarmMember,
 };
 use crate::nanobot::maintenance::SupportCondition;
-use crate::nanobot::placement::find_nearest_defend_zone_placement;
 use crate::nanobot::planned::{PlannedKind, PlannedStructure, planned_visual_components};
 use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
@@ -461,6 +460,7 @@ pub fn defender_health_loss_when_empty_system(
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn charger_auto_creation_system(
     mut commands: Commands,
+    access: super::construction_access::ConstructionAccess,
     grid: Res<IntentGrid>,
     structure_sprites: Res<StructureSprites>,
     chargers: Query<(
@@ -492,6 +492,7 @@ pub fn charger_auto_creation_system(
     >,
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,
 ) {
+    let mut access_layout = access.snapshot();
     let swarm_by_id: HashMap<SwarmId, Entity> =
         swarms.iter().map(|(entity, id)| (*id, entity)).collect();
     let swarm_id_by_entity: HashMap<Entity, SwarmId> =
@@ -630,7 +631,14 @@ pub fn charger_auto_creation_system(
             })
             .collect::<Vec<_>>();
         let Some((cell, placement_pos)) =
-            find_nearest_defend_zone_placement(&defend_cells, &obstacles, defender_pos)
+            crate::nanobot::placement::find_nearest_defend_zone_placement_accepting(
+                &defend_cells,
+                &obstacles,
+                defender_pos,
+                |position| {
+                    access.accepts(&access_layout, &grid, swarm, PlannedKind::Charger, position)
+                },
+            )
         else {
             continue;
         };
@@ -639,6 +647,12 @@ pub fn charger_auto_creation_system(
             OwnerSwarm(owner),
             planned_visual_components(PlannedKind::Charger, &structure_sprites, placement_pos),
         ));
+        access_layout.reserve(
+            swarm,
+            crate::navigation::align_structure(Transform::from_translation(
+                placement_pos.extend(0.0),
+            )),
+        );
         obstacles.push(Obstacle::planned(placement_pos));
         *capacity = MAX_DEFENDERS_PER_CHARGER - 1;
     }
@@ -690,6 +704,7 @@ pub fn find_swarm_capacity_aware_charger(
     charger_loads: &HashMap<Entity, u32>,
     navigation: &crate::navigation::Navigation,
 ) -> Option<(Entity, Vec2)> {
+    let mut pending_navigation = false;
     let mut best: Option<(f32, Entity, Vec2)> = None;
     for (entity, charger, transform, owner, condition) in chargers.iter() {
         if !charger_is_eligible(charger, owner, condition, swarm, grid, swarms)
@@ -698,14 +713,20 @@ pub fn find_swarm_capacity_aware_charger(
             continue;
         }
         let position = transform.translation.truncate();
-        let crate::navigation::RouteOutcome::Found(route) = navigation.route_to_interaction(
+        let outcome = navigation.query_interaction(
             pos,
             InteractionRegion::structure(transform),
             grid,
             swarm,
             false,
-        ) else {
-            continue;
+        );
+        let route = match outcome {
+            crate::navigation::RouteStatus::Found(route) => route,
+            crate::navigation::RouteStatus::Pending => {
+                pending_navigation = true;
+                continue;
+            }
+            crate::navigation::RouteStatus::Unreachable => continue,
         };
         let distance = route.cost;
         let better = best.is_none_or(|(best_distance, best_entity, _)| {
@@ -716,6 +737,9 @@ pub fn find_swarm_capacity_aware_charger(
         if better {
             best = Some((distance, entity, position));
         }
+    }
+    if pending_navigation {
+        return None;
     }
     best.map(|(_, entity, position)| (entity, position))
 }
@@ -1087,6 +1111,7 @@ impl Plugin for ChargePlugin {
         app.add_systems(
             FixedUpdate,
             charger_auto_creation_system
+                .after(crate::nanobot::planned::sink_stockpile_demand_system)
                 .after(crate::nanobot::RegionalAllocationSet::Acquire)
                 .before(crate::nanobot::planned::worker_planned_structure_work_system),
         );

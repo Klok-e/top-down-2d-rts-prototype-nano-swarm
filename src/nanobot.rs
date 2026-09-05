@@ -7,6 +7,7 @@ mod collapse;
 mod combat;
 mod combat_presentation;
 mod components;
+pub mod construction_access;
 mod consts;
 mod debug;
 mod gather;
@@ -167,3 +168,6 @@ impl Plugin for NanobotPlugin {
             .add_systems(Update, bot_debug_circle_system);
     }
 }
+
+pub mod clearing;
+pub use clearing::{ClearingEvacuation, StructureClearing};

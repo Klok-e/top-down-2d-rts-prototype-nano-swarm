@@ -135,6 +135,7 @@ pub fn spawn_default_player_scenario(
     spawn_seed_nanobots(
         commands,
         player_pos - Vec2::new(36.0, 0.0),
+        -1.0,
         SwarmId::PLAYER,
         &[
             (NanobotType::Worker, PLAYER_START_WORKERS),
@@ -197,6 +198,7 @@ pub fn spawn_default_opponent_scenario(
     spawn_seed_nanobots(
         commands,
         opponent_pos,
+        1.0,
         opponent_swarm_id,
         &[
             (NanobotType::Worker, OPPONENT_START_WORKERS),
@@ -210,7 +212,7 @@ pub fn spawn_default_opponent_scenario(
 }
 
 /// Spawn the seed nanobots described by `seeds` as top-level
-/// entities at `world_pos`. Each bot carries a `Transform` whose
+/// entities in a body-clear formation beside `world_pos`. Each bot carries a `Transform` whose
 /// `translation` is the world position the rest of the simulation
 /// reads (issue #38 / ADR-0004). The owning swarm is recorded on
 /// each bot via `SwarmMember(swarm_id)`; the swarm's own
@@ -219,11 +221,19 @@ pub fn spawn_default_opponent_scenario(
 fn spawn_seed_nanobots(
     commands: &mut Commands<'_, '_>,
     world_pos: Vec2,
+    outward: f32,
     swarm_id: SwarmId,
     seeds: &[(NanobotType, u32)],
 ) {
+    let mut index = 0;
     for (kind, count) in seeds {
         for _ in 0..*count {
+            let position = world_pos
+                + Vec2::new(
+                    outward * (index % 3) as f32 * 72.0,
+                    (index / 3) as f32 * 72.0 - 72.0,
+                );
+            index += 1;
             commands.spawn((
                 NanobotBundle {
                     nanobot: Nanobot {},
@@ -234,7 +244,7 @@ fn spawn_seed_nanobots(
                     swarm_member: SwarmMember::new(swarm_id),
                 },
                 Commitment::Idle,
-                Transform::from_translation(world_pos.extend(GAMEPLAY_SPRITE_Z)),
+                Transform::from_translation(position.extend(GAMEPLAY_SPRITE_Z)),
             ));
         }
     }
