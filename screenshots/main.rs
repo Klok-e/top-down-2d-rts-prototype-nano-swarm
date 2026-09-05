@@ -39,6 +39,7 @@ mod nanobot_presentation;
 mod navigation_geometry;
 mod opponent_gameplay_loop;
 mod physical_logistics;
+mod production_exits;
 mod production_priority_panel;
 mod regional_allocation;
 mod route_recovery;
@@ -78,10 +79,8 @@ fn main() -> std::process::ExitCode {
             run(local_avoidance::startup_formations)
         })
         .with_ignored_flag(true),
-        Trial::test("production_exit", || {
-            run(construction_lifecycle::production_exit)
-        })
-        .with_ignored_flag(true),
+        Trial::test("production_exit", || run(production_exits::production_exit))
+            .with_ignored_flag(true),
         Trial::test("construction_clearing", || {
             run(construction_lifecycle::construction_clearing)
         })
