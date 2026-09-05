@@ -6,6 +6,7 @@ pub mod game_settings;
 pub mod intent;
 pub mod materials;
 pub mod nanobot;
+pub mod navigation;
 pub mod resources;
 pub mod runtime;
 pub mod scenario;
@@ -218,6 +219,7 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
         // to it, so the placement near the end of the
         // plugin list is purely cosmetic.
         .add_plugins(StructureOverlayPlugin)
+        .add_observer(structure_sprites::attach_footprint_outline)
         // TacticalOverlayPlugin is the zoomed-out companion
         // to StructureOverlayPlugin. The two layers share
         // the same show / hide threshold so the structure

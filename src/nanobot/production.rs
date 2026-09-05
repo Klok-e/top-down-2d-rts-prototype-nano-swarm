@@ -35,6 +35,7 @@
 //! number of ticks to produce. Differentiated costs are a
 //! follow-up issue per the PRD.
 
+use crate::navigation::Obstacle;
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
@@ -46,7 +47,7 @@ use crate::nanobot::autonomy::{Commitment, NanobotType};
 use crate::nanobot::components::{Health, Nanobot, Swarm, SwarmId, SwarmMember, VelocityComponent};
 use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::maintenance::SupportCondition;
-use crate::nanobot::placement::{find_build_zone_placement, scaled_building_footprint_radius};
+use crate::nanobot::placement::find_build_zone_placement;
 use crate::nanobot::planned::{
     PlannedKind, PlannedProductionTarget, PlannedStructure, planned_visual_components,
 };
@@ -590,14 +591,16 @@ pub fn production_facility_auto_creation_system(
     // Production Facility is in this set, so subsequent
     // ticks do not pile a second plan on the same cell.
     let mut cells_with_target: HashSet<IVec2> = HashSet::new();
-    let mut obstacles: Vec<(Vec2, f32)> = deposits
+    let mut obstacles: Vec<Obstacle> = deposits
         .iter()
-        .map(|(deposit, transform)| (transform.translation.truncate(), deposit.radius))
+        .map(|(deposit, transform)| {
+            Obstacle::deposit(transform.translation.truncate(), deposit.radius)
+        })
         .collect();
     for transform in &existing_targets {
         let pos = transform.translation.truncate();
         cells_with_target.insert(world_to_cell(pos));
-        obstacles.push((pos, scaled_building_footprint_radius(transform)));
+        obstacles.push(Obstacle::structure(transform));
     }
     // Pre-compute the list of (cell, swarm) pairs that are
     // Build-painted, owned by a swarm, and not already

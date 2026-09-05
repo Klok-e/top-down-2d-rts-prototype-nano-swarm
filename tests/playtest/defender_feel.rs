@@ -955,3 +955,37 @@ fn default_front_has_readable_combat_and_staggered_sustain() {
     assert!(!collapse.opponent_collapsed);
     assert!(live_defenders(app.world_mut(), SwarmId::PLAYER) > 0);
 }
+
+#[test]
+fn authored_starting_facilities_align_without_changing_deposit_geometry() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::ProductionFacility, resources::ResourceDeposit,
+    };
+    let mut app = default_headless_app();
+    app.update();
+    let world = app.world_mut();
+    let facilities = world
+        .query_filtered::<&Transform, With<ProductionFacility>>()
+        .iter(world)
+        .collect::<Vec<_>>();
+    assert_eq!(facilities.len(), 2);
+    for transform in facilities {
+        let size = transform.scale.truncate() * 64.0;
+        assert!((size - Vec2::splat(216.0)).length() < 0.001);
+        let min = transform.translation.truncate() - size / 2.0;
+        for edge in [min.x, min.y, min.x + 216.0, min.y + 216.0] {
+            assert!((edge / 72.0 - (edge / 72.0).round()).abs() < 0.001);
+        }
+    }
+    let deposits = world
+        .query::<(&ResourceDeposit, &Transform)>()
+        .iter(world)
+        .collect::<Vec<_>>();
+    assert_eq!(deposits.len(), 4);
+    for (deposit, transform) in deposits {
+        assert!((deposit.radius - 64.0).abs() < 0.001);
+        assert!((transform.scale.truncate() - Vec2::splat(2.0)).length() < 0.001);
+        let offset = transform.translation.truncate() - Vec2::splat(256.0);
+        assert!((offset / 512.0 - (offset / 512.0).round()).length() < 0.001);
+    }
+}

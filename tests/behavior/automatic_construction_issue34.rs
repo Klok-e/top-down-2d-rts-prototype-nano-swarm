@@ -396,3 +396,32 @@ fn charger_placement_rejects_planned_sink_stockpile_overlap() {
         "unserved low Charge must still produce a plan at a non-overlapping Defend site"
     );
 }
+
+#[test]
+fn automatic_sink_edges_align_to_fine_cells_inside_owned_build_paint() {
+    let mut app = common::sim_app_with_planned();
+    let cell = IVec2::new(-1, 0);
+    paint_build(&mut app, cell);
+    spawn_owned_planned_production(&mut app, cell);
+    app.update();
+    let world = app.world_mut();
+    let (_, transform, sprite) = world
+        .query::<(&PlannedStructure, &Transform, &Sprite)>()
+        .iter(world)
+        .find(|(plan, _, _)| plan.kind == PlannedKind::SinkStockpile)
+        .expect("consumer creates a sink");
+    let size = sprite.custom_size.unwrap() * transform.scale.truncate().abs();
+    assert!(
+        (size - Vec2::splat(72.0)).length() < 0.001,
+        "one-cell structure: {size}"
+    );
+    let min = transform.translation.truncate() - size / 2.0;
+    let max = min + size;
+    for edge in [min.x, min.y, max.x, max.y] {
+        assert!(
+            (edge / 72.0 - (edge / 72.0).round()).abs() < 0.001,
+            "unaligned edge {edge}"
+        );
+    }
+    assert!(min.x >= -512.0 && max.x <= 0.0 && min.y >= 0.0 && max.y <= 512.0);
+}

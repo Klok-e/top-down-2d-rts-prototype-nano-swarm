@@ -582,3 +582,48 @@ fn planned_structure_visual_flip_is_observable_via_sprite_color() {
         "the visual must flip from planned to completed on promotion"
     );
 }
+
+#[test]
+fn every_kind_preserves_aligned_authored_rectangle_through_completion() {
+    use top_down_2d_rts_prototype_nano_swarm::{nanobot::PlannedKind, navigation::align_structure};
+    for kind in PlannedKind::ALL {
+        let mut app = common::sim_app_with_planned();
+        let cell = IVec2::new(-1, 0);
+        let entity = common::spawn_planned_structure_of_kind_at_cell(&mut app, cell, kind);
+        // Requested 128x192 becomes 144x216. Even X width puts its center on a boundary.
+        let transform = align_structure(
+            Transform::from_xyz(-155.0, 110.0, 0.0).with_scale(Vec3::new(2.0, 3.0, 1.0)),
+        );
+        assert!((transform.translation.truncate() - Vec2::new(-144.0, 108.0)).length() < 0.001);
+        app.world_mut().entity_mut(entity).insert(transform);
+        app.world_mut()
+            .entity_mut(entity)
+            .get_mut::<PlannedStructure>()
+            .unwrap()
+            .work_remaining = 1;
+        let worker = common::spawn_worker_at(&mut app, Vec2::new(-36.0, 108.0));
+        for _ in 0..3 {
+            app.update();
+        }
+        let completed = app.world().entity(entity);
+        assert!(
+            completed.get::<PlannedStructure>().is_none(),
+            "{kind:?} failed to complete; worker {worker:?}"
+        );
+        let actual = completed.get::<Transform>().unwrap();
+        assert!(
+            (actual.translation - transform.translation).length() < 0.001,
+            "{kind:?} moved"
+        );
+        assert!(
+            (actual.scale - transform.scale).length() < 0.001,
+            "{kind:?} resized"
+        );
+        let size =
+            completed.get::<Sprite>().unwrap().custom_size.unwrap() * actual.scale.truncate();
+        assert!(
+            (size - Vec2::new(144.0, 216.0)).length() < 0.001,
+            "{kind:?}: {size}"
+        );
+    }
+}

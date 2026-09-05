@@ -22,6 +22,7 @@
 use bevy::prelude::*;
 
 use crate::nanobot::gather::world_to_cell;
+use crate::navigation::{CELL_WIDTH, Obstacle, align_structure};
 
 /// SplitMix64 mix constant. Used both as the initial increment
 /// and as the multiplier in [`mix_hash`].
@@ -56,37 +57,23 @@ pub const SOURCE_STOCKPILE_JITTER_AMPLITUDE: f32 = 16.0;
 /// should not pile on top of each other.
 pub const SOURCE_STOCKPILE_PADDING: f32 = 16.0;
 
-/// Half-footprint of a Source Stockpile. The
-/// [`crate::nanobot::planned::PLANNED_STRUCTURE_FOOTPRINT`]
-/// is the full footprint; this is the radius used by the
-/// overlap test.
-pub const SOURCE_STOCKPILE_FOOTPRINT_RADIUS: f32 =
-    crate::nanobot::planned::PLANNED_STRUCTURE_FOOTPRINT / 2.0;
+/// Half width of an automatically placed one-cell Source Stockpile.
+pub const SOURCE_STOCKPILE_FOOTPRINT_RADIUS: f32 = CELL_WIDTH / 2.0;
 
-/// Shared half-footprint for planned and completed support
-/// structures. Issue #34 makes placement use one footprint
-/// rule for Planned Structures, Stockpiles, Production
-/// Facilities, and Chargers.
-pub const BUILDING_FOOTPRINT_RADIUS: f32 =
-    crate::nanobot::planned::PLANNED_STRUCTURE_FOOTPRINT / 2.0;
+/// Half width of an unscaled support sprite. Physical dimensions include its transform.
+pub const BUILDING_FOOTPRINT_RADIUS: f32 = crate::navigation::STRUCTURE_SPRITE_SIZE / 2.0;
 
 /// Shared padding gap between support structure footprints and
 /// between support structures and Resource Deposits.
 pub const BUILDING_FOOTPRINT_PADDING: f32 = 16.0;
 
-/// Placement radius of a rendered support structure, including authored scale.
-pub fn scaled_building_footprint_radius(transform: &Transform) -> f32 {
-    BUILDING_FOOTPRINT_RADIUS * transform.scale.x.abs().max(transform.scale.y.abs())
-}
-
 /// Maximum in-cell offset used when searching for a valid
 /// Build-Zone placement. `ZONE_BLOCK_SIZE / 2 - radius - padding`
 /// keeps candidates inside the painted cell with room for gap.
 pub const BUILD_ZONE_PLACEMENT_MAX_OFFSET: f32 =
-    crate::ZONE_BLOCK_SIZE / 2.0 - BUILDING_FOOTPRINT_RADIUS - BUILDING_FOOTPRINT_PADDING;
+    crate::ZONE_BLOCK_SIZE / 2.0 - CELL_WIDTH / 2.0 - BUILDING_FOOTPRINT_PADDING;
 
 const BUILD_ZONE_RANDOM_CANDIDATES_PER_CELL: u32 = 16;
-const BUILD_ZONE_DENSE_STEP: f32 = 16.0;
 
 /// Generate `count` evenly spaced angles in radians around
 /// the full circle. The first angle is 0 (east). The list
@@ -174,30 +161,29 @@ pub fn is_inside_gather_zone(pos: Vec2, gather_cells: &[IVec2]) -> bool {
     gather_cells.contains(&cell)
 }
 
-/// True when a Source Stockpile placed at `pos` (with
-/// half-footprint `self_radius`) would overlap any of the
-/// `obstacles` (each carrying its own center and
-/// half-footprint), accounting for the `padding` between
-/// footprints. Used to filter out candidates that would
-/// clip existing structures or planned structures.
-///
-/// The check is strictly "centre-to-centre distance is less
-/// than the sum of half-footprints plus the padding". A
-/// candidate whose edge is exactly at the padding boundary
-/// (`distance == sum + padding`) is *not* considered an
-/// overlap; only the strict-less case is. The "touch but
-/// not overlap" case is intentionally allowed so the
-/// builder does not artificially block tight packs.
+/// True when the candidate rectangle intersects an obstacle or its padding.
 pub fn overlaps_any_obstacle(
     pos: Vec2,
     self_radius: f32,
     padding: f32,
-    obstacles: &[(Vec2, f32)],
+    obstacles: &[Obstacle],
 ) -> bool {
-    let extra = self_radius + padding;
     obstacles
         .iter()
-        .any(|(center, half_footprint)| pos.distance(*center) < extra + half_footprint)
+        .any(|obstacle| obstacle.overlaps_rectangle(pos, Vec2::splat(self_radius), padding))
+}
+
+fn snap_candidate(pos: Vec2) -> Vec2 {
+    align_structure(Transform::from_translation(pos.extend(0.0)))
+        .translation
+        .truncate()
+}
+
+fn footprint_inside_zone(pos: Vec2, cells: &[IVec2]) -> bool {
+    let half = Vec2::splat(CELL_WIDTH / 2.0);
+    let min = world_to_cell(pos - half);
+    let max = world_to_cell(pos + half - Vec2::splat(0.001));
+    (min.x..=max.x).all(|x| (min.y..=max.y).all(|y| cells.contains(&IVec2::new(x, y))))
 }
 
 /// Score a candidate for the haul-direction bias. The
@@ -247,7 +233,7 @@ pub fn haul_direction_score(candidate_pos: Vec2, deposit_pos: Vec2, haul_dir: Ve
 pub fn find_source_stockpile_placement(
     deposit_pos: Vec2,
     gather_cells: &[IVec2],
-    obstacles: &[(Vec2, f32)],
+    obstacles: &[Obstacle],
     haul_direction: Vec2,
     ring_radius: f32,
     ring_count: usize,
@@ -265,11 +251,16 @@ pub fn find_source_stockpile_placement(
         let angle = angle_index as f32 * step;
         let base = ring_position(deposit_pos, ring_radius, angle);
         let jitter = deterministic_jitter(angle_index, deposit_cell, jitter_amplitude);
-        let pos = base + jitter;
-        if !is_inside_gather_zone(pos, gather_cells) {
+        let pos = snap_candidate(base + jitter);
+        if !footprint_inside_zone(pos, gather_cells) {
             continue;
         }
-        if overlaps_any_obstacle(pos, footprint_radius, padding, obstacles) {
+        if overlaps_any_obstacle(
+            pos,
+            footprint_radius.max(CELL_WIDTH / 2.0),
+            padding,
+            obstacles,
+        ) {
             continue;
         }
         let score = haul_direction_score(pos, deposit_pos, haul_direction);
@@ -301,7 +292,7 @@ fn seeded_build_zone_candidates(build_cells: &[IVec2], kind_seed: u32) -> Vec<(u
             let y = map_to_unit(splitmix64(seed.wrapping_add(SPLITMIX64_MIX))) * 2.0 - 1.0;
             let priority = splitmix64(seed ^ 0xD1B5_4A32_D192_ED03);
             let offset = Vec2::new(x, y) * BUILD_ZONE_PLACEMENT_MAX_OFFSET;
-            candidates.push((priority, cell, center + offset));
+            candidates.push((priority, cell, snap_candidate(center + offset)));
         }
     }
     candidates.sort_unstable_by_key(|(priority, cell, pos)| {
@@ -312,7 +303,7 @@ fn seeded_build_zone_candidates(build_cells: &[IVec2], kind_seed: u32) -> Vec<(u
 
 fn find_dense_build_zone_placement(
     build_cells: &[IVec2],
-    obstacles: &[(Vec2, f32)],
+    obstacles: &[Obstacle],
     kind_seed: u32,
 ) -> Option<(IVec2, Vec2)> {
     let side = dense_build_zone_side();
@@ -329,15 +320,20 @@ fn find_dense_build_zone_placement(
         let center = crate::ai::get_world_from_zone(cell);
         let start = (splitmix64(mix_hash(kind_seed, cell)) % candidate_count as u64) as u32;
         for step in 0..candidate_count {
-            // 353 is coprime with the 27x27 lattice, so every point is visited.
+            // The prime stride is coprime with the in-cell lattice size.
             let index = (start + step * 353) % candidate_count;
             let pos = dense_build_zone_position(center, side, index);
-            if !overlaps_any_obstacle(
-                pos,
-                BUILDING_FOOTPRINT_RADIUS,
-                BUILDING_FOOTPRINT_PADDING,
-                obstacles,
-            ) {
+            if world_to_cell(pos) != cell {
+                continue;
+            }
+            if footprint_inside_zone(pos, build_cells)
+                && !overlaps_any_obstacle(
+                    pos,
+                    CELL_WIDTH / 2.0,
+                    BUILDING_FOOTPRINT_PADDING,
+                    obstacles,
+                )
+            {
                 return Some((cell, pos));
             }
         }
@@ -346,17 +342,14 @@ fn find_dense_build_zone_placement(
 }
 
 fn dense_build_zone_side() -> u32 {
-    (BUILD_ZONE_PLACEMENT_MAX_OFFSET * 2.0 / BUILD_ZONE_DENSE_STEP).floor() as u32 + 1
+    (crate::ZONE_BLOCK_SIZE / CELL_WIDTH).ceil() as u32
 }
 
 fn dense_build_zone_position(center: Vec2, side: u32, index: u32) -> Vec2 {
-    let x = index % side;
-    let y = index / side;
-    center
-        + Vec2::new(
-            -BUILD_ZONE_PLACEMENT_MAX_OFFSET + x as f32 * BUILD_ZONE_DENSE_STEP,
-            -BUILD_ZONE_PLACEMENT_MAX_OFFSET + y as f32 * BUILD_ZONE_DENSE_STEP,
-        )
+    let cell_min = center - Vec2::splat(crate::ZONE_BLOCK_SIZE / 2.0);
+    let first = ((cell_min - Vec2::splat(CELL_WIDTH / 2.0)) / CELL_WIDTH).ceil() * CELL_WIDTH
+        + Vec2::splat(CELL_WIDTH / 2.0);
+    first + Vec2::new((index % side) as f32, (index / side) as f32) * CELL_WIDTH
 }
 
 /// Pick a stable, non-overlapping support-structure placement inside one of
@@ -366,16 +359,13 @@ fn dense_build_zone_position(center: Vec2, side: u32, index: u32) -> Vec2 {
 /// can miss.
 pub fn find_build_zone_placement(
     build_cells: &[IVec2],
-    obstacles: &[(Vec2, f32)],
+    obstacles: &[Obstacle],
     kind_seed: u32,
 ) -> Option<(IVec2, Vec2)> {
     for (_, cell, pos) in seeded_build_zone_candidates(build_cells, kind_seed) {
-        if !overlaps_any_obstacle(
-            pos,
-            BUILDING_FOOTPRINT_RADIUS,
-            BUILDING_FOOTPRINT_PADDING,
-            obstacles,
-        ) {
+        if footprint_inside_zone(pos, build_cells)
+            && !overlaps_any_obstacle(pos, CELL_WIDTH / 2.0, BUILDING_FOOTPRINT_PADDING, obstacles)
+        {
             return Some((cell, pos));
         }
     }
@@ -387,7 +377,7 @@ pub fn find_build_zone_placement(
 /// wins; cell and position coordinates provide deterministic tie-breakers.
 pub fn find_nearest_defend_zone_placement(
     defend_cells: &[IVec2],
-    obstacles: &[(Vec2, f32)],
+    obstacles: &[Obstacle],
     origin: Vec2,
 ) -> Option<(IVec2, Vec2)> {
     let side = dense_build_zone_side();
@@ -400,12 +390,17 @@ pub fn find_nearest_defend_zone_placement(
         let center = crate::ai::get_world_from_zone(cell);
         for index in 0..candidate_count {
             let pos = dense_build_zone_position(center, side, index);
-            if overlaps_any_obstacle(
-                pos,
-                BUILDING_FOOTPRINT_RADIUS,
-                BUILDING_FOOTPRINT_PADDING,
-                obstacles,
-            ) {
+            if world_to_cell(pos) != cell {
+                continue;
+            }
+            if !footprint_inside_zone(pos, defend_cells)
+                || overlaps_any_obstacle(
+                    pos,
+                    CELL_WIDTH / 2.0,
+                    BUILDING_FOOTPRINT_PADDING,
+                    obstacles,
+                )
+            {
                 continue;
             }
             let distance = origin.distance_squared(pos);
@@ -585,7 +580,7 @@ mod tests {
     fn overlaps_any_obstacle_centre_collision() {
         // Two Source Stockpiles at the same position. The
         // overlap must be true.
-        let obstacles = vec![(Vec2::new(0.0, 0.0), 32.0_f32)];
+        let obstacles = vec![Obstacle::deposit(Vec2::ZERO, 32.0)];
         assert!(overlaps_any_obstacle(
             Vec2::new(0.0, 0.0),
             32.0,
@@ -607,7 +602,7 @@ mod tests {
         // Centres 70 apart: outside the 64 footprint sum
         // but inside 64 + padding = 80. The overlap is
         // rejected only when padding > 0.
-        let obstacles = vec![(Vec2::new(0.0, 0.0), 32.0_f32)];
+        let obstacles = vec![Obstacle::deposit(Vec2::ZERO, 32.0)];
         assert!(!overlaps_any_obstacle(
             Vec2::new(70.0, 0.0),
             32.0,
@@ -630,7 +625,7 @@ mod tests {
         // distance of exactly the threshold counts as
         // "just touching, not overlapping". This keeps
         // tight packs readable.
-        let obstacles = vec![(Vec2::new(0.0, 0.0), 32.0_f32)];
+        let obstacles = vec![Obstacle::deposit(Vec2::ZERO, 32.0)];
         // Centres 64 apart: 64 == 32 + 32 (no padding).
         // Allowed, not an overlap.
         assert!(!overlaps_any_obstacle(
@@ -715,15 +710,9 @@ mod tests {
         .expect(
             "a candidate must be chosen when the gather cell is painted and there are no obstacles",
         );
-        // With jitter = 0, the chosen position is exactly on
-        // the north-of-deposit ring position. The ring radius
-        // is 96, so the y component is 256 + 96 = 352 and
-        // the x component is 256.
-        assert!((chosen.x - 256.0).abs() < EPS, "x drift: {chosen}");
-        assert!(
-            (chosen.y - (256.0 + SOURCE_STOCKPILE_PLACEMENT_RADIUS)).abs() < EPS,
-            "y drift: {chosen}"
-        );
+        // The north candidate snaps to a rectangle spanning x216..288, y288..360.
+        assert!((chosen.x - 252.0).abs() < EPS, "x drift: {chosen}");
+        assert!((chosen.y - 324.0).abs() < EPS, "y drift: {chosen}");
     }
 
     #[test]
@@ -733,7 +722,7 @@ mod tests {
         // pipeline.
         let deposit = Vec2::new(100.0, 200.0);
         let gather_cells = vec![IVec2::new(0, 0)];
-        let obstacles: Vec<(Vec2, f32)> = vec![(Vec2::new(150.0, 250.0), 32.0)];
+        let obstacles: Vec<Obstacle> = vec![Obstacle::deposit(Vec2::new(150.0, 250.0), 32.0)];
         let haul = Vec2::new(1.0, 0.0);
         let a = find_source_stockpile_placement(
             deposit,
@@ -815,7 +804,7 @@ mod tests {
         let gather_cells = vec![IVec2::new(0, 0)];
         // East of the deposit at the ring radius.
         let obstacle_pos = Vec2::new(256.0 + SOURCE_STOCKPILE_PLACEMENT_RADIUS, 256.0);
-        let obstacles = vec![(obstacle_pos, 32.0_f32)];
+        let obstacles = vec![Obstacle::deposit(obstacle_pos, 32.0)];
         let chosen = find_source_stockpile_placement(
             deposit,
             &gather_cells,
@@ -846,9 +835,9 @@ mod tests {
         let gather_cells = vec![IVec2::new(0, 0)];
         let radius = SOURCE_STOCKPILE_PLACEMENT_RADIUS;
         let count = SOURCE_STOCKPILE_PLACEMENT_COUNT;
-        let obstacles: Vec<(Vec2, f32)> = placement_angles(count)
+        let obstacles: Vec<Obstacle> = placement_angles(count)
             .into_iter()
-            .map(|a| (ring_position(deposit, radius, a), 64.0_f32))
+            .map(|a| Obstacle::deposit(ring_position(deposit, radius, a), 64.0))
             .collect();
         let chosen = find_source_stockpile_placement(
             deposit,
@@ -884,7 +873,7 @@ mod tests {
         // inside the padding zone: the candidate is
         // rejected.
         let obstacle_pos = Vec2::new(256.0 + radius + 6.0, 256.0);
-        let obstacles = vec![(obstacle_pos, 32.0_f32)];
+        let obstacles = vec![Obstacle::deposit(obstacle_pos, 32.0)];
         let chosen = find_source_stockpile_placement(
             deposit,
             &gather_cells,
@@ -929,8 +918,8 @@ mod tests {
             0.0,
         )
         .expect("a candidate must be chosen");
-        // East of the deposit at the ring radius.
-        let expected = Vec2::new(256.0 + SOURCE_STOCKPILE_PLACEMENT_RADIUS, 256.0);
+        // The east candidate snaps to x288..360, y216..288.
+        let expected = Vec2::new(324.0, 252.0);
         assert!(
             (chosen - expected).length() < EPS,
             "haul direction east must pick the east candidate; got {chosen:?}"
@@ -956,8 +945,8 @@ mod tests {
             0.0,
         )
         .expect("a candidate must be chosen");
-        // East of the deposit at the ring radius.
-        let expected = Vec2::new(256.0 + SOURCE_STOCKPILE_PLACEMENT_RADIUS, 256.0);
+        // The east candidate snaps to x288..360, y216..288.
+        let expected = Vec2::new(324.0, 252.0);
         assert!(
             (chosen - expected).length() < EPS,
             "zero haul direction must tie-break on angle 0; got {chosen:?}"
@@ -996,14 +985,14 @@ mod tests {
         let cell = IVec2::ZERO;
         let obstacles = seeded_build_zone_candidates(&[cell], 27)
             .into_iter()
-            .map(|(_, _, pos)| (pos, 0.0))
+            .map(|(_, _, pos)| Obstacle::deposit(pos, 0.0))
             .collect::<Vec<_>>();
 
         let (_, chosen) = find_build_zone_placement(&[cell], &obstacles, 27)
             .expect("dense fallback finds remaining in-cell space");
         assert!(!overlaps_any_obstacle(
             chosen,
-            BUILDING_FOOTPRINT_RADIUS,
+            CELL_WIDTH / 2.0,
             BUILDING_FOOTPRINT_PADDING,
             &obstacles,
         ));
@@ -1018,13 +1007,8 @@ mod tests {
         let origin = (left_center + right_center) / 2.0;
         let chosen = find_nearest_defend_zone_placement(&[right, left], &[], origin).unwrap();
 
-        assert_eq!(
-            chosen,
-            (
-                left,
-                left_center + Vec2::new(BUILD_ZONE_PLACEMENT_MAX_OFFSET, 0.0)
-            )
-        );
+        assert_eq!(chosen.0, left);
+        assert!(chosen.1.abs_diff_eq(Vec2::new(-36.0, 252.0), 0.001));
     }
 
     #[test]
@@ -1032,7 +1016,7 @@ mod tests {
         let cell = IVec2::ZERO;
         let center = crate::ai::get_world_from_zone(cell);
         let kind_seed = 28;
-        let mut obstacles = vec![(center, 0.0)];
+        let mut obstacles = vec![Obstacle::deposit(center, 0.0)];
         for (radius_index, radius) in [96.0, 160.0, BUILD_ZONE_PLACEMENT_MAX_OFFSET]
             .into_iter()
             .enumerate()
@@ -1040,7 +1024,7 @@ mod tests {
             let phase = deterministic_jitter(kind_seed + radius_index as u32 + 1, cell, 1.0).x
                 * std::f32::consts::TAU;
             obstacles.extend(placement_angles(8).into_iter().map(|angle| {
-                (
+                Obstacle::deposit(
                     center + Vec2::new((angle + phase).cos(), (angle + phase).sin()) * radius,
                     0.0,
                 )
@@ -1052,7 +1036,7 @@ mod tests {
 
         assert!(!overlaps_any_obstacle(
             chosen,
-            BUILDING_FOOTPRINT_RADIUS,
+            CELL_WIDTH / 2.0,
             BUILDING_FOOTPRINT_PADDING,
             &obstacles,
         ));
@@ -1066,6 +1050,52 @@ mod tests {
 
         let chosen = find_nearest_defend_zone_placement(&[cell], &[], origin).unwrap();
 
-        assert_eq!(chosen, (cell, center + Vec2::new(80.0, 48.0)));
+        assert_eq!(chosen.0, cell);
+        assert!(chosen.1.abs_diff_eq(Vec2::new(324.0, 324.0), 0.001));
+    }
+}
+
+#[cfg(test)]
+mod snapped_footprint_tests {
+    use super::*;
+
+    #[test]
+    fn source_candidate_is_checked_after_snapping_toward_obstacle() {
+        // East candidate (352,256) clears this circle before snapping, but
+        // the snapped rectangle x288..360,y216..288 intersects its radius30.
+        let chosen = find_source_stockpile_placement(
+            Vec2::new(256.0, 256.0),
+            &[IVec2::ZERO],
+            &[Obstacle::deposit(Vec2::new(260.0, 252.0), 30.0)],
+            Vec2::X,
+            96.0,
+            1,
+            0.0,
+            36.0,
+            0.0,
+        );
+        assert!(
+            chosen.is_none(),
+            "snapped candidate clips the deposit: {chosen:?}"
+        );
+    }
+
+    #[test]
+    fn source_candidate_cannot_snap_across_owned_paint_boundary() {
+        let chosen = find_source_stockpile_placement(
+            Vec2::new(490.0, 256.0),
+            &[IVec2::ZERO],
+            &[],
+            Vec2::X,
+            16.0,
+            1,
+            0.0,
+            36.0,
+            0.0,
+        );
+        assert!(
+            chosen.is_none(),
+            "rectangle must remain inside eligible paint"
+        );
     }
 }

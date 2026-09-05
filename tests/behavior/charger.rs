@@ -601,8 +601,8 @@ fn low_charge_defender_plans_charger_in_owned_defend_paint() {
         .expect("Planned Charger exists");
     assert_eq!(planned.cell, cell);
     assert!(
-        (transform.translation.truncate() - cell_center).length() < 1.0,
-        "with no obstacle, the nearest placement is the Defend cell center"
+        (transform.translation.truncate() - Vec2::new(756.0, 252.0)).length() < 0.001,
+        "nearest whole-cell footprint spans x720..792, y216..288"
     );
 }
 

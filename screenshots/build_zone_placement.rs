@@ -4,7 +4,8 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z, ZONE_BLOCK_SIZE,
     fly_camera::CameraZoom2d,
-    nanobot::{BUILDING_FOOTPRINT_RADIUS, find_build_zone_placement, overlaps_any_obstacle},
+    nanobot::{find_build_zone_placement, overlaps_any_obstacle},
+    navigation::CELL_WIDTH,
 };
 
 use crate::harness::{TestContext, TestFlow, clear_nanobots_and_sprite_entities};
@@ -83,7 +84,7 @@ fn spawn_placement_examples(world: &mut World) {
         assert!(position.distance(center) > 0.01);
         assert!(!overlaps_any_obstacle(
             position,
-            BUILDING_FOOTPRINT_RADIUS,
+            CELL_WIDTH / 2.0,
             16.0,
             &[],
         ));
@@ -93,7 +94,7 @@ fn spawn_placement_examples(world: &mut World) {
             Color::srgb(0.35, 0.9, 0.65)
         };
         world.spawn((
-            Sprite::from_color(color, Vec2::splat(BUILDING_FOOTPRINT_RADIUS * 2.0)),
+            Sprite::from_color(color, Vec2::splat(CELL_WIDTH)),
             Transform::from_translation(position.extend(GAMEPLAY_SPRITE_Z)),
         ));
     }

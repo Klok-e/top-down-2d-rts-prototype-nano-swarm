@@ -5,6 +5,7 @@
 //! owned plan or Build space, Worker/Hauler capability, infrastructure condition,
 //! and a material source. Crew counts alone never imply recoverability.
 
+use crate::navigation::Obstacle;
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
@@ -19,12 +20,11 @@ use crate::nanobot::production::{
 use crate::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        ActionableProjection, BUILDING_FOOTPRINT_RADIUS, Cargo, Charger, HaulerAssignment,
-        LogisticsReservation, OpportunityCategory, OpportunityTarget, PlannedKind,
-        PlannedStructure, PopulationDemand, SOURCE_STOCKPILE_FOOTPRINT_RADIUS,
+        ActionableProjection, Cargo, Charger, HaulerAssignment, LogisticsReservation,
+        OpportunityCategory, OpportunityTarget, PlannedKind, PlannedStructure, PopulationDemand,
         SOURCE_STOCKPILE_PROXIMITY_RADIUS, SupportCondition, SwarmMember,
         find_build_zone_placement, find_source_stockpile_placement_for_demand,
-        scaled_building_footprint_radius, sink_stockpile_zone_cells, world_to_cell,
+        sink_stockpile_zone_cells, world_to_cell,
     },
     resources::{ResourceDeposit, ResourceKind, StockpileRole},
 };
@@ -293,22 +293,15 @@ pub fn production_collapse_detection_system(
             .collect::<Vec<_>>();
         let mut obstacles = support_structures
             .iter()
-            .map(|transform| {
-                (
-                    transform.translation.truncate(),
-                    scaled_building_footprint_radius(transform),
-                )
-            })
+            .map(Obstacle::structure)
             .collect::<Vec<_>>();
-        obstacles.extend(
-            deposits
-                .iter()
-                .map(|(_, deposit, transform)| (transform.translation.truncate(), deposit.radius)),
-        );
+        obstacles.extend(deposits.iter().map(|(_, deposit, transform)| {
+            Obstacle::deposit(transform.translation.truncate(), deposit.radius)
+        }));
         let facility_placement = find_build_zone_placement(&build_cells, &obstacles, 27);
         let has_build_space = facility_placement.is_some();
         let sink_placement_exists =
-            |consumer_cell: IVec2, consumer_owner: Option<Entity>, obstacles: &[(Vec2, f32)]| {
+            |consumer_cell: IVec2, consumer_owner: Option<Entity>, obstacles: &[Obstacle]| {
                 let zone_cells =
                     sink_stockpile_zone_cells(&grid, consumer_cell, consumer_owner, &swarm_by_id);
                 find_build_zone_placement(&zone_cells, obstacles, 26).is_some()
@@ -338,43 +331,29 @@ pub fn production_collapse_detection_system(
             && !viable_planned_facility
             && facility_placement.is_some_and(|(cell, position)| {
                 let mut future_obstacles = obstacles.clone();
-                future_obstacles.push((position, BUILDING_FOOTPRINT_RADIUS));
+                future_obstacles.push(Obstacle::planned(position));
                 sink_placement_exists(cell, Some(swarm_entity), &future_obstacles)
             });
         let stockpile_belongs_to_swarm =
             |owner: Option<&OwnerSwarm>| owner.is_some_and(|owner| owner.0 == swarm_entity);
         let mut source_obstacles = deposits
             .iter()
-            .map(|(_, deposit, transform)| (transform.translation.truncate(), deposit.radius))
+            .map(|(_, deposit, transform)| {
+                Obstacle::deposit(transform.translation.truncate(), deposit.radius)
+            })
             .collect::<Vec<_>>();
         source_obstacles.extend(
             material_stockpiles
                 .iter()
-                .map(|(_, _, transform, _, _, _)| {
-                    (
-                        transform.translation.truncate(),
-                        SOURCE_STOCKPILE_FOOTPRINT_RADIUS,
-                    )
-                }),
+                .map(|(_, _, transform, _, _, _)| Obstacle::structure(transform)),
         );
-        source_obstacles.extend(planned.iter().map(|(_, transform, _)| {
-            (
-                transform.translation.truncate(),
-                SOURCE_STOCKPILE_FOOTPRINT_RADIUS,
-            )
-        }));
-        source_obstacles.extend(facility_obstacles.iter().map(|transform| {
-            (
-                transform.translation.truncate(),
-                scaled_building_footprint_radius(transform),
-            )
-        }));
-        source_obstacles.extend(charger_obstacles.iter().map(|transform| {
-            (
-                transform.translation.truncate(),
-                scaled_building_footprint_radius(transform),
-            )
-        }));
+        source_obstacles.extend(
+            planned
+                .iter()
+                .map(|(_, transform, _)| Obstacle::structure(transform)),
+        );
+        source_obstacles.extend(facility_obstacles.iter().map(Obstacle::structure));
+        source_obstacles.extend(charger_obstacles.iter().map(Obstacle::structure));
         let swarm_origin = swarm_transform.map(|transform| transform.translation.truncate());
         let gather_path = projection.as_deref().is_some_and(|projection| {
             projection.iter_regions().any(|(_, opportunities)| {
