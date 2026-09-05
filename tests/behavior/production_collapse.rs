@@ -464,11 +464,9 @@ fn occupied_facility_build_cell_can_plan_its_local_sink_recovery_path() {
     }
     let cell = IVec2::ZERO;
     let facility_pos = common::cell_world_center(cell);
-    let player = common::spawn_swarm_with_nanobots(
-        &mut app,
-        facility_pos,
-        &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
-    );
+    let player = common::spawn_swarm_at(&mut app, facility_pos);
+    common::spawn_worker_at(&mut app, facility_pos + Vec2::new(-144.0, -144.0));
+    common::spawn_hauler_at(&mut app, facility_pos + Vec2::new(-144.0, 0.0));
     app.world_mut().resource_mut::<IntentGrid>().paint_owned(
         cell,
         IntentKind::Build,
@@ -489,7 +487,17 @@ fn occupied_facility_build_cell_can_plan_its_local_sink_recovery_path() {
         .entity_mut(source)
         .insert(OwnerSwarm(player));
 
-    app.update();
+    for _ in 0..100 {
+        app.update();
+        if app
+            .world_mut()
+            .query::<&PlannedStructure>()
+            .iter(app.world())
+            .any(|plan| plan.kind == PlannedKind::SinkStockpile)
+        {
+            break;
+        }
+    }
 
     assert!(
         app.world_mut()

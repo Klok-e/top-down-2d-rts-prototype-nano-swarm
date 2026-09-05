@@ -38,7 +38,6 @@ use crate::nanobot::haul::HAULER_TRANSFER_PER_TICK;
 use crate::nanobot::placement::{
     SOURCE_STOCKPILE_FOOTPRINT_RADIUS, SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PADDING,
     SOURCE_STOCKPILE_PLACEMENT_COUNT, SOURCE_STOCKPILE_PLACEMENT_RADIUS,
-    find_source_stockpile_placement,
 };
 use crate::nanobot::planned::{
     PlannedKind, PlannedStructure, PlannedStructureClaim, PlannedStructureProgress,
@@ -393,6 +392,26 @@ pub(crate) fn find_source_stockpile_placement_for_demand(
     obstacles: &[Obstacle],
     swarm_origin: Option<Vec2>,
 ) -> Option<Vec2> {
+    find_source_stockpile_placement_for_demand_accepting(
+        deposit,
+        deposit_pos,
+        demand_swarm,
+        grid,
+        obstacles,
+        swarm_origin,
+        |_| true,
+    )
+}
+
+fn find_source_stockpile_placement_for_demand_accepting(
+    deposit: &ResourceDeposit,
+    deposit_pos: Vec2,
+    demand_swarm: SwarmId,
+    grid: &IntentGrid,
+    obstacles: &[Obstacle],
+    swarm_origin: Option<Vec2>,
+    accepts: impl FnMut(Vec2) -> bool,
+) -> Option<Vec2> {
     let mut gather_cells = Vec::new();
     let mut build_worlds = Vec::new();
     for (cell, intent_cell) in grid.iter_active_cells() {
@@ -419,7 +438,7 @@ pub(crate) fn find_source_stockpile_placement_for_demand(
     } else {
         SOURCE_STOCKPILE_PLACEMENT_RADIUS
     };
-    find_source_stockpile_placement(
+    crate::nanobot::placement::find_source_stockpile_placement_accepting(
         deposit_pos,
         &gather_cells,
         obstacles,
@@ -429,6 +448,7 @@ pub(crate) fn find_source_stockpile_placement_for_demand(
         SOURCE_STOCKPILE_JITTER_AMPLITUDE,
         SOURCE_STOCKPILE_FOOTPRINT_RADIUS,
         SOURCE_STOCKPILE_PADDING,
+        accepts,
     )
 }
 
@@ -492,6 +512,7 @@ pub(crate) fn find_source_stockpile_placement_for_demand(
 #[allow(clippy::too_many_arguments)]
 pub fn source_stockpile_demand_system(
     mut commands: Commands,
+    access: super::construction_access::ConstructionAccess,
     structure_sprites: Res<StructureSprites>,
     gather_assignments: Query<(&GatherAssignment, &SwarmMember)>,
     deposits: Query<(&ResourceDeposit, &Transform)>,
@@ -508,6 +529,7 @@ pub fn source_stockpile_demand_system(
     swarm_ids: Query<&SwarmId, With<Swarm>>,
     grid: Res<IntentGrid>,
 ) {
+    let mut access_layout = access.snapshot();
     let swarm_by_id: std::collections::HashMap<SwarmId, (Entity, Vec2)> = swarms
         .iter()
         .map(|(entity, id, transform)| (*id, (entity, transform.translation.truncate())))
@@ -563,16 +585,31 @@ pub fn source_stockpile_demand_system(
         // `None` here means every candidate was rejected by
         // the zone / overlap filter; the demand remains
         // unsatisfied and is retried on a later tick.
-        let Some(placement_pos) = find_source_stockpile_placement_for_demand(
+        let Some(placement_pos) = find_source_stockpile_placement_for_demand_accepting(
             deposit,
             deposit_pos,
             demand_swarm,
             &grid,
             &obstacles,
             swarm_origin,
+            |position| {
+                access.accepts(
+                    &access_layout,
+                    &grid,
+                    demand_swarm,
+                    PlannedKind::SourceStockpile,
+                    position,
+                )
+            },
         ) else {
             continue;
         };
+        access_layout.reserve(
+            demand_swarm,
+            crate::navigation::align_structure(Transform::from_translation(
+                placement_pos.extend(0.0),
+            )),
+        );
         let placement_cell = world_to_cell(placement_pos);
         newly_planned_positions.push(placement_pos);
         let mut entity_commands = commands.spawn((
@@ -1202,7 +1239,8 @@ impl Plugin for GatherPlugin {
         app.add_systems(
             FixedUpdate,
             (
-                source_stockpile_demand_system,
+                source_stockpile_demand_system
+                    .before(crate::nanobot::production::production_facility_auto_creation_system),
                 worker_gather_arrive_system,
                 worker_gather_extract_system,
                 worker_gather_reroute_system,

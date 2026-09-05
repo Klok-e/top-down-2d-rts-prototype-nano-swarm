@@ -18,7 +18,7 @@ use crate::nanobot::{
         HaulerContext, StockpileCandidate, TerminalCandidate, pick_logistics_leg_with_cost,
     },
 };
-use crate::navigation::{Navigation, RouteOutcome};
+use crate::navigation::{Navigation, RouteStatus};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole};
 
 /// Maximum units a Hauler can carry in a single trip. The glossary is
@@ -167,6 +167,7 @@ pub fn hauler_assignment_system(
         }
         let hauler_pos = transform.translation.truncate();
         let swarm = swarm_member.0;
+        let pending_navigation = std::cell::Cell::new(false);
         let Some(leg) = pick_logistics_leg_with_cost(
             HaulerContext {
                 pos: hauler_pos,
@@ -189,28 +190,37 @@ pub fn hauler_assignment_system(
                 let start = if from == hauler_pos {
                     from
                 } else if let Some(region) = region_at(from) {
-                    match navigation.route_to_interaction(hauler_pos, region, &grid, swarm, true) {
-                        RouteOutcome::Found(route) => {
-                            *route.waypoints.last().unwrap_or(&hauler_pos)
+                    match navigation.query_interaction(hauler_pos, region, &grid, swarm, true) {
+                        RouteStatus::Found(route) => *route.waypoints.last().unwrap_or(&hauler_pos),
+                        RouteStatus::Pending => {
+                            pending_navigation.set(true);
+                            return f32::INFINITY;
                         }
-                        RouteOutcome::Unreachable => return f32::INFINITY,
+                        RouteStatus::Unreachable => return f32::INFINITY,
                     }
                 } else {
                     from
                 };
                 let outcome = if let Some(region) = region_at(to) {
-                    navigation.route_to_interaction(start, region, &grid, swarm, true)
+                    navigation.query_interaction(start, region, &grid, swarm, true)
                 } else {
-                    navigation.route(start, to, &grid, swarm, true)
+                    navigation.query_point(start, to, &grid, swarm, true)
                 };
                 match outcome {
-                    RouteOutcome::Found(route) => route.cost,
-                    RouteOutcome::Unreachable => f32::INFINITY,
+                    RouteStatus::Found(route) => route.cost,
+                    RouteStatus::Pending => {
+                        pending_navigation.set(true);
+                        f32::INFINITY
+                    }
+                    RouteStatus::Unreachable => f32::INFINITY,
                 }
             },
         ) else {
             continue;
         };
+        if pending_navigation.get() {
+            continue;
+        }
         let source = leg.source;
         let sink = leg.sink;
         let Ok((_, _, source_transform, _, _)) = stockpiles.get(source) else {
@@ -615,6 +625,7 @@ pub fn hauler_reroute_system(
         });
 
         let hauler_pos = transform.translation.truncate();
+        let pending_navigation = std::cell::Cell::new(false);
         let terminal = (tier == HaulSourceTier::Sink)
             .then(|| {
                 facilities
@@ -645,15 +656,19 @@ pub fn hauler_reroute_system(
                             &conditions,
                         )?;
                         Some((
-                            match navigation.route_to_interaction(
+                            match navigation.query_interaction(
                                 hauler_pos,
                                 endpoint.region,
                                 &grid,
                                 swarm_member.0,
                                 true,
                             ) {
-                                RouteOutcome::Found(route) => route.cost,
-                                RouteOutcome::Unreachable => return None,
+                                RouteStatus::Found(route) => route.cost,
+                                RouteStatus::Pending => {
+                                    pending_navigation.set(true);
+                                    return None;
+                                }
+                                RouteStatus::Unreachable => return None,
                             },
                             candidate,
                             endpoint,
@@ -685,15 +700,19 @@ pub fn hauler_reroute_system(
                             &conditions,
                         )?;
                         Some((
-                            match navigation.route_to_interaction(
+                            match navigation.query_interaction(
                                 hauler_pos,
                                 endpoint.region,
                                 &grid,
                                 swarm_member.0,
                                 true,
                             ) {
-                                RouteOutcome::Found(route) => route.cost,
-                                RouteOutcome::Unreachable => return None,
+                                RouteStatus::Found(route) => route.cost,
+                                RouteStatus::Pending => {
+                                    pending_navigation.set(true);
+                                    return None;
+                                }
+                                RouteStatus::Unreachable => return None,
                             },
                             candidate,
                             endpoint,
@@ -735,15 +754,19 @@ pub fn hauler_reroute_system(
                 )?;
                 Some((
                     candidate != assignment.source,
-                    match navigation.route_to_interaction(
+                    match navigation.query_interaction(
                         hauler_pos,
                         endpoint.region,
                         &grid,
                         swarm_member.0,
                         true,
                     ) {
-                        RouteOutcome::Found(route) => route.cost,
-                        RouteOutcome::Unreachable => return None,
+                        RouteStatus::Found(route) => route.cost,
+                        RouteStatus::Pending => {
+                            pending_navigation.set(true);
+                            return None;
+                        }
+                        RouteStatus::Unreachable => return None,
                     },
                     candidate,
                     endpoint,
@@ -757,6 +780,9 @@ pub fn hauler_reroute_system(
             })
             .map(|(_, distance, candidate, endpoint)| (distance, candidate, endpoint));
 
+        if pending_navigation.get() {
+            continue;
+        }
         let Some((_, destination, endpoint)) = terminal.or(fallback) else {
             release_destination_claim(&mut commands, entity, reservation);
             continue;

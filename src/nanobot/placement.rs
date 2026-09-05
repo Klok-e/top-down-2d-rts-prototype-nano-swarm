@@ -241,12 +241,39 @@ pub fn find_source_stockpile_placement(
     footprint_radius: f32,
     padding: f32,
 ) -> Option<Vec2> {
+    find_source_stockpile_placement_accepting(
+        deposit_pos,
+        gather_cells,
+        obstacles,
+        haul_direction,
+        ring_radius,
+        ring_count,
+        jitter_amplitude,
+        footprint_radius,
+        padding,
+        |_| true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn find_source_stockpile_placement_accepting(
+    deposit_pos: Vec2,
+    gather_cells: &[IVec2],
+    obstacles: &[Obstacle],
+    haul_direction: Vec2,
+    ring_radius: f32,
+    ring_count: usize,
+    jitter_amplitude: f32,
+    footprint_radius: f32,
+    padding: f32,
+    mut accepts: impl FnMut(Vec2) -> bool,
+) -> Option<Vec2> {
     if ring_count == 0 {
         return None;
     }
     let deposit_cell = world_to_cell(deposit_pos);
     let step = std::f32::consts::TAU / ring_count as f32;
-    let mut best: Option<(f32, u32, Vec2)> = None;
+    let mut candidates = Vec::new();
     for angle_index in 0..ring_count as u32 {
         let angle = angle_index as f32 * step;
         let base = ring_position(deposit_pos, ring_radius, angle);
@@ -264,18 +291,13 @@ pub fn find_source_stockpile_placement(
             continue;
         }
         let score = haul_direction_score(pos, deposit_pos, haul_direction);
-        let better = match best {
-            None => true,
-            Some((best_score, best_index, _)) => {
-                score > best_score
-                    || ((score - best_score).abs() < f32::EPSILON && angle_index < best_index)
-            }
-        };
-        if better {
-            best = Some((score, angle_index, pos));
-        }
+        candidates.push((score, angle_index, pos));
     }
-    best.map(|(_, _, pos)| pos)
+    candidates.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    candidates
+        .into_iter()
+        .map(|(_, _, position)| position)
+        .find(|position| accepts(*position))
 }
 
 fn seeded_build_zone_candidates(build_cells: &[IVec2], kind_seed: u32) -> Vec<(u64, IVec2, Vec2)> {
@@ -305,6 +327,7 @@ fn find_dense_build_zone_placement(
     build_cells: &[IVec2],
     obstacles: &[Obstacle],
     kind_seed: u32,
+    accepts: &mut impl FnMut(Vec2) -> bool,
 ) -> Option<(IVec2, Vec2)> {
     let side = dense_build_zone_side();
     let candidate_count = side * side;
@@ -333,6 +356,7 @@ fn find_dense_build_zone_placement(
                     BUILDING_FOOTPRINT_PADDING,
                     obstacles,
                 )
+                && accepts(pos)
             {
                 return Some((cell, pos));
             }
@@ -362,14 +386,25 @@ pub fn find_build_zone_placement(
     obstacles: &[Obstacle],
     kind_seed: u32,
 ) -> Option<(IVec2, Vec2)> {
+    find_build_zone_placement_accepting(build_cells, obstacles, kind_seed, |_| true)
+}
+
+/// Search every placement candidate until its access policy accepts a site.
+pub fn find_build_zone_placement_accepting(
+    build_cells: &[IVec2],
+    obstacles: &[Obstacle],
+    kind_seed: u32,
+    mut accepts: impl FnMut(Vec2) -> bool,
+) -> Option<(IVec2, Vec2)> {
     for (_, cell, pos) in seeded_build_zone_candidates(build_cells, kind_seed) {
         if footprint_inside_zone(pos, build_cells)
             && !overlaps_any_obstacle(pos, CELL_WIDTH / 2.0, BUILDING_FOOTPRINT_PADDING, obstacles)
+            && accepts(pos)
         {
             return Some((cell, pos));
         }
     }
-    find_dense_build_zone_placement(build_cells, obstacles, kind_seed)
+    find_dense_build_zone_placement(build_cells, obstacles, kind_seed, &mut accepts)
 }
 
 /// Pick the nearest stable, non-overlapping Charger placement from the shared
@@ -380,11 +415,21 @@ pub fn find_nearest_defend_zone_placement(
     obstacles: &[Obstacle],
     origin: Vec2,
 ) -> Option<(IVec2, Vec2)> {
+    find_nearest_defend_zone_placement_accepting(defend_cells, obstacles, origin, |_| true)
+}
+
+/// Preserve nearest-site ordering while rejecting access-breaking candidates.
+pub fn find_nearest_defend_zone_placement_accepting(
+    defend_cells: &[IVec2],
+    obstacles: &[Obstacle],
+    origin: Vec2,
+    mut accepts: impl FnMut(Vec2) -> bool,
+) -> Option<(IVec2, Vec2)> {
     let side = dense_build_zone_side();
     let candidate_count = side * side;
     let mut cells = defend_cells.to_vec();
     cells.sort_unstable_by_key(|cell| (cell.x, cell.y));
-    let mut best: Option<(f32, IVec2, Vec2)> = None;
+    let mut candidates = Vec::new();
 
     for cell in cells {
         let center = crate::ai::get_world_from_zone(cell);
@@ -403,22 +448,20 @@ pub fn find_nearest_defend_zone_placement(
             {
                 continue;
             }
-            let distance = origin.distance_squared(pos);
-            let better = best.is_none_or(|(best_distance, best_cell, best_pos)| {
-                distance
-                    .total_cmp(&best_distance)
-                    .then_with(|| cell.x.cmp(&best_cell.x))
-                    .then_with(|| cell.y.cmp(&best_cell.y))
-                    .then_with(|| pos.x.total_cmp(&best_pos.x))
-                    .then_with(|| pos.y.total_cmp(&best_pos.y))
-                    .is_lt()
-            });
-            if better {
-                best = Some((distance, cell, pos));
-            }
+            candidates.push((origin.distance_squared(pos), cell, pos));
         }
     }
-    best.map(|(_, cell, pos)| (cell, pos))
+    candidates.sort_by(|a, b| {
+        a.0.total_cmp(&b.0)
+            .then_with(|| a.1.x.cmp(&b.1.x))
+            .then_with(|| a.1.y.cmp(&b.1.y))
+            .then_with(|| a.2.x.total_cmp(&b.2.x))
+            .then_with(|| a.2.y.total_cmp(&b.2.y))
+    });
+    candidates
+        .into_iter()
+        .find(|(_, _, position)| accepts(*position))
+        .map(|(_, cell, position)| (cell, position))
 }
 
 #[cfg(test)]

@@ -649,16 +649,8 @@ fn shared_early_ticks_across_types() {
 
 #[test]
 fn additional_facility_plans_when_existing_busy_and_build_zone_free() {
-    // Acceptance: "Additional Production Facilities emerge
-    // from demand pressure when existing capacity is too
-    // busy." After the issue #27 migration, "emerge" means
-    // "a Planned Production Facility appears in an owned
-    // Build Zone", not "a completed facility is
-    // instant-spawned". The plan is then built by a Worker
-    // and the completed facility is busy from the moment
-    // it is built (its `current_target` is the type the
-    // plan was created for). This test pins the new
-    // emergence path end-to-end.
+    // Unmet demand with busy capacity creates a plan. Its builder must finish
+    // construction before it becomes an idle, unfunded production terminal.
     use top_down_2d_rts_prototype_nano_swarm::{
         intent::{IntentGrid, IntentKind},
         nanobot::{
@@ -668,6 +660,7 @@ fn additional_facility_plans_when_existing_busy_and_build_zone_free() {
         },
     };
     let mut app = common::sim_app_with_production_planned();
+    let worker = common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     app.insert_resource(ProductionPriority::new());
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     {
@@ -692,8 +685,16 @@ fn additional_facility_plans_when_existing_busy_and_build_zone_free() {
         assert!(grid.paint_owned(IVec2::new(1, 0), IntentKind::Build, Some(SwarmId::PLAYER),));
     }
 
-    for _ in 0..PRODUCTION_PRESSURE_TICKS {
+    for _ in 0..PRODUCTION_PRESSURE_TICKS + 100 {
         app.update();
+        if app
+            .world_mut()
+            .query::<&PlannedStructure>()
+            .iter(app.world())
+            .any(|plan| plan.kind == PlannedKind::ProductionFacility)
+        {
+            break;
+        }
     }
 
     // After one tick: the plan exists, the completed
@@ -715,10 +716,7 @@ fn additional_facility_plans_when_existing_busy_and_build_zone_free() {
             "no completed Production Facility must appear from demand; the build is worker-time only"
         );
     }
-    // Place a Worker at the plan's cell so the build
-    // happens immediately. Drive the build to completion
-    // and check the completed facility is busy with the
-    // picked target.
+    // Inspect the accepted plan before moving its builder to the exterior.
     let planned_entity = {
         let world = app.world_mut();
         let mut q = world.query::<(Entity, &PlannedStructure)>();
@@ -757,19 +755,14 @@ fn additional_facility_plans_when_existing_busy_and_build_zone_free() {
         .expect("planned facility has transform")
         .translation
         .truncate();
-    // The Worker must be placed AT the planned cell
-    // center so the claim + arrive + work chain can
-    // fire without a long walk. The build then
-    // completes in `DEFAULT_PLANNED_WORK_TICKS` ticks
-    // of worker time.
-    let worker = common::spawn_worker_at(&mut app, center);
+    // Put the existing builder at a clearance-valid exterior work position.
+    app.world_mut()
+        .entity_mut(worker)
+        .insert(Transform::from_translation(
+            (center + Vec2::X * 72.0).extend(0.0),
+        ));
 
-    // 1 tick for claim + arrive (worker is already at
-    // the cell, so the arrive system fires on the same
-    // tick as the claim), then `DEFAULT_PLANNED_WORK_TICKS`
-    // ticks of work. The build completes on the
-    // `DEFAULT_PLANNED_WORK_TICKS + 1`-th tick. We do
-    // Completion must remain idle until logistics pays a full cycle.
+    // Allow queued routing, Worker time, and safe activation to complete.
     let build_ticks = 3 + DEFAULT_PLANNED_WORK_TICKS as usize;
     for _ in 0..(build_ticks + 200) {
         app.update();
@@ -786,7 +779,7 @@ fn additional_facility_plans_when_existing_busy_and_build_zone_free() {
     let world = app.world_mut();
     // The planned structure has been promoted: the
     // PlannedStructure component is gone, the entity now
-    // carries a ProductionFacility + local Stockpile,
+    // carries a ProductionFacility with its empty input hopper,
     // and the visual flipped to the completed color.
     let remaining = world
         .entity(planned_entity)

@@ -28,7 +28,7 @@ use crate::{
             WEAKENED_CHARGE_THRESHOLD, minerals_to_fully_charge,
         },
     },
-    navigation::{Navigation, RouteOutcome},
+    navigation::{Navigation, RouteStatus},
     resources::{ResourceDeposit, ResourceKind, Stockpile},
 };
 
@@ -538,14 +538,8 @@ pub fn regional_allocation_acquisition_system(
                         OpportunityTarget::Haul { .. } => None,
                     }?;
                     matches!(
-                        navigation.route_to_interaction(
-                            bot.position,
-                            region,
-                            &grid,
-                            bot.swarm,
-                            false
-                        ),
-                        RouteOutcome::Found(_)
+                        navigation.query_interaction(bot.position, region, &grid, bot.swarm, false),
+                        RouteStatus::Found(_)
                     )
                     .then_some(claims)
                 },
@@ -641,6 +635,7 @@ fn choose_terminal_logistics_work(
     if pull.categories.get(OpportunityCategory::Haul) == 0 {
         return None;
     }
+    let mut pending_navigation = false;
     let mut examined = 0;
     let mut best: Option<(TerminalLogisticsScore, ActionableOpportunity)> = None;
     for (_, opportunities) in ordered.iter().take(bounds.max_regions) {
@@ -720,20 +715,35 @@ fn choose_terminal_logistics_work(
                 base_urgency.saturating_sub((age / TERMINAL_FAIRNESS_PROMOTION_TICKS) as u8);
             let deficit_ratio =
                 u64::from(deficit).saturating_mul(1_000_000) / u64::from(capacity.max(1));
-            let RouteOutcome::Found(source_route) = navigation.route_to_interaction(
+            let outcome = navigation.query_interaction(
                 bot.position,
                 InteractionRegion::structure(source_transform),
                 grid,
                 bot.swarm,
                 true,
-            ) else {
-                continue;
+            );
+            let source_route = match outcome {
+                RouteStatus::Found(route) => route,
+                RouteStatus::Pending => {
+                    pending_navigation = true;
+                    continue;
+                }
+                RouteStatus::Unreachable => continue,
             };
             let source_pos = *source_route.waypoints.last().unwrap_or(&bot.position);
-            let RouteOutcome::Found(sink_route) =
-                navigation.route_to_interaction(source_pos, sink_region, grid, bot.swarm, true)
-            else {
-                continue;
+            let sink_route = match navigation.query_interaction(
+                source_pos,
+                sink_region,
+                grid,
+                bot.swarm,
+                true,
+            ) {
+                RouteStatus::Found(route) => route,
+                RouteStatus::Pending => {
+                    pending_navigation = true;
+                    continue;
+                }
+                RouteStatus::Unreachable => continue,
             };
             let route_cost = source_route.cost + sink_route.cost;
             if !route_cost.is_finite() {
@@ -754,6 +764,9 @@ fn choose_terminal_logistics_work(
                 best = Some((score, *work));
             }
         }
+    }
+    if pending_navigation {
+        return None;
     }
     best.map(|(_, work)| work)
 }

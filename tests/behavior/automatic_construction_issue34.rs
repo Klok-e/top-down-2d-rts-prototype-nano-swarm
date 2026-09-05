@@ -67,11 +67,22 @@ fn build_paint_alone_creates_no_plan_and_pulls_no_worker() {
 #[test]
 fn pending_consumer_creates_non_overlapping_sink_stockpile() {
     let mut app = common::sim_app_with_planned();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     let cell = IVec2::new(0, 0);
     paint_build(&mut app, cell);
     let consumer = spawn_owned_planned_production(&mut app, cell);
 
-    app.update();
+    for _ in 0..100 {
+        app.update();
+        if app
+            .world_mut()
+            .query::<&PlannedStructure>()
+            .iter(app.world())
+            .any(|plan| plan.kind == PlannedKind::SinkStockpile)
+        {
+            break;
+        }
+    }
 
     let world = app.world_mut();
     let consumer_pos = world
@@ -101,6 +112,7 @@ fn pending_consumer_creates_non_overlapping_sink_stockpile() {
 #[test]
 fn scaled_consumer_does_not_hide_its_sink_stockpile() {
     let mut app = common::sim_app_with_planned();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     let cell = IVec2::ZERO;
     paint_build(&mut app, cell);
     let consumer = spawn_owned_planned_production(&mut app, cell);
@@ -110,7 +122,17 @@ fn scaled_consumer_does_not_hide_its_sink_stockpile() {
         .expect("consumer must have Transform")
         .scale = Vec3::new(3.0, 3.0, 1.0);
 
-    app.update();
+    for _ in 0..100 {
+        app.update();
+        if app
+            .world_mut()
+            .query::<&PlannedStructure>()
+            .iter(app.world())
+            .any(|plan| plan.kind == PlannedKind::SinkStockpile)
+        {
+            break;
+        }
+    }
 
     let world = app.world_mut();
     let consumer_pos = world
@@ -343,6 +365,7 @@ fn charger_placement_rejects_planned_sink_stockpile_overlap() {
     // different position or produces no plan when every
     // candidate overlaps.
     let mut app = common::sim_app_with_charge_planned();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     let cell = IVec2::new(0, 0);
     let center = common::cell_world_center(cell);
     paint_defend(&mut app, cell);
@@ -400,10 +423,21 @@ fn charger_placement_rejects_planned_sink_stockpile_overlap() {
 #[test]
 fn automatic_sink_edges_align_to_fine_cells_inside_owned_build_paint() {
     let mut app = common::sim_app_with_planned();
+    common::spawn_worker_at(&mut app, Vec2::new(-1024.0, -1024.0));
     let cell = IVec2::new(-1, 0);
     paint_build(&mut app, cell);
     spawn_owned_planned_production(&mut app, cell);
-    app.update();
+    for _ in 0..100 {
+        app.update();
+        if app
+            .world_mut()
+            .query::<&PlannedStructure>()
+            .iter(app.world())
+            .any(|plan| plan.kind == PlannedKind::SinkStockpile)
+        {
+            break;
+        }
+    }
     let world = app.world_mut();
     let (_, transform, sprite) = world
         .query::<(&PlannedStructure, &Transform, &Sprite)>()

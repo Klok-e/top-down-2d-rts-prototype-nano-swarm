@@ -11,15 +11,14 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Charge, ChargePlugin, Charger, ChargerAssignment, ChargerProgress, CollapsePlugin,
-        CombatPlugin, DEFAULT_PLANNED_WORK_TICKS, DEGRADATION_INTERVAL_TICKS, DefenderResponse,
-        DirectMovementComponent, GatherPlugin, HaulPlugin, Health, LOW_CHARGE_THRESHOLD,
-        MAINTENANCE_BUFFER_TICKS, MAINTENANCE_NEEDS_THRESHOLD, MaintenanceAssignment,
-        MaintenancePlugin, MaintenanceProgress, MatchOutcome, Nanobot, NanobotPlugin, NanobotType,
-        OpponentIntentPlugin, OpponentSwarmIdAlloc, OwnerSwarm, PlannedKind, PlannedStructure,
-        PlannedStructurePlugin, PopulationDemand, PopulationDemandPlugin, ProductionCollapseState,
-        ProductionPlugin, ProductionPriority, RegionalAllocationPlugin, STRUCTURE_MAX_HEALTH,
-        Structure, Swarm, SwarmId, SwarmMember, TerritorySnapshot, nanobot_death_cleanup_system,
-        world_to_cell,
+        CombatPlugin, DEGRADATION_INTERVAL_TICKS, DefenderResponse, DirectMovementComponent,
+        GatherPlugin, HaulPlugin, Health, LOW_CHARGE_THRESHOLD, MAINTENANCE_BUFFER_TICKS,
+        MAINTENANCE_NEEDS_THRESHOLD, MaintenanceAssignment, MaintenancePlugin, MaintenanceProgress,
+        MatchOutcome, Nanobot, NanobotPlugin, NanobotType, OpponentIntentPlugin,
+        OpponentSwarmIdAlloc, OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructurePlugin,
+        PopulationDemand, PopulationDemandPlugin, ProductionCollapseState, ProductionPlugin,
+        ProductionPriority, RegionalAllocationPlugin, STRUCTURE_MAX_HEALTH, Structure, Swarm,
+        SwarmId, SwarmMember, TerritorySnapshot, nanobot_death_cleanup_system, world_to_cell,
     },
     resources::{ResourceKind, ResourceLedger},
     scenario::{
@@ -491,7 +490,12 @@ fn authored_charge_rotation_replaces_active_coverage_for_each_swarm() {
             .expect("Defender has Charge")
             .current = LOW_CHARGE_THRESHOLD;
 
-        app.update();
+        for _ in 0..60 {
+            app.update();
+            if app.world().get::<ChargerAssignment>(responder).is_some() {
+                break;
+            }
+        }
 
         let departing = app.world().entity(responder);
         assert_eq!(
@@ -533,7 +537,17 @@ fn authored_charger_planning_and_maintenance_follow_observed_service_need() {
         .current = LOW_CHARGE_THRESHOLD;
     let builder = common::spawn_worker_at(&mut app, center + Vec2::X * 68.0);
 
-    app.update();
+    for _ in 0..120 {
+        app.update();
+        if app
+            .world_mut()
+            .query::<&PlannedStructure>()
+            .iter(app.world())
+            .any(|plan| plan.kind == PlannedKind::Charger)
+        {
+            break;
+        }
+    }
 
     let planned_charger = {
         let world = app.world_mut();
@@ -551,8 +565,11 @@ fn authored_charger_planning_and_maintenance_follow_observed_service_need() {
         .expect("authored Defender has Charge")
         .current = 1.0;
 
-    for _ in 0..(1 + DEFAULT_PLANNED_WORK_TICKS as usize + 2) {
+    for _ in 0..180 {
         app.update();
+        if app.world().get::<Charger>(planned_charger).is_some() {
+            break;
+        }
     }
     assert!(
         app.world()
@@ -579,9 +596,29 @@ fn authored_charger_planning_and_maintenance_follow_observed_service_need() {
         .expect("authored Defender has Charge")
         .current = LOW_CHARGE_THRESHOLD;
     app.world_mut().despawn(builder);
-    let service_worker = common::spawn_worker_at(&mut app, center);
+    let charger_position = app
+        .world()
+        .get::<Transform>(planned_charger)
+        .unwrap()
+        .translation
+        .truncate();
+    let service_worker = common::spawn_worker_at(&mut app, charger_position + Vec2::X * 144.0);
 
-    app.update();
+    for _ in 0..80 {
+        app.update();
+        if app.world().get::<ChargerAssignment>(defender).is_some()
+            && (app
+                .world()
+                .get::<MaintenanceAssignment>(service_worker)
+                .is_some()
+                || app
+                    .world()
+                    .get::<MaintenanceProgress>(service_worker)
+                    .is_some())
+        {
+            break;
+        }
+    }
 
     let serviced_defender = app.world().entity(defender);
     assert_eq!(
@@ -804,18 +841,43 @@ fn spawn_runtime_front() -> (App, IVec2, Entity, Entity) {
         .expect("opponent swarm id");
     assert_eq!(opponent_id, OPPONENT_SWARM);
 
-    for _ in 0..6 {
-        common::spawn_defender_at(&mut app, common::cell_world_center(PLAYER_CELL));
+    for position in [
+        Vec2::new(220., 184.),
+        Vec2::new(148., 184.),
+        Vec2::new(76., 184.),
+        Vec2::new(220., 256.),
+        Vec2::new(148., 256.),
+        Vec2::new(76., 256.),
+    ] {
+        common::spawn_defender_at(&mut app, position);
     }
-    let _player_worker = common::spawn_worker_at(&mut app, common::cell_world_center(PLAYER_CELL));
-    let opponent_worker =
-        common::spawn_worker_at(&mut app, common::cell_world_center(OPPONENT_CELL));
+    let opponent_defenders = app
+        .world_mut()
+        .query::<(Entity, &SwarmMember, &NanobotType)>()
+        .iter(app.world())
+        .filter_map(|(entity, member, kind)| {
+            (member.0 == opponent_id && *kind == NanobotType::Defender).then_some(entity)
+        })
+        .collect::<Vec<_>>();
+    for (index, entity) in opponent_defenders.into_iter().enumerate() {
+        app.world_mut()
+            .get_mut::<Transform>(entity)
+            .unwrap()
+            .translation
+            .x = 1792.;
+        app.world_mut()
+            .get_mut::<Transform>(entity)
+            .unwrap()
+            .translation
+            .y = 184. + index as f32 * 72.;
+    }
+    let _player_worker = common::spawn_worker_at(&mut app, Vec2::new(220., 328.));
+    let opponent_worker = common::spawn_worker_at(&mut app, Vec2::new(1864., 256.));
     app.world_mut()
         .entity_mut(opponent_worker)
         .insert(SwarmMember::new(opponent_id));
-    let _player_hauler = common::spawn_hauler_at(&mut app, common::cell_world_center(PLAYER_CELL));
-    let opponent_hauler =
-        common::spawn_hauler_at(&mut app, common::cell_world_center(OPPONENT_CELL));
+    let _player_hauler = common::spawn_hauler_at(&mut app, Vec2::new(148., 328.));
+    let opponent_hauler = common::spawn_hauler_at(&mut app, Vec2::new(1936., 256.));
     app.world_mut()
         .entity_mut(opponent_hauler)
         .insert(SwarmMember::new(opponent_id));

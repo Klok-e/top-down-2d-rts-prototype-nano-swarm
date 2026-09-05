@@ -1,6 +1,6 @@
 # Shared navigation — issue #59
 
-Implemented against [#59](https://github.com/Klok-e/top-down-2d-rts-prototype-nano-swarm/issues/59) and the approved navigation/simulation/presentation seams in [#41](https://github.com/Klok-e/top-down-2d-rts-prototype-nano-swarm/issues/41). Verification date: 2026-09-05. **Acceptance remains incomplete: the initial verification found three failing scripted playtests; the Charge policy follow-up below resolves one.**
+Implemented against [#59](https://github.com/Klok-e/top-down-2d-rts-prototype-nano-swarm/issues/59) and the approved navigation/simulation/presentation seams in [#41](https://github.com/Klok-e/top-down-2d-rts-prototype-nano-swarm/issues/41). Verification date: 2026-09-05. **The initial verification failures are resolved.** The Charge policy follow-up resolves one; the [safe lifecycle follow-up](issues-60-65-safe-lifecycle.md) resolves the remaining two and records the passing full-suite gate. The initial evidence below is retained as history.
 
 ## Implementation
 
@@ -54,7 +54,7 @@ The initial verification recorded these failures:
 - `defender_feel::authored_default_scenario_reaches_primary_defend_contest`: the long economy proof reaches Defeat. Diagnostics show three player Workers inside completed support geometry and multiple produced opponent Haulers at the solid facility center `(1620, 252)`. Completed-plan clearing and exterior production exits belong to #64 and [#65](https://github.com/Klok-e/top-down-2d-rts-prototype-nano-swarm/issues/65). These are observed hazards; the diagnostic snapshot alone does not isolate their individual contribution to the terminal result.
 - `defender_feel::default_front_has_readable_combat_and_staggered_sustain`: three previously admitted charging rotations persist after casualties reduce six living Defenders to five. The existing selector caps new admissions while the test required a continuous cap. The confirmed [Charge policy](../adr/0015-territory-wide-defender-response.md) permits accepted travel and charging to finish after casualties. The follow-up replaces the continuous-cap assertion with an admission check; Charger destruction or invalidation ends the rotation and requires fresh admission.
 
-The two-axis review found no confirmed code defects in the reviewed routing changes. Standards noted nonblocking endpoint-identity reconstruction in the standalone Hauler assignment adapter and repeated route-cost parameters. The reported Corridor-stability and blocked-roaming coverage gaps were corrected. Spec review explicitly retains the failed full-suite gate as an acceptance limitation. Issue #59 remains open pending that gate and the scoped dependency decision.
+The two-axis review found no confirmed code defects in the reviewed routing changes. Standards noted nonblocking endpoint-identity reconstruction in the standalone Hauler assignment adapter and repeated route-cost parameters. The reported Corridor-stability and blocked-roaming coverage gaps were corrected. Spec review explicitly retains the failed full-suite gate as an acceptance limitation. At that review, issue #59 remained open pending that gate and the scoped dependency decision. The follow-up below records the resolution.
 
 
 ## Charge policy follow-up
@@ -64,3 +64,9 @@ The confirmed admission policy is documented in CONTEXT and ADR-0015. Production
 `casualty_preserves_accepted_travel_and_charging_until_completion` proves that three accepted rotations finish after six living Defenders become five, and a waiting Defender cannot enter above or at the two-rotation cap. `destroyed_charger_ends_rotation_without_grandfathering_replacement_admission` proves release and fresh admission after Charger loss. Assertion inversions demonstrated failures for both focused tests and the playtest admission check before restoration.
 
 Follow-up validation: formatting and all-target Clippy pass; 351 unit tests, 471 behavior tests, and 36 playtests pass. The two clearing/production-related playtests above still fail unchanged; two GPU-bearing playtests remain ignored. All 30 offscreen trials pass. Inspected `defender_combat_rotation.png` shows distinct opposing Defenders and a visible attack connection; `exterior_defender_charging.png` shows a Defender beside, outside, the Charger's solid footprint with visible status bars. These frames check presentation, while ECS assertions establish the admission policy. Logs are under `/tmp/charge-*.log` and images under `target/playtest-screenshots/`.
+
+## Remaining-failure implementation scope
+
+The maintainer approved including budgeted navigation (#60), local avoidance (#62), and access-preserving placement (#63), followed by Structure Clearing (#64) and production exits (#65). Implement in dependency order using the agreed simulation, navigation, and offscreen presentation seams. The clearing and production policies refined during the interview are recorded in ADR-0017 and ADR-0016 respectively. This approved work is now implemented and validated in the [safe lifecycle follow-up](issues-60-65-safe-lifecycle.md).
+
+Both remaining gameplay checks now pass. Their gameplay outcomes remain asserted; fixtures and bounded readiness waits were updated for physical body clearance and pending navigation, as detailed in the follow-up. The diagnostic hazards alone were not treated as proof of causality.

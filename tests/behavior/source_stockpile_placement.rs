@@ -94,8 +94,11 @@ fn candidate_placements_lie_on_the_configured_ring() {
         },
     );
 
-    for _ in 0..5 {
+    for _ in 0..100 {
         app.update();
+        if planned_source_stockpile_position(&mut app).is_some() {
+            break;
+        }
     }
 
     let pos = planned_source_stockpile_position(&mut app)
@@ -138,8 +141,11 @@ fn placement_jitter_is_stable_across_ticks() {
         },
     );
 
-    for _ in 0..3 {
+    for _ in 0..100 {
         app.update();
+        if planned_source_stockpile_position(&mut app).is_some() {
+            break;
+        }
     }
     let pos_first = planned_source_stockpile_position(&mut app)
         .expect("first planning pass must produce a Planned Source Stockpile");
@@ -160,8 +166,11 @@ fn placement_jitter_is_stable_across_ticks() {
         }
     }
 
-    for _ in 0..3 {
+    for _ in 0..100 {
         app.update();
+        if planned_source_stockpile_position(&mut app).is_some() {
+            break;
+        }
     }
     let pos_second = planned_source_stockpile_position(&mut app)
         .expect("second planning pass must produce a Planned Source Stockpile");

@@ -136,7 +136,7 @@ fn opponent_gather_demand_creates_opponent_owned_source_plan() {
         VelocityComponent::default(),
         Health::default(),
         SwarmMember(opponent_id),
-        Transform::from_translation((deposit_pos + Vec2::new(0.0, -100.0)).extend(0.0)),
+        Transform::from_translation((deposit_pos + Vec2::new(100.0, -100.0)).extend(0.0)),
     ));
     common::spawn_deposit(
         &mut app,
@@ -148,7 +148,17 @@ fn opponent_gather_demand_creates_opponent_owned_source_plan() {
         },
     );
 
-    app.update();
+    for _ in 0..100 {
+        app.update();
+        if app
+            .world_mut()
+            .query::<&PlannedStructure>()
+            .iter(app.world())
+            .any(|plan| plan.kind == PlannedKind::SourceStockpile)
+        {
+            break;
+        }
+    }
 
     let world = app.world_mut();
     let mut q = world.query::<(&PlannedStructure, &OwnerSwarm)>();
@@ -230,8 +240,16 @@ fn gather_assignment_triggers_planned_source_stockpile() {
         },
     );
 
-    for _ in 0..5 {
+    for _ in 0..100 {
         app.update();
+        if app
+            .world_mut()
+            .query::<&PlannedStructure>()
+            .iter(app.world())
+            .any(|plan| plan.kind == PlannedKind::SourceStockpile)
+        {
+            break;
+        }
     }
 
     let world = app.world_mut();
@@ -528,8 +546,16 @@ fn source_stockpile_stays_in_gather_painted_cell() {
         },
     );
 
-    for _ in 0..5 {
+    for _ in 0..100 {
         app.update();
+        if app
+            .world_mut()
+            .query::<&PlannedStructure>()
+            .iter(app.world())
+            .any(|plan| plan.kind == PlannedKind::SourceStockpile)
+        {
+            break;
+        }
     }
 
     let world = app.world_mut();
@@ -610,7 +636,17 @@ fn scenario_sized_deposit_at_authored_cell_center_gets_source_stockpile() {
         ))
         .id();
 
-    app.update();
+    for _ in 0..100 {
+        app.update();
+        if app
+            .world_mut()
+            .query::<&PlannedStructure>()
+            .iter(app.world())
+            .any(|plan| plan.kind == PlannedKind::SourceStockpile)
+        {
+            break;
+        }
+    }
 
     let world = app.world_mut();
     let mut q = world.query::<(&PlannedStructure, &Transform)>();
@@ -667,12 +703,41 @@ fn worker_waits_for_planned_source_stockpile_before_extracting() {
         },
     );
 
-    // Run a small number of ticks -- enough for the
-    // assignment + demand + claim to fire, but well short
-    // of the build finishing.
-    let pre_build_ticks = 2;
-    for _ in 0..pre_build_ticks {
+    // Observe the first accepted plan after queued route and access checks.
+    // The creation tick precedes any Worker construction on that plan.
+    for _ in 0..100 {
         app.update();
+        assert_eq!(
+            app.world().get::<ResourceDeposit>(deposit).unwrap().amount,
+            100
+        );
+        if app
+            .world_mut()
+            .query::<&PlannedStructure>()
+            .iter(app.world())
+            .any(|plan| plan.kind == PlannedKind::SourceStockpile)
+        {
+            break;
+        }
+    }
+
+    // Construction allocation can itself wait for a route after site acceptance.
+    for _ in 0..100 {
+        let assigned = app.world().get::<GatherAssignment>(worker).is_some()
+            || app.world().get::<PlannedStructureClaim>(worker).is_some()
+            || app
+                .world()
+                .get::<PlannedStructureProgress>(worker)
+                .is_some();
+        if assigned {
+            break;
+        }
+        app.update();
+        assert_eq!(
+            app.world().get::<ResourceDeposit>(deposit).unwrap().amount,
+            100
+        );
+        assert!(app.world().get::<ExtractProgress>(worker).is_none());
     }
 
     let world = app.world_mut();
@@ -799,8 +864,16 @@ fn demand_system_does_not_double_plan_when_planned_already_exists() {
     let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos + Vec2::new(0.0, -100.0));
 
     // First tick of demand.
-    for _ in 0..3 {
+    for _ in 0..100 {
         app.update();
+        if app
+            .world_mut()
+            .query::<&PlannedStructure>()
+            .iter(app.world())
+            .any(|plan| plan.kind == PlannedKind::SourceStockpile)
+        {
+            break;
+        }
     }
     let planned_after_first = {
         let world = app.world_mut();
@@ -814,6 +887,15 @@ fn demand_system_does_not_double_plan_when_planned_already_exists() {
         planned_after_first, 1,
         "first deposit must create exactly one Planned Source Stockpile"
     );
+
+    // Keep this commitment under construction while the second demand resolves.
+    for mut plan in app
+        .world_mut()
+        .query::<&mut PlannedStructure>()
+        .iter_mut(app.world_mut())
+    {
+        plan.work_remaining = 1000;
+    }
 
     // Add a second deposit in the same area, give it its
     // own worker, and assert the demand system does not

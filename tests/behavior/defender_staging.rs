@@ -409,6 +409,7 @@ fn cross_cell_redistribution_uses_normal_travel_speed() {
     );
     let defender = common::spawn_defender_at(&mut app, common::cell_world_center(start_cell));
     app.update();
+    app.update();
     let before = app
         .world()
         .entity(defender)
@@ -643,6 +644,8 @@ fn lone_defender_roams_continuously_and_replays_deterministically_without_territ
     second_app.update();
 
     let mut changed_direction = false;
+    let mut waiting_ticks = 0;
+    let mut consecutive_waiting = 0;
     let mut previous_delta = None;
     let mut previous_position = common::cell_world_center(cell);
     for index in 0..360 {
@@ -665,6 +668,16 @@ fn lone_defender_roams_continuously_and_replays_deterministically_without_territ
             "deterministic replay diverged at fixed step {index}",
         );
         let delta = left - previous_position;
+        if delta.length() < 1e-5 {
+            waiting_ticks += 1;
+            consecutive_waiting += 1;
+            assert!(
+                consecutive_waiting <= 2,
+                "a routine open-space route must not starve roaming"
+            );
+            continue;
+        }
+        consecutive_waiting = 0;
         assert!(
             (delta.length() - 1.5).abs() <= 1e-4,
             "the lone roamer parked or exceeded the gentle scale at step {index}: {delta:?}",
@@ -677,6 +690,10 @@ fn lone_defender_roams_continuously_and_replays_deterministically_without_territ
         previous_delta = Some(delta);
         previous_position = left;
     }
+    assert!(
+        waiting_ticks < 20,
+        "queued legs must still leave the Defender roaming during most ticks"
+    );
     assert!(
         changed_direction,
         "procedural arrival should advance to another subcell destination",

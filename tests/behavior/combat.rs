@@ -42,8 +42,8 @@ fn delivered_hit_publishes_the_resolved_combat_snapshot() {
     let cell = IVec2::ZERO;
     paint_player_territory(&mut app, cell);
     let center = common::cell_world_center(cell);
-    let attacker_position = center - Vec2::X * 16.0;
-    let target_position = center + Vec2::X * 16.0;
+    let attacker_position = center - Vec2::X * 36.0;
+    let target_position = center + Vec2::X * 36.0;
     let attacker = common::spawn_defender_at(&mut app, attacker_position);
     let target = common::spawn_worker_at(&mut app, target_position);
     app.world_mut()

@@ -6,7 +6,7 @@ mod common;
 
 #[test]
 fn combined_direct_and_separation_velocity_is_clamped_to_bot_speed() {
-    let mut app = common::sim_app();
+    let mut app = common::sim_app_with_movement();
     app.world_mut()
         .resource_mut::<top_down_2d_rts_prototype_nano_swarm::game_settings::GameSettings>()
         .bot_speed = 5.25;
@@ -22,6 +22,13 @@ fn combined_direct_and_separation_velocity_is_clamped_to_bot_speed() {
         });
 
     app.update();
+    let before = app
+        .world()
+        .get::<Transform>(mover)
+        .unwrap()
+        .translation
+        .truncate();
+    app.update();
 
     let position = app
         .world()
@@ -31,7 +38,7 @@ fn combined_direct_and_separation_velocity_is_clamped_to_bot_speed() {
         .translation
         .truncate();
     assert!(
-        position.distance(Vec2::new(-5.25, 0.0)) <= 1e-4,
+        (position - before).distance(Vec2::new(-5.25, 0.0)) <= 1e-4,
         "combined velocity must clamp to the configured 5.25 speed; displacement={position}",
     );
 }

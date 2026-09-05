@@ -67,7 +67,6 @@ use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::NanobotType;
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm, SwarmId, SwarmMember};
 use crate::nanobot::gather::world_to_cell;
-use crate::nanobot::placement::find_build_zone_placement;
 use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
 use crate::resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole};
 use crate::structure_sprites::{StructureSprites, StructureVisual, StructureVisualState};
@@ -341,6 +340,7 @@ pub(crate) fn sink_stockpile_zone_cells(
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn sink_stockpile_demand_system(
     mut commands: Commands,
+    access: super::construction_access::ConstructionAccess,
     grid: Res<IntentGrid>,
     structure_sprites: Res<StructureSprites>,
     planned: Query<(&PlannedStructure, &Transform, Option<&OwnerSwarm>)>,
@@ -355,6 +355,7 @@ pub fn sink_stockpile_demand_system(
     deposits: Query<(&ResourceDeposit, &Transform)>,
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,
 ) {
+    let mut access_layout = access.snapshot();
     let swarm_by_id: HashMap<SwarmId, Entity> = swarms.iter().map(|(e, id)| (*id, e)).collect();
     let mut obstacles: Vec<Obstacle> = deposits
         .iter()
@@ -431,11 +432,34 @@ pub fn sink_stockpile_demand_system(
         }
         let mut local_obstacles = obstacles.clone();
         local_obstacles.extend(newly_planned.iter().map(|pos| Obstacle::planned(*pos)));
+        let placement_swarm = owner
+            .or(painted_owner)
+            .and_then(|owner| swarms.get(owner).ok().map(|(_, id)| *id))
+            .unwrap_or(SwarmId::PLAYER);
         let Some((placement_cell, placement_pos)) =
-            find_build_zone_placement(&zone_cells, &local_obstacles, 26)
+            crate::nanobot::placement::find_build_zone_placement_accepting(
+                &zone_cells,
+                &local_obstacles,
+                26,
+                |position| {
+                    access.accepts(
+                        &access_layout,
+                        &grid,
+                        placement_swarm,
+                        PlannedKind::SinkStockpile,
+                        position,
+                    )
+                },
+            )
         else {
             continue;
         };
+        access_layout.reserve(
+            placement_swarm,
+            crate::navigation::align_structure(Transform::from_translation(
+                placement_pos.extend(0.0),
+            )),
+        );
         newly_planned.push(placement_pos);
         let mut entity_commands = commands.spawn((
             PlannedStructure::new(PlannedKind::SinkStockpile, placement_cell),
@@ -610,93 +634,46 @@ pub fn worker_planned_structure_arrive_system(
     }
 }
 
-/// Worker planned-structure work system. For each worker with
-/// a [`PlannedStructureProgress`], decrement the planned
-/// structure's `work_remaining` by 1 and, on the tick it
-/// reaches 0, promote the planned structure to its completed
-/// form.
-///
-/// The worker stays at the site until the build finishes or
-/// the planned structure is removed; the reservation is
-/// cleared on promotion so the worker returns to idle. V1
-/// does not consume any minerals, so the resource ledger and
-/// local stockpiles are untouched.
+/// Apply construction work, then release its Worker while the site clears.
 #[allow(clippy::type_complexity)]
 pub fn worker_planned_structure_work_system(
     mut commands: Commands,
-    structure_sprites: Res<StructureSprites>,
-    workers: Query<
-        (Entity, &Transform, &PlannedStructureProgress),
-        (With<Nanobot>, With<PlannedStructureProgress>),
-    >,
-    mut planned: Query<(
-        Entity,
-        &mut PlannedStructure,
-        &Transform,
-        Option<&PlannedProductionTarget>,
-    )>,
+    workers: Query<(Entity, &Transform, &PlannedStructureProgress), With<Nanobot>>,
+    mut planned: Query<(&mut PlannedStructure, &Transform)>,
 ) {
-    for (worker_entity, worker_transform, progress) in &workers {
-        let Ok((planned_entity, mut planned_state, planned_transform, first_target)) =
-            planned.get_mut(progress.target)
-        else {
-            commands
-                .entity(worker_entity)
-                .remove::<PlannedStructureClaim>()
-                .remove::<PlannedStructureProgress>();
+    for (worker, transform, progress) in &workers {
+        let Ok((mut plan, site)) = planned.get_mut(progress.target) else {
+            release_planned_worker(&mut commands, worker);
             continue;
         };
-        let region = InteractionRegion::structure(planned_transform);
-        let position = worker_transform.translation.truncate();
+        let position = transform.translation.truncate();
+        let region = InteractionRegion::structure(site);
         if !region.contains(position) {
             commands
-                .entity(worker_entity)
+                .entity(worker)
                 .insert(region.movement_from(position));
             continue;
         }
-        let first_target = first_target.copied().map(|target| target.0);
-
-        if planned_state.is_complete() {
-            promote_planned_to_completion(
-                &mut commands,
-                planned_entity,
-                planned_state.kind,
-                *planned_transform,
-                planned_state.cell,
-                first_target,
-                &structure_sprites,
-            );
-            release_planned_worker(&mut commands, worker_entity);
-            continue;
-        }
-
-        planned_state.work_remaining = planned_state.work_remaining.saturating_sub(1);
-        if planned_state.is_complete() {
-            promote_planned_to_completion(
-                &mut commands,
-                planned_entity,
-                planned_state.kind,
-                *planned_transform,
-                planned_state.cell,
-                first_target,
-                &structure_sprites,
-            );
-            release_planned_worker(&mut commands, worker_entity);
+        plan.work_remaining = plan.work_remaining.saturating_sub(1);
+        if plan.is_complete() {
+            plan.active_worker = None;
+            commands
+                .entity(progress.target)
+                .insert(crate::nanobot::StructureClearing {
+                    builder_position: position,
+                    validated_layout: None,
+                });
+            release_planned_worker(&mut commands, worker);
         }
     }
 }
 
-/// Release a worker that was building a planned structure:
-/// clear both the claim and the progress markers so the
-/// worker returns to the idle state. The build cell's slot is
-/// not modelled for v1 (the planned structure is consumed
-/// before the worker is free), so there is no slot to
-/// release.
-fn release_planned_worker(commands: &mut Commands, worker_entity: Entity) {
+fn release_planned_worker(commands: &mut Commands, worker: Entity) {
     commands
-        .entity(worker_entity)
+        .entity(worker)
         .remove::<PlannedStructureClaim>()
-        .remove::<PlannedStructureProgress>();
+        .remove::<PlannedStructureProgress>()
+        .remove::<crate::nanobot::RegionalLease>();
 }
 
 /// Promote a finished [`PlannedStructure`] to the completed
@@ -727,7 +704,7 @@ fn release_planned_worker(commands: &mut Commands, worker_entity: Entity) {
 ///   `first_target` is unused for this kind; the
 ///   pre-existing test fixtures that pre-spawn a Charger
 ///   already establish the default-shape contract.
-fn promote_planned_to_completion(
+pub(crate) fn promote_planned_to_completion(
     commands: &mut Commands,
     planned_entity: Entity,
     kind: PlannedKind,
@@ -850,22 +827,28 @@ pub struct PlannedStructurePlugin;
 
 impl Plugin for PlannedStructurePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            FixedUpdate,
-            release_stale_planned_workers_system
-                .before(crate::nanobot::RegionalAllocationSet::Project),
-        )
-        .add_systems(
-            FixedUpdate,
-            (
-                sink_stockpile_demand_system,
-                worker_planned_structure_arrive_system,
-                worker_planned_structure_work_system,
+        app.init_resource::<crate::nanobot::construction_access::CancelledSites>()
+            .add_systems(
+                FixedUpdate,
+                crate::nanobot::clearing::animate_cancelled_plans_system,
             )
-                .chain()
-                .after(crate::nanobot::RegionalAllocationSet::Acquire)
-                .after(crate::nanobot::NanobotSimulationSet::Movement),
-        );
+            .add_systems(
+                FixedUpdate,
+                release_stale_planned_workers_system
+                    .before(crate::nanobot::RegionalAllocationSet::Project),
+            )
+            .add_systems(
+                FixedUpdate,
+                (
+                    sink_stockpile_demand_system,
+                    worker_planned_structure_arrive_system,
+                    worker_planned_structure_work_system,
+                    crate::nanobot::clearing::clear_finished_structures_system,
+                )
+                    .chain()
+                    .after(crate::nanobot::RegionalAllocationSet::Acquire)
+                    .after(crate::nanobot::NanobotSimulationSet::Movement),
+            );
     }
 }
 

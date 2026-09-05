@@ -320,6 +320,14 @@ fn idle_worker_picks_maintenance_over_idling_when_structure_is_stale() {
     // because the worker starts at the structure's position.
     app.update();
 
+    for _ in 0..60 {
+        if app.world().get::<MaintenanceAssignment>(worker).is_some()
+            || app.world().get::<MaintenanceProgress>(worker).is_some()
+        {
+            break;
+        }
+        app.update();
+    }
     let world = app.world();
     let has_marker = world
         .entity(worker)
@@ -347,6 +355,14 @@ fn real_structure_requests_maintenance_without_build_paint() {
 
     app.update();
 
+    for _ in 0..60 {
+        if app.world().get::<MaintenanceAssignment>(worker).is_some()
+            || app.world().get::<MaintenanceProgress>(worker).is_some()
+        {
+            break;
+        }
+        app.update();
+    }
     let worker = app.world().entity(worker);
     assert!(
         worker.get::<MaintenanceAssignment>().is_some()
@@ -505,6 +521,14 @@ fn en_route_service_assigns_worker_to_stale_charger() {
 
     app.update();
 
+    for _ in 0..60 {
+        if app.world().get::<MaintenanceAssignment>(worker).is_some()
+            || app.world().get::<MaintenanceProgress>(worker).is_some()
+        {
+            break;
+        }
+        app.update();
+    }
     let worker = app.world().entity(worker);
     let target = worker
         .get::<MaintenanceAssignment>()

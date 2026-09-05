@@ -26,12 +26,15 @@ use libtest_mimic::{Arguments, Conclusion, Failed, Trial};
 mod background_checkerboard;
 mod build_zone_placement;
 mod combat_presentation;
+mod construction_access;
+mod construction_lifecycle;
 mod defender_combat_readability;
 mod defender_staging;
 mod exterior_work;
 mod fill_indicators;
 mod harness;
 mod idle_spread;
+mod local_avoidance;
 mod nanobot_presentation;
 mod navigation_geometry;
 mod opponent_gameplay_loop;
@@ -70,6 +73,24 @@ fn main() -> std::process::ExitCode {
     // Each test is ignored so default run skips GPU setup. `--ignored` runs
     // only ignored tests, matching standard `cargo test` convention.
     let tests = vec![
+        Trial::test("startup_formations", || {
+            run(local_avoidance::startup_formations)
+        })
+        .with_ignored_flag(true),
+        Trial::test("production_exit", || {
+            run(construction_lifecycle::production_exit)
+        })
+        .with_ignored_flag(true),
+        Trial::test("construction_clearing", || {
+            run(construction_lifecycle::construction_clearing)
+        })
+        .with_ignored_flag(true),
+        Trial::test("construction_cancellation", || {
+            run(construction_lifecycle::construction_cancellation)
+        })
+        .with_ignored_flag(true),
+        Trial::test("local_avoidance", || run(local_avoidance::local_avoidance))
+            .with_ignored_flag(true),
         Trial::test(
             "harness_screenshot_requests_pause_and_resume",
             regression::screenshot_requests_pause_and_resume,
@@ -125,6 +146,10 @@ fn main() -> std::process::ExitCode {
         .with_ignored_flag(true),
         Trial::test("integrated_combat_presentation", || {
             run(combat_presentation::integrated_combat_presentation)
+        })
+        .with_ignored_flag(true),
+        Trial::test("construction_access", || {
+            run(construction_access::construction_access)
         })
         .with_ignored_flag(true),
         Trial::test("build_zone_placement", || {

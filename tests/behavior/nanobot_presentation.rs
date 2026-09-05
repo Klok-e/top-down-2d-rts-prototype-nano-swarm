@@ -11,8 +11,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
         VelocityComponent, production_facility_work_system,
     },
     scenario::{
-        OPPONENT_CELL, OPPONENT_START_DEFENDERS, OPPONENT_START_HAULERS, OPPONENT_START_WORKERS,
-        PLAYER_START_DEFENDERS, PLAYER_START_HAULERS, PLAYER_START_WORKERS, cell_origin,
+        OPPONENT_START_DEFENDERS, OPPONENT_START_HAULERS, OPPONENT_START_WORKERS,
+        PLAYER_START_DEFENDERS, PLAYER_START_HAULERS, PLAYER_START_WORKERS,
         spawn_default_opponent_scenario, spawn_default_player_scenario,
     },
 };
@@ -108,28 +108,31 @@ fn authored_nanobots_render_through_one_neutral_presentation_child() {
     });
     assert_eq!(actual_counts, expected_counts);
 
+    for (index, first) in roots.iter().enumerate() {
+        for second in &roots[index + 1..] {
+            assert!(
+                first.3.translation.distance(second.3.translation) >= 71.99,
+                "authored seed bodies must begin separated"
+            );
+        }
+    }
     for (root, kind, swarm, transform, health, velocity, commitment) in roots {
-        let expected_position = if swarm == SwarmId::PLAYER {
-            Vec2::new(220.0, 256.0)
+        let expected_columns = if swarm == SwarmId::PLAYER {
+            [76.0, 148.0, 220.0]
         } else {
-            cell_origin(OPPONENT_CELL)
+            [1792.0, 1864.0, 1936.0]
         };
-        let expected_translation = expected_position.extend(GAMEPLAY_SPRITE_Z);
-        assert_abs_diff_eq!(
-            transform.translation.x,
-            expected_translation.x,
-            epsilon = 0.01
+        assert!(
+            expected_columns
+                .iter()
+                .any(|x| (transform.translation.x - x).abs() < 0.01)
         );
-        assert_abs_diff_eq!(
-            transform.translation.y,
-            expected_translation.y,
-            epsilon = 0.01
+        assert!(
+            [184.0, 256.0, 328.0]
+                .iter()
+                .any(|y| (transform.translation.y - y).abs() < 0.01)
         );
-        assert_abs_diff_eq!(
-            transform.translation.z,
-            expected_translation.z,
-            epsilon = 0.01
-        );
+        assert_abs_diff_eq!(transform.translation.z, GAMEPLAY_SPRITE_Z, epsilon = 0.01);
         let full_health = Health::default();
         assert_eq!(health.current, full_health.current);
         assert_eq!(health.max, full_health.max);
@@ -199,6 +202,7 @@ fn authored_nanobots_render_through_one_neutral_presentation_child() {
 #[test]
 fn produced_nanobots_use_the_same_type_and_faction_visual_children() {
     let mut app = App::new();
+    app.insert_resource(top_down_2d_rts_prototype_nano_swarm::intent::IntentGrid::new(8, 8));
     app.add_plugins(TaskPoolPlugin::default())
         .add_plugins(AssetPlugin::default())
         .init_asset::<Image>()
@@ -248,6 +252,7 @@ fn produced_nanobots_use_the_same_type_and_faction_visual_children() {
 #[test]
 fn production_remains_asset_free_without_the_presentation_plugin() {
     let mut app = App::new();
+    app.insert_resource(top_down_2d_rts_prototype_nano_swarm::intent::IntentGrid::new(8, 8));
     app.add_systems(Update, production_facility_work_system);
     let expected = common::spawn_completed_facilities_for_all_nanobot_types(&mut app, SwarmId(17));
 

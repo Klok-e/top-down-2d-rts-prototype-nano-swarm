@@ -497,7 +497,12 @@ fn hauler_routes_to_facility_from_sink_stockpile_leg3() {
         .id();
     let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
 
-    app.update();
+    for _ in 0..120 {
+        app.update();
+        if app.world().get::<HaulerAssignment>(hauler).is_some() {
+            break;
+        }
+    }
 
     let assignment = app
         .world()
@@ -519,8 +524,17 @@ fn hauler_routes_to_facility_from_sink_stockpile_leg3() {
 
     // Drive the trip and confirm material physically reaches the
     // hopper (production is off, so the hopper only grows).
-    for _ in 0..120 {
+    for _ in 0..300 {
         app.update();
+        if app
+            .world()
+            .get::<ProductionFacility>(facility)
+            .unwrap()
+            .input_amount
+            > 0
+        {
+            break;
+        }
     }
     let input = app
         .world()
@@ -561,7 +575,12 @@ fn hauler_reserves_partial_facility_leg_when_hopper_has_less_space_than_capacity
         .id();
     let hauler = common::spawn_hauler_at(&mut app, sink_pos + Vec2::new(-68.0, 0.0));
 
-    app.update();
+    for _ in 0..120 {
+        app.update();
+        if app.world().get::<LogisticsReservation>(hauler).is_some() {
+            break;
+        }
+    }
 
     let reservation = app
         .world()
@@ -590,7 +609,12 @@ fn hauler_never_picks_source_stockpile_as_sink() {
     app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
     let hauler = common::spawn_hauler_at(&mut app, source_pos + Vec2::new(-68.0, 0.0));
 
-    app.update();
+    for _ in 0..120 {
+        app.update();
+        if app.world().get::<HaulerAssignment>(hauler).is_some() {
+            break;
+        }
+    }
 
     let assignment = app
         .world()

@@ -93,3 +93,15 @@ mod exterior_haul;
 mod exterior_movement;
 #[path = "behavior/exterior_work.rs"]
 mod exterior_work;
+#[path = "behavior/local_avoidance.rs"]
+mod local_avoidance;
+#[path = "behavior/production_exits.rs"]
+mod production_exits;
+
+#[path = "behavior/construction_access.rs"]
+mod construction_access;
+#[path = "behavior/structure_clearing.rs"]
+mod structure_clearing;
+
+#[path = "behavior/navigation_budget.rs"]
+mod navigation_budget;

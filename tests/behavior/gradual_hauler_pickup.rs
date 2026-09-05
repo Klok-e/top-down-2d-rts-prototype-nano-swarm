@@ -34,7 +34,12 @@ fn hauler_reserves_partial_terminal_load_then_picks_it_up_gradually() {
         .resource_mut::<ResourceLedger>()
         .add(ResourceKind::Minerals, source_amount);
 
-    app.update();
+    for _ in 0..120 {
+        app.update();
+        if app.world().get::<LogisticsReservation>(hauler).is_some() {
+            break;
+        }
+    }
 
     let reservation = *app
         .world()
@@ -125,7 +130,15 @@ fn same_tick_haulers_reserve_only_available_source_and_destination() {
     let first = common::spawn_hauler_at(&mut app, Vec2::ZERO);
     let second = common::spawn_hauler_at(&mut app, Vec2::ZERO);
 
-    app.update();
+    for _ in 0..120 {
+        app.update();
+        if [first, second]
+            .iter()
+            .all(|entity| app.world().get::<LogisticsReservation>(*entity).is_some())
+        {
+            break;
+        }
+    }
 
     let reservations = [first, second]
         .into_iter()
@@ -397,7 +410,16 @@ fn loaded_hauler_from_source_reroutes_only_to_same_swarm_sink() {
         reservation,
     ));
 
-    app.update();
+    for _ in 0..120 {
+        app.update();
+        if app
+            .world()
+            .get::<HaulerAssignment>(hauler)
+            .is_some_and(|a| a.sink == replacement)
+        {
+            break;
+        }
+    }
 
     let assignment = app
         .world()
@@ -457,7 +479,16 @@ fn loaded_hauler_returns_to_source_when_destination_is_missing_and_no_terminal_e
         reservation,
     ));
 
-    app.update();
+    for _ in 0..120 {
+        app.update();
+        if app
+            .world()
+            .get::<HaulerAssignment>(hauler)
+            .is_some_and(|a| a.sink == source)
+        {
+            break;
+        }
+    }
 
     assert_eq!(
         app.world()
@@ -579,7 +610,16 @@ fn same_tick_reroutes_cannot_overbook_replacement_capacity() {
         ));
     }
 
-    app.update();
+    for _ in 0..120 {
+        app.update();
+        if haulers.iter().all(|entity| {
+            app.world()
+                .get::<LogisticsReservation>(*entity)
+                .is_some_and(|r| r.destination == replacement || r.destination_remaining == 0)
+        }) {
+            break;
+        }
+    }
 
     let claims = haulers
         .into_iter()
