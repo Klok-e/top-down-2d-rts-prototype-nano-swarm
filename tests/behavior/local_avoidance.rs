@@ -4,6 +4,99 @@ use top_down_2d_rts_prototype_nano_swarm::nanobot::DirectMovementComponent;
 mod common;
 
 #[test]
+fn opposing_types_pass_structure_corners_and_deposits_with_body_clearance() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{NanobotType, SwarmId, SwarmMember};
+    for kind in [
+        NanobotType::Worker,
+        NanobotType::Hauler,
+        NanobotType::Defender,
+    ] {
+        let mut app = common::sim_app_with_movement();
+        let wall = common::spawn_structure_at(&mut app, Vec2::new(432., 324.));
+        app.world_mut().get_mut::<Transform>(wall).unwrap().scale = Vec3::new(4.5, 2.25, 1.);
+        common::spawn_deposit(
+            &mut app,
+            common::DepositFixture {
+                world_pos: Vec2::new(720., 324.),
+                amount: 0,
+                capacity: 20,
+                radius: 72.,
+            },
+        );
+        let starts = [Vec2::new(180., 324.), Vec2::new(1008., 324.)];
+        let goals = [starts[1], starts[0]];
+        let bots = starts.map(|position| common::spawn_worker_at(&mut app, position));
+        for ((entity, xy), swarm) in bots
+            .into_iter()
+            .zip(goals)
+            .zip([SwarmId::PLAYER, SwarmId(42)])
+        {
+            app.world_mut().entity_mut(entity).insert((
+                kind,
+                SwarmMember(swarm),
+                DirectMovementComponent {
+                    xy,
+                    stop_radius: 0.,
+                    interaction: None,
+                    speed: None,
+                },
+            ));
+        }
+        let mut previous = starts;
+        let mut completed_routes = 0;
+        for tick in 0..1000 {
+            app.update();
+            completed_routes += app
+                .world()
+                .resource::<top_down_2d_rts_prototype_nano_swarm::navigation::Navigation>()
+                .work()
+                .completed;
+            let now = bots.map(|entity| {
+                app.world()
+                    .get::<Transform>(entity)
+                    .unwrap()
+                    .translation
+                    .truncate()
+            });
+            // Substeps check the literal authored shapes independently of navigation predicates.
+            for sample in 0..=20 {
+                let points =
+                    [0, 1].map(|index| previous[index].lerp(now[index], sample as f32 / 20.));
+                assert!(
+                    points[0].distance(points[1]) >= 67.99,
+                    "{kind:?} pair overlap at tick {tick}: {previous:?} -> {now:?}"
+                );
+                for point in points {
+                    let wall_distance = ((point - Vec2::new(432., 324.)).abs()
+                        - Vec2::new(144., 72.))
+                    .max(Vec2::ZERO)
+                    .length();
+                    assert!(
+                        wall_distance >= 33.99,
+                        "{kind:?} clipped corner at {point:?}"
+                    );
+                    assert!(
+                        point.distance(Vec2::new(720., 324.)) >= 105.99,
+                        "{kind:?} clipped depleted deposit at {point:?}"
+                    );
+                }
+            }
+            previous = now;
+        }
+        assert_eq!(
+            completed_routes, 2,
+            "crowds must not request a global detour"
+        );
+        for index in 0..2 {
+            assert!(
+                previous[index].distance(goals[index]) < 3.,
+                "{kind:?} stalled: {previous:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn opposing_bodies_pass_without_swept_overlap_in_open_space() {
     let mut app = common::sim_app_with_movement();
     let a = common::spawn_worker_at(&mut app, Vec2::new(200., 300.));
@@ -250,8 +343,14 @@ fn following_traffic_yields_with_the_front_bot_in_a_bottleneck() {
                 });
         }
         let mut previous = starts;
+        let mut completed_routes = 0;
         for _ in 0..1500 {
             app.update();
+            completed_routes += app
+                .world()
+                .resource::<top_down_2d_rts_prototype_nano_swarm::navigation::Navigation>()
+                .work()
+                .completed;
             let now = bots.map(|entity| {
                 app.world()
                     .get::<Transform>(entity)
@@ -281,6 +380,10 @@ fn following_traffic_yields_with_the_front_bot_in_a_bottleneck() {
             }
             previous = now;
         }
+        assert_eq!(
+            completed_routes, 4,
+            "streams must retain their global routes"
+        );
         for index in 0..4 {
             assert!(
                 previous[index].distance(goals[index]) < 3.,
