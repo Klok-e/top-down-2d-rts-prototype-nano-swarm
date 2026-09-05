@@ -13,6 +13,14 @@ use top_down_2d_rts_prototype_nano_swarm::{
 #[path = "../common/mod.rs"]
 mod common;
 
+fn movement_stays_in_current_cell(app: &App, defender: Entity) -> bool {
+    let entity = app.world().entity(defender);
+    let current = world_to_cell(entity.get::<Transform>().unwrap().translation.truncate());
+    entity
+        .get::<DirectMovementComponent>()
+        .is_none_or(|movement| world_to_cell(movement.xy) == current)
+}
+
 #[test]
 fn adding_owned_defend_paint_retargets_on_the_next_fixed_step() {
     let mut app = common::sim_app();
@@ -189,20 +197,14 @@ fn large_cohort_avoids_crossed_travel_when_local_balanced_slots_exist() {
 
     for defender in &defenders {
         assert!(
-            app.world()
-                .entity(*defender)
-                .get::<DirectMovementComponent>()
-                .is_none(),
+            movement_stays_in_current_cell(&app, *defender),
             "the 66-to-65 physical split already fills the balanced local layout",
         );
     }
     app.update();
     for defender in defenders {
         assert!(
-            app.world()
-                .entity(defender)
-                .get::<DirectMovementComponent>()
-                .is_none(),
+            movement_stays_in_current_cell(&app, defender),
             "the unchanged large-cohort layout should not introduce crossed travel",
         );
     }
@@ -275,10 +277,7 @@ fn balanced_layout_chooses_the_extra_slot_that_minimizes_travel() {
     );
     for defender in [west_defender, east_defender] {
         assert!(
-            app.world()
-                .entity(defender)
-                .get::<DirectMovementComponent>()
-                .is_none(),
+            movement_stays_in_current_cell(&app, defender),
             "Defenders already filling required cells should not be displaced",
         );
     }
@@ -392,10 +391,7 @@ fn erasing_defend_paint_retargets_only_the_now_displaced_defender() {
         .expect("the Defender on erased paint should join the remaining staging cell");
     assert_eq!(world_to_cell(east_movement.xy), west);
     assert!(
-        app.world()
-            .entity(west_defender)
-            .get::<DirectMovementComponent>()
-            .is_none(),
+        movement_stays_in_current_cell(&app, west_defender),
         "the Defender already filling the remaining staging cell should stay there",
     );
 }
@@ -503,6 +499,8 @@ fn engaged_defenders_do_not_consume_staging_slots() {
             charger: Entity::PLACEHOLDER,
         },
         DirectMovementComponent {
+            speed: None,
+            interaction: None,
             xy: empty_center,
             stop_radius: 0.0,
         },
@@ -568,6 +566,8 @@ fn returning_response_and_charge_defenders_join_the_current_layout() {
             charger: Entity::PLACEHOLDER,
         },
         DirectMovementComponent {
+            speed: None,
+            interaction: None,
             xy: old_east_center,
             stop_radius: 0.0,
         },
@@ -607,10 +607,7 @@ fn returning_response_and_charge_defenders_join_the_current_layout() {
     }
     for incumbent in [west_incumbent, east_incumbent] {
         assert!(
-            app.world()
-                .entity(incumbent)
-                .get::<DirectMovementComponent>()
-                .is_none(),
+            movement_stays_in_current_cell(&app, incumbent),
             "returning duty should not displace a valid incumbent",
         );
     }
@@ -629,10 +626,7 @@ fn unowned_defend_paint_does_not_replace_current_cell_fallback() {
     app.update();
 
     assert!(
-        app.world()
-            .entity(defender)
-            .get::<DirectMovementComponent>()
-            .is_none(),
+        movement_stays_in_current_cell(&app, defender),
         "shared unowned paint is neither owned Defend staging nor a Swarm Tile",
     );
 }

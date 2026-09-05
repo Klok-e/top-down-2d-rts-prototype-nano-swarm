@@ -224,6 +224,8 @@ fn spread_skips_bot_with_direct_movement_component() {
     app.world_mut()
         .entity_mut(bot)
         .insert(DirectMovementComponent {
+            speed: None,
+            interaction: None,
             xy: Vec2::new(1000.0, 0.0),
             stop_radius: 0.0,
         });

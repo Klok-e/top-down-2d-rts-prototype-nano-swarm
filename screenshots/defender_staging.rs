@@ -235,10 +235,18 @@ fn physical_counts<const N: usize>(
     Some(counts)
 }
 
+fn movement_stays_in_current_cell(world: &World, entity: Entity) -> bool {
+    world
+        .get::<DirectMovementComponent>(entity)
+        .is_none_or(|movement| {
+            world_to_cell(movement.xy) == world_to_cell(defender_position(world, entity))
+        })
+}
+
 fn assert_no_cross_cell_movement(world: &World, defenders: &[Entity; DEFENDER_COUNT]) {
     for entity in defenders {
         assert!(
-            world.get::<DirectMovementComponent>(*entity).is_none(),
+            movement_stays_in_current_cell(world, *entity),
             "balanced Defender {entity:?} should have completed cross-cell travel",
         );
     }
@@ -504,7 +512,7 @@ fn advance_scene(world: &mut World, evidence: &mut StagingEvidence) -> TestFlow 
                 && evidence
                     .defenders
                     .iter()
-                    .all(|entity| world.get::<DirectMovementComponent>(*entity).is_none())
+                    .all(|entity| movement_stays_in_current_cell(world, *entity))
             {
                 evidence.initial_positions = defender_positions(world, &evidence.defenders);
                 set_phase(evidence, EvidencePhase::AwaitInitialRoaming);
@@ -590,7 +598,7 @@ fn advance_scene(world: &mut World, evidence: &mut StagingEvidence) -> TestFlow 
                 && evidence
                     .defenders
                     .iter()
-                    .all(|entity| world.get::<DirectMovementComponent>(*entity).is_none())
+                    .all(|entity| movement_stays_in_current_cell(world, *entity))
             {
                 evidence.hostile = Some(spawn_hostile(world));
                 set_phase(evidence, EvidencePhase::AwaitInterception);
@@ -745,7 +753,7 @@ fn advance_scene(world: &mut World, evidence: &mut StagingEvidence) -> TestFlow 
                 && evidence
                     .defenders
                     .iter()
-                    .all(|entity| world.get::<DirectMovementComponent>(*entity).is_none())
+                    .all(|entity| movement_stays_in_current_cell(world, *entity))
             {
                 world.resource_mut::<Time<Virtual>>().pause();
                 assert_returned_to_current_staging(world, evidence);

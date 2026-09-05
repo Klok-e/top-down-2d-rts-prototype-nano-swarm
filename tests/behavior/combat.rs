@@ -438,6 +438,8 @@ fn physical_defender_presence_is_independent_of_current_duty() {
                 app.world_mut()
                     .entity_mut(challenger)
                     .insert(DirectMovementComponent {
+                        speed: None,
+                        interaction: None,
                         xy: center + Vec2::X * 200.0,
                         stop_radius: 0.0,
                     });

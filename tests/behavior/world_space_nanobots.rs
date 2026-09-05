@@ -358,6 +358,8 @@ fn stop_radius_zero_falls_through_to_stop_threshold() {
     // distance <= STOP_THRESHOLD (2.0) past `dest`.
     app.world_mut().entity_mut(bot).insert(
         top_down_2d_rts_prototype_nano_swarm::nanobot::DirectMovementComponent {
+            speed: None,
+            interaction: None,
             xy: dest,
             stop_radius: 0.0,
         },
@@ -405,6 +407,8 @@ fn stop_radius_uses_max_with_stop_threshold() {
         .id();
     app.world_mut().entity_mut(bot).insert(
         top_down_2d_rts_prototype_nano_swarm::nanobot::DirectMovementComponent {
+            speed: None,
+            interaction: None,
             xy: dest,
             stop_radius: 32.0,
         },

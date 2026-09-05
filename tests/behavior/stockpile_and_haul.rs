@@ -116,7 +116,7 @@ fn stockpile_not_emerged_for_corridor_only_cell() {
 fn hauler_ignores_enemy_owned_sink() {
     let mut app = build_app();
     let source_pos = Vec2::new(0.0, 0.0);
-    let enemy_sink_pos = Vec2::new(50.0, 0.0);
+    let enemy_sink_pos = Vec2::new(200.0, 0.0);
     let player_sink_pos = Vec2::new(500.0, 0.0);
     let enemy_swarm = app
         .world_mut()
@@ -142,7 +142,7 @@ fn hauler_ignores_enemy_owned_sink() {
     app.world_mut()
         .entity_mut(player_sink)
         .insert(OwnerSwarm(player_swarm));
-    let hauler = common::spawn_hauler_at(&mut app, source_pos);
+    let hauler = common::spawn_hauler_at(&mut app, source_pos + Vec2::new(-68.0, 0.0));
 
     for _ in 0..3 {
         app.update();
@@ -175,7 +175,7 @@ fn hauler_assigns_to_source_and_sink() {
     let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
     app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
-    let hauler = common::spawn_hauler_at(&mut app, source_pos);
+    let hauler = common::spawn_hauler_at(&mut app, source_pos + Vec2::new(-68.0, 0.0));
 
     for _ in 0..3 {
         app.update();
@@ -345,12 +345,12 @@ fn hauler_transports_source_to_sink_end_to_end() {
     let mut app = build_app();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let source_pos = Vec2::new(100.0, 0.0);
-    let sink_pos = Vec2::new(200.0, 0.0);
+    let sink_pos = Vec2::new(300.0, 0.0);
     let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
     let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
     app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
-    let hauler = common::spawn_hauler_at(&mut app, source_pos);
+    let hauler = common::spawn_hauler_at(&mut app, source_pos + Vec2::new(68.0, 0.0));
     // Initial total physical resources in the world: the source
     // stockpile holds 1000 minerals. The ResourceLedger is
     // updated on every pickup and delivery, so the conservation
@@ -415,73 +415,49 @@ fn hauler_does_not_pick_work_when_no_source_available() {
 
 #[test]
 fn resource_ledger_stays_consistent_through_transport() {
-    // The ledger total must equal the sum of physical resources
-    // across deposits and stockpiles after a chain of hauler
-    // trips. The ledger is updated on every pickup and delivery,
-    // so it stays a real-time view of swarm resources.
     let mut app = build_app();
-    let deposit_pos = Vec2::new(100.0, 0.0);
-    let stockpile_pos = Vec2::new(200.0, 0.0);
-    let deposit = common::spawn_deposit(
-        &mut app,
-        common::DepositFixture {
-            world_pos: deposit_pos,
-            amount: 200,
-            capacity: 1000,
-            radius: 32.0,
-        },
-    );
-    let stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
-    let _hauler = common::spawn_hauler_at(&mut app, deposit_pos);
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let source = common::spawn_stockpile(&mut app, Vec2::new(100.0, 0.0), 200, 200);
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(300.0, 0.0), 0, 200);
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
+    app.world_mut()
+        .resource_mut::<ResourceLedger>()
+        .add(ResourceKind::Minerals, 200);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(168.0, 0.0));
+    let mut carried_during_transit = false;
 
-    // The ResourceLedger starts at 0 because pre-existing
-    // deposits are not yet in the ledger (only physical
-    // movements are). The first delivery is what populates it.
-    {
-        let initial_ledger = app
-            .world()
-            .resource::<ResourceLedger>()
-            .total(ResourceKind::Minerals);
+    for _ in 0..50 {
+        app.update();
+        let world = app.world();
+        let source_amount = world.entity(source).get::<Stockpile>().unwrap().amount;
+        let sink_amount = world.entity(sink).get::<Stockpile>().unwrap().amount;
+        let cargo = world
+            .entity(hauler)
+            .get::<HaulerLoad>()
+            .map_or(0, |load| load.amount);
+        carried_during_transit |= cargo > 0;
         assert_eq!(
-            initial_ledger, 0,
-            "deposit pre-load: nothing in the ledger yet"
+            source_amount + sink_amount + cargo,
+            200,
+            "physical custody survives each pickup, travel and unload tick"
+        );
+        assert_eq!(
+            world
+                .resource::<ResourceLedger>()
+                .total(ResourceKind::Minerals),
+            200,
+            "transport within a swarm leaves its ledger unchanged"
         );
     }
 
-    // Drive enough ticks for the hauler to load, travel to the
-    // sink, deliver, and complete at least one round trip.
-    //   1 arrive + 5 load + 20 travel + 1 delivery = 27 ticks.
-    //   Plus a margin for the return trip's start = 50 ticks.
-    for _ in 0..50 {
-        app.update();
-    }
-
-    let world = app.world();
-    let deposit_amount = world
-        .entity(deposit)
-        .get::<ResourceDeposit>()
-        .unwrap()
-        .amount;
-    let stockpile_amount = world.entity(stockpile).get::<Stockpile>().unwrap().amount;
-    let ledger = world
-        .resource::<ResourceLedger>()
-        .total(ResourceKind::Minerals);
-
-    // The ledger is updated on every pickup (decrement) and
-    // delivery (increment). With a starting ledger of 0 and the
-    // initial deposit not yet in the ledger, the ledger equals
-    // the net amount currently in the swarm -- which is the
-    // amount that has been delivered to the sink so far.
-    assert_eq!(
-        ledger, stockpile_amount,
-        "ledger tracks deliveries: ledger == sink amount"
-    );
-    // The deposit and sink together hold at most the initial
-    // total; the hauler load is in flight and is also tracked
-    // by the ledger.
     assert!(
-        deposit_amount + stockpile_amount <= 200,
-        "physical resources never exceed the initial total"
+        carried_during_transit,
+        "minerals physically travel as Hauler cargo"
+    );
+    assert!(
+        app.world().entity(sink).get::<Stockpile>().unwrap().amount > 0,
+        "transport reaches the destination"
     );
 }
 
@@ -502,9 +478,9 @@ fn hauler_routes_to_facility_from_sink_stockpile_leg3() {
     // only actor touching the facility's hopper.
     app.insert_resource(ProductionPriority::new());
     let hauler_pos = Vec2::new(0.0, 0.0);
-    let source_pos = Vec2::new(50.0, 0.0); // source-role, closer to hauler
-    let sink_pos = Vec2::new(100.0, 0.0); // sink-role
-    let facility_pos = Vec2::new(140.0, 0.0);
+    let source_pos = Vec2::new(100.0, -180.0); // source-role, closer to hauler
+    let sink_pos = Vec2::new(250.0, 0.0); // sink-role
+    let facility_pos = Vec2::new(450.0, 0.0);
     let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
     let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 1000, 1000);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
@@ -543,7 +519,7 @@ fn hauler_routes_to_facility_from_sink_stockpile_leg3() {
 
     // Drive the trip and confirm material physically reaches the
     // hopper (production is off, so the hopper only grows).
-    for _ in 0..60 {
+    for _ in 0..120 {
         app.update();
     }
     let input = app
@@ -570,7 +546,7 @@ fn hauler_reserves_partial_facility_leg_when_hopper_has_less_space_than_capacity
     let mut app = build_app();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let sink_pos = Vec2::new(100.0, 0.0);
-    let facility_pos = Vec2::new(140.0, 0.0);
+    let facility_pos = Vec2::new(450.0, 0.0);
     let source = common::spawn_sink_stockpile(&mut app, sink_pos, 1000, 1000);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
     let mut facility = ProductionFacility::new();
@@ -583,7 +559,7 @@ fn hauler_reserves_partial_facility_leg_when_hopper_has_less_space_than_capacity
             Transform::from_translation(facility_pos.extend(0.0)),
         ))
         .id();
-    let hauler = common::spawn_hauler_at(&mut app, sink_pos);
+    let hauler = common::spawn_hauler_at(&mut app, sink_pos + Vec2::new(-68.0, 0.0));
 
     app.update();
 
@@ -612,7 +588,7 @@ fn hauler_never_picks_source_stockpile_as_sink() {
     let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
     app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
-    let hauler = common::spawn_hauler_at(&mut app, source_pos);
+    let hauler = common::spawn_hauler_at(&mut app, source_pos + Vec2::new(-68.0, 0.0));
 
     app.update();
 

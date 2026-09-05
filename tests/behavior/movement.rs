@@ -15,6 +15,8 @@ fn combined_direct_and_separation_velocity_is_clamped_to_bot_speed() {
     app.world_mut()
         .entity_mut(mover)
         .insert(DirectMovementComponent {
+            speed: None,
+            interaction: None,
             xy: Vec2::new(-100.0, 0.0),
             stop_radius: 0.0,
         });

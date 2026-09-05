@@ -134,7 +134,7 @@ pub fn spawn_default_player_scenario(
     // structure" bug.
     spawn_seed_nanobots(
         commands,
-        player_pos,
+        player_pos - Vec2::new(36.0, 0.0),
         SwarmId::PLAYER,
         &[
             (NanobotType::Worker, PLAYER_START_WORKERS),

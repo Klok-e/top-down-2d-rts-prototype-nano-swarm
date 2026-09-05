@@ -4,7 +4,7 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
-    nanobot::{DirectMovementComponent, HaulerAssignment, HaulerRoute, OwnerSwarm},
+    nanobot::{DirectMovementComponent, HaulerAssignment, OwnerSwarm},
 };
 
 #[path = "../common/mod.rs"]
@@ -28,40 +28,6 @@ fn paint_corridor(app: &mut App, cell: IVec2) {
         app.world_mut()
             .resource_mut::<IntentGrid>()
             .paint(cell, IntentKind::Corridor)
-    );
-}
-
-fn route_visits_row(route: &HaulerRoute, y: i32) -> bool {
-    route
-        .waypoints
-        .iter()
-        .any(|point| top_down_2d_rts_prototype_nano_swarm::nanobot::world_to_cell(*point).y == y)
-}
-
-#[test]
-fn hauler_uses_route_system_without_corridor_paint() {
-    let mut app = build_app();
-    let hauler_pos = Vec2::new(0.0, 0.0);
-    let source_pos = Vec2::new(3.0 * ZONE_BLOCK_SIZE, 0.0);
-    let sink_pos = Vec2::new(3.5 * ZONE_BLOCK_SIZE, 0.0);
-    let _source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
-    let _sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
-    own_for_player(&mut app, &[_source, _sink]);
-    let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
-
-    app.update();
-
-    let route = app
-        .world()
-        .entity(hauler)
-        .get::<HaulerRoute>()
-        .expect("hauler source leg should use a route even without corridor paint");
-    assert!(
-        route.waypoints.iter().all(|point| {
-            top_down_2d_rts_prototype_nano_swarm::nanobot::world_to_cell(*point).y == 0
-        }),
-        "unpainted route should follow the shortest row; got {:?}",
-        route.waypoints
     );
 }
 
@@ -89,29 +55,6 @@ fn corridor_only_intent_does_not_create_hauling_job() {
             .is_none(),
         "corridor must not give the hauler a destination"
     );
-    assert!(
-        app.world().entity(hauler).get::<HaulerRoute>().is_none(),
-        "corridor must not create a route without a logistics leg"
-    );
-}
-
-#[test]
-fn route_follower_reissues_current_waypoint_when_timeout_strips_dmc() {
-    let mut app = build_app();
-    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(0.0, 0.0));
-    let waypoint = Vec2::new(ZONE_BLOCK_SIZE, 0.0);
-    app.world_mut()
-        .entity_mut(hauler)
-        .insert(HaulerRoute::new(vec![waypoint], 0.0));
-
-    app.update();
-
-    let dmc = app
-        .world()
-        .entity(hauler)
-        .get::<DirectMovementComponent>()
-        .expect("route follower should restore movement to the active waypoint");
-    assert_eq!(dmc.xy, waypoint);
 }
 
 #[test]
@@ -124,7 +67,8 @@ fn leg_selection_uses_corridor_biased_route_cost() {
     let near_sink = common::spawn_sink_stockpile(&mut app, near_sink_pos, 0, 1000);
     let corridor_sink = common::spawn_sink_stockpile(&mut app, corridor_sink_pos, 0, 1000);
     own_for_player(&mut app, &[source, near_sink, corridor_sink]);
-    let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(68.0, 0.0));
+    paint_corridor(&mut app, IVec2::new(1, 0));
     paint_corridor(&mut app, IVec2::new(2, 0));
     paint_corridor(&mut app, IVec2::new(3, 0));
 
@@ -144,122 +88,237 @@ fn leg_selection_uses_corridor_biased_route_cost() {
 }
 
 #[test]
-fn source_leg_route_can_take_physically_longer_corridor_detour() {
+fn source_leg_moves_through_the_painted_corridor() {
     let mut app = build_app();
-    let hauler_pos = Vec2::new(0.0, 0.0);
-    let source_pos = Vec2::new(3.0 * ZONE_BLOCK_SIZE, 0.0);
-    let sink_pos = Vec2::new(3.5 * ZONE_BLOCK_SIZE, 0.0);
-    let _source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
-    let _sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
-    own_for_player(&mut app, &[_source, _sink]);
-    let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
-
-    for cell in [
-        IVec2::new(0, 1),
-        IVec2::new(1, 1),
-        IVec2::new(2, 1),
-        IVec2::new(3, 1),
-    ] {
-        paint_corridor(&mut app, cell);
+    let source = common::spawn_stockpile(&mut app, Vec2::new(1536.0, 256.0), 1000, 1000);
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(1792.0, 256.0), 0, 1000);
+    own_for_player(&mut app, &[source, sink]);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(0.0, 256.0));
+    for x in 0..4 {
+        paint_corridor(&mut app, IVec2::new(x, 1));
     }
-
-    app.update();
-
-    let route = app
-        .world()
-        .entity(hauler)
-        .get::<HaulerRoute>()
-        .expect("hauler should have a source-leg route");
+    let mut entered_corridor = false;
+    let mut furthest_y = 0.0_f32;
+    for _ in 0..500 {
+        app.update();
+        let position = app
+            .world()
+            .entity(hauler)
+            .get::<Transform>()
+            .unwrap()
+            .translation
+            .truncate();
+        entered_corridor |= position.y >= 512.0;
+        furthest_y = furthest_y.max(position.y);
+        if position.x > 1200.0 {
+            break;
+        }
+    }
     assert!(
-        route_visits_row(route, 1),
-        "strong corridor detour should bias route; got {:?}",
-        route.waypoints
+        entered_corridor,
+        "hauler should physically use the discounted corridor on the source leg; furthest y={furthest_y}"
     );
 }
 
 #[test]
-fn route_stays_stable_after_corridor_paint_changes() {
+fn carry_leg_moves_through_the_painted_corridor() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{Cargo, LogisticsReservation},
+        resources::ResourceKind,
+    };
     let mut app = build_app();
-    let hauler_pos = Vec2::new(0.0, 0.0);
-    let source_pos = Vec2::new(3.0 * ZONE_BLOCK_SIZE, 0.0);
-    let sink_pos = Vec2::new(3.5 * ZONE_BLOCK_SIZE, 0.0);
-    let _source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
-    let _sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
-    own_for_player(&mut app, &[_source, _sink]);
-    let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
-
-    let cells = [
-        IVec2::new(0, 1),
-        IVec2::new(1, 1),
-        IVec2::new(2, 1),
-        IVec2::new(3, 1),
-    ];
-    for cell in cells {
-        paint_corridor(&mut app, cell);
+    let source = common::spawn_stockpile(&mut app, Vec2::new(0.0, 256.0), 1000, 1000);
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(1536.0, 256.0), 0, 1000);
+    own_for_player(&mut app, &[source, sink]);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(68.0, 256.0));
+    app.world_mut().entity_mut(hauler).insert((
+        HaulerAssignment { source, sink },
+        Cargo {
+            kind: ResourceKind::Minerals,
+            amount: 20,
+        },
+        LogisticsReservation::new(source, sink, ResourceKind::Minerals, 20),
+    ));
+    for x in 0..4 {
+        paint_corridor(&mut app, IVec2::new(x, 1));
     }
-
-    app.update();
-    let before = app
-        .world()
-        .entity(hauler)
-        .get::<HaulerRoute>()
-        .expect("hauler should have a route")
-        .waypoints
-        .clone();
-
-    for cell in cells {
-        assert!(
-            app.world_mut()
-                .resource_mut::<IntentGrid>()
-                .erase(cell, IntentKind::Corridor)
-        );
+    let mut entered_corridor = false;
+    let mut furthest_y = 0.0_f32;
+    for _ in 0..500 {
+        app.update();
+        let position = app
+            .world()
+            .entity(hauler)
+            .get::<Transform>()
+            .unwrap()
+            .translation
+            .truncate();
+        entered_corridor |= position.y >= 512.0;
+        furthest_y = furthest_y.max(position.y);
+        if position.x > 1200.0 {
+            break;
+        }
     }
-    app.update();
-
-    let after = app
-        .world()
-        .entity(hauler)
-        .get::<HaulerRoute>()
-        .expect("active logistics leg should keep its route")
-        .waypoints
-        .clone();
-    assert_eq!(after, before);
+    assert!(
+        entered_corridor,
+        "loaded hauler should physically use the discounted corridor on the delivery leg; furthest y={furthest_y}"
+    );
 }
 
 #[test]
-fn carry_leg_uses_corridor_biased_route_to_sink() {
+fn unreachable_pickup_does_not_commit_a_hauler_or_reserve_minerals() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::LogisticsReservation, resources::Stockpile,
+    };
     let mut app = build_app();
-    let source_pos = Vec2::new(0.0, 0.0);
-    let sink_pos = Vec2::new(3.0 * ZONE_BLOCK_SIZE, 0.0);
-    let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
-    let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
+    app.insert_resource(IntentGrid::new(4, 2));
+    let source = common::spawn_stockpile(&mut app, Vec2::new(512.0, 0.0), 100, 100);
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(768.0, 0.0), 0, 100);
     own_for_player(&mut app, &[source, sink]);
-    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(68.0, 0.0));
-
-    for cell in [
-        IVec2::new(0, 1),
-        IVec2::new(1, 1),
-        IVec2::new(2, 1),
-        IVec2::new(3, 1),
-    ] {
-        paint_corridor(&mut app, cell);
-    }
+    let wall = common::spawn_stockpile(&mut app, Vec2::new(256.0, 0.0), 0, 100);
     app.world_mut()
-        .entity_mut(hauler)
-        .insert(HaulerAssignment { source, sink });
+        .entity_mut(wall)
+        .insert(Transform::from_xyz(256.0, 0.0, 0.0).with_scale(Vec3::new(1.0, 64.0, 1.0)));
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
 
-    for _ in 0..8 {
+    app.update();
+
+    assert!(
+        app.world()
+            .entity(hauler)
+            .get::<HaulerAssignment>()
+            .is_none()
+    );
+    assert!(
+        app.world()
+            .entity(hauler)
+            .get::<LogisticsReservation>()
+            .is_none()
+    );
+    assert_eq!(
+        app.world()
+            .entity(source)
+            .get::<Stockpile>()
+            .unwrap()
+            .amount,
+        100
+    );
+}
+
+#[test]
+fn erasing_corridor_preserves_active_leg_but_changes_the_next_leg() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{Cargo, HaulerLoading},
+        resources::Stockpile,
+    };
+    let mut twins = [build_app(), build_app()].map(|mut app| {
+        let source = common::spawn_stockpile(&mut app, Vec2::new(1536.0, 256.0), 20, 20);
+        let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(0.0, 256.0), 0, 20);
+        own_for_player(&mut app, &[source, sink]);
+        let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-100.0, 256.0));
+        for x in 0..4 {
+            paint_corridor(&mut app, IVec2::new(x, 1));
+        }
         app.update();
+        app.update();
+        assert!(
+            app.world()
+                .entity(hauler)
+                .get::<DirectMovementComponent>()
+                .is_some()
+        );
+        assert!(
+            app.world()
+                .entity(hauler)
+                .get::<Transform>()
+                .unwrap()
+                .translation
+                .x
+                > -100.0
+        );
+        (app, hauler, sink)
+    });
+    for x in 0..4 {
+        assert!(
+            twins[1]
+                .0
+                .world_mut()
+                .resource_mut::<IntentGrid>()
+                .erase(IVec2::new(x, 1), IntentKind::Corridor)
+        );
     }
 
-    let route = app
-        .world()
-        .entity(hauler)
-        .get::<HaulerRoute>()
-        .expect("loaded hauler should have a carry-leg route");
+    let mut reached_source = false;
+    let mut source_leg_entered_corridor = false;
+    for _ in 0..600 {
+        let positions = twins.each_mut().map(|(app, hauler, _)| {
+            app.update();
+            app.world()
+                .entity(*hauler)
+                .get::<Transform>()
+                .unwrap()
+                .translation
+                .truncate()
+        });
+        assert!(
+            positions[0].distance(positions[1]) < 0.001,
+            "paint erasure must preserve the committed movement; positions={positions:?}"
+        );
+        source_leg_entered_corridor |= positions[0].y >= 512.0;
+        if twins[0]
+            .0
+            .world()
+            .entity(twins[0].1)
+            .get::<HaulerLoading>()
+            .is_some()
+        {
+            assert!(
+                twins[1]
+                    .0
+                    .world()
+                    .entity(twins[1].1)
+                    .get::<HaulerLoading>()
+                    .is_some()
+            );
+            reached_source = true;
+            break;
+        }
+    }
     assert!(
-        route_visits_row(route, 1),
-        "carry leg should follow corridor-biased route; got {:?}",
-        route.waypoints
+        reached_source,
+        "both haulers finish the committed source leg"
+    );
+    assert!(
+        source_leg_entered_corridor,
+        "the preserved leg physically uses the former corridor"
+    );
+
+    let mut delivery_max_y = [256.0_f32; 2];
+    let mut delivered = [false; 2];
+    for _ in 0..600 {
+        for (index, (app, hauler, sink)) in twins.iter_mut().enumerate() {
+            app.update();
+            let bot = app.world().entity(*hauler);
+            if bot.get::<Cargo>().is_some() && bot.get::<HaulerLoading>().is_none() {
+                delivery_max_y[index] =
+                    delivery_max_y[index].max(bot.get::<Transform>().unwrap().translation.y);
+            }
+            delivered[index] = app.world().entity(*sink).get::<Stockpile>().unwrap().amount == 20;
+        }
+        if delivered.into_iter().all(|done| done) {
+            break;
+        }
+    }
+    assert!(
+        delivered.into_iter().all(|done| done),
+        "both next legs deliver all twenty minerals"
+    );
+    assert!(
+        delivery_max_y[0] >= 512.0,
+        "retained paint guides the next delivery leg: {delivery_max_y:?}"
+    );
+    assert!(
+        delivery_max_y[1] < 400.0,
+        "erased paint makes the next delivery leg take the ordinary direct route: {delivery_max_y:?}"
     );
 }

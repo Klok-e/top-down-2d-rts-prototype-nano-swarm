@@ -98,6 +98,8 @@ pub fn move_action_system(
         // falls through to `STOP_THRESHOLD` in the
         // movement system.
         commands.entity(ent).insert(DirectMovementComponent {
+            speed: None,
+            interaction: None,
             xy: bot.destination,
             stop_radius: 0.0,
         });

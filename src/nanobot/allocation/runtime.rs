@@ -27,8 +27,8 @@ use crate::{
             Charge, Charger, ChargerAssignment, ChargerProgress, LOW_CHARGE_THRESHOLD,
             WEAKENED_CHARGE_THRESHOLD, minerals_to_fully_charge,
         },
-        hauler_route_cost, planned_route_movement,
     },
+    navigation::{Navigation, RouteOutcome},
     resources::{ResourceDeposit, ResourceKind, Stockpile},
 };
 
@@ -222,6 +222,7 @@ pub fn regional_allocation_acquisition_system(
     mut commands: Commands,
     clock: Res<AllocationClock>,
     grid: Res<IntentGrid>,
+    navigation: Res<Navigation>,
     projection: Res<ActionableProjection>,
     mut region_ages: ResMut<RegionalServiceAges>,
     bots: Query<
@@ -490,6 +491,7 @@ pub fn regional_allocation_acquisition_system(
                 facilities,
                 chargers,
                 &grid,
+                &navigation,
                 &reserved_source,
                 &reserved_destination,
                 &charger_demand,
@@ -522,7 +524,30 @@ pub fn regional_allocation_acquisition_system(
                     ) {
                         return None;
                     }
-                    Some(claims)
+                    let region = match work.target {
+                        OpportunityTarget::Gather { deposit, .. } => {
+                            deposits.get(deposit).ok().map(|(deposit, transform)| {
+                                InteractionRegion::deposit(transform, deposit.radius)
+                            })
+                        }
+                        OpportunityTarget::PlannedBuild { structure, .. }
+                        | OpportunityTarget::Maintenance { structure } => structures
+                            .get(structure)
+                            .ok()
+                            .map(InteractionRegion::structure),
+                        OpportunityTarget::Haul { .. } => None,
+                    }?;
+                    matches!(
+                        navigation.route_to_interaction(
+                            bot.position,
+                            region,
+                            &grid,
+                            bot.swarm,
+                            false
+                        ),
+                        RouteOutcome::Found(_)
+                    )
+                    .then_some(claims)
                 },
             )
         };
@@ -534,7 +559,6 @@ pub fn regional_allocation_acquisition_system(
             &mut commands,
             bot,
             work,
-            &grid,
             &deposits,
             &mut planned,
             &structures,
@@ -608,6 +632,7 @@ fn choose_terminal_logistics_work(
     facilities: &Query<(&ProductionFacility, &Transform)>,
     chargers: &Query<(&Charger, &Transform)>,
     grid: &IntentGrid,
+    navigation: &Navigation,
     reserved_source: &BTreeMap<Entity, u32>,
     reserved_destination: &BTreeMap<Entity, u32>,
     charger_demand: &BTreeMap<Entity, (u8, u32)>,
@@ -637,7 +662,7 @@ fn choose_terminal_logistics_work(
                 .amount
                 .saturating_sub(reserved_source.get(&source).copied().unwrap_or_default());
             let incoming = reserved_destination.get(&sink).copied().unwrap_or_default();
-            let (base_urgency, destination_available, deficit, capacity, sink_pos) =
+            let (base_urgency, destination_available, deficit, capacity, sink_region) =
                 if let Ok((facility, transform)) = facilities.get(sink) {
                     let available = facility.input_free_space().saturating_sub(incoming);
                     let amount = HAULER_CARRY_CAPACITY.min(source_available).min(available);
@@ -651,7 +676,7 @@ fn choose_terminal_logistics_work(
                         available,
                         available,
                         facility.input_capacity,
-                        transform.translation.truncate(),
+                        InteractionRegion::structure(transform),
                     )
                 } else if let Ok((charger, transform)) = chargers.get(sink) {
                     let available = charger.free_space().saturating_sub(incoming);
@@ -670,7 +695,7 @@ fn choose_terminal_logistics_work(
                         },
                         available,
                         charger.capacity,
-                        transform.translation.truncate(),
+                        InteractionRegion::structure(transform),
                     )
                 } else if let Ok((stockpile, transform)) = stockpiles.get(sink) {
                     let available = stockpile.free_space().saturating_sub(incoming);
@@ -679,7 +704,7 @@ fn choose_terminal_logistics_work(
                         available,
                         available,
                         stockpile.capacity,
-                        transform.translation.truncate(),
+                        InteractionRegion::structure(transform),
                     )
                 } else {
                     continue;
@@ -695,13 +720,30 @@ fn choose_terminal_logistics_work(
                 base_urgency.saturating_sub((age / TERMINAL_FAIRNESS_PROMOTION_TICKS) as u8);
             let deficit_ratio =
                 u64::from(deficit).saturating_mul(1_000_000) / u64::from(capacity.max(1));
-            let source_pos = source_transform.translation.truncate();
+            let RouteOutcome::Found(source_route) = navigation.route_to_interaction(
+                bot.position,
+                InteractionRegion::structure(source_transform),
+                grid,
+                bot.swarm,
+                true,
+            ) else {
+                continue;
+            };
+            let source_pos = *source_route.waypoints.last().unwrap_or(&bot.position);
+            let RouteOutcome::Found(sink_route) =
+                navigation.route_to_interaction(source_pos, sink_region, grid, bot.swarm, true)
+            else {
+                continue;
+            };
+            let route_cost = source_route.cost + sink_route.cost;
+            if !route_cost.is_finite() {
+                continue;
+            }
             let score = TerminalLogisticsScore {
                 urgency,
                 age_key: u32::MAX - age,
                 deficit_key: u64::MAX - deficit_ratio,
-                route_cost: hauler_route_cost(bot.position, source_pos, grid, bot.swarm)
-                    + hauler_route_cost(source_pos, sink_pos, grid, bot.swarm),
+                route_cost,
                 terminal: sink.to_bits(),
                 source: source.to_bits(),
             };
@@ -787,7 +829,6 @@ fn adapt_decision(
     commands: &mut Commands,
     bot: BotSnapshot,
     work: ActionableOpportunity,
-    grid: &IntentGrid,
     deposits: &Query<(&ResourceDeposit, &Transform)>,
     planned: &mut Query<(Entity, &mut PlannedStructure, &Transform)>,
     structures: &Query<&Transform>,
@@ -877,17 +918,10 @@ fn adapt_decision(
             if amount == 0 {
                 return false;
             }
-            let (route, movement) = planned_route_movement(
-                bot.position,
-                InteractionRegion::structure(transform).approach(bot.position),
-                grid,
-                bot.swarm,
-                0.0,
-            );
+            let movement = InteractionRegion::structure(transform).movement_from(bot.position);
             commands.entity(bot.entity).insert((
                 HaulerAssignment { source, sink },
                 LogisticsReservation::new(source, sink, ResourceKind::Minerals, amount),
-                route,
                 movement,
             ));
             *reserved_source.entry(source).or_default() += amount;

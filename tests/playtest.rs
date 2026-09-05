@@ -20,6 +20,8 @@ mod physical_logistics_flow;
 mod production_priority_drag;
 #[path = "playtest/regional_allocation.rs"]
 mod regional_allocation;
+#[path = "playtest/shared_navigation.rs"]
+mod shared_navigation;
 #[path = "playtest/typed_population_demand.rs"]
 mod typed_population_demand;
 #[path = "playtest/world_space_nanobots.rs"]

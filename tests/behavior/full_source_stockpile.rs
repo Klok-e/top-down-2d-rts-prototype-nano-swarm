@@ -111,7 +111,7 @@ fn full_source_stockpile_does_not_count_as_usable_for_extraction() {
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
-    let (_swarm, worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
+    let (_swarm, worker) = spawn_swarm_and_worker(&mut app, deposit_pos + Vec2::new(0.0, -100.0));
     let deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -168,7 +168,7 @@ fn full_source_stockpile_triggers_new_planned_source_stockpile() {
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
-    let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
+    let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos + Vec2::new(0.0, -100.0));
     let _deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -222,7 +222,7 @@ fn full_source_stockpile_with_existing_planned_does_not_duplicate() {
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
-    let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
+    let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos + Vec2::new(0.0, -100.0));
     let _deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -274,7 +274,7 @@ fn no_valid_placement_with_full_stockpile_creates_no_plan() {
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
-    let (_swarm, worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
+    let (_swarm, worker) = spawn_swarm_and_worker(&mut app, deposit_pos + Vec2::new(0.0, -200.0));
     let deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -351,7 +351,7 @@ fn worker_resumes_extraction_after_full_stockpile_expansion() {
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
-    let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos);
+    let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos + Vec2::new(0.0, -100.0));
     let deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -435,7 +435,7 @@ fn worker_carry_assign_skips_full_stockpile() {
     });
     // Only a full stockpile in range.
     let _full_stockpile =
-        common::spawn_stockpile(&mut app, worker_pos + Vec2::new(50.0, 0.0), 1000, 1000);
+        common::spawn_stockpile(&mut app, worker_pos + Vec2::new(100.0, 0.0), 1000, 1000);
 
     for _ in 0..5 {
         app.update();
@@ -475,10 +475,10 @@ fn worker_carry_assign_prefers_free_stockpile_over_full_one() {
     });
     // A full stockpile close to the worker.
     let _full_stockpile =
-        common::spawn_stockpile(&mut app, worker_pos + Vec2::new(30.0, 0.0), 1000, 1000);
+        common::spawn_stockpile(&mut app, worker_pos + Vec2::new(100.0, 0.0), 1000, 1000);
     // A free stockpile slightly further away.
     let free_stockpile =
-        common::spawn_stockpile(&mut app, worker_pos + Vec2::new(60.0, 0.0), 0, 1000);
+        common::spawn_stockpile(&mut app, worker_pos + Vec2::new(200.0, 0.0), 0, 1000);
 
     app.update();
 
@@ -505,7 +505,7 @@ fn worker_delivery_rejects_full_stockpile() {
     let mut app = common::sim_app_with_gather();
     let stockpile_pos = Vec2::new(0.0, 0.0);
     let full_stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 1000, 1000);
-    let worker = common::spawn_worker_at(&mut app, stockpile_pos);
+    let worker = common::spawn_worker_at(&mut app, stockpile_pos + Vec2::new(-68.0, 0.0));
     // Stamp the worker with a load and a ReturningToStockpile
     // pointing at the full stockpile. The carry-assign
     // system is bypassed by hand-stamping the marker.
@@ -561,8 +561,9 @@ fn two_nearby_deposits_with_full_stockpiles_share_one_plan() {
     paint_gather(&mut app, cell);
     let deposit_a_pos = common::cell_world_center(cell);
     let deposit_b_pos = deposit_a_pos + Vec2::new(120.0, 0.0);
-    let (_swarm, _worker_a) = spawn_swarm_and_worker(&mut app, deposit_a_pos);
-    let _worker_b = common::spawn_worker_at(&mut app, deposit_b_pos);
+    let (_swarm, _worker_a) =
+        spawn_swarm_and_worker(&mut app, deposit_a_pos + Vec2::new(0.0, -100.0));
+    let _worker_b = common::spawn_worker_at(&mut app, deposit_b_pos + Vec2::new(0.0, -100.0));
     let _deposit_a = common::spawn_deposit(
         &mut app,
         common::DepositFixture {

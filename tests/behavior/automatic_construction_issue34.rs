@@ -211,7 +211,7 @@ fn source_stockpile_placement_rejects_production_facility_overlap() {
     let center = common::cell_world_center(cell);
     paint_gather(&mut app, cell);
     let _swarm = common::spawn_swarm_at(&mut app, center);
-    let _worker = common::spawn_worker_at(&mut app, center);
+    let _worker = common::spawn_worker_at(&mut app, center + Vec2::new(0.0, -100.0));
     let _deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -260,7 +260,7 @@ fn source_stockpile_placement_respects_scaled_facility_footprint() {
     let center = common::cell_world_center(cell);
     paint_gather(&mut app, cell);
     common::spawn_swarm_at(&mut app, center);
-    common::spawn_worker_at(&mut app, center);
+    common::spawn_worker_at(&mut app, center + Vec2::new(0.0, -100.0));
     common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -304,7 +304,7 @@ fn source_stockpile_placement_rejects_charger_overlap() {
     let center = common::cell_world_center(cell);
     paint_gather(&mut app, cell);
     let _swarm = common::spawn_swarm_at(&mut app, center);
-    let _worker = common::spawn_worker_at(&mut app, center);
+    let _worker = common::spawn_worker_at(&mut app, center + Vec2::new(0.0, -100.0));
     let _deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {

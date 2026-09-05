@@ -11,15 +11,14 @@ use bevy::prelude::*;
 use crate::intent::IntentGrid;
 use crate::nanobot::{
     Cargo, InteractionRegion, LogisticsReservation, NanobotType, OwnerSwarm, ProductionFacility,
-    STOP_THRESHOLD, SupportCondition,
+    SupportCondition,
     charge::Charger,
     components::{DirectMovementComponent, Nanobot, SwarmId, SwarmMember},
-    hauler_route_cost,
     logistics_leg::{
         HaulerContext, StockpileCandidate, TerminalCandidate, pick_logistics_leg_with_cost,
     },
-    plan_hauler_route,
 };
+use crate::navigation::{Navigation, RouteOutcome};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole};
 
 /// Maximum units a Hauler can carry in a single trip. The glossary is
@@ -58,117 +57,6 @@ pub struct HaulerAssignment {
 /// Marks a Hauler as standing at its assigned source and loading cargo.
 #[derive(Debug, Component, Default, Clone, Copy)]
 pub struct HaulerLoading;
-
-/// Stable route for one hauler Logistics Leg.
-#[derive(Debug, Component, Clone)]
-pub struct HaulerRoute {
-    pub waypoints: Vec<Vec2>,
-    pub current: usize,
-    pub final_stop_radius: f32,
-}
-
-impl HaulerRoute {
-    pub fn new(waypoints: Vec<Vec2>, final_stop_radius: f32) -> Self {
-        Self {
-            waypoints,
-            current: 0,
-            final_stop_radius,
-        }
-    }
-
-    fn current_waypoint(&self) -> Option<Vec2> {
-        self.waypoints.get(self.current).copied()
-    }
-
-    fn current_stop_radius(&self) -> f32 {
-        if self.current + 1 == self.waypoints.len() {
-            self.final_stop_radius
-        } else {
-            0.0
-        }
-    }
-
-    fn current_movement(&self) -> Option<DirectMovementComponent> {
-        self.current_waypoint().map(|xy| DirectMovementComponent {
-            xy,
-            stop_radius: self.current_stop_radius(),
-        })
-    }
-}
-
-/// Follow a stable route by issuing the current waypoint as direct movement.
-pub fn hauler_route_follow_system(
-    mut commands: Commands,
-    mut haulers: Query<(
-        Entity,
-        &Transform,
-        &mut HaulerRoute,
-        Option<&DirectMovementComponent>,
-    )>,
-) {
-    for (entity, transform, mut route, dmc) in &mut haulers {
-        if route.waypoints.is_empty() {
-            commands.entity(entity).remove::<HaulerRoute>();
-            continue;
-        }
-
-        let pos = transform.translation.truncate();
-        loop {
-            let Some(waypoint) = route.current_waypoint() else {
-                commands.entity(entity).remove::<HaulerRoute>();
-                break;
-            };
-            let stop_radius = route.current_stop_radius();
-            let threshold = if stop_radius > 0.0 {
-                stop_radius.max(STOP_THRESHOLD)
-            } else {
-                STOP_THRESHOLD
-            };
-            if pos.distance(waypoint) > threshold {
-                if dmc.is_none_or(|dmc| {
-                    (dmc.xy - waypoint).length() > 1.0
-                        || (dmc.stop_radius - stop_radius).abs() > f32::EPSILON
-                }) {
-                    commands.entity(entity).insert(DirectMovementComponent {
-                        xy: waypoint,
-                        stop_radius,
-                    });
-                }
-                break;
-            }
-            route.current += 1;
-        }
-    }
-}
-
-fn route_waypoints_or_direct(
-    start: Vec2,
-    end: Vec2,
-    grid: &IntentGrid,
-    swarm: SwarmId,
-) -> Vec<Vec2> {
-    plan_hauler_route(start, end, grid, swarm)
-        .map(|route| route.waypoints)
-        .unwrap_or_else(|| vec![end])
-}
-
-pub(crate) fn planned_route_movement(
-    start: Vec2,
-    end: Vec2,
-    grid: &IntentGrid,
-    swarm: SwarmId,
-    final_stop_radius: f32,
-) -> (HaulerRoute, DirectMovementComponent) {
-    let route = HaulerRoute::new(
-        route_waypoints_or_direct(start, end, grid, swarm),
-        final_stop_radius,
-    );
-    let movement = route.current_movement().unwrap_or(DirectMovementComponent {
-        xy: end,
-        stop_radius: final_stop_radius,
-    });
-    (route, movement)
-}
 
 /// Convert an optional [`OwnerSwarm`] marker into the concrete [`SwarmId`]
 /// used by the pure Logistics Leg picker. A broken owner reference
@@ -221,6 +109,7 @@ pub fn hauler_assignment_system(
     conditions: Query<&SupportCondition>,
     swarms: Query<&SwarmId>,
     grid: Res<IntentGrid>,
+    navigation: Res<Navigation>,
 ) {
     let stockpile_candidates: Vec<StockpileCandidate> = stockpiles
         .iter()
@@ -287,7 +176,38 @@ pub fn hauler_assignment_system(
             },
             &stockpile_candidates,
             &terminal_candidates,
-            |from, to| hauler_route_cost(from, to, &grid, swarm),
+            |from, to| {
+                let region_at = |position: Vec2| {
+                    stockpiles
+                        .iter()
+                        .map(|(_, _, t, _, _)| t)
+                        .chain(facilities.iter().map(|(_, _, t, _)| t))
+                        .chain(chargers.iter().map(|(_, _, t, _)| t))
+                        .find(|t| t.translation.truncate() == position)
+                        .map(InteractionRegion::structure)
+                };
+                let start = if from == hauler_pos {
+                    from
+                } else if let Some(region) = region_at(from) {
+                    match navigation.route_to_interaction(hauler_pos, region, &grid, swarm, true) {
+                        RouteOutcome::Found(route) => {
+                            *route.waypoints.last().unwrap_or(&hauler_pos)
+                        }
+                        RouteOutcome::Unreachable => return f32::INFINITY,
+                    }
+                } else {
+                    from
+                };
+                let outcome = if let Some(region) = region_at(to) {
+                    navigation.route_to_interaction(start, region, &grid, swarm, true)
+                } else {
+                    navigation.route(start, to, &grid, swarm, true)
+                };
+                match outcome {
+                    RouteOutcome::Found(route) => route.cost,
+                    RouteOutcome::Unreachable => f32::INFINITY,
+                }
+            },
         ) else {
             continue;
         };
@@ -296,13 +216,11 @@ pub fn hauler_assignment_system(
         let Ok((_, _, source_transform, _, _)) = stockpiles.get(source) else {
             continue;
         };
-        let goal = InteractionRegion::structure(source_transform).approach(hauler_pos);
-        let (route, movement) = planned_route_movement(hauler_pos, goal, &grid, swarm, 0.0);
+        let movement = InteractionRegion::structure(source_transform).movement_from(hauler_pos);
 
         commands.entity(entity).insert((
             HaulerAssignment { source, sink },
             LogisticsReservation::new(source, sink, ResourceKind::Minerals, leg.amount),
-            route,
             movement,
         ));
     }
@@ -321,7 +239,6 @@ pub fn hauler_arrive_source_system(
             Entity,
             &Transform,
             &HaulerAssignment,
-            Option<&HaulerRoute>,
             Option<&LogisticsReservation>,
         ),
         (
@@ -337,13 +254,12 @@ pub fn hauler_arrive_source_system(
     chargers: Query<(&Charger, &Transform)>,
     conditions: Query<&SupportCondition>,
 ) {
-    for (entity, transform, assignment, route, reservation) in &haulers {
+    for (entity, transform, assignment, reservation) in &haulers {
         if !endpoint_is_operational(assignment.source, &conditions) {
             commands
                 .entity(entity)
                 .remove::<HaulerAssignment>()
-                .remove::<LogisticsReservation>()
-                .remove::<HaulerRoute>();
+                .remove::<LogisticsReservation>();
             continue;
         }
         let region = if let Ok((d, t)) = deposits.get(assignment.source) {
@@ -358,8 +274,7 @@ pub fn hauler_arrive_source_system(
             commands
                 .entity(entity)
                 .remove::<HaulerAssignment>()
-                .remove::<LogisticsReservation>()
-                .remove::<HaulerRoute>();
+                .remove::<LogisticsReservation>();
             continue;
         };
         if region.contains(transform.translation.truncate()) {
@@ -368,18 +283,9 @@ pub fn hauler_arrive_source_system(
                 .unwrap_or(ResourceKind::Minerals);
             commands
                 .entity(entity)
-                .insert((HaulerLoading, Cargo::empty(kind)))
-                .remove::<HaulerRoute>();
-        } else if route.is_some() {
-            // The route follower owns movement restoration while a
-            // route is active.
+                .insert((HaulerLoading, Cargo::empty(kind)));
         } else {
-            // `ProgressChecker` can remove `DirectMovementComponent`
-            // before true arrival when congestion leaves the hauler
-            // below the progress threshold. Keep the source-side
-            // commitment alive and restore movement instead of
-            // marooning the hauler with `HaulerAssignment` and no
-            // velocity.
+            // Restore the final work goal while the source commitment remains active.
             commands
                 .entity(entity)
                 .insert(region.movement_from(transform.translation.truncate()));
@@ -659,6 +565,7 @@ pub fn hauler_reroute_system(
     swarms: Query<&SwarmId>,
     reservations: Query<(Entity, &LogisticsReservation)>,
     grid: Res<IntentGrid>,
+    navigation: Res<Navigation>,
 ) {
     let mut same_tick_claims = std::collections::HashMap::<Entity, u32>::new();
     for (entity, transform, cargo, mut assignment, swarm_member, reservation) in &mut haulers {
@@ -712,7 +619,7 @@ pub fn hauler_reroute_system(
             .then(|| {
                 facilities
                     .iter()
-                    .filter_map(|(candidate, _, transform, _)| {
+                    .filter_map(|(candidate, _, _, _)| {
                         if candidate == assignment.sink && keep_away_from_old_destination {
                             return None;
                         }
@@ -738,12 +645,21 @@ pub fn hauler_reroute_system(
                             &conditions,
                         )?;
                         Some((
-                            hauler_pos.distance(transform.translation.truncate()),
+                            match navigation.route_to_interaction(
+                                hauler_pos,
+                                endpoint.region,
+                                &grid,
+                                swarm_member.0,
+                                true,
+                            ) {
+                                RouteOutcome::Found(route) => route.cost,
+                                RouteOutcome::Unreachable => return None,
+                            },
                             candidate,
                             endpoint,
                         ))
                     })
-                    .chain(chargers.iter().filter_map(|(candidate, _, transform, _)| {
+                    .chain(chargers.iter().filter_map(|(candidate, _, _, _)| {
                         if candidate == assignment.sink && keep_away_from_old_destination {
                             return None;
                         }
@@ -769,7 +685,16 @@ pub fn hauler_reroute_system(
                             &conditions,
                         )?;
                         Some((
-                            hauler_pos.distance(transform.translation.truncate()),
+                            match navigation.route_to_interaction(
+                                hauler_pos,
+                                endpoint.region,
+                                &grid,
+                                swarm_member.0,
+                                true,
+                            ) {
+                                RouteOutcome::Found(route) => route.cost,
+                                RouteOutcome::Unreachable => return None,
+                            },
                             candidate,
                             endpoint,
                         ))
@@ -783,7 +708,7 @@ pub fn hauler_reroute_system(
             .flatten();
         let fallback = stockpiles
             .iter()
-            .filter_map(|(candidate, _, transform, _, _)| {
+            .filter_map(|(candidate, _, _, _, _)| {
                 if candidate == assignment.sink && keep_away_from_old_destination {
                     return None;
                 }
@@ -810,7 +735,16 @@ pub fn hauler_reroute_system(
                 )?;
                 Some((
                     candidate != assignment.source,
-                    hauler_pos.distance(transform.translation.truncate()),
+                    match navigation.route_to_interaction(
+                        hauler_pos,
+                        endpoint.region,
+                        &grid,
+                        swarm_member.0,
+                        true,
+                    ) {
+                        RouteOutcome::Found(route) => route.cost,
+                        RouteOutcome::Unreachable => return None,
+                    },
                     candidate,
                     endpoint,
                 ))
@@ -834,16 +768,8 @@ pub fn hauler_reroute_system(
         });
         redirected.destination = destination;
         redirected.destination_remaining = cargo.amount;
-        let (route, movement) = planned_route_movement(
-            hauler_pos,
-            endpoint.region.approach(hauler_pos),
-            &grid,
-            swarm_member.0,
-            0.0,
-        );
-        commands
-            .entity(entity)
-            .insert((redirected, route, movement));
+        let movement = endpoint.region.movement_from(hauler_pos);
+        commands.entity(entity).insert((redirected, movement));
     }
 }
 
@@ -857,10 +783,7 @@ fn release_destination_claim(
         released.destination_remaining = 0;
         commands.entity(entity).insert(released);
     }
-    commands
-        .entity(entity)
-        .remove::<DirectMovementComponent>()
-        .remove::<HaulerRoute>();
+    commands.entity(entity).remove::<DirectMovementComponent>();
 }
 
 /// Route loaded haulers only after revalidating the committed destination.
@@ -868,14 +791,7 @@ fn release_destination_claim(
 pub fn hauler_carry_assign_system(
     mut commands: Commands,
     haulers: Query<
-        (
-            Entity,
-            &Transform,
-            &Cargo,
-            &HaulerAssignment,
-            &SwarmMember,
-            Option<&HaulerRoute>,
-        ),
+        (Entity, &Transform, &Cargo, &HaulerAssignment, &SwarmMember),
         (
             With<Nanobot>,
             With<Cargo>,
@@ -895,9 +811,8 @@ pub fn hauler_carry_assign_system(
     conditions: Query<&SupportCondition>,
     swarms: Query<&SwarmId>,
     reservations: Query<(Entity, &LogisticsReservation)>,
-    grid: Res<IntentGrid>,
 ) {
-    for (entity, transform, cargo, assignment, swarm_member, route) in &haulers {
+    for (entity, transform, cargo, assignment, swarm_member) in &haulers {
         let Some(tier) = source_tier(
             assignment.source,
             cargo.kind,
@@ -934,17 +849,11 @@ pub fn hauler_carry_assign_system(
             continue;
         };
         let hauler_pos = transform.translation.truncate();
-        if sink.region.contains(hauler_pos) || route.is_some() {
+        if sink.region.contains(hauler_pos) {
             continue;
         }
-        let (route, movement) = planned_route_movement(
-            hauler_pos,
-            sink.region.approach(hauler_pos),
-            &grid,
-            swarm_member.0,
-            0.0,
-        );
-        commands.entity(entity).insert((route, movement));
+        let movement = sink.region.movement_from(hauler_pos);
+        commands.entity(entity).insert(movement);
     }
 }
 
@@ -1072,8 +981,7 @@ pub fn hauler_delivery_system(
                 .entity(entity)
                 .remove::<HaulerAssignment>()
                 .remove::<Cargo>()
-                .remove::<LogisticsReservation>()
-                .remove::<HaulerRoute>();
+                .remove::<LogisticsReservation>();
         } else if let Some(reservation) = reservation {
             let mut updated = *reservation;
             updated.destination_remaining = updated.destination_remaining.saturating_sub(actual);
@@ -1110,7 +1018,6 @@ impl Plugin for HaulPlugin {
                 hauler_reroute_system,
                 hauler_carry_assign_system,
                 hauler_delivery_system,
-                hauler_route_follow_system,
             )
                 .chain()
                 .after(crate::nanobot::RegionalAllocationSet::Acquire)

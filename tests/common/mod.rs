@@ -116,7 +116,10 @@ fn register_movement_systems(app: &mut App) {
 /// helpers directly.
 pub fn minimal_app() -> App {
     let mut app = App::new();
-    app.add_plugins(bevy::time::TimePlugin);
+    app.add_plugins((
+        bevy::time::TimePlugin,
+        top_down_2d_rts_prototype_nano_swarm::navigation_runtime::NavigationPlugin,
+    ));
     app.insert_resource(IntentGrid::new(DEFAULT_GRID_WIDTH, DEFAULT_GRID_HEIGHT));
     app.insert_resource(default_game_settings());
     app.init_resource::<SoftWorkSlots>();
@@ -153,9 +156,15 @@ pub fn minimal_app_with_actionable_projection() -> App {
 /// [`minimal_app`] sets up plus the four shared movement systems.
 /// No simulation plugin is registered; tests opt in via the
 /// `sim_app_with_*` builders below.
-pub fn sim_app() -> App {
+pub fn sim_app_with_movement() -> App {
     let mut app = minimal_app();
     register_movement_systems(&mut app);
+    app
+}
+
+/// Movement plus autonomous regional task selection.
+pub fn sim_app() -> App {
+    let mut app = sim_app_with_movement();
     app.add_plugins(RegionalAllocationPlugin);
     app
 }

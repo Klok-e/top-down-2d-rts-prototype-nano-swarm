@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-    Charge, ChargerAssignment, DirectMovementComponent, HaulerAssignment, HaulerRoute,
-    LogisticsReservation, OwnerSwarm, ProductionFacility, RegionalLease,
+    Charge, ChargerAssignment, DirectMovementComponent, HaulerAssignment, LogisticsReservation,
+    OwnerSwarm, ProductionFacility, RegionalLease,
 };
 
 #[path = "../common/mod.rs"]
@@ -11,7 +11,7 @@ mod common;
 fn empty_committed_defender_makes_charger_beat_startable_production() {
     let mut app = common::sim_app_with_gather_haul();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    let source = common::spawn_sink_stockpile(&mut app, Vec2::new(10.0, 0.0), 100, 100);
+    let source = common::spawn_sink_stockpile(&mut app, Vec2::new(-200.0, 0.0), 100, 100);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
 
     let facility = app
@@ -19,7 +19,7 @@ fn empty_committed_defender_makes_charger_beat_startable_production() {
         .spawn((
             ProductionFacility::new(),
             OwnerSwarm(swarm),
-            Transform::from_xyz(30.0, 0.0, 0.0),
+            Transform::from_xyz(700.0, 0.0, 0.0),
         ))
         .id();
     let charger = common::spawn_operational_charger_at(&mut app, IVec2::ZERO, 0);
@@ -35,7 +35,7 @@ fn empty_committed_defender_makes_charger_beat_startable_production() {
         },
         ChargerAssignment { charger },
     ));
-    let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-600.0, -200.0));
 
     app.update();
 
@@ -53,7 +53,7 @@ fn empty_committed_defender_makes_charger_beat_startable_production() {
 fn charger_emergency_reserves_only_uncovered_committed_charge_need() {
     let mut app = common::sim_app_with_gather_haul();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    let source = common::spawn_sink_stockpile(&mut app, Vec2::new(10.0, 0.0), 100, 100);
+    let source = common::spawn_sink_stockpile(&mut app, Vec2::new(-200.0, 0.0), 100, 100);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
     let charger = common::spawn_operational_charger_at(&mut app, IVec2::ZERO, 8);
     app.world_mut()
@@ -74,7 +74,7 @@ fn charger_emergency_reserves_only_uncovered_committed_charge_need() {
         top_down_2d_rts_prototype_nano_swarm::resources::ResourceKind::Minerals,
         1,
     ));
-    let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-600.0, -200.0));
 
     app.update();
 
@@ -93,18 +93,18 @@ fn charger_emergency_reserves_only_uncovered_committed_charge_need() {
 fn owned_terminal_ignores_shared_sink_stockpile() {
     let mut app = common::sim_app_with_gather_haul();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    let shared = common::spawn_sink_stockpile(&mut app, Vec2::new(1.0, 0.0), 100, 100);
-    let owned = common::spawn_sink_stockpile(&mut app, Vec2::new(50.0, 0.0), 100, 100);
+    let shared = common::spawn_sink_stockpile(&mut app, Vec2::new(-400.0, 0.0), 100, 100);
+    let owned = common::spawn_sink_stockpile(&mut app, Vec2::new(-200.0, 0.0), 100, 100);
     app.world_mut().entity_mut(owned).insert(OwnerSwarm(swarm));
     let facility = app
         .world_mut()
         .spawn((
             ProductionFacility::new(),
             OwnerSwarm(swarm),
-            Transform::from_xyz(60.0, 0.0, 0.0),
+            Transform::from_xyz(700.0, 0.0, 0.0),
         ))
         .id();
-    let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-600.0, -200.0));
 
     app.update();
 
@@ -122,14 +122,14 @@ fn owned_terminal_ignores_shared_sink_stockpile() {
 fn waiting_production_eventually_beats_continuous_charger_emergency() {
     let mut app = common::sim_app_with_gather_haul();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    let source = common::spawn_sink_stockpile(&mut app, Vec2::new(100.0, 0.0), 100, 100);
+    let source = common::spawn_sink_stockpile(&mut app, Vec2::new(-200.0, 0.0), 100, 100);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
     let facility = app
         .world_mut()
         .spawn((
             ProductionFacility::new(),
             OwnerSwarm(swarm),
-            Transform::from_xyz(120.0, 0.0, 0.0),
+            Transform::from_xyz(700.0, 0.0, 0.0),
         ))
         .id();
     let charger = common::spawn_operational_charger_at(&mut app, IVec2::ZERO, 0);
@@ -144,7 +144,7 @@ fn waiting_production_eventually_beats_continuous_charger_emergency() {
         },
         ChargerAssignment { charger },
     ));
-    let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-600.0, -200.0));
 
     let mut production_selected = false;
     for _ in 0..32 {
@@ -163,7 +163,6 @@ fn waiting_production_eventually_beats_continuous_charger_emergency() {
             .entity_mut(hauler)
             .remove::<HaulerAssignment>()
             .remove::<LogisticsReservation>()
-            .remove::<HaulerRoute>()
             .remove::<DirectMovementComponent>()
             .remove::<RegionalLease>();
     }
@@ -178,7 +177,7 @@ fn waiting_production_eventually_beats_continuous_charger_emergency() {
 fn startable_production_beats_nearer_ordinary_charger_refill() {
     let mut app = common::sim_app_with_gather_haul();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    let source = common::spawn_sink_stockpile(&mut app, Vec2::new(10.0, 0.0), 100, 100);
+    let source = common::spawn_sink_stockpile(&mut app, Vec2::new(-200.0, 0.0), 100, 100);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
     let charger = common::spawn_operational_charger_at(&mut app, IVec2::ZERO, 0);
     app.world_mut()
@@ -191,10 +190,10 @@ fn startable_production_beats_nearer_ordinary_charger_refill() {
         .spawn((
             production,
             OwnerSwarm(swarm),
-            Transform::from_xyz(200.0, 0.0, 0.0),
+            Transform::from_xyz(700.0, 0.0, 0.0),
         ))
         .id();
-    let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-600.0, -200.0));
 
     app.update();
 
@@ -212,7 +211,7 @@ fn startable_production_beats_nearer_ordinary_charger_refill() {
 fn larger_proportional_terminal_deficit_beats_shorter_route() {
     let mut app = common::sim_app_with_gather_haul();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    let source = common::spawn_sink_stockpile(&mut app, Vec2::new(10.0, 0.0), 100, 100);
+    let source = common::spawn_sink_stockpile(&mut app, Vec2::new(-200.0, 0.0), 100, 100);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
     let near_half_empty = common::spawn_operational_charger_at(&mut app, IVec2::ZERO, 30);
     app.world_mut()
@@ -222,7 +221,7 @@ fn larger_proportional_terminal_deficit_beats_shorter_route() {
     app.world_mut()
         .entity_mut(far_empty)
         .insert(OwnerSwarm(swarm));
-    let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-600.0, -200.0));
 
     app.update();
 
@@ -240,13 +239,13 @@ fn larger_proportional_terminal_deficit_beats_shorter_route() {
 fn route_cost_breaks_equal_terminal_demand_ties() {
     let mut app = common::sim_app_with_gather_haul();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    let source = common::spawn_sink_stockpile(&mut app, Vec2::ZERO, 100, 100);
+    let source = common::spawn_sink_stockpile(&mut app, Vec2::new(-200.0, 0.0), 100, 100);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
     let near = common::spawn_operational_charger_at(&mut app, IVec2::ZERO, 0);
     app.world_mut().entity_mut(near).insert(OwnerSwarm(swarm));
     let far = common::spawn_operational_charger_at(&mut app, IVec2::new(1, 0), 0);
     app.world_mut().entity_mut(far).insert(OwnerSwarm(swarm));
-    let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-600.0, -200.0));
 
     app.update();
 
@@ -264,13 +263,13 @@ fn route_cost_breaks_equal_terminal_demand_ties() {
 fn entity_id_breaks_fully_equal_terminal_ties() {
     let mut app = common::sim_app_with_gather_haul();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    let source = common::spawn_sink_stockpile(&mut app, Vec2::ZERO, 100, 100);
+    let source = common::spawn_sink_stockpile(&mut app, Vec2::new(-200.0, 0.0), 100, 100);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
     let first = common::spawn_operational_charger_at(&mut app, IVec2::ZERO, 0);
     app.world_mut().entity_mut(first).insert(OwnerSwarm(swarm));
     let second = common::spawn_operational_charger_at(&mut app, IVec2::ZERO, 0);
     app.world_mut().entity_mut(second).insert(OwnerSwarm(swarm));
-    let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-600.0, -200.0));
 
     app.update();
 

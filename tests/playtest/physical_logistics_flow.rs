@@ -4,8 +4,8 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         Cargo, DirectMovementComponent, HAULER_EXTRACT_PER_TICK, HAULER_TRANSFER_PER_TICK,
-        HaulerAssignment, HaulerLoading, HaulerRoute, LogisticsReservation, OwnerSwarm,
-        ProductionFacility, SwarmId,
+        HaulerAssignment, HaulerLoading, LogisticsReservation, OwnerSwarm, ProductionFacility,
+        SwarmId,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
 };
@@ -124,8 +124,7 @@ fn assignment_load_transit_and_terminal_unload_preserve_physical_custody() {
     app.world_mut()
         .entity_mut(hauler)
         .insert(Transform::from_xyz(232.0, 0.0, 0.0))
-        .remove::<DirectMovementComponent>()
-        .remove::<HaulerRoute>();
+        .remove::<DirectMovementComponent>();
     app.update();
 
     assert_eq!(facility_amount(&app, terminal), HAULER_TRANSFER_PER_TICK);

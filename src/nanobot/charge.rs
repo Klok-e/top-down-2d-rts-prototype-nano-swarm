@@ -688,6 +688,7 @@ pub fn find_swarm_capacity_aware_charger(
     )>,
     swarms: &Query<&SwarmId, With<Swarm>>,
     charger_loads: &HashMap<Entity, u32>,
+    navigation: &crate::navigation::Navigation,
 ) -> Option<(Entity, Vec2)> {
     let mut best: Option<(f32, Entity, Vec2)> = None;
     for (entity, charger, transform, owner, condition) in chargers.iter() {
@@ -697,7 +698,16 @@ pub fn find_swarm_capacity_aware_charger(
             continue;
         }
         let position = transform.translation.truncate();
-        let distance = pos.distance(position);
+        let crate::navigation::RouteOutcome::Found(route) = navigation.route_to_interaction(
+            pos,
+            InteractionRegion::structure(transform),
+            grid,
+            swarm,
+            false,
+        ) else {
+            continue;
+        };
+        let distance = route.cost;
         let better = best.is_none_or(|(best_distance, best_entity, _)| {
             distance.total_cmp(&best_distance).is_lt()
                 || (distance.total_cmp(&best_distance).is_eq()
@@ -717,10 +727,12 @@ pub fn find_swarm_capacity_aware_charger(
 /// en route to a charger or already at one is not re-rotated.
 /// A Defender without working capacity continues its current duty.
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub fn defender_rotation_to_charger_system(
     mut commands: Commands,
     mut allocation_wake: Option<ResMut<RegionalAllocationWake>>,
     grid: Res<IntentGrid>,
+    navigation: Res<crate::navigation::Navigation>,
     defenders: Query<
         (
             Entity,
@@ -832,6 +844,7 @@ pub fn defender_rotation_to_charger_system(
                 &chargers,
                 &swarms,
                 &charger_loads,
+                &navigation,
             ) else {
                 continue;
             };
