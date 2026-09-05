@@ -389,3 +389,124 @@ fn staging_keeps_roaming_through_free_edge_cells_around_an_occupied_center() {
         "a blocked central roaming area must not park Defenders: {earlier:?} -> {final_position:?}"
     );
 }
+
+#[test]
+fn corridor_edits_preserve_active_travel_and_guide_the_next_leg() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        intent::{IntentGrid, IntentKind},
+        navigation_runtime::NavigationBudget,
+    };
+    let mut app = common::sim_app_with_movement();
+    app.world_mut().insert_resource(IntentGrid::new(6, 6));
+    let bot = common::spawn_worker_at(&mut app, Vec2::new(-900.0, 400.0));
+    app.world_mut().entity_mut(bot).insert((
+        NanobotType::Hauler,
+        SwarmMember::new(SwarmId::PLAYER),
+        DirectMovementComponent {
+            xy: Vec2::new(900.0, 400.0),
+            stop_radius: 0.0,
+            interaction: None,
+            speed: Some(10.0),
+        },
+    ));
+    for _ in 0..1000 {
+        app.update();
+        if app.world().get::<Transform>(bot).unwrap().translation.x > -890.0 {
+            break;
+        }
+    }
+    let before = app.world().get::<Transform>(bot).unwrap().translation;
+    assert!(before.x > -890.0 && before.x < 0.0);
+    for x in -2..=1 {
+        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+            IVec2::new(x, 1),
+            IntentKind::Corridor,
+            Some(SwarmId::PLAYER),
+        );
+    }
+    app.world_mut().resource_mut::<NavigationBudget>().0 = 0;
+    for _ in 0..500 {
+        app.update();
+        let position = app.world().get::<Transform>(bot).unwrap().translation;
+        if app.world().get::<DirectMovementComponent>(bot).is_none() {
+            break;
+        }
+        assert!(
+            (position.y - 400.0).abs() < 0.001,
+            "paint changed the active leg: {position:?}"
+        );
+    }
+    let arrived = app
+        .world()
+        .get::<Transform>(bot)
+        .unwrap()
+        .translation
+        .truncate();
+    assert!(
+        arrived.distance(Vec2::new(900.0, 400.0)) < 3.0,
+        "first leg stopped at {arrived:?}"
+    );
+    app.world_mut()
+        .entity_mut(bot)
+        .insert(DirectMovementComponent {
+            xy: Vec2::new(-900.0, 400.0),
+            stop_radius: 0.0,
+            interaction: None,
+            speed: Some(10.0),
+        });
+    app.world_mut().resource_mut::<NavigationBudget>().0 = 32_768;
+    let mut used_corridor = false;
+    for _ in 0..1000 {
+        app.update();
+        let position = app.world().get::<Transform>(bot).unwrap().translation;
+        used_corridor |= position.y >= 512.0;
+        if app.world().get::<DirectMovementComponent>(bot).is_none() {
+            break;
+        }
+    }
+    assert!(
+        used_corridor,
+        "the next leg ignored new owned Corridor paint"
+    );
+    let returned = app
+        .world()
+        .get::<Transform>(bot)
+        .unwrap()
+        .translation
+        .truncate();
+    assert!(
+        returned.distance(Vec2::new(-900.0, 400.0)) < 3.0,
+        "return leg stopped at {returned:?}"
+    );
+}
+
+#[test]
+fn unrelated_obstacle_removal_preserves_travel_with_search_budget_stopped() {
+    use top_down_2d_rts_prototype_nano_swarm::navigation_runtime::NavigationBudget;
+    let mut app = common::sim_app_with_movement();
+    let obstacle = common::spawn_structure_at(&mut app, Vec2::new(400.0, 800.0));
+    let bot = common::spawn_worker_at(&mut app, Vec2::new(200.0, 300.0));
+    app.world_mut()
+        .entity_mut(bot)
+        .insert(DirectMovementComponent {
+            xy: Vec2::new(600.0, 300.0),
+            stop_radius: 0.0,
+            interaction: None,
+            speed: Some(5.0),
+        });
+    for _ in 0..10 {
+        app.update();
+    }
+    let before = app.world().get::<Transform>(bot).unwrap().translation;
+    assert!(before.x > 200.0 && before.x < 600.0);
+    app.world_mut().despawn(obstacle);
+    app.world_mut().resource_mut::<NavigationBudget>().0 = 0;
+    for _ in 0..100 {
+        app.update();
+    }
+    let arrived = app.world().get::<Transform>(bot).unwrap().translation;
+    assert!(
+        arrived.truncate().distance(Vec2::new(600.0, 300.0)) < 3.0,
+        "unrelated removal made valid travel wait for another search: {arrived:?}"
+    );
+}
