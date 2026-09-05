@@ -211,7 +211,10 @@ pub fn production_collapse_detection_system(
         Option<&SupportCondition>,
     )>,
     facility_obstacles: Query<&Transform, With<ProductionFacility>>,
-    charger_obstacles: Query<&Transform, With<Charger>>,
+    (charger_obstacles, rocks): (
+        Query<&Transform, With<Charger>>,
+        Query<(&crate::terrain::RockFormation, &Transform)>,
+    ),
     cargo: Query<
         (
             &Cargo,
@@ -318,6 +321,11 @@ pub fn production_collapse_detection_system(
         obstacles.extend(deposits.iter().map(|(_, deposit, transform)| {
             Obstacle::deposit(transform.translation.truncate(), deposit.radius)
         }));
+        obstacles.extend(
+            rocks
+                .iter()
+                .map(|(rock, transform)| rock.obstacle(transform)),
+        );
         let facility_placement = find_build_zone_placement(&build_cells, &obstacles, 27);
         let has_build_space = facility_placement.is_some_and(|(_, position)| {
             access.crew(
@@ -404,6 +412,11 @@ pub fn production_collapse_detection_system(
             planned
                 .iter()
                 .map(|(_, transform, _)| Obstacle::structure(transform)),
+        );
+        source_obstacles.extend(
+            rocks
+                .iter()
+                .map(|(rock, transform)| rock.obstacle(transform)),
         );
         source_obstacles.extend(facility_obstacles.iter().map(Obstacle::structure));
         source_obstacles.extend(charger_obstacles.iter().map(Obstacle::structure));

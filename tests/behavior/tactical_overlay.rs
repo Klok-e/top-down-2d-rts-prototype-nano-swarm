@@ -1011,3 +1011,38 @@ fn multiple_clusters_survive_across_ticks() {
         "two separate clusters must both survive across ticks"
     );
 }
+
+#[test]
+fn exhausted_deposit_loses_resource_marker_but_retains_its_physical_base() {
+    use top_down_2d_rts_prototype_nano_swarm::resources::ResourceDeposit;
+    let mut app = build_app();
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(250.0, 100.0),
+            amount: 1000,
+            capacity: 1000,
+            radius: 64.0,
+        },
+    );
+    set_zoom(&mut app, 24.0);
+    app.update();
+    assert_eq!(count_markers(&mut app), 1);
+    app.world_mut()
+        .get_mut::<ResourceDeposit>(deposit)
+        .unwrap()
+        .amount = 250;
+    app.update();
+    assert_eq!(count_markers(&mut app), 1, "partial minerals remain marked");
+    app.world_mut()
+        .get_mut::<ResourceDeposit>(deposit)
+        .unwrap()
+        .amount = 0;
+    app.update();
+    assert_eq!(
+        count_markers(&mut app),
+        0,
+        "exhausted rock must not advertise usable minerals"
+    );
+    assert!((app.world().get::<ResourceDeposit>(deposit).unwrap().radius - 64.0).abs() < 0.001);
+}

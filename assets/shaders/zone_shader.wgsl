@@ -51,6 +51,21 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         color = mix(intent_color(opponent), vec3<f32>(1.0, 0.12, 0.06), 0.4)
             * select(0.5, 0.9, hatch);
     }
-    let alpha = select(0.0, 0.8, has_player || has_opponent);
+    // Draw only the perimeter of a continuous region with identical ownership.
+    let pixel = max(fwidth(in.uv * vec2<f32>(f32(width), f32(height))), vec2<f32>(0.00001));
+    var border = 0.0;
+    if x == 0u || zone_map[y * width + x - 1u] != value {
+        border = max(border, 1.0 - smoothstep(pixel.x * 0.7, pixel.x * 1.7, local.x));
+    }
+    if x + 1u >= width || zone_map[y * width + x + 1u] != value {
+        border = max(border, 1.0 - smoothstep(pixel.x * 0.7, pixel.x * 1.7, 1.0 - local.x));
+    }
+    if y == 0u || zone_map[(y - 1u) * width + x] != value {
+        border = max(border, 1.0 - smoothstep(pixel.y * 0.7, pixel.y * 1.7, local.y));
+    }
+    if y + 1u >= height || zone_map[(y + 1u) * width + x] != value {
+        border = max(border, 1.0 - smoothstep(pixel.y * 0.7, pixel.y * 1.7, 1.0 - local.y));
+    }
+    let alpha = select(0.0, mix(0.24, 0.64, border), has_player || has_opponent);
     return vec4<f32>(color, alpha);
 }

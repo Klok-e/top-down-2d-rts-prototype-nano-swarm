@@ -8,6 +8,7 @@ use crate::{
     intent::{IntentGrid, IntentKind},
     navigation::{AccessCheck, AccessStatus, Navigation, Obstacle, RoutePriority},
     resources::{ResourceDeposit, Stockpile},
+    terrain::RockFormation,
 };
 use bevy::{ecs::system::SystemParam, prelude::*};
 
@@ -16,6 +17,7 @@ enum AccessOwner {
     Shared,
     Swarm(SwarmId),
     Orphaned,
+    Terrain,
 }
 
 #[derive(Clone)]
@@ -255,8 +257,10 @@ pub struct ConstructionAccess<'w, 's> {
             Option<&'static ResourceDeposit>,
             Option<&'static PlannedStructure>,
             Option<&'static OwnerSwarm>,
+            Option<&'static RockFormation>,
         ),
         Or<(
+            With<RockFormation>,
             With<ResourceDeposit>,
             With<Structure>,
             With<Stockpile>,
@@ -286,21 +290,33 @@ impl ConstructionAccess<'_, '_> {
                 .objects
                 .iter()
                 .map(
-                    |(entity, transform, deposit, planned, owner)| AccessObject {
+                    |(entity, transform, deposit, planned, owner, rock)| AccessObject {
                         entity,
                         transform: *transform,
-                        shape: deposit.map_or_else(
-                            || Obstacle::structure(transform),
-                            |deposit| {
-                                Obstacle::deposit(transform.translation.truncate(), deposit.radius)
+                        shape: rock.map_or_else(
+                            || {
+                                deposit.map_or_else(
+                                    || Obstacle::structure(transform),
+                                    |deposit| {
+                                        Obstacle::deposit(
+                                            transform.translation.truncate(),
+                                            deposit.radius,
+                                        )
+                                    },
+                                )
                             },
+                            |rock| rock.obstacle(transform),
                         ),
-                        owner: owner.map_or(AccessOwner::Shared, |owner| {
-                            self.swarms
-                                .get(owner.0)
-                                .copied()
-                                .map_or(AccessOwner::Orphaned, AccessOwner::Swarm)
-                        }),
+                        owner: if rock.is_some() {
+                            AccessOwner::Terrain
+                        } else {
+                            owner.map_or(AccessOwner::Shared, |owner| {
+                                self.swarms
+                                    .get(owner.0)
+                                    .copied()
+                                    .map_or(AccessOwner::Orphaned, AccessOwner::Swarm)
+                            })
+                        },
                         deposit: deposit.copied(),
                         planned: planned.is_some(),
                     },

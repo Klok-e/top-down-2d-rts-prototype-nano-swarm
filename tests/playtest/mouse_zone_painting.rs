@@ -9,6 +9,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{
         BrushSelection, IntentGrid, IntentKind, brush_key_for_kind, brush_selection_keyboard_system,
     },
+    materials::{BackgroundMaterial, update_paint_grid},
     nanobot::{MatchOutcome, SwarmId},
     ui::{UiHandling, check_ui_interaction},
     zones::{
@@ -465,5 +466,60 @@ fn scripted_paint_at_world_corner_lands_in_corner_cell() {
     assert!(
         cell.has(IntentKind::Gather),
         "world-corner paint must activate Gather in the corner cell"
+    );
+}
+
+#[test]
+fn scripted_cell_guides_follow_paint_erase_and_ui_capture() {
+    let mut app = build_app();
+    app.init_resource::<Assets<BackgroundMaterial>>()
+        .add_systems(Update, update_paint_grid.after(check_ui_interaction));
+    let ground = app
+        .world_mut()
+        .resource_mut::<Assets<BackgroundMaterial>>()
+        .add(BackgroundMaterial::default());
+    let window = spawn_window(&mut app);
+    spawn_camera(&mut app, Vec2::ZERO);
+    set_cursor(&mut app, window, Vec2::new(640.0, 360.0));
+    spawn_zone_material(&mut app);
+    let visible = |app: &App| {
+        app.world()
+            .resource::<Assets<BackgroundMaterial>>()
+            .get(&ground)
+            .unwrap()
+            .paint_grid
+            .x
+            > 0.5
+    };
+
+    app.update();
+    assert!(!visible(&app), "idle ground must have no cell guides");
+    press_mouse(&mut app, MouseButton::Left);
+    app.update();
+    assert!(visible(&app), "painting must show cell guides");
+    clear_mouse(&mut app);
+    app.update();
+    assert!(!visible(&app), "releasing the brush must hide cell guides");
+    press_mouse(&mut app, MouseButton::Right);
+    app.update();
+    assert!(visible(&app), "erasing must also show cell guides");
+    let control = app
+        .world_mut()
+        .spawn((
+            Node::default(),
+            bevy::ui::RelativeCursorPosition {
+                cursor_over: true,
+                normalized: None,
+            },
+        ))
+        .id();
+    app.update();
+    assert!(!visible(&app), "UI capture must suppress cell guides");
+    app.world_mut().despawn(control);
+    app.insert_resource(MatchOutcome::Victory);
+    app.update();
+    assert!(
+        !visible(&app),
+        "finished matches must not show paint guides"
     );
 }

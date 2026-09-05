@@ -21,16 +21,17 @@ use top_down_2d_rts_prototype_nano_swarm::{
         SwarmId, SwarmMember, TerritorySnapshot, nanobot_death_cleanup_system, world_to_cell,
     },
     resources::{ResourceKind, ResourceLedger},
-    scenario::{
-        OPPONENT_BUILD_FLANK_CELL, OPPONENT_CELL, OPPONENT_DEFEND_CELL, PLAYER_BUILD_FLANK_CELL,
-        PLAYER_CELL, PLAYER_DEFEND_CELL, spawn_default_opponent_scenario,
-        spawn_default_player_scenario,
-    },
+    scenario::{spawn_default_opponent_scenario, spawn_default_player_scenario},
 };
 
 #[path = "../common/mod.rs"]
 mod common;
 
+// Compact combat fixtures keep their own positions independently of the default map.
+const PLAYER_CELL: IVec2 = IVec2::new(0, 0);
+const PLAYER_DEFEND_CELL: IVec2 = IVec2::new(1, 0);
+const OPPONENT_CELL: IVec2 = IVec2::new(3, 0);
+const OPPONENT_DEFEND_CELL: IVec2 = IVec2::new(2, 0);
 const OPPONENT_SWARM: SwarmId = SwarmId(1);
 const MAX_TICKS_AFTER_CONTACT: u32 = 900;
 const MAX_CONTACT_TICKS: u32 = 500;
@@ -42,6 +43,7 @@ fn spawn_default_scenario_startup(
     mut grid: ResMut<IntentGrid>,
     opponent_id_alloc: ResMut<OpponentSwarmIdAlloc>,
 ) {
+    top_down_2d_rts_prototype_nano_swarm::scenario::spawn_default_terrain(&mut commands);
     spawn_default_player_scenario(&mut commands, &asset_server, &mut grid);
     spawn_default_opponent_scenario(&mut commands, &asset_server, &mut grid, opponent_id_alloc);
 }
@@ -73,7 +75,11 @@ fn default_headless_app() -> App {
 }
 
 #[test]
-fn authored_default_scenario_reaches_independent_defend_overlap() {
+fn authored_default_scenario_keeps_separated_economies_operational() {
+    use top_down_2d_rts_prototype_nano_swarm::scenario::{
+        OPPONENT_BUILD_FLANK_CELL, OPPONENT_DEFEND_CELL, PLAYER_BUILD_FLANK_CELL,
+        PLAYER_DEFEND_CELL,
+    };
     let mut app = default_headless_app();
     app.update();
 
@@ -142,66 +148,34 @@ fn authored_default_scenario_reaches_independent_defend_overlap() {
         3,
         "the third seeded opponent Defender remains as excess reserve while the front is peaceful",
     );
-    for _ in 0..2 {
+    let mut previous = positions(app.world_mut());
+    for _ in 0..300 {
+        let rotations = RotationSnapshot::capture(app.world_mut());
         app.update();
+        rotations.assert_admissions(app.world_mut());
+        previous = assert_default_tick_state(app.world_mut(), &previous);
     }
-
     assert!(
-        app.world()
+        !app.world()
             .resource::<IntentGrid>()
             .cell(PLAYER_DEFEND_CELL)
             .unwrap()
             .has_owned(IntentKind::Defend, SwarmId(1)),
-        "authored opponent cadence must overlap the player's primary Defend cell"
+        "the opponent must approach through the map rather than start on the player's front"
     );
     assert_eq!(
         *app.world().resource::<MatchOutcome>(),
-        MatchOutcome::InProgress,
-        "quiet staging must not overbuild a Charger and collapse the opponent economy"
+        MatchOutcome::InProgress
     );
-
-    let initial_player_health = aggregate_defender_health(app.world_mut(), SwarmId::PLAYER);
-    let initial_opponent_health = aggregate_defender_health(app.world_mut(), SwarmId(1));
-    let mut previous_positions = positions(app.world_mut());
-    let mut saw_both_participants = false;
-    for _ in 0..301 {
-        let rotations = RotationSnapshot::capture(app.world_mut());
-        app.update();
-        rotations.assert_admissions(app.world_mut());
-        previous_positions = assert_default_tick_state(
-            app.world_mut(),
-            &previous_positions,
-            &mut saw_both_participants,
-        );
-    }
-    for _ in 0..900 {
-        let rotations = RotationSnapshot::capture(app.world_mut());
-        app.update();
-        rotations.assert_admissions(app.world_mut());
-        previous_positions = assert_default_tick_state(
-            app.world_mut(),
-            &previous_positions,
-            &mut saw_both_participants,
-        );
-    }
-    let final_player_health = aggregate_defender_health(app.world_mut(), SwarmId::PLAYER);
-    let final_opponent_health = aggregate_defender_health(app.world_mut(), SwarmId(1));
-    assert!(
-        final_player_health < initial_player_health
-            || final_opponent_health < initial_opponent_health,
-        "authored default contact must cause combat by +900"
-    );
+    let deposits = app
+        .world_mut()
+        .query::<&top_down_2d_rts_prototype_nano_swarm::resources::ResourceDeposit>()
+        .iter(app.world())
+        .filter(|deposit| deposit.amount < 72_000)
+        .count();
     assert_eq!(
-        *app.world().resource::<MatchOutcome>(),
-        MatchOutcome::InProgress,
-        "the four-tile authored economy should remain recoverable through the proof horizon",
-    );
-    let collapse = app.world().resource::<ProductionCollapseState>();
-    assert!(!collapse.player_collapsed);
-    assert!(!collapse.opponent_collapsed);
-    assert!(
-        saw_both_participants,
-        "default fronts never established physical participants from both swarms"
+        deposits, 2,
+        "both sheltered economies must reach and extract their home minerals"
     );
 }
 
@@ -786,7 +760,6 @@ fn participants_in_front(world: &mut World, cell: IVec2, swarm: SwarmId) -> usiz
 fn assert_default_tick_state(
     world: &mut World,
     previous_positions: &HashMap<Entity, Vec2>,
-    saw_both_participants: &mut bool,
 ) -> HashMap<Entity, Vec2> {
     let current_positions = positions(world);
     for (entity, position) in &current_positions {
@@ -807,11 +780,6 @@ fn assert_default_tick_state(
         );
     }
 
-    let player_participants = participants_in_front(world, PLAYER_DEFEND_CELL, SwarmId::PLAYER);
-    let opponent_participants = participants_in_front(world, PLAYER_DEFEND_CELL, SwarmId(1));
-    if player_participants > 0 && opponent_participants > 0 {
-        *saw_both_participants = true;
-    }
     current_positions
 }
 
@@ -1056,7 +1024,7 @@ fn authored_starting_facilities_align_without_changing_deposit_geometry() {
         .query::<(&ResourceDeposit, &Transform)>()
         .iter(world)
         .collect::<Vec<_>>();
-    assert_eq!(deposits.len(), 4);
+    assert_eq!(deposits.len(), 6);
     for (deposit, transform) in deposits {
         assert!((deposit.radius - 64.0).abs() < 0.001);
         assert!((transform.scale.truncate() - Vec2::splat(2.0)).length() < 0.001);

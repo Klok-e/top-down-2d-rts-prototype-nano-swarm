@@ -1,4 +1,4 @@
-//! Full-app visual evidence for the compact skirmish, contested front, and
+//! Full-app visual evidence for the default skirmish and
 //! visible Production Collapse result.
 
 use bevy::prelude::*;

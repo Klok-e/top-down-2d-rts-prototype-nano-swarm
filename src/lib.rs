@@ -1,6 +1,7 @@
 pub mod agent_control;
 pub mod ai;
 pub mod building;
+pub mod deposit_presentation;
 pub mod fly_camera;
 pub mod game_settings;
 pub mod intent;
@@ -16,6 +17,8 @@ pub mod spatial;
 pub mod structure_overlay;
 pub mod structure_sprites;
 pub mod tactical_overlay;
+pub mod terrain;
+pub mod terrain_presentation;
 pub mod ui;
 pub mod zones;
 
@@ -152,6 +155,8 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
         .insert_resource(scenario::default_player_priority())
         .init_resource::<nanobot::OpponentSwarmIdAlloc>()
         .add_plugins(Material2dPlugin::<BackgroundMaterial>::default())
+        .add_plugins(terrain_presentation::TerrainPresentationPlugin)
+        .add_plugins(deposit_presentation::DepositPresentationPlugin)
         // must be before NanobotPlugin because otherwise it receives events with despawned entities
         .add_plugins(NanoswarmUiSetupPlugin)
         // must be before NanobotPlugin because otherwise it receives events with despawned entities
@@ -321,11 +326,7 @@ fn setup_things_startup(
         MainCamera,
         Camera2d,
         render_target,
-        Transform::from_translation(
-            scenario::cell_origin(scenario::PLAYER_CELL)
-                .midpoint(scenario::cell_origin(scenario::OPPONENT_CELL))
-                .extend(0.0),
-        ),
+        Transform::from_translation(scenario::cell_origin(scenario::PLAYER_CELL).extend(0.0)),
         Projection::Orthographic(OrthographicProjection {
             scale: DEFAULT_CAMERA_ZOOM,
             ..OrthographicProjection::default_2d()
@@ -348,6 +349,7 @@ fn setup_things_startup(
     commands.insert_resource(GameSettings::from_file_ron("config/game_settings.ron")?);
     commands.insert_resource(StructureSprites::load(&asset_server));
 
+    scenario::spawn_default_terrain(&mut commands);
     scenario::spawn_default_player_scenario(&mut commands, &asset_server, &mut grid);
     scenario::spawn_default_opponent_scenario(
         &mut commands,
@@ -359,7 +361,7 @@ fn setup_things_startup(
     // background
     commands.spawn((
         Mesh2d(meshes.add(Mesh::from(Rectangle::default()))),
-        MeshMaterial2d(bg_mats.add(BackgroundMaterial {})),
+        MeshMaterial2d(bg_mats.add(BackgroundMaterial::default())),
         background_overlay_transform(
             MAP_WIDTH as f32 * ZONE_BLOCK_SIZE,
             MAP_HEIGHT as f32 * ZONE_BLOCK_SIZE,

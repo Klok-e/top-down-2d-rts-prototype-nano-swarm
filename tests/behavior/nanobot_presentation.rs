@@ -116,22 +116,18 @@ fn authored_nanobots_render_through_one_neutral_presentation_child() {
             );
         }
     }
+    for first in roots.iter().filter(|root| root.2 == SwarmId::PLAYER) {
+        assert!(
+            roots.iter().any(|other| {
+                other.2 == opponent
+                    && other.1 == first.1
+                    && (first.3.translation.truncate() + other.3.translation.truncate())
+                        .abs_diff_eq(Vec2::splat(12800.0), 0.01)
+            }),
+            "each player seed must have a same-type rotational counterpart"
+        );
+    }
     for (root, kind, swarm, transform, health, velocity, commitment) in roots {
-        let expected_columns = if swarm == SwarmId::PLAYER {
-            [76.0, 148.0, 220.0]
-        } else {
-            [1792.0, 1864.0, 1936.0]
-        };
-        assert!(
-            expected_columns
-                .iter()
-                .any(|x| (transform.translation.x - x).abs() < 0.01)
-        );
-        assert!(
-            [184.0, 256.0, 328.0]
-                .iter()
-                .any(|y| (transform.translation.y - y).abs() < 0.01)
-        );
         assert_abs_diff_eq!(transform.translation.z, GAMEPLAY_SPRITE_Z, epsilon = 0.01);
         let full_health = Health::default();
         assert_eq!(health.current, full_health.current);

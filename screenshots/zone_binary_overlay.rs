@@ -29,7 +29,7 @@ const DISPLAY_VALUES: [u32; 7] = [0, 17, 130, 772, 1032, 1375, 99];
 const CAPTURE_FRAME: u32 = 60;
 const FRAMING_SCALE: f32 = 2.8;
 const PATCH_SIZE: u32 = 32;
-const PIXEL_TOLERANCE: u8 = 20;
+const PIXEL_TOLERANCE: u8 = 12;
 const MIN_SOLID_MATCHING_PIXELS: usize = 920;
 const MIN_STRIPE_MATCHING_PIXELS: usize = 256;
 
@@ -62,35 +62,40 @@ pub fn validate_zone_binary_overlay(path: &Path) -> Result<(), String> {
     let center = |index: usize| Vec2::new(first_center_x + index as f32 * cell_width, center_y);
 
     require_solid_patch(&image, center(0), [20, 20, 26], "absent zone")?;
-    require_solid_patch(&image, center(1), [231, 5, 7], "player Gather zone")?;
+    require_solid_patch(&image, center(1), [135, 17, 22], "player Gather zone")?;
     require_striped_patch(
         &image,
         center(2),
-        [221, 53, 179],
-        [170, 39, 137],
+        [129, 34, 104],
+        [98, 27, 80],
         "opponent Build zone",
     )?;
     require_striped_patch(
         &image,
         center(3),
-        [5, 5, 231],
-        [231, 88, 73],
+        [17, 17, 136],
+        [135, 53, 45],
         "independent overlapping Defend zone",
     )?;
-    require_solid_patch(&image, center(4), [231, 231, 7], "player Corridor zone")?;
-    require_solid_patch(
-        &image,
-        center(5),
-        [204, 124, 170],
-        "overlapping player zones",
-    )?;
+    require_solid_patch(&image, center(4), [135, 135, 22], "player Corridor zone")?;
+    require_solid_patch(&image, center(5), [119, 73, 99], "overlapping player zones")?;
     require_striped_patch(
         &image,
         center(6),
-        [231, 5, 231],
-        [231, 88, 73],
+        [135, 17, 136],
+        [135, 53, 45],
         "player Build preserved under enemy Gather hatch",
-    )
+    )?;
+    let gather_center = center(1);
+    let edge_x = (gather_center.x - cell_width / 2.0).ceil() as u32;
+    let border = image.get_pixel(edge_x, center_y as u32).0;
+    let fill = image.get_pixel(gather_center.x as u32, center_y as u32).0;
+    if border[0] < fill[0].saturating_add(35) {
+        return Err(format!(
+            "Gather border must be distinct from translucent fill: border={border:?}, fill={fill:?}"
+        ));
+    }
+    Ok(())
 }
 
 fn require_solid_patch(
@@ -264,6 +269,13 @@ fn focus_camera(world: &mut World) {
 }
 
 fn hide_existing_scene(world: &mut World) {
+    let terrain_entities = world
+        .query_filtered::<Entity, Or<(
+            With<top_down_2d_rts_prototype_nano_swarm::resources::ResourceDeposit>,
+            With<top_down_2d_rts_prototype_nano_swarm::terrain::RockFormation>,
+        )>>()
+        .iter(world)
+        .collect::<Vec<_>>();
     let mesh_entities = world
         .query_filtered::<Entity, With<Mesh2d>>()
         .iter(world)
@@ -280,8 +292,9 @@ fn hide_existing_scene(world: &mut World) {
         .query_filtered::<Entity, With<Node>>()
         .iter(world)
         .collect::<Vec<_>>();
-    for entity in mesh_entities
+    for entity in terrain_entities
         .into_iter()
+        .chain(mesh_entities)
         .chain(nanobot_entities)
         .chain(sprite_entities)
         .chain(ui_entities)

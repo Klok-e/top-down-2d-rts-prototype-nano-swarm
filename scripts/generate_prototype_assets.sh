@@ -15,15 +15,6 @@ fi
 
 mkdir -p "$assets_dir"
 
-# Resource Deposit: five flat teal/cyan rock-like diamonds/hexes, transparent background.
-"${im[@]}" -size 64x64 xc:none \
-    -fill '#28c7c7' -draw 'polygon 18,12 29,18 27,31 15,33 9,22' \
-    -fill '#45d6ff' -draw 'polygon 38,10 50,18 48,31 35,33 30,21' \
-    -fill '#159aa6' -draw 'polygon 29,26 42,33 39,49 25,52 18,39' \
-    -fill '#63e6d2' -draw 'polygon 14,34 25,40 23,52 11,55 6,44' \
-    -fill '#1fb8d1' -draw 'polygon 45,34 57,42 53,55 40,53 35,42' \
-    "$assets_dir/resource_deposit.png"
-
 # Planned Production Facility: foundation pad, transparent ghost core, four anchor sockets.
 "${im[@]}" -size 64x64 xc:none \
     -fill '#26303380' -draw 'rectangle 14,14 50,50' \

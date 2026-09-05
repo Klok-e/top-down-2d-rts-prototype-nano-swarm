@@ -672,25 +672,32 @@ impl Navigation {
             let paint = scheduler.paint.clone();
             let request = scheduler.requests.get_mut(&id).unwrap();
             if request.future.is_none() {
+                let obstacles = if self.clearing.is_empty() {
+                    self.obstacles.clone()
+                } else {
+                    Arc::new(
+                        self.obstacles
+                            .iter()
+                            .copied()
+                            .chain(
+                                self.clearing
+                                    .iter()
+                                    .copied()
+                                    .filter(|shape| shape.admits_body(request.start)),
+                            )
+                            .collect(),
+                    )
+                };
+                let obstacle_index = if self.clearing.is_empty() {
+                    self.obstacle_index.clone()
+                } else {
+                    Arc::new(ObstacleIndex::new(&obstacles))
+                };
                 let snapshot = Navigation {
                     min: self.min,
                     max: self.max,
-                    obstacles: if self.clearing.is_empty() {
-                        self.obstacles.clone()
-                    } else {
-                        Arc::new(
-                            self.obstacles
-                                .iter()
-                                .copied()
-                                .chain(
-                                    self.clearing
-                                        .iter()
-                                        .copied()
-                                        .filter(|shape| shape.admits_body(request.start)),
-                                )
-                                .collect(),
-                        )
-                    },
+                    obstacles,
+                    obstacle_index,
                     clearing: Vec::new(),
                     revision: self.revision,
                     chunks: if self.clearing.is_empty() {
@@ -925,9 +932,9 @@ impl Navigation {
         if !p.is_finite() || !p.cmpge(self.min).all() || !p.cmplt(self.max).all() {
             return false;
         }
-        for obstacle in self.obstacles.iter() {
+        for id in self.obstacle_index.candidates(p, p) {
             WorkUnit::new().await;
-            if !obstacle.admits_body(p) {
+            if !self.obstacles[id].admits_body(p) {
                 return false;
             }
         }
@@ -943,9 +950,9 @@ impl Navigation {
         {
             return false;
         }
-        for obstacle in self.obstacles.iter() {
+        for id in self.obstacle_index.candidates(a, b) {
             WorkUnit::new().await;
-            if !obstacle.segment_clear(a, b) {
+            if !self.obstacles[id].segment_clear(a, b) {
                 return false;
             }
         }
@@ -1037,6 +1044,7 @@ impl Navigation {
         Navigation {
             min: self.min,
             max: self.max,
+            obstacle_index: Arc::new(ObstacleIndex::new(&obstacles)),
             obstacles: Arc::new(obstacles),
             clearing: Vec::new(),
             revision: self.revision,
@@ -1106,6 +1114,68 @@ impl Navigation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn distant_rocks_do_not_consume_local_direct_route_allowance() {
+        let grid = IntentGrid::new(1000, 1000);
+        let obstacles = (0..300)
+            .map(|index| Obstacle::Rectangle {
+                center: Vec2::new(20_000.0 + index as f32 * 720.0, 20_000.0),
+                half: Vec2::splat(100.0),
+            })
+            .collect();
+        let navigation = Navigation::new(&grid, obstacles);
+        let request = navigation.request(
+            Vec2::ZERO,
+            RouteGoal::Point(Vec2::new(100.0, 0.0)),
+            SwarmId::PLAYER,
+            false,
+            RoutePriority::Routine,
+        );
+        navigation.advance(&grid, 1);
+        let RouteStatus::Found(route) = navigation.poll(request) else {
+            panic!("local clear segment must complete with one work unit despite distant terrain")
+        };
+        assert!((route.cost - 100.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn indexed_geometry_keeps_bucket_edges_huge_shapes_and_long_segments_solid() {
+        let grid = IntentGrid::new(1000, 1000);
+        let mut navigation = Navigation::new(
+            &grid,
+            vec![Obstacle::Circle {
+                center: Vec2::new(580.0, 0.0),
+                radius: 10.0,
+            }],
+        );
+        assert!(
+            !navigation.point_clear(Vec2::new(550.0, 0.0)),
+            "body radius crosses the 576-unit bucket boundary"
+        );
+        assert!(navigation.point_clear(Vec2::new(535.0, 0.0)));
+        assert!(
+            !navigation.segment_clear(Vec2::new(-50_000.0, 0.0), Vec2::new(50_000.0, 0.0)),
+            "long segment fallback must retain small obstacles"
+        );
+        navigation.refresh(
+            &grid,
+            vec![Obstacle::Rectangle {
+                center: Vec2::ZERO,
+                half: Vec2::new(100_000.0, 36.0),
+            }],
+        );
+        assert!(
+            !navigation.point_clear(Vec2::new(20_000.0, 50.0)),
+            "huge rectangles remain global candidates"
+        );
+        assert!(!navigation.segment_clear(Vec2::new(20_000.0, -100.0), Vec2::new(20_000.0, 100.0)));
+        navigation.refresh(&grid, vec![]);
+        assert!(
+            navigation.point_clear(Vec2::new(20_000.0, 50.0)),
+            "refresh must discard stale blockers"
+        );
+    }
 
     #[test]
     fn hypothetical_construction_and_movement_share_the_same_allowance() {

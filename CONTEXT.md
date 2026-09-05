@@ -36,6 +36,10 @@ _Avoid_: Mining zone, resource zone
 A physical map object containing extractable resources for gather work, distinct from the resource kind it contains. It blocks Nanobot movement while the object exists, including when depleted; gathering happens from reachable space outside its footprint.
 _Avoid_: Mineral node, mineral patch, resource pile
 
+**Rock Formation**:
+Permanent, impassable terrain that shapes base entrances, travel routes, and mineral pockets. Rock Formations cannot be destroyed or harvested and enclose the default map's playable area.
+_Avoid_: Destructible rock, Resource Deposit
+
 **Build Zone**:
 A swarm's intent marking space where automatic construction may place support structures, providing placement options without creating construction demand or reserving space. Overlapping swarms may each build in physically free space, subject to structures and construction reservations of every swarm; paint never transfers structure ownership.
 _Avoid_: Construction group, builder assignment, manual building placement

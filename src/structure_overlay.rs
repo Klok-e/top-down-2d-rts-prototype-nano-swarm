@@ -220,7 +220,7 @@ pub fn overlay_background_color(_kind: StructureOverlayKind) -> Color {
 /// Fill color for each kind.
 pub fn overlay_fill_color(kind: StructureOverlayKind) -> Color {
     match kind {
-        StructureOverlayKind::Deposit => Color::srgb(1.0, 0.68, 0.20),
+        StructureOverlayKind::Deposit => Color::srgb(0.18, 0.88, 0.96),
         StructureOverlayKind::Stockpile => Color::srgb(0.25, 0.85, 0.35),
         StructureOverlayKind::Facility => Color::srgb(0.25, 0.55, 1.0),
         StructureOverlayKind::Planned => Color::srgb(0.85, 0.85, 0.90),

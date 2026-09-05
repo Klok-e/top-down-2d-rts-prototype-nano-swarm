@@ -182,8 +182,8 @@ pub fn startup_formations(ctx: &mut TestContext) -> TestFlow {
             .query::<(&mut Transform, &mut Projection, &mut CameraZoom2d)>()
             .iter_mut(ctx.world)
         {
-            transform.translation.x = 1024.;
-            transform.translation.y = 350.;
+            transform.translation.x = 256.;
+            transform.translation.y = 256.;
             zoom.zoom = 1.8;
             if let Projection::Orthographic(ortho) = &mut *projection {
                 ortho.scale = 1.8;
