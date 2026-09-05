@@ -200,10 +200,10 @@ fn player_swarm_with_no_facility_and_recoverable_crew_is_not_collapsed() {
         player_pos,
         &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
     );
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::new(1, 0),
         IntentKind::Build,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     let stockpile = common::spawn_stockpile(&mut app, player_pos, PRODUCTION_COST_PER_BOT, 100);
     app.world_mut()
@@ -239,10 +239,10 @@ fn unowned_stockpile_material_does_not_preserve_player_recovery() {
         Vec2::ZERO,
         &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
     );
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::new(1, 0),
         IntentKind::Build,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     common::spawn_stockpile(&mut app, Vec2::ZERO, PRODUCTION_COST_PER_BOT, 100);
 
@@ -269,10 +269,10 @@ fn stranded_hauler_cargo_does_not_prevent_collapse() {
         Vec2::ZERO,
         &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
     );
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::new(1, 0),
         IntentKind::Build,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     let hauler = {
         let world = app.world_mut();
@@ -315,10 +315,10 @@ fn assigned_hauler_cargo_preserves_a_recovery_path() {
         Vec2::ZERO,
         &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
     );
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::new(1, 0),
         IntentKind::Build,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     let source = common::spawn_stockpile(&mut app, Vec2::ZERO, 0, 100);
     app.world_mut()
@@ -467,11 +467,9 @@ fn occupied_facility_build_cell_can_plan_its_local_sink_recovery_path() {
     let player = common::spawn_swarm_at(&mut app, facility_pos);
     common::spawn_worker_at(&mut app, facility_pos + Vec2::new(-144.0, -144.0));
     common::spawn_hauler_at(&mut app, facility_pos + Vec2::new(-144.0, 0.0));
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        cell,
-        IntentKind::Build,
-        Some(SwarmId::PLAYER),
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Build, SwarmId::PLAYER);
     app.world_mut().spawn((
         ProductionFacility::new(),
         OwnerSwarm(player),
@@ -528,10 +526,10 @@ fn remote_build_space_cannot_supply_an_idle_facility_outside_build_paint() {
         facility_pos,
         &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
     );
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::new(3, 0),
         IntentKind::Build,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     app.world_mut().spawn((
         ProductionFacility::new(),
@@ -580,10 +578,10 @@ fn blocked_source_ring_cannot_turn_gather_paint_into_a_material_path() {
         deposit_pos,
         &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
     );
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         gather_cell,
         IntentKind::Gather,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     let deposit = common::spawn_deposit(
         &mut app,
@@ -887,10 +885,10 @@ fn opponent_with_recoverable_crew_does_not_trigger_player_win() {
         .entity(opponent)
         .get::<SwarmId>()
         .expect("opponent swarm has identity");
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::new(2, 0),
         IntentKind::Build,
-        Some(opponent_id),
+        opponent_id,
     );
     app.world_mut().resource_mut::<ResourceLedger>().add_for(
         opponent_id,
@@ -996,4 +994,48 @@ fn paid_existing_cycle_needs_only_a_repair_worker() {
     });
 
     assert!(!outcome.collapsed);
+}
+
+#[test]
+fn stockpile_in_only_build_cell_leaves_free_space_for_production_recovery() {
+    let mut app = build_app();
+    {
+        let mut priority = app.world_mut().resource_mut::<ProductionPriority>();
+        priority.set_weight(NanobotType::Worker, 5);
+        priority.set_weight(NanobotType::Hauler, 2);
+    }
+    let player = common::spawn_swarm_with_nanobots(
+        &mut app,
+        Vec2::ZERO,
+        &[(NanobotType::Worker, 1), (NanobotType::Hauler, 1)],
+    );
+    let build_cell = IVec2::new(1, 0);
+    app.world_mut().resource_mut::<IntentGrid>().paint(
+        build_cell,
+        IntentKind::Build,
+        SwarmId::PLAYER,
+    );
+    let stockpile = common::spawn_stockpile(
+        &mut app,
+        common::cell_world_center(build_cell),
+        PRODUCTION_COST_PER_BOT,
+        100,
+    );
+    app.world_mut()
+        .entity_mut(stockpile)
+        .insert(OwnerSwarm(player));
+    app.world_mut().resource_mut::<ResourceLedger>().add_for(
+        SwarmId::PLAYER,
+        ResourceKind::Minerals,
+        PRODUCTION_COST_PER_BOT,
+    );
+
+    app.update();
+
+    assert!(
+        !app.world()
+            .resource::<ProductionCollapseState>()
+            .player_collapsed,
+        "a stockpile occupies only its footprint: the remaining Build space, crew, and materials allow rebuilding",
+    );
 }

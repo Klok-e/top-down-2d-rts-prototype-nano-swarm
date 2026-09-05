@@ -73,7 +73,7 @@ fn default_headless_app() -> App {
 }
 
 #[test]
-fn authored_default_scenario_reaches_primary_defend_contest() {
+fn authored_default_scenario_reaches_independent_defend_overlap() {
     let mut app = default_headless_app();
     app.update();
 
@@ -121,7 +121,12 @@ fn authored_default_scenario_reaches_primary_defend_contest() {
                 .cell(OPPONENT_BUILD_FLANK_CELL)
                 .is_some_and(|cell| cell.has(IntentKind::Defend))
         );
-        assert!(grid.defend_contest(PLAYER_DEFEND_CELL).is_none());
+        assert!(
+            !grid
+                .cell(PLAYER_DEFEND_CELL)
+                .unwrap()
+                .has_owned(IntentKind::Defend, SwarmId(1))
+        );
     }
 
     for _ in 0..299 {
@@ -144,9 +149,10 @@ fn authored_default_scenario_reaches_primary_defend_contest() {
     assert!(
         app.world()
             .resource::<IntentGrid>()
-            .defend_contest(PLAYER_DEFEND_CELL)
-            .is_some(),
-        "authored opponent cadence must contest the player's primary Defend cell"
+            .cell(PLAYER_DEFEND_CELL)
+            .unwrap()
+            .has_owned(IntentKind::Defend, SwarmId(1)),
+        "authored opponent cadence must overlap the player's primary Defend cell"
     );
     assert_eq!(
         *app.world().resource::<MatchOutcome>(),
@@ -180,16 +186,10 @@ fn authored_default_scenario_reaches_primary_defend_contest() {
     }
     let final_player_health = aggregate_defender_health(app.world_mut(), SwarmId::PLAYER);
     let final_opponent_health = aggregate_defender_health(app.world_mut(), SwarmId(1));
-    let final_contest = app
-        .world()
-        .resource::<IntentGrid>()
-        .defend_contest(PLAYER_DEFEND_CELL)
-        .is_some();
     assert!(
         final_player_health < initial_player_health
-            || final_opponent_health < initial_opponent_health
-            || !final_contest,
-        "authored default contact must cause combat or capture by +900"
+            || final_opponent_health < initial_opponent_health,
+        "authored default contact must cause combat by +900"
     );
     assert_eq!(
         *app.world().resource::<MatchOutcome>(),
@@ -210,10 +210,10 @@ fn authored_paint_edit_redistributes_the_full_unengaged_cohort_without_parking()
     let mut app = common::sim_app();
     let original_cell = IVec2::ZERO;
     let added_cell = IVec2::X;
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         original_cell,
         IntentKind::Defend,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     let center = common::cell_world_center(original_cell);
     let defenders = [
@@ -249,10 +249,10 @@ fn authored_paint_edit_redistributes_the_full_unengaged_cohort_without_parking()
         );
     }
 
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         added_cell,
         IntentKind::Defend,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     app.update();
 
@@ -325,12 +325,8 @@ fn authored_non_defend_pursuit_returns_to_current_staging_for_each_swarm() {
         let diagonal_halo = non_defend_territory + IVec2::ONE;
         {
             let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-            grid.paint_owned(original_staging, IntentKind::Defend, Some(defending_swarm));
-            grid.paint_owned(
-                non_defend_territory,
-                IntentKind::Gather,
-                Some(defending_swarm),
-            );
+            grid.paint(original_staging, IntentKind::Defend, defending_swarm);
+            grid.paint(non_defend_territory, IntentKind::Gather, defending_swarm);
         }
         let defender =
             common::spawn_defender_at(&mut app, common::cell_world_center(original_staging));
@@ -385,8 +381,8 @@ fn authored_non_defend_pursuit_returns_to_current_staging_for_each_swarm() {
             .translation = common::cell_world_center(diagonal_halo).extend(0.0);
         {
             let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-            grid.remove(original_staging, IntentKind::Defend);
-            grid.paint_owned(current_staging, IntentKind::Defend, Some(defending_swarm));
+            grid.erase(original_staging, IntentKind::Defend, defending_swarm);
+            grid.paint(current_staging, IntentKind::Defend, defending_swarm);
         }
         app.update();
         assert_eq!(
@@ -443,8 +439,8 @@ fn authored_charge_rotation_replaces_active_coverage_for_each_swarm() {
         let threatened_cell = IVec2::X;
         {
             let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-            grid.paint_owned(charger_cell, IntentKind::Defend, Some(defending_swarm));
-            grid.paint_owned(threatened_cell, IntentKind::Gather, Some(defending_swarm));
+            grid.paint(charger_cell, IntentKind::Defend, defending_swarm);
+            grid.paint(threatened_cell, IntentKind::Gather, defending_swarm);
         }
         let charger = common::spawn_operational_charger_at(&mut app, charger_cell, 100);
         app.world_mut()
@@ -524,10 +520,10 @@ fn authored_charger_planning_and_maintenance_follow_observed_service_need() {
     let charger_cell = IVec2::ZERO;
     let center = common::cell_world_center(charger_cell);
     let swarm = common::spawn_swarm_at(&mut app, center);
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         charger_cell,
         IntentKind::Defend,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     let defender = common::spawn_defender_at(&mut app, center);
     app.world_mut()
@@ -884,13 +880,9 @@ fn spawn_runtime_front() -> (App, IVec2, Entity, Entity) {
     let front = OPPONENT_DEFEND_CELL;
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        grid.paint_owned(
-            PLAYER_DEFEND_CELL,
-            IntentKind::Defend,
-            Some(SwarmId::PLAYER),
-        );
-        grid.paint_owned(front, IntentKind::Defend, Some(opponent_id));
-        grid.contest_defend(front, SwarmId::PLAYER);
+        grid.paint(PLAYER_DEFEND_CELL, IntentKind::Defend, SwarmId::PLAYER);
+        grid.paint(front, IntentKind::Defend, opponent_id);
+        grid.paint(front, IntentKind::Defend, SwarmId::PLAYER);
     }
 
     let player_charger = common::spawn_operational_charger_at(&mut app, PLAYER_DEFEND_CELL, 60);

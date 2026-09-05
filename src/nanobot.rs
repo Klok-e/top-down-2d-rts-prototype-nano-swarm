@@ -55,18 +55,11 @@ use crate::ai::AiStateComponent;
 
 pub use self::components::{Health, Nanobot, SwarmId, SwarmMember, VelocityComponent};
 
-/// Bundle for a freshly spawned nanobot. The default is a Worker
-/// (the most common type for the first implementation) with zero
-/// velocity and a fresh AI state. Spawners can override individual
-/// fields to specialise the bot (e.g. tests spawn Haulers).
+/// Bundle for a freshly spawned nanobot, defaulting to a Worker with zero
+/// velocity and a fresh AI state. Spawners override fields to specialise it.
 ///
-/// `swarm_member` defaults to [`SwarmId::PLAYER`] so the test
-/// seam helpers and any spawner that did not think about
-/// ownership still pass the per-swarm intent filter (every
-/// existing test uses unowned paint; legacy unowned paint is
-/// visible to every swarm, so the player default works for
-/// those cases). Opponent spawners and the production work
-/// system overwrite `swarm_member` to the right id.
+/// `swarm_member` defaults to [`SwarmId::PLAYER`]. Opponent spawners and
+/// production set it to the owning swarm so each bot acts on its own intent.
 #[derive(Debug, Bundle)]
 pub struct NanobotBundle {
     pub nanobot: Nanobot,

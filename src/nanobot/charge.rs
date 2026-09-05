@@ -553,7 +553,7 @@ pub fn charger_auto_creation_system(
         };
         if grid
             .cell(planned.cell)
-            .is_some_and(|cell| cell.owner(IntentKind::Defend) == Some(swarm))
+            .is_some_and(|cell| cell.has_owned(IntentKind::Defend, swarm))
         {
             *available_capacity.entry(swarm).or_default() += MAX_DEFENDERS_PER_CHARGER;
         }
@@ -627,7 +627,7 @@ pub fn charger_auto_creation_system(
         let defend_cells = grid
             .iter_active_cells()
             .filter_map(|(cell, intent)| {
-                (intent.owner(IntentKind::Defend) == Some(swarm)).then_some(cell)
+                (intent.has_owned(IntentKind::Defend, swarm)).then_some(cell)
             })
             .collect::<Vec<_>>();
         let Some((cell, placement_pos)) =
@@ -666,7 +666,7 @@ pub(crate) fn charger_can_serve_in_owned_zone(
     grid: &IntentGrid,
 ) -> bool {
     grid.cell(charger.cell)
-        .is_some_and(|cell| cell.owner(IntentKind::Defend) == Some(swarm))
+        .is_some_and(|cell| cell.has_owned(IntentKind::Defend, swarm))
         && charger.has_supply()
         && condition.is_some_and(SupportCondition::is_operational)
 }

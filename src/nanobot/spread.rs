@@ -355,7 +355,7 @@ pub fn idle_spread_system(
             for (type_idx, kinds) in kind_sets.iter().enumerate() {
                 if kinds
                     .iter()
-                    .any(|kind| intent_cell.visible_to(*kind, *swarm))
+                    .any(|kind| intent_cell.has_owned(*kind, *swarm))
                 {
                     indexes[type_idx].insert(cell);
                 }
@@ -379,7 +379,7 @@ pub fn idle_spread_system(
         let target = if grid.cell(own_cell).is_some_and(|cell| {
             kind_sets[type_idx]
                 .iter()
-                .any(|kind| cell.visible_to(*kind, member.0))
+                .any(|kind| cell.has_owned(*kind, member.0))
         }) {
             // In-region gradient step. Exclude the bot's own body
             // from its own cell's count so a lone bot reads density 0
@@ -395,7 +395,7 @@ pub fn idle_spread_system(
                     let neighbour = grid.cell(n)?;
                     let fit = kind_sets[type_idx]
                         .iter()
-                        .any(|kind| neighbour.visible_to(*kind, member.0));
+                        .any(|kind| neighbour.has_owned(*kind, member.0));
                     fit.then(|| (n, density.get(&n).copied().unwrap_or(0)))
                 })
                 .collect();
@@ -459,8 +459,9 @@ mod tests {
         // A cell with Gather only is fit for a Worker; a cell with
         // Build only is also fit for a Worker. The merged worker
         // region is the union of both kinds.
-        let mut gather_only = IntentCell::default();
-        gather_only.add(IntentKind::Gather);
+        let mut grid = IntentGrid::new(4, 4);
+        grid.paint(IVec2::ZERO, IntentKind::Gather, SwarmId::PLAYER);
+        let gather_only = grid.cell(IVec2::ZERO).unwrap().clone();
         assert!(cell_is_eligible_for_generic_spread(
             NanobotType::Worker,
             &gather_only
@@ -470,8 +471,9 @@ mod tests {
             &gather_only
         ));
 
-        let mut build_only = IntentCell::default();
-        build_only.add(IntentKind::Build);
+        let mut grid = IntentGrid::new(4, 4);
+        grid.paint(IVec2::ZERO, IntentKind::Build, SwarmId::PLAYER);
+        let build_only = grid.cell(IVec2::ZERO).unwrap().clone();
         assert!(cell_is_eligible_for_generic_spread(
             NanobotType::Worker,
             &build_only
@@ -490,8 +492,9 @@ mod tests {
             &build_only
         ));
 
-        let mut corridor = IntentCell::default();
-        corridor.add(IntentKind::Corridor);
+        let mut grid = IntentGrid::new(4, 4);
+        grid.paint(IVec2::ZERO, IntentKind::Corridor, SwarmId::PLAYER);
+        let corridor = grid.cell(IVec2::ZERO).unwrap().clone();
         assert!(cell_is_eligible_for_generic_spread(
             NanobotType::Hauler,
             &corridor
@@ -533,8 +536,8 @@ mod tests {
         // a Worker should see both as fit neighbours, while the
         // unpainted / out-of-bounds neighbours are dropped.
         let mut grid = IntentGrid::new(3, 3);
-        grid.add(IVec2::new(1, 0), IntentKind::Gather);
-        grid.add(IVec2::new(0, 1), IntentKind::Build);
+        grid.paint(IVec2::new(1, 0), IntentKind::Gather, SwarmId::PLAYER);
+        grid.paint(IVec2::new(0, 1), IntentKind::Build, SwarmId::PLAYER);
 
         let fit = fit_neighbour_cells(NanobotType::Worker, IVec2::new(0, 0), &grid);
         assert!(fit.contains(&IVec2::new(1, 0)));

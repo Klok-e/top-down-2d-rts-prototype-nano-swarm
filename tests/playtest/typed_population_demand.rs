@@ -30,10 +30,10 @@ fn swarm_tile_reserve_eventually_produces_defender_despite_excess_haulers() {
     priority.set_weight(NanobotType::Defender, 15);
     app.insert_resource(priority);
     for x in 0..4 {
-        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        app.world_mut().resource_mut::<IntentGrid>().paint(
             IVec2::new(x, 0),
             IntentKind::Defend,
-            Some(SwarmId::PLAYER),
+            SwarmId::PLAYER,
         );
     }
     let facility = common::spawn_facility_at(&mut app, swarm, Vec2::ZERO);
@@ -87,10 +87,10 @@ fn physical_threats_drive_eventual_defender_production_above_reserve() {
             .insert(SwarmMember::new(opponent_id));
     }
     for x in 0..2 {
-        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        app.world_mut().resource_mut::<IntentGrid>().paint(
             IVec2::new(x, 0),
             IntentKind::Gather,
-            Some(SwarmId::PLAYER),
+            SwarmId::PLAYER,
         );
     }
     let facilities = [

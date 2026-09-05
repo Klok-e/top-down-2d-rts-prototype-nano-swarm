@@ -40,9 +40,11 @@ fn stockpile_auto_emerges_in_gather_cell_with_demand() {
     // tick of simulation.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Gather);
+    app.world_mut().resource_mut::<IntentGrid>().paint(
+        cell,
+        IntentKind::Gather,
+        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
+    );
     assert_eq!(
         stockpile_count(app.world_mut()),
         0,
@@ -70,9 +72,11 @@ fn stockpile_not_duplicated_when_one_already_exists() {
     // not "multiply indefinitely".
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Gather);
+    app.world_mut().resource_mut::<IntentGrid>().paint(
+        cell,
+        IntentKind::Gather,
+        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
+    );
     let cell_world_center = common::cell_world_center(cell);
 
     // Manually pre-place a stockpile in the same cell. The
@@ -97,9 +101,11 @@ fn stockpile_not_emerged_for_corridor_only_cell() {
     // demand in the gather/build sense, so no stockpile emerges.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Corridor);
+    app.world_mut().resource_mut::<IntentGrid>().paint(
+        cell,
+        IntentKind::Corridor,
+        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
+    );
 
     for _ in 0..3 {
         app.update();

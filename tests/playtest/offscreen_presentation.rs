@@ -163,11 +163,9 @@ fn full_app_offscreen_combat_uses_real_facts_and_keeps_gameplay_roots_fixed() {
         .expect("full app needs its authored Opponent Swarm");
     let cell = IVec2::new(0, 5);
     let center = common::cell_world_center(cell);
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        cell,
-        IntentKind::Defend,
-        Some(SwarmId::PLAYER),
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend, SwarmId::PLAYER);
     let attacker = common::spawn_defender_at(&mut app, center + Vec2::new(-44.0, 0.0));
     app.world_mut()
         .entity_mut(attacker)

@@ -119,12 +119,11 @@ pub fn idle_spread(ctx: &mut TestContext) -> TestFlow {
     pin_camera(world);
 
     if ctx.frame == 0 {
-        // Paint the Corridor segment unowned so it is visible to
-        // every swarm (including the idle test swarm).
+        // Give the isolated haulers their own Corridor intent.
         {
             let mut grid = world.resource_mut::<IntentGrid>();
             for &cell in &CORRIDOR_CELLS {
-                grid.add_owned(cell, IntentKind::Corridor, None);
+                grid.paint(cell, IntentKind::Corridor, IDLE_SWARM);
             }
         }
         // Spawn the idle haulers stacked at the stranded start cell.

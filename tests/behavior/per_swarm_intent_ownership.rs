@@ -1,32 +1,4 @@
-//! Integration tests for issue #20: per-swarm intent ownership.
-//!
-//! Each test pins one bullet of the acceptance criteria so a
-//! failure points at a single contract:
-//!
-//! 1. `player_painted_intent_is_owned_by_player_swarm` -- the
-//!    `paint_owned` API stamps intent with the player `SwarmId`.
-//! 2. `player_painted_gather_drives_player_worker` -- a player
-//!    worker gets a `GatherAssignment` in a player-painted cell.
-//! 3. `opponent_prepainted_intent_is_owned_by_opponent_swarm`
-//!    -- the `spawn_opponent_swarm` helper stamps intent with
-//!    the opponent's `SwarmId`.
-//! 4. `opponent_prepainted_gather_drives_opponent_worker` -- an
-//!    opponent worker gets a `GatherAssignment` in the
-//!    opponent-painted cell.
-//! 5. `player_worker_ignores_opponent_gather_zone` -- the
-//!    per-swarm filter routes opponent paint away from player
-//!    workers.
-//! 6. `opponent_worker_ignores_player_gather_zone` -- the
-//!    per-swarm filter routes player paint away from opponent
-//!    workers.
-//! 7. `unowned_paint_remains_visible_to_every_swarm` -- legacy
-//!    shared paint (or paint written through the unowned API)
-//!    is still visible to every swarm, so pre-existing tests
-//!    keep passing.
-//! 8. `opponent_production_spawns_opponent_swarm_id_nanobots`
-//!    -- a freshly produced opponent nanobot carries the
-//!    opponent `SwarmId`, not the player id, so the new bot
-//!    keeps scoring opponent intent.
+//! Independent swarm intent drives each swarm's work without transferring orders.
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
@@ -58,25 +30,19 @@ fn app_with_production() -> App {
 
 #[test]
 fn player_painted_intent_is_owned_by_player_swarm() {
-    // Pin the player-side paint contract: when the player
-    // brush writes a Gather cell through `paint_owned` with
-    // `Some(SwarmId::PLAYER)`, the cell records the player
-    // `SwarmId` as the owner. The brush system in
-    // `zones::zone_brush` does exactly this on every
-    // mouse-held frame.
     let mut app = common::sim_app_with_gather();
     let cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
+        assert!(grid.paint(cell, IntentKind::Gather, SwarmId::PLAYER));
     }
 
     let grid = app.world().resource::<IntentGrid>();
     let painted = grid.cell(cell).expect("cell must be in bounds");
     assert!(painted.has(IntentKind::Gather));
     assert_eq!(
-        painted.owner(IntentKind::Gather),
-        Some(SwarmId::PLAYER),
+        painted.owners(IntentKind::Gather).collect::<Vec<_>>(),
+        vec![SwarmId::PLAYER],
         "player-painted cell must record the player SwarmId as the owner"
     );
 }
@@ -93,7 +59,7 @@ fn player_painted_gather_drives_player_worker() {
     let cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
+        assert!(grid.paint(cell, IntentKind::Gather, SwarmId::PLAYER));
     }
     let cell_center = common::cell_world_center(cell);
     let _deposit = common::spawn_deposit(
@@ -121,11 +87,6 @@ fn player_painted_gather_drives_player_worker() {
 
 #[test]
 fn opponent_prepainted_intent_is_owned_by_opponent_swarm() {
-    // The `spawn_opponent_swarm` helper must stamp prepainted
-    // cells with the opponent's `SwarmId`, not with `None`
-    // (unowned) or with `SwarmId::PLAYER`. This is the
-    // end-state the PRD calls out: opponent prepainted
-    // intent belongs to the Opponent Swarm.
     let mut app = common::sim_app_with_gather();
     let opponent_pos = Vec2::new(2000.0, 0.0);
     let gather_cell = IVec2::new(0, 0);
@@ -147,8 +108,8 @@ fn opponent_prepainted_intent_is_owned_by_opponent_swarm() {
     let cell = grid.cell(gather_cell).unwrap();
     assert!(cell.has(IntentKind::Gather));
     assert_eq!(
-        cell.owner(IntentKind::Gather),
-        Some(opponent_id),
+        cell.owners(IntentKind::Gather).collect::<Vec<_>>(),
+        vec![opponent_id],
         "opponent prepainted intent must be owned by the opponent SwarmId"
     );
 }
@@ -221,7 +182,7 @@ fn player_worker_ignores_opponent_gather_zone() {
     let opponent_cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(opponent_cell, IntentKind::Gather, Some(SwarmId(7)),));
+        assert!(grid.paint(opponent_cell, IntentKind::Gather, SwarmId(7)));
     }
     let cell_center = common::cell_world_center(opponent_cell);
     let _deposit = common::spawn_deposit(
@@ -269,7 +230,7 @@ fn opponent_worker_ignores_player_gather_zone() {
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
         // Player-painted cell (owner is `SwarmId::PLAYER`).
-        assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
+        assert!(grid.paint(cell, IntentKind::Gather, SwarmId::PLAYER));
     }
     let cell_center = common::cell_world_center(cell);
     let _deposit = common::spawn_deposit(
@@ -310,36 +271,21 @@ fn opponent_worker_ignores_player_gather_zone() {
 }
 
 #[test]
-fn unowned_paint_remains_visible_to_every_swarm() {
-    // The legacy unowned paint path (the existing `paint`
-    // method, used by every pre-#20 test) must stay visible
-    // to every swarm. The per-swarm filter treats `owner =
-    // None` as "shared" so a player worker can still pick
-    // unowned paint and an opponent worker can too. This is
-    // the back-compat leg the issue acceptance criterion
-    // "Existing intent-layer UI and painting behavior remain
-    // usable for player intent" relies on.
+fn overlapping_gather_paint_is_visible_only_to_its_independent_owners() {
     let mut app = common::sim_app_with_gather();
-    let cell = IVec2::new(0, 0);
+    let cell = IVec2::ZERO;
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        // The plain (unowned) `paint` API.
-        assert!(grid.paint(cell, IntentKind::Gather));
+        grid.paint(cell, IntentKind::Gather, SwarmId::PLAYER);
+        grid.paint(cell, IntentKind::Gather, SwarmId(42));
     }
 
     let grid = app.world().resource::<IntentGrid>();
     let painted = grid.cell(cell).unwrap();
-    assert!(painted.has(IntentKind::Gather));
-    assert_eq!(
-        painted.owner(IntentKind::Gather),
-        None,
-        "unowned paint must keep owner = None"
-    );
-    // Both a player and an opponent SwarmId see the cell.
-    assert!(painted.visible_to(IntentKind::Gather, SwarmId::PLAYER));
-    assert!(painted.visible_to(IntentKind::Gather, SwarmId(42)));
-    // An inactive layer is invisible to every swarm.
-    assert!(!painted.visible_to(IntentKind::Build, SwarmId::PLAYER));
+    assert!(painted.has_owned(IntentKind::Gather, SwarmId::PLAYER));
+    assert!(painted.has_owned(IntentKind::Gather, SwarmId(42)));
+    assert!(!painted.has_owned(IntentKind::Gather, SwarmId(9)));
+    assert!(!painted.has_owned(IntentKind::Build, SwarmId::PLAYER));
 }
 
 #[test]
@@ -418,4 +364,93 @@ fn opponent_production_spawns_opponent_swarm_id_nanobots() {
             "newly produced opponent nanobot must not be tagged as the player swarm"
         );
     }
+}
+
+#[test]
+fn overlapping_swarms_extract_from_one_finite_deposit() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{Swarm, WorkerLoad},
+        resources::{ResourceKind, ResourceLedger, Stockpile},
+    };
+
+    let mut app = common::sim_app_with_gather();
+    let cell = IVec2::ZERO;
+    let center = common::cell_world_center(cell);
+    let player = app.world_mut().spawn((Swarm {}, SwarmId::PLAYER)).id();
+    let enemy = app.world_mut().spawn((Swarm {}, SwarmId(7))).id();
+    {
+        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
+        grid.paint(cell, IntentKind::Gather, SwarmId::PLAYER);
+        grid.paint(cell, IntentKind::Gather, SwarmId(7));
+    }
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: center,
+            amount: 6,
+            capacity: 6,
+            radius: 32.0,
+        },
+    );
+    let player_stockpile = common::spawn_stockpile(&mut app, center + Vec2::new(96.0, 0.0), 0, 100);
+    app.world_mut()
+        .entity_mut(player_stockpile)
+        .insert(OwnerSwarm(player));
+    let enemy_stockpile = common::spawn_stockpile(&mut app, center - Vec2::new(96.0, 0.0), 0, 100);
+    app.world_mut()
+        .entity_mut(enemy_stockpile)
+        .insert(OwnerSwarm(enemy));
+    let player_worker = common::spawn_worker_at(&mut app, center + Vec2::new(0.0, 68.0));
+    let enemy_worker = common::spawn_worker_at(&mut app, center - Vec2::new(0.0, 68.0));
+    app.world_mut()
+        .entity_mut(enemy_worker)
+        .insert(SwarmMember::new(SwarmId(7)));
+
+    for _ in 0..120 {
+        app.update();
+    }
+
+    assert_eq!(
+        app.world()
+            .entity(deposit)
+            .get::<ResourceDeposit>()
+            .unwrap()
+            .amount,
+        0
+    );
+    let ledger = app.world().resource::<ResourceLedger>();
+    let player_extracted = ledger.total_for(SwarmId::PLAYER, ResourceKind::Minerals);
+    let enemy_extracted = ledger.total_for(SwarmId(7), ResourceKind::Minerals);
+    assert!(
+        player_extracted > 0,
+        "player must extract from overlapping Gather paint"
+    );
+    assert!(
+        enemy_extracted > 0,
+        "opponent must extract from the same deposit"
+    );
+    assert_eq!(player_extracted + enemy_extracted, 6);
+    let physical_total = [player_stockpile, enemy_stockpile]
+        .into_iter()
+        .map(|entity| {
+            app.world()
+                .entity(entity)
+                .get::<Stockpile>()
+                .unwrap()
+                .amount
+        })
+        .sum::<u32>()
+        + [player_worker, enemy_worker]
+            .into_iter()
+            .map(|entity| {
+                app.world()
+                    .entity(entity)
+                    .get::<WorkerLoad>()
+                    .map_or(0, |cargo| cargo.amount)
+            })
+            .sum::<u32>();
+    assert_eq!(
+        physical_total, 6,
+        "paint overlap must not duplicate the finite resource pool"
+    );
 }

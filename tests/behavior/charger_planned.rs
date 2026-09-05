@@ -57,7 +57,7 @@ fn planning_app() -> App {
 
 fn paint_defend_owned(app: &mut App, cell: IVec2) {
     let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-    assert!(grid.paint_owned(cell, IntentKind::Defend, Some(SwarmId::PLAYER),));
+    assert!(grid.paint(cell, IntentKind::Defend, SwarmId::PLAYER));
 }
 
 fn planned_charger_count(world: &mut World) -> usize {
@@ -438,8 +438,8 @@ fn each_swarm_plans_only_in_its_owned_defend_paint() {
     let opponent_cell = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        grid.paint_owned(player_cell, IntentKind::Defend, Some(SwarmId::PLAYER));
-        grid.paint_owned(opponent_cell, IntentKind::Defend, Some(opponent_id));
+        grid.paint(player_cell, IntentKind::Defend, SwarmId::PLAYER);
+        grid.paint(opponent_cell, IntentKind::Defend, opponent_id);
     }
     let player_defender =
         common::spawn_defender_at(&mut app, common::cell_world_center(player_cell));

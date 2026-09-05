@@ -13,9 +13,11 @@ mod common;
 #[test]
 fn exterior_gather_trip_extracts_and_delivers_at_scaled_target_surfaces() {
     let mut app = common::sim_app_with_gather();
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(IVec2::ZERO, IntentKind::Gather);
+    app.world_mut().resource_mut::<IntentGrid>().paint(
+        IVec2::ZERO,
+        IntentKind::Gather,
+        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
+    );
     let deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {

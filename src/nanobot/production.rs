@@ -46,7 +46,6 @@ use crate::nanobot::NanobotBundle;
 use crate::nanobot::PlannedStructure;
 use crate::nanobot::autonomy::{Commitment, NanobotType};
 use crate::nanobot::components::{Health, Nanobot, Swarm, SwarmId, SwarmMember, VelocityComponent};
-use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::maintenance::SupportCondition;
 use crate::nanobot::planned::{PlannedKind, PlannedProductionTarget, planned_visual_components};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
@@ -589,11 +588,6 @@ pub fn production_facility_auto_creation_system(
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,
 ) {
     let mut access_layout = access.snapshot();
-    // Build the set of cells already occupied by any
-    // planned or completed structure. A planned
-    // Production Facility is in this set, so subsequent
-    // ticks do not pile a second plan on the same cell.
-    let mut cells_with_target: HashSet<IVec2> = HashSet::new();
     let mut obstacles: Vec<Obstacle> = deposits
         .iter()
         .map(|(deposit, transform)| {
@@ -601,35 +595,17 @@ pub fn production_facility_auto_creation_system(
         })
         .collect();
     for transform in &existing_targets {
-        let pos = transform.translation.truncate();
-        cells_with_target.insert(world_to_cell(pos));
         obstacles.push(Obstacle::structure(transform));
     }
-    // Pre-compute the list of (cell, swarm) pairs that are
-    // Build-painted, owned by a swarm, and not already
-    // occupied. The swarm-by-id map and the per-cell
-    // ownership lookup drive the per-swarm placement
-    // decision below.
+    // Physical footprints constrain placement within every swarm-owned Build cell.
     let mut build_cells_by_swarm: HashMap<SwarmId, Vec<IVec2>> = HashMap::new();
     for (cell, intent_cell) in grid.iter_active_cells() {
         if !intent_cell.has(IntentKind::Build) {
             continue;
         }
-        if cells_with_target.contains(&cell) {
-            continue;
+        for owner_id in intent_cell.owners(IntentKind::Build) {
+            build_cells_by_swarm.entry(owner_id).or_default().push(cell);
         }
-        // Unowned Build paint is treated as a swarm-less
-        // cell: the per-swarm loop below will not see it,
-        // so the demand layer must have a swarm-owned Build
-        // Zone to plan a Production Facility. The
-        // per-swarm contract (issue #20) makes unowned
-        // paint visible to every swarm, but the planning
-        // layer here is per-swarm so we filter on the
-        // painted owner only.
-        let Some(owner_id) = intent_cell.owner(IntentKind::Build) else {
-            continue;
-        };
-        build_cells_by_swarm.entry(owner_id).or_default().push(cell);
     }
     for (swarm_entity, swarm_id) in &swarms {
         let has_pending_facility = planned_facilities.iter().any(|(planned, owner)| {

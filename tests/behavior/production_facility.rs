@@ -374,10 +374,10 @@ fn swarm_tile_reserve_produces_missing_defenders_despite_excess_haulers() {
         priority.set_weight(NanobotType::Defender, 15);
     }
     for (x, kind) in IntentKind::ALL.into_iter().enumerate() {
-        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        app.world_mut().resource_mut::<IntentGrid>().paint(
             IVec2::new(x as i32, 0),
             kind,
-            Some(SwarmId::PLAYER),
+            SwarmId::PLAYER,
         );
     }
     let first = common::spawn_facility_at(&mut app, swarm, Vec2::ZERO);
@@ -411,10 +411,10 @@ fn existing_and_in_production_defenders_satisfy_swarm_tile_demand() {
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     common::spawn_defender_at(&mut app, Vec2::ZERO);
     for x in 0..4 {
-        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        app.world_mut().resource_mut::<IntentGrid>().paint(
             IVec2::new(x, 0),
             IntentKind::Corridor,
-            Some(SwarmId::PLAYER),
+            SwarmId::PLAYER,
         );
     }
     let producing = common::spawn_facility_at(&mut app, swarm, Vec2::ZERO);
@@ -447,19 +447,19 @@ fn falling_swarm_tile_demand_retains_excess_defenders() {
     let first = common::spawn_defender_at(&mut app, Vec2::ZERO);
     let second = common::spawn_defender_at(&mut app, Vec2::ZERO);
     for x in 0..4 {
-        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        app.world_mut().resource_mut::<IntentGrid>().paint(
             IVec2::new(x, 0),
             IntentKind::Corridor,
-            Some(SwarmId::PLAYER),
+            SwarmId::PLAYER,
         );
     }
     app.update();
 
     for x in 1..4 {
-        app.world_mut().resource_mut::<IntentGrid>().erase_owned(
+        app.world_mut().resource_mut::<IntentGrid>().erase(
             IVec2::new(x, 0),
             IntentKind::Corridor,
-            Some(SwarmId::PLAYER),
+            SwarmId::PLAYER,
         );
     }
     app.update();
@@ -483,10 +483,10 @@ fn exact_priority_swarm_grows_when_useful_work_exceeds_population() {
         .resource_mut::<ProductionPriority>()
         .set_weight(NanobotType::Worker, 1);
     for cell in [IVec2::ZERO, IVec2::new(1, 0)] {
-        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        app.world_mut().resource_mut::<IntentGrid>().paint(
             cell,
             IntentKind::Gather,
-            Some(SwarmId::PLAYER),
+            SwarmId::PLAYER,
         );
         common::spawn_deposit(
             &mut app,
@@ -682,7 +682,7 @@ fn additional_facility_plans_when_existing_busy_and_build_zone_free() {
     // occupying the Build cell.
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(IVec2::new(1, 0), IntentKind::Build, Some(SwarmId::PLAYER),));
+        assert!(grid.paint(IVec2::new(1, 0), IntentKind::Build, SwarmId::PLAYER));
     }
 
     for _ in 0..PRODUCTION_PRESSURE_TICKS + 100 {

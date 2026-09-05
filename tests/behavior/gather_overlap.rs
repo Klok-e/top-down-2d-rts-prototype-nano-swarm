@@ -45,7 +45,7 @@ fn deposit_overlapping_painted_cell_is_eligible_when_center_in_other_cell() {
     let painted_cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(painted_cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
+        assert!(grid.paint(painted_cell, IntentKind::Gather, SwarmId::PLAYER));
     }
     // Deposit center sits in cell (1, 0) (cell x = 1 spans world
     // x = [512, 1024)). The chosen center (768, 256) is the cell
@@ -97,7 +97,7 @@ fn deposit_with_no_visual_overlap_remains_ineligible() {
     let painted_cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(painted_cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
+        assert!(grid.paint(painted_cell, IntentKind::Gather, SwarmId::PLAYER));
     }
     // Deposit in cell (3, 0). Cell (3, 0) center is at
     // (3 * 512 + 256, 256) = (1792, 256). A radius of 32 stays
@@ -147,8 +147,8 @@ fn deposit_overlapping_two_painted_cells_uses_canonical_anchor() {
     let far_cell = IVec2::new(1, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(near_cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
-        assert!(grid.paint_owned(far_cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
+        assert!(grid.paint(near_cell, IntentKind::Gather, SwarmId::PLAYER));
+        assert!(grid.paint(far_cell, IntentKind::Gather, SwarmId::PLAYER));
     }
     // Deposit straddling the two cells. Center at (768, 256)
     // (cell (1, 0) center) with radius 300 reaches both cell
@@ -197,7 +197,7 @@ fn opponent_overlap_eligibility_does_not_leak_to_player_workers() {
     let opponent_cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(opponent_cell, IntentKind::Gather, Some(opponent_id),));
+        assert!(grid.paint(opponent_cell, IntentKind::Gather, opponent_id));
     }
     // Deposit straddling the opponent cell with a generous
     // radius, so by the overlap rule it is a perfectly eligible

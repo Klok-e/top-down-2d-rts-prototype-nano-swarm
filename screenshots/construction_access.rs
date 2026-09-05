@@ -30,10 +30,10 @@ pub fn construction_access(ctx: &mut TestContext) -> TestFlow {
         charge.current = 0.1;
     }
     if !ctx.world.resource::<AccessScene>().painted {
-        ctx.world.resource_mut::<IntentGrid>().paint_owned(
+        ctx.world.resource_mut::<IntentGrid>().paint(
             IVec2::ZERO,
             IntentKind::Defend,
-            Some(SwarmId::PLAYER),
+            SwarmId::PLAYER,
         );
         ctx.world.resource_mut::<AccessScene>().painted = true;
     }

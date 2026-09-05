@@ -16,9 +16,11 @@ use crate::harness::{TestContext, TestFlow};
 
 pub fn opponent_gameplay_loop(ctx: &mut TestContext) -> TestFlow {
     if ctx.frame == 0 {
-        ctx.world
-            .resource_mut::<IntentGrid>()
-            .contest_defend(OPPONENT_DEFEND_CELL, SwarmId::PLAYER);
+        ctx.world.resource_mut::<IntentGrid>().paint(
+            OPPONENT_DEFEND_CELL,
+            IntentKind::Defend,
+            SwarmId::PLAYER,
+        );
     }
 
     if ctx.frame < 180 {
@@ -63,13 +65,9 @@ pub fn opponent_gameplay_loop(ctx: &mut TestContext) -> TestFlow {
         }
         {
             let mut grid = ctx.world.resource_mut::<IntentGrid>();
-            grid.paint_owned(OPPONENT_CELL, IntentKind::Defend, Some(opponent_id));
-            grid.erase_owned(OPPONENT_CELL, IntentKind::Build, Some(opponent_id));
-            grid.erase_owned(
-                OPPONENT_BUILD_FLANK_CELL,
-                IntentKind::Build,
-                Some(opponent_id),
-            );
+            grid.paint(OPPONENT_CELL, IntentKind::Defend, opponent_id);
+            grid.erase(OPPONENT_CELL, IntentKind::Build, opponent_id);
+            grid.erase(OPPONENT_BUILD_FLANK_CELL, IntentKind::Build, opponent_id);
         }
         return TestFlow::Screenshot("opponent_gameplay_victory".to_string());
     }

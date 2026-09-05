@@ -284,7 +284,11 @@ fn gather_intent_persists_after_deposit_depletes() {
     let cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(cell, IntentKind::Gather));
+        assert!(grid.paint(
+            cell,
+            IntentKind::Gather,
+            top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER
+        ));
     }
     app.update();
 
@@ -324,7 +328,11 @@ fn idle_worker_reactivates_when_deposit_refills() {
 
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(IVec2::new(0, 0), IntentKind::Gather));
+        assert!(grid.paint(
+            IVec2::new(0, 0),
+            IntentKind::Gather,
+            top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER
+        ));
     }
 
     // Finish extraction and the exterior delivery route before refilling.
@@ -405,7 +413,11 @@ fn idle_worker_chooses_gather_via_autonomy_scoring() {
     let cell = IVec2::new(2, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(cell, IntentKind::Gather));
+        assert!(grid.paint(
+            cell,
+            IntentKind::Gather,
+            top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER
+        ));
     }
     let cell_world_center = common::cell_world_center(cell);
     let deposit = common::spawn_deposit(
@@ -478,7 +490,11 @@ fn haulers_do_not_extract_directly() {
     let cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(cell, IntentKind::Gather));
+        assert!(grid.paint(
+            cell,
+            IntentKind::Gather,
+            top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER
+        ));
     }
     let cell_world_center = common::cell_world_center(cell);
     let _deposit = common::spawn_deposit(

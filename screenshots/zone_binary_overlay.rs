@@ -21,10 +21,11 @@ const PRESENT_CELLS: [IVec2; 4] = [
 ];
 const OVERLAP_CELL: IVec2 = IVec2::new(2, 5);
 const ABSENT_CELL: IVec2 = IVec2::new(4, 5);
-// Absent, player Gather, opponent Build, contested Defend, shared Corridor,
-// and all four player-owned layers. Presence occupies bits 0..=3 and each
-// ownership class occupies two bits beginning at bit 4.
-const DISPLAY_VALUES: [u32; 6] = [0, 17, 130, 772, 8, 1375];
+// Absent, player Gather, opponent Build, overlapping Defend, player Corridor,
+// all four player-owned layers, and player Build overlapping enemy Gather.
+// Presence occupies bits 0..=3 and each ownership class occupies two bits
+// beginning at bit 4.
+const DISPLAY_VALUES: [u32; 7] = [0, 17, 130, 772, 1032, 1375, 99];
 const CAPTURE_FRAME: u32 = 60;
 const FRAMING_SCALE: f32 = 2.8;
 const PATCH_SIZE: u32 = 32;
@@ -72,16 +73,23 @@ pub fn validate_zone_binary_overlay(path: &Path) -> Result<(), String> {
     require_striped_patch(
         &image,
         center(3),
-        [88, 162, 231],
+        [5, 5, 231],
         [231, 88, 73],
-        "contested Defend zone",
+        "independent overlapping Defend zone",
     )?;
-    require_solid_patch(&image, center(4), [214, 214, 133], "shared Corridor zone")?;
+    require_solid_patch(&image, center(4), [231, 231, 7], "player Corridor zone")?;
     require_solid_patch(
         &image,
         center(5),
         [204, 124, 170],
         "overlapping player zones",
+    )?;
+    require_striped_patch(
+        &image,
+        center(6),
+        [231, 5, 231],
+        [231, 88, 73],
+        "player Build preserved under enemy Gather hatch",
     )
 }
 
@@ -149,15 +157,16 @@ fn matching_pixels(pixels: &[[u8; 3]], expected: [u8; 3]) -> usize {
 fn paint_examples(world: &mut World) {
     let mut grid = world.resource_mut::<IntentGrid>();
     for (cell, kind) in PRESENT_CELLS.into_iter().zip(IntentKind::ALL) {
-        grid.add_owned(cell, kind, Some(SwarmId::PLAYER));
+        grid.paint(cell, kind, SwarmId::PLAYER);
     }
     for kind in IntentKind::ALL {
-        grid.add_owned(OVERLAP_CELL, kind, Some(SwarmId::PLAYER));
+        grid.paint(OVERLAP_CELL, kind, SwarmId::PLAYER);
+        grid.paint(OVERLAP_CELL, kind, SwarmId(9));
     }
 }
 
-/// Spawn one test strip through production [`ZoneMaterial`]: absent, each kind,
-/// then all kinds overlapped. Static test data makes rendered colour evidence
+/// Spawn a test strip through production [`ZoneMaterial`] with absent,
+/// player-only, enemy-only, and same-kind and cross-kind overlap examples. Static test data makes rendered colour evidence
 /// independent from asynchronous main-world storage-buffer extraction, while
 /// [`assert_mirror`] separately proves simulation-to-material mirroring.
 fn spawn_binary_display(world: &mut World) {
@@ -219,7 +228,7 @@ fn assert_mirror(world: &mut World) {
                 if expected {
                     ZoneOwnership::Player
                 } else {
-                    ZoneOwnership::Shared
+                    ZoneOwnership::Absent
                 }
             );
         }
@@ -227,6 +236,10 @@ fn assert_mirror(world: &mut World) {
     for kind in IntentKind::ALL {
         assert!(grid.cell(OVERLAP_CELL).unwrap().has(kind));
         assert!(material.zone_data[buffer_index(OVERLAP_CELL)].present(kind.index() as u32));
+        assert_eq!(
+            material.zone_data[buffer_index(OVERLAP_CELL)].ownership(kind.index() as u32),
+            ZoneOwnership::Overlap
+        );
         assert!(!grid.cell(ABSENT_CELL).unwrap().has(kind));
         assert!(!material.zone_data[buffer_index(ABSENT_CELL)].present(kind.index() as u32));
     }

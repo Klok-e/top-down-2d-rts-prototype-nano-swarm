@@ -113,3 +113,6 @@ mod physical_world;
 mod task_reachability;
 #[path = "behavior/worker_route_recovery.rs"]
 mod worker_route_recovery;
+
+#[path = "behavior/independent_build_intent.rs"]
+mod independent_build_intent;

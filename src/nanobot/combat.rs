@@ -4,10 +4,9 @@ use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
-use crate::intent::IntentGrid;
 use crate::nanobot::{
     Charge, DefenderResponse, Health, Nanobot, NanobotType, OwnerSwarm, Structure, StructureKind,
-    Swarm, SwarmId, SwarmMember, effective_attack, effective_defense, world_to_cell,
+    Swarm, SwarmId, SwarmMember, effective_attack, effective_defense,
 };
 use crate::spatial::FixedSpatialBuckets;
 use crate::structure_sprites::StructureVisual;
@@ -145,27 +144,6 @@ impl CombatTarget {
             Self::Nanobot(target) => target.swarm,
             Self::Structure(target) => target.swarm,
         }
-    }
-}
-
-/// Resolve tracked Defend contests from physical living Defender presence.
-pub fn defend_contest_resolution_system(
-    mut grid: ResMut<IntentGrid>,
-    defenders: Query<(&Transform, &NanobotType, &SwarmMember, &Health), With<Nanobot>>,
-) {
-    let occupants = defenders
-        .iter()
-        .filter(|(_, kind, _, health)| **kind == NanobotType::Defender && health.current > 0)
-        .map(|(transform, _, member, _)| {
-            (world_to_cell(transform.translation.truncate()), member.0)
-        })
-        .collect::<HashSet<_>>();
-    for (cell, incumbent, challenger) in grid.defend_contests() {
-        grid.update_defend_contest_presence(
-            cell,
-            occupants.contains(&(cell, incumbent)),
-            occupants.contains(&(cell, challenger)),
-        );
     }
 }
 
@@ -403,20 +381,13 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<ResolvedCombatFact>()
-            .add_systems(
-                FixedUpdate,
-                defend_contest_resolution_system
-                    .in_set(crate::nanobot::NanobotSimulationSet::Threat)
-                    .before(crate::nanobot::RegionalAllocationSet::Project),
-            )
-            .add_systems(
-                FixedUpdate,
-                defender_combat_system
-                    .in_set(crate::nanobot::NanobotSimulationSet::Combat)
-                    .after(crate::nanobot::RegionalAllocationSet::Acquire)
-                    .after(crate::nanobot::defender_charger_work_system),
-            );
+        app.add_message::<ResolvedCombatFact>().add_systems(
+            FixedUpdate,
+            defender_combat_system
+                .in_set(crate::nanobot::NanobotSimulationSet::Combat)
+                .after(crate::nanobot::RegionalAllocationSet::Acquire)
+                .after(crate::nanobot::defender_charger_work_system),
+        );
     }
 }
 

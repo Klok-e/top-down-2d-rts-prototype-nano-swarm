@@ -43,7 +43,11 @@ fn center(cell: IVec2) -> Vec2 {
 
 /// Paint `kind` at `cell`.
 fn paint(app: &mut App, cell: IVec2, kind: IntentKind) {
-    app.world_mut().resource_mut::<IntentGrid>().add(cell, kind);
+    app.world_mut().resource_mut::<IntentGrid>().paint(
+        cell,
+        kind,
+        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
+    );
 }
 
 /// Build a minimal app with only `idle_spread_system` registered, so
@@ -143,10 +147,10 @@ fn hauler_spreads_only_over_corridor() {
 #[test]
 fn player_worker_ignores_opponent_gather_paint() {
     let mut app = spread_only_app();
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::new(1, 0),
         IntentKind::Gather,
-        Some(SwarmId(1)),
+        SwarmId(1),
     );
     let bot = common::spawn_worker_at(&mut app, center(IVec2::ZERO));
 

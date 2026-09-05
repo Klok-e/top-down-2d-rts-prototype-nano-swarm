@@ -24,11 +24,11 @@ fn own_for_player(app: &mut App, entities: &[Entity]) {
 }
 
 fn paint_corridor(app: &mut App, cell: IVec2) {
-    assert!(
-        app.world_mut()
-            .resource_mut::<IntentGrid>()
-            .paint(cell, IntentKind::Corridor)
-    );
+    assert!(app.world_mut().resource_mut::<IntentGrid>().paint(
+        cell,
+        IntentKind::Corridor,
+        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER
+    ));
 }
 
 #[test]
@@ -258,13 +258,11 @@ fn erasing_corridor_preserves_active_leg_but_changes_the_next_leg() {
         (app, hauler, sink)
     });
     for x in 0..4 {
-        assert!(
-            twins[1]
-                .0
-                .world_mut()
-                .resource_mut::<IntentGrid>()
-                .erase(IVec2::new(x, 1), IntentKind::Corridor)
-        );
+        assert!(twins[1].0.world_mut().resource_mut::<IntentGrid>().erase(
+            IVec2::new(x, 1),
+            IntentKind::Corridor,
+            top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER
+        ));
     }
 
     let mut reached_source = false;

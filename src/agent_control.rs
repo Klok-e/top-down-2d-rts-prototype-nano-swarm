@@ -1366,10 +1366,12 @@ fn collect_agent_state(
             .map(|(cell, intents)| {
                 let layers = intents
                     .iter_layers()
-                    .map(|layer| {
-                        serde_json::json!({
-                            "intent": ProtocolIntent::from(layer.kind),
-                            "owner": intents.owner(layer.kind).map(|owner| owner.0),
+                    .flat_map(|layer| {
+                        intents.owners(layer.kind).map(move |owner| {
+                            serde_json::json!({
+                                "intent": ProtocolIntent::from(layer.kind),
+                                "owner": owner.0,
+                            })
                         })
                     })
                     .collect::<Vec<_>>();
@@ -1378,21 +1380,6 @@ fn collect_agent_state(
             .collect::<Vec<_>>();
         let next_cell_offset = (cell_offset as usize + active_cells.len() < active_cell_total)
             .then_some(cell_offset.saturating_add(active_cells.len() as u32));
-        let defend_contests = page_cells
-            .iter()
-            .filter_map(|(cell, _)| {
-                grid.defend_contest(*cell)
-                    .map(|(incumbent, challenger)| (*cell, incumbent, challenger))
-            })
-            .map(|(cell, incumbent, challenger)| {
-                serde_json::json!({
-                    "x": cell.x,
-                    "y": cell.y,
-                    "incumbent": incumbent.0,
-                    "challenger": challenger.0,
-                })
-            })
-            .collect::<Vec<_>>();
         Some(serde_json::json!({
             "width": grid.width(),
             "height": grid.height(),
@@ -1400,7 +1387,6 @@ fn collect_agent_state(
             "active_cells": active_cells,
             "active_cell_total": active_cell_total,
             "next_cell_offset": next_cell_offset,
-            "defend_contests": defend_contests,
         }))
     } else {
         None
@@ -2281,7 +2267,7 @@ mod tests {
     }
 
     #[test]
-    fn map_command_uses_player_defend_contest_rules() {
+    fn map_command_adds_independent_player_defend_over_enemy() {
         use crate::{
             intent::{IntentGrid, IntentKind},
             nanobot::{MatchOutcome, SwarmId},
@@ -2291,7 +2277,7 @@ mod tests {
         let cell = IVec2::new(2, -3);
         let opponent = SwarmId(4);
         let mut grid = IntentGrid::new(11, 11);
-        grid.paint_owned(cell, IntentKind::Defend, Some(opponent));
+        grid.paint(cell, IntentKind::Defend, opponent);
         let mut app = App::new();
         app.insert_resource(grid)
             .insert_resource(MatchOutcome::InProgress);
@@ -2318,10 +2304,12 @@ mod tests {
             Some(serde_json::json!({ "changed": true }))
         );
         let grid = app.world().resource::<IntentGrid>();
-        assert_eq!(grid.cell(cell).unwrap().owner(IntentKind::Defend), None);
         assert_eq!(
-            grid.defend_contests(),
-            vec![(cell, opponent, SwarmId::PLAYER)]
+            grid.cell(cell)
+                .unwrap()
+                .owners(IntentKind::Defend)
+                .collect::<Vec<_>>(),
+            vec![SwarmId::PLAYER, opponent]
         );
     }
 
@@ -2674,7 +2662,7 @@ mod tests {
         use bevy::prelude::*;
 
         let mut grid = IntentGrid::new(7, 5);
-        grid.paint_owned(IVec2::new(-2, 1), IntentKind::Build, Some(SwarmId::PLAYER));
+        grid.paint(IVec2::new(-2, 1), IntentKind::Build, SwarmId::PLAYER);
         let mut app = App::new();
         app.insert_resource(grid).insert_resource(BrushSelection {
             kind: IntentKind::Build,
@@ -2709,7 +2697,7 @@ mod tests {
 
         let mut grid = IntentGrid::new(7, 5);
         for x in -1..=1 {
-            grid.paint_owned(IVec2::new(x, 0), IntentKind::Gather, Some(SwarmId::PLAYER));
+            grid.paint(IVec2::new(x, 0), IntentKind::Gather, SwarmId::PLAYER);
         }
         let mut app = App::new();
         app.insert_resource(grid);
@@ -2758,8 +2746,8 @@ mod tests {
         use bevy::prelude::*;
 
         let mut grid = IntentGrid::new(7, 5);
-        grid.paint_owned(IVec2::new(0, 0), IntentKind::Gather, Some(SwarmId::PLAYER));
-        grid.paint_owned(IVec2::new(1, 0), IntentKind::Gather, Some(SwarmId::PLAYER));
+        grid.paint(IVec2::new(0, 0), IntentKind::Gather, SwarmId::PLAYER);
+        grid.paint(IVec2::new(1, 0), IntentKind::Gather, SwarmId::PLAYER);
         let mut app = App::new();
         app.insert_resource(grid)
             .insert_resource(MatchOutcome::InProgress);
@@ -2806,8 +2794,8 @@ mod tests {
         use bevy::prelude::*;
 
         let mut grid = IntentGrid::new(7, 5);
-        grid.paint_owned(IVec2::new(0, 0), IntentKind::Gather, Some(SwarmId::PLAYER));
-        grid.paint_owned(IVec2::new(1, 0), IntentKind::Gather, Some(SwarmId::PLAYER));
+        grid.paint(IVec2::new(0, 0), IntentKind::Gather, SwarmId::PLAYER);
+        grid.paint(IVec2::new(1, 0), IntentKind::Gather, SwarmId::PLAYER);
         let mut app = App::new();
         app.insert_resource(grid);
         let (control, plugin) = AgentControlCorePlugin::channel(4);
@@ -2826,10 +2814,10 @@ mod tests {
         let revision = first.recv().unwrap().result.unwrap()["map"]["map_revision"]
             .as_u64()
             .unwrap();
-        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        app.world_mut().resource_mut::<IntentGrid>().paint(
             IVec2::new(-1, 0),
             IntentKind::Gather,
-            Some(SwarmId::PLAYER),
+            SwarmId::PLAYER,
         );
 
         let stale = control
@@ -2850,15 +2838,15 @@ mod tests {
     }
 
     #[test]
-    fn state_get_bounds_defend_contests_to_the_active_cell_page() {
+    fn state_get_keeps_all_overlapping_owners_on_the_active_cell_page() {
         use crate::intent::{IntentGrid, IntentKind};
         use bevy::prelude::*;
 
         let mut grid = IntentGrid::new(7, 5);
         for x in -1..=1 {
             let cell = IVec2::new(x, 0);
-            grid.paint_owned(cell, IntentKind::Defend, Some(SwarmId(7)));
-            grid.contest_defend(cell, SwarmId::PLAYER);
+            grid.paint(cell, IntentKind::Defend, SwarmId(7));
+            grid.paint(cell, IntentKind::Defend, SwarmId::PLAYER);
         }
         let mut app = App::new();
         app.insert_resource(grid);
@@ -2878,7 +2866,13 @@ mod tests {
         let state = response.recv().unwrap().result.unwrap();
 
         assert_eq!(state["map"]["active_cells"].as_array().unwrap().len(), 1);
-        assert_eq!(state["map"]["defend_contests"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            state["map"]["active_cells"][0]["layers"],
+            serde_json::json!([
+                {"intent": "defend", "owner": 0}, {"intent": "defend", "owner": 7}
+            ])
+        );
+        assert!(state["map"].get("defend_contests").is_none());
     }
 
     #[test]

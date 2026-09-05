@@ -13,11 +13,11 @@ An individual autonomous agent within the swarm. It may choose tasks from player
 _Avoid_: Unit, soldier, worker
 
 **Intent Zone**:
-A player-painted spatial region that expresses what kind of work should happen there. Intent zones are the primary command surface for directing the swarm. Intent at a location is binary: painting adds it, repeated painting has no further effect, and erasing removes it.
+A swarm-owned spatial region that expresses what kind of work should happen there. Intent is binary per swarm, kind, and location: painting adds only that swarm's orders, erasing removes only its orders, and combat never captures or erases them; unowned paint does not exist.
 _Avoid_: Group zone, activity zone, command area
 
 **Swarm Tile**:
-A cell containing at least one intent layer owned by a swarm, or a Defend Contest in which that swarm participates. Different owned layers can make the same cell territory for multiple swarms; shared unowned intent does not make it territory.
+A cell containing at least one intent layer owned by a swarm. Independent paint of the same or different kinds can make the cell territory for multiple swarms, counting once for each swarm.
 _Avoid_: Visible intent cell, occupied cell, shared intent cell
 
 **Threat**:
@@ -29,7 +29,7 @@ The one-cell-wide band surrounding Swarm Tiles, including cells that touch only 
 _Avoid_: Swarm territory, detection range, unlimited pursuit
 
 **Gather Zone**:
-An intent zone where nanobots extract resources from available deposits. Each Resource Deposit contributes work once for each eligible swarm regardless of how many of that swarm's painted cells overlap it; paint establishes eligibility, while deposit work determines nanobot demand. Gather intent persists when local resources are depleted; workers leave when no useful work remains, and the zone can reactivate if resources appear later.
+A swarm's intent to extract resources from available deposits, each contributing work once per eligible swarm regardless of painted area; overlapping swarms extract from the same finite resource pool without exclusive ownership or reserved shares. Gather intent persists through depletion, with workers leaving when no useful work remains and returning if resources become available again.
 _Avoid_: Mining zone, resource zone
 
 **Resource Deposit**:
@@ -37,16 +37,12 @@ A physical map object containing extractable resources for gather work, distinct
 _Avoid_: Mineral node, mineral patch, resource pile
 
 **Build Zone**:
-An intent zone that marks free base space where automatic construction may place production facilities, sink stockpiles, and similar support structures. Build zones are not direct building placement commands; they constrain where base infrastructure may emerge. Zone area provides placement options but does not itself create construction demand.
+A swarm's intent marking space where automatic construction may place support structures, providing placement options without creating construction demand or reserving space. Overlapping swarms may each build in physically free space, subject to structures and construction reservations of every swarm; paint never transfers structure ownership.
 _Avoid_: Construction group, builder assignment, manual building placement
 
 **Defend Zone**:
 An intent zone that distributes unengaged Defenders at equal density and supports continuous density-driven, procedural roaming within and between its cells. It positions rather than bounds defense or creates population demand: Threats override staging, paint changes rebalance the cohort, and fallback staging uses Swarm Tiles or current cells.
 _Avoid_: Fighter group, combat squad, attack zone
-
-**Defend Contest**:
-A shared claim created when one swarm paints Defend intent over another swarm's Defend layer. Any living participant Defender physically inside establishes presence; after both sides engage, the sole remaining side captures the layer.
-_Avoid_: Territory overlap, attack zone, occupation timer
 
 **Stockpile**:
 A local resource buffer automatically created where sustained material flow is needed. Source stockpiles stage gathered resources near deposits; sink stockpiles stage minerals for terminal consumers. Terminal buffers receive minerals only through physical hauler delivery.
@@ -117,8 +113,8 @@ Ongoing worker time required to prevent structure collapse. A structure remains 
 _Avoid_: Permanent buildings, fire-and-forget construction
 
 **Overlapping Intent**:
-Multiple intent zones may cover the same space. Overlap means several kinds of work are valid there; autonomous allocation decides which nanobots respond without a player-set task priority.
-_Avoid_: Exclusive zones, zone ownership
+Independent intent zones covering the same space, including the same kind owned by different swarms. Each swarm acts on its own orders through autonomous allocation; overlap neither merges ownership nor creates a capture contest.
+_Avoid_: Exclusive zones, Defend Contest, shared unowned paint
 
 **Intent Allocation**:
 The moment-to-moment act of steering the swarm by adjusting intent zone placement and size, plus Production Priority. Players do not prioritize individual tasks; autonomous allocation weighs useful work, distance, type fit, crowding, and commitments. This is the primary player skill, not micro-managing individual nanobots.
@@ -157,7 +153,7 @@ Resources move physically through nanobots carrying them. Minerals remain swarm-
 _Avoid_: Global stockpile, teleporting resources
 
 **Logistics Corridor**:
-A player-painted movement intent for haulers that encourages resource transport along a path between stockpiles, facilities, chargers, or other resource needs. Owned Corridor cells apply a fixed route bias; their shape defines the preferred path, while unpainted or enemy Corridor cells give no benefit. Corridors do not create resource tasks by themselves and are special hauler guidance, not general direct movement commands.
+A player-painted movement intent for haulers that encourages resource transport along a path between stockpiles, facilities, chargers, or other resource needs. Owned Corridor cells apply a fixed route bias; their shape defines the preferred path, while cells without that swarm's Corridor paint give no benefit. Corridors do not create resource tasks by themselves and are special hauler guidance, not general direct movement commands.
 _Avoid_: Road, waypoint chain, manual route
 
 **Defender**:

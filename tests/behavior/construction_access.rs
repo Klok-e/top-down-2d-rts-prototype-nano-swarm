@@ -29,10 +29,10 @@ fn automatic_construction_does_not_require_disconnected_friendly_networks_to_joi
     common::spawn_worker_at(&mut app, Vec2::new(108.0, 108.0));
     let defender = common::spawn_defender_at(&mut app, Vec2::new(252.0, 252.0));
     app.world_mut().get_mut::<Charge>(defender).unwrap().current = 0.1;
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::ZERO,
         IntentKind::Defend,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     // A full-height wall separates two friendly Stockpiles. The builder and
     // proposed Charger are in the right-hand network, which has usable space.
@@ -67,10 +67,10 @@ fn automatic_construction_may_close_an_enemy_only_connection() {
     common::spawn_worker_at(&mut app, Vec2::new(108.0, 108.0));
     let defender = common::spawn_defender_at(&mut app, Vec2::new(252.0, 252.0));
     app.world_mut().get_mut::<Charge>(defender).unwrap().current = 0.1;
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::ZERO,
         IntentKind::Defend,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     // The sole passage connects enemy Stockpiles; no friendly endpoint depends on it.
     for (center, half) in [
@@ -126,7 +126,7 @@ fn assert_planner_waits_for_builder(kind: PlannedKind) {
         };
         app.world_mut()
             .resource_mut::<IntentGrid>()
-            .paint_owned(IVec2::ZERO, intent, Some(swarm));
+            .paint(IVec2::ZERO, intent, swarm);
         match kind {
             PlannedKind::Charger => {
                 let defender = common::spawn_defender_at(&mut app, Vec2::new(252.0, 252.0));
@@ -237,10 +237,10 @@ fn automatic_construction_considers_both_passages_when_another_plan_closes_one()
         common::spawn_worker_at(&mut app, Vec2::new(108.0, 108.0));
         let defender = common::spawn_defender_at(&mut app, Vec2::new(252.0, 252.0));
         app.world_mut().get_mut::<Charge>(defender).unwrap().current = 0.1;
-        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        app.world_mut().resource_mut::<IntentGrid>().paint(
             IVec2::ZERO,
             IntentKind::Defend,
-            Some(SwarmId::PLAYER),
+            SwarmId::PLAYER,
         );
         // The wall has two 144-unit openings, at y=-108..36 and 180..324.
         // A centered 72-unit plan closes either opening to a 68-unit body.
@@ -299,10 +299,10 @@ fn charger_demand_chooses_another_site_after_cancellation_without_layout_change(
     common::spawn_worker_at(&mut app, Vec2::new(-108.0, 180.0));
     let defender = common::spawn_defender_at(&mut app, Vec2::new(256.0, 256.0));
     app.world_mut().get_mut::<Charge>(defender).unwrap().current = 0.1;
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::ZERO,
         IntentKind::Defend,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     for _ in 0..100 {
         app.update();
@@ -397,10 +397,10 @@ fn automatic_charger_chooses_an_alternate_site_preserving_the_literal_wall_passa
     common::spawn_worker_at(&mut app, Vec2::new(108.0, 108.0));
     let defender = common::spawn_defender_at(&mut app, Vec2::new(252.0, 252.0));
     app.world_mut().get_mut::<Charge>(defender).unwrap().current = 0.1;
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::ZERO,
         IntentKind::Defend,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     let mut shapes = Vec::new();
     // Opponent wall pieces leave only y=180..324 open; closing its middle

@@ -156,9 +156,7 @@ impl AccessLayout {
             return deposit.amount > 0
                 && grid.iter_active_cells().any(|(cell, paint)| {
                     paint.has(IntentKind::Gather)
-                        && paint
-                            .owner(IntentKind::Gather)
-                            .is_none_or(|owner| owner == swarm)
+                        && paint.has_owned(IntentKind::Gather, swarm)
                         && cell_overlaps_circle(
                             cell,
                             object.transform.translation.truncate(),
@@ -204,7 +202,11 @@ impl AccessLayout {
         let mut gather: Vec<_> = grid
             .iter_active_cells()
             .filter(|(_, paint)| paint.has(IntentKind::Gather))
-            .map(|(cell, paint)| (cell.x, cell.y, paint.owner(IntentKind::Gather)))
+            .flat_map(|(cell, paint)| {
+                paint
+                    .owners(IntentKind::Gather)
+                    .map(move |owner| (cell.x, cell.y, owner))
+            })
             .collect();
         gather.sort_unstable();
         gather.hash(&mut hasher);
@@ -608,7 +610,7 @@ mod tests {
         let candidate = Transform::from_xyz(36.0, 0.0, 0.0).with_scale(Vec3::splat(72.0 / 64.0));
         let mut grid = IntentGrid::new(2, 2);
         assert!(layout.accepts(&grid, SwarmId::PLAYER, &candidate, None, None));
-        grid.paint(IVec2::ZERO, IntentKind::Gather);
+        grid.paint(IVec2::ZERO, IntentKind::Gather, SwarmId::PLAYER);
         assert!(!layout.accepts(&grid, SwarmId::PLAYER, &candidate, None, None));
         layout
             .objects

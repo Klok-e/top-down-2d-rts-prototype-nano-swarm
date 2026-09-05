@@ -58,8 +58,8 @@ fn scripted_counter_assault_can_cause_opponent_production_collapse() {
         ));
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        grid.paint_owned(player_cell, IntentKind::Defend, Some(SwarmId::PLAYER));
-        grid.paint_owned(opponent_cell, IntentKind::Defend, Some(opponent_id));
+        grid.paint(player_cell, IntentKind::Defend, SwarmId::PLAYER);
+        grid.paint(opponent_cell, IntentKind::Defend, opponent_id);
     }
     common::spawn_facility_at(&mut app, player_swarm, player_pos - Vec2::new(160.0, 0.0));
     common::spawn_facility_at(
@@ -74,14 +74,17 @@ fn scripted_counter_assault_can_cause_opponent_production_collapse() {
             .resource::<IntentGrid>()
             .cell(player_cell)
             .unwrap()
-            .owner(IntentKind::Defend),
-        None,
-        "the opponent controller must launch a real contested advance",
+            .owners(IntentKind::Defend)
+            .collect::<Vec<_>>(),
+        vec![SwarmId::PLAYER, opponent_id],
+        "the opponent controller must launch a advance into independently overlapping paint",
     );
 
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .contest_defend(opponent_cell, SwarmId::PLAYER);
+    app.world_mut().resource_mut::<IntentGrid>().paint(
+        opponent_cell,
+        IntentKind::Defend,
+        SwarmId::PLAYER,
+    );
 
     for _ in 0..800 {
         app.update();

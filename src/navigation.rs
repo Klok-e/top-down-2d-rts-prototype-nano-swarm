@@ -259,11 +259,7 @@ mod route_tests {
         use crate::intent::IntentKind;
         let mut grid = IntentGrid::new(6, 6);
         for x in -2..=1 {
-            grid.paint_owned(
-                IVec2::new(x, 1),
-                IntentKind::Corridor,
-                Some(SwarmId::PLAYER),
-            );
+            grid.paint(IVec2::new(x, 1), IntentKind::Corridor, SwarmId::PLAYER);
         }
         let navigation = Navigation::new(&grid, vec![]);
         let start = Vec2::new(-900.0, 400.0);

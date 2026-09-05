@@ -103,21 +103,20 @@ Player-action commands are rejected after Victory or Defeat. State, camera, scre
 `state.get` returns:
 
 - Selected intent.
-- Map dimensions, sparse active cells, per-layer owners, and Defend contests.
+- Map dimensions, sparse active cells, per-layer swarm owners.
 - Main-camera position and zoom.
 - Player Production Priority percentages.
 - Match outcome and collapse flags.
 - Per-swarm population, demand, aggregate health, centroid, minerals, and facility counts.
 
-Empty map cells are omitted. Active cells and contests use deterministic row-major ordering. Each response includes at most 10,000 active cells, the Defend contests belonging to those cells, `active_cell_total`, `next_cell_offset`, and `map_revision`. Pass both `next_cell_offset` and the unchanged `map_revision` into the next `state.get` call until the offset is `null`. Page zero contains the complete non-map snapshot; continuation pages contain only `map`, preventing live simulation changes from mixing newer swarm or match data into that snapshot. If the map changes between pages, the server returns `stale_state_page`; restart from offset zero. Owner `0` is the player; opponent IDs are positive integers; `null` ownership denotes a neutral contested layer.
+Empty map cells are omitted. Active cells use deterministic row-major ordering. Each response includes at most 10,000 active cells with their independently owned intent layers, `active_cell_total`, `next_cell_offset`, and `map_revision`. Pass both `next_cell_offset` and the unchanged `map_revision` into the next `state.get` call until the offset is `null`. Page zero contains the complete non-map snapshot; continuation pages contain only `map`, preventing live simulation changes from mixing newer swarm or match data into that snapshot. If the map changes between pages, the server returns `stale_state_page`; restart from offset zero. Each layer entry has an intent kind and a non-null owner ID: `0` is the player and positive IDs are opponents. The same kind can appear more than once in a cell, once per owning swarm; consume all entries. Entries are ordered by intent kind, then owner ID. There is no `defend_contests` field.
 
 ## Player Equivalence
 
 Socket map edits call the same semantic path as mouse painting:
 
-- Foreign non-Defend paint is not overwritten or erased.
-- Painting hostile Defend creates a contest.
-- Erasing contested Defend withdraws the player before ordinary erase.
+- Painting any kind adds the player's own intent, including over enemy paint.
+- Erasing removes only the player's selected kind and preserves all enemy orders.
 - Out-of-bounds edits and post-match player actions return errors.
 
 `button.press` sets the real button's `Interaction::Pressed`, lets the existing UI click system process it, and releases it on the next frame. Camera commands preserve camera depth, synchronize projection and zoom state, and clear keyboard movement velocity.

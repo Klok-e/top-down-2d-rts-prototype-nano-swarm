@@ -241,11 +241,7 @@ pub fn score_intent(
 /// looked up from `slots` per (cell, kind) pair, so callers can model
 /// current swarm pressure without recomputing it.
 ///
-/// `nanobot_swarm` is the [`SwarmId`] the calling nanobot belongs
-/// to. Cells whose owner is a different swarm are skipped: the
-/// per-swarm intent ownership contract from issue #20. Cells
-/// with `owner == None` (legacy shared paint, or paint written
-/// through the unowned API) are visible to every swarm.
+/// Only intent belonging to `nanobot_swarm` contributes candidates.
 #[allow(clippy::too_many_arguments)]
 pub fn best_candidate(
     grid: &IntentGrid,
@@ -267,7 +263,7 @@ pub fn best_candidate(
             if !intent_cell.has(kind) {
                 continue;
             }
-            if !intent_cell.visible_to(kind, nanobot_swarm) {
+            if !intent_cell.has_owned(kind, nanobot_swarm) {
                 continue;
             }
             let need = need_from_cell(intent_cell, kind);
@@ -523,8 +519,8 @@ mod tests {
         let mut grid = IntentGrid::new(4, 4);
         let near = IVec2::ZERO;
         let far = IVec2::ONE;
-        grid.paint(near, IntentKind::Gather);
-        grid.paint(far, IntentKind::Gather);
+        grid.paint(near, IntentKind::Gather, SwarmId::PLAYER);
+        grid.paint(far, IntentKind::Gather, SwarmId::PLAYER);
 
         let picked = best_candidate(
             &grid,
@@ -545,8 +541,8 @@ mod tests {
         let mut grid = IntentGrid::new(4, 4);
         let crowded = IVec2::new(-1, 0);
         let empty = IVec2::new(1, 0);
-        grid.paint(crowded, IntentKind::Gather);
-        grid.paint(empty, IntentKind::Gather);
+        grid.paint(crowded, IntentKind::Gather, SwarmId::PLAYER);
+        grid.paint(empty, IntentKind::Gather, SwarmId::PLAYER);
         let mut slots = SoftWorkSlots::new();
         for _ in 0..4 {
             slots.occupy(crowded, IntentKind::Gather);
@@ -571,8 +567,8 @@ mod tests {
         let mut grid = IntentGrid::new(4, 4);
         let first = IVec2::new(-1, 0);
         let second = IVec2::new(1, 0);
-        grid.paint(first, IntentKind::Gather);
-        grid.paint(second, IntentKind::Gather);
+        grid.paint(first, IntentKind::Gather, SwarmId::PLAYER);
+        grid.paint(second, IntentKind::Gather, SwarmId::PLAYER);
 
         let picked = best_candidate(
             &grid,
@@ -592,8 +588,8 @@ mod tests {
     #[test]
     fn global_awareness_filters_owner_and_type() {
         let mut grid = IntentGrid::new(4, 4);
-        grid.paint_owned(IVec2::new(-1, 0), IntentKind::Defend, Some(SwarmId(9)));
-        grid.paint_owned(IVec2::new(1, 0), IntentKind::Defend, Some(SwarmId::PLAYER));
+        grid.paint(IVec2::new(-1, 0), IntentKind::Defend, SwarmId(9));
+        grid.paint(IVec2::new(1, 0), IntentKind::Defend, SwarmId::PLAYER);
 
         let picked = best_candidate(
             &grid,

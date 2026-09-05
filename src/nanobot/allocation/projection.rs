@@ -428,25 +428,26 @@ fn project_intent_work(
         let mut anchors = Vec::<(Option<SwarmId>, IVec2)>::new();
         for (cell, intent) in grid.iter_active_cells().filter(|(cell, intent)| {
             intent.has(IntentKind::Gather)
-                && owners_compatible(intent.owner(IntentKind::Gather), deposit_owner)
                 && cell_overlaps_circle(*cell, transform.translation.truncate(), deposit.radius)
         }) {
-            let effective_owner = deposit_owner.or(intent.owner(IntentKind::Gather));
-            if let Some((_, anchor)) = anchors
-                .iter_mut()
-                .find(|(owner, _)| *owner == effective_owner)
-            {
-                if (cell.x, cell.y) < (anchor.x, anchor.y) {
-                    *anchor = cell;
+            for swarm in intent.owners(IntentKind::Gather) {
+                if deposit_owner.is_some_and(|owner| owner != swarm) {
+                    continue;
                 }
-            } else {
-                anchors.push((effective_owner, cell));
+                let effective_owner = Some(swarm);
+                if let Some((_, anchor)) = anchors
+                    .iter_mut()
+                    .find(|(owner, _)| *owner == effective_owner)
+                {
+                    if (cell.x, cell.y) < (anchor.x, anchor.y) {
+                        *anchor = cell;
+                    }
+                } else {
+                    anchors.push((effective_owner, cell));
+                }
             }
         }
 
-        if deposit_owner.is_none() && anchors.iter().any(|(owner, _)| owner.is_none()) {
-            anchors.retain(|(owner, _)| owner.is_none());
-        }
         anchors.sort_by_key(|(owner, _)| owner.map_or((false, 0), |owner| (true, owner.0)));
 
         for (owner, cell) in anchors {
@@ -626,10 +627,6 @@ fn resolve_owner(owner: Option<&OwnerSwarm>, swarms: &Query<&SwarmId>) -> Option
         None => Some(None),
         Some(owner) => swarms.get(owner.0).ok().copied().map(Some),
     }
-}
-
-fn owners_compatible(left: Option<SwarmId>, right: Option<SwarmId>) -> bool {
-    left.is_none() || right.is_none() || left == right
 }
 
 fn source_role_matches(role: StockpileRole, required: SourceRole) -> bool {

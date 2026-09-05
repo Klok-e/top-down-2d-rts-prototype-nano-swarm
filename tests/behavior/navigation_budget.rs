@@ -24,10 +24,10 @@ fn pending_worker_access_preserves_population_demand_until_budget_allows_assignm
             radius: 48.0,
         },
     );
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::ZERO,
         IntentKind::Gather,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     app.world_mut().resource_mut::<NavigationBudget>().0 = 0;
     for _ in 0..12 {
@@ -68,10 +68,10 @@ fn pending_placement_waits_for_shared_navigation_work_before_reserving_a_plan() 
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     common::spawn_facility_at(&mut app, swarm, common::cell_world_center(IVec2::new(1, 0)));
     common::spawn_worker_at(&mut app, Vec2::ZERO);
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::new(1, 0),
         IntentKind::Build,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     app.world_mut().resource_mut::<NavigationBudget>().0 = 0;
     for _ in 0..12 {
