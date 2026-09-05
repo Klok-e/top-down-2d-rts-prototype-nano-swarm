@@ -1,10 +1,34 @@
 use super::*;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering as AtomicOrdering},
+};
+
+#[derive(Default)]
+pub(super) struct ExpansionCounters {
+    pub hierarchy_cells: AtomicUsize,
+    pub hierarchy_chunks: AtomicUsize,
+    pub coarse: AtomicUsize,
+    pub fine: AtomicUsize,
+}
+impl ExpansionCounters {
+    fn snapshot(&self) -> NavigationWork {
+        NavigationWork {
+            hierarchy_cells: self.hierarchy_cells.load(AtomicOrdering::Relaxed),
+            hierarchy_chunks: self.hierarchy_chunks.load(AtomicOrdering::Relaxed),
+            coarse_expansions: self.coarse.load(AtomicOrdering::Relaxed),
+            fine_expansions: self.fine.load(AtomicOrdering::Relaxed),
+            ..Default::default()
+        }
+    }
+}
 use std::{
     future::Future,
     pin::Pin,
     task::{Context, Poll, Waker},
 };
+
+pub(super) type ChunkBuild = Pin<Box<dyn Future<Output = Chunk> + Send>>;
 
 struct WorkUnit(bool);
 impl WorkUnit {
@@ -26,9 +50,33 @@ impl Future for WorkUnit {
 
 impl Navigation {
     async fn async_regions(&self, chunk: IVec2) -> Chunk {
-        if let Some(cached) = self.chunks.lock().unwrap().get(&chunk).cloned() {
-            return cached;
-        }
+        std::future::poll_fn(|context| {
+            if let Some(cached) = self.chunks.lock().unwrap().get(&chunk).cloned() {
+                return Poll::Ready(cached);
+            }
+            let mut builds = self.chunk_builds.lock().unwrap();
+            let build = builds.entry(chunk).or_insert_with(|| {
+                // The build snapshot owns independent empty caches, so retaining a
+                // partial build cannot form an Arc cycle back to this shared cache.
+                let snapshot = self.hypothetical(self.obstacles.as_ref().clone());
+                Box::pin(async move { snapshot.async_build_regions(chunk).await })
+            });
+            match build.as_mut().poll(context) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(result) => {
+                    self.chunks.lock().unwrap().insert(chunk, result.clone());
+                    builds.remove(&chunk);
+                    Poll::Ready(result)
+                }
+            }
+        })
+        .await
+    }
+
+    async fn async_build_regions(&self, chunk: IVec2) -> Chunk {
+        self.expansions
+            .hierarchy_chunks
+            .fetch_add(1, AtomicOrdering::Relaxed);
         let mut regions = HashMap::new();
         for y in 0..CHUNK {
             WorkUnit::new().await;
@@ -42,6 +90,9 @@ impl Navigation {
                 let mut queue = VecDeque::from([cell]);
                 regions.insert(cell, cell);
                 while let Some(current) = queue.pop_front() {
+                    self.expansions
+                        .hierarchy_cells
+                        .fetch_add(1, AtomicOrdering::Relaxed);
                     WorkUnit::new().await;
                     for d in DIRECTIONS {
                         WorkUnit::new().await;
@@ -59,9 +110,7 @@ impl Navigation {
                 }
             }
         }
-        let result = Chunk { regions };
-        self.chunks.lock().unwrap().insert(chunk, result.clone());
-        result
+        Chunk { regions }
     }
 
     async fn async_region(&self, cell: IVec2) -> Option<IVec2> {
@@ -272,6 +321,7 @@ impl Navigation {
             if cost > costs[&node] {
                 continue;
             }
+            self.expansions.coarse.fetch_add(1, AtomicOrdering::Relaxed);
             if goals.contains(&node) {
                 reached = Some(node);
                 break;
@@ -280,6 +330,7 @@ impl Navigation {
                 let Some(reverse) = reverse_queue.pop_front() else {
                     return direct.map_or(RouteOutcome::Unreachable, RouteOutcome::Found);
                 };
+                self.expansions.coarse.fetch_add(1, AtomicOrdering::Relaxed);
                 if sources.contains(&reverse) {
                     reverse_connected = true;
                 } else {
@@ -360,6 +411,7 @@ impl Navigation {
             if cost > costs[&node] {
                 continue;
             }
+            self.expansions.fine.fetch_add(1, AtomicOrdering::Relaxed);
             if ends.contains(&node) {
                 let total = cost
                     + Self::paint_segment_cost(Self::center(node), end, grid, swarm, hauler).await;
@@ -445,6 +497,13 @@ pub struct NavigationWork {
     pub pending: usize,
     pub completed: usize,
     pub max_latency_ticks: u64,
+    /// Fine cells visited while materializing physical chunk connectivity.
+    pub hierarchy_cells: usize,
+    pub hierarchy_chunks: usize,
+    /// Non-stale coarse nodes expanded, including the reverse connectivity probe.
+    pub coarse_expansions: usize,
+    /// Non-stale fine nodes expanded while refining the coarse route.
+    pub fine_expansions: usize,
 }
 
 type Search = Pin<Box<dyn Future<Output = RouteOutcome> + Send>>;
@@ -455,7 +514,6 @@ struct Request {
     hauler: bool,
     priority: RoutePriority,
     submitted: u64,
-    last_served: u64,
     revision: u64,
     future: Option<Search>,
     result: RouteStatus,
@@ -507,7 +565,6 @@ impl Navigation {
                 hauler,
                 priority,
                 submitted: tick,
-                last_served: tick,
                 revision: self.revision,
                 future: None,
                 result: RouteStatus::Pending,
@@ -576,6 +633,7 @@ impl Navigation {
             scheduler.access_cached.remove(&key);
             scheduler.requests.remove(&id);
         }
+        let before = self.expansions.snapshot();
         let mut work = NavigationWork {
             tick,
             ..Default::default()
@@ -587,26 +645,27 @@ impl Navigation {
                 request.revision = self.revision;
             }
         }
-        while work.work < budget {
-            let next = scheduler
-                .requests
-                .iter()
-                .filter(|(_, r)| matches!(r.result, RouteStatus::Pending))
-                .max_by_key(|(id, r)| {
-                    let urgency = match r.priority {
-                        RoutePriority::Routine => 0,
-                        RoutePriority::Invalidated => 8,
-                        RoutePriority::Clearing => 16,
-                    };
-                    (
-                        tick.saturating_sub(r.last_served) + urgency,
-                        std::cmp::Reverse(id.0),
-                    )
-                })
-                .map(|(id, _)| *id);
-            let Some(id) = next else {
+        // Submission aging preserves eventual service without fragmenting every long
+        // search across the entire pending population. Candidate order is stable for
+        // this advance, so compute it once instead of scanning on every quantum.
+        let mut pending: Vec<_> = scheduler
+            .requests
+            .iter()
+            .filter(|(_, r)| matches!(r.result, RouteStatus::Pending))
+            .map(|(id, r)| {
+                let urgency = match r.priority {
+                    RoutePriority::Routine => 0,
+                    RoutePriority::Invalidated => 8,
+                    RoutePriority::Clearing => 16,
+                };
+                (*id, tick.saturating_sub(r.submitted) + urgency)
+            })
+            .collect();
+        pending.sort_by_key(|(id, priority)| (std::cmp::Reverse(*priority), id.0));
+        for (id, _) in pending {
+            if work.work >= budget {
                 break;
-            };
+            }
             let paint = scheduler.paint.clone();
             let request = scheduler.requests.get_mut(&id).unwrap();
             if request.future.is_none() {
@@ -637,6 +696,12 @@ impl Navigation {
                         Arc::new(Mutex::new(HashMap::new()))
                     },
                     scheduler: Mutex::new(Scheduler::default()),
+                    expansions: self.expansions.clone(),
+                    chunk_builds: if self.clearing.is_empty() {
+                        self.chunk_builds.clone()
+                    } else {
+                        Default::default()
+                    },
                 };
                 let (start, goal, swarm, hauler) =
                     (request.start, request.goal, request.swarm, request.hauler);
@@ -666,9 +731,8 @@ impl Navigation {
                     }
                 }));
             }
-            request.last_served = tick;
             let mut context = Context::from_waker(Waker::noop());
-            let quantum = (budget - work.work).min(64);
+            let quantum = budget - work.work;
             for _ in 0..quantum {
                 work.work += 1;
                 if let Poll::Ready(result) =
@@ -690,6 +754,11 @@ impl Navigation {
             .values()
             .filter(|r| matches!(r.result, RouteStatus::Pending))
             .count();
+        let after = self.expansions.snapshot();
+        work.hierarchy_cells = after.hierarchy_cells - before.hierarchy_cells;
+        work.coarse_expansions = after.coarse_expansions - before.coarse_expansions;
+        work.fine_expansions = after.fine_expansions - before.fine_expansions;
+        work.hierarchy_chunks = after.hierarchy_chunks - before.hierarchy_chunks;
         scheduler.work = work;
         work
     }
@@ -967,6 +1036,8 @@ impl Navigation {
             revision: self.revision,
             chunks: Arc::new(Mutex::new(HashMap::new())),
             scheduler: Mutex::new(Scheduler::default()),
+            expansions: self.expansions.clone(),
+            chunk_builds: Default::default(),
         }
     }
     async fn async_connected(
