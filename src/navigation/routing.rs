@@ -39,12 +39,79 @@ pub struct Navigation {
     min: Vec2,
     max: Vec2,
     obstacles: std::sync::Arc<Vec<Obstacle>>,
+    obstacle_index: std::sync::Arc<ObstacleIndex>,
     clearing: Vec<Obstacle>,
     revision: u64,
     chunks: std::sync::Arc<Mutex<HashMap<IVec2, Chunk>>>,
     scheduler: Mutex<budget::Scheduler>,
     chunk_builds: std::sync::Arc<Mutex<HashMap<IVec2, budget::ChunkBuild>>>,
     expansions: std::sync::Arc<budget::ExpansionCounters>,
+}
+/// Bucket coverage is capped for both shapes and queries. Huge shapes remain
+/// global candidates; long segments fall back to the bounded obstacle list.
+#[derive(Default)]
+struct ObstacleIndex {
+    buckets: HashMap<IVec2, Vec<usize>>,
+    global: Vec<usize>,
+    count: usize,
+}
+impl ObstacleIndex {
+    const MAX_BUCKETS: i64 = 64;
+    fn bounds(a: Vec2, b: Vec2) -> (IVec2, IVec2) {
+        let width = CELL_WIDTH * CHUNK as f32;
+        (
+            (a.min(b) / width).floor().as_ivec2(),
+            (a.max(b) / width).floor().as_ivec2(),
+        )
+    }
+    fn small_span(min: IVec2, max: IVec2) -> bool {
+        let width = i64::from(max.x) - i64::from(min.x) + 1;
+        let height = i64::from(max.y) - i64::from(min.y) + 1;
+        width <= Self::MAX_BUCKETS
+            && height <= Self::MAX_BUCKETS
+            && width * height <= Self::MAX_BUCKETS
+    }
+    fn new(obstacles: &[Obstacle]) -> Self {
+        let mut index = Self {
+            count: obstacles.len(),
+            ..Default::default()
+        };
+        for (id, shape) in obstacles.iter().enumerate() {
+            let (center, half) = match *shape {
+                Obstacle::Rectangle { center, half } => (center, half),
+                Obstacle::Circle { center, radius } => (center, Vec2::splat(radius)),
+            };
+            let half = half + Vec2::splat(BODY_RADIUS);
+            let (min, max) = Self::bounds(center - half, center + half);
+            if !Self::small_span(min, max) {
+                index.global.push(id);
+                continue;
+            }
+            for y in min.y..=max.y {
+                for x in min.x..=max.x {
+                    index.buckets.entry(IVec2::new(x, y)).or_default().push(id);
+                }
+            }
+        }
+        index
+    }
+    fn candidates(&self, a: Vec2, b: Vec2) -> Vec<usize> {
+        let (min, max) = Self::bounds(a, b);
+        if !Self::small_span(min, max) {
+            return (0..self.count).collect();
+        }
+        let mut candidates = self.global.clone();
+        for y in min.y..=max.y {
+            for x in min.x..=max.x {
+                if let Some(ids) = self.buckets.get(&IVec2::new(x, y)) {
+                    candidates.extend(ids);
+                }
+            }
+        }
+        candidates.sort_unstable();
+        candidates.dedup();
+        candidates
+    }
 }
 #[derive(Clone)]
 struct Chunk {
@@ -83,6 +150,7 @@ impl Navigation {
         Self {
             min,
             max: min + Vec2::new(grid.width() as f32, grid.height() as f32) * ZONE_BLOCK_SIZE,
+            obstacle_index: std::sync::Arc::new(ObstacleIndex::new(&obstacles)),
             obstacles: std::sync::Arc::new(obstacles),
             clearing: Vec::new(),
             revision: 1,
@@ -95,13 +163,12 @@ impl Navigation {
     /// Replace physical geometry and invalidate cached connectivity when it changes.
     /// Paint changes affect future costs without discarding physical connectivity.
     pub fn refresh(&mut self, grid: &IntentGrid, obstacles: Vec<Obstacle>) -> bool {
-        let replacement = Self::new(grid, obstacles);
-        if replacement.min == self.min
-            && replacement.max == self.max
-            && replacement.obstacles == self.obstacles
-        {
+        let min = IVec2::new(-(grid.width() / 2), -(grid.height() / 2)).as_vec2() * ZONE_BLOCK_SIZE;
+        let max = min + Vec2::new(grid.width() as f32, grid.height() as f32) * ZONE_BLOCK_SIZE;
+        if min == self.min && max == self.max && obstacles == *self.obstacles {
             return false;
         }
+        let replacement = Self::new(grid, obstacles);
         let changed: Vec<_> = self
             .obstacles
             .iter()
@@ -135,6 +202,7 @@ impl Navigation {
         self.min = replacement.min;
         self.max = replacement.max;
         self.obstacles = replacement.obstacles;
+        self.obstacle_index = replacement.obstacle_index;
         self.revision = self.revision.wrapping_add(1);
         true
     }
@@ -145,13 +213,21 @@ impl Navigation {
         p.is_finite()
             && p.cmpge(self.min).all()
             && p.cmplt(self.max).all()
-            && self.obstacles.iter().all(|o| o.admits_body(p))
+            && self
+                .obstacle_index
+                .candidates(p, p)
+                .into_iter()
+                .all(|id| self.obstacles[id].admits_body(p))
     }
     /// Analytic swept-disc clearance covers every point of the movement segment.
     pub fn segment_clear(&self, a: Vec2, b: Vec2) -> bool {
         self.point_clear(a)
             && self.point_clear(b)
-            && self.obstacles.iter().all(|o| o.segment_clear(a, b))
+            && self
+                .obstacle_index
+                .candidates(a, b)
+                .into_iter()
+                .all(|id| self.obstacles[id].segment_clear(a, b))
     }
     fn center(cell: IVec2) -> Vec2 {
         (cell.as_vec2() + Vec2::splat(0.5)) * CELL_WIDTH

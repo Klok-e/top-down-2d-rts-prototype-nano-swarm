@@ -1,8 +1,7 @@
 //! Authored default scenario for `cargo run`.
 //!
-//! The default map is a compact skirmish: both economies start moving,
-//! Defend fronts create immediate territory pressure, and the
-//! opponent advances by changing intent on a deterministic cadence.
+//! Rotationally symmetric rock terrain shelters two economies and separates
+//! a direct central approach from longer mineral-bearing flanks.
 
 use bevy::{math::vec3, prelude::*};
 
@@ -19,15 +18,24 @@ use crate::{
     resources::{ResourceDeposit, ResourceKind},
 };
 
+mod map;
+pub(crate) use map::rock_surface_mesh;
+pub use map::{default_rock_geometry, spawn_default_terrain};
+
 pub const PLAYER_CELL: IVec2 = IVec2::new(0, 0);
 pub const PLAYER_BUILD_FLANK_CELL: IVec2 = IVec2::new(0, 1);
-pub const PLAYER_DEFEND_CELL: IVec2 = IVec2::new(1, 0);
-pub const PLAYER_DEPOSIT_CELL: IVec2 = IVec2::new(-1, 0);
-pub const OPPONENT_CELL: IVec2 = IVec2::new(3, 0);
-pub const OPPONENT_BUILD_FLANK_CELL: IVec2 = IVec2::new(3, -1);
-pub const OPPONENT_DEFEND_CELL: IVec2 = IVec2::new(2, 0);
-pub const OPPONENT_DEPOSIT_CELL: IVec2 = IVec2::new(4, 0);
-pub const NEUTRAL_DEPOSIT_CELLS: [IVec2; 2] = [IVec2::new(1, 2), IVec2::new(2, -2)];
+pub const PLAYER_DEFEND_CELL: IVec2 = IVec2::new(1, 1);
+pub const PLAYER_DEPOSIT_CELL: IVec2 = IVec2::new(-1, -1);
+pub const OPPONENT_CELL: IVec2 = IVec2::new(24, 24);
+pub const OPPONENT_BUILD_FLANK_CELL: IVec2 = IVec2::new(24, 23);
+pub const OPPONENT_DEFEND_CELL: IVec2 = IVec2::new(23, 23);
+pub const OPPONENT_DEPOSIT_CELL: IVec2 = IVec2::new(25, 25);
+pub const NEUTRAL_DEPOSIT_CELLS: [IVec2; 4] = [
+    IVec2::new(0, 7),
+    IVec2::new(24, 17),
+    IVec2::new(6, 18),
+    IVec2::new(18, 6),
+];
 
 /// Keeps the seed facility visibly separate from seed nanobots while remaining
 /// close enough for the initial Worker crew to maintain it.
@@ -100,7 +108,6 @@ pub fn spawn_default_player_scenario(
     let player_pos = cell_origin(PLAYER_CELL);
     let facility_pos = player_pos + SEED_FACILITY_OFFSET;
     let deposit_pos = cell_origin(PLAYER_DEPOSIT_CELL);
-    let deposit_texture = asset_server.load("resource_deposit.png");
     let facility_texture = asset_server.load("production_facility.png");
 
     let swarm = commands
@@ -134,9 +141,9 @@ pub fn spawn_default_player_scenario(
         ],
     );
 
-    spawn_deposit(commands, Some(swarm), deposit_pos, &deposit_texture);
+    spawn_deposit(commands, Some(swarm), deposit_pos);
     for cell in NEUTRAL_DEPOSIT_CELLS {
-        spawn_deposit(commands, None, cell_origin(cell), &deposit_texture);
+        spawn_deposit(commands, None, cell_origin(cell));
     }
     spawn_production_facility(commands, swarm, facility_pos, &facility_texture);
 }
@@ -159,7 +166,6 @@ pub fn spawn_default_opponent_scenario(
     let opponent_pos = cell_origin(OPPONENT_CELL);
     let facility_pos = opponent_pos + OPPONENT_FACILITY_OFFSET;
     let deposit_pos = cell_origin(OPPONENT_DEPOSIT_CELL);
-    let deposit_texture = asset_server.load("resource_deposit.png");
     let facility_texture = asset_server.load("production_facility.png");
 
     let opponent = commands
@@ -187,7 +193,7 @@ pub fn spawn_default_opponent_scenario(
     // helper, which spawns top-level, hid the bug.
     spawn_seed_nanobots(
         commands,
-        opponent_pos,
+        opponent_pos + Vec2::new(36.0, 0.0),
         1.0,
         opponent_swarm_id,
         &[
@@ -197,7 +203,7 @@ pub fn spawn_default_opponent_scenario(
         ],
     );
 
-    spawn_deposit(commands, Some(opponent), deposit_pos, &deposit_texture);
+    spawn_deposit(commands, Some(opponent), deposit_pos);
     spawn_production_facility(commands, opponent, facility_pos, &facility_texture);
 }
 
@@ -221,7 +227,7 @@ fn spawn_seed_nanobots(
             let position = world_pos
                 + Vec2::new(
                     outward * (index % 3) as f32 * 72.0,
-                    (index / 3) as f32 * 72.0 - 72.0,
+                    -outward * ((index / 3) as f32 * 72.0 - 72.0),
                 );
             index += 1;
             commands.spawn((
@@ -240,12 +246,7 @@ fn spawn_seed_nanobots(
     }
 }
 
-fn spawn_deposit(
-    commands: &mut Commands<'_, '_>,
-    owner: Option<Entity>,
-    world_pos: Vec2,
-    texture: &Handle<Image>,
-) {
+fn spawn_deposit(commands: &mut Commands<'_, '_>, owner: Option<Entity>, world_pos: Vec2) {
     let mut entity = commands.spawn((
         Minerals {},
         ResourceDeposit {
@@ -255,7 +256,6 @@ fn spawn_deposit(
             radius: STARTING_WORK_RADIUS,
         },
         (
-            Sprite::from_image(texture.clone()),
             Transform::from_translation(vec3(world_pos.x, world_pos.y, GAMEPLAY_SPRITE_Z))
                 .with_scale(vec3(2., 2., 1.)),
         ),
@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn default_player_intent_prepaints_gather_build_and_defend() {
-        let mut grid = IntentGrid::new(32, 32);
+        let mut grid = IntentGrid::new(64, 64);
         paint_default_player_intent(&mut grid);
 
         let deposit_cell = grid.cell(PLAYER_DEPOSIT_CELL).unwrap();
@@ -352,7 +352,7 @@ mod tests {
                 .has(IntentKind::Defend)
         );
         assert!(
-            !grid.cell(IVec2::new(1, 1)).unwrap().has(IntentKind::Defend),
+            !grid.cell(IVec2::new(1, 0)).unwrap().has(IntentKind::Defend),
             "removed player Defender flank cell must stay unpainted"
         );
 
@@ -370,7 +370,7 @@ mod tests {
         // wandering into range must not see this cell as a
         // free gather cell. The owner stamp on the
         // prepainted cell is what enforces that.
-        let mut grid = IntentGrid::new(32, 32);
+        let mut grid = IntentGrid::new(64, 64);
         paint_default_player_intent(&mut grid);
 
         let cell = grid.cell(PLAYER_DEPOSIT_CELL).unwrap();
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn default_opponent_intent_prepaints_gather_build_and_defend() {
-        let mut grid = IntentGrid::new(32, 32);
+        let mut grid = IntentGrid::new(64, 64);
         let opponent_id = SwarmId(7);
         paint_default_opponent_intent(&mut grid, opponent_id);
 
@@ -484,23 +484,18 @@ mod tests {
             -crate::ZONE_BLOCK_SIZE,
             epsilon = 0.01
         );
-        assert_abs_diff_eq!(player_deposit.y, player_origin.y, epsilon = 0.01);
+        assert_abs_diff_eq!(
+            player_deposit.y - player_origin.y,
+            -crate::ZONE_BLOCK_SIZE,
+            epsilon = 0.01
+        );
         assert_abs_diff_eq!(
             opponent_deposit.x - opponent_origin.x,
             crate::ZONE_BLOCK_SIZE,
             epsilon = 0.01
         );
-        assert_abs_diff_eq!(opponent_deposit.y, opponent_origin.y, epsilon = 0.01);
-    }
-
-    #[test]
-    fn default_scenario_has_a_compact_opposing_front() {
-        assert!(
-            cell_origin(OPPONENT_CELL).distance(cell_origin(PLAYER_CELL))
-                <= 4.0 * crate::ZONE_BLOCK_SIZE
-        );
         assert_abs_diff_eq!(
-            cell_origin(OPPONENT_DEFEND_CELL).distance(cell_origin(PLAYER_DEFEND_CELL)),
+            opponent_deposit.y - opponent_origin.y,
             crate::ZONE_BLOCK_SIZE,
             epsilon = 0.01
         );

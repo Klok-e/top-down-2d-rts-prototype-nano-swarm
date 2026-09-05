@@ -23,14 +23,16 @@ use std::path::Path;
 
 use libtest_mimic::{Arguments, Conclusion, Failed, Trial};
 
-mod background_checkerboard;
+mod background_terrain;
 mod build_zone_placement;
 mod combat_presentation;
 mod congested_work;
 mod construction_access;
 mod construction_lifecycle;
+mod default_map;
 mod defender_combat_readability;
 mod defender_staging;
+mod deposit_presentation;
 mod exterior_work;
 mod fill_indicators;
 mod harness;
@@ -76,6 +78,14 @@ fn main() -> std::process::ExitCode {
     // Each test is ignored so default run skips GPU setup. `--ignored` runs
     // only ignored tests, matching standard `cargo test` convention.
     let tests = vec![
+        Trial::test("deposit_presentation", || {
+            run_with_validation(
+                deposit_presentation::deposit_presentation,
+                deposit_presentation::validate_deposit_presentation,
+            )
+        })
+        .with_ignored_flag(true),
+        Trial::test("default_map", || run(default_map::default_map)).with_ignored_flag(true),
         Trial::test("congested_work", || run(congested_work::congested_work))
             .with_ignored_flag(true),
         Trial::test("startup_formations", || {
@@ -124,10 +134,10 @@ fn main() -> std::process::ExitCode {
             regression::missing_screenshot_fails,
         )
         .with_ignored_flag(true),
-        Trial::test("background_checkerboard", || {
+        Trial::test("background_terrain", || {
             run_with_validation(
-                background_checkerboard::background_checkerboard,
-                background_checkerboard::validate_background_checkerboard,
+                background_terrain::background_terrain,
+                background_terrain::validate_background_terrain,
             )
         })
         .with_ignored_flag(true),

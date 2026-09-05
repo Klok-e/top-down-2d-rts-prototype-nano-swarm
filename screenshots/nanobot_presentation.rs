@@ -10,6 +10,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         Nanobot, NanobotSprites, NanobotType, NanobotVisual, OpponentSwarm, Swarm, SwarmId,
         SwarmMember, VelocityComponent,
     },
+    terrain::RockFormation,
 };
 
 use crate::harness::{TestContext, TestFlow};
@@ -36,6 +37,13 @@ struct EvidenceLayout {
 
 fn prepare_evidence(world: &mut World) {
     world.resource_mut::<Time<Virtual>>().pause();
+    for rock in world
+        .query_filtered::<Entity, With<RockFormation>>()
+        .iter(world)
+        .collect::<Vec<_>>()
+    {
+        world.despawn(rock);
+    }
 
     for (mut transform, mut projection, mut zoom) in world
         .query::<(&mut Transform, &mut Projection, &mut CameraZoom2d)>()

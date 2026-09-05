@@ -35,3 +35,6 @@ mod world_space_nanobots;
 mod adjacent_structure_clearing;
 #[path = "playtest/construction_cancellation.rs"]
 mod construction_cancellation;
+
+#[path = "playtest/default_map.rs"]
+mod default_map;

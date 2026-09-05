@@ -19,6 +19,9 @@ use top_down_2d_rts_prototype_nano_swarm::{
 
 use super::harness::{TestContext, TestFlow, run_screenshot_test};
 
+#[derive(Resource)]
+struct ArrivalCaptured;
+
 fn deposit_pos() -> Vec2 {
     cell_origin(PLAYER_DEPOSIT_CELL)
 }
@@ -27,7 +30,7 @@ fn cell_corner_pos() -> Vec2 {
     deposit_pos() + Vec2::new(256.0, 256.0)
 }
 
-/// Capture after worker has had time to walk to deposit. Test is ignored by
+/// Capture when a worker arrives at the deposit after the maintenance horizon. Test is ignored by
 /// default; run with `cargo test --test screenshots -- --ignored
 /// world_space_nanobots`. Callback pauses until PNG readback completes, then
 /// resumes and exits.
@@ -37,13 +40,16 @@ pub fn world_space_nanobots(ctx: &mut TestContext) -> TestFlow {
     // facility, and ResourceLedger. Advance simulation until worker arrives.
     // Capture wait runs full app updates, so simulation may advance before the
     // callback resumes. No post-resume gameplay state is assumed.
+    if ctx.world.contains_resource::<ArrivalCaptured>() {
+        return TestFlow::Exit;
+    }
     if ctx.frame < 900 {
         // Drive the simulation. The player swarm sits at (256, 256); the
-        // deposit is one cell left; the worker must walk 512 units. Running
+        // deposit is southwest in the sheltered base pocket. Running
         // 900 ticks also crosses the unmaintained facility-collapse horizon.
         return TestFlow::Continue;
     }
-    if ctx.frame == 900 {
+    if ctx.frame >= 900 {
         // Assert ECS state before capture so simulation regressions fail with
         // position-specific diagnostics.
         let world = &mut *ctx.world;
@@ -97,6 +103,10 @@ pub fn world_space_nanobots(ctx: &mut TestContext) -> TestFlow {
             })
             .expect("a player Worker must exist in the default scenario");
         let dist_to_deposit = bot_pos.distance(deposit);
+        let dist_to_corner = bot_pos.distance(corner);
+        if (dist_to_deposit > 200.0 || dist_to_corner <= 200.0) && ctx.frame < 1800 {
+            return TestFlow::Continue;
+        }
         assert!(
             dist_to_deposit <= 200.0,
             "worker Transform should land within ~200 units of the deposit center ({:?}); got {:?}, distance = {}",
@@ -104,7 +114,6 @@ pub fn world_space_nanobots(ctx: &mut TestContext) -> TestFlow {
             bot_pos,
             dist_to_deposit
         );
-        let dist_to_corner = bot_pos.distance(corner);
         assert!(
             dist_to_corner > 200.0,
             "worker must not land at the cell corner ({:?}); got {:?}, distance to corner = {}",
@@ -112,6 +121,7 @@ pub fn world_space_nanobots(ctx: &mut TestContext) -> TestFlow {
             bot_pos,
             dist_to_corner
         );
+        world.insert_resource(ArrivalCaptured);
         return TestFlow::Screenshot("world_space_nanobots".to_string());
     }
     TestFlow::Exit

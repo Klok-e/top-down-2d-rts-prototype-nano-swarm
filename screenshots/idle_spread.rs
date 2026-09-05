@@ -68,7 +68,7 @@ struct SpreadTestBot;
 /// no matching leg and its haulers are never grabbed.
 const IDLE_SWARM: SwarmId = SwarmId(99);
 
-/// Row far south of the scenario (player at y~0, opponent at y~0)
+/// Row south of the enclosed scenario
 /// where the test paints its isolated Corridor segment.
 const CORRIDOR_ROW: i32 = -5;
 

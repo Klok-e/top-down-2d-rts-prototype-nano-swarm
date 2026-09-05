@@ -10,6 +10,7 @@ use crate::{
     },
     navigation::{Navigation, Obstacle},
     resources::{ResourceDeposit, Stockpile},
+    terrain::RockFormation,
 };
 
 /// Reads lifecycle consequences without exposing their representation to consumers.
@@ -26,8 +27,10 @@ pub struct PhysicalWorld<'w, 's> {
             Option<&'static ResourceDeposit>,
             Option<&'static PlannedStructure>,
             Option<&'static StructureClearing>,
+            Option<&'static RockFormation>,
         ),
         Or<(
+            With<RockFormation>,
             With<ResourceDeposit>,
             With<Structure>,
             With<Stockpile>,
@@ -45,7 +48,11 @@ impl PhysicalWorld<'_, '_> {
         objects.sort_by_key(|(entity, ..)| entity.to_bits());
         let mut solids = Vec::new();
         let mut entry_barriers = Vec::new();
-        for (_, transform, deposit, plan, clearing) in objects {
+        for (_, transform, deposit, plan, clearing, rock) in objects {
+            if let Some(rock) = rock {
+                solids.push(rock.obstacle(transform));
+                continue;
+            }
             if let Some(deposit) = deposit {
                 solids.push(Obstacle::deposit(
                     transform.translation.truncate(),

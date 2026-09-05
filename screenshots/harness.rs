@@ -37,7 +37,14 @@ pub fn clear_nanobots_and_sprite_entities(world: &mut World) {
         .query_filtered::<Entity, With<Nanobot>>()
         .iter(world)
         .collect::<Vec<_>>();
-    let mut sprites = world.query_filtered::<Entity, (With<Sprite>, Without<NanobotVisual>)>();
+    let mut sprites = world.query_filtered::<Entity, (
+        Or<(
+            With<Sprite>,
+            With<top_down_2d_rts_prototype_nano_swarm::resources::ResourceDeposit>,
+            With<top_down_2d_rts_prototype_nano_swarm::terrain::RockFormation>,
+        )>,
+        Without<NanobotVisual>,
+    )>();
     let entities = nanobots
         .into_iter()
         .chain(sprites.iter(world))

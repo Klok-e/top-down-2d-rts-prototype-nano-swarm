@@ -22,6 +22,10 @@ impl Plugin for ZonesPlugin {
                 brush_selection_keyboard_system.before(zone_brush_system),
             )
             .add_systems(Update, zone_brush_system)
+            .add_systems(
+                Update,
+                crate::materials::update_paint_grid.after(crate::ui::check_ui_interaction),
+            )
             .add_systems(Update, mirror_intent_to_zone_material_system);
     }
 }

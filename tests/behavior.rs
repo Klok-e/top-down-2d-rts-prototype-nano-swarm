@@ -122,3 +122,9 @@ mod congestion;
 
 #[path = "behavior/work_navigation.rs"]
 mod work_navigation;
+
+#[path = "behavior/rock_terrain.rs"]
+mod rock_terrain;
+
+#[path = "behavior/deposit_presentation.rs"]
+mod deposit_presentation;

@@ -8,9 +8,11 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Charge, Charger, ChargerAssignment, Commitment, DefenderResponse, Health, Nanobot,
-        NanobotType, OpponentSwarm, OwnerSwarm, Structure, StructureKind, Swarm, SwarmId,
-        SwarmMember, VelocityComponent,
+        NanobotType, OpponentIntentController, OpponentSwarm, OwnerSwarm, Structure, StructureKind,
+        Swarm, SwarmId, SwarmMember, VelocityComponent,
     },
+    terrain::RockFormation,
+    ui::collapse_banner::CollapseBannerRoot,
 };
 
 use crate::harness::{TestContext, TestFlow};
@@ -69,6 +71,30 @@ fn spawn_defender(world: &mut World, position: Vec2, swarm: SwarmId, charge: f32
 
 fn setup_scene(world: &mut World) {
     focus_camera(world);
+    for banner in world
+        .query_filtered::<Entity, With<CollapseBannerRoot>>()
+        .iter(world)
+        .collect::<Vec<_>>()
+    {
+        world.despawn(banner);
+    }
+    for rock in world
+        .query_filtered::<Entity, Or<(With<RockFormation>, With<Nanobot>)>>()
+        .iter(world)
+        .collect::<Vec<_>>()
+    {
+        world.despawn(rock);
+    }
+    for opponent in world
+        .query_filtered::<Entity, With<OpponentIntentController>>()
+        .iter(world)
+        .collect::<Vec<_>>()
+    {
+        world
+            .entity_mut(opponent)
+            .remove::<OpponentIntentController>();
+    }
+    world.insert_resource(IntentGrid::new(32, 32));
     let player_swarm = swarm_entity(world, SwarmId::PLAYER);
     let opponent_swarm_id = world
         .query_filtered::<&SwarmId, (With<Swarm>, With<OpponentSwarm>)>()

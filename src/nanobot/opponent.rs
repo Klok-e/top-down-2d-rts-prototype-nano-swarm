@@ -51,13 +51,7 @@ impl OpponentIntentController {
 
 fn next_assault_cell(from: IVec2, target: IVec2) -> IVec2 {
     let delta = target - from;
-    if delta.x != 0 {
-        from + IVec2::new(delta.x.signum(), 0)
-    } else if delta.y != 0 {
-        from + IVec2::new(0, delta.y.signum())
-    } else {
-        from
-    }
+    from + delta.signum()
 }
 
 /// Advance each configured opponent's Defend intent on fixed simulation ticks.
@@ -256,6 +250,19 @@ pub fn next_opponent_swarm_id(world: &mut World) -> SwarmId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assault_advances_diagonally_toward_the_target_without_overshooting() {
+        assert_eq!(
+            next_assault_cell(IVec2::new(23, 23), IVec2::ZERO),
+            IVec2::new(22, 22)
+        );
+        assert_eq!(
+            next_assault_cell(IVec2::new(1, 0), IVec2::ZERO),
+            IVec2::ZERO
+        );
+        assert_eq!(next_assault_cell(IVec2::ZERO, IVec2::ZERO), IVec2::ZERO);
+    }
 
     fn build_app() -> App {
         let mut app = App::new();

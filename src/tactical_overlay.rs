@@ -370,7 +370,7 @@ pub fn cluster_color(kind: TacticalMarkerKind) -> Color {
     let (r, g, b) = match kind {
         TacticalMarkerKind::PlayerBase => (0.10, 0.55, 0.90),
         TacticalMarkerKind::OpponentBase => (0.85, 0.20, 0.20),
-        TacticalMarkerKind::Deposit => (0.65, 0.45, 0.10),
+        TacticalMarkerKind::Deposit => (0.08, 0.72, 0.84),
         TacticalMarkerKind::Facility => (0.20, 0.40, 0.70),
         TacticalMarkerKind::Stockpile => (0.20, 0.50, 0.20),
         TacticalMarkerKind::Planned => (0.45, 0.45, 0.45),
@@ -455,10 +455,7 @@ pub fn tactical_overlay_update_system(
         (Entity, &Transform, Option<&OpponentSwarm>, Option<&SwarmId>),
         (With<Swarm>, Without<TacticalMarker>),
     >,
-    deposits: Query<
-        (&Transform, Option<&OwnerSwarm>),
-        (With<ResourceDeposit>, Without<TacticalMarker>),
-    >,
+    deposits: Query<(&Transform, Option<&OwnerSwarm>, &ResourceDeposit), Without<TacticalMarker>>,
     facilities: Query<
         (&Transform, Option<&OwnerSwarm>),
         (With<ProductionFacility>, Without<TacticalMarker>),
@@ -509,7 +506,10 @@ pub fn tactical_overlay_update_system(
             .and_then(|owner| swarm_ids.get(&owner.0).copied())
             .unwrap_or(UNOWNED_SWARM_ID)
     };
-    for (transform, owner) in &deposits {
+    for (transform, owner, deposit) in &deposits {
+        if !deposit.has_work() {
+            continue;
+        }
         source_cache.push(TacticalSource {
             position: transform.translation.truncate(),
             kind: TacticalMarkerKind::Deposit,
