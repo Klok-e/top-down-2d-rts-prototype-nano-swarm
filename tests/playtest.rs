@@ -28,3 +28,8 @@ mod shared_navigation;
 mod typed_population_demand;
 #[path = "playtest/world_space_nanobots.rs"]
 mod world_space_nanobots;
+
+#[path = "playtest/adjacent_structure_clearing.rs"]
+mod adjacent_structure_clearing;
+#[path = "playtest/construction_cancellation.rs"]
+mod construction_cancellation;
