@@ -189,12 +189,12 @@ fn app_with_bots(scenario: AcceptanceScenario) -> App {
                         } else {
                             IntentKind::Gather
                         };
-                        grid.add_owned(IVec2::new(x, y), kind, Some(SwarmId::PLAYER));
+                        grid.paint(IVec2::new(x, y), kind, SwarmId::PLAYER);
                     }
                 }
             }
             AcceptanceScenario::UnengagedStaging => {
-                grid.add_owned(IVec2::new(-8, 0), IntentKind::Defend, Some(SwarmId::PLAYER));
+                grid.paint(IVec2::new(-8, 0), IntentKind::Defend, SwarmId::PLAYER);
             }
         }
     }
@@ -265,11 +265,7 @@ fn warmed_app(scenario: AcceptanceScenario) -> App {
 fn warmed_sparse_stranded_app() -> App {
     let mut app = app_with_bots(AcceptanceScenario::ExhaustedGather);
     let mut grid = IntentGrid::new(1000, 1000);
-    grid.add_owned(
-        IVec2::new(400, 400),
-        IntentKind::Gather,
-        Some(SwarmId::PLAYER),
-    );
+    grid.paint(IVec2::new(400, 400), IntentKind::Gather, SwarmId::PLAYER);
     app.insert_resource(grid);
     for _ in 0..WARMUP_FRAMES {
         app.update();
@@ -398,10 +394,10 @@ fn unengaged_staging_edit_proof() {
     }
 
     let target_cell = IVec2::new(8, 0);
-    app.world_mut().resource_mut::<IntentGrid>().add_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         target_cell,
         IntentKind::Defend,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     let started = Instant::now();
     app.update();

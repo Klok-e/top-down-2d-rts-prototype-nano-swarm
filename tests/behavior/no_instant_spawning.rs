@@ -87,7 +87,7 @@ fn planned_count(world: &mut World) -> usize {
 /// intent stamp.
 fn paint_owned(app: &mut App, cell: IVec2, kind: IntentKind) {
     let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-    assert!(grid.paint_owned(cell, kind, Some(SwarmId::PLAYER)));
+    assert!(grid.paint(cell, kind, SwarmId::PLAYER));
 }
 
 #[test]

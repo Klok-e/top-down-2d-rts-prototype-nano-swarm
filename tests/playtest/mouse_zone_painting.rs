@@ -12,7 +12,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{MatchOutcome, SwarmId},
     ui::{UiHandling, check_ui_interaction},
     zones::{
-        ZoneMaterial, ZoneMaterialHandleComponent, ZonePointData,
+        ZoneMaterial, ZoneMaterialHandleComponent, ZoneOwnership, ZonePointData,
         mirror_intent_to_zone_material_system, zone_brush_system,
     },
 };
@@ -330,11 +330,11 @@ fn scripted_player_erase_preserves_enemy_paint_at_cursor() {
     let enemy = SwarmId(11);
     let cell = IVec2::ZERO;
 
-    assert!(app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        cell,
-        IntentKind::Gather,
-        Some(enemy),
-    ));
+    assert!(
+        app.world_mut()
+            .resource_mut::<IntentGrid>()
+            .paint(cell, IntentKind::Gather, enemy)
+    );
     app.update();
 
     press_mouse(&mut app, MouseButton::Right);
@@ -344,9 +344,9 @@ fn scripted_player_erase_preserves_enemy_paint_at_cursor() {
     let grid = app.world().resource::<IntentGrid>();
     let painted_cell = grid.cell(cell).expect("cursor cell must be in bounds");
     assert_eq!(
-        painted_cell.owner(IntentKind::Gather),
-        Some(enemy),
-        "player erase must preserve enemy-owned Gather paint",
+        painted_cell.owners(IntentKind::Gather).collect::<Vec<_>>(),
+        vec![enemy],
+        "player erase must preserve enemy-owned Gather paint"
     );
     assert!(
         zone_cell(&app, material_entity, cell).present(IntentKind::Gather.index() as u32),
@@ -355,103 +355,66 @@ fn scripted_player_erase_preserves_enemy_paint_at_cursor() {
 }
 
 #[test]
-fn scripted_player_paint_preserves_enemy_paint_at_cursor() {
+fn scripted_player_paints_and_erases_independent_overlap_for_every_kind() {
     let mut app = build_app();
     let window = spawn_window(&mut app);
     set_cursor(&mut app, window, Vec2::new(640.0, 360.0));
     spawn_camera(&mut app, Vec2::ZERO);
-    spawn_zone_material(&mut app);
+    let material_entity = spawn_zone_material(&mut app);
     let enemy = SwarmId(11);
-    let cell = IVec2::ZERO;
-
-    assert!(app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        cell,
-        IntentKind::Gather,
-        Some(enemy),
-    ));
-    app.update();
-
-    press_mouse(&mut app, MouseButton::Left);
-    app.update();
-    clear_mouse(&mut app);
-
-    assert_eq!(
-        app.world()
-            .resource::<IntentGrid>()
-            .cell(cell)
-            .expect("cursor cell must be in bounds")
-            .owner(IntentKind::Gather),
-        Some(enemy),
-        "player paint must preserve enemy-owned Gather paint",
-    );
-}
-
-#[test]
-fn scripted_player_defend_paint_contests_enemy_defend_at_cursor() {
-    let mut app = build_app();
-    let window = spawn_window(&mut app);
-    set_cursor(&mut app, window, Vec2::new(640.0, 360.0));
-    spawn_camera(&mut app, Vec2::ZERO);
-    spawn_zone_material(&mut app);
     let cursor_cell = IVec2::ZERO;
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        cursor_cell,
-        IntentKind::Defend,
-        Some(SwarmId(11)),
-    );
 
-    press_key(
-        &mut app,
-        brush_key_for_kind(IntentKind::Defend).expect("Defend must have a key binding"),
-    );
-    press_mouse(&mut app, MouseButton::Left);
-    app.update();
+    for kind in IntentKind::ALL {
+        app.world_mut()
+            .resource_mut::<IntentGrid>()
+            .paint(cursor_cell, kind, enemy);
+        press_key(
+            &mut app,
+            brush_key_for_kind(kind).expect("each intent has a brush key"),
+        );
+        press_mouse(&mut app, MouseButton::Left);
+        app.update();
+        clear_mouse(&mut app);
 
-    assert_eq!(
-        app.world()
+        let painted = app
+            .world()
             .resource::<IntentGrid>()
             .cell(cursor_cell)
-            .unwrap()
-            .owner(IntentKind::Defend),
-        None,
-        "challenging hostile Defend intent must make the cell shared for combat",
-    );
-}
+            .unwrap();
+        assert!(
+            painted.has_owned(kind, SwarmId::PLAYER),
+            "player {kind:?} must be added over enemy paint"
+        );
+        assert!(painted.has_owned(kind, enemy), "enemy {kind:?} must remain");
+        assert_eq!(
+            zone_cell(&app, material_entity, cursor_cell).ownership(kind.index() as u32),
+            ZoneOwnership::Overlap,
+            "overlay must show both swarms for {kind:?}"
+        );
 
-#[test]
-fn scripted_right_mouse_withdraws_player_from_defend_contest() {
-    let mut app = build_app();
-    let window = spawn_window(&mut app);
-    set_cursor(&mut app, window, Vec2::new(640.0, 360.0));
-    spawn_camera(&mut app, Vec2::ZERO);
-    spawn_zone_material(&mut app);
-    let cursor_cell = IVec2::ZERO;
-    let opponent = SwarmId(11);
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        cursor_cell,
-        IntentKind::Defend,
-        Some(opponent),
-    );
-    press_key(
-        &mut app,
-        brush_key_for_kind(IntentKind::Defend).expect("Defend must have a key binding"),
-    );
-    press_mouse(&mut app, MouseButton::Left);
-    app.update();
-    clear_mouse(&mut app);
-    app.update();
+        press_mouse(&mut app, MouseButton::Right);
+        app.update();
+        clear_mouse(&mut app);
 
-    press_mouse(&mut app, MouseButton::Right);
-    app.update();
-
-    assert_eq!(
-        app.world()
+        let painted = app
+            .world()
             .resource::<IntentGrid>()
             .cell(cursor_cell)
-            .unwrap()
-            .owner(IntentKind::Defend),
-        Some(opponent),
-    );
+            .unwrap();
+        assert!(
+            !painted.has_owned(kind, SwarmId::PLAYER),
+            "erase must remove player {kind:?}"
+        );
+        assert!(
+            painted.has_owned(kind, enemy),
+            "erase must preserve enemy {kind:?}"
+        );
+        assert_eq!(
+            zone_cell(&app, material_entity, cursor_cell).ownership(kind.index() as u32),
+            ZoneOwnership::Opponent,
+            "overlay must retain enemy {kind:?}"
+        );
+    }
 }
 
 #[test]

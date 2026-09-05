@@ -181,10 +181,10 @@ pub fn combat_presentation(ctx: &mut TestContext) -> TestFlow {
 
     if ctx.frame == 2 {
         let evidence = *ctx.world.resource::<CombatEvidence>();
-        ctx.world.resource_mut::<IntentGrid>().paint_owned(
+        ctx.world.resource_mut::<IntentGrid>().paint(
             SCENE_CELL,
             IntentKind::Defend,
-            Some(SwarmId::PLAYER),
+            SwarmId::PLAYER,
         );
         ctx.world
             .entity_mut(evidence.attacker)
@@ -358,10 +358,10 @@ pub fn nanobot_combat_death(ctx: &mut TestContext) -> TestFlow {
     match evidence.phase {
         LethalEvidencePhase::AwaitVisuals => {
             let attacker_visual = visual_child(ctx.world, evidence.attacker);
-            ctx.world.resource_mut::<IntentGrid>().paint_owned(
+            ctx.world.resource_mut::<IntentGrid>().paint(
                 SCENE_CELL,
                 IntentKind::Defend,
-                Some(SwarmId::PLAYER),
+                SwarmId::PLAYER,
             );
             ctx.world
                 .entity_mut(evidence.attacker)
@@ -595,8 +595,8 @@ pub fn combat_presentation_density_and_zoom(ctx: &mut TestContext) -> TestFlow {
                 .expect("authored scene needs an Opponent Swarm");
             {
                 let mut grid = ctx.world.resource_mut::<IntentGrid>();
-                grid.paint_owned(SCENE_CELL, IntentKind::Defend, Some(SwarmId::PLAYER));
-                grid.contest_defend(SCENE_CELL, opponent);
+                grid.paint(SCENE_CELL, IntentKind::Defend, SwarmId::PLAYER);
+                grid.paint(SCENE_CELL, IntentKind::Defend, opponent);
             }
             let attackers = ctx
                 .world
@@ -861,10 +861,10 @@ pub fn support_structure_combat_presentation(ctx: &mut TestContext) -> TestFlow 
     match evidence.phase {
         StructureCombatPhase::AwaitVisuals => {
             let attacker_visual = visual_child(ctx.world, evidence.attacker);
-            ctx.world.resource_mut::<IntentGrid>().paint_owned(
+            ctx.world.resource_mut::<IntentGrid>().paint(
                 SCENE_CELL,
                 IntentKind::Defend,
-                Some(SwarmId::PLAYER),
+                SwarmId::PLAYER,
             );
             ctx.world
                 .entity_mut(evidence.attacker)

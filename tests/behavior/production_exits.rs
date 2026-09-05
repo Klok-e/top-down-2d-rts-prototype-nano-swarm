@@ -21,10 +21,10 @@ fn retained_output_satisfies_typed_demand_without_funding_a_duplicate() {
     priority.set_weight(NanobotType::Defender, 100);
     app.insert_resource(priority);
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::new(2, 2),
         IntentKind::Corridor,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     let retained = app
         .world_mut()

@@ -16,11 +16,9 @@ fn opponent_intent_advances_one_defend_cell_toward_the_player() {
     let opponent = SwarmId(11);
     let start = IVec2::new(3, 0);
     let target = IVec2::ZERO;
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        start,
-        IntentKind::Defend,
-        Some(opponent),
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(start, IntentKind::Defend, opponent);
     app.world_mut().spawn((
         Swarm {},
         OpponentSwarm {},
@@ -35,27 +33,26 @@ fn opponent_intent_advances_one_defend_cell_toward_the_player() {
     assert_eq!(
         grid.cell(IVec2::new(2, 0))
             .unwrap()
-            .owner(IntentKind::Defend),
-        Some(opponent),
+            .owners(IntentKind::Defend)
+            .collect::<Vec<_>>(),
+        vec![opponent]
     );
 }
 
 #[test]
-fn opponent_intent_contests_hostile_defend_without_leapfrogging_it() {
+fn opponent_intent_advances_through_enemy_paint_without_erasing_it() {
     let mut app = common::sim_app();
     app.add_plugins(OpponentIntentPlugin);
     let opponent = SwarmId(11);
     let start = IVec2::new(3, 0);
     let hostile_front = IVec2::new(2, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        start,
-        IntentKind::Defend,
-        Some(opponent),
-    );
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(start, IntentKind::Defend, opponent);
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         hostile_front,
         IntentKind::Defend,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     app.world_mut().spawn((
         Swarm {},
@@ -65,18 +62,29 @@ fn opponent_intent_contests_hostile_defend_without_leapfrogging_it() {
     ));
 
     app.update();
-    for _ in 0..3 {
-        app.update();
-    }
-
+    assert_eq!(
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(hostile_front)
+            .unwrap()
+            .owners(IntentKind::Defend)
+            .collect::<Vec<_>>(),
+        vec![SwarmId::PLAYER, opponent]
+    );
+    app.update();
+    app.update();
     let grid = app.world().resource::<IntentGrid>();
     assert_eq!(
-        grid.cell(hostile_front).unwrap().owner(IntentKind::Defend),
-        None,
+        grid.cell(hostile_front)
+            .unwrap()
+            .owners(IntentKind::Defend)
+            .collect::<Vec<_>>(),
+        vec![SwarmId::PLAYER]
     );
     assert!(
-        !grid.cell(IVec2::new(1, 0)).unwrap().has(IntentKind::Defend),
-        "the opponent must wait for the contested front to resolve",
+        grid.cell(IVec2::new(1, 0))
+            .unwrap()
+            .has_owned(IntentKind::Defend, opponent)
     );
 }
 
@@ -87,11 +95,9 @@ fn opponent_intent_stops_after_match_outcome_is_latched() {
     app.add_plugins(OpponentIntentPlugin);
     let opponent = SwarmId(11);
     let start = IVec2::new(3, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        start,
-        IntentKind::Defend,
-        Some(opponent),
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(start, IntentKind::Defend, opponent);
     app.world_mut().spawn((
         Swarm {},
         OpponentSwarm {},
@@ -103,8 +109,11 @@ fn opponent_intent_stops_after_match_outcome_is_latched() {
 
     let grid = app.world().resource::<IntentGrid>();
     assert_eq!(
-        grid.cell(start).unwrap().owner(IntentKind::Defend),
-        Some(opponent),
+        grid.cell(start)
+            .unwrap()
+            .owners(IntentKind::Defend)
+            .collect::<Vec<_>>(),
+        vec![opponent]
     );
     assert!(!grid.cell(IVec2::new(2, 0)).unwrap().has(IntentKind::Defend));
 }

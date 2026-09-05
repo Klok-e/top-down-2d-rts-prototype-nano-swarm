@@ -239,10 +239,10 @@ fn charging_resumes_from_exterior_without_spending_supply_while_displaced() {
         );
         let owner = common::spawn_swarm_at(&mut app, Vec2::ZERO);
         app.world_mut().entity_mut(owner).insert(swarm_id);
-        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        app.world_mut().resource_mut::<IntentGrid>().paint(
             IVec2::ZERO,
             IntentKind::Defend,
-            Some(swarm_id),
+            swarm_id,
         );
         let charger = common::spawn_charger(
             &mut app,

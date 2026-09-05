@@ -68,7 +68,7 @@ fn build_app() -> App {
 
 fn paint_gather(app: &mut App, cell: IVec2) {
     let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-    assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
+    assert!(grid.paint(cell, IntentKind::Gather, SwarmId::PLAYER));
 }
 
 fn spawn_swarm_and_worker(app: &mut App, worker_pos: Vec2) -> (Entity, Entity) {
@@ -123,11 +123,9 @@ fn opponent_gather_demand_creates_opponent_owned_source_plan() {
     assert_ne!(player_swarm, opponent_swarm);
     let cell = IVec2::new(0, 0);
     let deposit_pos = common::cell_world_center(cell);
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        cell,
-        IntentKind::Gather,
-        Some(opponent_id),
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Gather, opponent_id);
     let player_worker = common::spawn_worker_at(&mut app, deposit_pos + Vec2::new(0.0, -100.0));
     app.world_mut().spawn((
         Nanobot {},

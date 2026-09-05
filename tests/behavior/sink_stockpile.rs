@@ -45,7 +45,7 @@ fn build_app() -> App {
 
 fn paint_build(app: &mut App, cell: IVec2) {
     let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-    assert!(grid.paint_owned(cell, IntentKind::Build, Some(SwarmId::PLAYER),));
+    assert!(grid.paint(cell, IntentKind::Build, SwarmId::PLAYER));
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn no_sink_stockpile_planned_without_build_paint() {
     let cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
+        assert!(grid.paint(cell, IntentKind::Gather, SwarmId::PLAYER));
     }
 
     for _ in 0..5 {
@@ -330,7 +330,7 @@ fn source_stockpile_demand_ignores_sink_stockpile_in_same_cell() {
     let center = common::cell_world_center(cell);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
+        assert!(grid.paint(cell, IntentKind::Gather, SwarmId::PLAYER));
     }
     let _swarm = common::spawn_swarm_at(&mut app, center);
     let _worker = common::spawn_worker_at(&mut app, center + Vec2::new(-68.0, 0.0));

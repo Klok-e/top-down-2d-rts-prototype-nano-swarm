@@ -47,7 +47,7 @@ fn build_app() -> App {
 
 fn paint_build(app: &mut App, cell: IVec2) {
     let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-    assert!(grid.paint_owned(cell, IntentKind::Build, Some(SwarmId::PLAYER),));
+    assert!(grid.paint(cell, IntentKind::Build, SwarmId::PLAYER));
 }
 
 fn advance_pressure(app: &mut App) {
@@ -725,10 +725,10 @@ fn zero_priority_typed_shortage_still_creates_production_pressure() {
         priority.set_weight(NanobotType::Worker, 100);
         priority.set_weight(NanobotType::Defender, 0);
     }
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::ZERO,
         IntentKind::Defend,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     paint_build(&mut app, IVec2::new(1, 0));
     common::spawn_busy_facility_at(&mut app, Vec2::ZERO, NanobotType::Worker);

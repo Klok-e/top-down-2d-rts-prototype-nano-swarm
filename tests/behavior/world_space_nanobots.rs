@@ -46,7 +46,7 @@ fn build_app() -> App {
 /// Paint `cell` with player-owned Gather intent.
 fn paint_gather(app: &mut App, cell: IVec2) {
     let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-    assert!(grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER),));
+    assert!(grid.paint(cell, IntentKind::Gather, SwarmId::PLAYER));
 }
 
 #[test]
@@ -267,7 +267,7 @@ fn opponent_gather_bot_lands_at_deposit_world_position() {
     // Paint the deposit's gather cell as opponent-owned.
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(deposit_cell, IntentKind::Gather, Some(SwarmId(7)),));
+        assert!(grid.paint(deposit_cell, IntentKind::Gather, SwarmId(7)));
     }
     // Find the seed worker.
     let worker = {

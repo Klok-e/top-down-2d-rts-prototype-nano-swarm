@@ -149,36 +149,31 @@ pub(crate) fn sink_stockpile_zone_cells(
     consumer_owner: Option<Entity>,
     swarm_by_id: &HashMap<SwarmId, Entity>,
 ) -> Vec<IVec2> {
-    let Some(intent_cell) = grid.cell(consumer_cell) else {
-        return Vec::new();
+    let swarm = match consumer_owner {
+        Some(owner) => {
+            let Some((&swarm, _)) = swarm_by_id.iter().find(|(_, entity)| **entity == owner) else {
+                return Vec::new();
+            };
+            swarm
+        }
+        None => SwarmId::PLAYER,
     };
-    if !intent_cell.has(IntentKind::Build) {
+    if !grid
+        .cell(consumer_cell)
+        .is_some_and(|intent| intent.has_owned(IntentKind::Build, swarm))
+    {
         return Vec::new();
     }
-    let painted_owner = intent_cell
-        .owner(IntentKind::Build)
-        .and_then(|id| swarm_by_id.get(&id).copied());
-    if consumer_owner.is_some() && painted_owner.is_some() && consumer_owner != painted_owner {
-        return Vec::new();
-    }
-
     let mut zone_cells = Vec::new();
     for dx in -1..=1 {
         for dy in -1..=1 {
             let cell = consumer_cell + IVec2::new(dx, dy);
-            let Some(intent) = grid.cell(cell) else {
-                continue;
-            };
-            if !intent.has(IntentKind::Build) {
-                continue;
+            if grid
+                .cell(cell)
+                .is_some_and(|intent| intent.has_owned(IntentKind::Build, swarm))
+            {
+                zone_cells.push(cell);
             }
-            let cell_owner = intent
-                .owner(IntentKind::Build)
-                .and_then(|id| swarm_by_id.get(&id).copied());
-            if consumer_owner.is_some() && cell_owner.is_some() && cell_owner != consumer_owner {
-                continue;
-            }
-            zone_cells.push(cell);
         }
     }
     zone_cells
@@ -258,10 +253,16 @@ pub fn sink_stockpile_demand_system(
 
     let mut newly_planned: Vec<Vec2> = Vec::new();
     for (cell, owner) in demand_sites {
-        let painted_owner = grid
-            .cell(cell)
-            .and_then(|intent| intent.owner(IntentKind::Build))
-            .and_then(|id| swarm_by_id.get(&id).copied());
+        let effective_owner = owner.or_else(|| swarm_by_id.get(&SwarmId::PLAYER).copied());
+        let placement_swarm = effective_owner
+            .and_then(|owner| swarms.get(owner).ok().map(|(_, id)| *id))
+            .unwrap_or(SwarmId::PLAYER);
+        let sink_owner_matches = |candidate: Option<&OwnerSwarm>| match candidate {
+            Some(owner) => swarms
+                .get(owner.0)
+                .is_ok_and(|(_, id)| *id == placement_swarm),
+            None => placement_swarm == SwarmId::PLAYER,
+        };
         let zone_cells = sink_stockpile_zone_cells(&grid, cell, owner, &swarm_by_id);
         if zone_cells.is_empty() {
             continue;
@@ -272,24 +273,20 @@ pub fn sink_stockpile_demand_system(
             .any(|(_, transform, role, stockpile_owner)| {
                 matches!(role, Some(StockpileRole::Sink))
                     && in_zone(world_to_cell(transform.translation.truncate()))
-                    && (owner.is_none() || stockpile_owner.map(|o| o.0) == owner)
+                    && sink_owner_matches(stockpile_owner)
             })
             || planned
                 .iter()
                 .any(|(planned_structure, transform, plan_owner)| {
                     planned_structure.kind == PlannedKind::SinkStockpile
                         && in_zone(world_to_cell(transform.translation.truncate()))
-                        && (owner.is_none() || plan_owner.map(|o| o.0) == owner)
+                        && sink_owner_matches(plan_owner)
                 });
         if sink_exists {
             continue;
         }
         let mut local_obstacles = obstacles.clone();
         local_obstacles.extend(newly_planned.iter().map(|pos| Obstacle::planned(*pos)));
-        let placement_swarm = owner
-            .or(painted_owner)
-            .and_then(|owner| swarms.get(owner).ok().map(|(_, id)| *id))
-            .unwrap_or(SwarmId::PLAYER);
         let Some((placement_cell, placement_pos)) =
             crate::nanobot::placement::find_build_zone_placement_accepting(
                 &zone_cells,
@@ -323,7 +320,7 @@ pub fn sink_stockpile_demand_system(
                 placement_pos,
             ),
         ));
-        if let Some(owner) = owner.or(painted_owner) {
+        if let Some(owner) = effective_owner {
             entity_commands.insert(OwnerSwarm(owner));
         }
     }

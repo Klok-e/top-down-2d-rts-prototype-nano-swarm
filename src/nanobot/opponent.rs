@@ -61,7 +61,7 @@ fn next_assault_cell(from: IVec2, target: IVec2) -> IVec2 {
 }
 
 /// Advance each configured opponent's Defend intent on fixed simulation ticks.
-/// Hostile Defend paint is contested rather than overwritten.
+/// Each advance edits only that opponent swarm's paint.
 pub fn opponent_intent_system(
     mut controllers: Query<(Entity, &SwarmId, &mut OpponentIntentController), With<OpponentSwarm>>,
     mut grid: ResMut<IntentGrid>,
@@ -89,29 +89,12 @@ pub fn opponent_intent_system(
             continue;
         }
 
-        let current_owner = grid
-            .cell(controller.assault_cell)
-            .filter(|cell| cell.has(IntentKind::Defend))
-            .map(|cell| cell.owner(IntentKind::Defend));
-        match current_owner {
-            Some(Some(owner)) if owner != swarm => {
-                grid.contest_defend(controller.assault_cell, swarm);
-                controller.ticks_until_advance = controller.advance_period_ticks;
-                continue;
-            }
-            Some(None) => {
-                controller.ticks_until_advance = controller.advance_period_ticks;
-                continue;
-            }
-            _ => {}
-        }
-
         let next = next_assault_cell(controller.assault_cell, controller.target_cell);
         if next == controller.assault_cell {
             continue;
         }
-        grid.contest_defend(next, swarm);
-        grid.erase_owned(controller.assault_cell, IntentKind::Defend, Some(swarm));
+        grid.paint(next, IntentKind::Defend, swarm);
+        grid.erase(controller.assault_cell, IntentKind::Defend, swarm);
         controller.assault_cell = next;
         controller.ticks_until_advance = controller.advance_period_ticks;
     }
@@ -123,9 +106,7 @@ impl Plugin for OpponentIntentPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             FixedUpdate,
-            opponent_intent_system
-                .after(crate::nanobot::defend_contest_resolution_system)
-                .before(RegionalAllocationSet::Project),
+            opponent_intent_system.before(RegionalAllocationSet::Project),
         );
     }
 }
@@ -204,7 +185,7 @@ pub fn spawn_opponent_swarm(
     {
         let mut grid = world.resource_mut::<IntentGrid>();
         for paint in prepainted {
-            grid.paint_owned(paint.cell, paint.kind, Some(swarm_id));
+            grid.paint(paint.cell, paint.kind, swarm_id);
         }
     }
 
@@ -320,10 +301,10 @@ mod tests {
         let grid = app.world().resource::<IntentGrid>();
         let g = grid.cell(gather_cell).unwrap();
         assert!(g.has(IntentKind::Gather));
-        assert_eq!(g.owner(IntentKind::Gather), Some(SwarmId(1)));
+        assert!(g.has_owned(IntentKind::Gather, SwarmId(1)));
         let d = grid.cell(defend_cell).unwrap();
         assert!(d.has(IntentKind::Defend));
-        assert_eq!(d.owner(IntentKind::Defend), Some(SwarmId(1)));
+        assert!(d.has_owned(IntentKind::Defend, SwarmId(1)));
     }
 
     #[test]

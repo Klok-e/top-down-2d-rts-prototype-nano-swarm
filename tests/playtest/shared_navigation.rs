@@ -174,9 +174,11 @@ fn worker_gathers_from_reachable_side_when_nearest_deposit_face_is_blocked() {
         resources::ResourceDeposit,
     };
     let mut app = common::sim_app_with_gather();
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(IVec2::ZERO, IntentKind::Gather);
+    app.world_mut().resource_mut::<IntentGrid>().paint(
+        IVec2::ZERO,
+        IntentKind::Gather,
+        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
+    );
     let deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -347,10 +349,10 @@ fn ranged_pursuit_uses_an_accessible_side_of_the_attack_region() {
 fn staging_keeps_roaming_through_free_edge_cells_around_an_occupied_center() {
     use top_down_2d_rts_prototype_nano_swarm::intent::{IntentGrid, IntentKind};
     let mut app = common::sim_app();
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::ZERO,
         IntentKind::Defend,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     let solid = common::spawn_structure_at(&mut app, Vec2::splat(256.0));
     app.world_mut().get_mut::<Transform>(solid).unwrap().scale = Vec3::new(5.625, 5.625, 1.0);
@@ -418,10 +420,10 @@ fn corridor_edits_preserve_active_travel_and_guide_the_next_leg() {
     let before = app.world().get::<Transform>(bot).unwrap().translation;
     assert!(before.x > -890.0 && before.x < 0.0);
     for x in -2..=1 {
-        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        app.world_mut().resource_mut::<IntentGrid>().paint(
             IVec2::new(x, 1),
             IntentKind::Corridor,
-            Some(SwarmId::PLAYER),
+            SwarmId::PLAYER,
         );
     }
     app.world_mut().resource_mut::<NavigationBudget>().0 = 0;

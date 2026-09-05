@@ -176,7 +176,7 @@ pub fn sim_app_with_population_demand() -> App {
     app
 }
 
-/// `sim_app` + deterministic Defender combat and physical contest presence.
+/// `sim_app` + deterministic Defender combat.
 pub fn sim_app_with_combat() -> App {
     let mut app = sim_app();
     app.add_plugins(CombatPlugin);
@@ -633,10 +633,10 @@ pub struct ProjectedChargerFixture {
 /// for an actionable-projection scenario.
 pub fn spawn_projected_charger(app: &mut App, fixture: ProjectedChargerFixture) -> Entity {
     let owner = app.world_mut().spawn((Swarm {}, fixture.owner)).id();
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         fixture.cell,
         IntentKind::Defend,
-        Some(fixture.defend_paint_owner),
+        fixture.defend_paint_owner,
     );
     let charger = spawn_charger(
         app,

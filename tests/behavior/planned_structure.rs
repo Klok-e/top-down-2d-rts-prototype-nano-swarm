@@ -33,9 +33,11 @@ fn planned_structure_does_not_emerge_from_build_paint_alone() {
     // Demand systems create PlannedStructures; raw Build paint does not.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Build);
+    app.world_mut().resource_mut::<IntentGrid>().paint(
+        cell,
+        IntentKind::Build,
+        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
+    );
 
     app.update();
 
@@ -51,9 +53,11 @@ fn planned_structure_does_not_emerge_from_build_paint_alone() {
 fn build_paint_alone_stays_empty_across_repeated_ticks() {
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Build);
+    app.world_mut().resource_mut::<IntentGrid>().paint(
+        cell,
+        IntentKind::Build,
+        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
+    );
 
     for _ in 0..5 {
         app.update();
@@ -71,9 +75,11 @@ fn planned_structure_not_emerged_for_gather_only_cell() {
     // construction demand, so no PlannedStructure emerges.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Gather);
+    app.world_mut().resource_mut::<IntentGrid>().paint(
+        cell,
+        IntentKind::Gather,
+        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
+    );
 
     for _ in 0..3 {
         app.update();

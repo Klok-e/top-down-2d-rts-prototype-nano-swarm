@@ -30,11 +30,9 @@ fn real_combat_fact_reaches_runtime_presentation_and_recovers() {
         .spawn((Swarm {}, opponent, OpponentSwarm {}, Transform::default()));
     let cell = IVec2::ZERO;
     let center = common::cell_world_center(cell);
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        cell,
-        IntentKind::Defend,
-        Some(SwarmId::PLAYER),
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend, SwarmId::PLAYER);
     let attacker = common::spawn_defender_at(&mut app, center + Vec2::new(-36.0, 0.0));
     let target = common::spawn_worker_at(&mut app, center + Vec2::new(36.0, 0.0));
     app.world_mut()
@@ -115,11 +113,9 @@ fn lethal_real_combat_removes_the_target_while_its_pulse_and_ghost_finish() {
         .spawn((Swarm {}, opponent, OpponentSwarm {}, Transform::default()));
     let cell = IVec2::ZERO;
     let center = common::cell_world_center(cell);
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        cell,
-        IntentKind::Defend,
-        Some(SwarmId::PLAYER),
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend, SwarmId::PLAYER);
     let attacker = common::spawn_defender_at(&mut app, center + Vec2::new(-36.0, 0.0));
     let target = common::spawn_worker_at(&mut app, center + Vec2::new(36.0, 0.0));
     app.world_mut().entity_mut(target).insert((
@@ -189,11 +185,9 @@ fn surplus_defenders_leave_one_response_pulse_and_one_bounded_target_reaction() 
         .spawn((Swarm {}, opponent, OpponentSwarm {}, Transform::default()));
     let cell = IVec2::ZERO;
     let center = common::cell_world_center(cell);
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        cell,
-        IntentKind::Defend,
-        Some(SwarmId::PLAYER),
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend, SwarmId::PLAYER);
     let attacker_positions = [
         center + Vec2::new(-80.0, 0.0),
         center + Vec2::new(80.0, 0.0),
@@ -272,11 +266,9 @@ fn real_support_structure_combat_flashes_in_place_and_recovers() {
         .id();
     let cell = IVec2::ZERO;
     let center = common::cell_world_center(cell);
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        cell,
-        IntentKind::Defend,
-        Some(SwarmId::PLAYER),
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend, SwarmId::PLAYER);
     let attacker = common::spawn_defender_at(&mut app, center + Vec2::new(-36.0, 0.0));
     let kind = PlannedKind::Charger;
     let structure_transform =
@@ -342,11 +334,9 @@ fn lethal_real_support_structure_combat_removes_gameplay_entity_while_effects_fi
         .id();
     let cell = IVec2::ZERO;
     let center = common::cell_world_center(cell);
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        cell,
-        IntentKind::Defend,
-        Some(SwarmId::PLAYER),
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend, SwarmId::PLAYER);
     let attacker = common::spawn_defender_at(&mut app, center + Vec2::new(-36.0, 0.0));
     let kind = PlannedKind::ProductionFacility;
     let structure = common::spawn_owned_completed_structure(

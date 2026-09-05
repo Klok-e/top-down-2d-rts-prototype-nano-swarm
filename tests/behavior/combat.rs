@@ -5,7 +5,7 @@ use approx::assert_abs_diff_eq;
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
-    intent::{IntentGrid, IntentKind, UNCONTESTED_CAPTURE_TICKS},
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         ChargerAssignment, CombatAppearance, DEFENDER_ATTACK_INTERVAL_TICKS,
         DefenderAttackCooldown, DefenderResponse, DirectMovementComponent, Health, NanobotType,
@@ -27,11 +27,9 @@ fn assert_position(actual: Vec2, expected: Vec2) {
 }
 
 fn paint_player_territory(app: &mut App, cell: IVec2) {
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
-        cell,
-        IntentKind::Gather,
-        Some(SwarmId::PLAYER),
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Gather, SwarmId::PLAYER);
 }
 
 #[test]
@@ -222,8 +220,8 @@ fn simultaneous_lethal_responders_still_exchange_hits() {
     let cell = IVec2::ZERO;
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        grid.paint_owned(cell, IntentKind::Gather, Some(SwarmId::PLAYER));
-        grid.paint_owned(cell, IntentKind::Build, Some(SwarmId(11)));
+        grid.paint(cell, IntentKind::Gather, SwarmId::PLAYER);
+        grid.paint(cell, IntentKind::Build, SwarmId(11));
     }
     let center = common::cell_world_center(cell);
     let player = common::spawn_defender_at(&mut app, center - Vec2::X * 16.0);
@@ -366,15 +364,15 @@ fn lethal_structure_hit_publishes_stable_appearance_and_despawns_target() {
 }
 
 #[test]
-fn physical_charging_defender_establishes_uncontested_presence() {
+fn charging_defender_presence_does_not_capture_paint() {
     let mut app = common::sim_app_with_combat();
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
     app.world_mut().spawn((Swarm {}, SwarmId(11)));
     let cell = IVec2::ZERO;
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        grid.paint_owned(cell, IntentKind::Defend, Some(SwarmId::PLAYER));
-        grid.contest_defend(cell, SwarmId(11));
+        grid.paint(cell, IntentKind::Defend, SwarmId::PLAYER);
+        grid.paint(cell, IntentKind::Defend, SwarmId(11));
     }
     let challenger = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
     app.world_mut().entity_mut(challenger).insert((
@@ -384,22 +382,21 @@ fn physical_charging_defender_establishes_uncontested_presence() {
         },
     ));
 
-    for _ in 0..UNCONTESTED_CAPTURE_TICKS {
+    for _ in 0..240 {
         app.update();
     }
 
     let grid = app.world().resource::<IntentGrid>();
     assert_eq!(
         grid.cell(cell)
-            .and_then(|intent| intent.owner(IntentKind::Defend)),
-        Some(SwarmId(11)),
-        "physical presence must count even while the Defender is on Charge duty",
+            .map(|intent| intent.owners(IntentKind::Defend).collect::<Vec<_>>()),
+        Some(vec![SwarmId::PLAYER, SwarmId(11)]),
+        "Charge duty must preserve both swarms paint",
     );
-    assert!(grid.defend_contest(cell).is_none());
 }
 
 #[derive(Debug, Clone, Copy)]
-enum ContestDuty {
+enum DefenderDuty {
     Staging,
     Passing,
     Pursuit,
@@ -408,13 +405,13 @@ enum ContestDuty {
 }
 
 #[test]
-fn physical_defender_presence_is_independent_of_current_duty() {
+fn defender_presence_never_captures_paint_in_any_duty() {
     for duty in [
-        ContestDuty::Staging,
-        ContestDuty::Passing,
-        ContestDuty::Pursuit,
-        ContestDuty::Combat,
-        ContestDuty::Charge,
+        DefenderDuty::Staging,
+        DefenderDuty::Passing,
+        DefenderDuty::Pursuit,
+        DefenderDuty::Combat,
+        DefenderDuty::Charge,
     ] {
         let mut app = common::sim_app_with_combat();
         app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
@@ -423,8 +420,8 @@ fn physical_defender_presence_is_independent_of_current_duty() {
         let cell = IVec2::ZERO;
         {
             let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-            grid.paint_owned(cell, IntentKind::Defend, Some(SwarmId::PLAYER));
-            grid.contest_defend(cell, SwarmId(11));
+            grid.paint(cell, IntentKind::Defend, SwarmId::PLAYER);
+            grid.paint(cell, IntentKind::Defend, SwarmId(11));
         }
         let center = common::cell_world_center(cell);
         let challenger = common::spawn_defender_at(&mut app, center);
@@ -433,8 +430,8 @@ fn physical_defender_presence_is_independent_of_current_duty() {
             .insert(SwarmMember::new(SwarmId(11)));
 
         match duty {
-            ContestDuty::Staging => {}
-            ContestDuty::Passing => {
+            DefenderDuty::Staging => {}
+            DefenderDuty::Passing => {
                 app.world_mut()
                     .entity_mut(challenger)
                     .insert(DirectMovementComponent {
@@ -444,13 +441,13 @@ fn physical_defender_presence_is_independent_of_current_duty() {
                         stop_radius: 0.0,
                     });
             }
-            ContestDuty::Pursuit | ContestDuty::Combat => {
-                app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+            DefenderDuty::Pursuit | DefenderDuty::Combat => {
+                app.world_mut().resource_mut::<IntentGrid>().paint(
                     cell,
                     IntentKind::Build,
-                    Some(SwarmId(11)),
+                    SwarmId(11),
                 );
-                let offset = if matches!(duty, ContestDuty::Combat) {
+                let offset = if matches!(duty, DefenderDuty::Combat) {
                     16.0
                 } else {
                     200.0
@@ -463,7 +460,7 @@ fn physical_defender_presence_is_independent_of_current_duty() {
                     .entity_mut(challenger)
                     .insert(DefenderResponse { target });
             }
-            ContestDuty::Charge => {
+            DefenderDuty::Charge => {
                 app.world_mut()
                     .entity_mut(challenger)
                     .insert(ChargerAssignment {
@@ -472,7 +469,7 @@ fn physical_defender_presence_is_independent_of_current_duty() {
             }
         }
 
-        for _ in 0..UNCONTESTED_CAPTURE_TICKS {
+        for _ in 0..240 {
             app.update();
         }
 
@@ -480,23 +477,23 @@ fn physical_defender_presence_is_independent_of_current_duty() {
             app.world()
                 .resource::<IntentGrid>()
                 .cell(cell)
-                .and_then(|intent| intent.owner(IntentKind::Defend)),
-            Some(SwarmId(11)),
-            "physical presence should capture while the Defender is in {duty:?} duty",
+                .map(|intent| intent.owners(IntentKind::Defend).collect::<Vec<_>>()),
+            Some(vec![SwarmId::PLAYER, SwarmId(11)]),
+            "paint ownership must survive {duty:?} duty",
         );
     }
 }
 
 #[test]
-fn sole_living_physical_survivor_captures_after_both_sides_engage() {
+fn combat_death_preserves_both_swarms_paint() {
     let mut app = common::sim_app_with_combat();
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
     app.world_mut().spawn((Swarm {}, SwarmId(11)));
     let cell = IVec2::ZERO;
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        grid.paint_owned(cell, IntentKind::Defend, Some(SwarmId::PLAYER));
-        grid.contest_defend(cell, SwarmId(11));
+        grid.paint(cell, IntentKind::Defend, SwarmId::PLAYER);
+        grid.paint(cell, IntentKind::Defend, SwarmId(11));
     }
     let player = common::spawn_defender_at(&mut app, common::cell_world_center(cell) - Vec2::Y);
     let opponent = common::spawn_defender_at(&mut app, common::cell_world_center(cell) + Vec2::Y);
@@ -507,8 +504,9 @@ fn sole_living_physical_survivor_captures_after_both_sides_engage() {
     assert!(
         app.world()
             .resource::<IntentGrid>()
-            .defend_contest(cell)
-            .is_some()
+            .cell(cell)
+            .unwrap()
+            .has_owned(IntentKind::Defend, SwarmId::PLAYER)
     );
 
     app.world_mut()
@@ -521,8 +519,7 @@ fn sole_living_physical_survivor_captures_after_both_sides_engage() {
     let grid = app.world().resource::<IntentGrid>();
     assert_eq!(
         grid.cell(cell)
-            .and_then(|intent| intent.owner(IntentKind::Defend)),
-        Some(SwarmId(11)),
+            .map(|intent| intent.owners(IntentKind::Defend).collect::<Vec<_>>()),
+        Some(vec![SwarmId::PLAYER, SwarmId(11)]),
     );
-    assert!(grid.defend_contest(cell).is_none());
 }

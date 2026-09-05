@@ -40,7 +40,7 @@ pub fn regional_allocation(ctx: &mut TestContext) -> TestFlow {
     if ctx.frame == 0 {
         world
             .resource_mut::<IntentGrid>()
-            .add_owned(CELL, IntentKind::Gather, Some(TEST_SWARM));
+            .paint(CELL, IntentKind::Gather, TEST_SWARM);
         world.spawn((
             ResourceDeposit {
                 kind: ResourceKind::Minerals,

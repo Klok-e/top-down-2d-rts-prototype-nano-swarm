@@ -16,9 +16,11 @@ mod common;
 #[test]
 fn gather_paint_projects_only_live_overlapping_deposit_work() {
     let mut app = common::minimal_app_with_actionable_projection();
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .add(IVec2::ZERO, IntentKind::Gather);
+    app.world_mut().resource_mut::<IntentGrid>().paint(
+        IVec2::ZERO,
+        IntentKind::Gather,
+        SwarmId::PLAYER,
+    );
     app.world_mut().spawn((
         ResourceDeposit {
             kind: ResourceKind::Minerals,
@@ -60,8 +62,8 @@ fn stale_structure_projects_maintenance_without_defend_work() {
     let mut app = common::minimal_app_with_actionable_projection();
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        grid.add(IVec2::ZERO, IntentKind::Build);
-        grid.add(IVec2::ZERO, IntentKind::Defend);
+        grid.paint(IVec2::ZERO, IntentKind::Build, SwarmId::PLAYER);
+        grid.paint(IVec2::ZERO, IntentKind::Defend, SwarmId::PLAYER);
     }
     let mut structure = Structure::new(StructureKind::Basic);
     structure.ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
@@ -452,8 +454,8 @@ fn projection_replaces_only_regions_dirtied_by_intent_changes() {
     let second = IVec2::new(9, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        grid.add(first, IntentKind::Gather);
-        grid.add(second, IntentKind::Gather);
+        grid.paint(first, IntentKind::Gather, SwarmId::PLAYER);
+        grid.paint(second, IntentKind::Gather, SwarmId::PLAYER);
     }
     for cell in [first, second] {
         app.world_mut().spawn((
@@ -472,7 +474,7 @@ fn projection_replaces_only_regions_dirtied_by_intent_changes() {
 
     app.world_mut()
         .resource_mut::<IntentGrid>()
-        .remove(first, IntentKind::Gather);
+        .erase(first, IntentKind::Gather, SwarmId::PLAYER);
     app.update();
 
     let projection = app.world().resource::<ActionableProjection>();
@@ -505,8 +507,8 @@ fn deposit_projects_once_across_overlapping_allocation_regions() {
     let right = IVec2::new(8, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        grid.paint(left, IntentKind::Gather);
-        grid.paint(right, IntentKind::Gather);
+        grid.paint(left, IntentKind::Gather, SwarmId::PLAYER);
+        grid.paint(right, IntentKind::Gather, SwarmId::PLAYER);
     }
     let deposit = app
         .world_mut()
@@ -528,7 +530,7 @@ fn deposit_projects_once_across_overlapping_allocation_regions() {
 
     app.world_mut()
         .resource_mut::<IntentGrid>()
-        .erase(left, IntentKind::Gather);
+        .erase(left, IntentKind::Gather, SwarmId::PLAYER);
     app.update();
     let opportunities = gather_opportunities(app.world().resource::<ActionableProjection>());
     assert_eq!(opportunities.len(), 1);
@@ -549,11 +551,11 @@ fn unowned_deposit_projects_once_for_each_distinct_painted_owner() {
     let first_owner = SwarmId::PLAYER;
     let second_owner = SwarmId(7);
     let left = IVec2::ZERO;
-    let right = IVec2::X;
+    let right = IVec2::ZERO;
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint_owned(left, IntentKind::Gather, Some(first_owner)));
-        assert!(grid.paint_owned(right, IntentKind::Gather, Some(second_owner)));
+        assert!(grid.paint(left, IntentKind::Gather, first_owner));
+        assert!(grid.paint(right, IntentKind::Gather, second_owner));
     }
     app.world_mut().spawn((
         ResourceDeposit {
@@ -562,7 +564,7 @@ fn unowned_deposit_projects_once_for_each_distinct_painted_owner() {
             capacity: 20,
             radius: 64.0,
         },
-        Transform::from_xyz(512.0, 256.0, 0.0),
+        Transform::from_xyz(256.0, 256.0, 0.0),
     ));
 
     app.update();
@@ -586,31 +588,46 @@ fn unowned_deposit_projects_once_for_each_distinct_painted_owner() {
 }
 
 #[test]
-fn unowned_gather_paint_suppresses_owned_groups_for_unowned_deposit() {
+fn erasing_one_gather_owner_reprojects_only_that_owners_opportunity() {
     let mut app = common::minimal_app_with_actionable_projection();
-    let shared = IVec2::ZERO;
-    let owned = IVec2::X;
+    let cell = IVec2::ZERO;
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(shared, IntentKind::Gather));
-        assert!(grid.paint_owned(owned, IntentKind::Gather, Some(SwarmId::PLAYER)));
+        grid.paint(cell, IntentKind::Gather, SwarmId::PLAYER);
+        grid.paint(cell, IntentKind::Gather, SwarmId(7));
     }
-    app.world_mut().spawn((
-        ResourceDeposit {
-            kind: ResourceKind::Minerals,
-            amount: 20,
-            capacity: 20,
-            radius: 64.0,
-        },
-        Transform::from_xyz(512.0, 256.0, 0.0),
-    ));
+    let deposit = app
+        .world_mut()
+        .spawn((
+            ResourceDeposit {
+                kind: ResourceKind::Minerals,
+                amount: 20,
+                capacity: 20,
+                radius: 64.0,
+            },
+            Transform::from_xyz(256.0, 256.0, 0.0),
+        ))
+        .id();
+    app.update();
+    assert_eq!(
+        gather_opportunities(app.world().resource::<ActionableProjection>()).len(),
+        2
+    );
 
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .erase(cell, IntentKind::Gather, SwarmId::PLAYER);
     app.update();
 
     let opportunities = gather_opportunities(app.world().resource::<ActionableProjection>());
     assert_eq!(opportunities.len(), 1);
-    assert_eq!(opportunities[0].owner, None);
-    assert_eq!(opportunities[0].cell, shared);
+    assert_eq!(opportunities[0].owner, Some(SwarmId(7)));
+    assert_eq!(opportunities[0].cell, cell);
+    assert_eq!(
+        opportunities[0].target,
+        OpportunityTarget::Gather { deposit, cell }
+    );
+    assert_eq!(opportunities[0].available_work, 20);
 }
 
 #[test]
@@ -623,8 +640,9 @@ fn deposit_owner_changes_and_removal_reproject_gather_opportunity() {
     let first_owned = IVec2::X;
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(shared, IntentKind::Gather));
-        assert!(grid.paint_owned(first_owned, IntentKind::Gather, Some(SwarmId::PLAYER)));
+        assert!(grid.paint(shared, IntentKind::Gather, SwarmId::PLAYER));
+        assert!(grid.paint(shared, IntentKind::Gather, second_id));
+        assert!(grid.paint(first_owned, IntentKind::Gather, SwarmId::PLAYER));
     }
     let deposit = app
         .world_mut()
@@ -658,7 +676,16 @@ fn deposit_owner_changes_and_removal_reproject_gather_opportunity() {
     app.world_mut().entity_mut(deposit).remove::<OwnerSwarm>();
     app.update();
     let opportunities = gather_opportunities(app.world().resource::<ActionableProjection>());
-    assert_eq!(opportunities.len(), 1);
-    assert_eq!(opportunities[0].owner, None);
-    assert_eq!(opportunities[0].cell, shared);
+    assert_eq!(opportunities.len(), 2);
+    let mut owners = opportunities
+        .iter()
+        .map(|opportunity| opportunity.owner.unwrap().0)
+        .collect::<Vec<_>>();
+    owners.sort();
+    assert_eq!(owners, vec![SwarmId::PLAYER.0, 7]);
+    assert!(
+        opportunities
+            .iter()
+            .all(|opportunity| opportunity.cell == shared)
+    );
 }

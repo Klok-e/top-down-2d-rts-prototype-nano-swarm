@@ -78,18 +78,16 @@ fn setup_scene(world: &mut World) {
         .expect("default scenario must contain an opponent swarm");
     let opponent_swarm = swarm_entity(world, opponent_swarm_id);
     let center = cell_center(CENTER_CELL);
-    world.resource_mut::<IntentGrid>().paint_owned(
-        CENTER_CELL,
-        IntentKind::Defend,
-        Some(SwarmId::PLAYER),
-    );
     world
         .resource_mut::<IntentGrid>()
-        .contest_defend(CENTER_CELL, opponent_swarm_id);
-    world.resource_mut::<IntentGrid>().paint_owned(
+        .paint(CENTER_CELL, IntentKind::Defend, SwarmId::PLAYER);
+    world
+        .resource_mut::<IntentGrid>()
+        .paint(CENTER_CELL, IntentKind::Defend, opponent_swarm_id);
+    world.resource_mut::<IntentGrid>().paint(
         OPPONENT_CHARGER_CELL,
         IntentKind::Defend,
-        Some(opponent_swarm_id),
+        opponent_swarm_id,
     );
 
     for (index, offset) in [
@@ -238,7 +236,13 @@ pub fn defender_combat_readability(ctx: &mut TestContext) -> TestFlow {
     }
     if ctx.frame == 30 {
         let grid = ctx.world.resource::<IntentGrid>();
-        assert!(grid.defend_contest(CENTER_CELL).is_some());
+        assert!(
+            grid.cell(CENTER_CELL)
+                .unwrap()
+                .owners(IntentKind::Defend)
+                .count()
+                == 2
+        );
         assert_front_state(ctx.world, true);
         return TestFlow::Screenshot("defender_combat_early".to_string());
     }

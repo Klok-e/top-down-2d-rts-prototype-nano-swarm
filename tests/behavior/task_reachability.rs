@@ -24,10 +24,10 @@ fn unreachable_work_stops_population_demand_and_reopening_restores_it() {
     );
     let wall = common::spawn_structure_at(&mut app, Vec2::ZERO);
     app.world_mut().get_mut::<Transform>(wall).unwrap().scale = Vec3::new(1.0, 40.0, 1.0);
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::ZERO,
         IntentKind::Gather,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     app.world_mut().resource_mut::<NavigationBudget>().0 = 0;
     for _ in 0..5 {

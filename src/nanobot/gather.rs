@@ -420,16 +420,12 @@ fn find_source_stockpile_placement_for_demand_accepting(
     let mut build_worlds = Vec::new();
     for (cell, intent_cell) in grid.iter_active_cells() {
         if intent_cell.has(IntentKind::Gather)
-            && intent_cell
-                .owner(IntentKind::Gather)
-                .is_none_or(|owner| owner == demand_swarm)
+            && intent_cell.has_owned(IntentKind::Gather, demand_swarm)
         {
             gather_cells.push(cell);
         }
         if intent_cell.has(IntentKind::Build)
-            && intent_cell
-                .owner(IntentKind::Build)
-                .is_none_or(|owner| owner == demand_swarm)
+            && intent_cell.has_owned(IntentKind::Build, demand_swarm)
         {
             build_worlds.push(get_world_from_zone(cell));
         }

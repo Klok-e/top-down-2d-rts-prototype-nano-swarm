@@ -34,9 +34,11 @@ pub fn exterior_work(ctx: &mut TestContext) -> TestFlow {
             let _ = ctx.world.despawn(entity);
         }
         ctx.world.insert_resource(IntentGrid::new(8, 8));
-        ctx.world
-            .resource_mut::<IntentGrid>()
-            .paint(IVec2::ZERO, IntentKind::Gather);
+        ctx.world.resource_mut::<IntentGrid>().paint(
+            IVec2::ZERO,
+            IntentKind::Gather,
+            top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
+        );
         for (mut transform, mut projection, mut zoom) in ctx
             .world
             .query::<(&mut Transform, &mut Projection, &mut CameraZoom2d)>()
@@ -271,10 +273,10 @@ pub fn exterior_hauler_delivery(ctx: &mut TestContext) -> TestFlow {
 pub fn exterior_defender_charging(ctx: &mut TestContext) -> TestFlow {
     if ctx.frame == 2 {
         let owner = prepare_service_scene(ctx.world);
-        ctx.world.resource_mut::<IntentGrid>().paint_owned(
+        ctx.world.resource_mut::<IntentGrid>().paint(
             IVec2::ZERO,
             IntentKind::Defend,
-            Some(SwarmId::PLAYER),
+            SwarmId::PLAYER,
         );
         let mut charger = Charger::new(IVec2::ZERO);
         charger.amount = 40;

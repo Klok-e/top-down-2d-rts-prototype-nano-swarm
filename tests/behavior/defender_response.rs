@@ -19,10 +19,10 @@ fn distinct_threats_receive_one_response_before_surplus_defenders() {
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
     let opponent_entity = app.world_mut().spawn((Swarm {}, opponent)).id();
     let threatened_cell = IVec2::new(2, 2);
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         threatened_cell,
         IntentKind::Gather,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
 
     let center = common::cell_world_center(threatened_cell);
@@ -92,10 +92,10 @@ fn response_coverage_pages_beyond_the_per_defender_candidate_bound() {
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
     app.world_mut().spawn((Swarm {}, opponent));
     let threatened_cell = IVec2::new(2, 2);
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         threatened_cell,
         IntentKind::Gather,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     let center = common::cell_world_center(threatened_cell);
     let threats = (0..129)
@@ -139,9 +139,9 @@ fn responder_crosses_neutral_and_hostile_gaps_without_releasing_its_claim() {
     let threatened_cell = IVec2::new(3, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        grid.paint_owned(start_cell, IntentKind::Corridor, Some(SwarmId::PLAYER));
-        grid.paint_owned(IVec2::new(2, 0), IntentKind::Build, Some(opponent));
-        grid.paint_owned(threatened_cell, IntentKind::Gather, Some(SwarmId::PLAYER));
+        grid.paint(start_cell, IntentKind::Corridor, SwarmId::PLAYER);
+        grid.paint(IVec2::new(2, 0), IntentKind::Build, opponent);
+        grid.paint(threatened_cell, IntentKind::Gather, SwarmId::PLAYER);
     }
     let defender = common::spawn_defender_at(&mut app, common::cell_world_center(start_cell));
     let target = common::spawn_worker_at(&mut app, common::cell_world_center(threatened_cell));
@@ -192,10 +192,10 @@ fn higher_danger_preempts_while_same_tier_response_stays_stable() {
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
     let opponent_entity = app.world_mut().spawn((Swarm {}, opponent)).id();
     let threatened_cell = IVec2::new(2, 2);
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         threatened_cell,
         IntentKind::Build,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     let center = common::cell_world_center(threatened_cell);
     let structure = app
@@ -267,10 +267,10 @@ fn existing_claim_crosses_diagonal_halo_but_halo_does_not_create_work() {
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
     app.world_mut().spawn((Swarm {}, opponent));
     let territory_cell = IVec2::new(2, 2);
-    app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+    app.world_mut().resource_mut::<IntentGrid>().paint(
         territory_cell,
         IntentKind::Corridor,
-        Some(SwarmId::PLAYER),
+        SwarmId::PLAYER,
     );
     let target = common::spawn_worker_at(&mut app, common::cell_world_center(territory_cell));
     app.world_mut()

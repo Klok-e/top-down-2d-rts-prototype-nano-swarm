@@ -37,7 +37,7 @@ fn weight(grid: &IntentGrid, cell: IVec2, hauler: bool) -> f32 {
     if hauler
         && grid
             .cell(world_to_cell(center(cell)))
-            .is_some_and(|c| c.visible_to(IntentKind::Corridor, SwarmId::PLAYER))
+            .is_some_and(|c| c.has_owned(IntentKind::Corridor, SwarmId::PLAYER))
     {
         0.35
     } else {
@@ -152,7 +152,7 @@ fn check_literal_oracles() {
     );
     let open = Navigation::new(&grid, vec![]);
     assert!((flat(&open, &grid, IVec2::ONE, IVec2::new(3, 1), false).0 - 144.0).abs() < 0.01);
-    grid.add_owned(IVec2::ZERO, IntentKind::Corridor, Some(SwarmId::PLAYER));
+    grid.paint(IVec2::ZERO, IntentKind::Corridor, SwarmId::PLAYER);
     assert!((flat(&open, &grid, IVec2::ONE, IVec2::new(3, 1), true).0 - 50.4).abs() < 0.01);
     assert!((flat(&open, &grid, IVec2::ONE, IVec2::new(3, 1), false).0 - 144.0).abs() < 0.01);
     // Fine-cell centers switch paint at x=504: 468 painted units and 252 ordinary units.
@@ -180,11 +180,7 @@ pub fn run() -> serde_json::Value {
         for hauler in [false, true] {
             let mut grid = IntentGrid::new(MAP, MAP);
             for x in -16..20 {
-                grid.add_owned(
-                    IVec2::new(x, 0),
-                    IntentKind::Corridor,
-                    Some(SwarmId::PLAYER),
-                );
+                grid.paint(IVec2::new(x, 0), IntentKind::Corridor, SwarmId::PLAYER);
             }
             let navigation = Navigation::new(&grid, obstacles(name));
             let start = IVec2::new(-90, -20);

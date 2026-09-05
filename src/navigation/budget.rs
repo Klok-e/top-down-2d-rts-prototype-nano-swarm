@@ -607,7 +607,10 @@ impl Navigation {
         let tick = scheduler.tick;
         if scheduler.paint_revision != Some(grid.revision()) {
             scheduler.paint = Arc::new(PaintCosts {
-                cells: grid.iter_active_cells().map(|(p, c)| (p, *c)).collect(),
+                cells: grid
+                    .iter_active_cells()
+                    .map(|(p, c)| (p, c.clone()))
+                    .collect(),
             });
             scheduler.paint_revision = Some(grid.revision());
         }
@@ -769,7 +772,7 @@ impl Navigation {
         if hauler
             && grid
                 .cell(world_to_cell(Self::center(cell)))
-                .is_some_and(|c| c.visible_to(IntentKind::Corridor, swarm))
+                .is_some_and(|c| c.has_owned(IntentKind::Corridor, swarm))
         {
             0.35
         } else {
@@ -822,7 +825,10 @@ impl Navigation {
         hauler: bool,
     ) -> RouteOutcome {
         let paint = PaintCosts {
-            cells: grid.iter_active_cells().map(|(p, c)| (p, *c)).collect(),
+            cells: grid
+                .iter_active_cells()
+                .map(|(p, c)| (p, c.clone()))
+                .collect(),
         };
         let future = async {
             match goal {

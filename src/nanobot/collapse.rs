@@ -8,7 +8,7 @@
 use super::InteractionRegion;
 use super::work_access::{WorkAccess, WorkReachability};
 use crate::navigation::Obstacle;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use bevy::prelude::*;
 
@@ -303,17 +303,12 @@ pub fn production_collapse_detection_system(
             planned.kind == PlannedKind::SinkStockpile
                 && owner.is_some_and(|owner| owner.0 == swarm_entity)
         });
-        let occupied_cells = support_structures
-            .iter()
-            .map(|transform| world_to_cell(transform.translation.truncate()))
-            .collect::<HashSet<_>>();
         let build_cells = grid
             .iter_active_cells()
             .filter_map(|(cell, intent)| {
-                (intent.has(IntentKind::Build)
-                    && intent.owner(IntentKind::Build) == Some(swarm_id)
-                    && !occupied_cells.contains(&cell))
-                .then_some(cell)
+                intent
+                    .has_owned(IntentKind::Build, swarm_id)
+                    .then_some(cell)
             })
             .collect::<Vec<_>>();
         let mut obstacles = support_structures

@@ -123,9 +123,7 @@ impl BoundedStagingTargets {
 fn owned_defend_cells(grid: &IntentGrid, swarm: SwarmId) -> Vec<IVec2> {
     let mut cells = grid
         .iter_active_cells()
-        .filter_map(|(cell, intent)| {
-            (intent.owner(IntentKind::Defend) == Some(swarm)).then_some(cell)
-        })
+        .filter_map(|(cell, intent)| (intent.has_owned(IntentKind::Defend, swarm)).then_some(cell))
         .collect::<Vec<_>>();
     cells.sort_by_key(|cell| (cell.y, cell.x));
     cells

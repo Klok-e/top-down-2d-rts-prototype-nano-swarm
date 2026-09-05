@@ -68,27 +68,17 @@ pub fn default_opponent_priority() -> ProductionPriority {
 }
 
 pub fn paint_default_player_intent(grid: &mut IntentGrid) {
-    // Stamp the player `SwarmId` on the prepainted cells so the
-    // per-swarm intent filter from issue #20 keeps the player
-    // starting work visible only to player nanobots. Without the
-    // owner stamp the cells would be unowned, and opponent
-    // workers wandering into range would see them as free work.
     for (cell, kind) in [
         (PLAYER_DEPOSIT_CELL, IntentKind::Gather),
         (PLAYER_CELL, IntentKind::Build),
         (PLAYER_BUILD_FLANK_CELL, IntentKind::Build),
         (PLAYER_DEFEND_CELL, IntentKind::Defend),
     ] {
-        grid.paint_owned(cell, kind, Some(SwarmId::PLAYER));
+        grid.paint(cell, kind, SwarmId::PLAYER);
     }
 }
 
-/// Paint the default opponent Gather, Build, and Defend intent,
-/// stamping the cells with `owner` so they belong to the opponent
-/// swarm rather than the player. The opponent id is whatever the
-/// caller passes (the same id stamped on the opponent Swarm
-/// entity); using `None` would mark the cells as unowned and break
-/// the per-swarm separation.
+/// Paint the default opponent's independent Gather, Build, and Defend orders.
 pub fn paint_default_opponent_intent(grid: &mut IntentGrid, owner: SwarmId) {
     for (cell, kind) in [
         (OPPONENT_DEPOSIT_CELL, IntentKind::Gather),
@@ -96,7 +86,7 @@ pub fn paint_default_opponent_intent(grid: &mut IntentGrid, owner: SwarmId) {
         (OPPONENT_BUILD_FLANK_CELL, IntentKind::Build),
         (OPPONENT_DEFEND_CELL, IntentKind::Defend),
     ] {
-        grid.paint_owned(cell, kind, Some(owner));
+        grid.paint(cell, kind, owner);
     }
 }
 
@@ -385,32 +375,35 @@ mod tests {
 
         let cell = grid.cell(PLAYER_DEPOSIT_CELL).unwrap();
         assert_eq!(
-            cell.owner(IntentKind::Gather),
-            Some(SwarmId::PLAYER),
+            cell.owners(IntentKind::Gather).collect::<Vec<_>>(),
+            vec![SwarmId::PLAYER],
             "default player gather cell must be owned by SwarmId::PLAYER"
         );
-        assert!(cell.visible_to(IntentKind::Gather, SwarmId::PLAYER));
+        assert!(cell.has_owned(IntentKind::Gather, SwarmId::PLAYER));
         assert!(
-            !cell.visible_to(IntentKind::Gather, SwarmId(1)),
+            !cell.has_owned(IntentKind::Gather, SwarmId(1)),
             "opponent workers must NOT see the default player gather cell"
         );
 
         let facility_cell = grid.cell(PLAYER_CELL).unwrap();
         assert_eq!(
-            facility_cell.owner(IntentKind::Build),
-            Some(SwarmId::PLAYER)
+            facility_cell.owners(IntentKind::Build).collect::<Vec<_>>(),
+            vec![SwarmId::PLAYER]
         );
-        assert!(facility_cell.visible_to(IntentKind::Build, SwarmId::PLAYER));
+        assert!(facility_cell.has_owned(IntentKind::Build, SwarmId::PLAYER));
         assert!(
-            !facility_cell.visible_to(IntentKind::Build, SwarmId(1)),
+            !facility_cell.has_owned(IntentKind::Build, SwarmId(1)),
             "opponent workers must NOT see default player Build intent"
         );
 
         let defend_cell = grid.cell(PLAYER_DEFEND_CELL).unwrap();
-        assert_eq!(defend_cell.owner(IntentKind::Defend), Some(SwarmId::PLAYER));
-        assert!(defend_cell.visible_to(IntentKind::Defend, SwarmId::PLAYER));
+        assert_eq!(
+            defend_cell.owners(IntentKind::Defend).collect::<Vec<_>>(),
+            vec![SwarmId::PLAYER]
+        );
+        assert!(defend_cell.has_owned(IntentKind::Defend, SwarmId::PLAYER));
         assert!(
-            !defend_cell.visible_to(IntentKind::Defend, SwarmId(1)),
+            !defend_cell.has_owned(IntentKind::Defend, SwarmId(1)),
             "opponent workers must NOT see default player Defend intent"
         );
     }
@@ -423,20 +416,30 @@ mod tests {
 
         let gather_cell = grid.cell(OPPONENT_DEPOSIT_CELL).unwrap();
         assert!(gather_cell.has(IntentKind::Gather));
-        assert_eq!(gather_cell.owner(IntentKind::Gather), Some(opponent_id));
+        assert_eq!(
+            gather_cell.owners(IntentKind::Gather).collect::<Vec<_>>(),
+            vec![opponent_id]
+        );
 
         let facility_cell = grid.cell(OPPONENT_CELL).unwrap();
         assert!(facility_cell.has(IntentKind::Build));
-        assert_eq!(facility_cell.owner(IntentKind::Build), Some(opponent_id));
+        assert_eq!(
+            facility_cell.owners(IntentKind::Build).collect::<Vec<_>>(),
+            vec![opponent_id]
+        );
 
         let defend_cell = grid.cell(OPPONENT_DEFEND_CELL).unwrap();
         assert!(defend_cell.has(IntentKind::Defend));
-        assert_eq!(defend_cell.owner(IntentKind::Defend), Some(opponent_id));
+        assert_eq!(
+            defend_cell.owners(IntentKind::Defend).collect::<Vec<_>>(),
+            vec![opponent_id]
+        );
         assert_eq!(
             grid.cell(OPPONENT_BUILD_FLANK_CELL)
                 .unwrap()
-                .owner(IntentKind::Build),
-            Some(opponent_id)
+                .owners(IntentKind::Build)
+                .collect::<Vec<_>>(),
+            vec![opponent_id]
         );
         assert!(
             !grid
@@ -491,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn default_scenario_has_a_compact_contested_front() {
+    fn default_scenario_has_a_compact_opposing_front() {
         assert!(
             cell_origin(OPPONENT_CELL).distance(cell_origin(PLAYER_CELL))
                 <= 4.0 * crate::ZONE_BLOCK_SIZE

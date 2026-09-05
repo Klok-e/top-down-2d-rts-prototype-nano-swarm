@@ -5,7 +5,7 @@
 //! shader storage buffers. The GPU zone material reads from this resource via a
 //! mirror system; the resource itself never reads from rendering.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use bevy::{
     input::{ButtonInput, keyboard::KeyCode},
@@ -13,10 +13,6 @@ use bevy::{
 };
 
 use crate::nanobot::SwarmId;
-
-/// Fixed ticks a sole challenger must remain in a contested Defend cell before
-/// capturing it when the incumbent never engages.
-pub const UNCONTESTED_CAPTURE_TICKS: u32 = 120;
 
 /// Player intent kinds. Declaration order matches zone overlay colour slots, so
 /// [`IntentKind::index`] is stable cross-module layer key.
@@ -64,65 +60,85 @@ pub struct IntentLayer {
     pub kind: IntentKind,
 }
 
-/// Multiple intent layers at one cell. `active` is a bitmask of
-/// [`IntentKind::bit`] flags. Ownership is stored independently per kind, so
-/// overlapping kinds can belong to different swarms.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Independent intent layers for each swarm at one cell. `active` aggregates
+/// all owners' [`IntentKind::bit`] flags for consumers of the combined overlay.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IntentCell {
     pub active: u8,
-    pub owner: [Option<SwarmId>; IntentKind::COUNT],
+    swarm_layers: Vec<(SwarmId, u8)>,
 }
 
 impl IntentCell {
-    /// True when no intent layer is active at this cell.
+    /// True when no swarm has intent at this cell.
     pub fn is_empty(&self) -> bool {
         self.active == 0
     }
 
-    /// True when given intent kind is active at this cell.
+    /// True when any swarm has the given intent kind at this cell.
     pub fn has(&self, kind: IntentKind) -> bool {
         (self.active & kind.bit()) != 0
     }
 
-    /// Activate `kind` as unowned paint.
-    pub fn add(&mut self, kind: IntentKind) {
-        self.add_owned(kind, None);
+    /// True when `swarm` has its own `kind` intent at this cell.
+    pub fn has_owned(&self, kind: IntentKind, swarm: SwarmId) -> bool {
+        self.swarm_layers
+            .binary_search_by_key(&swarm.0, |(owner, _)| owner.0)
+            .is_ok_and(|index| self.swarm_layers[index].1 & kind.bit() != 0)
     }
 
-    /// Activate `kind` and stamp its owner. Returns whether state changed.
-    pub fn add_owned(&mut self, kind: IntentKind, owner: Option<SwarmId>) -> bool {
-        let changed = !self.has(kind) || self.owner[kind.index()] != owner;
-        self.active |= kind.bit();
-        self.owner[kind.index()] = owner;
-        changed
+    /// Owners of `kind` in ascending swarm-ID order.
+    pub fn owners(&self, kind: IntentKind) -> impl Iterator<Item = SwarmId> + '_ {
+        self.swarm_layers
+            .iter()
+            .filter_map(move |&(swarm, layers)| (layers & kind.bit() != 0).then_some(swarm))
     }
 
-    /// Deactivate `kind` and clear its owner. Returns whether state changed.
-    pub fn remove(&mut self, kind: IntentKind) -> bool {
-        if !self.has(kind) {
-            return false;
-        }
-        self.active &= !kind.bit();
-        self.owner[kind.index()] = None;
-        true
-    }
-
-    /// Owner of active `kind`, or `None` for unowned or absent paint.
-    pub fn owner(&self, kind: IntentKind) -> Option<SwarmId> {
-        self.has(kind).then(|| self.owner[kind.index()]).flatten()
-    }
-
-    /// True when `kind` is visible to `swarm`. Unowned paint is shared.
-    pub fn visible_to(&self, kind: IntentKind, swarm: SwarmId) -> bool {
-        self.has(kind) && self.owner(kind).is_none_or(|owner| owner == swarm)
-    }
-
-    /// Iterate active intent layers in declaration order.
+    /// Iterate distinct active intent kinds in declaration order.
     pub fn iter_layers(&self) -> impl Iterator<Item = IntentLayer> + '_ {
         IntentKind::ALL
             .into_iter()
             .filter(|&kind| self.has(kind))
             .map(|kind| IntentLayer { kind })
+    }
+
+    fn paint(&mut self, kind: IntentKind, swarm: SwarmId) -> bool {
+        match self
+            .swarm_layers
+            .binary_search_by_key(&swarm.0, |(owner, _)| owner.0)
+        {
+            Ok(index) => {
+                let layers = &mut self.swarm_layers[index].1;
+                if *layers & kind.bit() != 0 {
+                    return false;
+                }
+                *layers |= kind.bit();
+            }
+            Err(index) => self.swarm_layers.insert(index, (swarm, kind.bit())),
+        }
+        self.active |= kind.bit();
+        true
+    }
+
+    fn erase(&mut self, kind: IntentKind, swarm: SwarmId) -> bool {
+        let Ok(index) = self
+            .swarm_layers
+            .binary_search_by_key(&swarm.0, |(owner, _)| owner.0)
+        else {
+            return false;
+        };
+        let layers = &mut self.swarm_layers[index].1;
+        if *layers & kind.bit() == 0 {
+            return false;
+        }
+        *layers &= !kind.bit();
+        if *layers == 0 {
+            self.swarm_layers.remove(index);
+        }
+        self.active = self
+            .swarm_layers
+            .iter()
+            .fold(0, |active, (_, layers)| active | layers);
+        true
     }
 }
 
@@ -142,16 +158,6 @@ pub struct IntentGrid {
     render_dirty: HashSet<IVec2>,
     /// Cells awaiting actionable-projection consumption.
     projection_dirty: HashSet<IVec2>,
-    defend_contests: HashMap<IVec2, DefendContestState>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct DefendContestState {
-    incumbent: SwarmId,
-    challenger: SwarmId,
-    both_engaged: bool,
-    sole_holder: Option<SwarmId>,
-    sole_holder_ticks: u32,
 }
 
 impl IntentGrid {
@@ -166,7 +172,6 @@ impl IntentGrid {
             active_cells: Vec::new(),
             render_dirty: HashSet::new(),
             projection_dirty: HashSet::new(),
-            defend_contests: HashMap::new(),
         }
     }
 
@@ -178,7 +183,7 @@ impl IntentGrid {
         self.height
     }
 
-    /// Monotonic revision of externally visible cell and contest state.
+    /// Monotonic revision of externally visible cell state.
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -203,190 +208,35 @@ impl IntentGrid {
         }
     }
 
-    /// Set unowned `kind` intent at `point`. Returns whether point is in bounds.
-    pub fn add(&mut self, point: IVec2, kind: IntentKind) -> bool {
-        self.set_owned(point, kind, None)
-    }
-
-    /// Set `kind` intent and owner at `point`. Returns whether point is in bounds.
-    pub fn add_owned(&mut self, point: IVec2, kind: IntentKind, owner: Option<SwarmId>) -> bool {
-        self.set_owned(point, kind, owner)
-    }
-
-    /// Clear `kind` intent at `point`. Returns whether point is in bounds.
-    pub fn remove(&mut self, point: IVec2, kind: IntentKind) -> bool {
+    /// Paint `kind` for `swarm` without changing any other swarm's intent.
+    /// Returns whether `point` is in bounds; repeated paint is a no-op.
+    pub fn paint(&mut self, point: IVec2, kind: IntentKind, swarm: SwarmId) -> bool {
         if !self.in_bounds(point) {
             return false;
         }
         let idx = self.index(point);
-        if self.cells[idx].remove(kind) {
-            if kind == IntentKind::Defend {
-                self.defend_contests.remove(&point);
+        let was_empty = self.cells[idx].is_empty();
+        if self.cells[idx].paint(kind, swarm) {
+            if was_empty {
+                self.insert_active(point);
             }
+            self.mark_dirty(point);
+        }
+        true
+    }
+
+    /// Erase only `swarm`'s `kind` intent at `point`.
+    /// Returns whether `point` is in bounds; absent paint is a no-op.
+    pub fn erase(&mut self, point: IVec2, kind: IntentKind, swarm: SwarmId) -> bool {
+        if !self.in_bounds(point) {
+            return false;
+        }
+        let idx = self.index(point);
+        if self.cells[idx].erase(kind, swarm) {
             if self.cells[idx].is_empty() {
                 self.remove_active(point);
             }
             self.mark_dirty(point);
-        }
-        true
-    }
-
-    /// Paint unowned `kind` at `point`. Repeated paint is a no-op.
-    pub fn paint(&mut self, point: IVec2, kind: IntentKind) -> bool {
-        self.set_owned(point, kind, None)
-    }
-
-    /// Paint owned `kind` at `point`. Repeated paint by same owner is a no-op.
-    pub fn paint_owned(&mut self, point: IVec2, kind: IntentKind, owner: Option<SwarmId>) -> bool {
-        let contest_removed =
-            kind == IntentKind::Defend && self.defend_contests.remove(&point).is_some();
-        let previous_revision = self.revision;
-        let in_bounds = self.set_owned(point, kind, owner);
-        if contest_removed && in_bounds && self.revision == previous_revision {
-            self.mark_dirty(point);
-        }
-        in_bounds
-    }
-
-    /// Paint owned intent unless another swarm already owns the active layer.
-    /// Unowned paint may be claimed; same-owner repeated paint remains a no-op.
-    pub fn paint_owned_if_available(
-        &mut self,
-        point: IVec2,
-        kind: IntentKind,
-        owner: Option<SwarmId>,
-    ) -> bool {
-        if !self.in_bounds(point) {
-            return false;
-        }
-        if let Some(existing) = self.cells[self.index(point)].owner(kind)
-            && Some(existing) != owner
-        {
-            return true;
-        }
-        self.set_owned(point, kind, owner)
-    }
-
-    /// Paint player-facing Defend intent, or neutralize an existing hostile
-    /// Defend layer so both swarms can contest the same cell. Other intent
-    /// layers at the cell keep their existing ownership.
-    pub fn contest_defend(&mut self, point: IVec2, challenger: SwarmId) -> bool {
-        if !self.in_bounds(point) {
-            return false;
-        }
-        if let Some(contest) = self.defend_contests.get(&point)
-            && (contest.incumbent == challenger || contest.challenger == challenger)
-        {
-            return true;
-        }
-        match self.cells[self.index(point)].owner(IntentKind::Defend) {
-            Some(owner) if owner != challenger => {
-                self.defend_contests.insert(
-                    point,
-                    DefendContestState {
-                        incumbent: owner,
-                        challenger,
-                        both_engaged: false,
-                        sole_holder: None,
-                        sole_holder_ticks: 0,
-                    },
-                );
-                self.set_owned(point, IntentKind::Defend, None)
-            }
-            _ => {
-                self.defend_contests.remove(&point);
-                self.set_owned(point, IntentKind::Defend, Some(challenger))
-            }
-        }
-    }
-
-    /// Snapshot active Defend contests in deterministic cell order.
-    pub fn defend_contests(&self) -> Vec<(IVec2, SwarmId, SwarmId)> {
-        let mut contests = self
-            .defend_contests
-            .iter()
-            .map(|(cell, contest)| (*cell, contest.incumbent, contest.challenger))
-            .collect::<Vec<_>>();
-        contests.sort_by_key(|(cell, _, _)| (cell.y, cell.x));
-        contests
-    }
-
-    /// Participants in the Defend contest at `point`, if one is active.
-    pub fn defend_contest(&self, point: IVec2) -> Option<(SwarmId, SwarmId)> {
-        self.defend_contests
-            .get(&point)
-            .map(|contest| (contest.incumbent, contest.challenger))
-    }
-
-    /// Withdraw one participant from a tracked Defend contest. Control returns
-    /// to the remaining participant without changing overlapping intent layers.
-    pub fn withdraw_defend_contest(&mut self, point: IVec2, swarm: SwarmId) -> bool {
-        let Some(contest) = self.defend_contests.get(&point).copied() else {
-            return false;
-        };
-        let remaining = if contest.challenger == swarm {
-            contest.incumbent
-        } else if contest.incumbent == swarm {
-            contest.challenger
-        } else {
-            return false;
-        };
-        self.defend_contests.remove(&point);
-        self.set_owned(point, IntentKind::Defend, Some(remaining));
-        true
-    }
-
-    /// Record which participants currently hold a contested Defend cell. Once
-    /// both sides have engaged, the sole remaining holder captures the layer.
-    pub fn update_defend_contest_presence(
-        &mut self,
-        point: IVec2,
-        incumbent_present: bool,
-        challenger_present: bool,
-    ) -> Option<SwarmId> {
-        let winner = {
-            let contest = self.defend_contests.get_mut(&point)?;
-            contest.both_engaged |= incumbent_present && challenger_present;
-            let sole_holder = match (incumbent_present, challenger_present) {
-                (true, false) => Some(contest.incumbent),
-                (false, true) => Some(contest.challenger),
-                _ => None,
-            };
-            if contest.both_engaged {
-                sole_holder
-            } else if sole_holder == Some(contest.challenger) {
-                let holder = contest.challenger;
-                if contest.sole_holder != Some(holder) {
-                    contest.sole_holder = Some(holder);
-                    contest.sole_holder_ticks = 0;
-                }
-                contest.sole_holder_ticks = contest.sole_holder_ticks.saturating_add(1);
-                (contest.sole_holder_ticks >= UNCONTESTED_CAPTURE_TICKS).then_some(holder)
-            } else {
-                contest.sole_holder = None;
-                contest.sole_holder_ticks = 0;
-                None
-            }
-        };
-        if let Some(winner) = winner {
-            self.defend_contests.remove(&point);
-            self.set_owned(point, IntentKind::Defend, Some(winner));
-        }
-        winner
-    }
-
-    /// Erase `kind` at `point` immediately. Erasing absent paint is a no-op.
-    pub fn erase(&mut self, point: IVec2, kind: IntentKind) -> bool {
-        self.remove(point, kind)
-    }
-
-    /// Erase `kind` only when its active paint belongs to `owner`.
-    pub fn erase_owned(&mut self, point: IVec2, kind: IntentKind, owner: Option<SwarmId>) -> bool {
-        if !self.in_bounds(point) {
-            return false;
-        }
-        if self.cells[self.index(point)].owner(kind) == owner {
-            self.remove(point, kind);
         }
         true
     }
@@ -431,37 +281,17 @@ impl IntentGrid {
             .map(|point| (point, &self.cells[self.index(point)]))
     }
 
-    /// Unique territory cells claimed by `swarm`, in deterministic row-major
-    /// order. Owned intent layers and Defend Contest participation establish a
-    /// claim; shared unowned paint does not.
+    /// Unique cells containing any of `swarm`'s intent, in row-major order.
+    /// Overlapping cells independently belong to each owner.
     pub fn swarm_tiles(&self, swarm: SwarmId) -> Vec<IVec2> {
         self.iter_active_cells()
             .filter_map(|(point, cell)| {
-                let owns_layer = IntentKind::ALL
-                    .into_iter()
-                    .any(|kind| cell.owner(kind) == Some(swarm));
-                let participates_in_contest =
-                    self.defend_contest(point)
-                        .is_some_and(|(incumbent, challenger)| {
-                            incumbent == swarm || challenger == swarm
-                        });
-                (owns_layer || participates_in_contest).then_some(point)
+                cell.swarm_layers
+                    .binary_search_by_key(&swarm.0, |(owner, _)| owner.0)
+                    .is_ok()
+                    .then_some(point)
             })
             .collect()
-    }
-
-    fn set_owned(&mut self, point: IVec2, kind: IntentKind, owner: Option<SwarmId>) -> bool {
-        if !self.in_bounds(point) {
-            return false;
-        }
-        let idx = self.index(point);
-        if self.cells[idx].add_owned(kind, owner) {
-            if self.cells[idx].active == kind.bit() {
-                self.insert_active(point);
-            }
-            self.mark_dirty(point);
-        }
-        true
     }
 
     fn insert_active(&mut self, point: IVec2) {
@@ -505,215 +335,6 @@ fn drain_sorted(dirty: &mut HashSet<IVec2>) -> Vec<IVec2> {
     let mut points: Vec<IVec2> = dirty.drain().collect();
     points.sort_by_key(|point| (point.y, point.x));
     points
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn empty_grid_has_no_active_layers() {
-        let grid = IntentGrid::new(4, 4);
-        let cell = grid.cell(IVec2::new(1, 1)).unwrap();
-        assert!(cell.is_empty());
-        assert_eq!(cell.iter_layers().count(), 0);
-    }
-
-    #[test]
-    fn paint_is_binary_and_repeated_paint_stays_clean() {
-        let mut grid = IntentGrid::new(4, 4);
-        let point = IVec2::ZERO;
-
-        assert!(grid.paint(point, IntentKind::Gather));
-        assert!(grid.cell(point).unwrap().has(IntentKind::Gather));
-        assert_eq!(grid.render_dirty_count(), 1);
-        assert_eq!(grid.drain_render_dirty(), vec![point]);
-        assert_eq!(grid.drain_projection_dirty(), vec![point]);
-
-        assert!(grid.paint(point, IntentKind::Gather));
-        assert_eq!(grid.render_dirty_count(), 0);
-        assert_eq!(grid.projection_dirty_count(), 0);
-    }
-
-    #[test]
-    fn ownership_change_marks_binary_layer_dirty() {
-        let mut grid = IntentGrid::new(4, 4);
-        let point = IVec2::ZERO;
-        grid.paint_owned(point, IntentKind::Build, Some(SwarmId::PLAYER));
-        grid.drain_render_dirty();
-        grid.drain_projection_dirty();
-
-        grid.paint_owned(point, IntentKind::Build, Some(SwarmId(7)));
-
-        let cell = grid.cell(point).unwrap();
-        assert_eq!(cell.owner(IntentKind::Build), Some(SwarmId(7)));
-        assert_eq!(grid.render_dirty_count(), 1);
-        assert_eq!(grid.projection_dirty_count(), 1);
-    }
-
-    #[test]
-    fn replacing_contest_with_shared_defend_marks_derived_state_dirty() {
-        let mut grid = IntentGrid::new(4, 4);
-        let point = IVec2::ZERO;
-        grid.paint_owned(point, IntentKind::Defend, Some(SwarmId::PLAYER));
-        grid.contest_defend(point, SwarmId(7));
-        grid.drain_render_dirty();
-        grid.drain_projection_dirty();
-
-        grid.paint_owned(point, IntentKind::Defend, None);
-
-        assert!(grid.defend_contest(point).is_none());
-        assert_eq!(grid.drain_render_dirty(), vec![point]);
-        assert_eq!(grid.drain_projection_dirty(), vec![point]);
-    }
-
-    #[test]
-    fn overlapping_kinds_keep_independent_ownership() {
-        let mut grid = IntentGrid::new(4, 4);
-        let point = IVec2::ZERO;
-        grid.paint_owned(point, IntentKind::Gather, Some(SwarmId::PLAYER));
-        grid.paint_owned(point, IntentKind::Defend, Some(SwarmId(7)));
-
-        let cell = grid.cell(point).unwrap();
-        assert!(cell.has(IntentKind::Gather));
-        assert!(cell.has(IntentKind::Defend));
-        assert_eq!(cell.owner(IntentKind::Gather), Some(SwarmId::PLAYER));
-        assert_eq!(cell.owner(IntentKind::Defend), Some(SwarmId(7)));
-    }
-
-    #[test]
-    fn swarm_tiles_include_owned_layers_once_and_exclude_shared_paint() {
-        let mut grid = IntentGrid::new(8, 8);
-        let player_only = IVec2::new(-1, 0);
-        let overlapping_claims = IVec2::ZERO;
-        let shared = IVec2::new(1, 0);
-        let opponent = SwarmId(7);
-
-        for kind in IntentKind::ALL {
-            grid.paint_owned(player_only, kind, Some(SwarmId::PLAYER));
-        }
-        grid.paint_owned(
-            overlapping_claims,
-            IntentKind::Gather,
-            Some(SwarmId::PLAYER),
-        );
-        grid.paint_owned(overlapping_claims, IntentKind::Build, Some(opponent));
-        grid.paint(shared, IntentKind::Defend);
-
-        assert_eq!(
-            grid.swarm_tiles(SwarmId::PLAYER),
-            vec![player_only, overlapping_claims]
-        );
-        assert_eq!(grid.swarm_tiles(opponent), vec![overlapping_claims]);
-    }
-
-    #[test]
-    fn swarm_tiles_include_defend_contests_for_both_participants() {
-        let mut grid = IntentGrid::new(4, 4);
-        let cell = IVec2::ZERO;
-        let opponent = SwarmId(7);
-        grid.paint_owned(cell, IntentKind::Defend, Some(SwarmId::PLAYER));
-        grid.contest_defend(cell, opponent);
-
-        assert_eq!(grid.swarm_tiles(SwarmId::PLAYER), vec![cell]);
-        assert_eq!(grid.swarm_tiles(opponent), vec![cell]);
-        assert!(grid.swarm_tiles(SwarmId(9)).is_empty());
-    }
-
-    #[test]
-    fn erase_clears_selected_kind_immediately_and_stays_clean_when_repeated() {
-        let mut grid = IntentGrid::new(4, 4);
-        let point = IVec2::ZERO;
-        grid.paint(point, IntentKind::Gather);
-        grid.paint(point, IntentKind::Corridor);
-        grid.drain_render_dirty();
-        grid.drain_projection_dirty();
-
-        assert!(grid.erase(point, IntentKind::Gather));
-        let cell = grid.cell(point).unwrap();
-        assert!(!cell.has(IntentKind::Gather));
-        assert!(cell.has(IntentKind::Corridor));
-        assert_eq!(grid.drain_render_dirty(), vec![point]);
-        assert_eq!(grid.drain_projection_dirty(), vec![point]);
-
-        assert!(grid.erase(point, IntentKind::Gather));
-        assert_eq!(grid.render_dirty_count(), 0);
-        assert_eq!(grid.projection_dirty_count(), 0);
-    }
-
-    #[test]
-    fn out_of_bounds_writes_are_rejected() {
-        let mut grid = IntentGrid::new(3, 3);
-        assert!(!grid.paint(IVec2::new(-2, 0), IntentKind::Gather));
-        assert!(!grid.erase(IVec2::new(2, 0), IntentKind::Gather));
-    }
-
-    #[test]
-    fn dirty_cells_drain_independently_in_deterministic_order() {
-        let mut grid = IntentGrid::new(4, 4);
-        grid.add(IVec2::new(0, -1), IntentKind::Build);
-        grid.add(IVec2::new(-2, -2), IntentKind::Gather);
-
-        let expected = vec![IVec2::new(-2, -2), IVec2::new(0, -1)];
-        assert_eq!(grid.drain_render_dirty(), expected);
-        assert_eq!(grid.projection_dirty_count(), 2);
-        assert_eq!(grid.drain_projection_dirty(), expected);
-    }
-
-    #[test]
-    fn sparse_active_iteration_tracks_paint_overlap_and_final_erase() {
-        let mut grid = IntentGrid::new(1000, 1000);
-        let first = IVec2::new(7, -3);
-        let second = IVec2::new(-4, 8);
-        grid.paint(first, IntentKind::Gather);
-        grid.paint(first, IntentKind::Defend);
-        grid.paint(second, IntentKind::Build);
-
-        assert_eq!(
-            grid.iter_active_cells()
-                .map(|(point, _)| point)
-                .collect::<Vec<_>>(),
-            vec![first, second]
-        );
-
-        grid.erase(first, IntentKind::Gather);
-        assert_eq!(grid.iter_active_cells().count(), 2);
-        grid.erase(first, IntentKind::Defend);
-        assert_eq!(
-            grid.iter_active_cells()
-                .map(|(point, _)| point)
-                .collect::<Vec<_>>(),
-            vec![second]
-        );
-    }
-
-    #[test]
-    fn iter_cells_covers_whole_grid_in_row_major_order() {
-        let mut grid = IntentGrid::new(2, 2);
-        grid.add(IVec2::ZERO, IntentKind::Defend);
-        let seen: Vec<(IVec2, bool)> = grid
-            .iter_cells()
-            .map(|(point, cell)| (point, cell.has(IntentKind::Defend)))
-            .collect();
-        assert_eq!(
-            seen,
-            vec![
-                (IVec2::new(-1, -1), false),
-                (IVec2::new(0, -1), false),
-                (IVec2::new(-1, 0), false),
-                (IVec2::ZERO, true),
-            ]
-        );
-    }
-
-    #[test]
-    fn zero_dim_grid_is_empty_and_writes_are_rejected() {
-        let mut grid = IntentGrid::new(0, 0);
-        assert_eq!(grid.width(), 0);
-        assert_eq!(grid.height(), 0);
-        assert!(!grid.add(IVec2::ZERO, IntentKind::Gather));
-        assert!(grid.cell(IVec2::ZERO).is_none());
-    }
 }
 
 /// Which intent layer the player brush is currently writing. The brush
@@ -772,6 +393,216 @@ pub fn brush_selection_keyboard_system(
         if keyboard_input.just_pressed(main) || keyboard_input.just_pressed(numpad) {
             brush_selection.kind = kind;
             break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn three_swarms_keep_every_kind_independently_at_one_cell() {
+        let mut grid = IntentGrid::new(4, 4);
+        let point = IVec2::ZERO;
+        for swarm in [SwarmId(9), SwarmId(2), SwarmId(7)] {
+            for kind in IntentKind::ALL {
+                assert!(grid.paint(point, kind, swarm));
+            }
+        }
+
+        let cell = grid.cell(point).unwrap();
+        for kind in IntentKind::ALL {
+            assert_eq!(
+                cell.owners(kind).collect::<Vec<_>>(),
+                vec![SwarmId(2), SwarmId(7), SwarmId(9)]
+            );
+            assert!(cell.has_owned(kind, SwarmId(2)));
+            assert!(cell.has_owned(kind, SwarmId(7)));
+            assert!(cell.has_owned(kind, SwarmId(9)));
+            assert!(!cell.has_owned(kind, SwarmId(3)));
+        }
+        assert_eq!(
+            cell.iter_layers()
+                .map(|layer| layer.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                IntentKind::Gather,
+                IntentKind::Build,
+                IntentKind::Defend,
+                IntentKind::Corridor
+            ]
+        );
+    }
+
+    #[test]
+    fn repeated_paint_and_absent_erase_leave_revision_and_dirty_queues_unchanged() {
+        let mut grid = IntentGrid::new(4, 4);
+        let point = IVec2::ZERO;
+        grid.paint(point, IntentKind::Gather, SwarmId(7));
+        assert_eq!(grid.revision(), 1);
+        assert_eq!(grid.drain_render_dirty(), vec![point]);
+        assert_eq!(grid.drain_projection_dirty(), vec![point]);
+
+        grid.paint(point, IntentKind::Gather, SwarmId(7));
+        grid.erase(point, IntentKind::Gather, SwarmId(9));
+        grid.erase(point, IntentKind::Build, SwarmId(7));
+
+        assert_eq!(grid.revision(), 1);
+        assert_eq!(grid.render_dirty_count(), 0);
+        assert_eq!(grid.projection_dirty_count(), 0);
+        assert!(
+            grid.cell(point)
+                .unwrap()
+                .has_owned(IntentKind::Gather, SwarmId(7))
+        );
+    }
+
+    #[test]
+    fn adding_and_erasing_overlap_notifies_consumers_without_removing_other_orders() {
+        let mut grid = IntentGrid::new(4, 4);
+        let point = IVec2::ZERO;
+        grid.paint(point, IntentKind::Build, SwarmId(2));
+        grid.paint(point, IntentKind::Gather, SwarmId(7));
+        grid.drain_render_dirty();
+        grid.drain_projection_dirty();
+
+        grid.paint(point, IntentKind::Build, SwarmId(7));
+        assert_eq!(grid.revision(), 3);
+        assert_eq!(grid.drain_render_dirty(), vec![point]);
+        assert_eq!(grid.drain_projection_dirty(), vec![point]);
+
+        grid.erase(point, IntentKind::Build, SwarmId(7));
+        let cell = grid.cell(point).unwrap();
+        assert_eq!(
+            cell.owners(IntentKind::Build).collect::<Vec<_>>(),
+            vec![SwarmId(2)]
+        );
+        assert!(cell.has_owned(IntentKind::Gather, SwarmId(7)));
+        assert!(!cell.has_owned(IntentKind::Build, SwarmId(7)));
+        assert!(cell.has(IntentKind::Build));
+        assert_eq!(grid.revision(), 4);
+        assert_eq!(grid.drain_render_dirty(), vec![point]);
+        assert_eq!(grid.drain_projection_dirty(), vec![point]);
+    }
+
+    #[test]
+    fn every_kind_establishes_territory_for_all_its_owners_once() {
+        let mut grid = IntentGrid::new(8, 8);
+        let first = IVec2::new(-1, 0);
+        let overlap = IVec2::ZERO;
+        let last = IVec2::new(1, 0);
+        grid.paint(last, IntentKind::Corridor, SwarmId(7));
+        grid.paint(first, IntentKind::Gather, SwarmId(7));
+        grid.paint(first, IntentKind::Build, SwarmId(7));
+        for swarm in [SwarmId(7), SwarmId(9), SwarmId(2)] {
+            grid.paint(overlap, IntentKind::Defend, swarm);
+        }
+
+        assert_eq!(grid.swarm_tiles(SwarmId(7)), vec![first, overlap, last]);
+        assert_eq!(grid.swarm_tiles(SwarmId(9)), vec![overlap]);
+        assert_eq!(grid.swarm_tiles(SwarmId(2)), vec![overlap]);
+        assert!(grid.swarm_tiles(SwarmId(3)).is_empty());
+
+        grid.erase(overlap, IntentKind::Defend, SwarmId(7));
+        assert_eq!(grid.swarm_tiles(SwarmId(7)), vec![first, last]);
+        assert_eq!(grid.swarm_tiles(SwarmId(9)), vec![overlap]);
+    }
+
+    #[test]
+    fn sparse_index_keeps_overlap_until_last_order_is_erased() {
+        let mut grid = IntentGrid::new(1000, 1000);
+        let first = IVec2::new(7, -3);
+        let second = IVec2::new(-4, 8);
+        grid.paint(second, IntentKind::Build, SwarmId(2));
+        grid.paint(first, IntentKind::Gather, SwarmId(2));
+        grid.paint(first, IntentKind::Gather, SwarmId(7));
+        grid.paint(first, IntentKind::Defend, SwarmId(2));
+        assert_eq!(
+            grid.iter_active_cells()
+                .map(|(point, _)| point)
+                .collect::<Vec<_>>(),
+            vec![first, second]
+        );
+
+        grid.erase(first, IntentKind::Gather, SwarmId(2));
+        grid.erase(first, IntentKind::Defend, SwarmId(2));
+        assert_eq!(
+            grid.iter_active_cells()
+                .map(|(point, _)| point)
+                .collect::<Vec<_>>(),
+            vec![first, second]
+        );
+        grid.erase(first, IntentKind::Gather, SwarmId(7));
+        assert_eq!(
+            grid.iter_active_cells()
+                .map(|(point, _)| point)
+                .collect::<Vec<_>>(),
+            vec![second]
+        );
+        assert!(grid.cell(first).unwrap().is_empty());
+        assert_eq!(grid.cell(first).unwrap().iter_layers().count(), 0);
+        assert_eq!(
+            grid.cell(first).unwrap().owners(IntentKind::Gather).count(),
+            0
+        );
+    }
+
+    #[test]
+    fn dirty_cells_drain_independently_in_row_major_order() {
+        let mut grid = IntentGrid::new(4, 4);
+        grid.paint(IVec2::new(0, -1), IntentKind::Build, SwarmId(7));
+        grid.paint(IVec2::new(-2, -2), IntentKind::Gather, SwarmId(2));
+        grid.paint(IVec2::new(0, -1), IntentKind::Build, SwarmId(2));
+
+        let expected = vec![IVec2::new(-2, -2), IVec2::new(0, -1)];
+        assert_eq!(grid.drain_render_dirty(), expected);
+        assert_eq!(grid.projection_dirty_count(), 2);
+        assert_eq!(grid.drain_projection_dirty(), expected);
+        assert_eq!(grid.render_dirty_count(), 0);
+    }
+
+    #[test]
+    fn iter_cells_covers_empty_and_painted_cells_in_row_major_order() {
+        let mut grid = IntentGrid::new(2, 2);
+        grid.paint(IVec2::ZERO, IntentKind::Defend, SwarmId(7));
+        let seen = grid
+            .iter_cells()
+            .map(|(point, cell)| (point, cell.has(IntentKind::Defend)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            seen,
+            vec![
+                (IVec2::new(-1, -1), false),
+                (IVec2::new(0, -1), false),
+                (IVec2::new(-1, 0), false),
+                (IVec2::ZERO, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn centered_bounds_accept_edge_cells_and_reject_outside_writes() {
+        let mut grid = IntentGrid::new(3, 3);
+        assert!(grid.paint(IVec2::new(-1, -1), IntentKind::Build, SwarmId(7)));
+        assert!(grid.paint(IVec2::new(1, 1), IntentKind::Build, SwarmId(7)));
+        assert!(!grid.paint(IVec2::new(-2, 0), IntentKind::Gather, SwarmId(7)));
+        assert!(!grid.erase(IVec2::new(2, 0), IntentKind::Build, SwarmId(7)));
+        assert!(grid.cell(IVec2::new(0, 2)).is_none());
+        assert_eq!(grid.revision(), 2);
+        assert_eq!(grid.iter_active_cells().count(), 2);
+    }
+
+    #[test]
+    fn zero_and_negative_dimensions_are_empty_and_reject_writes() {
+        for dimensions in [(0, 0), (-3, 4), (4, -3)] {
+            let mut grid = IntentGrid::new(dimensions.0, dimensions.1);
+            assert!(!grid.paint(IVec2::ZERO, IntentKind::Gather, SwarmId(7)));
+            assert!(!grid.erase(IVec2::ZERO, IntentKind::Gather, SwarmId(7)));
+            assert!(grid.cell(IVec2::ZERO).is_none());
+            assert_eq!(grid.iter_cells().count(), 0);
+            assert_eq!(grid.iter_active_cells().count(), 0);
+            assert_eq!(grid.revision(), 0);
         }
     }
 }

@@ -131,14 +131,13 @@ fn clear_intent(world: &mut World) {
             .flat_map(|(cell, intent)| {
                 IntentKind::ALL
                     .into_iter()
-                    .filter(move |kind| intent.has(*kind))
-                    .map(move |kind| (cell, kind))
+                    .flat_map(move |kind| intent.owners(kind).map(move |owner| (cell, kind, owner)))
             })
             .collect::<Vec<_>>()
     };
     let mut grid = world.resource_mut::<IntentGrid>();
-    for (cell, kind) in layers {
-        assert!(grid.remove(cell, kind));
+    for (cell, kind, owner) in layers {
+        assert!(grid.erase(cell, kind, owner));
     }
 }
 
@@ -177,9 +176,9 @@ fn setup_scene(world: &mut World) -> StagingEvidence {
     {
         let mut grid = world.resource_mut::<IntentGrid>();
         for cell in INITIAL_STAGING_CELLS {
-            assert!(grid.paint_owned(cell, IntentKind::Defend, Some(EVIDENCE_SWARM)));
+            assert!(grid.paint(cell, IntentKind::Defend, EVIDENCE_SWARM));
         }
-        assert!(grid.paint_owned(THREAT_CELL, IntentKind::Gather, Some(EVIDENCE_SWARM)));
+        assert!(grid.paint(THREAT_CELL, IntentKind::Gather, EVIDENCE_SWARM));
     }
 
     let left = cell_center(INITIAL_STAGING_CELLS[0]);
@@ -295,7 +294,7 @@ fn assert_owned_intent(world: &World, cell: IVec2, kind: IntentKind, owner: Swar
         .cell(cell)
         .unwrap_or_else(|| panic!("evidence cell {cell:?} should be in bounds"));
     assert!(intent.has(kind));
-    assert_eq!(intent.owner(kind), Some(owner));
+    assert_eq!(intent.owners(kind).collect::<Vec<_>>(), vec![owner]);
 }
 
 fn assert_absent_intent(world: &World, cell: IVec2, kind: IntentKind) {
@@ -470,10 +469,10 @@ fn assert_halo_response(world: &World, evidence: &StagingEvidence, halo_cell: IV
 fn replace_staging_paint(world: &mut World) {
     let mut grid = world.resource_mut::<IntentGrid>();
     for cell in REDISTRIBUTED_STAGING_CELLS {
-        assert!(grid.remove(cell, IntentKind::Defend));
+        assert!(grid.erase(cell, IntentKind::Defend, EVIDENCE_SWARM));
     }
     for cell in RETURN_STAGING_CELLS {
-        assert!(grid.paint_owned(cell, IntentKind::Defend, Some(EVIDENCE_SWARM)));
+        assert!(grid.paint(cell, IntentKind::Defend, EVIDENCE_SWARM));
     }
 }
 
@@ -542,10 +541,10 @@ fn advance_scene(world: &mut World, evidence: &mut StagingEvidence) -> TestFlow 
         EvidencePhase::ResumeInitialRoaming => {
             assert!(world.resource::<Time<Virtual>>().is_paused());
             assert_initial_roaming(world, evidence);
-            assert!(world.resource_mut::<IntentGrid>().paint_owned(
+            assert!(world.resource_mut::<IntentGrid>().paint(
                 ADDED_STAGING_CELL,
                 IntentKind::Defend,
-                Some(EVIDENCE_SWARM),
+                EVIDENCE_SWARM
             ));
             world.resource_mut::<Time<Virtual>>().unpause();
             set_phase(evidence, EvidencePhase::AwaitRedistribution);

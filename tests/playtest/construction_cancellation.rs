@@ -26,10 +26,10 @@ fn cancelled_facility_restarts_pressure_then_plans_one_alternative() {
     );
     app.insert_resource(priority);
     for cell in [IVec2::ZERO, IVec2::X] {
-        app.world_mut().resource_mut::<IntentGrid>().paint_owned(
+        app.world_mut().resource_mut::<IntentGrid>().paint(
             cell,
             IntentKind::Build,
-            Some(SwarmId::PLAYER),
+            SwarmId::PLAYER,
         );
     }
     let site = Transform::from_xyz(252., 252., 0.).with_scale(Vec3::new(1.125, 1.125, 1.));
