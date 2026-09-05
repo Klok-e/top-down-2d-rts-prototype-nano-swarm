@@ -43,6 +43,8 @@ pub struct Navigation {
     revision: u64,
     chunks: std::sync::Arc<Mutex<HashMap<IVec2, Chunk>>>,
     scheduler: Mutex<budget::Scheduler>,
+    chunk_builds: std::sync::Arc<Mutex<HashMap<IVec2, budget::ChunkBuild>>>,
+    expansions: std::sync::Arc<budget::ExpansionCounters>,
 }
 #[derive(Clone)]
 struct Chunk {
@@ -86,6 +88,8 @@ impl Navigation {
             revision: 1,
             chunks: std::sync::Arc::new(Mutex::new(HashMap::new())),
             scheduler: Mutex::new(budget::Scheduler::default()),
+            expansions: Default::default(),
+            chunk_builds: Default::default(),
         }
     }
     /// Replace physical geometry and invalidate cached connectivity when it changes.
@@ -127,6 +131,7 @@ impl Navigation {
                 })
             });
         }
+        self.chunk_builds.lock().unwrap().clear();
         self.min = replacement.min;
         self.max = replacement.max;
         self.obstacles = replacement.obstacles;
