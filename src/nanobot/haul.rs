@@ -252,6 +252,7 @@ pub fn hauler_arrive_source_system(
             Option<&LogisticsReservation>,
         ),
         (
+            Without<super::WorkBlocked>,
             With<Nanobot>,
             With<HaulerAssignment>,
             Without<DirectMovementComponent>,
@@ -321,7 +322,11 @@ pub fn hauler_load_system(
             Option<&mut LogisticsReservation>,
             &SwarmMember,
         ),
-        (With<Nanobot>, With<HaulerLoading>),
+        (
+            Without<super::WorkBlocked>,
+            With<Nanobot>,
+            With<HaulerLoading>,
+        ),
     >,
     mut deposits: Query<(&mut ResourceDeposit, &Transform)>,
     mut source_stockpiles: Query<(&mut Stockpile, &Transform)>,
@@ -827,6 +832,7 @@ pub fn hauler_delivery_system(
             Option<&ReturningCargo>,
         ),
         (
+            Without<super::WorkBlocked>,
             With<Nanobot>,
             With<Cargo>,
             With<HaulerAssignment>,

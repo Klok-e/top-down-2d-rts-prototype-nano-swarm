@@ -6,7 +6,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
     intent::IntentGrid,
     nanobot::{
-        Commitment, DirectMovementComponent, Health, Nanobot, NanobotType,
+        Commitment, CongestionRecovery, DirectMovementComponent, Health, Nanobot, NanobotType,
         OpponentIntentController, Structure, StructureKind, SwarmId, SwarmMember,
         VelocityComponent,
     },
@@ -46,17 +46,21 @@ pub fn local_avoidance(ctx: &mut TestContext) -> TestFlow {
                 .resource::<top_down_2d_rts_prototype_nano_swarm::navigation::Navigation>()
                 .point_clear(*position)
         );
-        for other in &positions[index + 1..] {
+        for (other_index, other) in positions.iter().enumerate().skip(index + 1) {
             assert!(
-                position.distance(*other) >= 67.99,
-                "rendered bodies overlap: {positions:?}"
+                position.distance(*other) >= 67.99
+                    || [bots[index].0, bots[other_index].0]
+                        .into_iter()
+                        .any(|bot| ctx.world.get::<CongestionRecovery>(bot).is_some()),
+                "rendered bodies overlap outside recovery: {positions:?}"
             );
         }
     }
-    let arrived = positions
-        .iter()
-        .zip(&bots)
-        .all(|(position, (_, goal))| position.distance(*goal) < 3.);
+    // Arrived bodies may step aside for travellers still finishing their crossing.
+    let arrived = scene.started
+        && bots
+            .iter()
+            .all(|(bot, _)| ctx.world.get::<DirectMovementComponent>(*bot).is_none());
     if scene.arrived {
         assert!(arrived);
         return TestFlow::Exit;

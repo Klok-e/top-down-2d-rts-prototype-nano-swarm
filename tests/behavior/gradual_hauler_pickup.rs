@@ -217,8 +217,8 @@ fn simultaneous_hauler_unloads_into_stockpile_conserve_all_cargo() {
     app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
 
     let mut haulers = Vec::new();
-    for _ in 0..2 {
-        let hauler = common::spawn_hauler_at(&mut app, Vec2::new(68.0, 0.0));
+    for x in [-68.0, 68.0] {
+        let hauler = common::spawn_hauler_at(&mut app, Vec2::new(x, 0.0));
         let mut reservation = LogisticsReservation::new(source, sink, ResourceKind::Minerals, 10);
         reservation.source_remaining = 0;
         app.world_mut().entity_mut(hauler).insert((
@@ -261,7 +261,7 @@ fn simultaneous_haulers_unload_against_exact_independent_reservations() {
     app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
 
     let haulers = [
-        common::spawn_hauler_at(&mut app, Vec2::new(68.0, 0.0)),
+        common::spawn_hauler_at(&mut app, Vec2::new(-68.0, 0.0)),
         common::spawn_hauler_at(&mut app, Vec2::new(68.0, 0.0)),
     ];
     for hauler in haulers {

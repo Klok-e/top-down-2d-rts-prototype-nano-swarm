@@ -116,3 +116,9 @@ mod worker_route_recovery;
 
 #[path = "behavior/independent_build_intent.rs"]
 mod independent_build_intent;
+
+#[path = "behavior/congestion.rs"]
+mod congestion;
+
+#[path = "behavior/work_navigation.rs"]
+mod work_navigation;

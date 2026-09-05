@@ -924,6 +924,7 @@ pub fn defender_charger_arrive_system(
             &Transform,
             Option<&DirectMovementComponent>,
             &SwarmMember,
+            Has<super::WorkBlocked>,
         ),
         (
             With<Nanobot>,
@@ -940,7 +941,7 @@ pub fn defender_charger_arrive_system(
     )>,
     swarms: Query<&SwarmId, With<Swarm>>,
 ) {
-    for (entity, assignment, transform, movement, member) in &mut defenders {
+    for (entity, assignment, transform, movement, member, blocked) in &mut defenders {
         let Ok((charger, charger_transform, owner, condition)) = chargers.get(assignment.charger)
         else {
             release_charger_state(&mut commands, entity, &mut allocation_wake);
@@ -950,7 +951,7 @@ pub fn defender_charger_arrive_system(
             release_charger_state(&mut commands, entity, &mut allocation_wake);
             continue;
         }
-        if movement.is_some() {
+        if movement.is_some() || blocked {
             continue;
         }
         let region = InteractionRegion::structure(charger_transform);
@@ -994,6 +995,7 @@ pub fn defender_charger_work_system(
             &ChargerAssignment,
             Option<&mut ChargerPulseProgress>,
             &SwarmMember,
+            Has<super::WorkBlocked>,
         ),
         (With<Nanobot>, With<ChargerProgress>),
     >,
@@ -1009,12 +1011,12 @@ pub fn defender_charger_work_system(
 ) {
     let mut ordered_defenders = defenders
         .iter_mut()
-        .map(|(entity, _, _, _, _, _)| entity)
+        .map(|(entity, _, _, _, _, _, _)| entity)
         .collect::<Vec<_>>();
     ordered_defenders.sort_by_key(|entity| entity.to_bits());
 
     for entity in ordered_defenders {
-        let Ok((entity, mut charge, transform, assignment, pulse, member)) =
+        let Ok((entity, mut charge, transform, assignment, pulse, member, blocked)) =
             defenders.get_mut(entity)
         else {
             continue;
@@ -1029,6 +1031,13 @@ pub fn defender_charger_work_system(
         };
         if !charger_is_eligible(&charger, owner, condition, member.0, &grid, &swarms) {
             release_charger_state(&mut commands, entity, &mut allocation_wake);
+            continue;
+        }
+        if charge.is_full() {
+            release_charger_state(&mut commands, entity, &mut allocation_wake);
+            continue;
+        }
+        if blocked {
             continue;
         }
         let region = InteractionRegion::structure(charger_transform);

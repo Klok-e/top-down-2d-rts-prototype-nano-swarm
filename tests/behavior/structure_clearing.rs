@@ -219,12 +219,13 @@ fn clearing_waits_through_congestion_without_admitting_new_entrants() {
         *state = state.with_work_remaining(0);
     }
     let trapped = common::spawn_defender_at(&mut app, Vec2::new(252., 252.));
-    // Stationary bodies fill every adjacent cell; none can make room for the occupant.
+    // Hostile stationary bodies fill adjacent cells and cannot be crossed during recovery.
     for y in -1..=1 {
         for x in -1..=1 {
             if x != 0 || y != 0 {
                 app.world_mut().spawn((
                     Nanobot {},
+                    top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmMember(SwarmId(42)),
                     top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotType::Worker,
                     top_down_2d_rts_prototype_nano_swarm::nanobot::VelocityComponent::default(),
                     top_down_2d_rts_prototype_nano_swarm::nanobot::Commitment::Working,

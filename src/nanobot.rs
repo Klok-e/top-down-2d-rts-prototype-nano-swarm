@@ -1,3 +1,5 @@
+mod work_navigation;
+pub use work_navigation::*;
 pub mod allocation;
 mod autonomy;
 mod build;
@@ -152,6 +154,7 @@ impl Plugin for NanobotPlugin {
                     separation_system,
                     idle_spread_system,
                     velocity_system,
+                    work_standing_system,
                 )
                     .chain()
                     .in_set(NanobotSimulationSet::Movement),

@@ -2,6 +2,8 @@
 
 #[path = "playtest/combat_presentation.rs"]
 mod combat_presentation;
+#[path = "playtest/congested_economy.rs"]
+mod congested_economy;
 #[path = "playtest/defender_feel.rs"]
 mod defender_feel;
 #[path = "playtest/exterior_work_flow.rs"]

@@ -1,7 +1,7 @@
 //! Adjacent completing sites cannot route their occupants into one another.
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    nanobot::{Commitment, PlannedStructure, StructureClearing},
+    nanobot::{Commitment, CongestionRecovery, PlannedStructure, StructureClearing},
     navigation::Obstacle,
     resources::Stockpile,
 };
@@ -71,10 +71,13 @@ fn adjacent_structure_clearing_uses_free_exit_beside_congested_site() {
                 blocker_shape.segment_clear(previous[i], *position),
                 "local evacuation must not cross the adjacent blocker"
             );
-            for other in &positions[i + 1..] {
+            for (j, other) in positions.iter().enumerate().skip(i + 1) {
                 assert!(
-                    position.distance(*other) >= 67.999,
-                    "clearing must preserve body separation"
+                    position.distance(*other) >= 67.999
+                        || [bodies[i], bodies[j]]
+                            .into_iter()
+                            .any(|body| app.world().get::<CongestionRecovery>(body).is_some()),
+                    "clearing may overlap friendlies only during congestion recovery"
                 );
             }
         }

@@ -1751,7 +1751,7 @@ fn completed_recharge_wakes_allocation_between_regular_ten_hertz_ticks() {
     app.update();
 
     let threat =
-        common::spawn_worker_at(&mut app, common::cell_world_center(cell) + Vec2::X * 16.0);
+        common::spawn_worker_at(&mut app, common::cell_world_center(cell) + Vec2::X * 160.0);
     app.world_mut()
         .entity_mut(threat)
         .insert(SwarmMember::new(SwarmId(11)));

@@ -778,6 +778,7 @@ pub fn worker_gather_arrive_system(
     workers: Query<
         (Entity, &Transform, &GatherAssignment, &SwarmMember),
         (
+            Without<super::WorkBlocked>,
             With<Nanobot>,
             With<GatherAssignment>,
             Without<DirectMovementComponent>,
@@ -902,7 +903,7 @@ pub fn worker_gather_extract_system(
             &mut LogisticsReservation,
             &SwarmMember,
         ),
-        With<Nanobot>,
+        (With<Nanobot>, Without<super::WorkBlocked>),
     >,
     mut deposits: Query<(&mut ResourceDeposit, &Transform)>,
     mut ledger: ResMut<ResourceLedger>,
@@ -1221,6 +1222,7 @@ pub fn worker_gather_delivery_system(
             &NanobotType,
         ),
         (
+            Without<super::WorkBlocked>,
             With<Nanobot>,
             With<ReturningToStockpile>,
             Without<DirectMovementComponent>,

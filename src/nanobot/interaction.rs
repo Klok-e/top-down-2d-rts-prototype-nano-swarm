@@ -96,6 +96,56 @@ impl InteractionRegion {
         candidates
     }
 
+    /// Closely spaced perimeter probes for finding gaps between physical working bodies.
+    pub(crate) fn work_candidates(self, start: Vec2) -> Vec<Vec2> {
+        let mut candidates = self.candidates(start);
+        // Sample the whole perimeter more finely than a body, including face centers.
+        // Fine-grid projections alone can miss the only gap between two working bodies.
+        let samples = match self.shape {
+            Obstacle::Circle { radius, .. } => {
+                let count = ((std::f32::consts::TAU * (radius + BODY_RADIUS) / (BODY_RADIUS / 2.0))
+                    .ceil() as usize)
+                    .max(8);
+                (0..count)
+                    .map(|i| {
+                        Vec2::from_angle(std::f32::consts::TAU * i as f32 / count as f32)
+                            * (radius + BODY_RADIUS)
+                    })
+                    .collect::<Vec<_>>()
+            }
+            Obstacle::Rectangle { half, .. } => {
+                let outer = half + Vec2::splat(BODY_RADIUS + STOP_THRESHOLD);
+                let mut samples = Vec::new();
+                for axis in 0..2 {
+                    let along = if axis == 0 { outer.y } else { outer.x };
+                    let steps = ((2.0 * along / (BODY_RADIUS / 2.0)).ceil() as usize)
+                        .max(2)
+                        .next_multiple_of(2);
+                    for i in 0..=steps {
+                        let offset = -along + 2.0 * along * i as f32 / steps as f32;
+                        for sign in [-1.0, 1.0] {
+                            samples.push(if axis == 0 {
+                                Vec2::new(sign * outer.x, offset)
+                            } else {
+                                Vec2::new(offset, sign * outer.y)
+                            });
+                        }
+                    }
+                }
+                samples
+            }
+        };
+        for local in samples {
+            candidates
+                .push(self.approach(self.center + (self.rotation * local.extend(0.0)).truncate()));
+        }
+        candidates.sort_by(|a, b| {
+            a.distance_squared(start)
+                .total_cmp(&b.distance_squared(start))
+        });
+        candidates
+    }
+
     fn surface(self, position: Vec2) -> (f32, Vec2, Vec2) {
         let local = (self.rotation.inverse() * (position - self.center).extend(0.0)).truncate();
         self.shape.surface(local)
