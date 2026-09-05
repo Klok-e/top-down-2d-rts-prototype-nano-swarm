@@ -105,12 +105,15 @@ pub fn clear_finished_structures_system(
     grid: Res<IntentGrid>,
     navigation: Res<Navigation>,
     sprites: Res<StructureSprites>,
-    mut plans: Query<(
-        Entity,
-        &PlannedStructure,
-        &Transform,
-        &mut StructureClearing,
-        Option<&OwnerSwarm>,
+    mut world: ParamSet<(
+        crate::physical_world::PhysicalWorld,
+        Query<(
+            Entity,
+            &PlannedStructure,
+            &Transform,
+            &mut StructureClearing,
+            Option<&OwnerSwarm>,
+        )>,
     )>,
     swarms: Query<&SwarmId>,
     occupants: Query<
@@ -123,6 +126,8 @@ pub fn clear_finished_structures_system(
         With<Nanobot>,
     >,
 ) {
+    let physical = world.p0().snapshot();
+    let mut plans = world.p1();
     for (bot, _, evacuation, _) in &occupants {
         if evacuation.is_some_and(|evacuation| plans.get(evacuation.structure).is_err()) {
             commands
@@ -197,8 +202,8 @@ pub fn clear_finished_structures_system(
             occupied = true;
             if let Some(evacuation) = evacuation.filter(|evacuation| {
                 evacuation.structure == entity
-                    && navigation.point_clear(evacuation.goal)
-                    && navigation.segment_clear(position, evacuation.goal)
+                    && physical.can_occupy(evacuation.goal)
+                    && physical.movement_clear(position, evacuation.goal)
             }) {
                 if movement.is_none() {
                     commands.entity(bot).insert(DirectMovementComponent {
@@ -220,8 +225,8 @@ pub fn clear_finished_structures_system(
                 for x in min.x..=max.x {
                     let goal = (IVec2::new(x, y).as_vec2() + Vec2::splat(0.5)) * CELL_WIDTH;
                     if shape.admits_body(goal)
-                        && navigation.point_clear(goal)
-                        && navigation.segment_clear(position, goal)
+                        && physical.can_occupy(goal)
+                        && physical.movement_clear(position, goal)
                     {
                         candidates.push(goal);
                     }
