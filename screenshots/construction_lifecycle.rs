@@ -1,13 +1,14 @@
 //! Full-app clearing and cancellation presentation, driven by simulation ticks.
 use crate::harness::{TestContext, TestFlow, clear_nanobots_and_sprite_entities};
 use bevy::prelude::*;
+use top_down_2d_rts_prototype_nano_swarm::structure_overlay::CancelledPlanVisual;
 use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
     intent::IntentGrid,
     nanobot::{
         Commitment, Health, Nanobot, NanobotType, OpponentIntentController, PlannedKind,
         PlannedStructure, Structure, StructureClearing, StructureKind, SwarmId, SwarmMember,
-        VelocityComponent, clearing::CancelledPlanVisual,
+        VelocityComponent,
     },
     resources::Stockpile,
     structure_sprites::{StructureSprites, StructureVisual, StructureVisualState},
@@ -62,10 +63,10 @@ fn prepare(world: &mut World, cancel: bool) {
             Transform::from_xyz(252., 252., 1.).with_scale(Vec3::new(2.25, 2.25, 1.)),
         ))
         .id();
-    world
-        .get_mut::<PlannedStructure>(plan)
-        .unwrap()
-        .work_remaining = 0;
+    {
+        let mut state = world.get_mut::<PlannedStructure>(plan).unwrap();
+        *state = state.with_work_remaining(0);
+    }
     let bot = world
         .spawn((
             Nanobot {},
@@ -102,10 +103,11 @@ pub fn construction_clearing(ctx: &mut TestContext) -> TestFlow {
     let scene = ctx.world.resource::<Scene>();
     let (plan, bot, phase) = (scene.plan, scene.bot, scene.phase);
     if phase == 0 {
-        ctx.world.entity_mut(plan).insert(StructureClearing {
-            builder_position: Vec2::new(108., 252.),
-            validated_layout: None,
-        });
+        ctx.world
+            .entity_mut(plan)
+            .insert(StructureClearing::awaiting_validation(Vec2::new(
+                108., 252.,
+            )));
         ctx.world.resource_mut::<Scene>().phase = 1;
     } else if phase == 1 && ctx.world.get::<Stockpile>(plan).is_some() {
         let transform = ctx.world.get::<Transform>(plan).unwrap();
@@ -138,22 +140,23 @@ pub fn construction_cancellation(ctx: &mut TestContext) -> TestFlow {
     let scene = ctx.world.resource::<Scene>();
     let (plan, phase) = (scene.plan, scene.phase);
     if phase == 0 {
-        ctx.world.entity_mut(plan).insert(StructureClearing {
-            builder_position: Vec2::new(108., 252.),
-            validated_layout: None,
-        });
+        ctx.world
+            .entity_mut(plan)
+            .insert(StructureClearing::awaiting_validation(Vec2::new(
+                108., 252.,
+            )));
         ctx.world.resource_mut::<Scene>().phase = 1;
     }
-    let elapsed = ctx
+    let opacity = ctx
         .world
-        .query::<&CancelledPlanVisual>()
+        .query_filtered::<&Sprite, With<CancelledPlanVisual>>()
         .iter(ctx.world)
         .next()
-        .map(|e| e.elapsed);
-    let capture = match (phase, elapsed) {
+        .map(|sprite| sprite.color.to_srgba().alpha);
+    let capture = match (phase, opacity) {
         (1, Some(_)) => Some("construction_cancellation_pulse"),
-        (2, Some(t)) if t >= 10 => Some("construction_cancellation_collapse"),
-        (3, Some(t)) if t >= 20 => Some("construction_cancellation_fade"),
+        (2, Some(alpha)) if alpha <= 0.84 => Some("construction_cancellation_collapse"),
+        (3, Some(alpha)) if alpha <= 0.42 => Some("construction_cancellation_fade"),
         (4, None) => return TestFlow::Exit,
         _ => None,
     };

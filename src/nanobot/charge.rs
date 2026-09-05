@@ -54,8 +54,8 @@ use crate::nanobot::components::{
     DirectMovementComponent, Health, Nanobot, Swarm, SwarmId, SwarmMember,
 };
 use crate::nanobot::maintenance::SupportCondition;
-use crate::nanobot::planned::{PlannedKind, PlannedStructure, planned_visual_components};
 use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
+use crate::nanobot::{PlannedKind, PlannedStructure, planned_visual_components};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
 use crate::structure_sprites::StructureSprites;
 
@@ -1113,7 +1113,7 @@ impl Plugin for ChargePlugin {
             charger_auto_creation_system
                 .after(crate::nanobot::planned::sink_stockpile_demand_system)
                 .after(crate::nanobot::RegionalAllocationSet::Acquire)
-                .before(crate::nanobot::planned::worker_planned_structure_work_system),
+                .before(crate::nanobot::structure_lifecycle::worker_planned_structure_work_system),
         );
         // Consumer state settles before regional projection so Charge departure,
         // completion, and invalidation release old allocation before acquisition.

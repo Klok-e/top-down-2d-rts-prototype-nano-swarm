@@ -169,5 +169,5 @@ impl Plugin for NanobotPlugin {
     }
 }
 
-pub mod clearing;
-pub use clearing::{ClearingEvacuation, StructureClearing};
+pub mod structure_lifecycle;
+pub use structure_lifecycle::*;

@@ -547,7 +547,7 @@ fn project_planned_work(
     out: &mut Vec<ActionableOpportunity>,
 ) {
     for (entity, planned, owner) in planned.iter() {
-        if AllocationRegion::for_cell(planned.cell) != region || planned.work_remaining == 0 {
+        if AllocationRegion::for_cell(planned.cell) != region || planned.available_work() == 0 {
             continue;
         }
         let Some(owner) = resolve_owner(owner, swarms) else {
@@ -562,7 +562,7 @@ fn project_planned_work(
             },
             cell: planned.cell,
             owner,
-            available_work: planned.work_remaining,
+            available_work: planned.available_work(),
         });
     }
 }

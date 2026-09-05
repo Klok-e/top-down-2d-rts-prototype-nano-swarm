@@ -339,7 +339,7 @@ pub fn regional_allocation_acquisition_system(
         .map(|(entity, planned, _)| {
             (
                 entity.to_bits(),
-                planned.active_worker.map(|worker| worker.to_bits()),
+                planned.active_worker().map(|worker| worker.to_bits()),
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -867,19 +867,15 @@ fn adapt_decision(
             let Ok((_, mut planned_state, transform)) = planned.get_mut(structure) else {
                 return false;
             };
-            if planned_state.active_worker.is_some()
-                && planned_state.active_worker != Some(bot.entity)
-            {
+            if !planned_state.assign_worker(
+                commands,
+                structure,
+                bot.entity,
+                bot.position,
+                transform,
+            ) {
                 return false;
             }
-            planned_state.active_worker = Some(bot.entity);
-            commands.entity(bot.entity).insert((
-                PlannedStructureClaim {
-                    cell: work.cell,
-                    target: structure,
-                },
-                InteractionRegion::structure(transform).movement_from(bot.position),
-            ));
         }
         OpportunityTarget::Maintenance { structure } => {
             let Ok(transform) = structures.get(structure) else {

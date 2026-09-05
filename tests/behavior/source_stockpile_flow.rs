@@ -894,7 +894,7 @@ fn demand_system_does_not_double_plan_when_planned_already_exists() {
         .query::<&mut PlannedStructure>()
         .iter_mut(app.world_mut())
     {
-        plan.work_remaining = 1000;
+        *plan = plan.with_work_remaining(1000);
     }
 
     // Add a second deposit in the same area, give it its

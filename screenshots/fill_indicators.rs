@@ -185,7 +185,7 @@ fn spawn_facility(world: &mut World, pos: Vec2) -> Entity {
 
 fn spawn_planned(world: &mut World, pos: Vec2) -> Entity {
     let mut planned = PlannedStructure::new(PlannedKind::SinkStockpile, IVec2::ZERO);
-    planned.work_remaining = 2;
+    planned = planned.with_work_remaining(2);
     world
         .spawn((
             planned,

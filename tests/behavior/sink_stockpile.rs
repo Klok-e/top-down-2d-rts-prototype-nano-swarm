@@ -531,7 +531,7 @@ fn idle_worker_at_planned_sink_stockpile_claims_and_works() {
     assert_eq!(claim.target, planned);
     let planned_state = world.entity(planned).get::<PlannedStructure>().unwrap();
     assert_eq!(
-        planned_state.active_worker,
+        planned_state.active_worker(),
         Some(worker),
         "planned Sink Stockpile must record the worker as active_worker"
     );

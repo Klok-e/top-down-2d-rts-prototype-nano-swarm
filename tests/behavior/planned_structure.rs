@@ -119,7 +119,7 @@ fn player_worker_ignores_enemy_owned_planned_structure() {
     );
     let planned_state = world.entity(planned).get::<PlannedStructure>().unwrap();
     assert!(
-        planned_state.active_worker.is_none(),
+        planned_state.active_worker().is_none(),
         "enemy-owned PlannedStructure must remain unclaimed by player Worker"
     );
 }
@@ -141,7 +141,7 @@ fn idle_worker_claims_one_unclaimed_planned_structure() {
         if app
             .world()
             .get::<PlannedStructure>(planned)
-            .is_some_and(|plan| plan.active_worker.is_some())
+            .is_some_and(|plan| plan.active_worker().is_some())
         {
             break;
         }
@@ -155,7 +155,7 @@ fn idle_worker_claims_one_unclaimed_planned_structure() {
     assert_eq!(claim.target, planned);
     let planned_state = world.entity(planned).get::<PlannedStructure>().unwrap();
     assert_eq!(
-        planned_state.active_worker,
+        planned_state.active_worker(),
         Some(worker),
         "planned structure must record the worker as active_worker"
     );
@@ -179,7 +179,7 @@ fn only_one_worker_can_claim_a_planned_structure() {
         if app
             .world()
             .get::<PlannedStructure>(planned)
-            .is_some_and(|plan| plan.active_worker.is_some())
+            .is_some_and(|plan| plan.active_worker().is_some())
         {
             break;
         }
@@ -188,7 +188,7 @@ fn only_one_worker_can_claim_a_planned_structure() {
     let world = app.world();
     let planned_state = world.entity(planned).get::<PlannedStructure>().unwrap();
     let active = planned_state
-        .active_worker
+        .active_worker()
         .expect("the planned structure must be claimed");
     assert!(
         active == worker_a || active == worker_b,
@@ -227,7 +227,7 @@ fn surviving_worker_finishes_plan_after_claiming_worker_dies() {
         if app
             .world()
             .get::<PlannedStructure>(planned)
-            .is_some_and(|plan| plan.active_worker.is_some())
+            .is_some_and(|plan| plan.active_worker().is_some())
         {
             break;
         }
@@ -237,7 +237,7 @@ fn surviving_worker_finishes_plan_after_claiming_worker_dies() {
         .entity(planned)
         .get::<PlannedStructure>()
         .unwrap()
-        .active_worker
+        .active_worker()
         .expect("one Worker claims the plan");
     assert!(workers.contains(&claiming_worker));
     app.world_mut()
@@ -279,7 +279,7 @@ fn replacement_worker_finishes_plan_after_live_claim_is_revoked() {
             .entity(planned)
             .get::<PlannedStructure>()
             .unwrap();
-        state.active_worker = Some(former_claimant);
+        assert!(state.try_claim(former_claimant));
         app.world_mut().entity_mut(planned).insert(state);
     }
 
@@ -329,7 +329,7 @@ fn claimed_planned_structure_is_skipped_by_other_workers() {
     {
         let world = app.world_mut();
         let mut state = *world.entity(planned).get::<PlannedStructure>().unwrap();
-        state.active_worker = Some(claiming_worker);
+        assert!(state.try_claim(claiming_worker));
         world.entity_mut(planned).insert(state);
         world
             .entity_mut(claiming_worker)
@@ -358,7 +358,7 @@ fn claimed_planned_structure_is_skipped_by_other_workers() {
     );
     let planned_state = world.entity(planned).get::<PlannedStructure>().unwrap();
     assert_eq!(
-        planned_state.active_worker,
+        planned_state.active_worker(),
         Some(claiming_worker),
         "reservation must be preserved across later claim attempts"
     );
@@ -395,9 +395,9 @@ fn worker_time_advances_build_progress() {
     let still_planned = world.entity(planned).get::<PlannedStructure>().copied();
     if let Some(state) = still_planned {
         assert!(
-            state.work_remaining < DEFAULT_PLANNED_WORK_TICKS,
+            state.available_work() < DEFAULT_PLANNED_WORK_TICKS,
             "work_remaining must decrease as the worker spends time; got {}",
-            state.work_remaining
+            state.available_work()
         );
     }
 }
@@ -512,7 +512,8 @@ fn idle_worker_in_build_cell_with_planned_idles_when_far() {
     let world = app.world();
     let planned_state = world.entity(planned).get::<PlannedStructure>().unwrap();
     assert_eq!(
-        planned_state.work_remaining, DEFAULT_PLANNED_WORK_TICKS,
+        planned_state.available_work(),
+        DEFAULT_PLANNED_WORK_TICKS,
         "work_remaining must not decrease before the worker arrives"
     );
 }
@@ -623,11 +624,10 @@ fn every_kind_preserves_aligned_authored_rectangle_through_completion() {
         );
         assert!((transform.translation.truncate() - Vec2::new(-144.0, 108.0)).length() < 0.001);
         app.world_mut().entity_mut(entity).insert(transform);
-        app.world_mut()
-            .entity_mut(entity)
-            .get_mut::<PlannedStructure>()
-            .unwrap()
-            .work_remaining = 1;
+        {
+            let mut state = app.world_mut().get_mut::<PlannedStructure>(entity).unwrap();
+            *state = state.with_work_remaining(1);
+        }
         let worker = common::spawn_worker_at(&mut app, Vec2::new(-36.0, 108.0));
         for _ in 0..100 {
             app.update();
@@ -656,4 +656,45 @@ fn every_kind_preserves_aligned_authored_rectangle_through_completion() {
             "{kind:?}: {size}"
         );
     }
+}
+
+#[test]
+fn finished_construction_does_not_recruit_another_worker_while_access_is_pending() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{
+        Nanobot, NanobotType, StructureClearing, SwarmMember, worker_planned_structure_claim_system,
+    };
+    let mut app = App::new();
+    app.add_systems(Update, worker_planned_structure_claim_system);
+    let site = app
+        .world_mut()
+        .spawn((
+            PlannedStructure::new(
+                top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedKind::SinkStockpile,
+                IVec2::ZERO,
+            )
+            .with_work_remaining(0),
+            StructureClearing::awaiting_validation(Vec2::new(108.0, 36.0)),
+            Transform::from_xyz(36.0, 36.0, 0.0),
+        ))
+        .id();
+    let worker = app
+        .world_mut()
+        .spawn((
+            Nanobot {},
+            NanobotType::Worker,
+            SwarmMember::new(SwarmId::PLAYER),
+            Transform::from_xyz(108.0, 36.0, 0.0),
+        ))
+        .id();
+
+    app.update();
+
+    assert!(app.world().get::<PlannedStructureClaim>(worker).is_none());
+    assert!(
+        app.world()
+            .get::<PlannedStructure>(site)
+            .unwrap()
+            .active_worker()
+            .is_none()
+    );
 }

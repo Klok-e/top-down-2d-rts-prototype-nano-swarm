@@ -306,7 +306,7 @@ fn worker_claims_planned_production_facility() {
         if app
             .world()
             .get::<PlannedStructure>(plan)
-            .is_some_and(|plan| plan.active_worker.is_some())
+            .is_some_and(|plan| plan.active_worker().is_some())
         {
             break;
         }
@@ -320,7 +320,7 @@ fn worker_claims_planned_production_facility() {
     assert_eq!(claim.target, plan);
     let planned = world.entity(plan).get::<PlannedStructure>().unwrap();
     assert_eq!(
-        planned.active_worker,
+        planned.active_worker(),
         Some(_worker),
         "planned Production Facility must record the worker as active_worker"
     );
@@ -347,7 +347,7 @@ fn only_one_worker_claims_a_planned_production_facility() {
         if app
             .world()
             .get::<PlannedStructure>(plan)
-            .is_some_and(|plan| plan.active_worker.is_some())
+            .is_some_and(|plan| plan.active_worker().is_some())
         {
             break;
         }
@@ -356,7 +356,7 @@ fn only_one_worker_claims_a_planned_production_facility() {
     let world = app.world();
     let planned = world.entity(plan).get::<PlannedStructure>().unwrap();
     let active = planned
-        .active_worker
+        .active_worker()
         .expect("planned Production Facility must be claimed");
     assert!(
         active == worker_a || active == worker_b,

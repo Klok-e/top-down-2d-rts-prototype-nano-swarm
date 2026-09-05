@@ -105,3 +105,6 @@ mod structure_clearing;
 
 #[path = "behavior/navigation_budget.rs"]
 mod navigation_budget;
+
+#[path = "behavior/physical_world.rs"]
+mod physical_world;

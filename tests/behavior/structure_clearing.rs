@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use top_down_2d_rts_prototype_nano_swarm::structure_overlay::CancelledPlanVisual;
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         PlannedStructure, PlannedStructureProgress, StructureClearing, SwarmId, SwarmMember,
@@ -25,14 +26,16 @@ fn completing_plan_releases_worker_and_evacuates_either_swarm_before_activation(
         app.world_mut()
             .entity_mut(occupant)
             .insert(SwarmMember::new(owner));
-        app.world_mut()
-            .get_mut::<PlannedStructure>(plan)
-            .unwrap()
-            .work_remaining = 1;
-        app.world_mut()
-            .get_mut::<PlannedStructure>(plan)
-            .unwrap()
-            .active_worker = Some(worker);
+        {
+            let mut state = app.world_mut().get_mut::<PlannedStructure>(plan).unwrap();
+            *state = state.with_work_remaining(1);
+        }
+        assert!(
+            app.world_mut()
+                .get_mut::<PlannedStructure>(plan)
+                .unwrap()
+                .try_claim(worker)
+        );
         app.world_mut()
             .entity_mut(worker)
             .insert(PlannedStructureProgress {
@@ -52,7 +55,7 @@ fn completing_plan_releases_worker_and_evacuates_either_swarm_before_activation(
             app.world()
                 .get::<PlannedStructure>(plan)
                 .unwrap()
-                .active_worker,
+                .active_worker(),
             None
         );
         let mut previous = app
@@ -92,7 +95,6 @@ fn changed_access_cancels_clearing_and_releases_footprint_during_visual_fade() {
     use bevy::ecs::system::RunSystemOnce;
     use top_down_2d_rts_prototype_nano_swarm::nanobot::{
         PlannedKind,
-        clearing::CancelledPlanVisual,
         construction_access::{CancelledSites, ConstructionAccess},
     };
     let mut app = common::sim_app_with_planned();
@@ -102,15 +104,12 @@ fn changed_access_cancels_clearing_and_releases_footprint_during_visual_fade() {
     );
     app.world_mut().entity_mut(plan).insert((
         transform,
-        StructureClearing {
-            builder_position: Vec2::new(180., 252.),
-            validated_layout: None,
-        },
+        StructureClearing::awaiting_validation(Vec2::new(180., 252.)),
     ));
-    app.world_mut()
-        .get_mut::<PlannedStructure>(plan)
-        .unwrap()
-        .work_remaining = 0;
+    {
+        let mut state = app.world_mut().get_mut::<PlannedStructure>(plan).unwrap();
+        *state = state.with_work_remaining(0);
+    }
     let occupant = common::spawn_defender_at(&mut app, Vec2::new(252., 252.));
     app.update();
     app.update();
@@ -118,8 +117,7 @@ fn changed_access_cancels_clearing_and_releases_footprint_during_visual_fade() {
         app.world()
             .get::<StructureClearing>(plan)
             .unwrap()
-            .validated_layout
-            .is_some()
+            .bars_entry()
     );
     common::spawn_structure_at(&mut app, Vec2::new(180., 252.));
     for _ in 0..80 {
@@ -138,6 +136,39 @@ fn changed_access_cancels_clearing_and_releases_footprint_during_visual_fade() {
             .get::<top_down_2d_rts_prototype_nano_swarm::nanobot::ClearingEvacuation>(occupant)
             .is_none()
     );
+    use top_down_2d_rts_prototype_nano_swarm::{
+        intent::IntentGrid,
+        navigation::{Navigation, RouteGoal, RoutePriority, RouteStatus},
+        physical_world::PhysicalWorld,
+    };
+    let freed_position = Vec2::new(252.0, 252.0);
+    let geometry = app
+        .world_mut()
+        .run_system_once(|world: PhysicalWorld| world.snapshot())
+        .unwrap();
+    assert!(
+        geometry.can_occupy(freed_position),
+        "cancellation frees body placement in the committing tick"
+    );
+    let navigation = app.world().resource::<Navigation>();
+    let request = navigation.request(
+        Vec2::new(396.0, 252.0),
+        RouteGoal::Point(freed_position),
+        SwarmId::PLAYER,
+        false,
+        RoutePriority::Routine,
+    );
+    for _ in 0..100 {
+        navigation.advance(app.world().resource::<IntentGrid>(), 32_768);
+        if !matches!(navigation.poll(request), RouteStatus::Pending) {
+            break;
+        }
+    }
+    assert!(
+        matches!(navigation.poll(request), RouteStatus::Found(_)),
+        "the committing tick removes the entry barrier from cached navigation"
+    );
+
     let effect = app
         .world_mut()
         .query_filtered::<Entity, With<CancelledPlanVisual>>()
@@ -181,15 +212,12 @@ fn clearing_waits_through_congestion_without_admitting_new_entrants() {
     );
     app.world_mut().entity_mut(plan).insert((
         transform,
-        StructureClearing {
-            builder_position: Vec2::new(180., 252.),
-            validated_layout: None,
-        },
+        StructureClearing::awaiting_validation(Vec2::new(180., 252.)),
     ));
-    app.world_mut()
-        .get_mut::<PlannedStructure>(plan)
-        .unwrap()
-        .work_remaining = 0;
+    {
+        let mut state = app.world_mut().get_mut::<PlannedStructure>(plan).unwrap();
+        *state = state.with_work_remaining(0);
+    }
     let trapped = common::spawn_defender_at(&mut app, Vec2::new(252., 252.));
     // Stationary bodies fill every adjacent cell; none can make room for the occupant.
     for y in -1..=1 {
@@ -288,10 +316,7 @@ fn routes_detour_around_a_validated_clearing_footprint() {
     let transform = Transform::from_xyz(360., 324., 0.).with_scale(Vec3::new(1.125, 2.25, 1.));
     app.world_mut().spawn((
         PlannedStructure::new(PlannedKind::Charger, IVec2::ZERO),
-        StructureClearing {
-            builder_position: Vec2::new(200., 324.),
-            validated_layout: Some(0),
-        },
+        StructureClearing::validated(Vec2::new(200., 324.), 0),
         transform,
     ));
     let bot = common::spawn_worker_at(&mut app, Vec2::new(180., 324.));
@@ -335,15 +360,12 @@ fn unfinished_access_validation_preserves_the_plan_until_budget_opens() {
     );
     app.world_mut().entity_mut(plan).insert((
         transform,
-        StructureClearing {
-            builder_position: Vec2::new(180., 252.),
-            validated_layout: None,
-        },
+        StructureClearing::awaiting_validation(Vec2::new(180., 252.)),
     ));
-    app.world_mut()
-        .get_mut::<PlannedStructure>(plan)
-        .unwrap()
-        .work_remaining = 0;
+    {
+        let mut state = app.world_mut().get_mut::<PlannedStructure>(plan).unwrap();
+        *state = state.with_work_remaining(0);
+    }
     for _ in 0..20 {
         app.update();
         assert!(app.world().get::<PlannedStructure>(plan).is_some());

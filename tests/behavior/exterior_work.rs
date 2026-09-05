@@ -154,7 +154,7 @@ fn construction_pauses_after_displacement_and_finishes_from_exterior() {
         (
             worker_planned_structure_arrive_system,
             worker_planned_structure_work_system,
-            top_down_2d_rts_prototype_nano_swarm::nanobot::clearing::clear_finished_structures_system,
+            top_down_2d_rts_prototype_nano_swarm::nanobot::structure_lifecycle::clear_finished_structures_system,
         )
             .chain(),
     );
@@ -162,10 +162,10 @@ fn construction_pauses_after_displacement_and_finishes_from_exterior() {
     app.world_mut()
         .entity_mut(target)
         .insert(Transform::from_scale(Vec3::new(2.0, 1.0, 1.0)));
-    app.world_mut()
-        .get_mut::<PlannedStructure>(target)
-        .unwrap()
-        .work_remaining = 4;
+    {
+        let mut state = app.world_mut().get_mut::<PlannedStructure>(target).unwrap();
+        *state = state.with_work_remaining(4);
+    }
     let worker = common::spawn_worker_at(&mut app, Vec2::new(100.0, 0.0));
     app.world_mut()
         .entity_mut(worker)
@@ -173,16 +173,18 @@ fn construction_pauses_after_displacement_and_finishes_from_exterior() {
             cell: IVec2::ZERO,
             target,
         });
-    app.world_mut()
-        .get_mut::<PlannedStructure>(target)
-        .unwrap()
-        .active_worker = Some(worker);
+    assert!(
+        app.world_mut()
+            .get_mut::<PlannedStructure>(target)
+            .unwrap()
+            .try_claim(worker)
+    );
     app.update();
     assert_eq!(
         app.world()
             .get::<PlannedStructure>(target)
             .unwrap()
-            .work_remaining,
+            .available_work(),
         3
     );
     app.world_mut()
@@ -195,7 +197,7 @@ fn construction_pauses_after_displacement_and_finishes_from_exterior() {
         app.world()
             .get::<PlannedStructure>(target)
             .unwrap()
-            .work_remaining,
+            .available_work(),
         3
     );
     for _ in 0..60 {

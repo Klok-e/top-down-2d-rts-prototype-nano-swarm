@@ -8,6 +8,7 @@ pub mod materials;
 pub mod nanobot;
 pub mod navigation;
 pub mod navigation_runtime;
+pub mod physical_world;
 pub mod resources;
 pub mod runtime;
 pub mod scenario;
