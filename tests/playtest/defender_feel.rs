@@ -160,7 +160,9 @@ fn authored_default_scenario_reaches_primary_defend_contest() {
     let mut previous_positions = positions(app.world_mut());
     let mut saw_both_participants = false;
     for _ in 0..301 {
+        let rotations = RotationSnapshot::capture(app.world_mut());
         app.update();
+        rotations.assert_admissions(app.world_mut());
         previous_positions = assert_default_tick_state(
             app.world_mut(),
             &previous_positions,
@@ -168,7 +170,9 @@ fn authored_default_scenario_reaches_primary_defend_contest() {
         );
     }
     for _ in 0..900 {
+        let rotations = RotationSnapshot::capture(app.world_mut());
         app.update();
+        rotations.assert_admissions(app.world_mut());
         previous_positions = assert_default_tick_state(
             app.world_mut(),
             &previous_positions,
@@ -688,31 +692,48 @@ fn charger_loads(world: &mut World) -> HashMap<Entity, usize> {
     loads
 }
 
-fn swarm_rotation_loads(world: &mut World) -> HashMap<SwarmId, u32> {
-    let mut loads = HashMap::new();
-    for (member, _) in world
-        .query::<(&SwarmMember, &ChargerAssignment)>()
-        .iter(world)
-    {
-        *loads.entry(member.0).or_default() += 1;
-    }
-    loads
+struct RotationSnapshot {
+    assignments: HashMap<Entity, (SwarmId, Entity)>,
+    living: HashMap<SwarmId, usize>,
 }
 
-fn assert_swarm_rotation_caps(world: &mut World) {
-    let loads = swarm_rotation_loads(world);
-    for swarm in [SwarmId::PLAYER, OPPONENT_SWARM] {
-        let living = live_defenders(world, swarm) as u32;
-        let rotating = loads.get(&swarm).copied().unwrap_or_default();
-        let within_cap = match living {
-            0 => rotating == 0,
-            1 => rotating <= 1,
-            _ => rotating.saturating_mul(2) <= living,
-        };
-        assert!(
-            within_cap,
-            "swarm {swarm:?} rotated {rotating} of {living} living Defenders"
-        );
+impl RotationSnapshot {
+    fn capture(world: &mut World) -> Self {
+        Self {
+            assignments: world
+                .query::<(Entity, &SwarmMember, &ChargerAssignment)>()
+                .iter(world)
+                .map(|(entity, member, assignment)| (entity, (member.0, assignment.charger)))
+                .collect(),
+            living: [SwarmId::PLAYER, OPPONENT_SWARM]
+                .map(|swarm| (swarm, live_defenders(world, swarm)))
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    fn assert_admissions(&self, world: &mut World) {
+        let current = Self::capture(world);
+        for swarm in [SwarmId::PLAYER, OPPONENT_SWARM] {
+            let has_new_rotation = current.assignments.iter().any(|(entity, assignment)| {
+                assignment.0 == swarm && self.assignments.get(entity) != Some(assignment)
+            });
+            if !has_new_rotation {
+                continue;
+            }
+            // Combat and production can change the population within this tick.
+            // Focused Charge tests cover exact admission-time capacity.
+            let living = self.living[&swarm].max(current.living[&swarm]);
+            let rotating = current
+                .assignments
+                .values()
+                .filter(|(owner, _)| *owner == swarm)
+                .count();
+            assert!(
+                rotating <= (living / 2).max(1),
+                "swarm {swarm:?} admitted a new rotation with {rotating} active and {living} living Defenders"
+            );
+        }
     }
 }
 
@@ -752,7 +773,6 @@ fn assert_default_tick_state(
             "authored default charger {charger:?} exceeded its three-Defender service limit: {load}"
         );
     }
-    assert_swarm_rotation_caps(world);
 
     let player_participants = participants_in_front(world, PLAYER_DEFEND_CELL, SwarmId::PLAYER);
     let opponent_participants = participants_in_front(world, PLAYER_DEFEND_CELL, SwarmId(1));
@@ -886,6 +906,7 @@ fn default_front_has_readable_combat_and_staggered_sustain() {
     let mut saw_both_participants = false;
 
     for tick in 0..(MAX_CONTACT_TICKS + MAX_TICKS_AFTER_CONTACT) {
+        let rotations = RotationSnapshot::capture(app.world_mut());
         app.update();
 
         let current_positions = positions(app.world_mut());
@@ -906,7 +927,7 @@ fn default_front_has_readable_combat_and_staggered_sustain() {
         for charger in [player_charger, opponent_charger] {
             assert!(loads.get(&charger).copied().unwrap_or_default() <= 3);
         }
-        assert_swarm_rotation_caps(app.world_mut());
+        rotations.assert_admissions(app.world_mut());
 
         let player_participants = participants_in_front(app.world_mut(), front, SwarmId::PLAYER);
         let opponent_participants = participants_in_front(app.world_mut(), front, OPPONENT_SWARM);

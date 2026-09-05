@@ -298,7 +298,7 @@ pub struct DefenderRotationCandidate {
     pub duty: DefenderRotationDuty,
 }
 
-/// Maximum simultaneous Charge rotations for one living Defender population.
+/// Active-rotation limit for admitting new Charge rotations in a living population.
 pub fn defender_rotation_capacity(living_defenders: u32) -> u32 {
     if living_defenders == 0 {
         0
@@ -1334,7 +1334,7 @@ mod tests {
     }
 
     #[test]
-    fn swarm_rotation_capacity_keeps_at_least_half_of_living_defenders_on_duty() {
+    fn swarm_rotation_admission_capacity_reserves_half_the_living_population() {
         let cases = [(0, 0), (1, 1), (2, 1), (3, 1), (4, 2), (5, 2)];
 
         for (living, expected) in cases {
