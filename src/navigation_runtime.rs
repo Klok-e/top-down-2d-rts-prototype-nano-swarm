@@ -1,10 +1,5 @@
 //! Static-world snapshot shared by route consumers and final movement clearance.
-use crate::{
-    intent::IntentGrid,
-    nanobot::{Charger, PlannedStructure, ProductionFacility, Structure},
-    navigation::{Navigation, Obstacle},
-    resources::{ResourceDeposit, Stockpile},
-};
+use crate::{intent::IntentGrid, navigation::Navigation, physical_world::PhysicalWorld};
 use bevy::prelude::*;
 
 pub struct NavigationPlugin;
@@ -16,56 +11,14 @@ impl Plugin for NavigationPlugin {
     }
 }
 
-#[allow(clippy::type_complexity)]
 pub fn refresh_navigation(
     mut navigation: ResMut<Navigation>,
     grid: Res<IntentGrid>,
-    objects: Query<
-        (
-            Entity,
-            &Transform,
-            Option<&ResourceDeposit>,
-            Option<&PlannedStructure>,
-            Option<&crate::nanobot::StructureClearing>,
-        ),
-        Or<(
-            With<ResourceDeposit>,
-            With<Structure>,
-            With<Stockpile>,
-            With<ProductionFacility>,
-            With<Charger>,
-            With<crate::nanobot::StructureClearing>,
-        )>,
-    >,
+    physical: PhysicalWorld,
 ) {
-    let mut clearing: Vec<_> = objects
-        .iter()
-        .filter(|(_, _, _, _, clearing)| {
-            clearing.is_some_and(|clearing| clearing.validated_layout.is_some())
-        })
-        .map(|(entity, transform, _, _, _)| (entity, Obstacle::structure(transform)))
-        .collect();
-    clearing.sort_by_key(|(entity, _)| entity.to_bits());
-    navigation.refresh_clearing(clearing.into_iter().map(|(_, shape)| shape).collect());
-    let mut obstacles: Vec<_> = objects
-        .iter()
-        .filter_map(|(entity, transform, deposit, planned, _)| {
-            if planned.is_some() {
-                return None;
-            }
-            let shape = if let Some(deposit) = deposit {
-                Obstacle::deposit(transform.translation.truncate(), deposit.radius)
-            } else {
-                Obstacle::structure(transform)
-            };
-            Some((entity, shape))
-        })
-        .collect();
-    obstacles.sort_by_key(|(entity, _)| entity.to_bits());
-    navigation.refresh(
-        &grid,
-        obstacles.into_iter().map(|(_, shape)| shape).collect(),
-    );
+    physical
+        .snapshot()
+        .refresh_navigation(&mut navigation, &grid);
 }
 
 /// Shared deterministic allowance for hierarchy maintenance and route searches.

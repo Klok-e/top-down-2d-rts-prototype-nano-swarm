@@ -55,7 +55,7 @@ pub fn construction_access(ctx: &mut TestContext) -> TestFlow {
                 >= 144.0,
             "Charger must leave the narrow connection clear"
         );
-        plan.work_remaining = 100_000;
+        *plan = plan.with_work_remaining(100_000);
     }
     if found {
         if ctx.world.resource::<AccessScene>().captured {

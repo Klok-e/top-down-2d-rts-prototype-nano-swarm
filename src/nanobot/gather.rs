@@ -39,11 +39,11 @@ use crate::nanobot::placement::{
     SOURCE_STOCKPILE_FOOTPRINT_RADIUS, SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PADDING,
     SOURCE_STOCKPILE_PLACEMENT_COUNT, SOURCE_STOCKPILE_PLACEMENT_RADIUS,
 };
-use crate::nanobot::planned::{
+use crate::nanobot::production::OwnerSwarm;
+use crate::nanobot::{
     PlannedKind, PlannedStructure, PlannedStructureClaim, PlannedStructureProgress,
     planned_visual_components,
 };
-use crate::nanobot::production::OwnerSwarm;
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole};
 use crate::structure_sprites::StructureSprites;
 

@@ -1,4 +1,6 @@
-use bevy::prelude::{Commands, Component, Entity, Local, Quat, Query, Res, Transform, Vec2, With};
+use bevy::prelude::{
+    Commands, Component, Entity, Local, ParamSet, Quat, Query, Res, Transform, Vec2, With,
+};
 
 use crate::{
     game_settings::GameSettings, nanobot::consts::BOT_SEPARATION_FORCE,
@@ -320,22 +322,23 @@ fn swept_separation(start: Vec2, delta: Vec2, other: TrafficBody) -> f32 {
 #[allow(clippy::type_complexity)]
 pub fn velocity_system(
     mut commands: Commands,
-    mut query: Query<
-        (
+    mut world: ParamSet<(
+        crate::physical_world::PhysicalWorld,
+        Query<(
             Entity,
             &mut VelocityComponent,
             &mut Transform,
             Option<&Nanobot>,
             Option<&TrafficYield>,
             Option<&DirectMovementComponent>,
-        ),
-        bevy::prelude::Without<super::StructureClearing>,
-    >,
+        )>,
+    )>,
     mut yielding: Local<std::collections::HashMap<Entity, Yielding>>,
-    clearing: Query<(&Transform, &super::StructureClearing)>,
     game_settings: Res<GameSettings>,
     navigation: Res<crate::navigation::Navigation>,
 ) {
+    let physical = world.p0().snapshot();
+    let mut query = world.p1();
     let diameter = crate::navigation::BODY_RADIUS * 2.0;
     let mut bodies: Vec<_> = query
         .iter()
@@ -479,19 +482,7 @@ pub fn velocity_system(
             commands.entity(body.entity).remove::<TrafficYield>();
         }
         let safe = |delta: Vec2| {
-            navigation.segment_clear(body.start, body.start + delta)
-                && clearing
-                    .iter()
-                    .filter(|(_, clearing)| clearing.validated_layout.is_some())
-                    .all(|(transform, _)| {
-                        let shape = crate::navigation::Obstacle::structure(transform);
-                        let distance = shape.surface_distance(body.start);
-                        if distance < crate::navigation::BODY_RADIUS {
-                            true
-                        } else {
-                            shape.segment_clear(body.start, body.start + delta)
-                        }
-                    })
+            physical.movement_clear(body.start, body.start + delta)
                 && nearby.iter().all(|j| {
                     let other = bodies[*j].0;
                     // Invalid initial overlaps may separate, but cannot deepen.
@@ -572,7 +563,7 @@ pub fn velocity_system(
             bodies[indices[&entity]].0.delta
         } else {
             let proposed = clamp_velocity(velocity.value, game_settings.bot_speed);
-            if navigation.segment_clear(start, start + proposed) {
+            if physical.movement_clear(start, start + proposed) {
                 proposed
             } else {
                 Vec2::ZERO

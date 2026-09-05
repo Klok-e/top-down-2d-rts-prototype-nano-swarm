@@ -270,10 +270,7 @@ fn clearing_footprint_blocks_the_only_free_production_exit() {
         .world_mut()
         .spawn((
             PlannedStructure::new(PlannedKind::Charger, IVec2::ZERO),
-            StructureClearing {
-                builder_position: Vec2::new(180., 36.),
-                validated_layout: Some(0),
-            },
+            StructureClearing::validated(Vec2::new(180., 36.), 0),
             Transform::from_xyz(108., 36., 0.).with_scale(Vec3::new(1.125, 1.125, 1.)),
         ))
         .id();

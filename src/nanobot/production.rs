@@ -43,13 +43,12 @@ use bevy::prelude::*;
 use crate::ai::AiStateComponent;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::NanobotBundle;
+use crate::nanobot::PlannedStructure;
 use crate::nanobot::autonomy::{Commitment, NanobotType};
 use crate::nanobot::components::{Health, Nanobot, Swarm, SwarmId, SwarmMember, VelocityComponent};
 use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::maintenance::SupportCondition;
-use crate::nanobot::planned::{
-    PlannedKind, PlannedProductionTarget, PlannedStructure, planned_visual_components,
-};
+use crate::nanobot::planned::{PlannedKind, PlannedProductionTarget, planned_visual_components};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
 use crate::structure_sprites::StructureSprites;
 
@@ -898,41 +897,12 @@ pub fn production_facility_work_system(
     )>,
     swarms: Query<(Entity, Option<&SwarmId>), With<Swarm>>,
     nanobots: Query<&Transform, With<Nanobot>>,
-    objects: Query<
-        (
-            &Transform,
-            Option<&ResourceDeposit>,
-            Option<&PlannedStructure>,
-            Option<&crate::nanobot::StructureClearing>,
-        ),
-        Or<(
-            With<ResourceDeposit>,
-            With<crate::nanobot::Structure>,
-            With<Stockpile>,
-            With<ProductionFacility>,
-            With<crate::nanobot::Charger>,
-            With<crate::nanobot::StructureClearing>,
-        )>,
-    >,
-    grid: Res<IntentGrid>,
+    physical: crate::physical_world::PhysicalWorld,
 ) {
     use crate::navigation::{BODY_RADIUS, CELL_WIDTH, Obstacle};
     *tick = tick.saturating_add(1);
     let mut occupied: Vec<_> = nanobots.iter().map(|t| t.translation.truncate()).collect();
-    let obstacles: Vec<_> = objects
-        .iter()
-        .filter_map(|(transform, deposit, planned, clearing)| {
-            if planned.is_some()
-                && !clearing.is_some_and(|clearing| clearing.validated_layout.is_some())
-            {
-                return None;
-            }
-            Some(deposit.map_or_else(
-                || Obstacle::structure(transform),
-                |d| Obstacle::deposit(transform.translation.truncate(), d.radius),
-            ))
-        })
-        .collect();
+    let geometry = physical.snapshot();
     let mut ready = Vec::new();
     for (entity, mut facility, _, _, condition) in &mut facilities {
         if condition.is_some_and(|c| !c.is_operational()) || facility.current_target.is_none() {
@@ -975,10 +945,10 @@ pub fn production_facility_work_system(
         'cells: for y in min.y..=max.y {
             for x in min.x..=max.x {
                 let position = (IVec2::new(x, y).as_vec2() + Vec2::splat(0.5)) * CELL_WIDTH;
-                if !grid.in_bounds(world_to_cell(position)) || !shape.admits_body(position) {
+                if !shape.admits_body(position) {
                     continue;
                 }
-                if obstacles.iter().all(|shape| shape.admits_body(position))
+                if geometry.can_occupy(position)
                     && occupied.iter().all(|other| {
                         position.distance_squared(*other) >= (2.0 * BODY_RADIUS).powi(2)
                     })

@@ -100,11 +100,13 @@ fn planned_overlay_bar_uses_build_progress() {
         IVec2::ZERO,
         PlannedKind::SinkStockpile,
     );
-    app.world_mut()
-        .entity_mut(planned)
-        .get_mut::<PlannedStructure>()
-        .unwrap()
-        .work_remaining = 3;
+    {
+        let mut state = app
+            .world_mut()
+            .get_mut::<PlannedStructure>(planned)
+            .unwrap();
+        *state = state.with_work_remaining(3);
+    }
 
     app.update();
 

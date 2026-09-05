@@ -326,7 +326,7 @@ fn newly_planned_charger_waits_for_next_regional_allocation_pass() {
         if app
             .world()
             .get::<PlannedStructure>(plan)
-            .is_some_and(|plan| plan.active_worker.is_some())
+            .is_some_and(|plan| plan.active_worker().is_some())
         {
             break;
         }
@@ -337,7 +337,7 @@ fn newly_planned_charger_waits_for_next_regional_allocation_pass() {
             .entity(plan)
             .get::<PlannedStructure>()
             .unwrap()
-            .active_worker,
+            .active_worker(),
         Some(worker),
         "regional acquisition must claim the plan once its budgeted route resolves"
     );
@@ -516,7 +516,7 @@ fn idle_worker_claims_planned_charger() {
         if app
             .world()
             .get::<PlannedStructure>(plan)
-            .is_some_and(|plan| plan.active_worker.is_some())
+            .is_some_and(|plan| plan.active_worker().is_some())
         {
             break;
         }
@@ -530,7 +530,7 @@ fn idle_worker_claims_planned_charger() {
     assert_eq!(claim.target, plan);
     let planned = world.entity(plan).get::<PlannedStructure>().unwrap();
     assert_eq!(
-        planned.active_worker,
+        planned.active_worker(),
         Some(worker),
         "planned Charger must record the worker as active_worker"
     );
@@ -555,7 +555,7 @@ fn only_one_worker_claims_a_planned_charger() {
         if app
             .world()
             .get::<PlannedStructure>(plan)
-            .is_some_and(|plan| plan.active_worker.is_some())
+            .is_some_and(|plan| plan.active_worker().is_some())
         {
             break;
         }
@@ -564,7 +564,7 @@ fn only_one_worker_claims_a_planned_charger() {
     let world = app.world();
     let planned = world.entity(plan).get::<PlannedStructure>().unwrap();
     let active = planned
-        .active_worker
+        .active_worker()
         .expect("planned Charger must be claimed");
     assert!(
         active == worker_a || active == worker_b,

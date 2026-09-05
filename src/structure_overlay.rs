@@ -11,8 +11,8 @@ use bevy::{ecs::query::QueryFilter, prelude::*};
 use crate::GAMEPLAY_SPRITE_Z;
 use crate::fly_camera::CameraZoom2d;
 use crate::nanobot::{
-    BOT_RADIUS, Cargo, Charger, DEFAULT_PLANNED_WORK_TICKS, ExtractProgress, HAULER_CARRY_CAPACITY,
-    HaulerLoading, LogisticsReservation, MAINTENANCE_BUFFER_TICKS, MAINTENANCE_NEEDS_THRESHOLD,
+    BOT_RADIUS, Cargo, Charger, ExtractProgress, HAULER_CARRY_CAPACITY, HaulerLoading,
+    LogisticsReservation, MAINTENANCE_BUFFER_TICKS, MAINTENANCE_NEEDS_THRESHOLD,
     MAINTENANCE_WORK_DURATION_TICKS, MaintenanceProgress, Nanobot, NanobotType,
     PLANNED_STRUCTURE_FOOTPRINT, PlannedStructure, ProductionFacility, STRUCTURE_MAX_HEALTH,
     SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, WORKER_CARRY_CAPACITY,
@@ -172,10 +172,8 @@ pub fn fill_fraction(amount: u32, capacity: u32) -> f32 {
 
 /// Planned-structure build progress as a `0.0..=1.0` fraction.
 pub fn planned_fill_fraction(planned: &PlannedStructure) -> f32 {
-    fill_fraction(
-        DEFAULT_PLANNED_WORK_TICKS.saturating_sub(planned.work_remaining),
-        DEFAULT_PLANNED_WORK_TICKS,
-    )
+    let (completed, total) = planned.construction_progress();
+    fill_fraction(completed, total)
 }
 
 pub fn maintenance_fill_fraction(ticks_since_maintained: u32) -> f32 {
@@ -720,12 +718,7 @@ fn compute_overlay_amounts(
             .unwrap_or_default(),
         StructureOverlayKind::Planned => planned
             .get(target)
-            .map(|value| {
-                (
-                    DEFAULT_PLANNED_WORK_TICKS.saturating_sub(value.work_remaining),
-                    DEFAULT_PLANNED_WORK_TICKS,
-                )
-            })
+            .map(PlannedStructure::construction_progress)
             .unwrap_or_default(),
         StructureOverlayKind::Charger => chargers
             .get(target)
@@ -894,6 +887,56 @@ pub fn condition_overlay_cleanup_system(
     }
 }
 
+/// Visual residue has no structure, reservation, or collision identity.
+#[derive(Component)]
+pub struct CancelledPlanVisual {
+    elapsed: u32,
+    original_scale: Vec3,
+}
+
+pub(crate) fn spawn_cancelled_plan_visual(
+    commands: &mut Commands,
+    sprites: &crate::structure_sprites::StructureSprites,
+    kind: crate::nanobot::PlannedKind,
+    transform: Transform,
+) {
+    let mut sprite = sprites.sprite(
+        kind,
+        crate::structure_sprites::StructureVisualState::Planned,
+    );
+    sprite.color = Color::srgba(1.0, 0.05, 0.05, 1.0);
+    sprite.custom_size = Some(Vec2::splat(crate::navigation::STRUCTURE_SPRITE_SIZE));
+    commands.spawn((
+        sprite,
+        transform,
+        CancelledPlanVisual {
+            elapsed: 0,
+            original_scale: transform.scale,
+        },
+    ));
+}
+
+pub(crate) fn animate_cancelled_plans_system(
+    mut commands: Commands,
+    mut effects: Query<(
+        Entity,
+        &mut CancelledPlanVisual,
+        &mut Transform,
+        &mut Sprite,
+    )>,
+) {
+    for (entity, mut effect, mut transform, mut sprite) in &mut effects {
+        effect.elapsed += 1;
+        if effect.elapsed >= 30 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let fade = ((effect.elapsed.saturating_sub(6)) as f32 / 24.0).clamp(0.0, 1.0);
+        transform.scale = effect.original_scale * (1.0 - fade);
+        sprite.color = Color::srgba(1.0, 0.05, 0.05, 1.0 - fade);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use approx::assert_abs_diff_eq;
@@ -912,11 +955,11 @@ mod tests {
     #[test]
     fn planned_fill_fraction_reports_spent_work_budget() {
         let mut planned = PlannedStructure::new(PlannedKind::SinkStockpile, IVec2::ZERO);
-        planned.work_remaining = DEFAULT_PLANNED_WORK_TICKS;
+        planned = planned.with_work_remaining(DEFAULT_PLANNED_WORK_TICKS);
         assert_abs_diff_eq!(planned_fill_fraction(&planned), 0.0, epsilon = 1e-5);
-        planned.work_remaining = DEFAULT_PLANNED_WORK_TICKS / 2;
+        planned = planned.with_work_remaining(DEFAULT_PLANNED_WORK_TICKS / 2);
         assert_abs_diff_eq!(planned_fill_fraction(&planned), 0.6, epsilon = 1e-5);
-        planned.work_remaining = 0;
+        planned = planned.with_work_remaining(0);
         assert_abs_diff_eq!(planned_fill_fraction(&planned), 1.0, epsilon = 1e-5);
     }
 
