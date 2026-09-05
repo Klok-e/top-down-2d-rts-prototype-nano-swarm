@@ -59,6 +59,8 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
+use crate::nanobot::InteractionRegion;
+
 use crate::GAMEPLAY_SPRITE_Z;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::NanobotType;
@@ -542,7 +544,10 @@ pub fn worker_planned_structure_claim_system(
                 ));
             }
         }
-        let Some((_distance, planned_entity, planned, planned_pos)) = best else {
+        let Some((_distance, planned_entity, planned, _planned_pos)) = best else {
+            continue;
+        };
+        let Ok((_, target_transform, _, _)) = planned_structures.get(planned_entity) else {
             continue;
         };
         claimed.insert(planned_entity);
@@ -556,15 +561,7 @@ pub fn worker_planned_structure_claim_system(
                 cell: planned.cell,
                 target: planned_entity,
             },
-            // Issue #38 / ADR-0004: stop on the building
-            // footprint's physical edge so the worker
-            // lands at the planned structure's centre,
-            // matching the arrive guard's radius-based
-            // check below.
-            DirectMovementComponent {
-                xy: planned_pos,
-                stop_radius: BUILDING_FOOTPRINT_RADIUS,
-            },
+            InteractionRegion::structure(target_transform).movement_from(worker_pos),
         ));
     }
 }
@@ -587,17 +584,8 @@ fn planned_owner_matches_worker(
 /// `Without<PlannedStructureProgress>` filter makes arrival
 /// idempotent: the same tick cannot fire twice.
 ///
-/// The arrival threshold matches the building footprint
-/// (issue #38 / ADR-0004): the same extent the
-/// `DirectMovementComponent::stop_radius` the claim system
-/// passes, and the same extent the build chain's arrive
-/// guard uses. The guard is not redundant: a bot whose
-/// `DirectMovementComponent` was stripped elsewhere (e.g.
-/// the `ProgressChecker` stuck-timeout in `move_system`)
-/// cannot produce a false arrival past the physical
-/// extent, and the resume branch below re-issues a DMC
-/// when a bot is between the building edge and a tight
-/// arrival threshold.
+/// Arrival requires the same exterior region used for movement and ongoing work.
+/// Displaced workers reapproach while retaining their claim.
 #[allow(clippy::type_complexity)]
 pub fn worker_planned_structure_arrive_system(
     mut commands: Commands,
@@ -622,11 +610,9 @@ pub fn worker_planned_structure_arrive_system(
                 .remove::<PlannedStructureClaim>();
             continue;
         };
-        let distance = worker_transform
-            .translation
-            .truncate()
-            .distance(planned_transform.translation.truncate());
-        if distance <= BUILDING_FOOTPRINT_RADIUS {
+        let region = InteractionRegion::structure(planned_transform);
+        let position = worker_transform.translation.truncate();
+        if region.contains(position) {
             commands
                 .entity(worker_entity)
                 .insert(PlannedStructureProgress {
@@ -634,20 +620,9 @@ pub fn worker_planned_structure_arrive_system(
                     target: claim.target,
                 });
         } else {
-            // Resume branch (issue #38 / ADR-0004): the
-            // `Without<DirectMovementComponent>` filter
-            // guarantees the worker has no DMC, so
-            // re-issue one with the same extent the
-            // claim path uses. A bot nudged past the
-            // footprint by separation force walks
-            // back instead of stalling without a
-            // movement command.
             commands
                 .entity(worker_entity)
-                .insert(DirectMovementComponent {
-                    xy: planned_transform.translation.truncate(),
-                    stop_radius: BUILDING_FOOTPRINT_RADIUS,
-                });
+                .insert(region.movement_from(position));
         }
     }
 }
@@ -668,7 +643,7 @@ pub fn worker_planned_structure_work_system(
     mut commands: Commands,
     structure_sprites: Res<StructureSprites>,
     workers: Query<
-        (Entity, &PlannedStructureProgress),
+        (Entity, &Transform, &PlannedStructureProgress),
         (With<Nanobot>, With<PlannedStructureProgress>),
     >,
     mut planned: Query<(
@@ -678,7 +653,7 @@ pub fn worker_planned_structure_work_system(
         Option<&PlannedProductionTarget>,
     )>,
 ) {
-    for (worker_entity, progress) in &workers {
+    for (worker_entity, worker_transform, progress) in &workers {
         let Ok((planned_entity, mut planned_state, planned_transform, first_target)) =
             planned.get_mut(progress.target)
         else {
@@ -688,6 +663,14 @@ pub fn worker_planned_structure_work_system(
                 .remove::<PlannedStructureProgress>();
             continue;
         };
+        let region = InteractionRegion::structure(planned_transform);
+        let position = worker_transform.translation.truncate();
+        if !region.contains(position) {
+            commands
+                .entity(worker_entity)
+                .insert(region.movement_from(position));
+            continue;
+        }
         let first_target = first_target.copied().map(|target| target.0);
 
         if planned_state.is_complete() {

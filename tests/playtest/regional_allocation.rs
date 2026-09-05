@@ -31,7 +31,7 @@ fn exhausted_gather_zone_persists_without_invalid_worker_retries() {
         },
     );
     let _stockpile = common::spawn_stockpile(&mut app, deposit_pos + Vec2::new(96.0, 0.0), 0, 100);
-    let worker = common::spawn_worker_at(&mut app, deposit_pos);
+    let worker = common::spawn_worker_at(&mut app, deposit_pos - Vec2::new(68.0, 0.0));
     paint_gather(&mut app, gather_cell);
 
     for _ in 0..8 {

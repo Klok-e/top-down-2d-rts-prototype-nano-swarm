@@ -17,10 +17,10 @@ use super::{
 use crate::{
     intent::IntentGrid,
     nanobot::{
-        BUILDING_FOOTPRINT_RADIUS, Commitment, DirectMovementComponent, ExtractProgress,
-        GatherAssignment, HAULER_CARRY_CAPACITY, HaulerAssignment, HaulerLoad, HaulerLoading,
-        Health, LogisticsReservation, MaintenanceAssignment, MaintenanceProgress, Nanobot,
-        NanobotType, PRODUCTION_COST_PER_BOT, PlannedStructure, PlannedStructureClaim,
+        Commitment, DirectMovementComponent, ExtractProgress, GatherAssignment,
+        HAULER_CARRY_CAPACITY, HaulerAssignment, HaulerLoad, HaulerLoading, Health,
+        InteractionRegion, LogisticsReservation, MaintenanceAssignment, MaintenanceProgress,
+        Nanobot, NanobotType, PRODUCTION_COST_PER_BOT, PlannedStructure, PlannedStructureClaim,
         PlannedStructureProgress, ProductionFacility, ReturningToStockpile, SwarmId, SwarmMember,
         WORKER_CARRY_CAPACITY, WorkerLoad,
         charge::{
@@ -805,10 +805,8 @@ fn adapt_decision(
             };
             commands.entity(bot.entity).insert((
                 GatherAssignment::new(cell, deposit),
-                DirectMovementComponent {
-                    xy: transform.translation.truncate(),
-                    stop_radius: deposit_state.radius,
-                },
+                InteractionRegion::deposit(transform, deposit_state.radius)
+                    .movement_from(bot.position),
             ));
         }
         OpportunityTarget::PlannedBuild { structure, .. } => {
@@ -826,10 +824,7 @@ fn adapt_decision(
                     cell: work.cell,
                     target: structure,
                 },
-                DirectMovementComponent {
-                    xy: transform.translation.truncate(),
-                    stop_radius: BUILDING_FOOTPRINT_RADIUS,
-                },
+                InteractionRegion::structure(transform).movement_from(bot.position),
             ));
         }
         OpportunityTarget::Maintenance { structure } => {
@@ -841,10 +836,7 @@ fn adapt_decision(
                     cell: work.cell,
                     target: structure,
                 },
-                DirectMovementComponent {
-                    xy: transform.translation.truncate(),
-                    stop_radius: BUILDING_FOOTPRINT_RADIUS,
-                },
+                InteractionRegion::structure(transform).movement_from(bot.position),
             ));
         }
         OpportunityTarget::Haul {
@@ -887,10 +879,10 @@ fn adapt_decision(
             }
             let (route, movement) = planned_route_movement(
                 bot.position,
-                transform.translation.truncate(),
+                InteractionRegion::structure(transform).approach(bot.position),
                 grid,
                 bot.swarm,
-                source_state.radius,
+                0.0,
             );
             commands.entity(bot.entity).insert((
                 HaulerAssignment { source, sink },

@@ -17,7 +17,7 @@ fn worker_reserves_exact_partial_trip_without_moving_minerals() {
     let mut app = common::sim_app_with_gather();
     let pos = Vec2::ZERO;
     let swarm = common::spawn_swarm_at(&mut app, pos);
-    let worker = common::spawn_worker_at(&mut app, pos);
+    let worker = common::spawn_worker_at(&mut app, pos + Vec2::new(68.0, 0.0));
     let deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -83,7 +83,7 @@ fn extraction_moves_only_new_minerals_into_cargo_and_ledger() {
     let mut app = common::sim_app_with_gather();
     let pos = Vec2::ZERO;
     let swarm = common::spawn_swarm_at(&mut app, pos);
-    let worker = common::spawn_worker_at(&mut app, pos);
+    let worker = common::spawn_worker_at(&mut app, pos + Vec2::new(68.0, 0.0));
     let deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -156,8 +156,8 @@ fn same_tick_workers_cannot_overbook_deposit_or_source_capacity() {
         .entity_mut(stockpile)
         .insert((StockpileRole::Source, OwnerSwarm(swarm)));
     let workers = [
-        common::spawn_worker_at(&mut app, pos),
-        common::spawn_worker_at(&mut app, pos),
+        common::spawn_worker_at(&mut app, pos + Vec2::new(68.0, 0.0)),
+        common::spawn_worker_at(&mut app, pos - Vec2::new(68.0, 0.0)),
     ];
     for worker in workers {
         app.world_mut()
@@ -209,7 +209,7 @@ fn worker_unloads_gradually_at_shared_rate_without_changing_ledger() {
     let mut app = common::sim_app_with_gather();
     let pos = Vec2::ZERO;
     let swarm = common::spawn_swarm_at(&mut app, pos);
-    let worker = common::spawn_worker_at(&mut app, pos);
+    let worker = common::spawn_worker_at(&mut app, pos + Vec2::new(68.0, 0.0));
     let source = common::spawn_deposit(
         &mut app,
         common::DepositFixture {

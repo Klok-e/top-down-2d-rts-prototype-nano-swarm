@@ -197,7 +197,8 @@ fn normal_rotation_consumes_exact_minerals() {
         ResourceKind::Minerals,
         60,
     );
-    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
+    let defender =
+        common::spawn_defender_at(&mut app, common::cell_world_center(cell) + Vec2::X * 68.0);
     app.world_mut().entity_mut(defender).insert((
         ChargerAssignment { charger },
         ChargerProgress { charger },
@@ -372,6 +373,7 @@ fn material_is_not_overdrawn_under_charger_contention() {
     for _ in 0..2 {
         app.world_mut().spawn((
             Nanobot {},
+            Transform::from_xyz(68.0, 0.0, 0.0),
             NanobotType::Defender,
             SwarmMember::new(SwarmId::PLAYER),
             Charge {
@@ -449,6 +451,7 @@ fn charger_pulse_recipient_is_stable_across_spawn_order() {
                 .world_mut()
                 .spawn((
                     Nanobot {},
+                    Transform::from_xyz(68.0, 0.0, 0.0),
                     NanobotType::Defender,
                     SwarmMember::new(SwarmId::PLAYER),
                     Charge {
@@ -1534,7 +1537,8 @@ fn completed_recharge_wakes_allocation_between_regular_ten_hertz_ticks() {
         .entity_mut(threat)
         .insert(SwarmMember::new(SwarmId(11)));
 
-    let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
+    let defender =
+        common::spawn_defender_at(&mut app, common::cell_world_center(cell) + Vec2::X * 68.0);
     app.world_mut().entity_mut(defender).insert((
         ChargerAssignment { charger },
         ChargerProgress { charger },
@@ -1776,7 +1780,7 @@ fn defender_charge_refills_in_supplied_pulses() {
     app.world_mut()
         .entity_mut(charger)
         .insert(OwnerSwarm(swarm));
-    let defender = common::spawn_defender_at(&mut app, cell_center);
+    let defender = common::spawn_defender_at(&mut app, cell_center + Vec2::X * 68.0);
     {
         let w = app.world_mut();
         w.entity_mut(defender).get_mut::<Charge>().unwrap().current = 0.5;
@@ -1867,6 +1871,7 @@ fn charger_work_consumes_owning_swarm_resources() {
             charger_component,
             OwnerSwarm(swarm),
             Structure::new(StructureKind::Basic),
+            Transform::default(),
         ))
         .id();
     app.world_mut().resource_mut::<ResourceLedger>().add_for(
@@ -1881,6 +1886,7 @@ fn charger_work_consumes_owning_swarm_resources() {
                 nanobot_type: NanobotType::Defender,
                 ..default()
             },
+            Transform::from_xyz(68.0, 0.0, 0.0),
             Charge {
                 current: 0.5,
                 max: MAX_CHARGE,

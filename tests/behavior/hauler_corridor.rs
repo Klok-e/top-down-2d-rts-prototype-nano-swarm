@@ -234,7 +234,7 @@ fn carry_leg_uses_corridor_biased_route_to_sink() {
     let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
     let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
     own_for_player(&mut app, &[source, sink]);
-    let hauler = common::spawn_hauler_at(&mut app, source_pos);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(68.0, 0.0));
 
     for cell in [
         IVec2::new(0, 1),

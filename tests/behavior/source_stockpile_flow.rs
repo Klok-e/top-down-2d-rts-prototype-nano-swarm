@@ -27,8 +27,8 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Commitment, DEFAULT_PLANNED_WORK_TICKS, ExtractProgress, GatherAssignment, Health, Nanobot,
-        NanobotType, OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructureClaim,
+        Cargo, Commitment, DEFAULT_PLANNED_WORK_TICKS, ExtractProgress, GatherAssignment, Health,
+        Nanobot, NanobotType, OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructureClaim,
         PlannedStructureProgress, SOURCE_STOCKPILE_JITTER_AMPLITUDE,
         SOURCE_STOCKPILE_PLACEMENT_RADIUS, Swarm, SwarmId, SwarmMember, VelocityComponent,
         completed_visual_color,
@@ -311,6 +311,10 @@ fn worker_builds_planned_source_stockpile() {
     let total_ticks = 1 + travel_ticks(PLANNED_TRAVEL_DISTANCE) + DEFAULT_PLANNED_WORK_TICKS + 5;
     for _ in 0..total_ticks {
         app.update();
+        let world = app.world_mut();
+        if world.query::<&Stockpile>().iter(world).next().is_some() {
+            break;
+        }
     }
 
     let world = app.world_mut();
@@ -408,14 +412,7 @@ fn worker_delivers_minerals_to_completed_source_stockpile() {
         },
     );
 
-    // Build + extract + carry + deliver. The test stops right
-    // after the first delivery so the ledger assertion sees a
-    // single delivery (stockpile = 4, ledger = 4) before a
-    // second extract cycle decrements the ledger back toward
-    // zero. The "extract + delivery = 4" invariant is the
-    // contract: the swarm's minerals move from deposit to
-    // stockpile via the worker, and the ledger tracks the
-    // delivery end of that move.
+    // Advance the complete build, extraction, and delivery flow.
     let total_ticks = 1
         + travel_ticks(PLANNED_TRAVEL_DISTANCE)
         + DEFAULT_PLANNED_WORK_TICKS
@@ -433,12 +430,18 @@ fn worker_delivers_minerals_to_completed_source_stockpile() {
     // immutable borrow on `app.world()` is released.
     let mut q = app.world_mut().query::<&Stockpile>();
     let mut dq = app.world_mut().query::<&ResourceDeposit>();
-    let (stockpile_count, stockpile_amount, deposit_remaining) = {
+    let mut cq = app.world_mut().query::<&Cargo>();
+    let (stockpile_count, stockpile_amount, deposit_remaining, cargo_amount) = {
         let world = app.world();
         let count = q.iter(world).count();
         let amount = q.iter(world).next().map(|s| s.amount).unwrap_or(0);
         let deposit: u32 = dq.iter(world).map(|d| d.amount).sum();
-        (count, amount, deposit)
+        (
+            count,
+            amount,
+            deposit,
+            cq.iter(world).map(|cargo| cargo.amount).sum::<u32>(),
+        )
     };
     assert_eq!(stockpile_count, 1, "exactly one Source Stockpile exists");
     assert!(
@@ -446,22 +449,11 @@ fn worker_delivers_minerals_to_completed_source_stockpile() {
         "Worker must deliver extracted minerals to the completed Source Stockpile; got amount={}",
         stockpile_amount
     );
-    // Resource conservation: every unit extracted from
-    // the deposit ends up in the stockpile (or still in
-    // flight via WorkerLoad). The deposit + stockpile
-    // total must equal the original 100. Issue #38
-    // / ADR-0004 changes the worker arrival threshold
-    // from `STOP_THRESHOLD` (2) to `deposit.radius` (32),
-    // which lets the worker deliver 2 trips in the test
-    // timeline (the original timeline assumed a tighter
-    // `STOP_THRESHOLD` and stopped right after the first
-    // delivery). The conservation invariant is the
-    // load-bearing assertion; the exact delivery count
-    // is timing-dependent and not the contract.
+    // Every extracted mineral remains in the stockpile or physical worker cargo.
     assert_eq!(
-        deposit_remaining + stockpile_amount,
+        deposit_remaining + stockpile_amount + cargo_amount,
         100,
-        "deposit + stockpile must equal the original 100 (conservation)"
+        "deposit + stockpile + cargo must equal the original 100 (conservation)"
     );
 }
 

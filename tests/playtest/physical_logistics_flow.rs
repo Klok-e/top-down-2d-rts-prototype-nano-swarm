@@ -59,7 +59,7 @@ fn assignment_load_transit_and_terminal_unload_preserve_physical_custody() {
 
     app.world_mut()
         .entity_mut(hauler)
-        .insert(Transform::from_translation(source_pos.extend(0.0)))
+        .insert(Transform::from_xyz(168.0, 0.0, 0.0))
         .remove::<DirectMovementComponent>();
     app.update();
 
@@ -105,7 +105,7 @@ fn assignment_load_transit_and_terminal_unload_preserve_physical_custody() {
         .entity(hauler)
         .get::<DirectMovementComponent>()
         .expect("runtime carry assignment starts terminal transit");
-    assert_eq!(movement.xy, terminal_pos);
+    assert!(movement.xy.distance(Vec2::new(232.0, 0.0)) < 0.001);
     app.update();
     let transit_pos = app
         .world()
@@ -123,7 +123,7 @@ fn assignment_load_transit_and_terminal_unload_preserve_physical_custody() {
 
     app.world_mut()
         .entity_mut(hauler)
-        .insert(Transform::from_translation(terminal_pos.extend(0.0)))
+        .insert(Transform::from_xyz(232.0, 0.0, 0.0))
         .remove::<DirectMovementComponent>()
         .remove::<HaulerRoute>();
     app.update();

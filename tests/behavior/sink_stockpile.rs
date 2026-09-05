@@ -122,7 +122,7 @@ fn build_paint_alone_does_not_duplicate_sink_stockpiles() {
 fn worker_builds_planned_sink_stockpile_into_completed() {
     // Acceptance: "One Worker builds a Planned Sink
     // Stockpile into a completed Stockpile." A Worker at
-    // the cell center claims the plan, spends
+    // the exterior work position claims the plan, spends
     // `DEFAULT_PLANNED_WORK_TICKS` ticks, and the plan
     // promotes to a `Stockpile` carrying the Sink role.
     let mut app = build_app();
@@ -130,7 +130,7 @@ fn worker_builds_planned_sink_stockpile_into_completed() {
     let center = common::cell_world_center(cell);
     let planned =
         common::spawn_planned_structure_of_kind_at_cell(&mut app, cell, PlannedKind::SinkStockpile);
-    let _worker = common::spawn_worker_at(&mut app, center);
+    let _worker = common::spawn_worker_at(&mut app, center + Vec2::new(68.0, 0.0));
 
     let total_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize + 5;
     for _ in 0..total_ticks {
@@ -272,7 +272,7 @@ fn planned_sink_stockpile_is_owned_by_swarm_that_painted_cell() {
     let cell = IVec2::new(0, 0);
     let center = common::cell_world_center(cell);
     let swarm = common::spawn_swarm_at(&mut app, center);
-    let _worker = common::spawn_worker_at(&mut app, center);
+    let _worker = common::spawn_worker_at(&mut app, center + Vec2::new(68.0, 0.0));
     let planned_entity =
         common::spawn_planned_structure_of_kind_at_cell(&mut app, cell, PlannedKind::SinkStockpile);
     app.world_mut()
@@ -513,11 +513,11 @@ fn idle_worker_at_planned_sink_stockpile_claims_and_works() {
     let center = common::cell_world_center(cell);
     let planned =
         common::spawn_planned_structure_of_kind_at_cell(&mut app, cell, PlannedKind::SinkStockpile);
-    let worker = common::spawn_worker_at(&mut app, center);
+    let worker = common::spawn_worker_at(&mut app, center + Vec2::new(68.0, 0.0));
 
     // Run a few ticks so the claim -> arrive -> progress
-    // chain has time to fire for the worker at the cell
-    // center. The build has 5 ticks of work, so a handful
+    // chain has time to fire for the worker at the exterior
+    // work position. The build has 5 ticks of work, so a handful
     // of ticks is enough to observe the progress marker.
     for _ in 0..3 {
         app.update();
@@ -538,6 +538,6 @@ fn idle_worker_at_planned_sink_stockpile_claims_and_works() {
     let progress = world.entity(worker).get::<PlannedStructureProgress>();
     assert!(
         progress.is_some(),
-        "worker at the planned structure's cell must be in progress after a few ticks"
+        "worker at exterior work reach must be in progress after a few ticks"
     );
 }

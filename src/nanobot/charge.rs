@@ -42,6 +42,8 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
+use crate::nanobot::InteractionRegion;
+
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::allocation::DefenderResponse;
 use crate::nanobot::allocation::RegionalLease;
@@ -831,7 +833,7 @@ pub fn defender_rotation_to_charger_system(
             let Some(pos) = candidate_positions.get(&entity) else {
                 continue;
             };
-            let Some((charger_entity, charger_pos)) = find_swarm_capacity_aware_charger(
+            let Some((charger_entity, _charger_pos)) = find_swarm_capacity_aware_charger(
                 *pos,
                 swarm,
                 &grid,
@@ -841,10 +843,9 @@ pub fn defender_rotation_to_charger_system(
             ) else {
                 continue;
             };
-            let charger_radius = chargers
-                .get(charger_entity)
-                .map(|(_, charger, _, _, _)| charger.radius)
-                .unwrap_or(0.0);
+            let Ok((_, _, charger_transform, _, _)) = chargers.get(charger_entity) else {
+                continue;
+            };
             commands
                 .entity(entity)
                 .remove::<RegionalLease>()
@@ -854,10 +855,7 @@ pub fn defender_rotation_to_charger_system(
                     ChargerAssignment {
                         charger: charger_entity,
                     },
-                    DirectMovementComponent {
-                        xy: charger_pos,
-                        stop_radius: charger_radius,
-                    },
+                    InteractionRegion::structure(charger_transform).movement_from(*pos),
                 ));
             if let Some(wake) = allocation_wake.as_deref_mut() {
                 wake.request_current_pass();
@@ -884,17 +882,8 @@ fn release_charger_state(
     }
 }
 
-/// Detect a defender that has arrived at its assigned charger
-/// and transition it into the `ChargerProgress` state. The
-/// arrival trigger is the same as the rest of the
-/// simulation: the movement system removes the
-/// `DirectMovementComponent` when the bot is within
-/// [`STOP_THRESHOLD`] of its target.
-///
-/// The `Without<ChargerProgress>` filter makes arrival
-/// idempotent. The `ChargerAssignment` is kept on the entity
-/// so the work system can read which charger the defender is
-/// at without re-querying the grid.
+/// Start charging after a Defender reaches the charger's exterior interaction
+/// region. Displaced Defenders retain their assignment and reapproach.
 #[allow(clippy::type_complexity)]
 pub fn defender_charger_arrive_system(
     mut commands: Commands,
@@ -935,12 +924,12 @@ pub fn defender_charger_arrive_system(
         if movement.is_some() {
             continue;
         }
-        let distance = transform
-            .translation
-            .truncate()
-            .distance(charger_transform.translation.truncate());
-        if distance > charger.radius {
-            release_charger_state(&mut commands, entity, &mut allocation_wake);
+        let region = InteractionRegion::structure(charger_transform);
+        let position = transform.translation.truncate();
+        if !region.contains(position) {
+            commands
+                .entity(entity)
+                .insert(region.movement_from(position));
             continue;
         }
         commands.entity(entity).insert((
@@ -972,6 +961,7 @@ pub fn defender_charger_work_system(
         (
             Entity,
             &mut Charge,
+            &Transform,
             &ChargerAssignment,
             Option<&mut ChargerPulseProgress>,
             &SwarmMember,
@@ -979,21 +969,30 @@ pub fn defender_charger_work_system(
         (With<Nanobot>, With<ChargerProgress>),
     >,
     grid: Res<IntentGrid>,
-    mut chargers: Query<(&mut Charger, Option<&OwnerSwarm>, Option<&SupportCondition>)>,
+    mut chargers: Query<(
+        &mut Charger,
+        &Transform,
+        Option<&OwnerSwarm>,
+        Option<&SupportCondition>,
+    )>,
     swarms: Query<&SwarmId, With<Swarm>>,
     mut ledger: ResMut<ResourceLedger>,
 ) {
     let mut ordered_defenders = defenders
         .iter_mut()
-        .map(|(entity, _, _, _, _)| entity)
+        .map(|(entity, _, _, _, _, _)| entity)
         .collect::<Vec<_>>();
     ordered_defenders.sort_by_key(|entity| entity.to_bits());
 
     for entity in ordered_defenders {
-        let Ok((entity, mut charge, assignment, pulse, member)) = defenders.get_mut(entity) else {
+        let Ok((entity, mut charge, transform, assignment, pulse, member)) =
+            defenders.get_mut(entity)
+        else {
             continue;
         };
-        let Ok((mut charger, owner, condition)) = chargers.get_mut(assignment.charger) else {
+        let Ok((mut charger, charger_transform, owner, condition)) =
+            chargers.get_mut(assignment.charger)
+        else {
             // Charger disappeared mid-charge. Drop both
             // markers and let the defender be re-assigned.
             release_charger_state(&mut commands, entity, &mut allocation_wake);
@@ -1001,6 +1000,14 @@ pub fn defender_charger_work_system(
         };
         if !charger_is_eligible(&charger, owner, condition, member.0, &grid, &swarms) {
             release_charger_state(&mut commands, entity, &mut allocation_wake);
+            continue;
+        }
+        let region = InteractionRegion::structure(charger_transform);
+        let position = transform.translation.truncate();
+        if !region.contains(position) {
+            commands
+                .entity(entity)
+                .insert(region.movement_from(position));
             continue;
         }
         let Some(mut pulse) = pulse else {

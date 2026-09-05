@@ -215,7 +215,7 @@ fn hauler_source_arrival_reissues_movement_when_timeout_strips_dmc_before_arriva
         .entity(hauler)
         .get::<DirectMovementComponent>()
         .expect("hauler still outside source should resume movement after DMC timeout");
-    assert_eq!(dmc.xy, source_pos);
+    assert!(dmc.xy.distance(Vec2::new(232.0, 0.0)) < 0.001);
     assert!(
         app.world()
             .entity(hauler)
@@ -244,7 +244,7 @@ fn hauler_fills_load_up_to_carry_capacity() {
         },
     );
     let _stockpile = common::spawn_stockpile(&mut app, stockpile_pos, 0, 1000);
-    let hauler = common::spawn_hauler_at(&mut app, deposit_pos);
+    let hauler = common::spawn_hauler_at(&mut app, deposit_pos + Vec2::new(68.0, 0.0));
 
     // Pre-seed an assignment to the source so the test isolates
     // the loading chain from the source/sink selection logic.
@@ -300,19 +300,27 @@ fn hauler_delivers_full_load_to_sink() {
     let mut app = build_app();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let source_pos = Vec2::new(100.0, 0.0);
-    let sink_pos = Vec2::new(150.0, 0.0);
-    let source = common::spawn_stockpile(&mut app, source_pos, 1000, 1000);
+    let sink_pos = Vec2::new(300.0, 0.0);
+    let source = common::spawn_stockpile(&mut app, source_pos, 0, 1000);
     let sink_entity = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
     app.world_mut()
         .entity_mut(sink_entity)
         .insert(OwnerSwarm(swarm));
-    let _hauler = common::spawn_hauler_at(&mut app, source_pos);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(232.0, 0.0));
+    app.world_mut().entity_mut(hauler).insert((
+        HaulerAssignment {
+            source,
+            sink: sink_entity,
+        },
+        HaulerLoad {
+            kind: ResourceKind::Minerals,
+            amount: HAULER_CARRY_CAPACITY,
+        },
+    ));
 
-    // Fill the load (5 extraction ticks), travel to the stockpile edge,
-    // then unload at four units per tick. This hand-seeded deposit leg
-    // cannot be automatically reissued after completion.
-    for _ in 0..18 {
+    // Five exterior unload ticks transfer the full twenty-unit cargo.
+    for _ in 0..5 {
         app.update();
     }
 
@@ -321,8 +329,7 @@ fn hauler_delivers_full_load_to_sink() {
         sink.amount, HAULER_CARRY_CAPACITY,
         "sink receives the full load through gradual unloading",
     );
-    // Hauler may already hold cargo for a subsequent trip because allocation
-    // and delivery share the update schedule. Sink amount pins completed unload.
+    assert!(app.world().get::<HaulerLoad>(hauler).is_none());
 }
 
 #[test]

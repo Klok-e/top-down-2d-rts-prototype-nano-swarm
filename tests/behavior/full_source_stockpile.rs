@@ -480,9 +480,7 @@ fn worker_carry_assign_prefers_free_stockpile_over_full_one() {
     let free_stockpile =
         common::spawn_stockpile(&mut app, worker_pos + Vec2::new(60.0, 0.0), 0, 1000);
 
-    for _ in 0..5 {
-        app.update();
-    }
+    app.update();
 
     let world = app.world_mut();
     let returning = world

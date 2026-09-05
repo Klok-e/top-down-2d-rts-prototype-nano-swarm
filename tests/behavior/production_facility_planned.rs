@@ -338,7 +338,7 @@ fn only_one_worker_claims_a_planned_production_facility() {
 #[test]
 fn worker_builds_planned_production_facility_to_completion() {
     // Acceptance: "One Worker builds the planned facility
-    // to completion." A Worker at the plan's cell claims
+    // to completion." A Worker at the plan's exterior claims
     // it, spends `DEFAULT_PLANNED_WORK_TICKS` ticks, and
     // the plan promotes to a completed `ProductionFacility`
     // (with its `current_target` round-tripped from the
@@ -348,18 +348,9 @@ fn worker_builds_planned_production_facility_to_completion() {
     let center = common::cell_world_center(cell);
     let plan =
         common::spawn_planned_production_facility_at_cell(&mut app, cell, NanobotType::Hauler);
-    let _worker = common::spawn_worker_at(&mut app, center);
+    let _worker = common::spawn_worker_at(&mut app, center + Vec2::new(68.0, 0.0));
 
-    // 1 tick for claim + arrive (worker is already at the
-    // cell, so the arrive system fires on the same tick
-    // as the claim), then `DEFAULT_PLANNED_WORK_TICKS`
-    // ticks of work. The build completes on the
-    // `DEFAULT_PLANNED_WORK_TICKS + 1`-th tick. We do
-    // NOT add a buffer here: the completed facility's
-    // production cycle starts immediately, and the
-    // work system resets `current_target` to `None` when
-    // the cycle completes. The sidecar round-trip must
-    // be checked before the production cycle finishes.
+    // Start within exterior work reach and allow claim plus the full build duration.
     let build_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize;
     for _ in 0..build_ticks {
         app.update();
@@ -441,7 +432,7 @@ fn completed_production_facility_consumes_resources_and_produces_nanobots() {
     }
     let plan =
         common::spawn_planned_production_facility_at_cell(&mut app, cell, NanobotType::Hauler);
-    let _worker = common::spawn_worker_at(&mut app, cell_center);
+    let _worker = common::spawn_worker_at(&mut app, cell_center + Vec2::new(68.0, 0.0));
 
     // Drive the build to completion, then run enough
     // ticks for the completed facility to do one full
@@ -694,7 +685,7 @@ fn zero_priority_typed_shortage_still_creates_production_pressure() {
 fn idle_worker_at_planned_production_facility_claims_and_works() {
     // Pin the end-to-end "claim -> arrive -> progress"
     // chain for a Planned Production Facility. An
-    // idle Worker placed at the cell receives a
+    // idle Worker placed at exterior work reach receives a
     // `PlannedStructureClaim` and reaches the
     // `PlannedStructureProgress` state after a few
     // ticks.
@@ -703,7 +694,7 @@ fn idle_worker_at_planned_production_facility_claims_and_works() {
     let center = common::cell_world_center(cell);
     let _plan =
         common::spawn_planned_production_facility_at_cell(&mut app, cell, NanobotType::Worker);
-    let worker = common::spawn_worker_at(&mut app, center);
+    let worker = common::spawn_worker_at(&mut app, center + Vec2::new(68.0, 0.0));
 
     for _ in 0..3 {
         app.update();
@@ -722,6 +713,6 @@ fn idle_worker_at_planned_production_facility_claims_and_works() {
             .entity(worker)
             .get::<PlannedStructureProgress>()
             .is_some(),
-        "worker at the cell must be in progress after a few ticks"
+        "worker at exterior work reach must be in progress after a few ticks"
     );
 }
