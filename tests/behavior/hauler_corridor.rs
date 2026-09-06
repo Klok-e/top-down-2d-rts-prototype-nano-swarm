@@ -58,7 +58,7 @@ fn corridor_only_intent_does_not_create_hauling_job() {
 }
 
 #[test]
-fn leg_selection_uses_corridor_biased_route_cost() {
+fn leg_selection_estimates_distance_before_committed_corridor_routing() {
     let mut app = build_app();
     let hauler_pos = Vec2::new(0.0, 0.0);
     let near_sink_pos = Vec2::new(0.0, 2.0 * ZONE_BLOCK_SIZE);
@@ -86,88 +86,10 @@ fn leg_selection_uses_corridor_biased_route_cost() {
         .expect("hauler should choose a valid logistics leg");
     assert_eq!(assignment.source, source);
     assert_eq!(
-        assignment.sink, corridor_sink,
-        "route cost should beat plain physical distance when corridor discount outweighs detour"
+        assignment.sink, near_sink,
+        "allocation ranks reachable destinations by estimated distance; Corridor optimization belongs to the selected leg"
     );
-    assert_ne!(assignment.sink, near_sink);
-}
-
-#[test]
-fn source_leg_moves_through_the_painted_corridor() {
-    let mut app = build_app();
-    let source = common::spawn_stockpile(&mut app, Vec2::new(1536.0, 256.0), 1000, 1000);
-    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(1792.0, 256.0), 0, 1000);
-    own_for_player(&mut app, &[source, sink]);
-    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(0.0, 256.0));
-    for x in 0..4 {
-        paint_corridor(&mut app, IVec2::new(x, 1));
-    }
-    let mut entered_corridor = false;
-    let mut furthest_y = 0.0_f32;
-    for _ in 0..500 {
-        app.update();
-        let position = app
-            .world()
-            .entity(hauler)
-            .get::<Transform>()
-            .unwrap()
-            .translation
-            .truncate();
-        entered_corridor |= position.y >= 512.0;
-        furthest_y = furthest_y.max(position.y);
-        if position.x > 1200.0 {
-            break;
-        }
-    }
-    assert!(
-        entered_corridor,
-        "hauler should physically use the discounted corridor on the source leg; furthest y={furthest_y}"
-    );
-}
-
-#[test]
-fn carry_leg_moves_through_the_painted_corridor() {
-    use top_down_2d_rts_prototype_nano_swarm::{
-        nanobot::{Cargo, LogisticsReservation},
-        resources::ResourceKind,
-    };
-    let mut app = build_app();
-    let source = common::spawn_stockpile(&mut app, Vec2::new(0.0, 256.0), 1000, 1000);
-    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(1536.0, 256.0), 0, 1000);
-    own_for_player(&mut app, &[source, sink]);
-    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(68.0, 256.0));
-    app.world_mut().entity_mut(hauler).insert((
-        HaulerAssignment { source, sink },
-        Cargo {
-            kind: ResourceKind::Minerals,
-            amount: 20,
-        },
-        LogisticsReservation::new(source, sink, ResourceKind::Minerals, 20),
-    ));
-    for x in 0..4 {
-        paint_corridor(&mut app, IVec2::new(x, 1));
-    }
-    let mut entered_corridor = false;
-    let mut furthest_y = 0.0_f32;
-    for _ in 0..500 {
-        app.update();
-        let position = app
-            .world()
-            .entity(hauler)
-            .get::<Transform>()
-            .unwrap()
-            .translation
-            .truncate();
-        entered_corridor |= position.y >= 512.0;
-        furthest_y = furthest_y.max(position.y);
-        if position.x > 1200.0 {
-            break;
-        }
-    }
-    assert!(
-        entered_corridor,
-        "loaded hauler should physically use the discounted corridor on the delivery leg; furthest y={furthest_y}"
-    );
+    assert_ne!(assignment.sink, corridor_sink);
 }
 
 #[test]

@@ -2,12 +2,16 @@
 
 This document defines repo-specific testing conventions. For the TDD loop itself, use the TDD skill.
 
-For test design and review, follow the repository's
-[`testing-on-the-toilet` skill](../../.agents/skills/testing-on-the-toilet/SKILL.md).
-Assert observable behavior rather than source text, API reachability, or whether code compiles.
-Derive expected results independently with literal domain examples, compare calculated floating-point
-values with an explicit tolerance, and make every scenario-relevant fixture field visible at the call
-site instead of hiding it behind defaults.
+For test design and review, follow the repository's [`testing-on-the-toilet` skill](../../.agents/skills/testing-on-the-toilet/SKILL.md).
+
+## Required test review
+
+When writing or reviewing tests, inspect the tests in scope and nearby coverage of the same behavior. This is a local review, not a required audit of the entire suite.
+
+- Apply the skill's [change-detector gate](../../.agents/skills/testing-on-the-toilet/SKILL.md#1-change-detector-gate) to weak tests and check for redundant coverage across tests.
+- When edits are authorized, perform the cleanup within that scope. Before deleting or consolidating duplicate coverage, name the retained test and behavior, and apply the skill's [test-refactoring failure proof](../../.agents/skills/testing-on-the-toilet/SKILL.md#6-prove-the-test-can-fail).
+- In read-only reviews, report concrete cleanup recommendations and retained coverage without editing files or temporarily mutating production code.
+- In the handoff, summarize removed or consolidated coverage, retained protection, and verification performed.
 
 ## Commands
 

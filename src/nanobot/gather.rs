@@ -22,7 +22,7 @@
 //! pressure stays in sync with the number of workers actually
 //! working a given cell.
 
-use crate::navigation::{Navigation, Obstacle, RouteStatus};
+use crate::navigation::{ConnectivityStatus, Navigation, Obstacle, RouteGoal};
 use bevy::prelude::*;
 
 use crate::nanobot::InteractionRegion;
@@ -774,7 +774,6 @@ pub fn worker_gather_assignment_system(
 pub fn worker_gather_arrive_system(
     mut commands: Commands,
     navigation: Res<Navigation>,
-    grid: Res<IntentGrid>,
     workers: Query<
         (Entity, &Transform, &GatherAssignment, &SwarmMember),
         (
@@ -841,19 +840,16 @@ pub fn worker_gather_arrive_system(
             &swarms,
             &reservations,
             &same_tick_destinations,
-            |destination_transform| match navigation.query_interaction(
+            |destination_transform| match navigation.query_connectivity(
                 worker_pos,
-                InteractionRegion::structure(destination_transform),
-                &grid,
-                swarm_member.0,
-                false,
+                RouteGoal::Interaction(InteractionRegion::structure(destination_transform)),
             ) {
-                RouteStatus::Found(_) => true,
-                RouteStatus::Pending => {
+                ConnectivityStatus::Connected { .. } => true,
+                ConnectivityStatus::Pending => {
                     pending_navigation = true;
                     false
                 }
-                RouteStatus::Unreachable => false,
+                ConnectivityStatus::Unreachable => false,
             },
         );
         let Some((destination, destination_available)) = destination else {
@@ -892,7 +888,6 @@ pub fn worker_gather_arrive_system(
 pub fn worker_gather_extract_system(
     mut commands: Commands,
     navigation: Res<Navigation>,
-    grid: Res<IntentGrid>,
     mut workers: Query<
         (
             Entity,
@@ -928,8 +923,8 @@ pub fn worker_gather_extract_system(
         let position = transform.translation.truncate();
         if !region.contains(position) {
             if matches!(
-                navigation.query_interaction(position, region, &grid, swarm.0, false),
-                RouteStatus::Unreachable
+                navigation.query_connectivity(position, RouteGoal::Interaction(region)),
+                ConnectivityStatus::Unreachable
             ) {
                 reservation.source_remaining = 0;
                 reservation.destination_remaining = cargo.amount;
@@ -980,7 +975,6 @@ fn transition_worker_to_carrying(commands: &mut Commands, entity: Entity, amount
 pub fn worker_gather_reroute_system(
     mut commands: Commands,
     navigation: Res<Navigation>,
-    grid: Res<IntentGrid>,
     workers: Query<
         (
             Entity,
@@ -1031,15 +1025,12 @@ pub fn worker_gather_reroute_system(
         if current_valid {
             let (_, _, destination_transform, _, _, _) =
                 stockpiles.get(reservation.destination).unwrap();
-            match navigation.query_interaction(
+            match navigation.query_connectivity(
                 transform.translation.truncate(),
-                InteractionRegion::structure(destination_transform),
-                &grid,
-                swarm_member.0,
-                false,
+                RouteGoal::Interaction(InteractionRegion::structure(destination_transform)),
             ) {
-                RouteStatus::Found(_) | RouteStatus::Pending => continue,
-                RouteStatus::Unreachable => {}
+                ConnectivityStatus::Connected { .. } | ConnectivityStatus::Pending => continue,
+                ConnectivityStatus::Unreachable => {}
             }
         }
         let replacement = find_nearest_stockpile(
@@ -1055,14 +1046,11 @@ pub fn worker_gather_reroute_system(
             &same_tick_claims,
             |destination_transform| {
                 matches!(
-                    navigation.query_interaction(
+                    navigation.query_connectivity(
                         transform.translation.truncate(),
-                        InteractionRegion::structure(destination_transform),
-                        &grid,
-                        swarm_member.0,
-                        false,
+                        RouteGoal::Interaction(InteractionRegion::structure(destination_transform))
                     ),
-                    RouteStatus::Found(_)
+                    ConnectivityStatus::Connected { .. }
                 )
             },
         );
@@ -1098,7 +1086,6 @@ pub fn worker_gather_reroute_system(
 pub fn worker_gather_carry_assign_system(
     mut commands: Commands,
     navigation: Res<Navigation>,
-    grid: Res<IntentGrid>,
     workers: Query<
         (
             Entity,
@@ -1173,14 +1160,13 @@ pub fn worker_gather_carry_assign_system(
                 &same_tick_claims,
                 |destination_transform| {
                     matches!(
-                        navigation.query_interaction(
+                        navigation.query_connectivity(
                             transform.translation.truncate(),
-                            InteractionRegion::structure(destination_transform),
-                            &grid,
-                            swarm_member.0,
-                            false,
+                            RouteGoal::Interaction(InteractionRegion::structure(
+                                destination_transform
+                            ))
                         ),
-                        RouteStatus::Found(_)
+                        ConnectivityStatus::Connected { .. }
                     )
                 },
             )

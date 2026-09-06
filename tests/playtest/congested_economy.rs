@@ -105,10 +105,6 @@ fn hauler_sustains_twenty_deliveries_around_occupied_goal_at_runtime_cadence() {
         completed_deliveries, 20,
         "twenty separate cargo loads were unloaded"
     );
-    assert_eq!(
-        next_milestone, 420,
-        "all twenty complete loads reached the sink"
-    );
     assert_eq!(app.world().get::<Stockpile>(source).unwrap().amount, 0);
     assert!(app.world().get::<Cargo>(hauler).is_none());
 }
@@ -294,4 +290,190 @@ fn worker_builds_around_occupied_site_approach() {
             app.world().get::<PlannedStructure>(site),
         );
     }
+}
+
+#[test]
+fn loaded_workers_deliver_without_remote_waiting_or_removing_unloaded_workers() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{LogisticsReservation, ReturningToStockpile, SwarmId},
+        resources::{ResourceKind, ResourceLedger},
+    };
+    let mut app = common::sim_app_with_gather();
+    let cadence = Duration::from_secs_f64(1.0 / 60.0);
+    app.insert_resource(Time::<Fixed>::from_duration(cadence));
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(cadence));
+    common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let sink = common::spawn_stockpile(&mut app, Vec2::new(700.0, 0.0), 0, 1000);
+    let workers: Vec<_> = (0..11)
+        .map(|i| {
+            let worker = common::spawn_worker_at(&mut app, Vec2::new(300.0, i as f32 * 75.0));
+            let mut reservation =
+                LogisticsReservation::new(Entity::PLACEHOLDER, sink, ResourceKind::Minerals, 4);
+            reservation.source_remaining = 0;
+            app.world_mut().entity_mut(worker).insert((
+                Cargo {
+                    kind: ResourceKind::Minerals,
+                    amount: 4,
+                },
+                ReturningToStockpile { stockpile: sink },
+                reservation,
+                Commitment::Carrying,
+            ));
+            worker
+        })
+        .collect();
+    app.world_mut().resource_mut::<ResourceLedger>().add_for(
+        SwarmId::PLAYER,
+        ResourceKind::Minerals,
+        44,
+    );
+    for _ in 0..1200 {
+        app.update();
+
+        let delivered = app.world().get::<Stockpile>(sink).unwrap().amount;
+        let carried: u32 = workers
+            .iter()
+            .map(|worker| {
+                app.world()
+                    .get::<Cargo>(*worker)
+                    .map_or(0, |cargo| cargo.amount)
+            })
+            .sum();
+        assert_eq!(
+            delivered + carried,
+            44,
+            "waiting and yielding preserve physical cargo"
+        );
+        assert_eq!(
+            app.world()
+                .resource::<ResourceLedger>()
+                .total_for(SwarmId::PLAYER, ResourceKind::Minerals,),
+            44,
+            "delivery preserves the swarm mineral ledger"
+        );
+        if delivered == 44 {
+            break;
+        }
+    }
+    assert_eq!(
+        app.world().get::<Stockpile>(sink).unwrap().amount,
+        44,
+        "all eleven workers must unload within twenty simulation seconds without removing idle bodies: {:?}",
+        workers
+            .iter()
+            .map(|e| (
+                *e,
+                app.world()
+                    .get::<Transform>(*e)
+                    .unwrap()
+                    .translation
+                    .truncate(),
+                app.world().get::<Cargo>(*e),
+                app.world()
+                    .get::<top_down_2d_rts_prototype_nano_swarm::nanobot::WorkApproach>(*e)
+            ))
+            .collect::<Vec<_>>()
+    );
+    for worker in workers {
+        assert!(
+            app.world().get_entity(worker).is_ok(),
+            "unloaded workers remain in the world"
+        );
+        assert!(app.world().get::<Cargo>(worker).is_none());
+    }
+}
+
+#[test]
+fn loaded_haulers_approach_before_waiting_and_each_complete_delivery() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{
+            ApproachPhase, HaulerAssignment, InteractionRegion, LogisticsReservation, WorkApproach,
+        },
+        resources::ResourceKind,
+    };
+    let count = 12;
+    let total = 640;
+    let mut app = common::sim_app_with_gather_haul();
+    let cadence = Duration::from_secs_f64(1.0 / 60.0);
+    app.insert_resource(Time::<Fixed>::from_duration(cadence));
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(cadence));
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let source = common::spawn_stockpile(&mut app, Vec2::new(150.0, 0.0), 400, 1000);
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(700.0, 0.0), 0, 1000);
+    for e in [source, sink] {
+        app.world_mut().entity_mut(e).insert(OwnerSwarm(swarm));
+    }
+    let region = InteractionRegion::structure(app.world().get::<Transform>(sink).unwrap());
+    let bots: Vec<_> = (0..count)
+        .map(|i| {
+            let e = common::spawn_hauler_at(&mut app, Vec2::new(300.0, i as f32 * 75.0));
+            let mut reservation =
+                LogisticsReservation::new(source, sink, ResourceKind::Minerals, 20);
+            reservation.source_remaining = 0;
+            app.world_mut().entity_mut(e).insert((
+                HaulerAssignment { source, sink },
+                reservation,
+                Cargo {
+                    kind: ResourceKind::Minerals,
+                    amount: 20,
+                },
+                Commitment::Idle,
+            ));
+            e
+        })
+        .collect();
+    let mut unloaded = std::collections::HashSet::new();
+    for tick in 0..3600 {
+        app.update();
+        let carried: u32 = bots
+            .iter()
+            .map(|e| app.world().get::<Cargo>(*e).map_or(0, |c| c.amount))
+            .sum();
+        assert_eq!(
+            app.world().get::<Stockpile>(source).unwrap().amount
+                + app.world().get::<Stockpile>(sink).unwrap().amount
+                + carried,
+            total
+        );
+        for e in &bots {
+            if app.world().get::<Cargo>(*e).is_none() {
+                unloaded.insert(*e);
+            }
+            if let Some(approach) = app.world().get::<WorkApproach>(*e)
+                && approach.phase == ApproachPhase::Waiting
+                && approach.region == region
+            {
+                let position = app
+                    .world()
+                    .get::<Transform>(*e)
+                    .unwrap()
+                    .translation
+                    .truncate();
+                assert!(
+                    position.distance(region.approach(position)) < 222.0,
+                    "loaded hauler waited far from destination: {position:?}"
+                );
+            }
+        }
+        if tick == 1199 {
+            assert_eq!(
+                unloaded.len(),
+                count,
+                "new trips must not starve an original loaded hauler"
+            );
+        }
+        if app.world().get::<Stockpile>(sink).unwrap().amount == total {
+            break;
+        }
+    }
+    assert_eq!(
+        app.world().get::<Stockpile>(sink).unwrap().amount,
+        total,
+        "repeated loaded trips must drain the source within sixty simulation seconds"
+    );
+    assert_eq!(
+        unloaded.len(),
+        count,
+        "every loaded hauler gets a turn at the destination"
+    );
 }

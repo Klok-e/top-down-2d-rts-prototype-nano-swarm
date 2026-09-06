@@ -117,7 +117,7 @@ fn pending_recovery_waits_but_proven_disconnected_material_causes_collapse() {
 fn reachable_haul_is_assigned_while_another_destination_search_is_pending() {
     use top_down_2d_rts_prototype_nano_swarm::{
         nanobot::{HaulerAssignment, InteractionRegion, OwnerSwarm, ProductionFacility},
-        navigation::{Navigation, RouteStatus},
+        navigation::{ConnectivityStatus, Navigation, RouteGoal},
     };
     let mut app = common::sim_app_with_gather_haul();
     app.insert_resource(IntentGrid::new(2, 2));
@@ -140,10 +140,10 @@ fn reachable_haul_is_assigned_while_another_destination_search_is_pending() {
     let grid = app.world().resource::<IntentGrid>();
     let mut pickup = None;
     for _ in 0..40 {
-        if let RouteStatus::Found(route) =
-            navigation.query_interaction(origin, source_region, grid, SwarmId::PLAYER, true)
+        if let ConnectivityStatus::Connected { endpoint } =
+            navigation.query_connectivity(origin, RouteGoal::Interaction(source_region))
         {
-            pickup = route.waypoints.last().copied();
+            pickup = Some(endpoint);
             break;
         }
         navigation.advance(grid, 32_768);
@@ -151,8 +151,8 @@ fn reachable_haul_is_assigned_while_another_destination_search_is_pending() {
     let pickup = pickup.expect("the clear pickup approach resolves within forty navigation ticks");
     for _ in 0..40 {
         if matches!(
-            navigation.query_interaction(pickup, ready_region, grid, SwarmId::PLAYER, true),
-            RouteStatus::Found(_)
+            navigation.query_connectivity(pickup, RouteGoal::Interaction(ready_region)),
+            ConnectivityStatus::Connected { .. }
         ) {
             break;
         }

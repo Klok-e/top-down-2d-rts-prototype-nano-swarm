@@ -9,6 +9,109 @@ use top_down_2d_rts_prototype_nano_swarm::{
 mod common;
 
 #[test]
+fn loaded_delivery_revalidation_keeps_commitments_without_materializing_routes() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        intent::IntentGrid,
+        nanobot::{
+            HaulerAssignment, InteractionRegion, OwnerSwarm, hauler_reroute_system,
+            worker_gather_reroute_system,
+        },
+        navigation::{ConnectivityStatus, Navigation, Obstacle, RouteGoal},
+    };
+    for hauler in [false, true] {
+        let mut app = App::new();
+        let grid = IntentGrid::new(4, 4);
+        app.insert_resource(Navigation::new(
+            &grid,
+            vec![Obstacle::Rectangle {
+                center: Vec2::ZERO,
+                half: Vec2::new(36.0, 200.0),
+            }],
+        ));
+        app.add_systems(
+            Update,
+            (worker_gather_reroute_system, hauler_reroute_system).chain(),
+        );
+        let owner = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+        let start = Vec2::new(-800.0, 0.0);
+        let bot = if hauler {
+            common::spawn_hauler_at(&mut app, start)
+        } else {
+            common::spawn_worker_at(&mut app, start)
+        };
+        let source = common::spawn_stockpile(&mut app, Vec2::new(-900.0, 400.0), 0, 100);
+        let destination = if hauler {
+            common::spawn_sink_stockpile(&mut app, Vec2::new(800.0, 0.0), 0, 100)
+        } else {
+            common::spawn_stockpile(&mut app, Vec2::new(800.0, 0.0), 0, 100)
+        };
+        let nearer = if hauler {
+            common::spawn_sink_stockpile(&mut app, Vec2::new(-400.0, 400.0), 0, 100)
+        } else {
+            common::spawn_stockpile(&mut app, Vec2::new(-400.0, 400.0), 0, 100)
+        };
+        for stockpile in [source, destination, nearer] {
+            app.world_mut()
+                .entity_mut(stockpile)
+                .insert(OwnerSwarm(owner));
+        }
+        let mut reservation =
+            LogisticsReservation::new(source, destination, ResourceKind::Minerals, 4);
+        reservation.source_remaining = 0;
+        app.world_mut().entity_mut(bot).insert((
+            reservation,
+            Cargo {
+                kind: ResourceKind::Minerals,
+                amount: 4,
+            },
+        ));
+        if hauler {
+            app.world_mut().entity_mut(bot).insert(HaulerAssignment {
+                source,
+                sink: destination,
+            });
+        } else {
+            app.world_mut()
+                .entity_mut(bot)
+                .insert(ReturningToStockpile {
+                    stockpile: destination,
+                });
+        }
+        for _ in 0..80 {
+            app.update();
+            let work = app.world().resource::<Navigation>().advance(&grid, 32768);
+            assert_eq!(
+                work.movement_pending, 0,
+                "this fixture only checks commitments, not movement"
+            );
+            assert_eq!(
+                work.fine_expansions, 0,
+                "reachability must not refine a detailed path"
+            );
+            let retained = app.world().get::<LogisticsReservation>(bot).unwrap();
+            assert_eq!(
+                retained.destination, destination,
+                "a nearer alternative must not replace valid delivery"
+            );
+            assert_eq!(retained.destination_remaining, 4);
+            assert_eq!(app.world().get::<Cargo>(bot).unwrap().amount, 4);
+            assert_eq!(app.world().get::<Stockpile>(nearer).unwrap().amount, 0);
+        }
+        let region =
+            InteractionRegion::structure(app.world().get::<Transform>(destination).unwrap());
+        assert!(
+            matches!(
+                app.world()
+                    .resource::<Navigation>()
+                    .query_connectivity(start, RouteGoal::Interaction(region)),
+                ConnectivityStatus::Connected { .. }
+            ),
+            "the retained destination must be proven reachable around the wall"
+        );
+    }
+}
+
+#[test]
 fn worker_retains_cargo_and_releases_unreachable_capacity_then_resumes_after_obstacle_removal() {
     let mut app = common::sim_app_with_gather();
     common::spawn_swarm_at(&mut app, Vec2::ZERO);

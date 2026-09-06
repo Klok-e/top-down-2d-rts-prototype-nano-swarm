@@ -32,6 +32,8 @@ pub enum RouteOutcome {
     Found(Route),
     Unreachable,
 }
+type ComponentEdges = HashMap<IVec2, Vec<(IVec2, IVec2, IVec2)>>;
+
 /// Shared physical connectivity and clearance for all swarms and Nanobot Types.
 /// Chunk regions are materialized only where searches visit the large world.
 #[derive(Resource)]
@@ -43,6 +45,7 @@ pub struct Navigation {
     clearing: Vec<Obstacle>,
     revision: u64,
     chunks: std::sync::Arc<Mutex<HashMap<IVec2, Chunk>>>,
+    connections: std::sync::Arc<Mutex<ComponentEdges>>,
     scheduler: Mutex<budget::Scheduler>,
     chunk_builds: std::sync::Arc<Mutex<HashMap<IVec2, budget::ChunkBuild>>>,
     expansions: std::sync::Arc<budget::ExpansionCounters>,
@@ -155,6 +158,7 @@ impl Navigation {
             clearing: Vec::new(),
             revision: 1,
             chunks: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            connections: Default::default(),
             scheduler: Mutex::new(budget::Scheduler::default()),
             expansions: Default::default(),
             chunk_builds: Default::default(),
@@ -199,6 +203,7 @@ impl Navigation {
             });
         }
         self.chunk_builds.lock().unwrap().clear();
+        self.connections.lock().unwrap().clear();
         self.min = replacement.min;
         self.max = replacement.max;
         self.obstacles = replacement.obstacles;
@@ -229,6 +234,15 @@ impl Navigation {
                 .into_iter()
                 .all(|id| self.obstacles[id].segment_clear(a, b))
     }
+    /// Swept travel respects clearing entry barriers while allowing existing occupants to leave.
+    pub(crate) fn movement_clear(&self, start: Vec2, end: Vec2) -> bool {
+        self.segment_clear(start, end)
+            && self
+                .clearing
+                .iter()
+                .all(|shape| !shape.admits_body(start) || shape.segment_clear(start, end))
+    }
+
     fn center(cell: IVec2) -> Vec2 {
         (cell.as_vec2() + Vec2::splat(0.5)) * CELL_WIDTH
     }

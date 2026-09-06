@@ -1,98 +1,59 @@
 ---
 name: testing-on-the-toilet
 description: >-
-  Apply Google Testing on the Toilet (TotT) rules when writing tests, reviewing
-  a test diff, choosing mocks vs fakes, diagnosing brittle or change-detector
-  tests, DAMP vs DRY test structure, SMURF/pyramid layer choice, or flaky
-  time/sleep/shared-fixture tests. Instructs what a good test asserts and what
-  to refuse. Not a Vitest/runner cookbook and not an E2E authoring workflow.
+  Write and review tests that catch meaningful behavior failures. Use when
+  assessing test coverage, redundant or brittle tests, test doubles, assertions,
+  or nondeterministic tests. Repository setup and test commands belong in project docs.
 ---
 
 # Testing on the Toilet
 
-Distilled from Google's [Testing on the Toilet](https://testing.googleblog.com/search/label/TotT) episodes (2007–2026). Episode index: [`references/episodes.md`](references/episodes.md).
+Apply these decision rules when writing or reviewing tests. A useful test catches an identifiable behavior failure and remains valid through refactors that preserve its contract.
 
-Run this loop on every new test and every test you review. Completion: each test that ships would fail on a real behavior bug and would survive a behavior-preserving refactor.
+The guidance draws on Google's Testing on the Toilet series. Read the [episode index](references/episodes.md) when you need a source or a topic compressed here.
 
 ## 1. Change-detector gate
 
-A **change-detector** restates production structure (especially ordered `verify` of every collaborator call) without checking an observable result. Correct and incorrect implementations pass equally; any rename/extract/reorder fails the suite.
+Identify the contract and a concrete fault the test would catch. Contracts include observable results, side effects, and internal invariants such as a persisted encoding or resource conservation. Prefer public behavior; testing a private function is justified when the invariant itself matters.
 
-Rewrite it to assert **state, return value, rendered output, or persisted data**. If you cannot name the user-visible contract, **delete the test** and say why. Do not "fix" a refactor by mechanically updating fifty mirrors.
+A change-detector asserts implementation choices that can change without violating the contract, such as an incidental collaborator call order. Replace those assertions with the relevant outcome. Verify interactions when the interaction is the contract, such as sending a notification once.
 
-Interaction `verify` is allowed only when the call itself is the contract (send mail once, do not double-charge, presenter tells the view to show X). If unsure, rewrite to a state/return assertion; if that is impossible, **stop and ask** which observable outcome the test protects.
+Before deleting a test, establish that it duplicates retained coverage or protects no meaningful contract. Inspect callers and nearby coverage when its purpose is unclear; unresolved understanding is a reason to report uncertainty, not evidence for deletion. A tautology provides no behavioral protection, but a useful scenario may warrant replacing its assertion rather than discarding it.
+
+Apply recommendations within the user's authorized scope. A testability concern can justify a proposed production refactor; it does not itself authorize one. Resolve instruction conflicts using the applicable instruction priority and existing user decisions. Ask only when an unresolved choice materially affects the work and cannot be settled from available evidence.
 
 ## 2. Pick the cheapest layer that still has fidelity
 
-Name the bug/risk first. Pick the **topmost** row in the table that can catch it. Escalate a row only when a cheaper layer would miss that risk (state the miss). **SMURF** (Speed, Maintainability, Utilization/cost, Reliability, Fidelity) is the tradeoff language when two rows could both catch it: prefer the cheaper/faster/more reliable one.
+Choose the least costly test that can expose the identified fault with adequate fidelity. Use pure logic tests for calculations, real in-process collaborators for their integration, and broader flows when wiring or cross-system behavior is the risk. For UI wiring, exercise the control through the application's supported interaction seam; calling its handler alone does not prove the wiring.
 
-| Risk | Layer |
-| --- | --- |
-| Pure logic, parsing, validation, reducers | Fast unit through the **public API** |
-| Collaborators you own, in-process | Real objects or an owner-maintained **fake** |
-| Service/HTTP contract | Owner fake or hermetic server — not a handwritten request mock |
-| UI wiring (disabled, unbound, hidden) | Drive the **rendered control** (click/type), not the handler |
-| Cross-system critical path | Tiny e2e set: one path per use case plus key error classes; assert system outcomes, not copy/layout |
-
-Brainstorm **key risks** before stacking layers. Coverage meters find gaps; they do not certify quality. Cover both sides of a branch (the implicit `else` counts). Skip exhaustive combinatorics; extract predicates and cover each independently.
-
-Prefer testing through the **public API**. Exhaustive tests of private helpers for inputs callers never pass are change-detectors in disguise.
+Compare speed, maintainability, resource utilization, reliability, and fidelity when layers overlap. A lower test count or higher coverage percentage is not evidence of better protection. Preserve materially different failure cases without multiplying scenarios that catch the same fault.
 
 ## 3. Choose the double
 
-Order: **real → fake → stub → mock**. Mock last.
+Prefer a real dependency when it is fast, controllable, and isolated. Otherwise choose a fake for working behavior, a stub for a supplied response, or a mock when an interaction needs verification. Check a shared fake against the real dependency's relevant contract.
 
-- **Real** when it is fast, deterministic, in-process.
-- **Fake**: simplified working impl of a type you (or the library owner) maintain. Keep it narrow. Contract-test fake vs real when the fake is shared.
-- **Stub**: canned returns for queries. Do not `verify` getters.
-- **Mock**: verify side-effecting calls whose interaction *is* the spec.
-
-Hard rules:
-
-- Do **not mock types you don't own**. Wrap the third-party API; mock the wrapper; test the wrapper against the real library.
-- Mocking more than one or two collaborators, or a long `when`/`verify` chain, is a **seam** smell — extract a narrower port and fake that.
-- Inject long-lived collaborators in the constructor; pass per-call work as method arguments. No hidden singletons, unmockable statics, or `now()` inside the logic under test.
+Prefer an owned boundary over mocking third-party internals. If constructing that boundary requires out-of-scope production changes, report the tradeoff. Long mock scripts suggest a brittle seam; consider a simpler fixture or different test layer before proposing architectural changes.
 
 ## 4. Author the test (DAMP)
 
-**DAMP** (descriptive and meaningful phrases) beats DRY in tests. Tests have no tests — a reader must see cause next to effect in the method body.
+Keep cause and effect visible. DAMP means descriptive and meaningful phrases: helpers may hide irrelevant setup, while scenario-defining values and the asserted outcome remain easy to inspect.
 
-- **One behavior per test.** Name `unit_scenario_expectedOutcome` (or the project's equivalent). `testFoo` is not a name.
-- **Arrange–act–assert** in one block. Shared `@Before` soup that lives far from the assertion is how wrong expected values sneak in.
-- Helpers hide **irrelevant** construction. Scenario-relevant fields stay **visible** in the test. Builder/factory with defaults is good; silently asserting a helper default is not.
-- **Literal** inputs and expected outputs. Do not compute the expectation with loops/conditionals that can share a bug with production. If a helper must contain logic, unit-test the helper.
-- **Narrow assertions**: the fields under test, not the whole object/screenshot/hash order. One full-equality check for the common happy object is enough.
-- **Distinct non-default values** per input (`0`, `""`, first enum can match uninitialized state and fake a pass).
-- **Actionable failures**: precise matchers (`containsEntry`, `isOk` with error text) over `assertTrue(result.ok())`. Independent checks should continue (`EXPECT`) unless later asserts are meaningless (`ASSERT` file opened).
-- Floats: **tolerance**, never exact equality.
-- UI locators: stable test IDs, not copy or brittle XPath.
+- Name the behavior and scenario using project conventions. Group assertions that establish one coherent outcome; separate unrelated behaviors.
+- Derive expected results independently of production logic. Prefer literal examples for simple cases; use independent oracles or invariant checks when that better expresses the contract. Test helper logic when its complexity or reuse creates a material risk of false results.
+- Assert relevant fields with informative failures. Whole-value equality is appropriate when the whole value is the contract. Use distinguishable inputs where defaults could conceal a fault; retain zero and empty values when those boundaries are the scenario.
+- Use explicit tolerances for approximate numerical results. Exact equality is appropriate for exactly representable results or values required to pass through unchanged.
+- For UI tests, choose stable locators appropriate to the contract: test IDs, semantic roles, or accessible names. Assert wording when wording is itself the requirement.
 
 ## 5. Hermetic and deterministic
 
-No real clock, no `sleep` as synchronization, no live network/disk in unit tests, no shared files/rows assumed empty.
+Control the source of nondeterminism. Advance simulated time for time-dependent logic and synchronize on explicit completion with a bounded timeout or simulated-step limit instead of sleeping. Use isolated temporary storage when real filesystem behavior matters, and controlled dependencies for external services. Avoid shared state or live infrastructure for small logic tests.
 
-- Inject a clock; **tick** it.
-- Wait on latches/events with a timeout, or advance a fake scheduler.
-- Unique temp paths / isolated fixtures per test.
-- Force rare failures (timeouts, thrown errors) through the double — live infra cannot.
+Exercise rare error paths through controlled inputs or dependencies rather than hoping a live failure occurs. Use the repository's supported test seams and execution constraints.
 
 ## 6. Prove the test can fail
 
-When writing or editing locally: run green, then break production (or invert the assertion) and confirm **red**. When reviewing and you cannot run: write the one concrete behavior bug this assertion would catch; if you cannot, treat it as a change-detector and do not approve.
+For new or changed behavioral coverage, reproduce the original bug or introduce a representative production fault and confirm that the test fails for the expected behavioral reason. An inverted assertion, compile failure, or unrelated setup failure does not establish this proof.
 
-When **refactoring tests**, put production in a known-broken state first so dropped assertions show up; then restore production. Never green-to-green "cleanup" of tests without that check.
+Before deleting or consolidating duplicate coverage, identify the retained test and demonstrate that it detects the relevant fault. Keep that fault active through the test refactor so lost protection is observable. Restore temporary production changes without overwriting others' work, then confirm the final tests pass using the repository's required checks.
 
-If the only remaining test is a tautology, a mock-script of the implementation, or wiring with no logic: **do not add it**. Report the missing seam or the layer that should own the risk instead.
-
-If project conventions conflict with a hard rule here (required mock-all-collaborators, sleep-based waits, tests of private helpers only): **stop and cite the conflict**. Do not silently follow the weaker convention.
-
-## Review checklist
-
-A test you would merge:
-
-- [ ] Would fail on a real behavior bug, not only on a rename/extract
-- [ ] Asserts a result/state, not a call script (unless the call is the contract)
-- [ ] Public API / user-facing path, not an unreachable helper
-- [ ] Cause and effect visible; name states the outcome
-- [ ] Deterministic (clock/IO/uniqueness handled)
-- [ ] Failure message would start the fix without extra logging
+During read-only reviews, do not edit tests or temporarily mutate production. Describe the concrete fault the coverage should catch and distinguish that reasoning from executed failure proof. If execution is unavailable, report the missing evidence without claiming verification occurred.

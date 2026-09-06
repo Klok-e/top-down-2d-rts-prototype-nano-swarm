@@ -13,10 +13,18 @@ pub struct CongestionRecovery;
 #[derive(Default)]
 pub struct TravelProgress {
     goal: Vec2,
+    region: Option<super::InteractionRegion>,
     best_distance: f32,
     last_progress: f64,
     recovering: bool,
     crossed: bool,
+}
+
+#[derive(Default)]
+pub struct LocalMotion {
+    goal: Option<(Vec2, Option<super::InteractionRegion>)>,
+    velocity: Vec2,
+    departure: Option<Vec2>,
 }
 
 type ActiveWork = Or<(
@@ -26,6 +34,16 @@ type ActiveWork = Or<(
     With<super::PlannedStructureProgress>,
     With<super::MaintenanceProgress>,
     With<super::ChargerProgress>,
+)>;
+
+type AssignedWork = Or<(
+    With<super::GatherAssignment>,
+    With<super::ReturningToStockpile>,
+    With<super::HaulerAssignment>,
+    With<super::BuildAssignment>,
+    With<super::PlannedStructureClaim>,
+    With<super::MaintenanceAssignment>,
+    With<super::ChargerAssignment>,
 )>;
 
 #[derive(Clone, Copy)]
@@ -174,13 +192,65 @@ fn swept_separation(start: Vec2, delta: Vec2, other: TrafficBody) -> f32 {
     (relative + travel * t).length()
 }
 
+/// Choose a safe velocity in the acceleration-reachable disk, closest to the requested motion.
+/// A blocked disk permits an immediate stop; collision clearance is authoritative.
+fn continuous_velocity(
+    previous: Vec2,
+    requested: Vec2,
+    acceleration: f32,
+    speed_limit: f32,
+    safe: impl Fn(Vec2) -> bool,
+) -> Vec2 {
+    if requested.length_squared() < 1e-8 || acceleration <= 0.0 {
+        return Vec2::ZERO;
+    }
+    let preferred = clamp_velocity(
+        previous + clamp_velocity(requested - previous, acceleration),
+        speed_limit,
+    );
+    if safe(preferred) {
+        return preferred;
+    }
+    let requested_speed = requested.length();
+    let requested_direction = requested / requested_speed;
+    let mut best = None;
+    let mut best_score = f32::INFINITY;
+    for ring in 0..=4 {
+        for heading in 0..24 {
+            let angle = heading as f32 * std::f32::consts::TAU / 24.0;
+            let candidate =
+                previous + Vec2::new(angle.cos(), angle.sin()) * acceleration * ring as f32 / 4.0;
+            if candidate.length_squared() > speed_limit * speed_limit + 1e-6 {
+                continue;
+            }
+            let lateral = candidate.perp_dot(requested_direction);
+            let lost_speed = requested_speed - candidate.length();
+            // Retained momentum carries a passing body around contact instead of alternating tangents.
+
+            let score = candidate.distance_squared(requested)
+                + lateral * lateral
+                + 2.0 * lost_speed * lost_speed
+                + 0.5 * candidate.distance_squared(previous);
+            if score < best_score && safe(candidate) {
+                best = Some(candidate);
+                best_score = score;
+            }
+        }
+    }
+    best.unwrap_or(Vec2::ZERO)
+}
+
 #[derive(SystemParam)]
 pub struct TrafficContext<'w, 's> {
+    motion: Local<'s, std::collections::HashMap<Entity, LocalMotion>>,
     time: Res<'w, Time<Fixed>>,
     members: Query<'w, 's, &'static SwarmMember>,
     remaining_travel: Query<'w, 's, &'static super::RemainingTravel>,
     active_work: Query<'w, 's, (), ActiveWork>,
+    assigned_work: Query<'w, 's, (), AssignedWork>,
+    cargo: Query<'w, 's, &'static super::Cargo>,
     commitments: Query<'w, 's, &'static super::Commitment>,
+    approaches: Query<'w, 's, (Entity, &'static super::WorkApproach)>,
     queued: Query<'w, 's, (), With<super::WaitingForWork>>,
 }
 
@@ -205,12 +275,16 @@ pub fn velocity_system(
     navigation: Res<crate::navigation::Navigation>,
 ) {
     let TrafficContext {
+        mut motion,
         time,
         members,
         remaining_travel,
         active_work,
+        assigned_work,
+        cargo,
         commitments,
         queued,
+        approaches,
     } = traffic;
     let physical = world.p0().snapshot();
     let mut query = world.p1();
@@ -241,14 +315,26 @@ pub fn velocity_system(
     }
     let now = time.elapsed_secs_f64();
     progress.retain(|entity, _| indices.contains_key(entity));
+    motion.retain(|entity, _| indices.contains_key(entity));
     let friendly = |a: Entity, b: Entity| {
         members.get(a).map_or(SwarmId::PLAYER, |member| member.0)
             == members.get(b).map_or(SwarmId::PLAYER, |member| member.0)
     };
+    let mut demanded_regions = Vec::new();
+    for (entity, approach) in &approaches {
+        let owner = members
+            .get(entity)
+            .map_or(SwarmId::PLAYER, |member| member.0);
+        if !demanded_regions.contains(&(owner, approach.region)) {
+            demanded_regions.push((owner, approach.region));
+        }
+    }
     let pinned: std::collections::HashSet<_> = bodies
         .iter()
         .filter_map(|(body, _)| {
             ((active_work.contains(body.entity)
+                || assigned_work.contains(body.entity)
+                || cargo.get(body.entity).is_ok_and(|cargo| cargo.amount > 0)
                 || commitments
                     .get(body.entity)
                     .is_ok_and(|value| *value == super::Commitment::Working))
@@ -266,6 +352,7 @@ pub fn velocity_system(
             .map(|movement| movement.xy);
         if pinned.contains(&body.entity) {
             bodies[i].1 = Vec2::ZERO;
+            motion.entry(body.entity).or_default().departure = None;
         } else if movement.is_none() || queued.contains(body.entity) {
             // Step sideways before an approaching friendly reaches the waiting body's space.
             let approaching = lookup
@@ -303,6 +390,65 @@ pub fn velocity_system(
                     .unwrap_or(Vec2::ZERO);
             }
         }
+        if movement.is_none() && !queued.contains(body.entity) && !pinned.contains(&body.entity) {
+            if motion
+                .entry(body.entity)
+                .or_default()
+                .departure
+                .is_some_and(|target| !physical.movement_clear(body.start, target))
+            {
+                motion.entry(body.entity).or_default().departure = None;
+            }
+            if motion.entry(body.entity).or_default().departure.is_none() {
+                let owner = members
+                    .get(body.entity)
+                    .map_or(SwarmId::PLAYER, |member| member.0);
+                let demanded = demanded_regions.iter().find_map(|(swarm, region)| {
+                    (*swarm == owner
+                        && !approaches.contains(body.entity)
+                        && body.start.distance(region.approach(body.start)) < diameter)
+                        .then_some(*region)
+                });
+                if let Some(region) = demanded {
+                    let target = (0..8)
+                        .map(|step| {
+                            let angle = step as f32 * std::f32::consts::FRAC_PI_4;
+                            body.start + Vec2::new(angle.cos(), angle.sin()) * diameter
+                        })
+                        .filter(|point| physical.movement_clear(body.start, *point))
+                        .max_by(|a, b| {
+                            a.distance_squared(region.approach(*a))
+                                .total_cmp(&b.distance_squared(region.approach(*b)))
+                        });
+                    if let Some(target) = target {
+                        motion.entry(body.entity).or_default().departure = Some(target);
+                    }
+                }
+            }
+            if let Some(target) = motion.entry(body.entity).or_default().departure {
+                if body.start.distance(target) <= 0.01 {
+                    motion.entry(body.entity).or_default().departure = None;
+                } else {
+                    bodies[i].1 = clamp_velocity(target - body.start, game_settings.bot_speed);
+                }
+            }
+        } else {
+            motion.entry(body.entity).or_default().departure = None;
+        }
+        let order = query.get(body.entity).unwrap().5;
+        let region = order.and_then(|order| order.interaction);
+        let preference = motion.entry(body.entity).or_default();
+        let goal = order.map(|order| (order.xy, order.interaction));
+        let same_goal = match (preference.goal, goal) {
+            (Some((_, Some(old))), Some((_, Some(new)))) => old == new,
+            (old, new) => old == new,
+        };
+        if !same_goal {
+            if yielding.remove(&body.entity).is_some() {
+                commands.entity(body.entity).remove::<TrafficYield>();
+            }
+            preference.goal = goal;
+        }
         let overlapping = lookup
             .neighbourhood(lookup.bucket_for_position(body.start), 1)
             .flat_map(|(_, entries)| entries.iter().copied())
@@ -331,15 +477,19 @@ pub fn velocity_system(
             }
             continue;
         };
-        let distance = remaining.0;
+        let distance = region.map_or(remaining.0, |region| {
+            body.start.distance(region.approach(body.start))
+        });
         let state = progress.entry(body.entity).or_insert(TravelProgress {
             goal: movement,
+            region,
             best_distance: distance,
             last_progress: now,
             ..Default::default()
         });
-        if state.goal != movement {
+        if state.region != region || (region.is_none() && state.goal != movement) {
             state.goal = movement;
+            state.region = region;
             state.best_distance = distance;
             state.last_progress = now;
         } else if distance + 2.0 < state.best_distance {
@@ -368,6 +518,7 @@ pub fn velocity_system(
         if pinned.contains(&body.entity) {
             yielding.remove(&body.entity);
             commands.entity(body.entity).remove::<TrafficYield>();
+            motion.entry(body.entity).or_default().velocity = Vec2::ZERO;
             continue;
         }
         let nearby: Vec<_> = lookup
@@ -376,13 +527,21 @@ pub fn velocity_system(
             .filter(|j| *j != i)
             .collect();
         if let Some(state) = progress.get_mut(&body.entity) {
+            // A returning yield follows its recorded trail, which can be obstructed even when the original route direction is clear or pending.
+            let recovery_intent = yielding
+                .get(&body.entity)
+                .filter(|state| state.returning)
+                .and_then(|state| state.trail.last())
+                .map_or(desired, |point| {
+                    clamp_velocity(*point - body.start, game_settings.bot_speed)
+                });
             let obstructed_by_friend = remaining_travel
                 .get(body.entity)
                 .is_ok_and(|remaining| remaining.0 > 0.01)
                 && nearby.iter().any(|j| {
                     let other = bodies[*j].0;
                     friendly(body.entity, other.entity)
-                        && swept_separation(body.start, desired, other) < diameter
+                        && swept_separation(body.start, recovery_intent, other) < diameter
                 });
             if !state.recovering && now - state.last_progress >= 1.0 && obstructed_by_friend {
                 state.recovering = true;
@@ -397,6 +556,24 @@ pub fn velocity_system(
         let recovering = progress
             .get(&body.entity)
             .is_some_and(|state| state.recovering);
+        let can_resume_route = yielding.contains_key(&body.entity)
+            && desired.length_squared() > 0.01
+            && physical.movement_clear(body.start, body.start + desired)
+            && nearby.iter().all(|j| {
+                let (other, wanted) = bodies[*j];
+                swept_separation(
+                    body.start,
+                    desired,
+                    TrafficBody {
+                        delta: wanted,
+                        ..other
+                    },
+                ) >= diameter
+            });
+        if can_resume_route {
+            yielding.remove(&body.entity);
+            commands.entity(body.entity).remove::<TrafficYield>();
+        }
         if let Some(state) = yielding.get_mut(&body.entity) {
             let (other, other_wanted) = bodies[indices[&state.to]];
             let following = nearby.iter().any(|j| {
@@ -437,9 +614,9 @@ pub fn velocity_system(
                     && toward.dot(desired) > 0.0
                     && swept_separation(
                         body.start,
-                        desired.normalize_or_zero() * diameter,
+                        desired,
                         TrafficBody {
-                            delta: wanted.normalize_or_zero() * diameter,
+                            delta: wanted,
                             ..other
                         },
                     ) < diameter
@@ -519,7 +696,7 @@ pub fn velocity_system(
                 })
         };
         let speed = game_settings.bot_speed;
-        let applied = if let Some(state) = yielding.get_mut(&body.entity) {
+        let requested = if let Some(state) = yielding.get_mut(&body.entity) {
             while state.returning
                 && state
                     .trail
@@ -529,10 +706,9 @@ pub fn velocity_system(
                 state.trail.pop();
             }
             if state.returning {
-                let delta = state.trail.last().map_or(Vec2::ZERO, |point| {
+                state.trail.last().map_or(Vec2::ZERO, |point| {
                     clamp_velocity(*point - body.start, speed)
-                });
-                if safe(delta) { delta } else { Vec2::ZERO }
+                })
             } else {
                 let side = Vec2::new(-state.retreat.y, state.retreat.x);
                 let choices = state.side.map_or(vec![side, -side, state.retreat], |side| {
@@ -544,7 +720,6 @@ pub fn velocity_system(
                         let delta = direction * speed;
                         if navigation
                             .segment_clear(body.start, body.start + direction * (diameter + 2.0))
-                            && safe(delta)
                         {
                             if direction != state.retreat {
                                 state.side = Some(direction);
@@ -556,27 +731,54 @@ pub fn velocity_system(
                     })
                     .unwrap_or(Vec2::ZERO)
             }
-        } else if safe(desired) {
-            desired
         } else {
-            let direction = desired.normalize_or_zero();
-            let side = Vec2::new(-direction.y, direction.x);
-            [
-                (direction + side).normalize_or_zero(),
-                (direction - side).normalize_or_zero(),
-                side,
-                -side,
-            ]
-            .into_iter()
-            .find_map(|direction| {
-                let delta = direction * desired.length();
-                safe(delta).then_some(delta)
-            })
-            .unwrap_or(Vec2::ZERO)
+            desired
         };
+        let state = motion.get_mut(&body.entity).unwrap();
+        let acceleration = speed * (time.delta_secs() / 0.12).clamp(0.0, 1.0);
+        let local_remaining = state
+            .departure
+            .map(|point| point.distance(body.start))
+            .or_else(|| {
+                yielding
+                    .get(&body.entity)
+                    .filter(|state| state.returning)
+                    .and_then(|state| state.trail.last().map(|point| point.distance(body.start)))
+            });
+        let remaining = local_remaining.or_else(|| {
+            remaining_travel
+                .get(body.entity)
+                .ok()
+                .map(|travel| travel.0)
+        });
+        let braking = local_remaining.is_some() || !yielding.contains_key(&body.entity);
+        let limit = if braking {
+            remaining.map_or(speed, |distance| speed.min(distance.max(0.0)))
+        } else {
+            speed
+        };
+        let target = if braking {
+            remaining.map_or(requested, |distance| {
+                clamp_velocity(
+                    requested,
+                    (acceleration * acceleration + 2.0 * acceleration * distance.max(0.0)).sqrt()
+                        - acceleration,
+                )
+            })
+        } else {
+            requested
+        };
+        let applied = continuous_velocity(state.velocity, target, acceleration, limit, safe);
+        state.velocity = applied;
         if let Some(state) = yielding.get_mut(&body.entity) {
             if !state.returning && applied.length_squared() > 0.0 {
                 state.trail.push(body.start + applied);
+                // A committed side-step or retreat clears a passage even while route distance grows.
+                if applied.dot(state.side.unwrap_or(state.retreat)) > 2.0
+                    && let Some(travel) = progress.get_mut(&body.entity)
+                {
+                    travel.last_progress = now;
+                }
             }
             if state.returning && state.trail.is_empty() {
                 yielding.remove(&body.entity);

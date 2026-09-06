@@ -23,6 +23,7 @@ use std::path::Path;
 
 use libtest_mimic::{Arguments, Conclusion, Failed, Trial};
 
+mod approach_delivery;
 mod background_terrain;
 mod build_zone_placement;
 mod combat_presentation;
@@ -78,6 +79,10 @@ fn main() -> std::process::ExitCode {
     // Each test is ignored so default run skips GPU setup. `--ignored` runs
     // only ignored tests, matching standard `cargo test` convention.
     let tests = vec![
+        Trial::test("approach_delivery", || {
+            run(approach_delivery::approach_delivery)
+        })
+        .with_ignored_flag(true),
         Trial::test("deposit_presentation", || {
             run_with_validation(
                 deposit_presentation::deposit_presentation,

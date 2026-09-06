@@ -128,12 +128,20 @@ pub fn clear_finished_structures_system(
 ) {
     let physical = world.p0().snapshot();
     let mut plans = world.p1();
-    for (bot, _, evacuation, _) in &occupants {
-        if evacuation.is_some_and(|evacuation| plans.get(evacuation.structure).is_err()) {
-            commands
-                .entity(bot)
-                .remove::<ClearingEvacuation>()
-                .remove::<DirectMovementComponent>();
+    for (bot, position, evacuation, movement) in &occupants {
+        if let Some(evacuation) = evacuation.filter(|evacuation| {
+            plans
+                .get(evacuation.structure)
+                .map_or(true, |(_, _, transform, _, _)| {
+                    Obstacle::structure(transform).admits_body(position.translation.truncate())
+                })
+        }) {
+            commands.entity(bot).remove::<ClearingEvacuation>();
+            if movement.is_some_and(|movement| {
+                movement.interaction.is_none() && movement.xy == evacuation.goal
+            }) {
+                commands.entity(bot).remove::<DirectMovementComponent>();
+            }
         }
     }
     let layout = access.p0().snapshot();
@@ -191,18 +199,30 @@ pub fn clear_finished_structures_system(
         for (bot, position, evacuation, movement) in &occupants {
             let position = position.translation.truncate();
             if shape.admits_body(position) {
-                if evacuation.is_some_and(|evacuation| evacuation.structure == entity) {
-                    commands
-                        .entity(bot)
-                        .remove::<ClearingEvacuation>()
-                        .remove::<DirectMovementComponent>();
+                if let Some(evacuation) =
+                    evacuation.filter(|evacuation| evacuation.structure == entity)
+                {
+                    commands.entity(bot).remove::<ClearingEvacuation>();
+                    if movement.is_some_and(|movement| {
+                        movement.interaction.is_none() && movement.xy == evacuation.goal
+                    }) {
+                        commands.entity(bot).remove::<DirectMovementComponent>();
+                    }
                 }
                 continue;
             }
             occupied = true;
+            let free_exit = |goal: Vec2| {
+                occupants.iter().all(|(other, transform, _, _)| {
+                    other == bot
+                        || transform.translation.truncate().distance_squared(goal)
+                            >= (2.0 * crate::navigation::BODY_RADIUS).powi(2)
+                })
+            };
             if let Some(evacuation) = evacuation.filter(|evacuation| {
                 evacuation.structure == entity
                     && physical.can_occupy(evacuation.goal)
+                    && free_exit(evacuation.goal)
                     && physical.movement_clear(position, evacuation.goal)
             }) {
                 if movement.is_none() {
@@ -225,6 +245,7 @@ pub fn clear_finished_structures_system(
                 for x in min.x..=max.x {
                     let goal = (IVec2::new(x, y).as_vec2() + Vec2::splat(0.5)) * CELL_WIDTH;
                     if shape.admits_body(goal)
+                        && free_exit(goal)
                         && physical.can_occupy(goal)
                         && physical.movement_clear(position, goal)
                     {

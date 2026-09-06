@@ -111,7 +111,7 @@ enum StockpileSourceFilter {
 /// Pick the best Logistics Leg for a Hauler.
 ///
 /// Ranking is ADR-0005: terminal sinks beat buffer sinks; within
-/// a tier the shortest `hauler -> source -> sink` trip wins.
+/// a tier the lowest estimated `hauler -> source -> sink` trip wins.
 /// Both terminal kinds draw only from Sink Stockpiles; Sink
 /// Stockpiles draw only from Source Stockpiles.
 #[cfg(test)]
@@ -123,7 +123,8 @@ pub fn pick_logistics_leg(
     pick_logistics_leg_with_cost(hauler, stockpiles, terminals, |a, b| a.distance(b))
 }
 
-/// Pick the best Logistics Leg using caller-supplied route costs.
+/// Pick the best Logistics Leg using estimates for proven reachable candidates.
+/// Unknown or unreachable legs use an infinite cost and remain unselected.
 pub fn pick_logistics_leg_with_cost(
     hauler: HaulerContext,
     stockpiles: &[StockpileCandidate],
