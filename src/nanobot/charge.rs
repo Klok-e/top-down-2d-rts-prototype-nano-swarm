@@ -704,7 +704,6 @@ pub fn find_swarm_capacity_aware_charger(
     charger_loads: &HashMap<Entity, u32>,
     navigation: &crate::navigation::Navigation,
 ) -> Option<(Entity, Vec2)> {
-    let mut pending_navigation = false;
     let mut best: Option<(f32, Entity, Vec2)> = None;
     for (entity, charger, transform, owner, condition) in chargers.iter() {
         if !charger_is_eligible(charger, owner, condition, swarm, grid, swarms)
@@ -713,22 +712,14 @@ pub fn find_swarm_capacity_aware_charger(
             continue;
         }
         let position = transform.translation.truncate();
-        let outcome = navigation.query_interaction(
+        let distance = match navigation.query_connectivity(
             pos,
-            InteractionRegion::structure(transform),
-            grid,
-            swarm,
-            false,
-        );
-        let route = match outcome {
-            crate::navigation::RouteStatus::Found(route) => route,
-            crate::navigation::RouteStatus::Pending => {
-                pending_navigation = true;
-                continue;
-            }
-            crate::navigation::RouteStatus::Unreachable => continue,
+            crate::navigation::RouteGoal::Interaction(InteractionRegion::structure(transform)),
+        ) {
+            crate::navigation::ConnectivityStatus::Connected { endpoint } => pos.distance(endpoint),
+            crate::navigation::ConnectivityStatus::Pending
+            | crate::navigation::ConnectivityStatus::Unreachable => continue,
         };
-        let distance = route.cost;
         let better = best.is_none_or(|(best_distance, best_entity, _)| {
             distance.total_cmp(&best_distance).is_lt()
                 || (distance.total_cmp(&best_distance).is_eq()
@@ -737,9 +728,6 @@ pub fn find_swarm_capacity_aware_charger(
         if better {
             best = Some((distance, entity, position));
         }
-    }
-    if pending_navigation {
-        return None;
     }
     best.map(|(_, entity, position)| (entity, position))
 }

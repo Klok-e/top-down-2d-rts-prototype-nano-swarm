@@ -8,7 +8,6 @@
 
 use bevy::prelude::*;
 
-use crate::intent::IntentGrid;
 use crate::nanobot::{
     Cargo, InteractionRegion, LogisticsReservation, NanobotType, OwnerSwarm, ProductionFacility,
     SupportCondition,
@@ -18,7 +17,7 @@ use crate::nanobot::{
         HaulerContext, StockpileCandidate, TerminalCandidate, pick_logistics_leg_with_cost,
     },
 };
-use crate::navigation::{Navigation, RouteStatus};
+use crate::navigation::{ConnectivityStatus, Navigation, RouteGoal};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole};
 
 /// Maximum units a Hauler can carry in a single trip. The glossary is
@@ -108,7 +107,6 @@ pub fn hauler_assignment_system(
     chargers: Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
     conditions: Query<&SupportCondition>,
     swarms: Query<&SwarmId>,
-    grid: Res<IntentGrid>,
     navigation: Res<Navigation>,
 ) {
     let stockpile_candidates: Vec<StockpileCandidate> = stockpiles
@@ -167,7 +165,6 @@ pub fn hauler_assignment_system(
         }
         let hauler_pos = transform.translation.truncate();
         let swarm = swarm_member.0;
-        let pending_navigation = std::cell::Cell::new(false);
         let Some(leg) = pick_logistics_leg_with_cost(
             HaulerContext {
                 pos: hauler_pos,
@@ -190,37 +187,31 @@ pub fn hauler_assignment_system(
                 let start = if from == hauler_pos {
                     from
                 } else if let Some(region) = region_at(from) {
-                    match navigation.query_interaction(hauler_pos, region, &grid, swarm, true) {
-                        RouteStatus::Found(route) => *route.waypoints.last().unwrap_or(&hauler_pos),
-                        RouteStatus::Pending => {
-                            pending_navigation.set(true);
+                    match navigation.query_connectivity(hauler_pos, RouteGoal::Interaction(region))
+                    {
+                        ConnectivityStatus::Connected { endpoint } => endpoint,
+                        ConnectivityStatus::Pending => {
                             return f32::INFINITY;
                         }
-                        RouteStatus::Unreachable => return f32::INFINITY,
+                        ConnectivityStatus::Unreachable => return f32::INFINITY,
                     }
                 } else {
                     from
                 };
                 let outcome = if let Some(region) = region_at(to) {
-                    navigation.query_interaction(start, region, &grid, swarm, true)
+                    navigation.query_connectivity(start, RouteGoal::Interaction(region))
                 } else {
-                    navigation.query_point(start, to, &grid, swarm, true)
+                    navigation.query_connectivity(start, RouteGoal::Point(to))
                 };
                 match outcome {
-                    RouteStatus::Found(route) => route.cost,
-                    RouteStatus::Pending => {
-                        pending_navigation.set(true);
-                        f32::INFINITY
-                    }
-                    RouteStatus::Unreachable => f32::INFINITY,
+                    ConnectivityStatus::Connected { endpoint } => start.distance(endpoint),
+                    ConnectivityStatus::Pending => f32::INFINITY,
+                    ConnectivityStatus::Unreachable => f32::INFINITY,
                 }
             },
         ) else {
             continue;
         };
-        if pending_navigation.get() {
-            continue;
-        }
         let source = leg.source;
         let sink = leg.sink;
         let Ok((_, _, source_transform, _, _)) = stockpiles.get(source) else {
@@ -312,7 +303,6 @@ pub fn hauler_arrive_source_system(
 pub fn hauler_load_system(
     mut commands: Commands,
     navigation: Res<Navigation>,
-    grid: Res<IntentGrid>,
     mut haulers: Query<
         (
             Entity,
@@ -365,14 +355,11 @@ pub fn hauler_load_system(
             && !region.contains(transform.translation.truncate())
         {
             if matches!(
-                navigation.query_interaction(
+                navigation.query_connectivity(
                     transform.translation.truncate(),
-                    region,
-                    &grid,
-                    swarm.0,
-                    true
+                    RouteGoal::Interaction(region)
                 ),
-                RouteStatus::Unreachable
+                ConnectivityStatus::Unreachable
             ) {
                 finish_reservation(reservation.as_deref_mut(), cargo.amount);
                 commands.entity(entity).remove::<DirectMovementComponent>();
@@ -603,7 +590,6 @@ pub fn hauler_reroute_system(
     conditions: Query<&SupportCondition>,
     swarms: Query<&SwarmId>,
     reservations: Query<(Entity, &LogisticsReservation)>,
-    grid: Res<IntentGrid>,
     navigation: Res<Navigation>,
 ) {
     let mut same_tick_claims = std::collections::HashMap::<Entity, u32>::new();
@@ -648,15 +634,9 @@ pub fn hauler_reroute_system(
         if reservation_covers_destination(reservation, assignment.sink, cargo.amount)
             && let Some(current) = endpoint(assignment.sink, returning.is_some())
         {
-            match navigation.query_interaction(
-                position,
-                current.region,
-                &grid,
-                swarm_member.0,
-                true,
-            ) {
-                RouteStatus::Found(_) | RouteStatus::Pending => continue,
-                RouteStatus::Unreachable => {}
+            match navigation.query_connectivity(position, RouteGoal::Interaction(current.region)) {
+                ConnectivityStatus::Connected { .. } | ConnectivityStatus::Pending => continue,
+                ConnectivityStatus::Unreachable => {}
             }
         }
         let mut best: Option<(bool, f32, Entity, SinkEndpointSnapshot)> = None;
@@ -678,28 +658,24 @@ pub fn hauler_reroute_system(
             } else {
                 continue;
             };
-            let route = match navigation.query_interaction(
-                position,
-                target.region,
-                &grid,
-                swarm_member.0,
-                true,
-            ) {
-                RouteStatus::Found(route) => route,
-                RouteStatus::Pending => {
+            let cost = match navigation
+                .query_connectivity(position, RouteGoal::Interaction(target.region))
+            {
+                ConnectivityStatus::Connected { endpoint } => position.distance(endpoint),
+                ConnectivityStatus::Pending => {
                     pending_destination |= !is_return;
                     continue;
                 }
-                RouteStatus::Unreachable => continue,
+                ConnectivityStatus::Unreachable => continue,
             };
             if best
                 .as_ref()
-                .is_none_or(|(old_return, cost, old_entity, _)| {
-                    (is_return, route.cost, candidate.to_bits())
-                        < (*old_return, *cost, old_entity.to_bits())
+                .is_none_or(|(old_return, old_cost, old_entity, _)| {
+                    (is_return, cost, candidate.to_bits())
+                        < (*old_return, *old_cost, old_entity.to_bits())
                 })
             {
-                best = Some((is_return, route.cost, candidate, target));
+                best = Some((is_return, cost, candidate, target));
             }
         }
         if pending_destination && best.as_ref().is_none_or(|(is_return, ..)| *is_return) {

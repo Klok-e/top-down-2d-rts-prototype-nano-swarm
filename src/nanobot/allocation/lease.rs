@@ -146,7 +146,7 @@ pub fn maintain_regional_leases_system(
         let reachability = bodies
             .get(entity)
             .ok()
-            .and_then(|(transform, member, kind, cargo)| {
+            .and_then(|(transform, _, _, cargo)| {
                 if cargo.is_some_and(|cargo| cargo.amount > 0) {
                     return None;
                 }
@@ -159,8 +159,7 @@ pub fn maintain_regional_leases_system(
                 let Some(region) = access.region(target) else {
                     return Some(WorkReachability::Unreachable);
                 };
-                let approach =
-                    access.route_from(member.0, *kind, transform.translation.truncate(), region);
+                let approach = access.reachability_from(transform.translation.truncate(), region);
                 if approach == WorkReachability::Unreachable {
                     return Some(approach);
                 }
@@ -168,12 +167,8 @@ pub fn maintain_regional_leases_system(
                     let Some(destination) = access.region(sink) else {
                         return Some(WorkReachability::Unreachable);
                     };
-                    let delivery = access.chain_from(
-                        member.0,
-                        transform.translation.truncate(),
-                        region,
-                        destination,
-                    );
+                    let delivery =
+                        access.chain_from(transform.translation.truncate(), region, destination);
                     if delivery == WorkReachability::Unreachable {
                         return Some(delivery);
                     }

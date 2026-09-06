@@ -15,7 +15,6 @@ use super::{
     choose_bounded_candidate_from_ordered_regions_with_claims, outward_pull_budgets, pressure_map,
 };
 use crate::{
-    intent::IntentGrid,
     nanobot::{
         Commitment, DirectMovementComponent, ExtractProgress, GatherAssignment,
         HAULER_CARRY_CAPACITY, HaulerAssignment, HaulerLoad, HaulerLoading, Health,
@@ -28,7 +27,7 @@ use crate::{
             WEAKENED_CHARGE_THRESHOLD, minerals_to_fully_charge,
         },
     },
-    navigation::{Navigation, RouteStatus},
+    navigation::{ConnectivityStatus, Navigation, RouteGoal},
     resources::{ResourceDeposit, ResourceKind, Stockpile},
 };
 
@@ -221,7 +220,6 @@ pub struct TerminalLogisticsParams<'w, 's> {
 pub fn regional_allocation_acquisition_system(
     mut commands: Commands,
     clock: Res<AllocationClock>,
-    grid: Res<IntentGrid>,
     navigation: Res<Navigation>,
     projection: Res<ActionableProjection>,
     mut region_ages: ResMut<RegionalServiceAges>,
@@ -496,7 +494,6 @@ pub fn regional_allocation_acquisition_system(
                 &stockpiles,
                 facilities,
                 chargers,
-                &grid,
                 &navigation,
                 &reserved_source,
                 &reserved_destination,
@@ -547,8 +544,8 @@ pub fn regional_allocation_acquisition_system(
                         return None;
                     }
                     matches!(
-                        navigation.query_interaction(bot.position, region, &grid, bot.swarm, false),
-                        RouteStatus::Found(_)
+                        navigation.query_connectivity(bot.position, RouteGoal::Interaction(region)),
+                        ConnectivityStatus::Connected { .. }
                     )
                     .then_some(claims)
                 },
@@ -608,7 +605,7 @@ struct TerminalLogisticsScore {
     urgency: u8,
     age_key: u32,
     deficit_key: u64,
-    route_cost: f32,
+    estimated_cost: f32,
     terminal: u64,
     source: u64,
 }
@@ -619,7 +616,7 @@ impl TerminalLogisticsScore {
             .cmp(&other.urgency)
             .then_with(|| self.age_key.cmp(&other.age_key))
             .then_with(|| self.deficit_key.cmp(&other.deficit_key))
-            .then_with(|| self.route_cost.total_cmp(&other.route_cost))
+            .then_with(|| self.estimated_cost.total_cmp(&other.estimated_cost))
             .then_with(|| self.terminal.cmp(&other.terminal))
             .then_with(|| self.source.cmp(&other.source))
     }
@@ -635,7 +632,6 @@ fn choose_terminal_logistics_work(
     stockpiles: &Query<(&Stockpile, &Transform)>,
     facilities: &Query<(&ProductionFacility, &Transform)>,
     chargers: &Query<(&Charger, &Transform)>,
-    grid: &IntentGrid,
     navigation: &Navigation,
     reserved_source: &BTreeMap<Entity, u32>,
     reserved_destination: &BTreeMap<Entity, u32>,
@@ -727,39 +723,28 @@ fn choose_terminal_logistics_work(
                 base_urgency.saturating_sub((age / TERMINAL_FAIRNESS_PROMOTION_TICKS) as u8);
             let deficit_ratio =
                 u64::from(deficit).saturating_mul(1_000_000) / u64::from(capacity.max(1));
-            let outcome = navigation.query_interaction(
+            let source_pos = match navigation.query_connectivity(
                 bot.position,
-                InteractionRegion::structure(source_transform),
-                grid,
-                bot.swarm,
-                true,
-            );
-            let source_route = match outcome {
-                RouteStatus::Found(route) => route,
-                RouteStatus::Pending => continue,
-                RouteStatus::Unreachable => continue,
-            };
-            let source_pos = *source_route.waypoints.last().unwrap_or(&bot.position);
-            let sink_route = match navigation.query_interaction(
-                source_pos,
-                sink_region,
-                grid,
-                bot.swarm,
-                true,
+                RouteGoal::Interaction(InteractionRegion::structure(source_transform)),
             ) {
-                RouteStatus::Found(route) => route,
-                RouteStatus::Pending => continue,
-                RouteStatus::Unreachable => continue,
+                ConnectivityStatus::Connected { endpoint } => endpoint,
+                ConnectivityStatus::Pending | ConnectivityStatus::Unreachable => continue,
             };
-            let route_cost = source_route.cost + sink_route.cost;
-            if !route_cost.is_finite() {
+            let sink_pos = match navigation
+                .query_connectivity(source_pos, RouteGoal::Interaction(sink_region))
+            {
+                ConnectivityStatus::Connected { endpoint } => endpoint,
+                ConnectivityStatus::Pending | ConnectivityStatus::Unreachable => continue,
+            };
+            let estimated_cost = bot.position.distance(source_pos) + source_pos.distance(sink_pos);
+            if !estimated_cost.is_finite() {
                 continue;
             }
             let score = TerminalLogisticsScore {
                 urgency,
                 age_key: u32::MAX - age,
                 deficit_key: u64::MAX - deficit_ratio,
-                route_cost,
+                estimated_cost,
                 terminal: sink.to_bits(),
                 source: source.to_bits(),
             };

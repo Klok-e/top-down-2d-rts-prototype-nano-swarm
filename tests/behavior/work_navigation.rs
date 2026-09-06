@@ -33,13 +33,13 @@ fn oldest_loaded_waiter_gets_open_work_position_before_closer_newcomer() {
             east_blocker = Some(blocker);
         }
     }
-    let oldest = common::spawn_hauler_at(&mut app, Vec2::new(750.0, 0.0));
+    let oldest = common::spawn_hauler_at(&mut app, Vec2::new(590.0, 0.0));
     app.world_mut().entity_mut(oldest).insert((
         Cargo {
             kind: ResourceKind::Minerals,
             amount: 7,
         },
-        region.movement_from(Vec2::new(750.0, 0.0)),
+        region.movement_from(Vec2::new(590.0, 0.0)),
     ));
     for _ in 0..3 {
         app.update();
@@ -60,7 +60,7 @@ fn oldest_loaded_waiter_gets_open_work_position_before_closer_newcomer() {
     app.world_mut()
         .get_mut::<Transform>(oldest)
         .unwrap()
-        .translation = Vec3::new(780.0, -20.0, 0.0);
+        .translation = Vec3::new(610.0, -20.0, 0.0);
     app.world_mut().despawn(east_blocker.unwrap());
     let mut arrived = None;
     for _ in 0..500 {
@@ -85,39 +85,6 @@ fn oldest_loaded_waiter_gets_open_work_position_before_closer_newcomer() {
     );
     assert_eq!(app.world().get::<Cargo>(oldest).unwrap().amount, 7);
     assert_eq!(app.world().get::<Cargo>(newcomer).unwrap().amount, 11);
-}
-
-#[test]
-fn empty_bot_releases_work_when_the_entire_perimeter_is_occupied() {
-    let mut app = common::sim_app_with_movement();
-    let center = Vec2::new(400.0, 0.0);
-    let site = Transform::from_translation(center.extend(0.0));
-    let region = InteractionRegion::structure(&site);
-    for x in [-68.0, 0.0, 68.0] {
-        for y in [-68.0, 0.0, 68.0] {
-            if x == 0.0 && y == 0.0 {
-                continue;
-            }
-            let blocker = common::spawn_worker_at(&mut app, center + Vec2::new(x, y));
-            app.world_mut()
-                .entity_mut(blocker)
-                .insert(Commitment::Working);
-        }
-    }
-    let worker = common::spawn_worker_at(&mut app, Vec2::new(700.0, 0.0));
-    app.world_mut().entity_mut(worker).insert((
-        Commitment::Working,
-        region.movement_from(Vec2::new(700.0, 0.0)),
-    ));
-    for _ in 0..3 {
-        app.update();
-    }
-    assert!(app.world().get::<DirectMovementComponent>(worker).is_none());
-    assert_eq!(
-        app.world().get::<Commitment>(worker),
-        Some(&Commitment::Idle)
-    );
-    assert!(app.world().get::<WaitingForWork>(worker).is_none());
 }
 
 #[test]
@@ -190,4 +157,93 @@ fn empty_worker_leaves_saturated_build_site_and_builds_an_alternate_site() {
             < 50,
         "the rejected near site must not prevent useful work at the free alternate site"
     );
+}
+
+#[test]
+fn distant_loaded_bot_approaches_an_occupied_goal_before_waiting() {
+    use bevy::time::TimeUpdateStrategy;
+    use std::time::Duration;
+    let mut app = common::sim_app_with_movement();
+    let cadence = Duration::from_secs_f64(1.0 / 60.0);
+    app.insert_resource(Time::<Fixed>::from_duration(cadence));
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(cadence));
+    let site = common::spawn_structure_at(&mut app, Vec2::new(400.0, 0.0));
+    let region = InteractionRegion::structure(app.world().get::<Transform>(site).unwrap());
+    for offset in [
+        Vec2::new(-68.0, -68.0),
+        Vec2::new(-68.0, 0.0),
+        Vec2::new(-68.0, 68.0),
+        Vec2::new(0.0, -68.0),
+        Vec2::new(0.0, 68.0),
+        Vec2::new(68.0, -68.0),
+        Vec2::new(68.0, 0.0),
+        Vec2::new(68.0, 68.0),
+    ] {
+        let blocker = common::spawn_worker_at(&mut app, Vec2::new(400.0, 0.0) + offset);
+        app.world_mut()
+            .entity_mut(blocker)
+            .insert(Commitment::Working);
+    }
+    let start = Vec2::new(800.0, 0.0);
+    let bot = common::spawn_hauler_at(&mut app, start);
+    app.world_mut().entity_mut(bot).insert((
+        Cargo {
+            kind: ResourceKind::Minerals,
+            amount: 20,
+        },
+        region.movement_from(start),
+    ));
+    for _ in 0..30 {
+        app.update();
+    }
+    let position = app
+        .world()
+        .get::<Transform>(bot)
+        .unwrap()
+        .translation
+        .truncate();
+    assert!(
+        position.x < 700.0,
+        "distant cargo must approach even when every standing position is occupied: {position:?}"
+    );
+    assert!(app.world().get::<WaitingForWork>(bot).is_none());
+    for _ in 0..120 {
+        app.update();
+    }
+    assert!(
+        app.world().get::<WaitingForWork>(bot).is_some(),
+        "a full local destination permits waiting"
+    );
+    assert_eq!(app.world().get::<Cargo>(bot).unwrap().amount, 20);
+}
+
+#[test]
+fn clear_final_hauler_approach_moves_without_search_capacity() {
+    use top_down_2d_rts_prototype_nano_swarm::navigation_runtime::NavigationBudget;
+    let mut app = common::sim_app_with_movement();
+    app.insert_resource(NavigationBudget(0));
+    let site = common::spawn_structure_at(&mut app, Vec2::new(400.0, 0.0));
+    let region = InteractionRegion::structure(app.world().get::<Transform>(site).unwrap());
+    let start = Vec2::new(500.0, 0.0);
+    let bot = common::spawn_hauler_at(&mut app, start);
+    app.world_mut().entity_mut(bot).insert((
+        Cargo {
+            kind: ResourceKind::Minerals,
+            amount: 20,
+        },
+        region.movement_from(start),
+    ));
+    app.update();
+    assert!(
+        app.world().get::<Transform>(bot).unwrap().translation.x < 500.0,
+        "a clear final approach must begin on its first movement tick without a graph search"
+    );
+    for _ in 0..60 {
+        app.update();
+    }
+    assert!(
+        app.world().get::<DirectMovementComponent>(bot).is_none(),
+        "the direct approach must reach standing space even while global search is unavailable"
+    );
+    assert_eq!(app.world().get::<Cargo>(bot).unwrap().amount, 20);
 }

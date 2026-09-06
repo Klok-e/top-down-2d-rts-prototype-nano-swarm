@@ -1,3 +1,4 @@
+mod route_following;
 mod work_navigation;
 pub use work_navigation::*;
 pub mod allocation;

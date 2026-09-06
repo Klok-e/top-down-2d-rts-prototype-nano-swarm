@@ -167,16 +167,24 @@ fn authored_default_scenario_keeps_separated_economies_operational() {
         *app.world().resource::<MatchOutcome>(),
         MatchOutcome::InProgress
     );
-    let deposits = app
-        .world_mut()
-        .query::<&top_down_2d_rts_prototype_nano_swarm::resources::ResourceDeposit>()
-        .iter(app.world())
-        .filter(|deposit| deposit.amount < 72_000)
-        .count();
-    assert_eq!(
-        deposits, 2,
-        "both sheltered economies must reach and extract their home minerals"
-    );
+    // Allow startup work allocation and crowd movement to settle within twenty
+    // simulated seconds while continuing to enforce movement safety each tick.
+    for _ in 0..600 {
+        let rotations = RotationSnapshot::capture(app.world_mut());
+        app.update();
+        rotations.assert_admissions(app.world_mut());
+        previous = assert_default_tick_state(app.world_mut(), &previous);
+        let deposits = app
+            .world_mut()
+            .query::<&top_down_2d_rts_prototype_nano_swarm::resources::ResourceDeposit>()
+            .iter(app.world())
+            .filter(|deposit| deposit.amount < 72_000)
+            .count();
+        if deposits == 2 {
+            return;
+        }
+    }
+    panic!("both sheltered economies must extract their home minerals within twenty seconds");
 }
 
 #[test]
@@ -1031,4 +1039,99 @@ fn authored_starting_facilities_align_without_changing_deposit_geometry() {
         let offset = transform.translation.truncate() - Vec2::splat(256.0);
         assert!((offset / 512.0 - (offset / 512.0).round()).length() < 0.001);
     }
+}
+
+#[test]
+fn default_economy_loaded_bots_do_not_wait_for_clear_routes() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{Cargo, ExtractProgress, HaulerLoading, WaitingForWork, WorkBlocked},
+        navigation::Navigation,
+    };
+    let mut app = default_headless_app();
+    app.world_mut().resource_mut::<GameSettings>().bot_speed = 5.0;
+    let cadence = Duration::from_secs_f64(1.0 / 60.0);
+    app.insert_resource(Time::<Fixed>::from_duration(cadence));
+    app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(cadence));
+    let mut motion = HashMap::<Entity, (Vec2, u32)>::new();
+    let mut observed = 0;
+    let mut oldest_request = 0;
+    let mut worst = (0, Entity::PLACEHOLDER, Vec2::ZERO);
+    for _ in 0..3600 {
+        app.update();
+        let world = app.world_mut();
+        oldest_request =
+            oldest_request.max(world.resource::<Navigation>().work().oldest_movement_ticks);
+        let bodies: Vec<_> = world
+            .query_filtered::<(Entity, &Transform), With<Nanobot>>()
+            .iter(world)
+            .map(|(e, t)| (e, t.translation.truncate()))
+            .collect();
+        let snapshots: Vec<_> = world
+            .query_filtered::<(
+                Entity,
+                &Transform,
+                &Cargo,
+                &DirectMovementComponent,
+                Has<HaulerLoading>,
+                Has<ExtractProgress>,
+                Has<WaitingForWork>,
+                Has<WorkBlocked>,
+            ), With<Nanobot>>()
+            .iter(world)
+            .map(|(e, t, c, m, l, x, w, b)| {
+                (
+                    e,
+                    t.translation.truncate(),
+                    c.amount,
+                    m.interaction
+                        .map_or(m.xy, |region| region.approach(t.translation.truncate())),
+                    l || x || w || b,
+                )
+            })
+            .collect();
+        motion.retain(|e, _| snapshots.iter().any(|(other, ..)| e == other));
+        for (entity, position, cargo, goal, working_or_blocked) in snapshots {
+            let eligible = cargo > 0
+                && !working_or_blocked
+                && position.distance(goal) > 5.0
+                && world.resource::<Navigation>().segment_clear(position, goal)
+                && bodies
+                    .iter()
+                    .all(|(other, p)| *other == entity || p.distance(position) >= 80.0);
+            let entry = motion.entry(entity).or_insert((position, 0));
+            if eligible {
+                observed += 1;
+                entry.1 = if position.distance(entry.0) < 0.1 {
+                    entry.1 + 1
+                } else {
+                    0
+                };
+                if entry.1 > worst.0 {
+                    worst = (entry.1, entity, position);
+                }
+            } else {
+                entry.1 = 0;
+            }
+            entry.0 = position;
+        }
+    }
+    eprintln!(
+        "default movement: samples={observed}, longest clear stop={}ticks, oldest route={}ticks",
+        worst.0, oldest_request
+    );
+    assert!(
+        oldest_request <= 15,
+        "default movement requests must be serviced within250ms; oldest={oldest_request}"
+    );
+    assert!(
+        observed > 100,
+        "default economy must exercise unobstructed loaded travel"
+    );
+    assert!(
+        worst.0 <= 15,
+        "unobstructed loaded movement waited {} ticks (>250ms), bot {:?} at {:?}",
+        worst.0,
+        worst.1,
+        worst.2
+    );
 }

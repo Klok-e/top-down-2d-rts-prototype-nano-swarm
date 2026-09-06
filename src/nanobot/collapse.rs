@@ -514,12 +514,8 @@ pub fn production_collapse_detection_system(
             }
             if transform.is_some_and(|transform| {
                 !recovery_destinations.iter().any(|destination| {
-                    access.route_from(
-                        swarm_id,
-                        *kind,
-                        transform.translation.truncate(),
-                        *destination,
-                    ) != WorkReachability::Unreachable
+                    access.reachability_from(transform.translation.truncate(), *destination)
+                        != WorkReachability::Unreachable
                 })
             }) {
                 continue;

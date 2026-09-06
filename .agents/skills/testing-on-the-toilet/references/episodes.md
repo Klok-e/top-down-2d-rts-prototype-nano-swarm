@@ -1,6 +1,6 @@
 # TotT episode index
 
-Google Testing Blog posts labeled TotT (113 fetched, 2007–2026). Kept episodes only — one rule each. Load this file when you need the source or a theme the main skill compressed.
+Google Testing Blog posts labeled TotT (113 fetched, 2007–2026).
 
 ## Change-detectors, fidelity, what to assert
 
@@ -91,5 +91,3 @@ Google Testing Blog posts labeled TotT (113 fetched, 2007–2026). Kept episodes
 - [Testable Contracts Make Exceptional Neighbors](https://testing.googleblog.com/2008/05/tott-testable-contracts-make.html)
 - [Prefactoring](https://testing.googleblog.com/2026/07/prefactoring-clear-way-for-your-new.html) — restructure, then feature; don't mix.
 - [In Praise of Small Pull Requests](https://testing.googleblog.com/2024/07/in-praise-of-small-pull-requests.html)
-
-Dropped: meta/history posts, pure review-etiquette, obsolete framework how-tos (EasyMock, TestNG API tour, gmock announcements), and code-health notes with no test/testability rule.

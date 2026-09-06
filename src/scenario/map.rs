@@ -1,4 +1,4 @@
-//! Authored walkable spaces carved from permanent terrain, in intent-cell units.
+//! Open basins, sheltered clearings, and rounded landforms in intent-cell units.
 
 use bevy::prelude::*;
 
@@ -7,8 +7,8 @@ use crate::{ZONE_BLOCK_SIZE, terrain::RockFormation};
 use super::{PLAYER_CELL, cell_origin};
 
 const MIN: f32 = -2.0;
-const TILE: f32 = 0.25;
-const SIDE: usize = 112;
+const TILE: f32 = 0.125;
+const SIDE: usize = 224;
 
 fn segment_distance(point: Vec2, start: Vec2, end: Vec2) -> f32 {
     let direction = end - start;
@@ -22,33 +22,57 @@ fn path_contains(point: Vec2, points: &[(f32, f32)], width: f32) -> bool {
         .any(|pair| segment_distance(point, Vec2::from(pair[0]), Vec2::from(pair[1])) < width / 2.0)
 }
 
-fn home_and_flank(point: Vec2) -> bool {
-    // The side entrance feeds a flank; its far end joins the opposing main
-    // approach outside the base, preserving exactly two entrances per base.
-    (point.x > -1.65 && point.x < 1.75 && point.y > -1.65 && point.y < 1.75)
-        || path_contains(point, &[(0.0, 0.0), (3.0, 3.0)], 2.0)
-        || path_contains(point, &[(0.0, 0.0), (0.0, 4.0)], 1.0)
-        || path_contains(
-            point,
-            &[
-                (0.0, 4.0),
-                (0.0, 8.0),
-                (6.0, 18.0),
-                (16.0, 24.0),
-                (20.0, 24.0),
-                (21.0, 21.0),
-            ],
-            2.0,
-        )
-        || path_contains(point, &[(0.0, 7.0), (7.0, 7.0)], 1.5)
-        || point.distance(Vec2::new(0.0, 7.0)) < 1.5
-        || point.distance(Vec2::new(6.0, 18.0)) < 2.0
+fn rounded_square(point: Vec2, half: f32, radius: f32) -> bool {
+    let q = (point - Vec2::splat(12.0)).abs() - Vec2::splat(half - radius);
+    q.max(Vec2::ZERO).length() + q.max_element().min(0.0) < radius
 }
 
-fn walkable(point: Vec2) -> bool {
-    home_and_flank(point)
-        || home_and_flank(Vec2::splat(24.0) - point)
-        || path_contains(point, &[(3.0, 3.0), (21.0, 21.0)], 3.5)
+fn oval(point: Vec2, center: Vec2, axes: Vec2, angle: f32) -> bool {
+    let delta = point - center;
+    let (sin, cos) = angle.sin_cos();
+    let local = Vec2::new(
+        cos * delta.x + sin * delta.y,
+        -sin * delta.x + cos * delta.y,
+    );
+    (local / axes).length_squared() < 1.0
+}
+
+fn landforms(point: Vec2) -> bool {
+    // A crescent shelters the spacious home clearing. The diagonal gateway
+    // and northern side pass are the only breaks through its enclosing ridge.
+    let shelter = path_contains(
+        point,
+        &[
+            (-1.4, 4.0),
+            (0.8, 4.8),
+            (2.2, 4.6),
+            (4.0, 2.3),
+            (4.2, 0.2),
+            (3.5, -1.5),
+        ],
+        0.9,
+    ) && !path_contains(point, &[(0.0, 0.0), (6.0, 6.0)], 3.0)
+        && !path_contains(point, &[(0.0, 2.0), (0.0, 6.0)], 1.8);
+
+    // Long curved ridges frame the basin; rounded mesas and smaller outcrops
+    // give the outer reaches recognizable landmarks without filling the plains.
+    shelter
+        || ((oval(point, Vec2::new(5.1, 12.1), Vec2::new(1.2, 3.3), -0.35)
+            || oval(point, Vec2::new(7.9, 15.5), Vec2::new(3.5, 1.15), 0.52))
+            && !oval(point, Vec2::new(5.1, 15.8), Vec2::new(1.2, 0.85), 0.1))
+        || oval(point, Vec2::new(13.7, 21.1), Vec2::new(2.6, 1.2), 0.28)
+        || oval(point, Vec2::new(15.3, 21.0), Vec2::new(1.3, 0.8), -0.45)
+        || oval(point, Vec2::new(2.6, 20.8), Vec2::new(1.4, 2.1), -0.35)
+        || oval(point, Vec2::new(2.1, 16.2), Vec2::new(0.7, 1.0), 0.3)
+        || oval(point, Vec2::new(-1.8, 12.0), Vec2::new(2.0, 3.2), -0.2)
+        || oval(point, Vec2::new(7.5, 25.6), Vec2::new(3.4, 1.5), 0.1)
+}
+
+fn solid_at(point: Vec2) -> bool {
+    rounded_square(point, 14.0, 0.85)
+        && (!rounded_square(point, 13.65, 0.5)
+            || landforms(point)
+            || landforms(Vec2::splat(24.0) - point))
 }
 
 /// Solid rectangles exactly cover the authored rock silhouette. Merging adjacent
@@ -58,7 +82,7 @@ pub fn default_rock_geometry() -> Vec<(RockFormation, Transform)> {
     for (y, row) in solid.iter_mut().enumerate() {
         for (x, tile) in row.iter_mut().enumerate() {
             let point = Vec2::splat(MIN) + Vec2::new(x as f32 + 0.5, y as f32 + 0.5) * TILE;
-            *tile = !walkable(point);
+            *tile = solid_at(point);
         }
     }
     let mut rocks = Vec::new();
@@ -123,7 +147,7 @@ pub(crate) fn rock_surface_mesh(origin: Vec2) -> Mesh {
     let is_solid = |x: i32, y: i32| {
         (0..SIDE as i32).contains(&x)
             && (0..SIDE as i32).contains(&y)
-            && !walkable(Vec2::splat(MIN) + Vec2::new(x as f32 + 0.5, y as f32 + 0.5) * TILE)
+            && solid_at(Vec2::splat(MIN) + Vec2::new(x as f32 + 0.5, y as f32 + 0.5) * TILE)
     };
     for y in 0..SIDE as i32 {
         for x in 0..SIDE as i32 {

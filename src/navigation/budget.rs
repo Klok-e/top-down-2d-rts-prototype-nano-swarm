@@ -126,6 +126,9 @@ impl Navigation {
         self.async_regions(key).await.regions.get(&cell).copied()
     }
     async fn async_connections(&self, node: IVec2) -> Vec<(IVec2, IVec2, IVec2)> {
+        if let Some(edges) = self.connections.lock().unwrap().get(&node).cloned() {
+            return edges;
+        }
         let chunk = self.async_regions(Self::chunk(node)).await;
         let mut result = Vec::new();
         let mut cells: Vec<_> = chunk
@@ -154,6 +157,10 @@ impl Navigation {
                 }
             }
         }
+        self.connections
+            .lock()
+            .unwrap()
+            .insert(node, result.clone());
         result
     }
     async fn async_connectors(&self, p: Vec2) -> Vec<IVec2> {
@@ -249,6 +256,63 @@ impl Navigation {
         }
         RouteOutcome::Unreachable
     }
+    async fn async_connectivity(&self, start: Vec2, goal: RouteGoal) -> RouteOutcome {
+        if !self.async_point_clear(start).await {
+            return RouteOutcome::Unreachable;
+        }
+        let mut endpoints = match goal {
+            RouteGoal::Point(end) => vec![end],
+            RouteGoal::Interaction(region) => {
+                if region.contains(start) {
+                    return RouteOutcome::Found(Route {
+                        waypoints: vec![start],
+                        cost: 0.0,
+                    });
+                }
+                region.candidates(start)
+            }
+            RouteGoal::Range { center, radius } => {
+                if !radius.is_finite() || radius < 0.0 || !center.is_finite() {
+                    return RouteOutcome::Unreachable;
+                }
+                if start.distance(center) <= radius {
+                    return RouteOutcome::Found(Route {
+                        waypoints: vec![start],
+                        cost: 0.0,
+                    });
+                }
+                let mut points =
+                    vec![center + (start - center).normalize_or_zero() * (radius - 0.5).max(0.0)];
+                let min = Self::cell(center - Vec2::splat(radius));
+                let max = Self::cell(center + Vec2::splat(radius));
+                for y in min.y..=max.y {
+                    for x in min.x..=max.x {
+                        WorkUnit::new().await;
+                        let point = Self::center(IVec2::new(x, y));
+                        if point.distance(center) <= radius {
+                            points.push(point);
+                        }
+                    }
+                }
+                points
+            }
+        };
+        endpoints.sort_by(|a, b| {
+            a.distance_squared(start)
+                .total_cmp(&b.distance_squared(start))
+        });
+        let paint = PaintCosts::default();
+        for endpoint in endpoints {
+            WorkUnit::new().await;
+            if let result @ RouteOutcome::Found(_) = self
+                .async_route_search(start, endpoint, &paint, SwarmId::PLAYER, false, true)
+                .await
+            {
+                return result;
+            }
+        }
+        RouteOutcome::Unreachable
+    }
     async fn async_route(
         &self,
         start: Vec2,
@@ -257,10 +321,24 @@ impl Navigation {
         swarm: SwarmId,
         hauler: bool,
     ) -> RouteOutcome {
+        self.async_route_search(start, end, grid, swarm, hauler, false)
+            .await
+    }
+    async fn async_route_search(
+        &self,
+        start: Vec2,
+        end: Vec2,
+        grid: &PaintCosts,
+        swarm: SwarmId,
+        hauler: bool,
+        connectivity_only: bool,
+    ) -> RouteOutcome {
         if !self.async_point_clear(start).await || !self.async_point_clear(end).await {
             return RouteOutcome::Unreachable;
         }
-        if (start.distance_squared(end) < 0.0001 || !hauler)
+        if (start.distance_squared(end) < 0.0001
+            || !hauler
+            || !grid.corridor_swarms.contains(&swarm))
             && self.async_segment_clear(start, end).await
         {
             return RouteOutcome::Found(Route {
@@ -379,6 +457,12 @@ impl Navigation {
             allowed.insert(parent);
             node = parent;
         }
+        if connectivity_only {
+            return RouteOutcome::Found(Route {
+                waypoints: vec![end],
+                cost: start.distance(end),
+            });
+        }
         // Every coarse edge represents an actual fine-grid edge. Restricting detail to
         // the connected regions on that chain therefore preserves reachability.
         open.clear();
@@ -490,12 +574,33 @@ pub enum RouteStatus {
     Found(Route),
     Unreachable,
 }
+/// Geometric access only; a connected endpoint is not a movement route.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ConnectivityStatus {
+    Pending,
+    Connected { endpoint: Vec2 },
+    Unreachable,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestPurpose {
+    Movement,
+    Connectivity,
+    Construction,
+}
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NavigationWork {
     pub tick: u64,
     pub work: usize,
     pub pending: usize,
     pub completed: usize,
+    pub movement_work: usize,
+    pub background_work: usize,
+    pub movement_pending: usize,
+    pub owned_movement_pending: usize,
+    pub connectivity_pending: usize,
+    pub construction_pending: usize,
+    pub oldest_movement_ticks: u64,
+    pub oldest_background_ticks: u64,
     pub max_latency_ticks: u64,
     /// Fine cells visited while materializing physical chunk connectivity.
     pub hierarchy_cells: usize,
@@ -508,6 +613,9 @@ pub struct NavigationWork {
 
 type Search = Pin<Box<dyn Future<Output = RouteOutcome> + Send>>;
 struct Request {
+    purpose: RequestPurpose,
+    owner: Option<Entity>,
+    last_served: u64,
     start: Vec2,
     goal: RouteGoal,
     swarm: SwarmId,
@@ -527,11 +635,12 @@ pub(super) struct Scheduler {
     work: NavigationWork,
     paint: Arc<PaintCosts>,
     paint_revision: Option<u64>,
-    cached: HashMap<String, (RouteRequestId, u64)>,
     access_cached: HashMap<(u64, u64), (RouteRequestId, u64)>,
+    connectivity_cached: HashMap<String, (RouteRequestId, u64)>,
 }
 #[derive(Default)]
 struct PaintCosts {
+    corridor_swarms: HashSet<SwarmId>,
     cells: HashMap<IVec2, crate::intent::IntentCell>,
 }
 impl PaintCosts {
@@ -559,6 +668,9 @@ impl Navigation {
         scheduler.requests.insert(
             id,
             Request {
+                purpose: RequestPurpose::Movement,
+                owner: None,
+                last_served: tick,
                 start,
                 goal,
                 swarm,
@@ -571,6 +683,26 @@ impl Navigation {
                 access: None,
             },
         );
+        id
+    }
+    /// A committed route with diagnostic ownership and explicit cancellation by its caller.
+    pub fn request_owned(
+        &self,
+        start: Vec2,
+        goal: RouteGoal,
+        swarm: SwarmId,
+        hauler: bool,
+        priority: RoutePriority,
+        owner: Entity,
+    ) -> RouteRequestId {
+        let id = self.request(start, goal, swarm, hauler, priority);
+        self.scheduler
+            .lock()
+            .unwrap()
+            .requests
+            .get_mut(&id)
+            .unwrap()
+            .owner = Some(owner);
         id
     }
     pub fn poll(&self, id: RouteRequestId) -> RouteStatus {
@@ -596,6 +728,22 @@ impl Navigation {
         self.scheduler.lock().unwrap().work
     }
 
+    /// Oldest unfinished committed request belonging to this bot, in simulation ticks.
+    pub fn pending_movement_ticks(&self, owner: Entity) -> Option<u64> {
+        let scheduler = self.scheduler.lock().unwrap();
+        scheduler
+            .requests
+            .values()
+            .filter(|request| {
+                request.purpose == RequestPurpose::Movement
+                    && request.owner == Some(owner)
+                    && (request.revision != self.revision
+                        || matches!(request.result, RouteStatus::Pending))
+            })
+            .map(|request| scheduler.tick.saturating_sub(request.submitted))
+            .max()
+    }
+
     /// One unit resumes at most one graph edge, cell, or search iteration.
     /// Lazy hierarchy construction yields through this same allowance.
     pub fn advance(&self, grid: &IntentGrid, budget: usize) -> NavigationWork {
@@ -607,22 +755,16 @@ impl Navigation {
         let tick = scheduler.tick;
         if scheduler.paint_revision != Some(grid.revision()) {
             scheduler.paint = Arc::new(PaintCosts {
+                corridor_swarms: grid
+                    .iter_active_cells()
+                    .flat_map(|(_, cell)| cell.owners(IntentKind::Corridor))
+                    .collect(),
                 cells: grid
                     .iter_active_cells()
                     .map(|(p, c)| (p, c.clone()))
                     .collect(),
             });
             scheduler.paint_revision = Some(grid.revision());
-        }
-        let expired: Vec<_> = scheduler
-            .cached
-            .iter()
-            .filter(|(_, (_, touched))| tick.saturating_sub(*touched) > 120)
-            .map(|(key, (id, _))| (key.clone(), *id))
-            .collect();
-        for (key, id) in expired {
-            scheduler.cached.remove(&key);
-            scheduler.requests.remove(&id);
         }
         let stale_access: Vec<_> = scheduler
             .access_cached
@@ -634,6 +776,22 @@ impl Navigation {
             .collect();
         for (key, id) in stale_access {
             scheduler.access_cached.remove(&key);
+            scheduler.requests.remove(&id);
+        }
+        let stale_connectivity: Vec<_> = scheduler
+            .connectivity_cached
+            .iter()
+            .filter(|(_, (id, touched))| {
+                tick.saturating_sub(*touched) > 120
+                    || scheduler
+                        .requests
+                        .get(id)
+                        .is_none_or(|r| r.revision != self.revision)
+            })
+            .map(|(key, (id, _))| (key.clone(), *id))
+            .collect();
+        for (key, id) in stale_connectivity {
+            scheduler.connectivity_cached.remove(&key);
             scheduler.requests.remove(&id);
         }
         let before = self.expansions.snapshot();
@@ -648,27 +806,82 @@ impl Navigation {
                 request.revision = self.revision;
             }
         }
-        // Submission aging preserves eventual service without fragmenting every long
-        // search across the entire pending population. Candidate order is stable for
-        // this advance, so compute it once instead of scanning on every quantum.
-        let mut pending: Vec<_> = scheduler
-            .requests
-            .iter()
-            .filter(|(_, r)| matches!(r.result, RouteStatus::Pending))
-            .map(|(id, r)| {
-                let urgency = match r.priority {
-                    RoutePriority::Routine => 0,
-                    RoutePriority::Invalidated => 8,
-                    RoutePriority::Clearing => 16,
-                };
-                (*id, tick.saturating_sub(r.submitted) + urgency)
-            })
-            .collect();
-        pending.sort_by_key(|(id, priority)| (std::cmp::Reverse(*priority), id.0));
-        for (id, _) in pending {
-            if work.work >= budget {
-                break;
+        let mut lanes = [Vec::new(), Vec::new()];
+        for (&id, request) in &scheduler.requests {
+            if !matches!(request.result, RouteStatus::Pending) {
+                continue;
             }
+            let boost = match request.priority {
+                RoutePriority::Routine => 0,
+                RoutePriority::Invalidated => 8,
+                RoutePriority::Clearing => 16,
+            };
+            let lane = usize::from(request.purpose != RequestPurpose::Movement);
+            lanes[lane].push((id, tick.saturating_sub(request.last_served) + boost));
+        }
+        for lane in &mut lanes {
+            lane.sort_by_key(|(id, urgency)| (std::cmp::Reverse(*urgency), id.0));
+        }
+        let mut queues =
+            lanes.map(|lane| lane.into_iter().map(|(id, _)| id).collect::<VecDeque<_>>());
+        // Three quarters of capacity serves committed motion. Fractional shares rotate
+        // across ticks so even a one-unit allowance eventually serves both classes.
+        let background = budget / 4 + usize::from(tick % 4 < (budget % 4) as u64);
+        let shares = [budget - background, background];
+        for lane in 0..2 {
+            self.advance_lane(&mut scheduler, &mut queues[lane], shares[lane], &mut work);
+        }
+        for queue in &mut queues {
+            let unused = budget - work.work;
+            self.advance_lane(&mut scheduler, queue, unused, &mut work);
+        }
+        for request in scheduler.requests.values() {
+            if !matches!(request.result, RouteStatus::Pending) {
+                continue;
+            }
+            let age = tick.saturating_sub(request.submitted);
+            match request.purpose {
+                RequestPurpose::Movement => {
+                    work.movement_pending += 1;
+                    work.owned_movement_pending += usize::from(request.owner.is_some());
+                    work.oldest_movement_ticks = work.oldest_movement_ticks.max(age);
+                }
+                purpose => {
+                    work.oldest_background_ticks = work.oldest_background_ticks.max(age);
+                    match purpose {
+                        RequestPurpose::Connectivity => work.connectivity_pending += 1,
+                        RequestPurpose::Construction => work.construction_pending += 1,
+                        RequestPurpose::Movement => unreachable!(),
+                    }
+                }
+            }
+        }
+        work.pending = scheduler
+            .requests
+            .values()
+            .filter(|r| matches!(r.result, RouteStatus::Pending))
+            .count();
+        let after = self.expansions.snapshot();
+        work.hierarchy_cells = after.hierarchy_cells - before.hierarchy_cells;
+        work.coarse_expansions = after.coarse_expansions - before.coarse_expansions;
+        work.fine_expansions = after.fine_expansions - before.fine_expansions;
+        work.hierarchy_chunks = after.hierarchy_chunks - before.hierarchy_chunks;
+        scheduler.work = work;
+        work
+    }
+    fn advance_lane(
+        &self,
+        scheduler: &mut Scheduler,
+        queue: &mut VecDeque<RouteRequestId>,
+        allowance: usize,
+        work: &mut NavigationWork,
+    ) {
+        const QUANTUM: usize = 128;
+        let stop = work.work + allowance;
+        while work.work < stop {
+            let Some(id) = queue.pop_front() else {
+                break;
+            };
             let paint = scheduler.paint.clone();
             let request = scheduler.requests.get_mut(&id).unwrap();
             if request.future.is_none() {
@@ -705,6 +918,11 @@ impl Navigation {
                     } else {
                         Arc::new(Mutex::new(HashMap::new()))
                     },
+                    connections: if self.clearing.is_empty() {
+                        self.connections.clone()
+                    } else {
+                        Default::default()
+                    },
                     scheduler: Mutex::new(Scheduler::default()),
                     expansions: self.expansions.clone(),
                     chunk_builds: if self.clearing.is_empty() {
@@ -716,9 +934,13 @@ impl Navigation {
                 let (start, goal, swarm, hauler) =
                     (request.start, request.goal, request.swarm, request.hauler);
                 let access = request.access.clone();
+                let connectivity = request.purpose == RequestPurpose::Connectivity;
                 request.future = Some(Box::pin(async move {
                     if let Some(check) = access {
                         return snapshot.async_access(&check, &paint).await;
+                    }
+                    if connectivity {
+                        return snapshot.async_connectivity(start, goal).await;
                     }
                     match goal {
                         RouteGoal::Point(end) => {
@@ -741,10 +963,15 @@ impl Navigation {
                     }
                 }));
             }
+            request.last_served = scheduler.tick;
             let mut context = Context::from_waker(Waker::noop());
-            let quantum = budget - work.work;
-            for _ in 0..quantum {
+            for _ in 0..QUANTUM.min(stop - work.work) {
                 work.work += 1;
+                if request.purpose == RequestPurpose::Movement {
+                    work.movement_work += 1;
+                } else {
+                    work.background_work += 1;
+                }
                 if let Poll::Ready(result) =
                     request.future.as_mut().unwrap().as_mut().poll(&mut context)
                 {
@@ -754,23 +981,16 @@ impl Navigation {
                     };
                     request.future = None;
                     work.completed += 1;
-                    work.max_latency_ticks = work.max_latency_ticks.max(tick - request.submitted);
+                    work.max_latency_ticks = work
+                        .max_latency_ticks
+                        .max(scheduler.tick - request.submitted);
                     break;
                 }
             }
+            if matches!(request.result, RouteStatus::Pending) {
+                queue.push_back(id);
+            }
         }
-        work.pending = scheduler
-            .requests
-            .values()
-            .filter(|r| matches!(r.result, RouteStatus::Pending))
-            .count();
-        let after = self.expansions.snapshot();
-        work.hierarchy_cells = after.hierarchy_cells - before.hierarchy_cells;
-        work.coarse_expansions = after.coarse_expansions - before.coarse_expansions;
-        work.fine_expansions = after.fine_expansions - before.fine_expansions;
-        work.hierarchy_chunks = after.hierarchy_chunks - before.hierarchy_chunks;
-        scheduler.work = work;
-        work
     }
 }
 
@@ -832,6 +1052,10 @@ impl Navigation {
         hauler: bool,
     ) -> RouteOutcome {
         let paint = PaintCosts {
+            corridor_swarms: grid
+                .iter_active_cells()
+                .flat_map(|(_, cell)| cell.owners(IntentKind::Corridor))
+                .collect(),
             cells: grid
                 .iter_active_cells()
                 .map(|(p, c)| (p, c.clone()))
@@ -870,60 +1094,64 @@ impl Navigation {
 }
 
 impl Navigation {
-    /// Repeated allocation probes share a request; pending probes do not establish no-route.
-    pub fn query(
-        &self,
-        start: Vec2,
-        goal: RouteGoal,
-        grid: &IntentGrid,
-        swarm: SwarmId,
-        hauler: bool,
-    ) -> RouteStatus {
+    /// Establish static access without refining or returning a movement path.
+    /// Moving origins share the exact fine-cell component already built in their chunk.
+    /// Paint and nanobot occupancy cannot change this geometric answer.
+    pub fn query_connectivity(&self, start: Vec2, goal: RouteGoal) -> ConnectivityStatus {
         let cell = Self::cell(start);
-        let key = format!("{cell:?}:{goal:?}:{swarm:?}:{hauler}:{}", grid.revision());
+        let region = if self.clearing.is_empty() && self.segment_clear(start, Self::center(cell)) {
+            self.chunks
+                .lock()
+                .unwrap()
+                .get(&Self::chunk(cell))
+                .and_then(|chunk| chunk.regions.get(&cell))
+                .copied()
+        } else {
+            None
+        };
+        let key = format!(
+            "{region:?}:{cell_key:?}:{goal:?}",
+            cell_key = region.unwrap_or(cell)
+        );
         let mut scheduler = self.scheduler.lock().unwrap();
         let tick = scheduler.tick;
-        if let Some(&(id, _)) = scheduler.cached.get(&key) {
-            let reusable = scheduler
-                .requests
-                .get(&id)
-                .is_some_and(|r| self.segment_clear(start, r.start));
-            if reusable {
-                scheduler.cached.get_mut(&key).unwrap().1 = tick;
-                drop(scheduler);
-                return self.poll(id);
+        if region.is_some() && !scheduler.connectivity_cached.contains_key(&key) {
+            let cold_key = format!("{none:?}:{cell:?}:{goal:?}", none = None::<IVec2>);
+            if let Some(&(id, touched)) = scheduler.connectivity_cached.get(&cold_key)
+                && scheduler.requests.get(&id).is_some_and(|r| {
+                    r.revision == self.revision && self.movement_clear(start, r.start)
+                })
+            {
+                scheduler.connectivity_cached.remove(&cold_key);
+                scheduler
+                    .connectivity_cached
+                    .insert(key.clone(), (id, touched));
             }
-            scheduler.cached.remove(&key);
+        }
+        if let Some(&(id, _)) = scheduler.connectivity_cached.get(&key) {
+            let reusable = scheduler.requests.get(&id).is_some_and(|request| {
+                request.revision == self.revision
+                    && (region.is_some() || self.movement_clear(start, request.start))
+            });
+            if reusable {
+                scheduler.connectivity_cached.get_mut(&key).unwrap().1 = tick;
+                return match &scheduler.requests[&id].result {
+                    RouteStatus::Pending => ConnectivityStatus::Pending,
+                    RouteStatus::Found(route) => ConnectivityStatus::Connected {
+                        endpoint: *route.waypoints.last().unwrap(),
+                    },
+                    RouteStatus::Unreachable => ConnectivityStatus::Unreachable,
+                };
+            }
+            scheduler.connectivity_cached.remove(&key);
             scheduler.requests.remove(&id);
         }
         drop(scheduler);
-        let id = self.request(start, goal, swarm, hauler, RoutePriority::Routine);
-        self.scheduler
-            .lock()
-            .unwrap()
-            .cached
-            .insert(key, (id, tick));
-        RouteStatus::Pending
-    }
-    pub fn query_interaction(
-        &self,
-        start: Vec2,
-        region: crate::nanobot::InteractionRegion,
-        grid: &IntentGrid,
-        swarm: SwarmId,
-        hauler: bool,
-    ) -> RouteStatus {
-        self.query(start, RouteGoal::Interaction(region), grid, swarm, hauler)
-    }
-    pub fn query_point(
-        &self,
-        start: Vec2,
-        end: Vec2,
-        grid: &IntentGrid,
-        swarm: SwarmId,
-        hauler: bool,
-    ) -> RouteStatus {
-        self.query(start, RouteGoal::Point(end), grid, swarm, hauler)
+        let id = self.request(start, goal, SwarmId::PLAYER, false, RoutePriority::Routine);
+        let mut scheduler = self.scheduler.lock().unwrap();
+        scheduler.requests.get_mut(&id).unwrap().purpose = RequestPurpose::Connectivity;
+        scheduler.connectivity_cached.insert(key, (id, tick));
+        ConnectivityStatus::Pending
     }
 }
 
@@ -1036,7 +1264,9 @@ impl Navigation {
             priority,
         );
         let mut scheduler = self.scheduler.lock().unwrap();
-        scheduler.requests.get_mut(&id).unwrap().access = Some(check);
+        let request = scheduler.requests.get_mut(&id).unwrap();
+        request.access = Some(check);
+        request.purpose = RequestPurpose::Construction;
         scheduler.access_cached.insert(cache_key, (id, tick));
         AccessStatus::Pending
     }
@@ -1049,6 +1279,7 @@ impl Navigation {
             clearing: Vec::new(),
             revision: self.revision,
             chunks: Arc::new(Mutex::new(HashMap::new())),
+            connections: Default::default(),
             scheduler: Mutex::new(Scheduler::default()),
             expansions: self.expansions.clone(),
             chunk_builds: Default::default(),
@@ -1058,13 +1289,13 @@ impl Navigation {
         &self,
         a: crate::nanobot::InteractionRegion,
         b: crate::nanobot::InteractionRegion,
-        paint: &PaintCosts,
-        swarm: SwarmId,
+        _paint: &PaintCosts,
+        _swarm: SwarmId,
     ) -> bool {
         for point in a.candidates(Vec2::ZERO) {
             WorkUnit::new().await;
             if matches!(
-                self.async_route_to_interaction(point, b, paint, swarm, false)
+                self.async_connectivity(point, RouteGoal::Interaction(b))
                     .await,
                 RouteOutcome::Found(_)
             ) {
@@ -1082,7 +1313,7 @@ impl Navigation {
             WorkUnit::new().await;
             if matches!(
                 completed
-                    .async_route_to_interaction(builder, check.target, paint, check.swarm, false)
+                    .async_connectivity(builder, RouteGoal::Interaction(check.target))
                     .await,
                 RouteOutcome::Found(_)
             ) {
@@ -1114,6 +1345,171 @@ impl Navigation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connectivity_uses_exact_components_without_refining_routes() {
+        let grid = IntentGrid::new(8, 8);
+        let mut navigation = Navigation::new(
+            &grid,
+            vec![Obstacle::Rectangle {
+                center: Vec2::ZERO,
+                half: Vec2::new(36.0, 216.0),
+            }],
+        );
+        let start = Vec2::new(-252.0, 36.0);
+        let goal = RouteGoal::Point(Vec2::new(252.0, 36.0));
+        let mut status = navigation.query_connectivity(start, goal);
+        let mut fine = 0;
+        for _ in 0..1000 {
+            if status != ConnectivityStatus::Pending {
+                break;
+            }
+            fine += navigation.advance(&grid, 2048).fine_expansions;
+            status = navigation.query_connectivity(start, goal);
+        }
+        assert_eq!(
+            status,
+            ConnectivityStatus::Connected {
+                endpoint: Vec2::new(252.0, 36.0)
+            }
+        );
+        assert_eq!(fine, 0, "reachability must not refine a discarded path");
+        assert_eq!(
+            navigation.query_connectivity(Vec2::new(-324.0, 108.0), goal),
+            status,
+            "moving within the same exact component must reuse its access result"
+        );
+        navigation.refresh(
+            &grid,
+            vec![Obstacle::Rectangle {
+                center: Vec2::ZERO,
+                half: Vec2::new(36.0, 5000.0),
+            }],
+        );
+        assert_eq!(
+            navigation.query_connectivity(start, goal),
+            ConnectivityStatus::Pending
+        );
+        for _ in 0..1000 {
+            navigation.advance(&grid, 2048);
+            status = navigation.query_connectivity(start, goal);
+            if status != ConnectivityStatus::Pending {
+                break;
+            }
+        }
+        assert_eq!(
+            status,
+            ConnectivityStatus::Unreachable,
+            "a full dividing wall separates exact components"
+        );
+    }
+
+    #[test]
+    fn hauler_without_owned_corridors_uses_clear_direct_route() {
+        let mut grid = IntentGrid::new(8, 8);
+        grid.paint(IVec2::ZERO, IntentKind::Corridor, SwarmId(7));
+        let navigation = Navigation::new(&grid, vec![]);
+        let id = navigation.request(
+            Vec2::ZERO,
+            RouteGoal::Point(Vec2::new(100.0, 0.0)),
+            SwarmId::PLAYER,
+            true,
+            RoutePriority::Routine,
+        );
+        let work = navigation.advance(&grid, 1);
+        assert!(
+            matches!(navigation.poll(id), RouteStatus::Found(_)),
+            "hostile paint must not delay a clear hauler route"
+        );
+        assert_eq!(work.coarse_expansions + work.fine_expansions, 0);
+    }
+
+    #[test]
+    fn bounded_quanta_serve_short_routes_behind_long_routes() {
+        let grid = IntentGrid::new(40, 40);
+        let navigation = Navigation::new(
+            &grid,
+            vec![Obstacle::Rectangle {
+                center: Vec2::ZERO,
+                half: Vec2::new(72.0, 720.0),
+            }],
+        );
+        navigation.request(
+            Vec2::new(-252.0, 36.0),
+            RouteGoal::Point(Vec2::new(252.0, 36.0)),
+            SwarmId::PLAYER,
+            false,
+            RoutePriority::Routine,
+        );
+        let quick = navigation.request(
+            Vec2::new(-500.0, -500.0),
+            RouteGoal::Point(Vec2::new(-600.0, -500.0)),
+            SwarmId::PLAYER,
+            false,
+            RoutePriority::Routine,
+        );
+        navigation.advance(&grid, 256);
+        assert!(matches!(navigation.poll(quick), RouteStatus::Found(_)));
+    }
+
+    #[test]
+    fn cheap_movement_is_not_blocked_by_an_older_expensive_probe() {
+        let grid = IntentGrid::new(40, 40);
+        let navigation = Navigation::new(
+            &grid,
+            vec![Obstacle::Rectangle {
+                center: Vec2::ZERO,
+                half: Vec2::new(72.0, 720.0),
+            }],
+        );
+        navigation.query_connectivity(
+            Vec2::new(-252.0, 36.0),
+            RouteGoal::Point(Vec2::new(252.0, 36.0)),
+        );
+        let movement = navigation.request(
+            Vec2::new(-500.0, -500.0),
+            RouteGoal::Point(Vec2::new(-600.0, -500.0)),
+            SwarmId::PLAYER,
+            false,
+            RoutePriority::Routine,
+        );
+        navigation.advance(&grid, 128);
+        assert!(
+            matches!(navigation.poll(movement), RouteStatus::Found(_)),
+            "an unrelated background detour must not stall clear movement"
+        );
+    }
+
+    #[test]
+    fn background_work_progresses_while_movement_is_expensive() {
+        let grid = IntentGrid::new(40, 40);
+        let navigation = Navigation::new(
+            &grid,
+            vec![Obstacle::Rectangle {
+                center: Vec2::ZERO,
+                half: Vec2::new(72.0, 720.0),
+            }],
+        );
+        navigation.request(
+            Vec2::new(-252.0, 36.0),
+            RouteGoal::Point(Vec2::new(252.0, 36.0)),
+            SwarmId::PLAYER,
+            false,
+            RoutePriority::Clearing,
+        );
+        let probe = || {
+            navigation.query_connectivity(
+                Vec2::new(-500.0, -500.0),
+                RouteGoal::Point(Vec2::new(-600.0, -500.0)),
+            )
+        };
+        assert_eq!(probe(), ConnectivityStatus::Pending);
+        navigation.advance(&grid, 128);
+        assert!(
+            matches!(probe(), ConnectivityStatus::Connected { .. }),
+            "sustained movement must leave capacity for background planning"
+        );
+    }
 
     #[test]
     fn distant_rocks_do_not_consume_local_direct_route_allowance() {
@@ -1311,31 +1707,20 @@ mod tests {
     fn repeated_pending_queries_share_work_and_keep_their_result() {
         let grid = IntentGrid::new(4, 4);
         let navigation = Navigation::new(&grid, vec![]);
+        let query =
+            || navigation.query_connectivity(Vec2::ZERO, RouteGoal::Point(Vec2::splat(100.0)));
         for _ in 0..100 {
-            assert!(matches!(
-                navigation.query_point(
-                    Vec2::ZERO,
-                    Vec2::splat(100.0),
-                    &grid,
-                    SwarmId::PLAYER,
-                    false
-                ),
-                RouteStatus::Pending
-            ));
+            assert_eq!(query(), ConnectivityStatus::Pending);
         }
-        let work = navigation.advance(&grid, 1);
+        let work = navigation.advance(&grid, 2);
         assert_eq!(work.completed, 1);
         assert_eq!(work.pending, 0);
-        assert!(matches!(
-            navigation.query_point(
-                Vec2::ZERO,
-                Vec2::splat(100.0),
-                &grid,
-                SwarmId::PLAYER,
-                false
-            ),
-            RouteStatus::Found(_)
-        ));
+        assert_eq!(
+            query(),
+            ConnectivityStatus::Connected {
+                endpoint: Vec2::splat(100.0)
+            }
+        );
     }
 
     #[test]

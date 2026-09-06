@@ -51,7 +51,8 @@ pub fn default_map(ctx: &mut TestContext) -> TestFlow {
         let image = image::open("target/playtest-screenshots/default_map_overview.png")
             .unwrap()
             .to_rgb8();
-        let rock = image.get_pixel(460, 110).0;
+        // Sample the northern mesa and the open central basin at overview zoom.
+        let rock = image.get_pixel(676, 166).0;
         let ground = image.get_pixel(640, 360).0;
         assert!(
             rock[0] > ground[0] + 25 && rock[2] > rock[0],

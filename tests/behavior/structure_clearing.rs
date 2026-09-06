@@ -84,7 +84,15 @@ fn completing_plan_releases_worker_and_evacuates_either_swarm_before_activation(
         }
         assert!(
             app.world().get::<Stockpile>(plan).is_some(),
-            "clear site should activate for occupant {owner:?}"
+            "clear site should activate for occupant {owner:?}; occupant {:?}, worker {:?}, evacuation {:?}, movement {:?}",
+            app.world().get::<Transform>(occupant),
+            app.world().get::<Transform>(worker),
+            app.world()
+                .get::<top_down_2d_rts_prototype_nano_swarm::nanobot::ClearingEvacuation>(occupant),
+            app.world()
+                .get::<top_down_2d_rts_prototype_nano_swarm::nanobot::DirectMovementComponent>(
+                    occupant
+                )
         );
         assert!(app.world().get::<StructureClearing>(plan).is_none());
     }
@@ -383,4 +391,56 @@ fn unfinished_access_validation_preserves_the_plan_until_budget_opens() {
         app.world().get::<Stockpile>(plan).is_some(),
         "queued access validation must resume activation"
     );
+}
+
+#[test]
+fn evacuated_bot_resumes_work_while_construction_validation_is_pending() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{Cargo, ClearingEvacuation, DirectMovementComponent},
+        navigation_runtime::NavigationBudget,
+        resources::ResourceKind,
+    };
+    let mut app = common::sim_app_with_planned();
+    common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let plan = common::spawn_planned_structure_at_cell(&mut app, IVec2::ZERO);
+    let transform = top_down_2d_rts_prototype_nano_swarm::navigation::align_structure(
+        *app.world().get::<Transform>(plan).unwrap(),
+    );
+    let position = transform.translation.truncate() + Vec2::Y * 100.0;
+    app.world_mut()
+        .entity_mut(plan)
+        .insert((transform, StructureClearing::awaiting_validation(position)));
+    let bot = common::spawn_worker_at(&mut app, position);
+    app.world_mut().entity_mut(bot).insert((
+        Cargo {
+            kind: ResourceKind::Minerals,
+            amount: 4,
+        },
+        ClearingEvacuation {
+            structure: plan,
+            goal: position,
+        },
+        DirectMovementComponent {
+            xy: position + Vec2::X * 100.0,
+            stop_radius: 0.0,
+            interaction: None,
+            speed: None,
+        },
+    ));
+    app.insert_resource(NavigationBudget(0));
+    app.update();
+    assert!(
+        app.world().get::<StructureClearing>(plan).is_some(),
+        "construction must still await its safety check"
+    );
+    assert!(
+        app.world().get::<ClearingEvacuation>(bot).is_none(),
+        "a body already outside the footprint must not remain assigned to evacuation"
+    );
+    app.update();
+    assert!(
+        app.world().get::<Transform>(bot).unwrap().translation.x > position.x,
+        "pending construction validation must not override the next movement order"
+    );
+    assert_eq!(app.world().get::<Cargo>(bot).unwrap().amount, 4);
 }

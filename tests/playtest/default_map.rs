@@ -173,3 +173,35 @@ fn default_map_base_entrances_have_two_separate_lanes_with_body_clearance() {
         }
     }
 }
+
+#[test]
+fn default_map_has_generous_open_ground_and_a_broad_central_basin() {
+    let (_, navigation) = navigation();
+    let mut clear = 0;
+    let mut total = 0;
+    for y in 0..52 {
+        for x in 0..52 {
+            let point =
+                Vec2::new(x as f32 * 0.5 - 1.0, y as f32 * 0.5 - 1.0) * 512.0 + Vec2::splat(256.0);
+            total += 1;
+            clear += usize::from(navigation.point_clear(point));
+        }
+    }
+    eprintln!(
+        "body-clear interior={:.1}%",
+        clear as f32 / total as f32 * 100.0
+    );
+    assert!(
+        clear * 100 >= total * 60,
+        "only {:.1}% of the interior has body-clear ground",
+        clear as f32 / total as f32 * 100.0
+    );
+    for y in [10, 12, 14] {
+        for x in [10, 12, 14] {
+            assert!(
+                navigation.point_clear(cell_origin(IVec2::new(x, y))),
+                "central basin must provide room at {x},{y}"
+            );
+        }
+    }
+}

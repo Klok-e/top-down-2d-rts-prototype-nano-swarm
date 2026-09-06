@@ -9,6 +9,22 @@ use bevy::prelude::*;
 #[derive(Component, Debug)]
 pub struct WaitingForWork;
 
+/// The observable stage of a bot approaching an exterior work goal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApproachPhase {
+    Travelling,
+    Searching,
+    Waiting,
+}
+
+/// Local searching and yielding preserve the age of the original work approach.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct WorkApproach {
+    pub region: super::InteractionRegion,
+    pub phase: ApproachPhase,
+    pub since: f64,
+}
+
 /// Distance along the remaining static route, used to recognize real travel progress.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct RemainingTravel(pub f32);
@@ -57,18 +73,64 @@ pub fn work_standing_system(
 
 #[derive(Default)]
 pub struct WorkApproaches {
-    tick: u64,
-    entries: std::collections::HashMap<Entity, (super::InteractionRegion, u64, Option<Vec2>)>,
+    entries: std::collections::HashMap<Entity, ApproachEntry>,
+}
+
+struct ApproachEntry {
+    region: super::InteractionRegion,
+    since: f64,
+    selected: Option<Vec2>,
+    nearby: bool,
+    rejected: Vec<Vec2>,
+    revision: u64,
 }
 
 pub struct ActiveRoute {
     destination: Vec2,
+    requested_start: Vec2,
+    task: Option<super::InteractionRegion>,
     stop_radius: f32,
     interaction: Option<super::InteractionRegion>,
     waypoints: Vec<Vec2>,
     current: usize,
+    follower: super::route_following::RouteFollower,
     revision: u64,
     pending: Option<crate::navigation::RouteRequestId>,
+}
+
+impl ActiveRoute {
+    /// Preserve the reachable prefix so a replacement search does not freeze safe travel.
+    fn trim_at_obstruction(
+        &mut self,
+        position: Vec2,
+        navigation: &crate::navigation::Navigation,
+    ) -> bool {
+        let next = self.follower.target_index(self.current);
+        let mut previous = position;
+        for index in next..self.waypoints.len() {
+            let point = self.waypoints[index];
+            if !navigation.movement_clear(previous, point) {
+                let mut clear = 0.0;
+                let mut blocked = 1.0;
+                for _ in 0..12 {
+                    let fraction = (clear + blocked) * 0.5;
+                    if navigation.movement_clear(previous, previous.lerp(point, fraction)) {
+                        clear = fraction;
+                    } else {
+                        blocked = fraction;
+                    }
+                }
+                let end = previous.lerp(point, clear);
+                self.waypoints.truncate(index);
+                if end.distance(previous) > STOP_THRESHOLD {
+                    self.waypoints.push(end);
+                }
+                return true;
+            }
+            previous = point;
+        }
+        false
+    }
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
@@ -88,9 +150,9 @@ pub fn move_velocity_system(
     )>,
     bodies: Query<(Entity, &Transform, Has<super::CongestionRecovery>), With<super::Nanobot>>,
     loads: Query<&super::Cargo>,
-    grid: Res<crate::intent::IntentGrid>,
     game_settings: Res<GameSettings>,
     navigation: Res<crate::navigation::Navigation>,
+    time: Res<Time<Fixed>>,
 ) {
     use crate::navigation::{RouteGoal, RoutePriority, RouteStatus};
     routes.retain(|entity, route| {
@@ -103,33 +165,48 @@ pub fn move_velocity_system(
             if bodies.contains(*entity) {
                 commands
                     .entity(*entity)
-                    .remove::<(RemainingTravel, WaitingForWork)>();
+                    .remove::<(RemainingTravel, WaitingForWork, WorkApproach)>();
             }
             false
         }
     });
-    approaches.tick += 1;
+    let now = time.elapsed_secs_f64();
     approaches
         .entries
         .retain(|entity, _| bots.contains(*entity));
-    let tick = approaches.tick;
+
     for (entity, destination, ..) in &bots {
         if let Some(region) = destination.interaction {
-            let entry = approaches
-                .entries
-                .entry(entity)
-                .or_insert((region, tick, None));
-            if entry.0 != region {
-                *entry = (region, tick, None);
+            let entry = approaches.entries.entry(entity).or_insert(ApproachEntry {
+                region,
+                since: now,
+                selected: None,
+                nearby: false,
+                rejected: Vec::new(),
+                revision: navigation.revision(),
+            });
+            if entry.region != region {
+                *entry = ApproachEntry {
+                    region,
+                    since: now,
+                    selected: None,
+                    nearby: false,
+                    rejected: Vec::new(),
+                    revision: navigation.revision(),
+                };
             }
         } else {
             approaches.entries.remove(&entity);
+            commands.entity(entity).remove::<WorkApproach>();
         }
     }
     let mut ordered: Vec<_> = bots.iter().map(|(entity, ..)| entity).collect();
     ordered.sort_by_key(|entity| {
         (
-            approaches.entries.get(entity).map_or(tick, |entry| entry.1),
+            approaches
+                .entries
+                .get(entity)
+                .map_or(u64::MAX, |entry| entry.since.to_bits()),
             entity.to_bits(),
         )
     });
@@ -148,6 +225,9 @@ pub fn move_velocity_system(
             continue;
         };
         commands.entity(entity).remove::<RemainingTravel>();
+        let keep_order_after_evacuation = evacuation.is_some_and(|evacuation| {
+            destination.interaction.is_some() || destination.xy != evacuation.goal
+        });
         let evacuation_destination = evacuation.map(|evacuation| DirectMovementComponent {
             xy: evacuation.goal,
             stop_radius: 0.0,
@@ -164,59 +244,77 @@ pub fn move_velocity_system(
         let position = transform.translation.truncate();
         let mut work_ready = true;
         if let Some(region) = selected_destination.interaction {
+            let entry = approaches.entries.get_mut(&entity).unwrap();
+            if entry.revision != navigation.revision() {
+                entry.rejected.clear();
+                entry.revision = navigation.revision();
+            }
+            let distance = position.distance(region.approach(position));
+            let threshold = if entry.nearby { 3.0 } else { 2.0 } * crate::navigation::CELL_WIDTH;
+            entry.nearby = distance <= threshold;
+            let nearby = entry.nearby;
+            let mut phase = if nearby {
+                ApproachPhase::Searching
+            } else {
+                ApproachPhase::Travelling
+            };
+            commands.entity(entity).insert(WorkApproach {
+                region,
+                phase,
+                since: entry.since,
+            });
             let free = |point: Vec2| {
                 navigation.point_clear(point)
-                    && space_free(entity, point, &occupancy)
-                    && space_free(entity, point, &claims)
+                    && (!nearby
+                        || (space_free(entity, point, &occupancy)
+                            && space_free(entity, point, &claims)))
             };
             let mut candidates = region.work_candidates(position);
+            if let Some(old) = approaches
+                .entries
+                .get(&entity)
+                .and_then(|entry| entry.selected)
+            {
+                candidates.insert(0, old);
+            }
+            // A separate position already in reach is useful immediately, even after yielding away from the intended approach.
             if region.contains(position) {
                 candidates.insert(0, position);
             }
-            if let Some(old) = approaches.entries.get(&entity).and_then(|entry| entry.2) {
-                candidates.insert(0, old);
-            }
-            let swarm = member.map_or(super::SwarmId::PLAYER, |member| member.0);
-            let mut selected = None;
-            let mut pending = false;
-            for candidate in candidates.into_iter().filter(|point| free(*point)) {
-                if navigation.segment_clear(position, candidate)
-                    || routes.get(&entity).is_some_and(|route| {
-                        route.destination == candidate
-                            && route.revision == navigation.revision()
-                            && !route.waypoints.is_empty()
-                    })
-                {
-                    selected = Some(candidate);
-                    break;
-                }
-                match navigation.query_point(
-                    position,
-                    candidate,
-                    &grid,
-                    swarm,
-                    kind == Some(&super::NanobotType::Hauler),
-                ) {
-                    RouteStatus::Found(_) => {
-                        selected = Some(candidate);
-                        break;
-                    }
-                    RouteStatus::Pending => {
-                        // Keep the exact probe goal stable while yielding changes the start.
-                        approaches.entries.get_mut(&entity).unwrap().2 = Some(candidate);
-                        pending = true;
-                        break;
-                    }
-                    RouteStatus::Unreachable => {}
-                }
-            }
+            let entry = approaches.entries.get(&entity).unwrap();
+            let candidates: Vec<_> = candidates
+                .into_iter()
+                .filter(|point| free(*point) && !entry.rejected.contains(point))
+                .collect();
+            // Retain a usable commitment, otherwise prefer an immediately clear approach.
+            let retained = entry
+                .selected
+                .filter(|point| candidates.contains(point))
+                .filter(|point| {
+                    navigation.movement_clear(position, *point)
+                        || routes.get(&entity).is_some_and(|route| {
+                            route.destination == *point
+                                && (route.pending.is_some() || !route.waypoints.is_empty())
+                        })
+                });
+            let selected = retained
+                .or_else(|| {
+                    candidates
+                        .iter()
+                        .copied()
+                        .find(|point| navigation.movement_clear(position, *point))
+                })
+                .or_else(|| candidates.first().copied());
             if let Some(point) = selected {
-                claims.insert(point, (entity, point));
-                approaches.entries.get_mut(&entity).unwrap().2 = Some(point);
+                if nearby {
+                    claims.insert(point, (entity, point));
+                }
+                approaches.entries.get_mut(&entity).unwrap().selected = Some(point);
                 selected_destination.xy = point;
                 // Route to the selected perimeter position, never the occupied nearest face.
                 selected_destination.interaction = None;
-                work_ready = region.contains(position)
+                work_ready = nearby
+                    && region.contains(position)
                     && space_free(entity, position, &occupancy)
                     && !bodies
                         .get(entity)
@@ -224,47 +322,57 @@ pub fn move_velocity_system(
                     && position.distance(point) <= STOP_THRESHOLD;
                 commands.entity(entity).remove::<WaitingForWork>();
             } else {
-                if !pending {
-                    if loads.get(entity).is_ok_and(|cargo| cargo.amount > 0)
-                        || kind == Some(&super::NanobotType::Defender)
-                    {
-                        commands.entity(entity).insert(WaitingForWork);
-                    } else {
-                        commands
-                            .entity(entity)
-                            .insert((
-                                super::Commitment::Idle,
-                                RejectedWorkGoal {
-                                    region,
-                                    remaining_seconds: 1.0,
-                                },
-                            ))
-                            .remove::<(
-                                super::BuildAssignment,
-                                super::BuildProgress,
-                                super::ReturningToStockpile,
-                            )>()
-                            .remove::<(
-                                DirectMovementComponent,
-                                super::RegionalLease,
-                                super::GatherAssignment,
-                                super::ExtractProgress,
-                                super::PlannedStructureClaim,
-                                super::PlannedStructureProgress,
-                                super::MaintenanceAssignment,
-                                super::MaintenanceProgress,
-                                super::HaulerAssignment,
-                                super::HaulerLoading,
-                                super::LogisticsReservation,
-                                super::Cargo,
-                                WaitingForWork,
-                            )>();
-                    }
+                if loads.get(entity).is_ok_and(|cargo| cargo.amount > 0)
+                    || kind == Some(&super::NanobotType::Defender)
+                {
+                    let entry = approaches.entries.get_mut(&entity).unwrap();
+                    phase = ApproachPhase::Waiting;
+                    commands.entity(entity).insert((
+                        WaitingForWork,
+                        WorkApproach {
+                            region,
+                            phase,
+                            since: entry.since,
+                        },
+                    ));
+                } else {
+                    commands
+                        .entity(entity)
+                        .insert((
+                            super::Commitment::Idle,
+                            RejectedWorkGoal {
+                                region,
+                                remaining_seconds: 1.0,
+                            },
+                        ))
+                        .remove::<(
+                            super::BuildAssignment,
+                            super::BuildProgress,
+                            super::ReturningToStockpile,
+                        )>()
+                        .remove::<(
+                            DirectMovementComponent,
+                            super::RegionalLease,
+                            super::GatherAssignment,
+                            super::ExtractProgress,
+                            super::PlannedStructureClaim,
+                            super::PlannedStructureProgress,
+                            super::MaintenanceAssignment,
+                            super::MaintenanceProgress,
+                            super::HaulerAssignment,
+                            super::HaulerLoading,
+                            super::LogisticsReservation,
+                            super::Cargo,
+                            WaitingForWork,
+                            WorkApproach,
+                        )>();
                 }
                 continue;
             }
         } else {
-            commands.entity(entity).remove::<WaitingForWork>();
+            commands
+                .entity(entity)
+                .remove::<(WaitingForWork, WorkApproach)>();
         }
         let destination = &selected_destination;
         let position = transform.translation.truncate();
@@ -279,8 +387,10 @@ pub fn move_velocity_system(
         {
             commands
                 .entity(entity)
-                .remove::<DirectMovementComponent>()
-                .remove::<ProgressChecker>();
+                .remove::<(ProgressChecker, WorkApproach, WaitingForWork)>();
+            if !keep_order_after_evacuation {
+                commands.entity(entity).remove::<DirectMovementComponent>();
+            }
             if let Some(route) = routes.remove(&entity)
                 && let Some(id) = route.pending
             {
@@ -288,21 +398,71 @@ pub fn move_velocity_system(
             }
             continue;
         }
-        let needs_route = routes.get(&entity).is_none_or(|route| {
-            (route.pending.is_none()
-                && route.destination != destination.xy
-                && (original.interaction.is_some()
-                    || route.destination.distance(destination.xy) > crate::navigation::CELL_WIDTH
-                    || route.current >= route.waypoints.len()))
-                || route.stop_radius != stop
-                || route.interaction != destination.interaction
-                || (route.waypoints.is_empty() && route.revision != navigation.revision())
-                || yielding.is_none()
-                    && route
-                        .waypoints
-                        .get(route.current)
-                        .is_some_and(|next| !navigation.segment_clear(position, *next))
+        let direct = navigation.movement_clear(position, destination.xy)
+            && (kind != Some(&super::NanobotType::Hauler)
+                || original.interaction.is_some_and(|region| {
+                    position.distance(region.approach(position))
+                        <= 2.0 * crate::navigation::CELL_WIDTH
+                }));
+        if direct
+            && routes.get(&entity).is_none_or(|route| {
+                route.pending.is_some()
+                    || route.task != original.interaction
+                    || route.current != 0
+                    || route.waypoints.as_slice() != [destination.xy]
+            })
+        {
+            if let Some(old) = routes.remove(&entity)
+                && let Some(id) = old.pending
+            {
+                navigation.cancel(id);
+            }
+            routes.insert(
+                entity,
+                ActiveRoute {
+                    destination: destination.xy,
+                    requested_start: position,
+                    task: original.interaction,
+                    stop_radius: stop,
+                    interaction: destination.interaction,
+                    waypoints: vec![destination.xy],
+                    current: 0,
+                    follower: Default::default(),
+                    revision: navigation.revision(),
+                    pending: None,
+                },
+            );
+        }
+        let invalidated = routes.get_mut(&entity).is_some_and(|route| {
+            if route.revision == navigation.revision() {
+                return false;
+            }
+            route.revision = navigation.revision();
+            route.waypoints.is_empty() || route.trim_at_obstruction(position, &navigation)
         });
+        let needs_route = invalidated
+            || routes.get(&entity).is_none_or(|route| {
+                (route.pending.is_none()
+                    && route.destination != destination.xy
+                    && (original.interaction.is_some()
+                        || route.destination.distance(destination.xy)
+                            > crate::navigation::CELL_WIDTH
+                        || route.current >= route.waypoints.len()))
+                    || (route.pending.is_none()
+                        && !route.waypoints.is_empty()
+                        && route.current >= route.waypoints.len()
+                        && position.distance(destination.xy) > STOP_THRESHOLD)
+                    || route.task != original.interaction
+                    || route.stop_radius != stop
+                    || route.interaction != destination.interaction
+                    || (route.waypoints.is_empty() && route.revision != navigation.revision())
+                    || route.pending.is_none()
+                        && yielding.is_none()
+                        && route
+                            .waypoints
+                            .get(route.follower.target_index(route.current))
+                            .is_some_and(|next| !navigation.movement_clear(position, *next))
+            });
         if needs_route {
             let swarm = member.map_or(super::SwarmId::PLAYER, |member| member.0);
             let hauler = kind == Some(&super::NanobotType::Hauler);
@@ -328,28 +488,39 @@ pub fn move_velocity_system(
             } else {
                 RouteGoal::Point(destination.xy)
             };
-            let pending = Some(navigation.request(position, goal, swarm, hauler, priority));
-            let (waypoints, current) = routes
+            let pending =
+                Some(navigation.request_owned(position, goal, swarm, hauler, priority, entity));
+            let (waypoints, current, follower) = routes
                 .get(&entity)
                 .filter(|route| {
-                    route.interaction == destination.interaction
+                    route.task == original.interaction
+                        && route.interaction == destination.interaction
                         && route
                             .waypoints
-                            .get(route.current)
-                            .is_some_and(|next| navigation.segment_clear(position, *next))
+                            .get(route.follower.target_index(route.current))
+                            .is_some_and(|next| navigation.movement_clear(position, *next))
                 })
                 .map_or_else(
-                    || (Vec::new(), 0),
-                    |route| (route.waypoints.clone(), route.current),
+                    || {
+                        (
+                            Vec::new(),
+                            0,
+                            super::route_following::RouteFollower::default(),
+                        )
+                    },
+                    |route| (route.waypoints.clone(), route.current, route.follower),
                 );
             routes.insert(
                 entity,
                 ActiveRoute {
                     destination: destination.xy,
+                    requested_start: position,
+                    task: original.interaction,
                     stop_radius: stop,
                     waypoints,
                     interaction: destination.interaction,
                     current,
+                    follower,
                     revision: navigation.revision(),
                     pending,
                 },
@@ -361,28 +532,42 @@ pub fn move_velocity_system(
                 RouteStatus::Pending => {}
                 RouteStatus::Found(found) => {
                     route.waypoints = found.waypoints;
-                    route.current = 0;
+                    route.current = super::route_following::rejoin_index(
+                        position,
+                        route.requested_start,
+                        &route.waypoints,
+                        &navigation,
+                    );
+                    route.follower = Default::default();
                     route.pending = None;
                     navigation.cancel(id);
                 }
                 RouteStatus::Unreachable => {
+                    if let Some(entry) = approaches.entries.get_mut(&entity) {
+                        entry.rejected.push(route.destination);
+                        entry.selected = None;
+                    }
                     route.waypoints.clear();
                     route.current = 0;
+                    route.follower = Default::default();
                     route.pending = None;
                     navigation.cancel(id);
                 }
             }
         }
-        while route
-            .waypoints
-            .get(route.current)
-            .is_some_and(|point| position.distance(*point) < 0.01)
-        {
-            route.current += 1;
-        }
-        if let Some(next) = route.waypoints.get(route.current) {
+        let speed = destination.speed.unwrap_or(game_settings.bot_speed);
+        let step = route.follower.route_step(
+            position,
+            &route.waypoints,
+            &mut route.current,
+            speed,
+            kind == Some(&super::NanobotType::Hauler),
+            &navigation,
+        );
+        let next_index = route.follower.target_index(route.current);
+        if let Some(next) = route.waypoints.get(next_index) {
             let remaining = position.distance(*next)
-                + route.waypoints[route.current..]
+                + route.waypoints[next_index..]
                     .windows(2)
                     .map(|segment| segment[0].distance(segment[1]))
                     .sum::<f32>();
@@ -392,9 +577,7 @@ pub fn move_velocity_system(
                     rejoin: Some(*next),
                 });
             }
-            let delta = *next - position;
-            let speed = destination.speed.unwrap_or(game_settings.bot_speed);
-            velocity.value += delta.normalize_or_zero() * speed.min(delta.length());
+            velocity.value += step;
         }
     }
 }

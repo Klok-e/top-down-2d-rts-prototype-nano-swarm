@@ -4,8 +4,7 @@ use super::{
     SupportCondition, SwarmId, SwarmMember,
 };
 use crate::{
-    intent::IntentGrid,
-    navigation::{Navigation, RouteStatus},
+    navigation::{ConnectivityStatus, Navigation, RouteGoal},
     resources::ResourceDeposit,
 };
 use bevy::{ecs::system::SystemParam, prelude::*};
@@ -30,7 +29,6 @@ struct WorkOrigins {
 pub struct WorkAccess<'w, 's> {
     origins: Local<'s, std::cell::RefCell<WorkOrigins>>,
     navigation: Res<'w, Navigation>,
-    grid: Res<'w, IntentGrid>,
     bots: Query<
         'w,
         's,
@@ -65,23 +63,18 @@ impl WorkAccess<'_, '_> {
         })
     }
 
-    pub(crate) fn route_from(
+    pub(crate) fn reachability_from(
         &self,
-        swarm: SwarmId,
-        kind: NanobotType,
         start: Vec2,
         destination: InteractionRegion,
     ) -> WorkReachability {
-        match self.navigation.query_interaction(
-            start,
-            destination,
-            &self.grid,
-            swarm,
-            kind == NanobotType::Hauler,
-        ) {
-            RouteStatus::Pending => WorkReachability::Pending,
-            RouteStatus::Found(_) => WorkReachability::Reachable,
-            RouteStatus::Unreachable => WorkReachability::Unreachable,
+        match self
+            .navigation
+            .query_connectivity(start, RouteGoal::Interaction(destination))
+        {
+            ConnectivityStatus::Pending => WorkReachability::Pending,
+            ConnectivityStatus::Connected { .. } => WorkReachability::Reachable,
+            ConnectivityStatus::Unreachable => WorkReachability::Unreachable,
         }
     }
 
@@ -145,7 +138,7 @@ impl WorkAccess<'_, '_> {
         }
         let mut pending = false;
         for &start in starts.iter() {
-            match self.route_from(swarm, kind, start, destination) {
+            match self.reachability_from(start, destination) {
                 WorkReachability::Reachable => return WorkReachability::Reachable,
                 WorkReachability::Pending => pending = true,
                 WorkReachability::Unreachable => {}
@@ -160,23 +153,19 @@ impl WorkAccess<'_, '_> {
 
     pub(crate) fn chain_from(
         &self,
-        swarm: SwarmId,
         start: Vec2,
         source: InteractionRegion,
         destination: InteractionRegion,
     ) -> WorkReachability {
         match self
             .navigation
-            .query_interaction(start, source, &self.grid, swarm, true)
+            .query_connectivity(start, RouteGoal::Interaction(source))
         {
-            RouteStatus::Pending => WorkReachability::Pending,
-            RouteStatus::Unreachable => WorkReachability::Unreachable,
-            RouteStatus::Found(route) => self.route_from(
-                swarm,
-                NanobotType::Hauler,
-                *route.waypoints.last().unwrap_or(&start),
-                destination,
-            ),
+            ConnectivityStatus::Pending => WorkReachability::Pending,
+            ConnectivityStatus::Unreachable => WorkReachability::Unreachable,
+            ConnectivityStatus::Connected { endpoint } => {
+                self.reachability_from(endpoint, destination)
+            }
         }
     }
 
@@ -202,7 +191,7 @@ impl WorkAccess<'_, '_> {
         }
         let mut pending = false;
         for &start in starts.iter() {
-            match self.chain_from(swarm, start, source, destination) {
+            match self.chain_from(start, source, destination) {
                 WorkReachability::Reachable => return WorkReachability::Reachable,
                 WorkReachability::Pending => pending = true,
                 WorkReachability::Unreachable => {}
