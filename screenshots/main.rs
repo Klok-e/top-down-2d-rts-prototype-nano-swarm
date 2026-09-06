@@ -44,7 +44,6 @@ mod navigation_geometry;
 mod opponent_gameplay_loop;
 mod physical_logistics;
 mod production_exits;
-mod production_priority_panel;
 mod regional_allocation;
 mod route_recovery;
 mod shared_navigation;
@@ -215,10 +214,6 @@ fn main() -> std::process::ExitCode {
         .with_ignored_flag(true),
         Trial::test("opponent_gameplay_loop", || {
             run(opponent_gameplay_loop::opponent_gameplay_loop)
-        })
-        .with_ignored_flag(true),
-        Trial::test("production_priority_panel", || {
-            run(production_priority_panel::production_priority_panel)
         })
         .with_ignored_flag(true),
         Trial::test("regional_allocation", || {

@@ -477,12 +477,8 @@ fn hauler_routes_to_facility_from_sink_stockpile_leg3() {
     // contracts at once: terminals beat buffers, a facility's source
     // is a sink stockpile, and a source stockpile is never a leg-3
     // source (the triple that prevents ping-pong).
-    use top_down_2d_rts_prototype_nano_swarm::nanobot::ProductionPriority;
     let mut app = build_app();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    // Empty priority so production never fires and the hauler is the
-    // only actor touching the facility's hopper.
-    app.insert_resource(ProductionPriority::new());
     let hauler_pos = Vec2::new(0.0, 0.0);
     let source_pos = Vec2::new(100.0, -180.0); // source-role, closer to hauler
     let sink_pos = Vec2::new(250.0, 0.0); // sink-role
@@ -556,6 +552,35 @@ fn hauler_routes_to_facility_from_sink_stockpile_leg3() {
     assert!(
         sink_after < 1000,
         "sink stockpile must have lost material to the leg-3 hauler; got {sink_after}"
+    );
+}
+
+#[test]
+fn hauler_ignores_facility_whose_owner_is_not_a_swarm() {
+    let mut app = build_app();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(100.0, 0.0), 1000, 1000);
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
+    let invalid_owner = app.world_mut().spawn(SwarmId::PLAYER).id();
+    let facility = app
+        .world_mut()
+        .spawn((
+            ProductionFacility::new(),
+            OwnerSwarm(invalid_owner),
+            Transform::from_xyz(200.0, 0.0, 0.0),
+        ))
+        .id();
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
+
+    for _ in 0..10 {
+        app.update();
+    }
+
+    assert_ne!(
+        app.world()
+            .get::<HaulerAssignment>(hauler)
+            .map(|assignment| assignment.sink),
+        Some(facility),
     );
 }
 

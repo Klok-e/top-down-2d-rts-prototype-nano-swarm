@@ -48,6 +48,13 @@ pub fn smoke(ctx: &mut TestContext) -> TestFlow {
             cell_origin(PLAYER_CELL),
             "default Production Facility must not be hidden under the seed swarm"
         );
+        assert!(
+            ctx.world
+                .query::<&Text>()
+                .iter(ctx.world)
+                .all(|text| text.0 != "Production Priority"),
+            "the removed Production Priority panel must not appear in the full app"
+        );
     }
 
     // Warm up a few frames so the scene has rendered before capture.

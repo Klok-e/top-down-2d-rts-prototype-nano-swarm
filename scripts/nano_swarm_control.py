@@ -84,11 +84,6 @@ def build_parser() -> argparse.ArgumentParser:
     pan.add_argument("dx", type=float)
     pan.add_argument("dy", type=float)
 
-    priority = commands.add_parser("priority")
-    priority.add_argument("worker", type=int)
-    priority.add_argument("hauler", type=int)
-    priority.add_argument("defender", type=int)
-
     wait = commands.add_parser("wait")
     wait.add_argument("--frames", type=int, default=0)
     wait.add_argument("--fixed-ticks", type=int, default=0)
@@ -139,12 +134,6 @@ def command_request(args: argparse.Namespace) -> tuple[str, dict | None]:
         return "camera.set", params
     if args.command == "pan":
         return "camera.pan", {"dx": args.dx, "dy": args.dy}
-    if args.command == "priority":
-        return "production_priority.set", {
-            "worker": args.worker,
-            "hauler": args.hauler,
-            "defender": args.defender,
-        }
     if args.command == "wait":
         if args.frames < 0 or args.fixed_ticks < 0:
             raise ValueError("wait values cannot be negative")

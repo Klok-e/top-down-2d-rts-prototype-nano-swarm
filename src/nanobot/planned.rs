@@ -13,7 +13,6 @@ use super::structure_lifecycle::*;
 
 use crate::GAMEPLAY_SPRITE_Z;
 use crate::intent::{IntentGrid, IntentKind};
-use crate::nanobot::autonomy::NanobotType;
 use crate::nanobot::components::{Swarm, SwarmId};
 use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
@@ -43,10 +42,7 @@ pub const PLANNED_STRUCTURE_FOOTPRINT: f32 = crate::navigation::STRUCTURE_SPRITE
 /// migrates Chargers onto the same lifecycle. All four
 /// PRD-named kinds now live on the shared foundation.
 ///
-/// All variants are data-less so [`PlannedKind::ALL`] can stay
-/// a `const` array (the future-target kind for a planned
-/// Production Facility lives on a sidecar component,
-/// [`PlannedProductionTarget`], instead of on the enum).
+/// All variants are data-less so [`PlannedKind::ALL`] can stay a `const` array.
 #[derive(Debug, Component, Default, Clone, Copy, PartialEq, Eq)]
 pub enum PlannedKind {
     /// Completes into a [`Stockpile`] (Source Stockpile in the
@@ -65,11 +61,8 @@ pub enum PlannedKind {
     /// emerges from production demand pressure (issue #27)
     /// rather than from raw Build paint: the auto-creation
     /// system plans one inside an owned Build Zone cell when
-    /// existing capacity is too busy. The first production
-    /// target the completed facility should pick lives on a
-    /// sidecar [`PlannedProductionTarget`] component, not on
-    /// the enum itself, so the planned kind stays a
-    /// const-friendly tag.
+    /// existing capacity is too busy. The completed facility
+    /// selects from current Population Demand after funding.
     ProductionFacility,
     /// Completes into a [`crate::nanobot::Charger`]. The
     /// kind emerges when a low-Charge Defender has no available
@@ -131,32 +124,20 @@ pub const fn completed_visual_color() -> Color {
     Color::srgba(0.2, 0.6, 0.3, 1.0)
 }
 
-/// Planning-time snapshot of the type most under target when a
-/// [`PlannedKind::ProductionFacility`] plan is created.
-///
-/// The sidecar stays separate so [`PlannedKind`] remains data-less. Promotion
-/// removes it and creates an idle, empty facility; physical input must pay the
-/// first cycle before the normal picker chooses any type.
-#[derive(Debug, Component, Clone, Copy)]
-pub struct PlannedProductionTarget(pub NanobotType);
-
 /// Build-painted cells where a consumer may place its local Sink Stockpile.
 /// Both planning and collapse recovery use this helper so ownership and
 /// consumer-local topology cannot diverge.
 pub(crate) fn sink_stockpile_zone_cells(
     grid: &IntentGrid,
     consumer_cell: IVec2,
-    consumer_owner: Option<Entity>,
+    consumer_owner: Entity,
     swarm_by_id: &HashMap<SwarmId, Entity>,
 ) -> Vec<IVec2> {
-    let swarm = match consumer_owner {
-        Some(owner) => {
-            let Some((&swarm, _)) = swarm_by_id.iter().find(|(_, entity)| **entity == owner) else {
-                return Vec::new();
-            };
-            swarm
-        }
-        None => SwarmId::PLAYER,
+    let Some((&swarm, _)) = swarm_by_id
+        .iter()
+        .find(|(_, entity)| **entity == consumer_owner)
+    else {
+        return Vec::new();
     };
     if !grid
         .cell(consumer_cell)
@@ -221,14 +202,13 @@ pub fn sink_stockpile_demand_system(
     // Production Facility plans satisfy sink-side demand:
     // chargers are direct-delivery terminals and do not
     // auto-plan Sink Stockpiles (ADR-0005).
-    let mut demand_sites: Vec<(IVec2, Option<Entity>)> = Vec::new();
+    let mut demand_sites: Vec<(IVec2, Entity)> = Vec::new();
     for (planned_structure, transform, owner) in &planned {
         obstacles.push(Obstacle::structure(transform));
-        if planned_structure.kind == PlannedKind::ProductionFacility {
-            demand_sites.push((
-                world_to_cell(transform.translation.truncate()),
-                owner.map(|o| o.0),
-            ));
+        if planned_structure.kind == PlannedKind::ProductionFacility
+            && let Some(owner) = owner
+        {
+            demand_sites.push((world_to_cell(transform.translation.truncate()), owner.0));
         }
     }
     for (transform, _) in &facilities {
@@ -239,10 +219,9 @@ pub fn sink_stockpile_demand_system(
     }
 
     for (transform, owner) in &facilities {
-        demand_sites.push((
-            world_to_cell(transform.translation.truncate()),
-            owner.map(|o| o.0),
-        ));
+        if let Some(owner) = owner {
+            demand_sites.push((world_to_cell(transform.translation.truncate()), owner.0));
+        }
     }
     // Chargers are direct-delivery terminals fed by haulers;
     // they deliberately do not create Sink Stockpile demand.
@@ -253,15 +232,15 @@ pub fn sink_stockpile_demand_system(
 
     let mut newly_planned: Vec<Vec2> = Vec::new();
     for (cell, owner) in demand_sites {
-        let effective_owner = owner.or_else(|| swarm_by_id.get(&SwarmId::PLAYER).copied());
-        let placement_swarm = effective_owner
-            .and_then(|owner| swarms.get(owner).ok().map(|(_, id)| *id))
-            .unwrap_or(SwarmId::PLAYER);
+        let Ok((_, placement_swarm)) = swarms.get(owner) else {
+            continue;
+        };
+        let placement_swarm = *placement_swarm;
         let sink_owner_matches = |candidate: Option<&OwnerSwarm>| match candidate {
             Some(owner) => swarms
                 .get(owner.0)
                 .is_ok_and(|(_, id)| *id == placement_swarm),
-            None => placement_swarm == SwarmId::PLAYER,
+            None => false,
         };
         let zone_cells = sink_stockpile_zone_cells(&grid, cell, owner, &swarm_by_id);
         if zone_cells.is_empty() {
@@ -320,9 +299,7 @@ pub fn sink_stockpile_demand_system(
                 placement_pos,
             ),
         ));
-        if let Some(owner) = effective_owner {
-            entity_commands.insert(OwnerSwarm(owner));
-        }
+        entity_commands.insert(OwnerSwarm(owner));
     }
 }
 

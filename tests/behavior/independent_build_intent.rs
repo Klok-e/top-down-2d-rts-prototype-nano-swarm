@@ -4,8 +4,8 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        NanobotType, OwnerSwarm, PRODUCTION_PRESSURE_TICKS, PlannedKind, PlannedStructure,
-        ProductionFacility, ProductionPriority, Swarm, SwarmId, SwarmMember,
+        OwnerSwarm, PRODUCTION_PRESSURE_TICKS, PlannedKind, PlannedStructure, ProductionFacility,
+        Swarm, SwarmId, SwarmMember,
     },
 };
 
@@ -25,10 +25,6 @@ fn overlapping_build_orders_construct_separate_owned_facilities() {
     app.world_mut()
         .entity_mut(enemy_worker)
         .insert(SwarmMember::new(SwarmId(7)));
-    let mut priority = ProductionPriority::new();
-    priority.set_weight(NanobotType::Worker, 10);
-    priority.set_weight(NanobotType::Hauler, 10);
-    app.insert_resource(priority);
     for cell in [IVec2::new(2, 0)] {
         for swarm in [SwarmId::PLAYER, SwarmId(7)] {
             app.world_mut()
@@ -99,10 +95,6 @@ fn enemy_only_build_does_not_supply_player_construction() {
     let mut app = common::sim_app_with_production();
     let player = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     common::spawn_worker_at(&mut app, Vec2::new(-256.0, -256.0));
-    let mut priority = ProductionPriority::new();
-    priority.set_weight(NanobotType::Worker, 10);
-    priority.set_weight(NanobotType::Hauler, 10);
-    app.insert_resource(priority);
     let cell = IVec2::new(2, 0);
     app.world_mut()
         .resource_mut::<IntentGrid>()
@@ -155,10 +147,6 @@ fn enemy_facility_blocks_its_footprint_but_not_the_rest_of_shared_build_cell() {
         .spawn((Swarm {}, SwarmId(7), Transform::default()))
         .id();
     common::spawn_worker_at(&mut app, Vec2::new(-256.0, -256.0));
-    let mut priority = ProductionPriority::new();
-    priority.set_weight(NanobotType::Worker, 10);
-    priority.set_weight(NanobotType::Hauler, 10);
-    app.insert_resource(priority);
     let cell = IVec2::new(2, 0);
     for swarm in [SwarmId::PLAYER, SwarmId(7)] {
         app.world_mut()

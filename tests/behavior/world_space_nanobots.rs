@@ -248,7 +248,6 @@ fn opponent_gather_bot_lands_at_deposit_world_position() {
     let _opponent = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
         opponent_pos,
-        top_down_2d_rts_prototype_nano_swarm::nanobot::ProductionPriority::new(),
         &[(
             top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotType::Worker,
             1,

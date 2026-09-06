@@ -277,6 +277,7 @@ pub fn sim_app_with_charge() -> App {
 /// chain use this builder.
 pub fn sim_app_with_production() -> App {
     let mut app = sim_app();
+    app.add_plugins(PopulationDemandPlugin);
     app.add_plugins(ProductionPlugin);
     app
 }
@@ -289,6 +290,7 @@ pub fn sim_app_with_production() -> App {
 /// plan -> build -> production chain.
 pub fn sim_app_with_production_planned() -> App {
     let mut app = sim_app();
+    app.add_plugins(PopulationDemandPlugin);
     app.add_plugins(ProductionPlugin);
     app.add_plugins(PlannedStructurePlugin);
     app
@@ -381,6 +383,21 @@ pub fn spawn_swarm_at(app: &mut App, world_pos: Vec2) -> Entity {
             Transform::from_translation(world_pos.extend(0.0)),
         ))
         .id()
+}
+
+fn player_swarm_entity(app: &mut App) -> Entity {
+    let existing = {
+        let world = app.world_mut();
+        let mut query = world.query_filtered::<(Entity, &SwarmId), With<Swarm>>();
+        query
+            .iter(world)
+            .find_map(|(entity, swarm)| (*swarm == SwarmId::PLAYER).then_some(entity))
+    };
+    existing.unwrap_or_else(|| {
+        app.world_mut()
+            .spawn((Swarm {}, SwarmId::PLAYER, Transform::default()))
+            .id()
+    })
 }
 
 /// Spawn one production facility on the completion tick for every nanobot type
@@ -668,20 +685,18 @@ pub fn spawn_operational_charger_at(app: &mut App, cell: IVec2, amount: u32) -> 
     )
 }
 
-/// Spawn an idle [`ProductionFacility`] at `world_pos`. The
-/// facility has no `OwnerSwarm`, so it falls back to the global
-/// `ProductionPriority` resource and the player swarm when the
-/// work system spawns a new nanobot. An untagged swarm remains the
-/// legacy player fallback. The input hopper
-/// is pre-filled (see [`fill_facility_input`]) so the facility can
+/// Spawn an idle player-owned [`ProductionFacility`] at `world_pos`.
+/// The input hopper is pre-filled (see [`fill_facility_input`]) so the facility can
 /// run production cycles without standing up the full hauler
 /// chain; the real game starts a facility empty and lets leg 3
 /// fill it.
 pub fn spawn_idle_facility_at(app: &mut App, world_pos: Vec2) -> Entity {
+    let owner = player_swarm_entity(app);
     let entity = app
         .world_mut()
         .spawn((
             ProductionFacility::new(),
+            OwnerSwarm(owner),
             Transform::from_translation(world_pos.extend(0.0)),
         ))
         .id();
@@ -785,23 +800,15 @@ pub fn spawn_planned_structure_of_kind_at_cell(
 
 /// Spawn a fresh [`PlannedStructure`] of
 /// [`top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedKind::ProductionFacility`]
-/// in `cell`, with a [`PlannedProductionTarget`] sidecar
-/// recording the type the completed facility should produce
-/// first. Use this when a test needs to drive the
+/// in `cell`. Use this when a test needs to drive the
 /// build/claim flow for a planned Production Facility
 /// without the auto-creation system (issue #27). The
 /// planned visual is included so tests that pin the visual
 /// flip can compare colors against the same starting state
 /// the production code produces.
-pub fn spawn_planned_production_facility_at_cell(
-    app: &mut App,
-    cell: IVec2,
-    first_target: top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotType,
-) -> Entity {
+pub fn spawn_planned_production_facility_at_cell(app: &mut App, cell: IVec2) -> Entity {
     use top_down_2d_rts_prototype_nano_swarm::{
-        nanobot::{
-            PLANNED_STRUCTURE_FOOTPRINT, PlannedKind, PlannedProductionTarget, planned_visual_color,
-        },
+        nanobot::{PLANNED_STRUCTURE_FOOTPRINT, PlannedKind, planned_visual_color},
         structure_sprites::{StructureVisual, StructureVisualState},
     };
     let center = cell_world_center(cell);
@@ -812,10 +819,11 @@ pub fn spawn_planned_production_facility_at_cell(
     );
     sprite.color = planned_visual_color();
     sprite.custom_size = Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT));
+    let owner = player_swarm_entity(app);
     app.world_mut()
         .spawn((
             PlannedStructure::new(PlannedKind::ProductionFacility, cell),
-            PlannedProductionTarget(first_target),
+            OwnerSwarm(owner),
             sprite,
             Transform::from_translation(center.extend(0.0)),
             StructureVisual::planned(PlannedKind::ProductionFacility),
@@ -851,11 +859,7 @@ pub fn spawn_planned_charger_at_cell(app: &mut App, cell: IVec2) -> Entity {
         .id()
 }
 
-/// Spawn an [`OpponentSwarm`] at `world_pos` with the given
-/// `priority` and `counts` of each nanobot type as children. The
-/// opponent marker and per-swarm `SwarmProduction` are wired in
-/// so the production systems use the opponent's fixed priority
-/// rather than the global `ProductionPriority` resource.
+/// Spawn an [`OpponentSwarm`] at `world_pos` with `counts` of each nanobot type.
 ///
 /// Thin wrapper over the production
 /// [`top_down_2d_rts_prototype_nano_swarm::nanobot::spawn_opponent_swarm`]
@@ -866,7 +870,6 @@ pub fn spawn_planned_charger_at_cell(app: &mut App, cell: IVec2) -> Entity {
 pub fn spawn_opponent_swarm_with_nanobots(
     app: &mut App,
     world_pos: Vec2,
-    priority: top_down_2d_rts_prototype_nano_swarm::nanobot::ProductionPriority,
     counts: &[(NanobotType, u32)],
 ) -> Entity {
     use top_down_2d_rts_prototype_nano_swarm::nanobot::{SeedNanobots, spawn_opponent_swarm};
@@ -874,15 +877,12 @@ pub fn spawn_opponent_swarm_with_nanobots(
         .iter()
         .map(|(kind, n)| SeedNanobots::new(*kind, *n))
         .collect();
-    spawn_opponent_swarm(app.world_mut(), world_pos, priority, &[], &seeds)
+    spawn_opponent_swarm(app.world_mut(), world_pos, &[], &seeds)
 }
 
 /// Spawn an idle [`ProductionFacility`] owned by `owner` at
 /// `pos`. The owner marker is what tells the production
-/// systems to use the owner's priority and children for the
-/// deficit math; without it, the facility falls back to the
-/// global `ProductionPriority` resource. The input hopper is
-/// pre-filled (see [`fill_facility_input`]).
+/// systems to use the owner's population demand. The input hopper is pre-filled.
 pub fn spawn_facility_at(app: &mut App, owner: Entity, pos: Vec2) -> Entity {
     let entity = app
         .world_mut()
@@ -904,12 +904,17 @@ pub fn spawn_facility_at(app: &mut App, owner: Entity, pos: Vec2) -> Entity {
 /// behaviour directly. The input hopper is pre-filled (see
 /// [`fill_facility_input`]) so the next pick cycle can fire.
 pub fn spawn_busy_facility_at(app: &mut App, world_pos: Vec2, target: NanobotType) -> Entity {
+    let owner = player_swarm_entity(app);
     let mut f = ProductionFacility::new();
     f.current_target = Some(target);
     f.progress = 1;
     let entity = app
         .world_mut()
-        .spawn((f, Transform::from_translation(world_pos.extend(0.0))))
+        .spawn((
+            f,
+            OwnerSwarm(owner),
+            Transform::from_translation(world_pos.extend(0.0)),
+        ))
         .id();
     fill_facility_input(app, entity);
     entity
@@ -929,7 +934,7 @@ pub fn fill_facility_input(app: &mut App, facility: Entity) -> u32 {
         .get::<OwnerSwarm>()
         .and_then(|owner| app.world().entity(owner.0).get::<SwarmId>())
         .copied()
-        .unwrap_or(SwarmId::PLAYER);
+        .expect("ProductionFacility must have a valid OwnerSwarm");
     let added = {
         let world = app.world_mut();
         let mut entity = world.entity_mut(facility);

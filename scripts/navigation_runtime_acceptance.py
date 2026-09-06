@@ -70,7 +70,6 @@ def run_scene(kind, output):
                     for x, y in [(-1, 0), (0, 0), (0, 1)]:
                         call("paint", "corridor", str(x), str(y))
                     call("paint", "build", "-1", "1")
-                    call("priority", "0", "0", "100")
                     capture("start")
                     for name in ["working", "delivery", "later"]:
                         call("wait", "--fixed-ticks", "600")

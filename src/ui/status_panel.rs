@@ -112,11 +112,7 @@ pub fn update_status_panel_system(
     player_swarms: Query<(Entity, &SwarmId), (With<Swarm>, Without<OpponentSwarm>)>,
     nanobots: Query<(&NanobotType, &SwarmMember), With<Nanobot>>,
     deposits: Query<(&ResourceDeposit, Option<&OwnerSwarm>)>,
-    facilities: Query<(
-        &ProductionFacility,
-        Option<&OwnerSwarm>,
-        Option<&SupportCondition>,
-    )>,
+    facilities: Query<(&ProductionFacility, &OwnerSwarm, Option<&SupportCondition>)>,
     ledger: Res<ResourceLedger>,
     population_demand: Option<Res<PopulationDemand>>,
     mut text: Query<&mut Text, With<StatusPanelText>>,
@@ -174,7 +170,7 @@ pub fn update_status_panel_system(
 
     let mut operational_facilities = 0;
     for (facility, owner, condition) in &facilities {
-        if !belongs_to_player(owner, player_swarm) {
+        if owner.0 != player_swarm {
             continue;
         }
         state.facilities += 1;
@@ -206,10 +202,6 @@ pub fn update_status_panel_system(
     };
 
     *text = Text::new(format_status_panel(state));
-}
-
-fn belongs_to_player(owner: Option<&OwnerSwarm>, player_swarm: Entity) -> bool {
-    owner.is_none_or(|OwnerSwarm(owner)| *owner == player_swarm)
 }
 
 #[cfg(test)]
@@ -280,6 +272,24 @@ mod tests {
                 .ends_with("Deposits: 7"),
             "the player HUD reports only explicitly player-owned deposits",
         );
+    }
+
+    #[test]
+    fn hud_ignores_unowned_production_facilities() {
+        let mut app = App::new();
+        app.init_resource::<crate::resources::ResourceLedger>()
+            .add_systems(Update, update_status_panel_system);
+        app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
+        let mut orphan = ProductionFacility::new();
+        orphan.current_target = Some(NanobotType::Worker);
+        app.world_mut().spawn(orphan);
+        let text = app.world_mut().spawn((Text::new(""), StatusPanelText)).id();
+
+        app.update();
+
+        let text = &app.world().entity(text).get::<Text>().unwrap().0;
+        assert!(text.contains("Production: demand met"));
+        assert!(text.contains("Facilities: 0"));
     }
 
     #[test]

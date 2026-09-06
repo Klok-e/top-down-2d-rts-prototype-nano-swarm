@@ -62,8 +62,6 @@ mod production_collapse;
 mod production_facility;
 #[path = "behavior/production_facility_planned.rs"]
 mod production_facility_planned;
-#[path = "behavior/production_priority_panel.rs"]
-mod production_priority_panel;
 #[path = "behavior/regional_allocation.rs"]
 mod regional_allocation;
 #[path = "behavior/sink_stockpile.rs"]

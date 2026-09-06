@@ -2,8 +2,9 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
-        Commitment, DirectMovementComponent, Nanobot, NanobotType, OwnerSwarm, ProductionFacility,
-        ProductionPlugin, ProductionPriority, SwarmId, SwarmMember, SwarmProduction,
+        Commitment, DirectMovementComponent, Nanobot, NanobotType, OwnerSwarm,
+        PRODUCTION_COST_PER_BOT, ProductionFacility, SwarmId, SwarmMember,
+        production_facility_work_system,
     },
     resources::{ResourceKind, ResourceLedger},
 };
@@ -14,21 +15,18 @@ mod common;
 #[test]
 fn both_swarms_release_paid_output_once_when_movement_opens_the_shared_exit() {
     let mut app = common::sim_app_with_movement();
-    app.insert_resource(ProductionPriority::default());
-    app.add_plugins(ProductionPlugin);
+    app.add_systems(Update, production_facility_work_system);
     let mut facilities = Vec::new();
     for (owner, kind, x, minerals) in [
         (SwarmId::PLAYER, NanobotType::Defender, 36., 20),
         (SwarmId(1), NanobotType::Hauler, 180., 33),
     ] {
         let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-        let mut priority = ProductionPriority::new();
-        priority.set_weight(kind, 100);
-        app.world_mut()
-            .entity_mut(swarm)
-            .insert((owner, SwarmProduction::new(priority)));
+        app.world_mut().entity_mut(swarm).insert(owner);
+        let remainder = minerals - PRODUCTION_COST_PER_BOT;
         let mut facility = ProductionFacility::new();
-        facility.input_amount = minerals;
+        facility.input_amount = remainder;
+        facility.current_target = Some(kind);
         let facility = app
             .world_mut()
             .spawn((
@@ -41,7 +39,7 @@ fn both_swarms_release_paid_output_once_when_movement_opens_the_shared_exit() {
         app.world_mut().resource_mut::<ResourceLedger>().add_for(
             owner,
             ResourceKind::Minerals,
-            minerals,
+            remainder,
         );
     }
     let mut opening = None;

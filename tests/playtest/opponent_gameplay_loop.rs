@@ -7,15 +7,13 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         CollapsePlugin, CombatPlugin, MaintenancePlugin, MatchOutcome, NanobotType,
         OpponentIntentController, OpponentIntentPlugin, PopulationDemandPlugin,
-        ProductionCollapseState, ProductionPlugin, ProductionPriority, SwarmId,
-        nanobot_death_cleanup_system,
+        ProductionCollapseState, ProductionPlugin, SwarmId, nanobot_death_cleanup_system,
     },
 };
 
 #[test]
 fn scripted_counter_assault_can_cause_opponent_production_collapse() {
     let mut app = common::sim_app();
-    app.insert_resource(ProductionPriority::default());
     app.add_plugins(MaintenancePlugin)
         .add_plugins(ProductionPlugin)
         .add_plugins(PopulationDemandPlugin)
@@ -40,7 +38,6 @@ fn scripted_counter_assault_can_cause_opponent_production_collapse() {
     let opponent_swarm = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
         opponent_pos,
-        ProductionPriority::default(),
         &[
             (NanobotType::Worker, 1),
             (NanobotType::Hauler, 1),

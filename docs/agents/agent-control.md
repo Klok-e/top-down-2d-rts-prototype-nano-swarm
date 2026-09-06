@@ -34,7 +34,6 @@ python scripts/nano_swarm_control.py paint defend 2 0
 python scripts/nano_swarm_control.py erase defend 2 0
 python scripts/nano_swarm_control.py camera 1024 256 2
 python scripts/nano_swarm_control.py pan 128 -64
-python scripts/nano_swarm_control.py priority 20 20 60
 python scripts/nano_swarm_control.py wait --fixed-ticks 60
 python scripts/nano_swarm_control.py screenshot --name assault
 python scripts/nano_swarm_control.py shutdown
@@ -87,14 +86,11 @@ Screenshot capture is asynchronous. A request received before any render submiss
 | `map.apply` | `action`, `intent`, `x`, `y` | Whether intent state changed |
 | `camera.set` | `x`, `y`, optional `zoom` | Applied camera view |
 | `camera.pan` | `dx`, `dy` | Applied camera view |
-| `production_priority.set` | `worker`, `hauler`, `defender` | Applied player percentages |
 | `frame.wait` | optional `frames`, optional `fixed_ticks` | Actual elapsed clocks |
 | `screenshot.capture` | optional `name` | Absolute path, dimensions, and capture clocks |
 | `process.shutdown` | none | Requests a clean successful `AppExit` |
 
 Valid intents are `gather`, `build`, `defend`, and `corridor`. Stable button IDs are `intent.gather`, `intent.build`, `intent.defend`, and `intent.corridor`.
-
-Production percentages must total 100 and use five-percent steps. The command changes only the player's global priority; opponent priorities remain authored values.
 
 Player-action commands are rejected after Victory or Defeat. State, camera, screenshot, wait, hello, and shutdown remain available for terminal-state inspection.
 
@@ -105,7 +101,6 @@ Player-action commands are rejected after Victory or Defeat. State, camera, scre
 - Selected intent.
 - Map dimensions, sparse active cells, per-layer swarm owners.
 - Main-camera position and zoom.
-- Player Production Priority percentages.
 - Match outcome and collapse flags.
 - Per-swarm population, demand, aggregate health, centroid, minerals, and facility counts.
 

@@ -44,12 +44,12 @@ pub struct WorkAccess<'w, 's> {
         's,
         (
             &'static Transform,
-            Option<&'static OwnerSwarm>,
+            &'static OwnerSwarm,
             Option<&'static SupportCondition>,
         ),
         With<ProductionFacility>,
     >,
-    swarms: Query<'w, 's, &'static SwarmId>,
+    swarms: Query<'w, 's, &'static SwarmId, With<super::Swarm>>,
     targets: Query<'w, 's, (&'static Transform, Option<&'static ResourceDeposit>)>,
 }
 
@@ -104,10 +104,9 @@ impl WorkAccess<'_, '_> {
                     .collect::<Vec<_>>();
                 if include_production {
                     for (transform, owner, condition) in &self.facilities {
-                        let owner = owner
-                            .and_then(|owner| self.swarms.get(owner.0).ok())
-                            .copied()
-                            .unwrap_or(SwarmId::PLAYER);
+                        let Ok(owner) = self.swarms.get(owner.0).copied() else {
+                            continue;
+                        };
                         if owner == swarm && condition.is_none_or(|condition| condition.health > 0)
                         {
                             starts.extend(

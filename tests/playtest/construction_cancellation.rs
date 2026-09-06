@@ -4,7 +4,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         OwnerSwarm, PlannedKind, PlannedStructure, ProductionFacility, ProductionPressure,
-        ProductionPriority, StructureClearing, SwarmId,
+        StructureClearing, SwarmId,
         construction_access::{CancelledSites, ConstructionAccess},
     },
     physical_world::PhysicalWorld,
@@ -19,12 +19,6 @@ fn cancelled_facility_restarts_pressure_then_plans_one_alternative() {
     let mut app = common::sim_app_with_production_planned();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     common::spawn_worker_at(&mut app, Vec2::new(-1024., -1024.));
-    let mut priority = ProductionPriority::new();
-    priority.set_weight(
-        top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotType::Hauler,
-        10,
-    );
-    app.insert_resource(priority);
     for cell in [IVec2::ZERO, IVec2::X] {
         app.world_mut().resource_mut::<IntentGrid>().paint(
             cell,

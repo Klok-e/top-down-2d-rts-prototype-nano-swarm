@@ -4,7 +4,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         ActionableOpportunity, ActionableProjection, AllocationRegion, ChargerAssignment,
         ChargerProgress, Health, MAINTENANCE_NEEDS_THRESHOLD, OpportunityCategory,
-        OpportunityTarget, OwnerSwarm, PlannedKind, PlannedStructure,
+        OpportunityTarget, OwnerSwarm, PlannedKind, PlannedStructure, ProductionFacility,
         SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, SwarmId, SwarmMember,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole},
@@ -82,6 +82,30 @@ fn stale_structure_projects_maintenance_without_defend_work() {
         vec![OpportunityCategory::Maintenance]
     );
     assert_eq!(opportunities[0].available_work, 1);
+}
+
+#[test]
+fn invalid_facility_owner_does_not_project_maintenance() {
+    let mut app = common::minimal_app_with_actionable_projection();
+    let invalid_owner = app.world_mut().spawn(SwarmId::PLAYER).id();
+    let mut structure = Structure::new(StructureKind::Basic);
+    structure.ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
+    app.world_mut().spawn((
+        ProductionFacility::new(),
+        structure,
+        OwnerSwarm(invalid_owner),
+        Transform::from_xyz(32.0, 32.0, 0.0),
+    ));
+
+    app.update();
+
+    let projection = app.world().resource::<ActionableProjection>();
+    assert!(
+        projection
+            .opportunities(AllocationRegion::for_cell(IVec2::ZERO))
+            .iter()
+            .all(|opportunity| opportunity.category != OpportunityCategory::Maintenance)
+    );
 }
 
 #[test]
