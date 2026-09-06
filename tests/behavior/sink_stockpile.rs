@@ -31,7 +31,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         DEFAULT_PLANNED_WORK_TICKS, HaulerAssignment, OwnerSwarm, PlannedKind, PlannedStructure,
-        PlannedStructureClaim, PlannedStructureProgress, SwarmId, completed_visual_color,
+        PlannedStructureClaim, PlannedStructureProgress, ProductionFacility, SwarmId,
+        completed_visual_color,
     },
     resources::{ResourceKind, Stockpile, StockpileRole},
 };
@@ -66,6 +67,29 @@ fn build_paint_alone_does_not_plan_sink_stockpile() {
         world.query::<&Stockpile>().iter(world).count(),
         0,
         "Build paint alone must not spawn completed Stockpile"
+    );
+}
+
+#[test]
+fn unowned_facility_does_not_create_player_sink_demand() {
+    let mut app = build_app();
+    let cell = IVec2::ZERO;
+    paint_build(&mut app, cell);
+    app.world_mut().spawn((
+        ProductionFacility::new(),
+        Transform::from_translation(common::cell_world_center(cell).extend(0.0)),
+    ));
+
+    app.update();
+
+    let world = app.world_mut();
+    assert_eq!(
+        world
+            .query::<&PlannedStructure>()
+            .iter(world)
+            .filter(|planned| planned.kind == PlannedKind::SinkStockpile)
+            .count(),
+        0,
     );
 }
 
@@ -444,7 +468,7 @@ fn opponent_build_cell_creates_opponent_owned_sink_stockpile() {
     // cells; the planned-structure auto-creation must
     // route the Sink Stockpile to the right owner.
     use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-        PrepaintedIntent, ProductionPriority, SeedNanobots, Swarm, SwarmId, spawn_opponent_swarm,
+        PrepaintedIntent, SeedNanobots, Swarm, SwarmId, spawn_opponent_swarm,
     };
     let mut app = build_app();
     let opponent_pos = Vec2::new(2_000.0, 0.0);
@@ -452,7 +476,6 @@ fn opponent_build_cell_creates_opponent_owned_sink_stockpile() {
     let opponent = spawn_opponent_swarm(
         app.world_mut(),
         opponent_pos,
-        ProductionPriority::new(),
         &[PrepaintedIntent::new(cell, IntentKind::Build)],
         &[SeedNanobots::new(
             top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotType::Worker,

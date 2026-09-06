@@ -5,28 +5,14 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Commitment, GatherAssignment, Health, Nanobot, NanobotType, OwnerSwarm,
-        PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT, PlannedStructureClaim, PrepaintedIntent,
-        ProductionFacility, ProductionPlugin, ProductionPriority, SeedNanobots, SwarmId,
-        SwarmMember, VelocityComponent, spawn_opponent_swarm,
+        PlannedStructureClaim, PrepaintedIntent, SeedNanobots, SwarmId, SwarmMember,
+        VelocityComponent, spawn_opponent_swarm,
     },
     resources::ResourceDeposit,
 };
 
 #[path = "../common/mod.rs"]
 mod common;
-
-/// Gather app + the production plugin. The production
-/// systems need a `ProductionPriority` resource (the common
-/// seam's `sim_app_with_gather` does not register one); the
-/// resource is left empty because the test spawns an opponent
-/// swarm with its own `SwarmProduction` that overrides the
-/// global priority.
-fn app_with_production() -> App {
-    let mut app = common::sim_app_with_gather();
-    app.insert_resource(ProductionPriority::new());
-    app.add_plugins(ProductionPlugin);
-    app
-}
 
 #[test]
 fn player_painted_intent_is_owned_by_player_swarm() {
@@ -93,7 +79,6 @@ fn opponent_prepainted_intent_is_owned_by_opponent_swarm() {
     let opponent = spawn_opponent_swarm(
         app.world_mut(),
         opponent_pos,
-        ProductionPriority::new(),
         &[PrepaintedIntent::new(gather_cell, IntentKind::Gather)],
         &[],
     );
@@ -128,7 +113,6 @@ fn opponent_prepainted_gather_drives_opponent_worker() {
     let opponent = spawn_opponent_swarm(
         app.world_mut(),
         opponent_pos,
-        ProductionPriority::new(),
         &[PrepaintedIntent::new(gather_cell, IntentKind::Gather)],
         &[SeedNanobots::new(NanobotType::Worker, 1)],
     );
@@ -286,84 +270,6 @@ fn overlapping_gather_paint_is_visible_only_to_its_independent_owners() {
     assert!(painted.has_owned(IntentKind::Gather, SwarmId(42)));
     assert!(!painted.has_owned(IntentKind::Gather, SwarmId(9)));
     assert!(!painted.has_owned(IntentKind::Build, SwarmId::PLAYER));
-}
-
-#[test]
-fn opponent_production_spawns_opponent_swarm_id_nanobots() {
-    // A full production cycle for the opponent must end
-    // with a new nanobot carrying the opponent `SwarmId`,
-    // not the player id, so it keeps scoring opponent
-    // intent on later ticks. This pins the "production
-    // chain copies parent's ownership" half of the
-    // contract.
-    let mut app = app_with_production();
-    let opponent_pos = Vec2::new(2000.0, 0.0);
-    let mut priority = ProductionPriority::new();
-    priority.set_weight(NanobotType::Worker, 1);
-    let opponent = spawn_opponent_swarm(app.world_mut(), opponent_pos, priority, &[], &[]);
-    let _stockpile =
-        common::spawn_stockpile(&mut app, opponent_pos, PRODUCTION_COST_PER_BOT * 5, 1000);
-    let _facility = app
-        .world_mut()
-        .spawn((
-            ProductionFacility::new(),
-            OwnerSwarm(opponent),
-            Transform::from_translation(opponent_pos.extend(0.0)),
-        ))
-        .id();
-    common::fill_facility_input(&mut app, _facility);
-
-    let opponent_id = app
-        .world()
-        .entity(opponent)
-        .get::<SwarmId>()
-        .copied()
-        .expect("opponent must carry a SwarmId");
-    // Issue #38 / ADR-0004: production-spawned
-    // nanobots are top-level entities whose
-    // `SwarmMember` matches the opponent's `SwarmId`.
-    // The swarm no longer parents the produced bots.
-    // Count the new bot by matching `SwarmMember ==
-    // opponent.SwarmId`; the count increases from 0
-    // (no seed bots) to 1 (one production cycle) over
-    // the test.
-    for _ in 0..(1 + PRODUCTION_TICKS_PER_BOT as usize) {
-        app.update();
-    }
-
-    let mut owned_bots: Vec<Entity> = Vec::new();
-    {
-        let world = app.world_mut();
-        let mut query = world.query::<(
-            Entity,
-            &top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmMember,
-        )>();
-        for (entity, member) in query.iter(world) {
-            if member.0 == opponent_id {
-                owned_bots.push(entity);
-            }
-        }
-    }
-    let world = app.world();
-    assert!(
-        !owned_bots.is_empty(),
-        "opponent facility must spawn at least one new nanobot over the cycle"
-    );
-    for new_child in &owned_bots {
-        let member = world
-            .entity(*new_child)
-            .get::<SwarmMember>()
-            .copied()
-            .expect("newly produced nanobot must carry a SwarmMember");
-        assert_eq!(
-            member.0, opponent_id,
-            "newly produced opponent nanobot must carry the opponent SwarmId, not the player id"
-        );
-        assert!(
-            !member.0.is_player(),
-            "newly produced opponent nanobot must not be tagged as the player swarm"
-        );
-    }
 }
 
 #[test]

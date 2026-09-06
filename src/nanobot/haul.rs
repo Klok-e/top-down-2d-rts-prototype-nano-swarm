@@ -12,7 +12,7 @@ use crate::nanobot::{
     Cargo, InteractionRegion, LogisticsReservation, NanobotType, OwnerSwarm, ProductionFacility,
     SupportCondition,
     charge::Charger,
-    components::{DirectMovementComponent, Nanobot, SwarmId, SwarmMember},
+    components::{DirectMovementComponent, Nanobot, Swarm, SwarmId, SwarmMember},
     logistics_leg::{
         HaulerContext, StockpileCandidate, TerminalCandidate, pick_logistics_leg_with_cost,
     },
@@ -63,7 +63,7 @@ pub struct HaulerLoading;
 /// behaviour.
 fn candidate_owner(
     owner: Option<&OwnerSwarm>,
-    swarms: &Query<&SwarmId>,
+    swarms: &Query<&SwarmId, With<Swarm>>,
 ) -> Option<Option<SwarmId>> {
     match owner {
         None => Some(None),
@@ -106,7 +106,7 @@ pub fn hauler_assignment_system(
     facilities: Query<(Entity, &ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
     chargers: Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
     conditions: Query<&SupportCondition>,
-    swarms: Query<&SwarmId>,
+    swarms: Query<&SwarmId, With<Swarm>>,
     navigation: Res<Navigation>,
 ) {
     let stockpile_candidates: Vec<StockpileCandidate> = stockpiles
@@ -452,7 +452,11 @@ enum HaulSourceTier {
 #[derive(Component)]
 pub struct ReturningCargo;
 
-fn owner_is_swarm(owner: Option<&OwnerSwarm>, swarms: &Query<&SwarmId>, swarm: SwarmId) -> bool {
+fn owner_is_swarm(
+    owner: Option<&OwnerSwarm>,
+    swarms: &Query<&SwarmId, With<Swarm>>,
+    swarm: SwarmId,
+) -> bool {
     owner
         .and_then(|owner| swarms.get(owner.0).ok())
         .is_some_and(|owner| *owner == swarm)
@@ -470,7 +474,7 @@ fn source_tier(
         Option<&StockpileRole>,
         Option<&OwnerSwarm>,
     )>,
-    swarms: &Query<&SwarmId>,
+    swarms: &Query<&SwarmId, With<Swarm>>,
 ) -> Option<HaulSourceTier> {
     let (_, stockpile, _, role, owner) = stockpiles.get(source).ok()?;
     if stockpile.kind != kind || !owner_is_swarm(owner, swarms, swarm) {
@@ -524,7 +528,7 @@ fn valid_destination_snapshot(
     )>,
     facilities: &Query<(Entity, &ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
     chargers: &Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
-    swarms: &Query<&SwarmId>,
+    swarms: &Query<&SwarmId, With<Swarm>>,
     conditions: &Query<&SupportCondition>,
 ) -> Option<SinkEndpointSnapshot> {
     if !endpoint_is_operational(destination, conditions) {
@@ -588,7 +592,7 @@ pub fn hauler_reroute_system(
     facilities: Query<(Entity, &ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
     chargers: Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
     conditions: Query<&SupportCondition>,
-    swarms: Query<&SwarmId>,
+    swarms: Query<&SwarmId, With<Swarm>>,
     reservations: Query<(Entity, &LogisticsReservation)>,
     navigation: Res<Navigation>,
 ) {
@@ -745,7 +749,7 @@ pub fn hauler_carry_assign_system(
     facilities: Query<(Entity, &ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
     chargers: Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
     conditions: Query<&SupportCondition>,
-    swarms: Query<&SwarmId>,
+    swarms: Query<&SwarmId, With<Swarm>>,
     reservations: Query<(Entity, &LogisticsReservation)>,
 ) {
     for (entity, transform, cargo, assignment, swarm_member, returning) in &haulers {
@@ -831,7 +835,7 @@ pub fn hauler_delivery_system(
     )>,
     mut chargers: Query<(Entity, &mut Charger, &Transform, Option<&OwnerSwarm>)>,
     conditions: Query<&SupportCondition>,
-    swarms: Query<&SwarmId>,
+    swarms: Query<&SwarmId, With<Swarm>>,
     reservations: Query<(Entity, &LogisticsReservation)>,
 ) {
     let mut destination_claims = std::collections::HashMap::<Entity, u32>::new();

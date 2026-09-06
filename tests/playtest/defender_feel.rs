@@ -17,8 +17,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
         MatchOutcome, Nanobot, NanobotPlugin, NanobotType, OpponentIntentPlugin,
         OpponentSwarmIdAlloc, OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructurePlugin,
         PopulationDemand, PopulationDemandPlugin, ProductionCollapseState, ProductionPlugin,
-        ProductionPriority, RegionalAllocationPlugin, STRUCTURE_MAX_HEALTH, Structure, Swarm,
-        SwarmId, SwarmMember, TerritorySnapshot, nanobot_death_cleanup_system, world_to_cell,
+        RegionalAllocationPlugin, STRUCTURE_MAX_HEALTH, Structure, Swarm, SwarmId, SwarmMember,
+        TerritorySnapshot, nanobot_death_cleanup_system, world_to_cell,
     },
     resources::{ResourceKind, ResourceLedger},
     scenario::{spawn_default_opponent_scenario, spawn_default_player_scenario},
@@ -55,7 +55,6 @@ fn default_headless_app() -> App {
         .add_plugins(TaskPoolPlugin::default())
         .add_plugins(AssetPlugin::default())
         .init_asset::<Image>()
-        .insert_resource(ProductionPriority::default())
         .init_resource::<OpponentSwarmIdAlloc>()
         .add_plugins(NanobotPlugin::default())
         .add_plugins(GatherPlugin)
@@ -794,7 +793,7 @@ fn assert_default_tick_state(
 fn spawn_runtime_front() -> (App, IVec2, Entity, Entity) {
     let mut app = common::sim_app_with_charge();
     app.world_mut().resource_mut::<GameSettings>().bot_speed = 5.25;
-    app.insert_resource(ProductionPriority::default());
+    app.add_plugins(PopulationDemandPlugin);
     app.add_plugins(CombatPlugin);
     app.add_plugins(CollapsePlugin);
     app.add_systems(FixedLast, nanobot_death_cleanup_system);
@@ -803,7 +802,6 @@ fn spawn_runtime_front() -> (App, IVec2, Entity, Entity) {
     let opponent_swarm = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
         common::cell_world_center(OPPONENT_CELL),
-        ProductionPriority::default(),
         &[(NanobotType::Defender, 3)],
     );
     let opponent_id = *app

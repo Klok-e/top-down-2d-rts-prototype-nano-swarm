@@ -1,9 +1,8 @@
-//! Production facilities and Production Priority control.
+//! Demand-driven production facilities.
 //!
-//! Production facilities consume delivered resources and use Production
-//! Priority to order typed workload shortages. Additional facilities emerge
-//! from demand pressure when existing capacity is too busy. Blocked types are
-//! skipped temporarily instead of stalling all production.
+//! Production facilities consume delivered resources and fill typed workload
+//! shortages. Additional facilities emerge from demand pressure when existing
+//! capacity is too busy.
 //!
 //! ## State machine
 //!
@@ -11,24 +10,21 @@
 //!
 //! ```text
 //!   Idle (no current_target)
-//!      -> pick the highest-priority typed shortage
-//!      -> try consume material from nearest stockpile
+//!      -> pick the greatest relative typed shortage
+//!      -> try consume material from the facility hopper
 //!      -> on success: Working (current_target set, progress=0)
-//!      -> on failure: type added to blocked set, try next
+//!      -> on failure: remain Idle
 //!   Working
 //!      -> advance progress each tick
 //!      -> on progress >= PRODUCTION_TICKS_PER_BOT:
 //!         spawn a new nanobot of current_target
-//!         reset to Idle, clear blocked_types
+//!         reset to Idle
 //! ```
 //!
-//! Material flow: the facility pulls the full
-//! [`PRODUCTION_COST_PER_BOT`] from the nearest local stockpile at
-//! the start of a production cycle, so the resource is consumed
-//! up-front rather than in dribbles. This matches the build
-//! system's per-tick consumption pattern but at cycle boundaries.
-//! No teleporting resources; the hauler chain is the upstream
-//! source of those stockpiles.
+//! Material flow: the facility pulls the full [`PRODUCTION_COST_PER_BOT`] from
+//! its input hopper at the start of a production cycle. Haulers physically fill
+//! that hopper through the final logistics leg, and production consumes the
+//! committed material up front.
 //!
 //! Shared cost/time: all three early types (Worker, Hauler,
 //! Defender) cost the same number of minerals and take the same
@@ -36,7 +32,7 @@
 //! follow-up issue per the PRD.
 
 use crate::navigation::Obstacle;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use bevy::prelude::*;
 
@@ -47,7 +43,7 @@ use crate::nanobot::PlannedStructure;
 use crate::nanobot::autonomy::{Commitment, NanobotType};
 use crate::nanobot::components::{Health, Nanobot, Swarm, SwarmId, SwarmMember, VelocityComponent};
 use crate::nanobot::maintenance::SupportCondition;
-use crate::nanobot::planned::{PlannedKind, PlannedProductionTarget, planned_visual_components};
+use crate::nanobot::planned::{PlannedKind, planned_visual_components};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
 use crate::structure_sprites::StructureSprites;
 
@@ -68,10 +64,6 @@ pub const PRODUCTION_TICKS_PER_BOT: u32 = 120;
 /// so a facility can buffer short delivery gaps without hoarding at
 /// stockpile scale.
 pub const PRODUCTION_INPUT_CAPACITY: u32 = 40;
-
-/// Priority-share deficit threshold for the legacy no-`PopulationDemand`
-/// facility-emergence fallback.
-pub const FACILITY_EMERGE_DEFICIT_THRESHOLD: i32 = 5;
 
 /// Consecutive fixed ticks of Production Pressure required before committing
 /// another Production Facility.
@@ -105,169 +97,19 @@ fn next_production_pressure_ticks(current: u32, pressure_continues: bool) -> u32
     }
 }
 
-/// Player-set production priority. Inserted as a Bevy
-/// [`Resource`] so the production systems can read and write it
-/// without a public crate API surface.
-///
-/// The values are relative weights used to order typed workload shortages.
-/// Zero is the lowest priority, not a production ban: required work is still
-/// filled after positively weighted shortages.
-#[derive(Debug, Clone, Resource)]
-pub struct ProductionPriority {
-    pub weights: HashMap<NanobotType, u32>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum ProductionPriorityPercentError {
-    #[error("production priority percentages must total 100, got {actual}")]
-    InvalidTotal { actual: u32 },
-    #[error("production priority percentages must use five-percent steps")]
-    InvalidStep,
-}
-
-impl ProductionPriority {
-    /// Empty priority. Tests use this to set only the types they
-    /// care about; the game starts with [`Default`].
-    pub fn new() -> Self {
-        Self {
-            weights: HashMap::new(),
-        }
-    }
-
-    /// Set the priority weight for `kind` without clamping.
-    pub fn set_weight(&mut self, kind: NanobotType, weight: u32) {
-        self.weights.insert(kind, weight);
-    }
-
-    /// Weight for `kind`, or `0` when unset.
-    pub fn weight(&self, kind: NanobotType) -> u32 {
-        self.weights.get(&kind).copied().unwrap_or(0)
-    }
-
-    /// Sum of all weights.
-    pub fn total_weight(&self) -> u32 {
-        self.weights.values().sum()
-    }
-
-    /// Fraction of the total priority allocated to `kind`, in
-    /// `[0.0, 1.0]`. Returns `0.0` when the total weight is
-    /// zero so callers can treat "unset" and "explicitly zero"
-    /// identically.
-    pub fn normalized_weight(&self, kind: NanobotType) -> f32 {
-        let total = self.total_weight();
-        if total == 0 {
-            return 0.0;
-        }
-        self.weight(kind) as f32 / total as f32
-    }
-
-    /// Integer percent (0-100) of the total priority allocated
-    /// to `kind`, rounded to the nearest whole number. The
-    /// UI uses this for the percentage labels; the production
-    /// picker compares raw weights.
-    pub fn percentage(&self, kind: NanobotType) -> u32 {
-        (self.normalized_weight(kind) * 100.0).round() as u32
-    }
-
-    /// Change `kind`'s weight by `delta`, saturating at zero on
-    /// the low end. Returns the new weight, or `None` when the
-    /// change would zero the total. The slider UI uses this so
-    /// the player cannot drag every type to zero.
-    pub fn try_change_weight(&mut self, kind: NanobotType, delta: i32) -> Option<u32> {
-        let current = self.weight(kind) as i32;
-        let proposed = current.saturating_add(delta).max(0) as u32;
-        let new_total = self
-            .total_weight()
-            .saturating_sub(current as u32)
-            .saturating_add(proposed);
-        if new_total == 0 {
-            return None;
-        }
-        self.weights.insert(kind, proposed);
-        Some(proposed)
-    }
-
-    pub fn set_percentages(
-        &mut self,
-        worker: u32,
-        hauler: u32,
-        defender: u32,
-    ) -> Result<(), ProductionPriorityPercentError> {
-        let total = worker
-            .checked_add(hauler)
-            .and_then(|total| total.checked_add(defender))
-            .ok_or(ProductionPriorityPercentError::InvalidTotal { actual: u32::MAX })?;
-        if total != 100 {
-            return Err(ProductionPriorityPercentError::InvalidTotal { actual: total });
-        }
-        if [worker, hauler, defender]
-            .into_iter()
-            .any(|percent| !percent.is_multiple_of(5))
-        {
-            return Err(ProductionPriorityPercentError::InvalidStep);
-        }
-
-        self.set_weight(NanobotType::Worker, worker);
-        self.set_weight(NanobotType::Hauler, hauler);
-        self.set_weight(NanobotType::Defender, defender);
-        Ok(())
-    }
-}
-
-impl Default for ProductionPriority {
-    fn default() -> Self {
-        let mut priority = Self::new();
-        priority.set_weight(NanobotType::Worker, 6);
-        priority.set_weight(NanobotType::Hauler, 3);
-        priority.set_weight(NanobotType::Defender, 1);
-        priority
-    }
-}
-
 /// Marker for a [`crate::nanobot::Swarm`] that is driven by
-/// prepainted intent and a fixed production priority (the project
-/// glossary's "Opponent Swarm"). Opponent nanobots still run
+/// prepainted intent. Opponent nanobots still run
 /// through the same scoring, logistics, and production systems
 /// as the player swarm; the marker only lets callers query
 /// opponents separately.
 #[derive(Debug, Component, Default)]
 pub struct OpponentSwarm {}
 
-/// Per-swarm production priority override. Attached to a
-/// [`crate::nanobot::Swarm`] to give it its own production ordering.
-/// When present, the production systems prefer this over the
-/// global [`ProductionPriority`] resource, so the opponent can
-/// keep fixed priorities while the player keeps mutating the global
-/// resource.
-#[derive(Debug, Component, Clone)]
-pub struct SwarmProduction {
-    pub priority: ProductionPriority,
-}
-
-impl SwarmProduction {
-    pub fn new(priority: ProductionPriority) -> Self {
-        Self { priority }
-    }
-}
-
 /// Ties a production facility to the swarm that owns it. Used
-/// to resolve the per-swarm [`SwarmProduction`] (or the
-/// global [`ProductionPriority`] resource as a fallback) and to
-/// decide which swarm a completed cycle spawns its new
-/// nanobot under. Facilities without this marker fall back to
-/// the global priority and the player swarm. A swarm without a
-/// [`SwarmId`] remains a legacy player fallback.
+/// to resolve typed demand and to decide which swarm a completed cycle spawns
+/// its new nanobot under. Every production facility must carry this marker.
 #[derive(Debug, Component, Clone, Copy)]
 pub struct OwnerSwarm(pub Entity);
-
-pub(crate) fn facility_belongs_to_swarm(
-    owner: Option<&OwnerSwarm>,
-    swarm_entity: Entity,
-    swarm_id: SwarmId,
-) -> bool {
-    owner.is_some_and(|OwnerSwarm(owner)| *owner == swarm_entity)
-        || (owner.is_none() && swarm_id == SwarmId::PLAYER)
-}
 
 /// An automatic production facility. Spawned by
 /// `production_facility_auto_creation_system` near a swarm that
@@ -285,11 +127,6 @@ pub struct ProductionFacility {
     /// Type currently being produced, or `None` if the facility
     /// is idle and waiting to pick its next target.
     pub current_target: Option<NanobotType>,
-    /// Types the facility could not start producing this cycle
-    /// (e.g. because its input hopper is too low for the cost).
-    /// The system clears this set at the end of a cycle so
-    /// blocked types get re-tried in the next one.
-    pub blocked_types: HashSet<NanobotType>,
     /// Resource kind the input hopper accepts. Always
     /// [`ResourceKind::Minerals`] in the first implementation;
     /// kept as a field so the hauler sink matcher can pair it
@@ -320,7 +157,6 @@ impl ProductionFacility {
             progress: 0,
             finished_at: None,
             current_target: None,
-            blocked_types: HashSet::new(),
             input_kind: ResourceKind::Minerals,
             input_amount: 0,
             input_capacity: PRODUCTION_INPUT_CAPACITY,
@@ -332,11 +168,6 @@ impl ProductionFacility {
     /// facilities are too busy".
     pub fn is_busy(&self) -> bool {
         self.current_target.is_some() && self.progress < PRODUCTION_TICKS_PER_BOT
-    }
-
-    /// True when `kind` is currently in the blocked set.
-    pub fn is_blocked(&self, kind: NanobotType) -> bool {
-        self.blocked_types.contains(&kind)
     }
 
     /// Free capacity in the input hopper for hauler delivery.
@@ -353,101 +184,6 @@ impl Default for ProductionFacility {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Legacy compatibility picker used only when [`crate::nanobot::PopulationDemand`]
-/// is unavailable. It picks the type with the largest proportional priority
-/// share deficit, skipping types in `blocked`. Returns `None` when every type is
-/// blocked or the total priority is zero. Ties are broken by
-/// [`NanobotType::ALL`] order, so the picker is deterministic.
-///
-/// With no current population, every current share is zero
-/// and the picker returns the type with the largest target
-/// share (the "start with the most-demanded type" rule).
-pub fn pick_type_for_legacy_priority_share_fallback(
-    targets: &ProductionPriority,
-    current_counts: &HashMap<NanobotType, u32>,
-    blocked: &HashSet<NanobotType>,
-) -> Option<NanobotType> {
-    let total_weight = targets.total_weight();
-    if total_weight == 0 {
-        return None;
-    }
-    let total_count: u32 = current_counts.values().sum();
-    let mut best: Option<(f32, NanobotType)> = None;
-    for &kind in &NanobotType::ALL {
-        if blocked.contains(&kind) {
-            continue;
-        }
-        let target_share = targets.weight(kind) as f32 / total_weight as f32;
-        let current_share = if total_count == 0 {
-            0.0
-        } else {
-            *current_counts.get(&kind).unwrap_or(&0) as f32 / total_count as f32
-        };
-        let deficit = target_share - current_share;
-        match best {
-            None => best = Some((deficit, kind)),
-            Some((d, _)) if deficit > d => best = Some((deficit, kind)),
-            _ => {}
-        }
-    }
-    best.filter(|(d, _)| *d > 0.0).map(|(_, k)| k)
-}
-
-/// Pick the required type with the highest weighted shortage. Stable type order
-/// breaks ties. A zero-weight shortage remains eligible, so priority never
-/// disables required production.
-pub fn pick_type_for_demand(
-    priority: &ProductionPriority,
-    available_counts: &HashMap<NanobotType, u32>,
-    desired_counts: &HashMap<NanobotType, u32>,
-    blocked: &HashSet<NanobotType>,
-) -> Option<NanobotType> {
-    let mut best = None;
-    for kind in NanobotType::ALL {
-        if blocked.contains(&kind) {
-            continue;
-        }
-        let desired = desired_counts.get(&kind).copied().unwrap_or_default();
-        let available = available_counts.get(&kind).copied().unwrap_or_default();
-        let missing = desired.saturating_sub(available);
-        if missing == 0 {
-            continue;
-        }
-        let score = missing as u64 * priority.weight(kind) as u64;
-        if best.is_none_or(|(best_score, _)| score > best_score) {
-            best = Some((score, kind));
-        }
-    }
-    best.map(|(_, kind)| kind)
-}
-
-/// Legacy compatibility pressure metric used when
-/// [`crate::nanobot::PopulationDemand`] is unavailable. It sums positive
-/// priority-share deficits in percentage points. Returns `0` when no priority
-/// is configured.
-pub fn total_deficit(
-    targets: &ProductionPriority,
-    current_counts: &HashMap<NanobotType, u32>,
-) -> i32 {
-    let total_weight = targets.total_weight();
-    if total_weight == 0 {
-        return 0;
-    }
-    let total_count: u32 = current_counts.values().sum();
-    let mut total = 0.0_f32;
-    for &kind in &NanobotType::ALL {
-        let target_share = targets.weight(kind) as f32 / total_weight as f32;
-        let current_share = if total_count == 0 {
-            0.0
-        } else {
-            *current_counts.get(&kind).unwrap_or(&0) as f32 / total_count as f32
-        };
-        let deficit = (target_share - current_share).max(0.0);
-        total += deficit * 100.0;
-    }
-    total.round() as i32
 }
 
 /// Cycle progress for a [`ProductionFacility`] as an
@@ -470,28 +206,6 @@ pub fn production_progress_percent(facility: &ProductionFacility) -> u32 {
     }
     let pct = (facility.progress as u64 * 100 / PRODUCTION_TICKS_PER_BOT as u64) as u32;
     pct.min(100)
-}
-
-/// Count nanobots in the world, keyed by type. Used by the
-/// production systems to measure the current population mix.
-///
-/// The first implementation counts every nanobot with a
-/// `NanobotType` component globally; later issues can scope this
-/// to a specific swarm once multi-swarm production lands.
-///
-/// Issue #38 / ADR-0004: the query matches
-/// `(&NanobotType, &SwarmMember)` so the count math is
-/// consistent with the per-swarm variant; this function
-/// counts all nanobots regardless of swarm, which is the
-/// pre-multi-swarm fallback for unowned facilities.
-pub fn count_nanobots_by_type(
-    nanobots: &Query<(&NanobotType, &crate::nanobot::components::SwarmMember), With<Nanobot>>,
-) -> HashMap<NanobotType, u32> {
-    let mut counts = HashMap::new();
-    for (ty, _) in nanobots.iter() {
-        *counts.entry(*ty).or_insert(0) += 1;
-    }
-    counts
 }
 
 /// Count nanobots that belong to `swarm_id`'s swarm, keyed by
@@ -525,10 +239,8 @@ pub fn count_swarm_nanobots_by_type(
 /// each swarm in the world, a [`PlannedStructure`] of
 /// [`PlannedKind::ProductionFacility`] emerges when:
 ///
-/// 1. the swarm has a typed shortage selected by Production Priority, AND
-/// 2. every operational facility that belongs to this swarm
-///    (those with [`OwnerSwarm`] pointing at it, plus unowned
-///    facilities for the legacy player fallback) stays busy for
+/// 1. the swarm has a typed population shortage, AND
+/// 2. every operational facility that belongs to this swarm stays busy for
 ///    [`PRODUCTION_PRESSURE_TICKS`] consecutive ticks, AND
 /// 3. the swarm owns at least one `Build`-painted cell that
 ///    does not already host a planned or completed
@@ -536,21 +248,10 @@ pub fn count_swarm_nanobots_by_type(
 ///    (issue #27 acceptance: "Planned Production Facility
 ///    placement is constrained to an owned Build Zone").
 ///
-/// The plan carries a [`PlannedProductionTarget`] sidecar
-/// recording the type the completed facility should produce
-/// first, so the demand layer can pre-allocate the highest weighted shortage
-/// at planning time. The plan
-/// itself does NOT consume any material: build work is
+/// The plan itself does NOT consume any material: build work is
 /// worker-time-only in v1, so a Worker can build the plan
 /// even when the swarm is short on minerals. The completed
-/// `ProductionFacility` then runs through the existing pick
-/// + work systems, which consume material on the first
-///   pick cycle (or skip the cycle if material is unavailable,
-///   matching the existing blocked-type behaviour).
-///
-/// When `PopulationDemand` is absent, a legacy compatibility fallback derives
-/// demand from priority shares. This seam supports isolated tests and callers
-/// that do not install the runtime demand resource.
+/// `ProductionFacility` chooses from current demand after physical funding.
 ///
 /// Acceptance: "No new Production Facility is planned when
 /// no suitable Build Zone exists." A swarm without any
@@ -563,14 +264,13 @@ pub fn production_facility_auto_creation_system(
     access: super::construction_access::ConstructionAccess,
     grid: Res<IntentGrid>,
     structure_sprites: Res<StructureSprites>,
-    global_priority: Res<ProductionPriority>,
-    population_demand: Option<Res<crate::nanobot::PopulationDemand>>,
+    population_demand: Res<crate::nanobot::PopulationDemand>,
     mut pressure: ResMut<ProductionPressure>,
     nanobots: Query<(&NanobotType, &crate::nanobot::components::SwarmMember), With<Nanobot>>,
     facilities: Query<(
         Entity,
         &ProductionFacility,
-        Option<&OwnerSwarm>,
+        &OwnerSwarm,
         Option<&SupportCondition>,
     )>,
     existing_targets: Query<
@@ -582,9 +282,8 @@ pub fn production_facility_auto_creation_system(
             With<crate::nanobot::Charger>,
         )>,
     >,
-    planned_facilities: Query<(&PlannedStructure, Option<&OwnerSwarm>)>,
+    planned_facilities: Query<(&PlannedStructure, &OwnerSwarm)>,
     deposits: Query<(&ResourceDeposit, &Transform)>,
-    swarm_productions: Query<&SwarmProduction>,
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,
 ) {
     let mut access_layout = access.snapshot();
@@ -609,46 +308,26 @@ pub fn production_facility_auto_creation_system(
     }
     for (swarm_entity, swarm_id) in &swarms {
         let has_pending_facility = planned_facilities.iter().any(|(planned, owner)| {
-            planned.kind == PlannedKind::ProductionFacility
-                && owner.is_some_and(|owner| owner.0 == swarm_entity)
+            planned.kind == PlannedKind::ProductionFacility && owner.0 == swarm_entity
         });
         if has_pending_facility {
             pressure.set_ticks(*swarm_id, 0);
             continue;
         }
-        let priority = swarm_productions
-            .get(swarm_entity)
-            .map(|sp| &sp.priority)
-            .unwrap_or(&*global_priority);
         let mut counts = count_swarm_nanobots_by_type(*swarm_id, &nanobots);
         for (_, facility, owner, _) in &facilities {
-            let belongs_to_swarm = facility_belongs_to_swarm(owner, swarm_entity, *swarm_id);
-            if belongs_to_swarm && let Some(kind) = facility.current_target {
+            if owner.0 == swarm_entity
+                && let Some(kind) = facility.current_target
+            {
                 *counts.entry(kind).or_default() += 1;
             }
         }
-        let target = if let Some(demand) = population_demand.as_deref() {
-            let desired = NanobotType::ALL
-                .into_iter()
-                .map(|kind| (kind, demand.desired_for(*swarm_id, kind)))
-                .collect();
-            pick_type_for_demand(priority, &counts, &desired, &HashSet::new())
-        } else {
-            // Compatibility seam for isolated tests and callers without the
-            // runtime typed-demand resource.
-            if total_deficit(priority, &counts) < FACILITY_EMERGE_DEFICIT_THRESHOLD {
-                None
-            } else {
-                pick_type_for_legacy_priority_share_fallback(priority, &counts, &HashSet::new())
-            }
-        };
-        // Unowned facilities belong to the player fallback so legacy scenarios
-        // do not lend the same capacity to every visible swarm.
+        let target = population_demand.most_underfilled_type(*swarm_id, &counts);
         let relevant: Vec<&ProductionFacility> = facilities
             .iter()
             .filter(|(_, _, owner, condition)| {
                 condition.is_none_or(|condition| condition.is_operational())
-                    && facility_belongs_to_swarm(*owner, swarm_entity, *swarm_id)
+                    && owner.0 == swarm_entity
             })
             .map(|(_, facility, _, _)| facility)
             .collect();
@@ -660,9 +339,9 @@ pub fn production_facility_auto_creation_system(
         if pressure_ticks < PRODUCTION_PRESSURE_TICKS {
             continue;
         }
-        let Some(target) = target else {
+        if target.is_none() {
             continue;
-        };
+        }
         // Build-Zone constrained placement. The swarm must
         // own at least one free Build cell. Without it,
         // the swarm cannot plan a new facility and the
@@ -695,7 +374,6 @@ pub fn production_facility_auto_creation_system(
         );
         commands.spawn((
             PlannedStructure::new(PlannedKind::ProductionFacility, build_cell),
-            PlannedProductionTarget(target),
             OwnerSwarm(swarm_entity),
             planned_visual_components(
                 PlannedKind::ProductionFacility,
@@ -707,39 +385,27 @@ pub fn production_facility_auto_creation_system(
     }
 }
 
-/// Pick the next production target for every idle facility and
-/// consume the material up-front from the facility's own input
-/// hopper. If the hopper does not hold a full
-/// [`PRODUCTION_COST_PER_BOT`], the candidate type is added to
-/// the facility's blocked set and the picker tries the next one.
-///
-/// A facility whose blocked set covers every type stays idle
-/// (it has nothing to produce) until a hauler delivers material
-/// via logistics leg 3 and a future pick run can break the
-/// deadlock. Production never scans stockpiles: the input hopper
+/// Pick the next production target for every funded idle facility. Production
+/// never scans stockpiles: the input hopper
 /// is the only buffer it consumes from, so the three-leg chain
 /// cannot be bypassed.
 ///
-/// Each facility reads Production Priority from the [`SwarmProduction`] of its
-/// [`OwnerSwarm`] (if present) or falls back to the global
-/// [`ProductionPriority`] resource. Counts are scoped to the owner so opponent
-/// and player populations cannot leak into each other's shortage calculation.
+/// Counts are scoped to the explicit owner so opponent and player populations
+/// cannot leak into each other's shortage calculation.
 ///
 /// Issue #38 / ADR-0004: counts now match the per-swarm
 /// `SwarmId` rather than walking the swarm's `Children`,
 /// because nanobots are top-level entities.
 #[allow(clippy::type_complexity)]
 pub fn production_facility_pick_target_system(
-    global_priority: Res<ProductionPriority>,
-    population_demand: Option<Res<crate::nanobot::PopulationDemand>>,
+    population_demand: Res<crate::nanobot::PopulationDemand>,
     nanobots: Query<(&NanobotType, &crate::nanobot::components::SwarmMember), With<Nanobot>>,
-    swarm_productions: Query<&SwarmProduction>,
     swarms: Query<&SwarmId, With<Swarm>>,
     mut facility_queries: ParamSet<(
-        Query<(&ProductionFacility, Option<&OwnerSwarm>)>,
+        Query<(&ProductionFacility, &OwnerSwarm)>,
         Query<(
             &mut ProductionFacility,
-            Option<&OwnerSwarm>,
+            &OwnerSwarm,
             Option<&SupportCondition>,
         )>,
     )>,
@@ -756,9 +422,9 @@ pub fn production_facility_pick_target_system(
         let Some(kind) = facility.current_target else {
             continue;
         };
-        let owner_id = owner
-            .and_then(|OwnerSwarm(owner)| swarms.get(*owner).ok().copied())
-            .unwrap_or(SwarmId::PLAYER);
+        let Ok(owner_id) = swarms.get(owner.0).copied() else {
+            continue;
+        };
         *available_by_swarm
             .entry(owner_id)
             .or_insert_with(|| count_swarm_nanobots_by_type(owner_id, &nanobots))
@@ -774,87 +440,27 @@ pub fn production_facility_pick_target_system(
             continue;
         }
 
-        // Owned facility: owner's priority and population.
-        // Unowned facility: global priority and player population.
-        // The unowned branch is the fallback that
-        // keeps the pre-multi-swarm tests green.
-        //
         // Issue #38 / ADR-0004: the per-swarm count uses
         // the owner's `SwarmId` rather than walking
         // children, because nanobots are top-level
         // entities.
-        let (priority, owner_id): (&ProductionPriority, SwarmId) = match owner {
-            Some(OwnerSwarm(swarm)) => {
-                let priority = swarm_productions
-                    .get(*swarm)
-                    .map(|sp| &sp.priority)
-                    .unwrap_or(&*global_priority);
-                let swarm_id = swarms.get(*swarm).copied().unwrap_or(SwarmId::PLAYER);
-                (priority, swarm_id)
-            }
-            None => (&*global_priority, SwarmId::PLAYER),
+        let Ok(owner_id) = swarms.get(owner.0).copied() else {
+            continue;
         };
         let counts = available_by_swarm
             .entry(owner_id)
             .or_insert_with(|| count_swarm_nanobots_by_type(owner_id, &nanobots));
-
-        // Try shortages in priority order; if the input hopper does
-        // not hold a full production cost, block the type and
-        // try the next. We loop because blocking one type
-        // changes the ranking for the next attempt. The hopper
-        // is the facility's own buffer -- a sink stockpile no
-        // longer feeds production directly, so leg 3 of the
-        // logistics chain (hauler: sink stockpile -> facility)
-        // is the only way material reaches this point.
-        //
-        // `picked` tracks whether a cycle started this tick.
-        // When it did, the blocked set is preserved for the
-        // rest of that cycle (it is the running list of types
-        // the picker walked past); the work system clears it
-        // on spawn. When it did NOT, the blocked set is
-        // dropped here so every required type is re-tried
-        // fresh next tick. Without this drop a cold-start
-        // facility deadlocks: it blocks its only
-        // required type on an empty hopper, the
-        // blocked set is otherwise only cleared at the end
-        // of a cycle, and a cycle can never start while that
-        // sole type stays blocked. This is the "blocked
-        // types are skipped temporarily instead of stalling
-        // all production" half of the contract.
-        let mut picked = false;
-        loop {
-            let kind = if let Some(demand) = population_demand.as_deref() {
-                let desired = NanobotType::ALL
-                    .into_iter()
-                    .map(|kind| (kind, demand.desired_for(owner_id, kind)))
-                    .collect();
-                pick_type_for_demand(priority, counts, &desired, &facility.blocked_types)
-            } else {
-                // Compatibility seam for isolated tests and callers without
-                // the runtime typed-demand resource.
-                pick_type_for_legacy_priority_share_fallback(
-                    priority,
-                    counts,
-                    &facility.blocked_types,
-                )
-            };
-            let Some(kind) = kind else {
-                break;
-            };
-            if facility.input_amount >= PRODUCTION_COST_PER_BOT {
-                facility.input_amount -= PRODUCTION_COST_PER_BOT;
-                ledger.remove_for(owner_id, facility.input_kind, PRODUCTION_COST_PER_BOT);
-                facility.current_target = Some(kind);
-                facility.progress = 0;
-                *counts.entry(kind).or_default() += 1;
-                picked = true;
-                break;
-            }
-            facility.blocked_types.insert(kind);
+        let Some(kind) = population_demand.most_underfilled_type(owner_id, counts) else {
+            continue;
+        };
+        if facility.input_amount < PRODUCTION_COST_PER_BOT {
+            continue;
         }
-        if !picked {
-            facility.blocked_types.clear();
-        }
+        facility.input_amount -= PRODUCTION_COST_PER_BOT;
+        ledger.remove_for(owner_id, facility.input_kind, PRODUCTION_COST_PER_BOT);
+        facility.current_target = Some(kind);
+        facility.progress = 0;
+        *counts.entry(kind).or_default() += 1;
     }
 }
 
@@ -868,10 +474,10 @@ pub fn production_facility_work_system(
         Entity,
         &mut ProductionFacility,
         &Transform,
-        Option<&OwnerSwarm>,
+        &OwnerSwarm,
         Option<&SupportCondition>,
     )>,
-    swarms: Query<(Entity, Option<&SwarmId>), With<Swarm>>,
+    swarms: Query<&SwarmId, With<Swarm>>,
     nanobots: Query<&Transform, With<Nanobot>>,
     physical: crate::physical_world::PhysicalWorld,
 ) {
@@ -898,19 +504,9 @@ pub fn production_facility_work_system(
         let Ok((_, mut facility, transform, owner, _)) = facilities.get_mut(entity) else {
             continue;
         };
-        let owner_swarm = owner.map(|OwnerSwarm(e)| *e).or_else(|| {
-            swarms
-                .iter()
-                .find_map(|(e, id)| (id == Some(&SwarmId::PLAYER)).then_some(e))
-                .or_else(|| swarms.iter().find_map(|(e, id)| id.is_none().then_some(e)))
-        });
-        let Some(owner_swarm) = owner_swarm else {
+        let Ok(swarm_id) = swarms.get(owner.0).copied() else {
             continue;
         };
-        let Ok((_, id)) = swarms.get(owner_swarm) else {
-            continue;
-        };
-        let swarm_id = id.copied().unwrap_or(SwarmId::PLAYER);
         let shape = Obstacle::structure(transform);
         let Obstacle::Rectangle { center, half } = shape else {
             unreachable!()
@@ -956,7 +552,6 @@ pub fn production_facility_work_system(
         occupied.push(position);
         facility.progress = 0;
         facility.finished_at = None;
-        facility.blocked_types.clear();
     }
 }
 
@@ -1001,9 +596,7 @@ impl Plugin for ProductionPlugin {
 #[cfg(test)]
 mod tests {
     //! Pure-helper unit tests. End-to-end behaviour lives in the production
-    //! facility and Production Priority behavior tests.
-
-    use approx::assert_abs_diff_eq;
+    //! facility behavior tests.
 
     use super::*;
 
@@ -1027,162 +620,11 @@ mod tests {
     }
 
     #[test]
-    fn typed_demand_uses_weighted_shortage() {
-        let mut priority = ProductionPriority::new();
-        priority.set_weight(NanobotType::Worker, 25);
-        priority.set_weight(NanobotType::Hauler, 60);
-        priority.set_weight(NanobotType::Defender, 15);
-        let available = HashMap::from([
-            (NanobotType::Worker, 2),
-            (NanobotType::Hauler, 8),
-            (NanobotType::Defender, 0),
-        ]);
-        let desired = HashMap::from([
-            (NanobotType::Worker, 4),
-            (NanobotType::Hauler, 9),
-            (NanobotType::Defender, 3),
-        ]);
-
-        assert_eq!(
-            pick_type_for_demand(&priority, &available, &desired, &HashSet::new()),
-            Some(NanobotType::Hauler),
-        );
-    }
-
-    #[test]
-    fn excess_haulers_do_not_satisfy_defender_demand() {
-        let priority = ProductionPriority::default();
-        let available = HashMap::from([
-            (NanobotType::Worker, 4),
-            (NanobotType::Hauler, 10),
-            (NanobotType::Defender, 0),
-        ]);
-        let desired = HashMap::from([
-            (NanobotType::Worker, 1),
-            (NanobotType::Hauler, 2),
-            (NanobotType::Defender, 1),
-        ]);
-
-        assert_eq!(
-            pick_type_for_demand(&priority, &available, &desired, &HashSet::new()),
-            Some(NanobotType::Defender),
-        );
-    }
-
-    #[test]
-    fn priority_does_not_create_work_without_typed_demand() {
-        let mut priority = ProductionPriority::new();
-        priority.set_weight(NanobotType::Worker, 1);
-        priority.set_weight(NanobotType::Defender, 99);
-        let desired = HashMap::from([(NanobotType::Worker, 1)]);
-
-        assert_eq!(
-            pick_type_for_demand(&priority, &HashMap::new(), &desired, &HashSet::new()),
-            Some(NanobotType::Worker),
-        );
-    }
-
-    #[test]
-    fn zero_priority_required_type_remains_eligible() {
-        let mut priority = ProductionPriority::new();
-        priority.set_weight(NanobotType::Worker, 100);
-        priority.set_weight(NanobotType::Defender, 0);
-        let available = HashMap::from([(NanobotType::Worker, 1)]);
-        let desired = HashMap::from([(NanobotType::Worker, 1), (NanobotType::Defender, 1)]);
-
-        assert_eq!(
-            pick_type_for_demand(&priority, &available, &desired, &HashSet::new()),
-            Some(NanobotType::Defender),
-        );
-    }
-
-    #[test]
-    fn in_flight_count_satisfies_one_bot_shortage() {
-        let priority = ProductionPriority::default();
-        let available = HashMap::from([(NanobotType::Defender, 1)]);
-        let desired = HashMap::from([(NanobotType::Defender, 1)]);
-
-        assert_eq!(
-            pick_type_for_demand(&priority, &available, &desired, &HashSet::new()),
-            None,
-        );
-    }
-
-    #[test]
-    fn production_priority_set_and_get_round_trip() {
-        let mut priority = ProductionPriority::new();
-        priority.set_weight(NanobotType::Worker, 5);
-        priority.set_weight(NanobotType::Hauler, 2);
-        priority.set_weight(NanobotType::Defender, 1);
-        assert_eq!(priority.weight(NanobotType::Worker), 5);
-        assert_eq!(priority.weight(NanobotType::Hauler), 2);
-        assert_eq!(priority.weight(NanobotType::Defender), 1);
-        assert_eq!(priority.total_weight(), 8);
-    }
-
-    #[test]
-    fn production_priority_unset_returns_zero() {
-        // Unset weights do not contribute to shortage ordering.
-        let priority = ProductionPriority::new();
-        assert_eq!(priority.weight(NanobotType::Worker), 0);
-        assert_eq!(priority.total_weight(), 0);
-    }
-
-    #[test]
-    fn production_priority_default_seeds_all_three_types() {
-        let priority = ProductionPriority::default();
-        assert!(priority.weight(NanobotType::Worker) > 0);
-        assert!(priority.weight(NanobotType::Hauler) > 0);
-        assert!(priority.weight(NanobotType::Defender) > 0);
-    }
-
-    #[test]
-    fn legacy_no_population_demand_fallback_picks_largest_priority_share_gap() {
-        let mut priority = ProductionPriority::new();
-        priority.set_weight(NanobotType::Worker, 5);
-        priority.set_weight(NanobotType::Hauler, 10);
-        priority.set_weight(NanobotType::Defender, 5);
-        let counts = HashMap::from([
-            (NanobotType::Worker, 5),
-            (NanobotType::Hauler, 0),
-            (NanobotType::Defender, 1),
-        ]);
-        assert_eq!(
-            pick_type_for_legacy_priority_share_fallback(&priority, &counts, &HashSet::new(),),
-            Some(NanobotType::Hauler)
-        );
-    }
-
-    #[test]
-    fn legacy_no_population_demand_fallback_is_stable_and_skips_blocked_types() {
-        let mut priority = ProductionPriority::new();
-        priority.set_weight(NanobotType::Worker, 5);
-        priority.set_weight(NanobotType::Hauler, 5);
-        let counts = HashMap::new();
-        let mut blocked = HashSet::new();
-        blocked.insert(NanobotType::Worker);
-        assert_eq!(
-            pick_type_for_legacy_priority_share_fallback(&priority, &counts, &blocked),
-            Some(NanobotType::Hauler)
-        );
-    }
-
-    #[test]
-    fn legacy_no_population_demand_fallback_reports_no_pressure_when_balanced() {
-        let mut priority = ProductionPriority::new();
-        priority.set_weight(NanobotType::Worker, 5);
-        priority.set_weight(NanobotType::Hauler, 3);
-        let counts = HashMap::from([(NanobotType::Worker, 5), (NanobotType::Hauler, 3)]);
-        assert_eq!(total_deficit(&priority, &counts), 0);
-    }
-
-    #[test]
     fn production_facility_starts_idle() {
         let f = ProductionFacility::new();
         assert!(!f.is_busy());
         assert_eq!(f.progress, 0);
         assert_eq!(f.current_target, None);
-        assert!(f.blocked_types.is_empty());
     }
 
     #[test]
@@ -1193,37 +635,11 @@ mod tests {
     }
 
     #[test]
-    fn production_facility_blocked_set_tracks_types() {
-        let mut f = ProductionFacility::new();
-        f.blocked_types.insert(NanobotType::Hauler);
-        assert!(f.is_blocked(NanobotType::Hauler));
-        assert!(!f.is_blocked(NanobotType::Worker));
-    }
-
-    #[test]
-    fn swarm_production_wraps_a_production_priority() {
-        let mut priority = ProductionPriority::new();
-        priority.set_weight(NanobotType::Hauler, 4);
-        let swarm_production = SwarmProduction::new(priority);
-        assert_eq!(swarm_production.priority.weight(NanobotType::Hauler), 4);
-    }
-
-    #[test]
     fn owner_swarm_stores_the_entity_reference() {
         let mut world = World::new();
         let swarm = world.spawn_empty().id();
         let owner = OwnerSwarm(swarm);
         assert_eq!(owner.0, swarm);
-    }
-
-    #[test]
-    fn unowned_facility_belongs_only_to_player_fallback() {
-        let mut world = World::new();
-        let player = world.spawn_empty().id();
-        let opponent = world.spawn_empty().id();
-
-        assert!(facility_belongs_to_swarm(None, player, SwarmId::PLAYER));
-        assert!(!facility_belongs_to_swarm(None, opponent, SwarmId(2),));
     }
 
     #[test]
@@ -1246,105 +662,5 @@ mod tests {
         // report >100%.
         f.progress = PRODUCTION_TICKS_PER_BOT + 5;
         assert_eq!(production_progress_percent(&f), 100);
-    }
-
-    // ---- Production Priority weights and adjustment bounds ----
-
-    #[test]
-    fn production_priority_default_seeds_60_30_10_normalized_weights() {
-        let priority = ProductionPriority::default();
-        assert_abs_diff_eq!(
-            priority.normalized_weight(NanobotType::Worker),
-            0.60,
-            epsilon = 1e-5
-        );
-        assert_abs_diff_eq!(
-            priority.normalized_weight(NanobotType::Hauler),
-            0.30,
-            epsilon = 1e-5
-        );
-        assert_abs_diff_eq!(
-            priority.normalized_weight(NanobotType::Defender),
-            0.10,
-            epsilon = 1e-5
-        );
-    }
-
-    #[test]
-    fn production_priority_normalized_weight_is_zero_when_total_is_zero() {
-        // Avoids NaN from divide-by-zero.
-        let priority = ProductionPriority::new();
-        assert_abs_diff_eq!(
-            priority.normalized_weight(NanobotType::Worker),
-            0.0,
-            epsilon = 1e-5
-        );
-        assert_abs_diff_eq!(
-            priority.normalized_weight(NanobotType::Hauler),
-            0.0,
-            epsilon = 1e-5
-        );
-        assert_abs_diff_eq!(
-            priority.normalized_weight(NanobotType::Defender),
-            0.0,
-            epsilon = 1e-5
-        );
-    }
-
-    #[test]
-    fn production_priority_normalized_weight_matches_weight_fraction() {
-        let mut priority = ProductionPriority::new();
-        priority.set_weight(NanobotType::Worker, 7);
-        priority.set_weight(NanobotType::Hauler, 3);
-        assert!((priority.normalized_weight(NanobotType::Worker) - 0.7).abs() < 1e-6);
-        assert!((priority.normalized_weight(NanobotType::Hauler) - 0.3).abs() < 1e-6);
-    }
-
-    #[test]
-    fn production_priority_try_change_weight_applies_positive_delta() {
-        let mut priority = ProductionPriority::default();
-        let new = priority.try_change_weight(NanobotType::Worker, 5);
-        assert_eq!(new, Some(11));
-        assert_eq!(priority.weight(NanobotType::Worker), 11);
-    }
-
-    #[test]
-    fn production_priority_try_change_weight_applies_negative_delta() {
-        let mut priority = ProductionPriority::default();
-        let new = priority.try_change_weight(NanobotType::Hauler, -3);
-        assert_eq!(new, Some(0));
-        assert_eq!(priority.weight(NanobotType::Hauler), 0);
-    }
-
-    #[test]
-    fn production_priority_try_change_weight_clamps_to_zero() {
-        // Negative delta larger than current must saturate
-        // at 0, never underflow. The "total cannot become
-        // zero" rule is checked in the next test.
-        let mut priority = ProductionPriority::default();
-        let new = priority.try_change_weight(NanobotType::Defender, -100);
-        assert_eq!(new, Some(0));
-        assert_eq!(priority.weight(NanobotType::Defender), 0);
-    }
-
-    #[test]
-    fn production_priority_try_change_weight_rejects_zero_total() {
-        // Acceptance: "the last nonzero type is clamped to
-        // a nonzero value." With only Defender set, dropping
-        // it to 0 would zero the total -- rejected, value
-        // stays at 1.
-        let mut priority = ProductionPriority::new();
-        priority.set_weight(NanobotType::Defender, 1);
-        let new = priority.try_change_weight(NanobotType::Defender, -1);
-        assert_eq!(new, None);
-        assert_eq!(priority.weight(NanobotType::Defender), 1);
-    }
-
-    #[test]
-    fn production_priority_try_change_weight_allows_zero_when_other_types_remain() {
-        let mut priority = ProductionPriority::default();
-        let new = priority.try_change_weight(NanobotType::Defender, -1);
-        assert_eq!(new, Some(0));
-        assert_eq!(priority.total_weight(), 9);
     }
 }

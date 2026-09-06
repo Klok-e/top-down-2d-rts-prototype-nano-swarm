@@ -66,14 +66,14 @@ fn unreachable_work_stops_population_demand_and_reopening_restores_it() {
 
 #[test]
 fn pending_recovery_waits_but_proven_disconnected_material_causes_collapse() {
-    use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-        OwnerSwarm, ProductionCollapseState, ProductionPriority,
-    };
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{OwnerSwarm, ProductionCollapseState};
     let mut app = common::sim_app_with_collapse();
     app.insert_resource(IntentGrid::new(2, 2));
-    let mut priority = ProductionPriority::new();
-    priority.set_weight(NanobotType::Worker, 5);
-    app.insert_resource(priority);
+    app.world_mut().resource_mut::<IntentGrid>().paint(
+        IVec2::ZERO,
+        IntentKind::Build,
+        SwarmId::PLAYER,
+    );
     let swarm = common::spawn_swarm_at(&mut app, Vec2::new(-200.0, 100.0));
     common::spawn_worker_at(&mut app, Vec2::new(-200.0, 100.0));
     common::spawn_hauler_at(&mut app, Vec2::new(-200.0, 150.0));

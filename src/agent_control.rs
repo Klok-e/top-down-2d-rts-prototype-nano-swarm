@@ -36,8 +36,7 @@ use crate::{
     intent::{BrushSelection, IntentGrid, IntentKind},
     nanobot::{
         Health, MatchOutcome, Nanobot, NanobotType, OpponentSwarm, OwnerSwarm, PopulationDemand,
-        ProductionCollapseState, ProductionFacility, ProductionPriority, Swarm, SwarmId,
-        SwarmMember,
+        ProductionCollapseState, ProductionFacility, Swarm, SwarmId, SwarmMember,
     },
     resources::{ResourceKind, ResourceLedger},
     ui::intent_layer_panel::{IntentLayerButton, IntentLayerPanelRoot},
@@ -54,8 +53,8 @@ const MAX_CONTROL_RESPONSE_DURATION: Duration = Duration::from_secs(310);
 const CONTROL_RESPONSE_POLL_DURATION: Duration = Duration::from_millis(10);
 #[cfg(unix)]
 const MAX_CONTROL_LINE_DURATION: Duration = Duration::from_secs(30);
-pub const AGENT_PROTOCOL_VERSION: u32 = 1;
-pub const SUPPORTED_METHODS: [&str; 11] = [
+pub const AGENT_PROTOCOL_VERSION: u32 = 2;
+pub const SUPPORTED_METHODS: [&str; 10] = [
     "session.hello",
     "state.get",
     "button.press",
@@ -63,7 +62,6 @@ pub const SUPPORTED_METHODS: [&str; 11] = [
     "map.apply",
     "camera.set",
     "camera.pan",
-    "production_priority.set",
     "frame.wait",
     "screenshot.capture",
     "process.shutdown",
@@ -128,11 +126,6 @@ pub enum AgentCommand {
         frames: u64,
         fixed_ticks: u64,
     },
-    ProductionPrioritySet {
-        worker: u32,
-        hauler: u32,
-        defender: u32,
-    },
     ProcessShutdown,
     ScreenshotCapture {
         name: Option<String>,
@@ -152,10 +145,7 @@ impl AgentCommand {
     fn is_player_action(&self) -> bool {
         matches!(
             self,
-            Self::ButtonPress { .. }
-                | Self::IntentSelect { .. }
-                | Self::MapApply { .. }
-                | Self::ProductionPrioritySet { .. }
+            Self::ButtonPress { .. } | Self::IntentSelect { .. } | Self::MapApply { .. }
         )
     }
 }
@@ -1304,33 +1294,6 @@ fn execute_agent_command(
                 }
             }
         }
-        AgentCommand::ProductionPrioritySet {
-            worker,
-            hauler,
-            defender,
-        } => {
-            let Some(mut priority) = world.get_resource_mut::<ProductionPriority>() else {
-                return AgentResponse::failure(
-                    request.id,
-                    clock,
-                    "runtime_unavailable",
-                    "ProductionPriority resource is unavailable",
-                );
-            };
-            if let Err(error) = priority.set_percentages(worker, hauler, defender) {
-                return AgentResponse::failure(
-                    request.id,
-                    clock,
-                    "invalid_priority",
-                    error.to_string(),
-                );
-            }
-            serde_json::json!({
-                "worker": worker,
-                "hauler": hauler,
-                "defender": defender,
-            })
-        }
         AgentCommand::ProcessShutdown => {
             world.write_message(AppExit::Success);
             serde_json::json!({ "shutting_down": true })
@@ -1409,13 +1372,6 @@ fn collect_agent_state(
             })
         })
     };
-    let production_priority = world.get_resource::<ProductionPriority>().map(|priority| {
-        serde_json::json!({
-            "worker": priority.percentage(NanobotType::Worker),
-            "hauler": priority.percentage(NanobotType::Hauler),
-            "defender": priority.percentage(NanobotType::Defender),
-        })
-    });
     let outcome = world
         .get_resource::<MatchOutcome>()
         .copied()
@@ -1459,10 +1415,10 @@ fn collect_agent_state(
             .collect::<Vec<_>>()
     };
     let facilities = {
-        let mut query = world.query::<(&ProductionFacility, Option<&OwnerSwarm>)>();
+        let mut query = world.query::<(&ProductionFacility, &OwnerSwarm)>();
         query
             .iter(world)
-            .map(|(facility, owner)| (owner.map(|owner| owner.0), facility.is_busy()))
+            .map(|(facility, owner)| (owner.0, facility.is_busy()))
             .collect::<Vec<_>>()
     };
     let ledger = world.get_resource::<ResourceLedger>().cloned();
@@ -1512,10 +1468,7 @@ fn collect_agent_state(
             });
             let (facility_count, active_facilities) = facilities
                 .iter()
-                .filter(|(owner, _)| {
-                    owner.is_some_and(|owner| owner == swarm_entity)
-                        || (owner.is_none() && id.is_player())
-                })
+                .filter(|(owner, _)| *owner == swarm_entity)
                 .fold((0u32, 0u32), |(total, active), (_, busy)| {
                     (total + 1, active + u32::from(*busy))
                 });
@@ -1560,7 +1513,6 @@ fn collect_agent_state(
         "selected_intent": selected_intent,
         "map": map,
         "camera": camera,
-        "production_priority": production_priority,
         "match": match_state,
         "swarms": swarms,
     }))
@@ -1980,14 +1932,6 @@ struct CameraPanParams {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ProductionPrioritySetParams {
-    worker: u32,
-    hauler: u32,
-    defender: u32,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct FrameWaitParams {
     #[serde(default)]
     frames: u64,
@@ -2127,15 +2071,6 @@ pub fn parse_request_line(line: &[u8]) -> Result<AgentRequest, ProtocolError> {
                 intent: params.intent,
                 x: params.x,
                 y: params.y,
-            }
-        }
-        "production_priority.set" => {
-            let params = serde_json::from_value::<ProductionPrioritySetParams>(request.params)
-                .map_err(ProtocolError::InvalidJson)?;
-            AgentCommand::ProductionPrioritySet {
-                worker: params.worker,
-                hauler: params.hauler,
-                defender: params.defender,
             }
         }
         "process.shutdown" => {
@@ -2535,65 +2470,6 @@ mod tests {
     }
 
     #[test]
-    fn production_priority_command_rejects_invalid_percentages_without_mutation() {
-        use crate::nanobot::{NanobotType, ProductionPriority};
-        use bevy::prelude::*;
-
-        let mut app = App::new();
-        app.init_resource::<ProductionPriority>();
-        let before = app.world().resource::<ProductionPriority>().weights.clone();
-        let (control, plugin) = AgentControlCorePlugin::channel(4);
-        app.add_plugins(plugin);
-
-        let response = control
-            .submit(AgentRequest {
-                id: RequestId::Number(18),
-                command: AgentCommand::ProductionPrioritySet {
-                    worker: 50,
-                    hauler: 25,
-                    defender: 15,
-                },
-            })
-            .unwrap();
-        app.update();
-        let response = response.recv().unwrap();
-
-        assert!(!response.ok);
-        assert_eq!(response.error.unwrap().code, "invalid_priority");
-        let priority = app.world().resource::<ProductionPriority>();
-        assert_eq!(priority.weights, before);
-        assert_eq!(priority.weight(NanobotType::Worker), 6);
-    }
-
-    #[test]
-    fn production_priority_command_applies_valid_player_percentages() {
-        use crate::nanobot::{NanobotType, ProductionPriority};
-        use bevy::prelude::*;
-
-        let mut app = App::new();
-        app.init_resource::<ProductionPriority>();
-        let (control, plugin) = AgentControlCorePlugin::channel(4);
-        app.add_plugins(plugin);
-        let response = control
-            .submit(AgentRequest {
-                id: RequestId::Number(181),
-                command: AgentCommand::ProductionPrioritySet {
-                    worker: 20,
-                    hauler: 20,
-                    defender: 60,
-                },
-            })
-            .unwrap();
-
-        app.update();
-        assert!(response.recv().unwrap().ok);
-        let priority = app.world().resource::<ProductionPriority>();
-        assert_eq!(priority.weight(NanobotType::Worker), 20);
-        assert_eq!(priority.weight(NanobotType::Hauler), 20);
-        assert_eq!(priority.weight(NanobotType::Defender), 60);
-    }
-
-    #[test]
     fn completed_match_rejects_player_action_commands() {
         use crate::{
             intent::{BrushSelection, IntentKind},
@@ -2642,7 +2518,7 @@ mod tests {
 
         assert!(response.ok);
         let result = response.result.unwrap();
-        assert_eq!(result["protocol_version"], 1);
+        assert_eq!(result["protocol_version"], 2);
         assert!(
             result["methods"]
                 .as_array()
@@ -2650,6 +2526,14 @@ mod tests {
                 .iter()
                 .any(|method| method == "state.get"),
             "hello must advertise state.get"
+        );
+        assert!(
+            result["methods"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|method| method != "production_priority.set"),
+            "hello must not advertise the removed priority command"
         );
     }
 
@@ -2881,8 +2765,8 @@ mod tests {
             MainCamera,
             fly_camera::CameraZoom2d,
             nanobot::{
-                Health, MatchOutcome, Nanobot, NanobotType, ProductionCollapseState,
-                ProductionPriority, Swarm, SwarmId, SwarmMember,
+                Health, MatchOutcome, Nanobot, NanobotType, OwnerSwarm, ProductionCollapseState,
+                ProductionFacility, Swarm, SwarmId, SwarmMember,
             },
             resources::{ResourceKind, ResourceLedger},
         };
@@ -2891,8 +2775,7 @@ mod tests {
         let mut ledger = ResourceLedger::new();
         ledger.add_for(SwarmId::PLAYER, ResourceKind::Minerals, 37);
         let mut app = App::new();
-        app.init_resource::<ProductionPriority>()
-            .insert_resource(ledger)
+        app.insert_resource(ledger)
             .insert_resource(MatchOutcome::Victory)
             .insert_resource(ProductionCollapseState {
                 player_collapsed: false,
@@ -2906,7 +2789,15 @@ mod tests {
                 ..default()
             },
         ));
-        app.world_mut().spawn((Swarm::default(), SwarmId::PLAYER));
+        let player = app
+            .world_mut()
+            .spawn((Swarm::default(), SwarmId::PLAYER))
+            .id();
+        app.world_mut()
+            .spawn((ProductionFacility::new(), OwnerSwarm(player)));
+        let mut orphan = ProductionFacility::new();
+        orphan.current_target = Some(NanobotType::Worker);
+        app.world_mut().spawn(orphan);
         app.world_mut().spawn((
             Nanobot::default(),
             NanobotType::Worker,
@@ -2934,12 +2825,14 @@ mod tests {
             state["camera"],
             serde_json::json!({ "x": 80.0, "y": -40.0, "zoom": 2.5 })
         );
-        assert_eq!(state["production_priority"]["worker"], 60);
+        assert!(state.get("production_priority").is_none());
         assert_eq!(state["match"]["outcome"], "victory");
         assert_eq!(state["match"]["opponent_collapsed"], true);
         assert_eq!(state["swarms"][0]["id"], 0);
         assert_eq!(state["swarms"][0]["population"]["worker"], 1);
         assert_eq!(state["swarms"][0]["minerals"], 37);
+        assert_eq!(state["swarms"][0]["facilities"]["total"], 1);
+        assert_eq!(state["swarms"][0]["facilities"]["active"], 0);
         assert_eq!(
             state["swarms"][0]["centroid"],
             serde_json::json!({ "x": 5.0, "y": 7.0 })
@@ -3268,7 +3161,7 @@ mod tests {
         assert_eq!(response["ok"], true);
         assert!(response["frame"].is_u64());
         assert!(response["fixed_tick"].is_u64());
-        assert_eq!(response["result"]["protocol_version"], 1);
+        assert_eq!(response["result"]["protocol_version"], 2);
 
         drop(app);
         remove_control_socket_test_directory(&directory);

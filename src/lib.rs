@@ -152,7 +152,6 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
         .insert_resource(PresentationTarget(target))
         .insert_resource(IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32))
         .init_resource::<ResourceLedger>()
-        .insert_resource(scenario::default_player_priority())
         .init_resource::<nanobot::OpponentSwarmIdAlloc>()
         .add_plugins(Material2dPlugin::<BackgroundMaterial>::default())
         .add_plugins(terrain_presentation::TerrainPresentationPlugin)
@@ -216,7 +215,7 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
         .add_plugins(OpponentIntentPlugin)
         // Single allocator for regional work and territory-wide Defender responses.
         .add_plugins(RegionalAllocationPlugin)
-        // Typed workload chooses required capacity; Production Priority orders shortages.
+        // Typed workload chooses required capacity and automatic production order.
         .add_plugins(PopulationDemandPlugin)
         // StructureOverlayPlugin is a consumer of the
         // simulation's per-structure state. It registers

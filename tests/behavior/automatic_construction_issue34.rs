@@ -6,8 +6,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         BUILDING_FOOTPRINT_PADDING, BUILDING_FOOTPRINT_RADIUS, Charge, Commitment,
-        LOW_CHARGE_THRESHOLD, NanobotType, OwnerSwarm, PlannedKind, PlannedProductionTarget,
-        PlannedStructure, PlannedStructureClaim, SwarmId,
+        LOW_CHARGE_THRESHOLD, OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructureClaim,
+        SwarmId,
     },
     resources::ResourceDeposit,
 };
@@ -25,7 +25,6 @@ fn spawn_owned_planned_production(app: &mut App, cell: IVec2) -> Entity {
     app.world_mut()
         .spawn((
             PlannedStructure::new(PlannedKind::ProductionFacility, cell),
-            PlannedProductionTarget(NanobotType::Worker),
             OwnerSwarm(owner),
             Transform::from_translation(common::cell_world_center(cell).extend(0.0)),
         ))

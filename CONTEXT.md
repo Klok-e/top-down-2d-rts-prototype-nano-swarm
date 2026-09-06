@@ -121,7 +121,7 @@ Independent intent zones covering the same space, including the same kind owned 
 _Avoid_: Exclusive zones, Defend Contest, shared unowned paint
 
 **Intent Allocation**:
-The moment-to-moment act of steering the swarm by adjusting intent zone placement and size, plus Production Priority. Players do not prioritize individual tasks; autonomous allocation weighs useful work, distance, type fit, crowding, and commitments. This is the primary player skill, not micro-managing individual nanobots.
+The moment-to-moment act of steering the swarm by adjusting intent zone placement and size; players do not prioritize individual tasks or control population composition directly. Autonomous allocation weighs useful work, distance, type fit, crowding, and commitments, making Intent Allocation the primary player skill rather than individual nanobot management.
 _Avoid_: Unit micro, direct control
 
 **Soft Work Slot**:
@@ -164,18 +164,14 @@ _Avoid_: Road, waypoint chain, manual route
 A nanobot type that stages and roams in Defend Zones, responds to Threats throughout its swarm's Swarm Tiles, and may briefly pursue them through the Pursuit Halo.
 _Avoid_: Fighter, soldier, combat unit
 
-**Production Priority**:
-A player-set relative weighting that orders unmet Worker, Hauler, and Defender demand. It does not create demand or promise a population mix. Production balances shortage size against priority, while a zero-priority type remains eligible when its work is required.
-_Avoid_: Build queue, manual unit training
-
 **Population Demand**:
-The per-Nanobot-Type capacity justified by actionable workload: gathering, construction, and maintenance require Workers, while physical transport requires Haulers. Defender demand is the greater of half the swarm's unique Swarm Tile count rounded up and its active Threat count; Defend Zones only position that capacity. Existing and in-production nanobots of one type cannot satisfy another type's demand; finished output waiting for an exit remains committed population but is unavailable for work. Excess nanobots remain in the swarm when demand falls. A pending Production Facility may increase Worker demand but is never evidence for committing another Production Facility.
+The per-Nanobot-Type capacity justified by actionable workload: gathering, construction, and maintenance require Workers, physical transport requires Haulers, and Defender demand is the greater of half the swarm's unique Swarm Tile count rounded up and its active Threat count. Every swarm serves its greatest relative shortage, breaking equal ratios by the larger missing count and then stable type order; existing and committed capacity counts only for its own type, excess nanobots remain, and a pending Production Facility may increase Worker demand but never justifies another facility.
 _Avoid_: Population cap, unit quota
 
 **Production Pressure**:
-Consecutive unmet Population Demand of any type while every operational Production Facility remains busy producing; waiting for exit space does not qualify as busy production. Production Priority, including a zero weight, never suppresses pressure from required work. Pressure also accumulates when no Production Facility is operational, while resolved demand or idle operational capacity clears it. Brief demand spikes and a facility's internal cycle progress do not establish Production Pressure.
+Consecutive unmet Population Demand of any type while every operational Production Facility remains busy producing, or while no Production Facility is operational; waiting for exit space does not qualify as busy production. Resolved demand or idle operational capacity clears it, while brief demand spikes and a facility's internal cycle progress do not establish it.
 _Avoid_: Build-zone size, instantaneous deficit
 
 **Production Facility**:
-A terminal support structure that consumes delivered resources and automatically fills typed Population Demand in Production Priority order. Production Pressure may create one unfinished expansion commitment per swarm; capacity is reassessed after that commitment completes or is lost.
+A swarm-owned terminal support structure that consumes delivered resources and automatically fills its swarm's typed Population Demand. Production Pressure may create one unfinished expansion commitment per swarm; capacity is reassessed after that commitment completes or is lost.
 _Avoid_: Barracks, factory queue, manual spawner

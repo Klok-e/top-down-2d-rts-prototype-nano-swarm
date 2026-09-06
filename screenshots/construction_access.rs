@@ -7,7 +7,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Charge, NanobotBundle, NanobotType, OpponentIntentController, OwnerSwarm, PlannedKind,
-        PlannedStructure, ProductionPriority, Swarm, SwarmId,
+        PlannedStructure, Swarm, SwarmId,
     },
     resources::{ResourceKind, Stockpile},
 };
@@ -91,7 +91,6 @@ fn prepare(world: &mut World) {
         let _ = world.despawn(entity);
     }
     world.insert_resource(IntentGrid::new(2, 2));
-    world.insert_resource(ProductionPriority::new());
     for (mut transform, mut projection, mut zoom) in world
         .query::<(&mut Transform, &mut Projection, &mut CameraZoom2d)>()
         .iter_mut(world)

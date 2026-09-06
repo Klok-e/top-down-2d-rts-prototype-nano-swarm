@@ -100,12 +100,12 @@ fn automatic_construction_may_close_an_enemy_only_connection() {
 
 fn assert_planner_waits_for_builder(kind: PlannedKind) {
     use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-        GatherAssignment, NanobotType, ProductionPressure, ProductionPriority, SwarmMember,
+        GatherAssignment, PopulationDemandPlugin, ProductionPressure, SwarmMember,
         production_facility_auto_creation_system, sink_stockpile_demand_system,
         source_stockpile_demand_system,
     };
     for swarm in [SwarmId::PLAYER, SwarmId(2)] {
-        let mut app = common::minimal_app();
+        let mut app = common::sim_app();
         app.insert_resource(IntentGrid::new(2, 2));
         let owner = common::spawn_swarm_at(&mut app, Vec2::new(108.0, 108.0));
         app.world_mut().entity_mut(owner).insert(swarm);
@@ -156,11 +156,7 @@ fn assert_planner_waits_for_builder(kind: PlannedKind) {
                 app.add_systems(Update, sink_stockpile_demand_system);
             }
             PlannedKind::ProductionFacility => {
-                let mut priority = ProductionPriority::new();
-                priority.set_weight(NanobotType::Worker, 10);
-                priority.set_weight(NanobotType::Hauler, 10);
-                priority.set_weight(NanobotType::Defender, 10);
-                app.insert_resource(priority)
+                app.add_plugins(PopulationDemandPlugin)
                     .init_resource::<ProductionPressure>()
                     .add_systems(Update, production_facility_auto_creation_system);
             }

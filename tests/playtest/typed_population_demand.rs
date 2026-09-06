@@ -4,8 +4,8 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        NanobotType, PRODUCTION_TICKS_PER_BOT, PopulationDemand, PopulationDemandPlugin,
-        ProductionFacility, ProductionPriority, Swarm, SwarmId, SwarmMember,
+        NanobotType, PRODUCTION_TICKS_PER_BOT, PopulationDemand, ProductionFacility, Swarm,
+        SwarmId, SwarmMember,
     },
 };
 
@@ -15,7 +15,6 @@ mod common;
 #[test]
 fn swarm_tile_reserve_eventually_produces_defender_despite_excess_haulers() {
     let mut app = common::sim_app_with_production();
-    app.add_plugins(PopulationDemandPlugin);
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     for _ in 0..4 {
         common::spawn_worker_at(&mut app, Vec2::ZERO);
@@ -24,11 +23,6 @@ fn swarm_tile_reserve_eventually_produces_defender_despite_excess_haulers() {
         common::spawn_hauler_at(&mut app, Vec2::ZERO);
     }
     common::spawn_defender_at(&mut app, Vec2::ZERO);
-    let mut priority = ProductionPriority::new();
-    priority.set_weight(NanobotType::Worker, 25);
-    priority.set_weight(NanobotType::Hauler, 60);
-    priority.set_weight(NanobotType::Defender, 15);
-    app.insert_resource(priority);
     for x in 0..4 {
         app.world_mut().resource_mut::<IntentGrid>().paint(
             IVec2::new(x, 0),
@@ -72,10 +66,6 @@ fn swarm_tile_reserve_eventually_produces_defender_despite_excess_haulers() {
 #[test]
 fn physical_threats_drive_eventual_defender_production_above_reserve() {
     let mut app = common::sim_app_with_production();
-    app.add_plugins(PopulationDemandPlugin);
-    let mut priority = ProductionPriority::new();
-    priority.set_weight(NanobotType::Defender, 1);
-    app.insert_resource(priority);
     let player_swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     common::spawn_defender_at(&mut app, Vec2::ZERO);
     let opponent_id = SwarmId(7);

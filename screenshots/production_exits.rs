@@ -8,8 +8,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::IntentGrid,
     nanobot::{
         Commitment, DirectMovementComponent, Health, Nanobot, NanobotType,
-        OpponentIntentController, PRODUCTION_TICKS_PER_BOT, PlannedKind, ProductionFacility,
-        SwarmId, SwarmMember, VelocityComponent,
+        OpponentIntentController, OwnerSwarm, PRODUCTION_TICKS_PER_BOT, PlannedKind,
+        ProductionFacility, Swarm, SwarmId, SwarmMember, VelocityComponent,
     },
     structure_sprites::{StructureSprites, StructureVisual, StructureVisualState},
 };
@@ -167,6 +167,11 @@ fn prepare(world: &mut World) {
     production.progress = PRODUCTION_TICKS_PER_BOT;
     production.input_amount = 0;
     let kind = PlannedKind::ProductionFacility;
+    let owner = world
+        .query_filtered::<(Entity, &SwarmId), With<Swarm>>()
+        .iter(world)
+        .find_map(|(entity, id)| (*id == SwarmId::PLAYER).then_some(entity))
+        .expect("full app must retain the player swarm");
     let mut sprite = world
         .resource::<StructureSprites>()
         .sprite(kind, StructureVisualState::Completed);
@@ -174,6 +179,7 @@ fn prepare(world: &mut World) {
     let facility = world
         .spawn((
             production,
+            OwnerSwarm(owner),
             sprite,
             StructureVisual::completed(kind),
             Transform::from_xyz(252., 252., GAMEPLAY_SPRITE_Z)

@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-    Nanobot, NanobotType, PRODUCTION_TICKS_PER_BOT, ProductionFacility,
+    Nanobot, NanobotType, OwnerSwarm, PRODUCTION_TICKS_PER_BOT, ProductionFacility,
     production_facility_work_system,
 };
 #[path = "../common/mod.rs"]
@@ -11,15 +11,11 @@ fn retained_output_satisfies_typed_demand_without_funding_a_duplicate() {
     use top_down_2d_rts_prototype_nano_swarm::{
         game_settings::GameSettings,
         intent::{IntentGrid, IntentKind},
-        nanobot::{Commitment, PopulationDemandPlugin, ProductionPriority, SwarmId},
+        nanobot::{Commitment, SwarmId},
         resources::{ResourceKind, ResourceLedger},
     };
     let mut app = common::sim_app_with_production();
-    app.add_plugins(PopulationDemandPlugin);
     app.world_mut().resource_mut::<GameSettings>().bot_speed = 0.;
-    let mut priority = ProductionPriority::new();
-    priority.set_weight(NanobotType::Defender, 100);
-    app.insert_resource(priority);
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::new(2, 2),
@@ -112,7 +108,7 @@ fn retained_output_satisfies_typed_demand_without_funding_a_duplicate() {
 fn completed_output_waits_for_an_exterior_cell_and_releases_once() {
     let mut app = common::minimal_app();
     app.add_systems(Update, production_facility_work_system);
-    common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let mut facility = ProductionFacility::new();
     facility.current_target = Some(NanobotType::Worker);
     facility.progress = PRODUCTION_TICKS_PER_BOT - 1;
@@ -120,6 +116,7 @@ fn completed_output_waits_for_an_exterior_cell_and_releases_once() {
         .world_mut()
         .spawn((
             facility,
+            OwnerSwarm(swarm),
             Transform::from_xyz(36.0, 36.0, 0.0).with_scale(Vec3::new(1.125, 1.125, 1.0)),
         ))
         .id();
@@ -181,28 +178,17 @@ fn completed_output_waits_for_an_exterior_cell_and_releases_once() {
 #[test]
 fn retained_output_keeps_one_funded_cycle_and_is_lost_with_its_facility() {
     use top_down_2d_rts_prototype_nano_swarm::{
-        nanobot::{
-            OwnerSwarm, ProductionPriority, SwarmId, SwarmMember,
-            production_facility_pick_target_system,
-        },
+        nanobot::{SwarmId, SwarmMember},
         resources::{ResourceKind, ResourceLedger},
     };
     for owner in [SwarmId::PLAYER, SwarmId(1)] {
         let mut app = common::minimal_app();
-        let mut priority = ProductionPriority::new();
-        priority.set_weight(NanobotType::Defender, 100);
-        app.insert_resource(priority).add_systems(
-            Update,
-            (
-                production_facility_pick_target_system,
-                production_facility_work_system,
-            )
-                .chain(),
-        );
+        app.add_systems(Update, production_facility_work_system);
         let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
         app.world_mut().entity_mut(swarm).insert(owner);
         let mut facility = ProductionFacility::new();
-        facility.input_amount = 50;
+        facility.current_target = Some(NanobotType::Defender);
+        facility.input_amount = 30;
         let facility = app
             .world_mut()
             .spawn((
@@ -213,7 +199,7 @@ fn retained_output_keeps_one_funded_cycle_and_is_lost_with_its_facility() {
             .id();
         app.world_mut()
             .resource_mut::<ResourceLedger>()
-            .add_for(owner, ResourceKind::Minerals, 50);
+            .add_for(owner, ResourceKind::Minerals, 30);
         for y in -1..=1 {
             for x in -1..=1 {
                 if x != 0 || y != 0 {
@@ -271,7 +257,7 @@ fn retained_output_keeps_one_funded_cycle_and_is_lost_with_its_facility() {
 fn oldest_finished_output_wins_a_shared_exit_even_when_created_later() {
     let mut app = common::minimal_app();
     app.add_systems(Update, production_facility_work_system);
-    common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let mut young = ProductionFacility::new();
     young.current_target = Some(NanobotType::Hauler);
     young.progress = PRODUCTION_TICKS_PER_BOT - 2;
@@ -279,6 +265,7 @@ fn oldest_finished_output_wins_a_shared_exit_even_when_created_later() {
         .world_mut()
         .spawn((
             young,
+            OwnerSwarm(swarm),
             Transform::from_xyz(180., 36., 0.).with_scale(Vec3::new(1.125, 1.125, 1.)),
         ))
         .id();
@@ -289,6 +276,7 @@ fn oldest_finished_output_wins_a_shared_exit_even_when_created_later() {
         .world_mut()
         .spawn((
             old,
+            OwnerSwarm(swarm),
             Transform::from_xyz(36., 36., 0.).with_scale(Vec3::new(1.125, 1.125, 1.)),
         ))
         .id();
@@ -347,7 +335,7 @@ fn clearing_footprint_blocks_the_only_free_production_exit() {
     };
     let mut app = common::minimal_app();
     app.add_systems(Update, production_facility_work_system);
-    common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let mut facility = ProductionFacility::new();
     facility.current_target = Some(NanobotType::Worker);
     facility.progress = PRODUCTION_TICKS_PER_BOT;
@@ -355,6 +343,7 @@ fn clearing_footprint_blocks_the_only_free_production_exit() {
         .world_mut()
         .spawn((
             facility,
+            OwnerSwarm(swarm),
             Transform::from_xyz(36., 36., 0.).with_scale(Vec3::new(1.125, 1.125, 1.)),
         ))
         .id();

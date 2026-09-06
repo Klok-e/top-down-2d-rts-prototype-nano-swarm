@@ -70,6 +70,11 @@ fn marker_keys(app: &mut App) -> Vec<TacticalClusterKey> {
     q.iter(world).copied().collect()
 }
 
+fn spawn_facility_landmark_without_swarm(app: &mut App, position: Vec2) {
+    let identity = app.world_mut().spawn(SwarmId::PLAYER).id();
+    common::spawn_facility_at(app, identity, position);
+}
+
 // ---------------------------------------------------------------------------
 // Visibility gating by zoom
 // ---------------------------------------------------------------------------
@@ -805,7 +810,7 @@ fn deoverlap_pushes_co_located_clusters_apart() {
             radius: 32.0,
         },
     );
-    common::spawn_idle_facility_at(&mut app, Vec2::new(0.0, 0.0));
+    spawn_facility_landmark_without_swarm(&mut app, Vec2::ZERO);
     set_zoom(&mut app, 8.0);
     app.update();
 
@@ -833,7 +838,7 @@ fn deoverlap_leaves_far_apart_clusters_in_place() {
             radius: 32.0,
         },
     );
-    common::spawn_idle_facility_at(&mut app, Vec2::new(1000.0, 0.0));
+    spawn_facility_landmark_without_swarm(&mut app, Vec2::new(1000.0, 0.0));
     set_zoom(&mut app, 8.0);
     app.update();
 
@@ -870,7 +875,7 @@ fn deoverlap_separates_three_co_located_clusters() {
             radius: 32.0,
         },
     );
-    common::spawn_idle_facility_at(&mut app, Vec2::new(0.0, 0.0));
+    spawn_facility_landmark_without_swarm(&mut app, Vec2::ZERO);
     common::spawn_operational_charger_at(&mut app, IVec2::new(0, 0), 0);
     set_zoom(&mut app, 8.0);
     app.update();
@@ -904,7 +909,7 @@ fn deoverlap_preserves_center_of_mass() {
             radius: 32.0,
         },
     );
-    common::spawn_idle_facility_at(&mut app, Vec2::new(0.0, 0.0));
+    spawn_facility_landmark_without_swarm(&mut app, Vec2::ZERO);
     set_zoom(&mut app, 8.0);
     app.update();
 

@@ -9,7 +9,7 @@ use crate::ZONE_BLOCK_SIZE;
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::{
     Charger, ChargerAssignment, ChargerProgress, Health, Nanobot, NanobotType, OwnerSwarm,
-    PlannedStructure, ProductionFacility, Structure, SupportCondition, SwarmId, SwarmMember,
+    PlannedStructure, ProductionFacility, Structure, SupportCondition, Swarm, SwarmId, SwarmMember,
     cell_overlaps_circle, charger_can_serve_in_owned_zone,
 };
 use crate::resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole};
@@ -137,6 +137,7 @@ pub fn project_actionable_opportunities_system(
     >,
     mut previous_maintenance_defenders: Local<BTreeMap<Entity, (SwarmId, IVec2, Option<Entity>)>>,
     swarms: Query<&SwarmId>,
+    facility_swarms: Query<&SwarmId, With<Swarm>>,
     entities: Query<Entity>,
 ) {
     for cell in grid.drain_projection_dirty() {
@@ -358,11 +359,13 @@ pub fn project_actionable_opportunities_system(
                 if condition.is_some_and(|condition| !condition.is_operational()) {
                     return None;
                 }
+                let owner = owner.as_deref()?;
+                let owner = facility_swarms.get(owner.0).ok().copied()?;
                 Some(SinkSnapshot {
                     entity,
                     kind: facility.input_kind,
                     free_space: facility.input_free_space(),
-                    owner: resolve_owner(owner.as_deref(), &swarms)?,
+                    owner: Some(owner),
                     source_role: SourceRole::Sink,
                 })
             }),
@@ -392,9 +395,11 @@ pub fn project_actionable_opportunities_system(
             region,
             &grid,
             &structures,
+            &facilities,
             &chargers,
             &maintenance_defenders,
             &swarms,
+            &facility_swarms,
             &mut opportunities,
         );
         project_planned_work(region, &planned, &swarms, &mut opportunities);
@@ -468,11 +473,17 @@ fn project_intent_work(
     }
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn project_maintenance_work(
     region: AllocationRegion,
     grid: &IntentGrid,
     structures: &Query<(Entity, Ref<Structure>, Ref<Transform>, Option<&OwnerSwarm>)>,
+    facilities: &Query<(
+        Entity,
+        Ref<ProductionFacility>,
+        Option<Ref<OwnerSwarm>>,
+        Option<Ref<SupportCondition>>,
+    )>,
     chargers: &Query<(
         Entity,
         Ref<Charger>,
@@ -481,6 +492,7 @@ fn project_maintenance_work(
     )>,
     maintenance_defenders: &[DefenderMaintenanceSnapshot],
     swarms: &Query<&SwarmId>,
+    facility_swarms: &Query<&SwarmId, With<Swarm>>,
     out: &mut Vec<ActionableOpportunity>,
 ) {
     for (entity, structure, transform, owner) in structures.iter() {
@@ -504,8 +516,19 @@ fn project_maintenance_work(
         if AllocationRegion::for_cell(cell) != region {
             continue;
         }
-        let Some(owner) = resolve_owner(owner, swarms) else {
-            continue;
+        let owner = if facilities.get(entity).is_ok() {
+            let Some(owner) = owner else {
+                continue;
+            };
+            let Ok(owner) = facility_swarms.get(owner.0).copied() else {
+                continue;
+            };
+            Some(owner)
+        } else {
+            let Some(owner) = resolve_owner(owner, swarms) else {
+                continue;
+            };
+            owner
         };
         out.push(ActionableOpportunity {
             region,

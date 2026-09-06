@@ -16,8 +16,7 @@ use crate::nanobot::OpponentSwarm;
 use crate::nanobot::autonomy::NanobotType;
 use crate::nanobot::components::{Swarm, SwarmId};
 use crate::nanobot::production::{
-    OwnerSwarm, PRODUCTION_COST_PER_BOT, ProductionFacility, ProductionPriority, SwarmProduction,
-    count_swarm_nanobots_by_type, facility_belongs_to_swarm, total_deficit,
+    OwnerSwarm, PRODUCTION_COST_PER_BOT, ProductionFacility, count_swarm_nanobots_by_type,
 };
 use crate::{
     intent::{IntentGrid, IntentKind},
@@ -179,7 +178,7 @@ pub fn production_collapse_detection_system(
     swarms: Query<
         (
             Entity,
-            Option<&crate::nanobot::components::SwarmId>,
+            &crate::nanobot::components::SwarmId,
             Option<&OpponentSwarm>,
             Option<&Transform>,
         ),
@@ -187,7 +186,7 @@ pub fn production_collapse_detection_system(
     >,
     facilities: Query<(
         &ProductionFacility,
-        Option<&OwnerSwarm>,
+        &OwnerSwarm,
         &Transform,
         Option<&SupportCondition>,
     )>,
@@ -233,43 +232,32 @@ pub fn production_collapse_detection_system(
         ),
         With<crate::nanobot::components::Nanobot>,
     >,
-    global_priority: Res<ProductionPriority>,
-    swarm_productions: Query<&SwarmProduction>,
     mut state: ResMut<ProductionCollapseState>,
     grid: Res<IntentGrid>,
     projection: Option<Res<ActionableProjection>>,
-    (population_demand, access): (Option<Res<PopulationDemand>>, WorkAccess),
+    (population_demand, access): (Res<PopulationDemand>, WorkAccess),
 ) {
     state.player_collapsed = false;
     state.opponent_collapsed = false;
     let swarm_by_id: HashMap<SwarmId, Entity> = swarms
         .iter()
-        .filter_map(|(entity, id, _, _)| id.map(|id| (*id, entity)))
+        .map(|(entity, id, _, _)| (*id, entity))
         .collect();
     for (swarm_entity, swarm_id, opponent, swarm_transform) in &swarms {
-        let swarm_id = swarm_id
-            .copied()
-            .unwrap_or(crate::nanobot::components::SwarmId::PLAYER);
+        let swarm_id = *swarm_id;
         let counts = count_swarm_nanobots_by_type(swarm_id, &nanobots);
         let workers = *counts.get(&NanobotType::Worker).unwrap_or(&0);
         let haulers = *counts.get(&NanobotType::Hauler).unwrap_or(&0);
-        let priority = swarm_productions
-            .get(swarm_entity)
-            .map(|production| &production.priority)
-            .unwrap_or(&*global_priority);
-        let has_unmet_demand = population_demand
-            .as_deref()
-            .map(|demand| demand.has_shortage(swarm_id, &counts))
-            .unwrap_or_else(|| total_deficit(priority, &counts) > 0);
+        let has_unmet_demand = population_demand.has_shortage(swarm_id, &counts);
 
         let operational_production = facilities.iter().any(|(facility, owner, _, condition)| {
-            facility_belongs_to_swarm(owner, swarm_entity, swarm_id)
+            owner.0 == swarm_entity
                 && condition.is_none_or(|condition| condition.is_operational())
                 && (facility.is_busy() || facility.input_amount >= PRODUCTION_COST_PER_BOT)
         });
         let recoverable_existing_facility =
             facilities.iter().any(|(_, owner, transform, condition)| {
-                owner.is_some_and(|owner| owner.0 == swarm_entity)
+                owner.0 == swarm_entity
                     && condition.is_none_or(|condition| condition.health > 0)
                     && access.crew(
                         swarm_id,
@@ -282,7 +270,7 @@ pub fn production_collapse_detection_system(
             facilities
                 .iter()
                 .any(|(facility, owner, transform, condition)| {
-                    facility_belongs_to_swarm(owner, swarm_entity, swarm_id)
+                    owner.0 == swarm_entity
                         && access.crew(
                             swarm_id,
                             NanobotType::Worker,
@@ -338,9 +326,8 @@ pub fn production_collapse_detection_system(
         let mut recovery_destinations = facilities
             .iter()
             .filter_map(|(_, owner, transform, condition)| {
-                (owner.is_some_and(|owner| owner.0 == swarm_entity)
-                    && condition.is_none_or(|condition| condition.health > 0))
-                .then_some(InteractionRegion::structure(transform))
+                (owner.0 == swarm_entity && condition.is_none_or(|condition| condition.health > 0))
+                    .then_some(InteractionRegion::structure(transform))
             })
             .collect::<Vec<_>>();
         recovery_destinations.extend(planned.iter().filter_map(|(plan, transform, owner)| {
@@ -362,17 +349,17 @@ pub fn production_collapse_detection_system(
                 })
         };
         let sink_placement_exists =
-            |consumer_cell: IVec2, consumer_owner: Option<Entity>, obstacles: &[Obstacle]| {
+            |consumer_cell: IVec2, consumer_owner: Entity, obstacles: &[Obstacle]| {
                 let zone_cells =
                     sink_stockpile_zone_cells(&grid, consumer_cell, consumer_owner, &swarm_by_id);
                 find_build_zone_placement(&zone_cells, obstacles, 26).is_some()
             };
         let local_consumer_sink_path = facilities.iter().any(|(_, owner, transform, condition)| {
-            owner.is_some_and(|owner| owner.0 == swarm_entity)
+            owner.0 == swarm_entity
                 && condition.is_none_or(|condition| condition.health > 0)
                 && sink_placement_exists(
                     world_to_cell(transform.translation.truncate()),
-                    Some(swarm_entity),
+                    swarm_entity,
                     &obstacles,
                 )
         }) || planned.iter().any(|(planned, transform, owner)| {
@@ -380,20 +367,19 @@ pub fn production_collapse_detection_system(
                 && owner.is_some_and(|owner| owner.0 == swarm_entity)
                 && sink_placement_exists(
                     world_to_cell(transform.translation.truncate()),
-                    Some(swarm_entity),
+                    swarm_entity,
                     &obstacles,
                 )
         });
         let has_operational_facility = facilities.iter().any(|(_, owner, _, condition)| {
-            owner.is_some_and(|owner| owner.0 == swarm_entity)
-                && condition.is_none_or(|condition| condition.is_operational())
+            owner.0 == swarm_entity && condition.is_none_or(|condition| condition.is_operational())
         });
         let future_facility_sink_path = !has_operational_facility
             && !viable_planned_facility
             && facility_placement.is_some_and(|(cell, position)| {
                 let mut future_obstacles = obstacles.clone();
                 future_obstacles.push(Obstacle::planned(position));
-                sink_placement_exists(cell, Some(swarm_entity), &future_obstacles)
+                sink_placement_exists(cell, swarm_entity, &future_obstacles)
             });
         let stockpile_belongs_to_swarm =
             |owner: Option<&OwnerSwarm>| owner.is_some_and(|owner| owner.0 == swarm_entity);
@@ -568,7 +554,7 @@ pub fn production_collapse_detection_system(
             deliverable_material >= PRODUCTION_COST_PER_BOT || (gather_path && has_sink_path);
         let existing_facility_material_path =
             facilities.iter().any(|(facility, owner, _, condition)| {
-                owner.is_some_and(|owner| owner.0 == swarm_entity)
+                owner.0 == swarm_entity
                     && condition.is_none_or(|condition| condition.health > 0)
                     && ((gather_path && has_sink_path)
                         || facility.input_amount.saturating_add(deliverable_material)

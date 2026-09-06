@@ -14,14 +14,9 @@ use bevy::ui::RelativeCursorPosition;
 use bevy::window::Window;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{BrushSelection, IntentGrid},
-    nanobot::ProductionPriority,
     ui::{
         NoPointerCapture, UiHandling, check_ui_interaction,
         intent_layer_panel::IntentLayerPanelRoot,
-        production_priority_panel::{
-            HandleBoundary, ProductionPriorityDragState, ProductionPriorityHandle,
-            ProductionPriorityTrack, production_priority_drag_system,
-        },
     },
     zones::zone_brush_system,
 };
@@ -209,70 +204,6 @@ fn brush_paints_after_check_ui_clears_stale_over_ui_state() {
         dirty_count > 0,
         "brush must paint after check_ui_interaction clears the stale state \
          (dirty cells: {dirty_count}, order is check_ui then zone_brush)"
-    );
-}
-
-#[test]
-fn priority_drag_keeps_world_brush_captured_after_pointer_leaves_ui() {
-    let mut app = build_app();
-    app.init_resource::<ProductionPriorityDragState>();
-    app.insert_resource(ProductionPriority::default());
-    spawn_window_with_cursor(&mut app, Vec2::new(640.0, 360.0));
-    spawn_camera_at_origin(&mut app);
-    let _track = app
-        .world_mut()
-        .spawn((
-            Node::default(),
-            ProductionPriorityTrack,
-            RelativeCursorPosition {
-                cursor_over: false,
-                normalized: Some(Vec2::ZERO),
-            },
-        ))
-        .id();
-    let handle = app
-        .world_mut()
-        .spawn((
-            Node::default(),
-            ProductionPriorityHandle(HandleBoundary::WorkerEnd),
-            RelativeCursorPosition {
-                cursor_over: true,
-                normalized: Some(Vec2::ZERO),
-            },
-        ))
-        .id();
-    app.add_systems(
-        Update,
-        (
-            production_priority_drag_system,
-            check_ui_interaction,
-            zone_brush_system,
-        )
-            .chain(),
-    );
-
-    press_left_mouse(&mut app);
-    app.update();
-    assert_eq!(
-        app.world().resource::<IntentGrid>().render_dirty_count(),
-        0,
-        "pressing the handle starts captured",
-    );
-
-    app.world_mut()
-        .entity_mut(handle)
-        .get_mut::<RelativeCursorPosition>()
-        .unwrap()
-        .cursor_over = false;
-    app.world_mut()
-        .resource_mut::<ButtonInput<MouseButton>>()
-        .clear_just_pressed(MouseButton::Left);
-    app.update();
-
-    assert_eq!(
-        app.world().resource::<IntentGrid>().render_dirty_count(),
-        0,
-        "an active UI drag must not leak held left-click into world painting",
     );
 }
 

@@ -3,7 +3,7 @@ use bevy::prelude::*;
 
 use super::{
     DirectMovementComponent, InteractionRegion, Nanobot, NanobotType, OwnerSwarm,
-    PlannedProductionTarget, ProductionFacility, SwarmId, SwarmMember,
+    ProductionFacility, SwarmId, SwarmMember,
     construction_access::{CancelledSites, ConstructionAccess},
 };
 use crate::{
@@ -612,7 +612,7 @@ fn promote_planned_to_completion(
 ) {
     commands
         .entity(planned_entity)
-        .remove::<(PlannedStructure, StructureClearing, PlannedProductionTarget)>();
+        .remove::<(PlannedStructure, StructureClearing)>();
     let visual = completed_visual_bundle(kind, structure_sprites, transform);
     match kind {
         PlannedKind::SourceStockpile => {
@@ -631,8 +631,7 @@ fn promote_planned_to_completion(
         }
         PlannedKind::ProductionFacility => {
             // Completion creates an empty terminal. The normal production picker
-            // chooses a type only after the hopper can pay the full cycle cost; a
-            // planned target must never become a free first nanobot.
+            // chooses a type only after the hopper can pay the full cycle cost.
             let facility = ProductionFacility::new();
             // A completed facility is a terminal consumer:
             // it owns its own input hopper (on
