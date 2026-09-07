@@ -5,28 +5,13 @@ use crate::nanobot::MatchOutcome;
 
 use super::{ui_interaction_system::NoPointerCapture, ui_setup::FontsResource};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CollapsePresentation {
-    Hidden,
-    Victory,
-    Defeat,
-}
-
-pub fn collapse_presentation(outcome: MatchOutcome) -> CollapsePresentation {
-    match outcome {
-        MatchOutcome::InProgress => CollapsePresentation::Hidden,
-        MatchOutcome::Victory => CollapsePresentation::Victory,
-        MatchOutcome::Defeat => CollapsePresentation::Defeat,
-    }
-}
+#[derive(Debug, Component)]
+pub struct MatchBannerRoot;
 
 #[derive(Debug, Component)]
-pub struct CollapseBannerRoot;
+pub struct MatchBannerText;
 
-#[derive(Debug, Component)]
-pub struct CollapseBannerText;
-
-pub fn setup_collapse_banner(mut commands: Commands, fonts: Res<FontsResource>) {
+pub fn setup_match_banner(mut commands: Commands, fonts: Res<FontsResource>) {
     commands
         .spawn((
             Node {
@@ -38,7 +23,7 @@ pub fn setup_collapse_banner(mut commands: Commands, fonts: Res<FontsResource>) 
                 ..default()
             },
             Visibility::Hidden,
-            CollapseBannerRoot,
+            MatchBannerRoot,
             NoPointerCapture,
         ))
         .with_children(|root| {
@@ -60,25 +45,25 @@ pub fn setup_collapse_banner(mut commands: Commands, fonts: Res<FontsResource>) 
                     },
                     TextColor(Color::WHITE),
                     TextLayout::new_with_justify(Justify::Center),
-                    CollapseBannerText,
+                    MatchBannerText,
                 ));
             });
         });
 }
 
-pub fn update_collapse_banner_system(
+pub fn update_match_banner_system(
     outcome: Option<Res<MatchOutcome>>,
-    mut previous: Local<Option<CollapsePresentation>>,
-    mut roots: Query<&mut Visibility, With<CollapseBannerRoot>>,
-    mut texts: Query<(&mut Text, &mut TextColor), With<CollapseBannerText>>,
+    mut previous: Local<Option<MatchOutcome>>,
+    mut roots: Query<&mut Visibility, With<MatchBannerRoot>>,
+    mut texts: Query<(&mut Text, &mut TextColor), With<MatchBannerText>>,
 ) {
-    let presentation = collapse_presentation(outcome.as_deref().copied().unwrap_or_default());
+    let presentation = outcome.as_deref().copied().unwrap_or_default();
     if *previous == Some(presentation) {
         return;
     }
     *previous = Some(presentation);
     for mut visibility in &mut roots {
-        *visibility = if presentation == CollapsePresentation::Hidden {
+        *visibility = if presentation == MatchOutcome::InProgress {
             Visibility::Hidden
         } else {
             Visibility::Visible
@@ -86,14 +71,16 @@ pub fn update_collapse_banner_system(
     }
     for (mut text, mut color) in &mut texts {
         let (value, next_color) = match presentation {
-            CollapsePresentation::Hidden => ("", Color::WHITE),
-            CollapsePresentation::Victory => (
-                "VICTORY\nOpponent Production Collapsed",
+            MatchOutcome::InProgress => ("", Color::WHITE),
+            MatchOutcome::Victory => (
+                "VICTORY\nOpponent Swarm Eliminated",
                 Color::srgb(0.35, 0.95, 0.55),
             ),
-            CollapsePresentation::Defeat => {
-                ("DEFEAT\nProduction Collapse", Color::srgb(1.0, 0.35, 0.35))
-            }
+            MatchOutcome::Draw => ("DRAW\nBoth Swarms Eliminated", Color::srgb(1.0, 0.85, 0.4)),
+            MatchOutcome::Defeat => (
+                "DEFEAT\nPlayer Swarm Eliminated",
+                Color::srgb(1.0, 0.35, 0.35),
+            ),
         };
         **text = value.to_string();
         color.0 = next_color;

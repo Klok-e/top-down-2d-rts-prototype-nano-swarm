@@ -5,7 +5,7 @@ Nano Swarm is a top-down RTS prototype about steering a population of autonomous
 ## Language
 
 **Scenario**:
-A complete starting setup defining terrain, Resource Deposits, starting swarms, opponent behavior, and match outcome rules. Standard pairs the player with an advancing Opponent Swarm and uses Production Collapse outcomes; Sandbox uses the same map and player start without an opponent or victory and defeat conditions.
+A complete starting setup defining terrain, Resource Deposits, starting swarms, opponent behavior, and match outcome rules. Standard pairs the player with an advancing Opponent Swarm and uses Swarm Elimination outcomes; Sandbox uses the same map and player start without an opponent or match outcomes.
 _Avoid_: Saved game, map only
 
 **Swarm**:
@@ -92,9 +92,13 @@ _Avoid_: Sink, consumer building, final destination
 A non-player swarm governed by the same intent, production, logistics, maintenance, and Charge rules as the player swarm. An authored opponent may use a deterministic intent controller that advances its Defend intent toward a target while leaving nanobot allocation, production, logistics, Maintenance, Charge, and combat to the shared simulation.
 _Avoid_: Enemy AI faction, scripted attackers
 
-**Production Collapse**:
-A terminal win or loss condition where unmet workload remains but a swarm has neither operational production nor a complete physical recovery path. The first detected match result remains latched even if later simulation state changes. Recovery requires usable construction space or an owned production plan, appropriate Worker/Hauler capability, and reachable material; surviving crew alone is insufficient.
-_Avoid_: Population wipeout, king unit death, crew-count proxy
+**Swarm Elimination**:
+A swarm's loss of all its Nanobots and completed structures, excluding Planned Structures. Any surviving Nanobot, Production Facility, Stockpile, or Charger prevents elimination regardless of production or recovery potential.
+_Avoid_: Production Collapse, population wipeout, king unit death
+
+**Match Outcome**:
+The permanent result of a Standard match: Victory when only the Opponent Swarm is eliminated, Defeat when only the player swarm is eliminated, or Draw when both are eliminated simultaneously. Sandbox has no Match Outcome.
+_Avoid_: Production status, recoverability warning
 
 **Automatic Construction**:
 The swarm creates needed structures from demand pressure rather than direct player placement. Production facilities, stockpiles, chargers, and similar support structures emerge inside or near matching intent paint when existing capacity is too busy for current intent. Painting a Build Zone alone does not create a structure; there must be active demand for the resulting support structure.

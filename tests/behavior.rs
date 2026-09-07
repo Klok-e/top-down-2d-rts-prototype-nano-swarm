@@ -8,8 +8,6 @@ mod automatic_construction_issue34;
 mod charger;
 #[path = "behavior/charger_planned.rs"]
 mod charger_planned;
-#[path = "behavior/collapse_banner.rs"]
-mod collapse_banner;
 #[path = "behavior/combat.rs"]
 mod combat;
 #[path = "behavior/combat_presentation.rs"]
@@ -38,6 +36,8 @@ mod idle_spread;
 mod intent_brush;
 #[path = "behavior/maintenance.rs"]
 mod maintenance;
+#[path = "behavior/match_banner.rs"]
+mod match_banner;
 #[path = "behavior/movement.rs"]
 mod movement;
 #[path = "behavior/nanobot_presentation.rs"]
@@ -56,14 +56,14 @@ mod physical_worker_gather;
 mod planned_structure;
 #[path = "behavior/population_demand.rs"]
 mod population_demand;
-#[path = "behavior/production_collapse.rs"]
-mod production_collapse;
 #[path = "behavior/production_facility.rs"]
 mod production_facility;
 #[path = "behavior/production_facility_planned.rs"]
 mod production_facility_planned;
 #[path = "behavior/regional_allocation.rs"]
 mod regional_allocation;
+#[path = "behavior/sink_placement.rs"]
+mod sink_placement;
 #[path = "behavior/sink_stockpile.rs"]
 mod sink_stockpile;
 #[path = "behavior/source_stockpile_flow.rs"]
@@ -129,3 +129,9 @@ mod deposit_presentation;
 
 #[path = "behavior/scenario_selection.rs"]
 mod scenario_selection;
+
+#[path = "behavior/swarm_elimination.rs"]
+mod swarm_elimination;
+
+#[path = "behavior/agent_match_snapshot.rs"]
+mod agent_match_snapshot;

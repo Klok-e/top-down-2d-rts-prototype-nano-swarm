@@ -12,7 +12,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         Swarm, SwarmId, SwarmMember, VelocityComponent,
     },
     terrain::RockFormation,
-    ui::collapse_banner::CollapseBannerRoot,
+    ui::match_banner::MatchBannerRoot,
 };
 
 use crate::harness::{TestContext, TestFlow};
@@ -72,7 +72,7 @@ fn spawn_defender(world: &mut World, position: Vec2, swarm: SwarmId, charge: f32
 fn setup_scene(world: &mut World) {
     focus_camera(world);
     for banner in world
-        .query_filtered::<Entity, With<CollapseBannerRoot>>()
+        .query_filtered::<Entity, With<MatchBannerRoot>>()
         .iter(world)
         .collect::<Vec<_>>()
     {

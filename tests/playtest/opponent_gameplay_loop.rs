@@ -5,21 +5,30 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        CollapsePlugin, CombatPlugin, MaintenancePlugin, MatchOutcome, NanobotType,
-        OpponentIntentController, OpponentIntentPlugin, PopulationDemandPlugin,
-        ProductionCollapseState, ProductionPlugin, SwarmId, nanobot_death_cleanup_system,
+        Charger, CombatPlugin, MaintenancePlugin, MatchOutcome, Nanobot, NanobotType,
+        OpponentIntentController, OpponentIntentPlugin, OwnerSwarm, PopulationDemandPlugin,
+        ProductionFacility, ProductionPlugin, SwarmEliminationPlugin, SwarmEliminationState,
+        SwarmId, SwarmMember, nanobot_death_cleanup_system,
+    },
+    resources::Stockpile,
+    ui::{
+        FontsResource,
+        match_banner::{MatchBannerText, setup_match_banner, update_match_banner_system},
     },
 };
 
 #[test]
-fn scripted_counter_assault_can_cause_opponent_production_collapse() {
+fn scripted_counter_assault_can_eliminate_opponent() {
     let mut app = common::sim_app();
+    app.insert_resource(FontsResource { font: default() })
+        .add_systems(Startup, setup_match_banner)
+        .add_systems(Update, update_match_banner_system);
     app.add_plugins(MaintenancePlugin)
         .add_plugins(ProductionPlugin)
         .add_plugins(PopulationDemandPlugin)
         .add_plugins(CombatPlugin)
         .add_plugins(OpponentIntentPlugin)
-        .add_plugins(CollapsePlugin)
+        .add_plugins(SwarmEliminationPlugin)
         .add_systems(FixedLast, nanobot_death_cleanup_system);
 
     let player_cell = IVec2::new(-1, 0);
@@ -85,23 +94,83 @@ fn scripted_counter_assault_can_cause_opponent_production_collapse() {
 
     for _ in 0..800 {
         app.update();
-        if app
-            .world()
-            .resource::<ProductionCollapseState>()
-            .player_won()
-        {
+        if *app.world().resource::<MatchOutcome>() == MatchOutcome::Victory {
+            assert!(
+                !app.world_mut()
+                    .query_filtered::<&SwarmMember, With<Nanobot>>()
+                    .iter(app.world())
+                    .any(|owner| owner.0 == opponent_id)
+            );
+            assert!(!app.world_mut().query_filtered::<&OwnerSwarm, Or<(With<ProductionFacility>, With<Stockpile>, With<Charger>)>>()
+                .iter(app.world()).any(|owner| owner.0 == opponent_swarm));
             assert_eq!(
-                *app.world().resource::<MatchOutcome>(),
-                MatchOutcome::Victory,
-                "the visible match result must latch on the collapse tick",
+                app.world_mut()
+                    .query_filtered::<&Text, With<MatchBannerText>>()
+                    .single(app.world())
+                    .unwrap()
+                    .0,
+                "VICTORY\nOpponent Swarm Eliminated"
             );
             return;
         }
     }
 
-    let state = app.world().resource::<ProductionCollapseState>();
+    let state = app.world().resource::<SwarmEliminationState>();
     panic!(
-        "scripted counter-assault did not end the match: player_collapsed={}, opponent_collapsed={}",
-        state.player_collapsed, state.opponent_collapsed
+        "scripted counter-assault did not end the match: player_eliminated={}, opponent_eliminated={}",
+        state.player_eliminated, state.opponent_eliminated
+    );
+}
+
+#[test]
+fn mutual_final_combat_deaths_show_draw_in_the_same_tick() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::Health;
+    let mut app = common::sim_app();
+    app.add_plugins((CombatPlugin, SwarmEliminationPlugin))
+        .add_systems(FixedLast, nanobot_death_cleanup_system)
+        .insert_resource(FontsResource { font: default() })
+        .add_systems(Startup, setup_match_banner)
+        .add_systems(Update, update_match_banner_system);
+    let center = common::cell_world_center(IVec2::ZERO);
+    common::spawn_swarm_with_nanobots(
+        &mut app,
+        center - Vec2::X * 36.0,
+        &[(NanobotType::Defender, 1)],
+    );
+    let opponent = common::spawn_opponent_swarm_with_nanobots(
+        &mut app,
+        center + Vec2::X * 36.0,
+        &[(NanobotType::Defender, 1)],
+    );
+    let opponent_id = *app.world().get::<SwarmId>(opponent).unwrap();
+    for mut health in app
+        .world_mut()
+        .query::<&mut Health>()
+        .iter_mut(app.world_mut())
+    {
+        health.current = 1;
+    }
+    for owner in [SwarmId::PLAYER, opponent_id] {
+        app.world_mut()
+            .resource_mut::<IntentGrid>()
+            .paint(IVec2::ZERO, IntentKind::Defend, owner);
+    }
+    app.update();
+    assert_eq!(
+        app.world_mut()
+            .query_filtered::<Entity, With<Nanobot>>()
+            .iter(app.world())
+            .count(),
+        0,
+        "both final Defenders must die through the real combat and cleanup systems"
+    );
+    assert_eq!(*app.world().resource::<MatchOutcome>(), MatchOutcome::Draw);
+    assert_eq!(
+        app.world_mut()
+            .query_filtered::<&Text, With<MatchBannerText>>()
+            .single(app.world())
+            .unwrap()
+            .0,
+        "DRAW\nBoth Swarms Eliminated"
     );
 }

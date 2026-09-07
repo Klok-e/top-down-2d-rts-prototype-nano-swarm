@@ -1,8 +1,8 @@
 pub mod button_bg_interaction;
-pub mod collapse_banner;
 pub mod consts;
 mod fps_count;
 pub mod intent_layer_panel;
+pub mod match_banner;
 pub mod scenario_menu;
 mod status_panel;
 mod ui_interaction_system;
@@ -20,12 +20,12 @@ use crate::zones::zone_brush_system;
 
 use self::{
     button_bg_interaction::button_background_system,
-    collapse_banner::{setup_collapse_banner, update_collapse_banner_system},
     fps_count::fps_ui_system,
     intent_layer_panel::{
         intent_layer_button_click_system, setup_intent_layer_panel,
         update_intent_layer_panel_highlight,
     },
+    match_banner::{setup_match_banner, update_match_banner_system},
     status_panel::{setup_status_panel, update_status_panel_system},
 };
 
@@ -42,7 +42,7 @@ impl Plugin for NanoswarmUiSetupPlugin {
                     setup_ui_system,
                     setup_status_panel,
                     setup_intent_layer_panel,
-                    setup_collapse_banner,
+                    setup_match_banner,
                 )
                     .chain(),
             )
@@ -53,7 +53,7 @@ impl Plugin for NanoswarmUiSetupPlugin {
             .add_systems(Update, check_ui_interaction.before(zone_brush_system))
             .add_systems(Update, fps_ui_system)
             .add_systems(Update, update_status_panel_system)
-            .add_systems(Update, update_collapse_banner_system)
+            .add_systems(Update, update_match_banner_system)
             .add_systems(Update, button_background_system)
             .add_systems(Update, intent_layer_button_click_system)
             .add_systems(Update, update_intent_layer_panel_highlight);

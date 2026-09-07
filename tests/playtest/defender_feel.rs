@@ -10,15 +10,15 @@ use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Charge, ChargePlugin, Charger, ChargerAssignment, ChargerProgress, CollapsePlugin,
-        CombatPlugin, DEGRADATION_INTERVAL_TICKS, DefenderResponse, DirectMovementComponent,
-        GatherPlugin, HaulPlugin, Health, LOW_CHARGE_THRESHOLD, MAINTENANCE_BUFFER_TICKS,
+        Charge, ChargePlugin, Charger, ChargerAssignment, ChargerProgress, CombatPlugin,
+        DEGRADATION_INTERVAL_TICKS, DefenderResponse, DirectMovementComponent, GatherPlugin,
+        HaulPlugin, Health, LOW_CHARGE_THRESHOLD, MAINTENANCE_BUFFER_TICKS,
         MAINTENANCE_NEEDS_THRESHOLD, MaintenanceAssignment, MaintenancePlugin, MaintenanceProgress,
         MatchOutcome, Nanobot, NanobotPlugin, NanobotType, OpponentIntentPlugin,
         OpponentSwarmIdAlloc, OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructurePlugin,
-        PopulationDemand, PopulationDemandPlugin, ProductionCollapseState, ProductionPlugin,
-        RegionalAllocationPlugin, STRUCTURE_MAX_HEALTH, Structure, Swarm, SwarmId, SwarmMember,
-        TerritorySnapshot, nanobot_death_cleanup_system, world_to_cell,
+        PopulationDemand, PopulationDemandPlugin, ProductionPlugin, RegionalAllocationPlugin,
+        STRUCTURE_MAX_HEALTH, Structure, Swarm, SwarmEliminationPlugin, SwarmEliminationState,
+        SwarmId, SwarmMember, TerritorySnapshot, nanobot_death_cleanup_system, world_to_cell,
     },
     resources::{ResourceKind, ResourceLedger},
     scenario::{spawn_default_opponent_scenario, spawn_default_player_scenario},
@@ -62,7 +62,7 @@ fn default_headless_app() -> App {
         .add_plugins(PlannedStructurePlugin)
         .add_plugins(MaintenancePlugin)
         .add_plugins(ProductionPlugin)
-        .add_plugins(CollapsePlugin)
+        .add_plugins(SwarmEliminationPlugin)
         .add_plugins(ChargePlugin)
         .add_plugins(CombatPlugin)
         .add_plugins(OpponentIntentPlugin)
@@ -795,7 +795,7 @@ fn spawn_runtime_front() -> (App, IVec2, Entity, Entity) {
     app.world_mut().resource_mut::<GameSettings>().bot_speed = 5.25;
     app.add_plugins(PopulationDemandPlugin);
     app.add_plugins(CombatPlugin);
-    app.add_plugins(CollapsePlugin);
+    app.add_plugins(SwarmEliminationPlugin);
     app.add_systems(FixedLast, nanobot_death_cleanup_system);
 
     let player_swarm = common::spawn_swarm_at(&mut app, common::cell_world_center(PLAYER_CELL));
@@ -997,11 +997,11 @@ fn default_front_has_readable_combat_and_staggered_sustain() {
     assert_eq!(
         *app.world().resource::<MatchOutcome>(),
         MatchOutcome::InProgress,
-        "combat feel flow must not collapse either production side"
+        "combat feel flow must keep both swarms in the match"
     );
-    let collapse = app.world().resource::<ProductionCollapseState>();
-    assert!(!collapse.player_collapsed);
-    assert!(!collapse.opponent_collapsed);
+    let elimination = app.world().resource::<SwarmEliminationState>();
+    assert!(!elimination.player_eliminated);
+    assert!(!elimination.opponent_eliminated);
     assert!(live_defenders(app.world_mut(), SwarmId::PLAYER) > 0);
 }
 

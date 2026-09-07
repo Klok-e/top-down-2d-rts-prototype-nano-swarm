@@ -99,17 +99,19 @@ Screenshot capture is asynchronous. A request received before any render submiss
 
 Valid intents are `gather`, `build`, `defend`, and `corridor`. Stable button IDs are `intent.gather`, `intent.build`, `intent.defend`, and `intent.corridor`.
 
-Player-action commands are rejected after Victory or Defeat. State, camera, screenshot, wait, hello, and shutdown remain available for terminal-state inspection.
+Player-action commands are rejected after Victory, Defeat, or Draw. State, camera, screenshot, wait, hello, and shutdown remain available for terminal-state inspection.
 
 ## State Snapshot
+
+`session.hello` reports protocol version 3. Elimination fields replace collapse fields without compatibility aliases.
 
 `state.get` returns:
 
 - Selected intent.
 - Map dimensions, sparse active cells, per-layer swarm owners.
 - Main-camera position and zoom.
-- Match outcome and collapse flags.
-- Per-swarm population, demand, aggregate health, centroid, minerals, and facility counts.
+- Match outcome (`in_progress`, `victory`, `defeat`, or `draw`) and `player_eliminated` / `opponent_eliminated` flags.
+- Per-swarm `eliminated` flag, population, demand, aggregate health, centroid, minerals, and facility counts.
 
 Empty map cells are omitted. Active cells use deterministic row-major ordering. Each response includes at most 10,000 active cells with their independently owned intent layers, `active_cell_total`, `next_cell_offset`, and `map_revision`. Pass both `next_cell_offset` and the unchanged `map_revision` into the next `state.get` call until the offset is `null`. Page zero contains the complete non-map snapshot; continuation pages contain only `map`, preventing live simulation changes from mixing newer swarm or match data into that snapshot. If the map changes between pages, the server returns `stale_state_page`; restart from offset zero. Each layer entry has an intent kind and a non-null owner ID: `0` is the player and positive IDs are opponents. The same kind can appear more than once in a cell, once per owning swarm; consume all entries. Entries are ordered by intent kind, then owner ID. There is no `defend_contests` field.
 
