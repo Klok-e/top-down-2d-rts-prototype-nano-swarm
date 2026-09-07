@@ -2,6 +2,10 @@
 
 The agent control interface drives a real nano-swarm process without OS input automation. It is opt-in and works with either the normal window or GPU-backed offscreen presentation.
 
+Agents may extend the agent-control interface as they see fit.
+
+Automated tests and agent verification must never create an OS/compositor window. Use minimal ECS apps or offscreen rendering; run real agent playtests with `--headless --agent-socket`.
+
 ## Launch
 
 ```bash

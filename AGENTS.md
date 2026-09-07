@@ -11,7 +11,7 @@
 
 For coding-agent implementation work, follow `docs/agents/testing.md`. Don't edit this doc autonomously: human approval always required.
 
-Automated tests and agent verification must never create an OS/compositor window. Use minimal ECS apps or offscreen rendering; run real agent playtests with `--headless --agent-socket`.
+For agent control and real-process verification, read `docs/agents/agent-control.md`.
 
 ## Comments
 
