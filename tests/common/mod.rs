@@ -44,12 +44,12 @@ use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        ActionableProjection, Charge, ChargePlugin, Charger, CollapsePlugin, CombatPlugin,
-        Commitment, GatherPlugin, HaulPlugin, Health, LOW_CHARGE_THRESHOLD, MaintenancePlugin,
-        Nanobot, NanobotBundle, NanobotSimulationSet, NanobotType, NanobotVisual, OpponentSwarm,
-        OwnerSwarm, PRODUCTION_TICKS_PER_BOT, PlannedStructure, PlannedStructurePlugin,
-        PopulationDemandPlugin, ProductionFacility, ProductionPlugin, RegionalAllocationPlugin,
-        SoftWorkSlots, Structure, StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent,
+        ActionableProjection, Charge, ChargePlugin, Charger, CombatPlugin, Commitment,
+        GatherPlugin, HaulPlugin, Health, LOW_CHARGE_THRESHOLD, MaintenancePlugin, Nanobot,
+        NanobotBundle, NanobotSimulationSet, NanobotType, NanobotVisual, OpponentSwarm, OwnerSwarm,
+        PRODUCTION_TICKS_PER_BOT, PlannedStructure, PlannedStructurePlugin, PopulationDemandPlugin,
+        ProductionFacility, ProductionPlugin, RegionalAllocationPlugin, SoftWorkSlots, Structure,
+        StructureKind, Swarm, SwarmEliminationPlugin, SwarmId, SwarmMember, VelocityComponent,
         bot_debug_circle_system, idle_spread_system, initialize_nanobot_type_components,
         move_velocity_system, project_actionable_opportunities_system, separation_system,
         velocity_system, work_standing_system,
@@ -312,13 +312,13 @@ pub fn sim_app_with_charge_planned() -> App {
     app
 }
 
-/// `sim_app` + production + collapse. The collapse detection
-/// system runs after the production work system, so both plugins
-/// must be registered together for the order to match the
-/// production app.
-pub fn sim_app_with_collapse() -> App {
-    let mut app = sim_app_with_production();
-    app.add_plugins(CollapsePlugin);
+/// Minimal simulation with real Nanobot cleanup and end-of-tick match outcomes.
+pub fn sim_app_with_elimination() -> App {
+    let mut app = minimal_app();
+    app.add_plugins(SwarmEliminationPlugin).add_systems(
+        FixedLast,
+        top_down_2d_rts_prototype_nano_swarm::nanobot::nanobot_death_cleanup_system,
+    );
     app
 }
 
@@ -445,7 +445,7 @@ pub fn spawn_completed_facilities_for_all_nanobot_types(
 /// `Transform` for world position. Each bot is a fresh
 /// [`NanobotBundle`] with `Commitment::Idle` and a `Transform` at
 /// `world_pos`, so it is immediately eligible for the autonomy
-/// scoring path. Use for production and collapse tests that
+/// scoring path. Use for production and elimination tests that
 /// need a known starting population.
 pub fn spawn_swarm_with_nanobots(
     app: &mut App,
@@ -896,30 +896,6 @@ pub fn spawn_facility_at(app: &mut App, owner: Entity, pos: Vec2) -> Entity {
     entity
 }
 
-/// Spawn a busy [`ProductionFacility`] at `world_pos` with the
-/// given production `target` and `progress = 1`. A busy facility
-/// is the "production is currently working" half of the collapse
-/// contract, so production and collapse tests can use this helper
-/// to skip the pick/work setup and assert collapse-related
-/// behaviour directly. The input hopper is pre-filled (see
-/// [`fill_facility_input`]) so the next pick cycle can fire.
-pub fn spawn_busy_facility_at(app: &mut App, world_pos: Vec2, target: NanobotType) -> Entity {
-    let owner = player_swarm_entity(app);
-    let mut f = ProductionFacility::new();
-    f.current_target = Some(target);
-    f.progress = 1;
-    let entity = app
-        .world_mut()
-        .spawn((
-            f,
-            OwnerSwarm(owner),
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id();
-    fill_facility_input(app, entity);
-    entity
-}
-
 /// Fill a facility's input hopper to capacity with minerals and
 /// record the material in the [`ResourceLedger`]. This mirrors
 /// what hauler delivery (logistics leg 3) does in the real game,
@@ -974,4 +950,40 @@ pub fn press_button(app: &mut App, button: Entity) {
         *interaction = Interaction::None;
     }
     app.update();
+}
+
+/// Spawn one empty completed structure owned by `owner`, without maintenance or production.
+pub fn spawn_empty_completed_structure(
+    app: &mut App,
+    owner: Entity,
+    kind: top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedKind,
+) -> Entity {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedKind;
+    let mut entity = app
+        .world_mut()
+        .spawn((OwnerSwarm(owner), Transform::default()));
+    match kind {
+        PlannedKind::ProductionFacility => {
+            entity.insert(ProductionFacility::new());
+        }
+        PlannedKind::Charger => {
+            entity.insert(Charger::new(IVec2::ZERO));
+        }
+        PlannedKind::SourceStockpile | PlannedKind::SinkStockpile => {
+            entity.insert((
+                Stockpile {
+                    kind: ResourceKind::Minerals,
+                    amount: 0,
+                    capacity: 100,
+                    radius: 32.0,
+                },
+                if kind == PlannedKind::SourceStockpile {
+                    StockpileRole::Source
+                } else {
+                    StockpileRole::Sink
+                },
+            ));
+        }
+    }
+    entity.id()
 }

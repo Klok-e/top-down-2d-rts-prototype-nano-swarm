@@ -48,8 +48,9 @@ use game_settings::GameSettings;
 use intent::IntentGrid;
 use materials::BackgroundMaterial;
 use nanobot::{
-    CollapsePlugin, CombatPlugin, NanobotPlugin, NanobotPresentationPlugin, OpponentIntentPlugin,
+    CombatPlugin, NanobotPlugin, NanobotPresentationPlugin, OpponentIntentPlugin,
     PlannedStructurePlugin, PopulationDemandPlugin, ProductionPlugin, RegionalAllocationPlugin,
+    SwarmEliminationPlugin,
 };
 use resources::ResourceLedger;
 use structure_overlay::StructureOverlayPlugin;
@@ -202,11 +203,8 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
         // own chain so it sees the post-pick / post-work state
         // before deciding to spawn a new facility.
         .add_plugins(ProductionPlugin)
-        // CollapsePlugin must run after the production work
-        // system so the "is this facility currently busy?"
-        // check sees the post-work state, not the pre-work
-        // state of the same tick.
-        .add_plugins(CollapsePlugin)
+        // Match outcomes observe completed creation and death cleanup each tick.
+        .add_plugins(SwarmEliminationPlugin)
         // ChargePlugin settles consumer state after movement and before regional
         // acquisition so rotation releases current allocation immediately.
         .add_plugins(nanobot::ChargePlugin)

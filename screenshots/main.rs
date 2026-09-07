@@ -39,6 +39,7 @@ mod fill_indicators;
 mod harness;
 mod idle_spread;
 mod local_avoidance;
+mod match_banner;
 mod nanobot_presentation;
 mod navigation_geometry;
 mod opponent_gameplay_loop;
@@ -79,6 +80,11 @@ fn main() -> std::process::ExitCode {
     // Each test is ignored so default run skips GPU setup. `--ignored` runs
     // only ignored tests, matching standard `cargo test` convention.
     let tests = vec![
+        Trial::test("match_victory_banner", || run(match_banner::victory_banner))
+            .with_ignored_flag(true),
+        Trial::test("match_defeat_banner", || run(match_banner::defeat_banner))
+            .with_ignored_flag(true),
+        Trial::test("match_draw_banner", || run(match_banner::draw_banner)).with_ignored_flag(true),
         Trial::test("scenario_menu", || run(scenario_menu::scenario_menu)).with_ignored_flag(true),
         Trial::test("approach_delivery", || {
             run(approach_delivery::approach_delivery)

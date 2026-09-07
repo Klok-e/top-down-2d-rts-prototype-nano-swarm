@@ -38,7 +38,7 @@ use crate::{
     intent::{BrushSelection, IntentGrid, IntentKind},
     nanobot::{
         Health, MatchOutcome, Nanobot, NanobotType, OpponentSwarm, OwnerSwarm, PopulationDemand,
-        ProductionCollapseState, ProductionFacility, Swarm, SwarmId, SwarmMember,
+        ProductionFacility, Swarm, SwarmEliminationState, SwarmId, SwarmMember,
     },
     resources::{ResourceKind, ResourceLedger},
     ui::intent_layer_panel::{IntentLayerButton, IntentLayerPanelRoot},
@@ -55,7 +55,7 @@ const MAX_CONTROL_RESPONSE_DURATION: Duration = Duration::from_secs(310);
 const CONTROL_RESPONSE_POLL_DURATION: Duration = Duration::from_millis(10);
 #[cfg(unix)]
 const MAX_CONTROL_LINE_DURATION: Duration = Duration::from_secs(30);
-pub const AGENT_PROTOCOL_VERSION: u32 = 2;
+pub const AGENT_PROTOCOL_VERSION: u32 = 3;
 pub const SUPPORTED_METHODS: [&str; 10] = [
     "session.hello",
     "state.get",
@@ -1438,14 +1438,14 @@ fn collect_agent_state(
         .get_resource::<MatchOutcome>()
         .copied()
         .unwrap_or_default();
-    let collapse = world
-        .get_resource::<ProductionCollapseState>()
+    let elimination = world
+        .get_resource::<SwarmEliminationState>()
         .copied()
         .unwrap_or_default();
     let match_state = serde_json::json!({
         "outcome": match_outcome_name(outcome),
-        "player_collapsed": collapse.player_collapsed,
-        "opponent_collapsed": collapse.opponent_collapsed,
+        "player_eliminated": elimination.player_eliminated,
+        "opponent_eliminated": elimination.opponent_eliminated,
     });
 
     let mut swarms = {
@@ -1545,10 +1545,10 @@ fn collect_agent_state(
             serde_json::json!({
                 "id": id.0,
                 "opponent": opponent,
-                "collapsed": if id.is_player() {
-                    collapse.player_collapsed
+                "eliminated": if id.is_player() {
+                    elimination.player_eliminated
                 } else {
-                    collapse.opponent_collapsed
+                    elimination.opponent_eliminated
                 },
                 "population": {
                     "worker": population[nanobot_type_index(NanobotType::Worker)],
@@ -1598,6 +1598,7 @@ fn match_outcome_name(outcome: MatchOutcome) -> &'static str {
         MatchOutcome::InProgress => "in_progress",
         MatchOutcome::Victory => "victory",
         MatchOutcome::Defeat => "defeat",
+        MatchOutcome::Draw => "draw",
     }
 }
 
@@ -2555,29 +2556,35 @@ mod tests {
         };
         use bevy::prelude::*;
 
-        let mut app = App::new();
-        app.init_resource::<BrushSelection>()
-            .insert_resource(MatchOutcome::Victory);
-        let (control, plugin) = AgentControlCorePlugin::channel(4);
-        app.add_plugins(plugin);
+        for outcome in [
+            MatchOutcome::Victory,
+            MatchOutcome::Defeat,
+            MatchOutcome::Draw,
+        ] {
+            let mut app = App::new();
+            app.init_resource::<BrushSelection>()
+                .insert_resource(outcome);
+            let (control, plugin) = AgentControlCorePlugin::channel(4);
+            app.add_plugins(plugin);
 
-        let response = control
-            .submit(AgentRequest {
-                id: RequestId::Number(19),
-                command: AgentCommand::IntentSelect {
-                    intent: ProtocolIntent::Defend,
-                },
-            })
-            .unwrap();
-        app.update();
-        let response = response.recv().unwrap();
+            let response = control
+                .submit(AgentRequest {
+                    id: RequestId::Number(19),
+                    command: AgentCommand::IntentSelect {
+                        intent: ProtocolIntent::Defend,
+                    },
+                })
+                .unwrap();
+            app.update();
+            let response = response.recv().unwrap();
 
-        assert!(!response.ok);
-        assert_eq!(response.error.unwrap().code, "match_finished");
-        assert_eq!(
-            app.world().resource::<BrushSelection>().kind,
-            IntentKind::Gather
-        );
+            assert!(!response.ok);
+            assert_eq!(response.error.unwrap().code, "match_finished");
+            assert_eq!(
+                app.world().resource::<BrushSelection>().kind,
+                IntentKind::Gather
+            );
+        }
     }
 
     #[test]
@@ -2596,7 +2603,7 @@ mod tests {
 
         assert!(response.ok);
         let result = response.result.unwrap();
-        assert_eq!(result["protocol_version"], 2);
+        assert_eq!(result["protocol_version"], 3);
         assert!(
             result["methods"]
                 .as_array()
@@ -2843,8 +2850,8 @@ mod tests {
             MainCamera,
             fly_camera::CameraZoom2d,
             nanobot::{
-                Health, MatchOutcome, Nanobot, NanobotType, OwnerSwarm, ProductionCollapseState,
-                ProductionFacility, Swarm, SwarmId, SwarmMember,
+                Health, MatchOutcome, Nanobot, NanobotType, OwnerSwarm, ProductionFacility, Swarm,
+                SwarmEliminationState, SwarmId, SwarmMember,
             },
             resources::{ResourceKind, ResourceLedger},
         };
@@ -2855,9 +2862,9 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(ledger)
             .insert_resource(MatchOutcome::Victory)
-            .insert_resource(ProductionCollapseState {
-                player_collapsed: false,
-                opponent_collapsed: true,
+            .insert_resource(SwarmEliminationState {
+                player_eliminated: false,
+                opponent_eliminated: true,
             });
         app.world_mut().spawn((
             MainCamera,
@@ -2905,7 +2912,16 @@ mod tests {
         );
         assert!(state.get("production_priority").is_none());
         assert_eq!(state["match"]["outcome"], "victory");
-        assert_eq!(state["match"]["opponent_collapsed"], true);
+        assert_eq!(
+            state["match"],
+            serde_json::json!({
+                "outcome": "victory",
+                "player_eliminated": false,
+                "opponent_eliminated": true,
+            })
+        );
+        assert_eq!(state["swarms"][0]["eliminated"], false);
+        assert!(state["swarms"][0].get("collapsed").is_none());
         assert_eq!(state["swarms"][0]["id"], 0);
         assert_eq!(state["swarms"][0]["population"]["worker"], 1);
         assert_eq!(state["swarms"][0]["minerals"], 37);
@@ -3239,7 +3255,7 @@ mod tests {
         assert_eq!(response["ok"], true);
         assert!(response["frame"].is_u64());
         assert!(response["fixed_tick"].is_u64());
-        assert_eq!(response["result"]["protocol_version"], 2);
+        assert_eq!(response["result"]["protocol_version"], 3);
 
         drop(app);
         remove_control_socket_test_directory(&directory);

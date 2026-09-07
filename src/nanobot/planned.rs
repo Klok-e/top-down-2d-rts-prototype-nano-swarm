@@ -125,8 +125,6 @@ pub const fn completed_visual_color() -> Color {
 }
 
 /// Build-painted cells where a consumer may place its local Sink Stockpile.
-/// Both planning and collapse recovery use this helper so ownership and
-/// consumer-local topology cannot diverge.
 pub(crate) fn sink_stockpile_zone_cells(
     grid: &IntentGrid,
     consumer_cell: IVec2,

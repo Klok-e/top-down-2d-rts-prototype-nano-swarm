@@ -168,23 +168,13 @@ impl WorkAccess<'_, '_> {
         }
     }
 
-    pub(crate) fn between(
-        &self,
-        swarm: SwarmId,
-        source: InteractionRegion,
-        destination: InteractionRegion,
-    ) -> WorkReachability {
-        self.haul_chain(swarm, source, destination, false)
-    }
-
     fn haul_chain(
         &self,
         swarm: SwarmId,
         source: InteractionRegion,
         destination: InteractionRegion,
-        include_production: bool,
     ) -> WorkReachability {
-        let starts = self.starts(swarm, NanobotType::Hauler, include_production);
+        let starts = self.starts(swarm, NanobotType::Hauler, true);
         if starts.is_empty() {
             return WorkReachability::Pending;
         }
@@ -221,7 +211,7 @@ impl WorkAccess<'_, '_> {
             let Some(destination) = self.region(sink) else {
                 return WorkReachability::Unreachable;
             };
-            return self.haul_chain(swarm, region, destination, true);
+            return self.haul_chain(swarm, region, destination);
         }
         self.crew(swarm, kind, region, true)
     }

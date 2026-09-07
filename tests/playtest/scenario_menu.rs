@@ -288,7 +288,7 @@ fn completed_match_still_allows_menu_selection_and_quit_through_agent_buttons() 
     };
     let directory = SettingsDirectory::new();
     let mut app = menu_app(ScenarioSelection::load(directory.path()));
-    app.insert_resource(MatchOutcome::Defeat);
+    app.insert_resource(MatchOutcome::Draw);
     let (control, plugin) = AgentControlCorePlugin::channel(4);
     app.add_plugins(plugin);
     for (id, button) in [
@@ -316,10 +316,7 @@ fn completed_match_still_allows_menu_selection_and_quit_through_agent_buttons() 
         ScenarioSelection::load(directory.path()).current,
         Scenario::Sandbox
     );
-    assert_eq!(
-        *app.world().resource::<MatchOutcome>(),
-        MatchOutcome::Defeat
-    );
+    assert_eq!(*app.world().resource::<MatchOutcome>(), MatchOutcome::Draw);
     assert!(
         app.world()
             .resource::<Messages<AppExit>>()

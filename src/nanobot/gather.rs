@@ -385,28 +385,6 @@ pub(crate) fn has_any_near_source_stockpile(
         .any(|pos| pos.distance(deposit_pos) <= SOURCE_STOCKPILE_PROXIMITY_RADIUS)
 }
 
-/// Find the Source Stockpile candidate accepted by the Gather planner for one
-/// deposit and swarm. Collapse recovery shares this helper so painted Gather
-/// work counts only when the physical Source leg can exist.
-pub(crate) fn find_source_stockpile_placement_for_demand(
-    deposit: &ResourceDeposit,
-    deposit_pos: Vec2,
-    demand_swarm: SwarmId,
-    grid: &IntentGrid,
-    obstacles: &[Obstacle],
-    swarm_origin: Option<Vec2>,
-) -> Option<Vec2> {
-    find_source_stockpile_placement_for_demand_accepting(
-        deposit,
-        deposit_pos,
-        demand_swarm,
-        grid,
-        obstacles,
-        swarm_origin,
-        |_| true,
-    )
-}
-
 fn find_source_stockpile_placement_for_demand_accepting(
     deposit: &ResourceDeposit,
     deposit_pos: Vec2,

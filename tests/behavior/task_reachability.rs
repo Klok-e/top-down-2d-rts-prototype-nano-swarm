@@ -65,55 +65,6 @@ fn unreachable_work_stops_population_demand_and_reopening_restores_it() {
 }
 
 #[test]
-fn pending_recovery_waits_but_proven_disconnected_material_causes_collapse() {
-    use top_down_2d_rts_prototype_nano_swarm::nanobot::{OwnerSwarm, ProductionCollapseState};
-    let mut app = common::sim_app_with_collapse();
-    app.insert_resource(IntentGrid::new(2, 2));
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        IVec2::ZERO,
-        IntentKind::Build,
-        SwarmId::PLAYER,
-    );
-    let swarm = common::spawn_swarm_at(&mut app, Vec2::new(-200.0, 100.0));
-    common::spawn_worker_at(&mut app, Vec2::new(-200.0, 100.0));
-    common::spawn_hauler_at(&mut app, Vec2::new(-200.0, 150.0));
-    let material = common::spawn_sink_stockpile(&mut app, Vec2::new(-200.0, -100.0), 50, 100);
-    app.world_mut()
-        .entity_mut(material)
-        .insert(OwnerSwarm(swarm));
-    let facility = common::spawn_facility_at(&mut app, swarm, Vec2::new(200.0, 100.0));
-    app.world_mut()
-        .get_mut::<top_down_2d_rts_prototype_nano_swarm::nanobot::ProductionFacility>(facility)
-        .unwrap()
-        .input_amount = 0;
-    let wall = common::spawn_structure_at(&mut app, Vec2::ZERO);
-    app.world_mut().get_mut::<Transform>(wall).unwrap().scale = Vec3::new(1.0, 40.0, 1.0);
-    app.world_mut().resource_mut::<NavigationBudget>().0 = 0;
-    for _ in 0..5 {
-        app.update();
-    }
-    assert!(
-        !app.world()
-            .resource::<ProductionCollapseState>()
-            .player_collapsed,
-        "navigation delay cannot conclude the match"
-    );
-    app.world_mut().resource_mut::<NavigationBudget>().0 = 32_768;
-    for _ in 0..60 {
-        app.update();
-    }
-    assert!(
-        app.world()
-            .resource::<ProductionCollapseState>()
-            .player_collapsed,
-        "material isolated from production is not a recovery path: {:?}",
-        app.world()
-            .resource::<top_down_2d_rts_prototype_nano_swarm::navigation::Navigation>()
-            .work()
-    );
-}
-
-#[test]
 fn reachable_haul_is_assigned_while_another_destination_search_is_pending() {
     use top_down_2d_rts_prototype_nano_swarm::{
         nanobot::{HaulerAssignment, InteractionRegion, OwnerSwarm, ProductionFacility},

@@ -1,15 +1,16 @@
 //! Full-app visual evidence for the default skirmish and
-//! visible Production Collapse result.
+//! visible Swarm Elimination result.
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Nanobot, OpponentSwarm, OwnerSwarm, ProductionCollapseState, ProductionFacility, Swarm,
+        Charger, MatchOutcome, Nanobot, OpponentSwarm, OwnerSwarm, ProductionFacility, Swarm,
         SwarmId, SwarmMember,
     },
+    resources::Stockpile,
     scenario::{OPPONENT_BUILD_FLANK_CELL, OPPONENT_CELL, OPPONENT_DEFEND_CELL},
-    ui::collapse_banner::CollapseBannerRoot,
+    ui::match_banner::MatchBannerRoot,
 };
 
 use crate::harness::{TestContext, TestFlow};
@@ -54,13 +55,13 @@ pub fn opponent_gameplay_loop(ctx: &mut TestContext) -> TestFlow {
             .iter(ctx.world)
             .filter_map(|(entity, member)| (member.0 == opponent_id).then_some(entity))
             .collect::<Vec<_>>();
-        let opponent_facilities = ctx
+        let opponent_structures = ctx
             .world
-            .query_filtered::<(Entity, &OwnerSwarm), With<ProductionFacility>>()
+            .query_filtered::<(Entity, &OwnerSwarm), Or<(With<ProductionFacility>, With<Stockpile>, With<Charger>)>>()
             .iter(ctx.world)
             .filter_map(|(entity, owner)| (owner.0 == opponent_entity).then_some(entity))
             .collect::<Vec<_>>();
-        for entity in opponent_nanobots.into_iter().chain(opponent_facilities) {
+        for entity in opponent_nanobots.into_iter().chain(opponent_structures) {
             ctx.world.despawn(entity);
         }
         {
@@ -72,14 +73,14 @@ pub fn opponent_gameplay_loop(ctx: &mut TestContext) -> TestFlow {
         return TestFlow::Screenshot("opponent_gameplay_victory".to_string());
     }
 
-    let state = ctx.world.resource::<ProductionCollapseState>();
-    assert!(
-        state.player_won(),
+    assert_eq!(
+        *ctx.world.resource::<MatchOutcome>(),
+        MatchOutcome::Victory,
         "scripted terminal state must be a victory"
     );
     let banner_visible = ctx
         .world
-        .query_filtered::<&Visibility, With<CollapseBannerRoot>>()
+        .query_filtered::<&Visibility, With<MatchBannerRoot>>()
         .iter(ctx.world)
         .any(|visibility| *visibility == Visibility::Visible);
     assert!(banner_visible, "victory banner must be visible");
