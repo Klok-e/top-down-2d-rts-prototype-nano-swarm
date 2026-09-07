@@ -126,3 +126,6 @@ mod rock_terrain;
 
 #[path = "behavior/deposit_presentation.rs"]
 mod deposit_presentation;
+
+#[path = "behavior/scenario_selection.rs"]
+mod scenario_selection;

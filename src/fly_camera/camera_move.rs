@@ -92,7 +92,14 @@ pub fn camera_2d_movement_system(
     time: Res<Time>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut query: Query<(&mut FlyCamera2d, &mut Transform, Option<&Projection>)>,
+    menu: Option<Res<crate::ui::scenario_menu::ScenarioMenu>>,
 ) {
+    if menu.is_some_and(|menu| menu.blocks_world_input) {
+        for (mut options, _, _) in &mut query {
+            options.velocity = Vec2::ZERO;
+        }
+        return;
+    }
     for (mut options, mut transform, ortho) in query.iter_mut() {
         let (axis_h, axis_v) = if options.enabled {
             (

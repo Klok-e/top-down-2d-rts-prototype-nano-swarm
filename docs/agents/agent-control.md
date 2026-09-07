@@ -33,6 +33,9 @@ python scripts/nano_swarm_control.py hello
 python scripts/nano_swarm_control.py state
 python scripts/nano_swarm_control.py state --cell-offset 10000 --cell-limit 10000 --map-revision 42
 python scripts/nano_swarm_control.py button intent.defend
+python scripts/nano_swarm_control.py button menu.open
+python scripts/nano_swarm_control.py button menu.sandbox
+python scripts/nano_swarm_control.py button menu.resume
 python scripts/nano_swarm_control.py select defend
 python scripts/nano_swarm_control.py paint defend 2 0
 python scripts/nano_swarm_control.py erase defend 2 0
@@ -149,3 +152,5 @@ The socket worker polls a nonblocking listener and performs bounded blocking cli
 `screenshot_failed`: inspect GPU adapter diagnostics in the game log. Headless mode requires a working Bevy/wgpu adapter but never falls back to a desktop window.
 
 `match_finished`: use `state`, `camera`, or `screenshot` to inspect the terminal state, then `shutdown`; start a new process for more player actions.
+
+Menu buttons are `menu.open`, `menu.resume`, `menu.standard`, `menu.sandbox`, and `menu.quit`. Menu actions use the real UI buttons and remain available after a match finishes; controls inside the menu require it to be open. While the menu is open, world input commands (including camera commands) return `menu_open`. Use frame waits rather than fixed-tick waits while paused. `state.get` includes `scenario` with `current`, `next_launch`, `save_error`, and `menu_open`. The runtime reads the next-launch preference from `$XDG_CONFIG_HOME/nano-swarm/scenario.json`, or `$HOME/.config/nano-swarm/scenario.json` when XDG_CONFIG_HOME is unavailable; automated runtime checks should use an isolated configuration directory.

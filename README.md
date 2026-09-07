@@ -34,6 +34,8 @@ Run the normal windowed game:
 cargo run
 ```
 
+Press **ESC** to pause and open the scenario menu. Choose **Standard** for the opponent match or **Sandbox** for open-ended play without an opponent. The choice saves immediately and starts fresh on the next application launch; **Resume** or ESC returns to the current session. **Quit to desktop** exits the game.
+
 Run with GPU-backed offscreen rendering and no desktop window:
 
 ```bash

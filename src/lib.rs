@@ -13,6 +13,7 @@ pub mod physical_world;
 pub mod resources;
 pub mod runtime;
 pub mod scenario;
+pub mod scenario_selection;
 pub mod spatial;
 pub mod structure_overlay;
 pub mod structure_sprites;
@@ -158,6 +159,7 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
         .add_plugins(deposit_presentation::DepositPresentationPlugin)
         // must be before NanobotPlugin because otherwise it receives events with despawned entities
         .add_plugins(NanoswarmUiSetupPlugin)
+        .add_plugins(ui::scenario_menu::ScenarioMenuPlugin)
         // must be before NanobotPlugin because otherwise it receives events with despawned entities
         .add_plugins(ZonesPlugin::default())
         .add_plugins(NanobotPlugin::default())
@@ -313,6 +315,7 @@ fn setup_things_startup(
     mut grid: ResMut<IntentGrid>,
     opponent_id_alloc: ResMut<nanobot::OpponentSwarmIdAlloc>,
     presentation_target: Res<PresentationTarget>,
+    selection: Res<scenario_selection::ScenarioSelection>,
 ) -> Result<()> {
     let handle = zone_mats.add(ZoneMaterial::new(MAP_WIDTH, MAP_HEIGHT, &mut buffers));
     let is_offscreen = presentation_target.0.is_some();
@@ -350,12 +353,16 @@ fn setup_things_startup(
 
     scenario::spawn_default_terrain(&mut commands);
     scenario::spawn_default_player_scenario(&mut commands, &asset_server, &mut grid);
-    scenario::spawn_default_opponent_scenario(
-        &mut commands,
-        &asset_server,
-        &mut grid,
-        opponent_id_alloc,
-    );
+    if selection.current == scenario_selection::Scenario::Standard {
+        scenario::spawn_default_opponent_scenario(
+            &mut commands,
+            &asset_server,
+            &mut grid,
+            opponent_id_alloc,
+        );
+    } else {
+        scenario::spawn_sandbox_resources(&mut commands);
+    }
 
     // background
     commands.spawn((

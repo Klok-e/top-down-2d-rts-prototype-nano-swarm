@@ -192,6 +192,7 @@ pub fn apply_player_intent(
 /// resource for the layer currently selected in [`BrushSelection`]. The
 /// simulation owns the grid; the GPU zone material is a downstream mirror of
 /// the resource, updated by [`mirror_intent_to_zone_material_system`].
+#[allow(clippy::too_many_arguments)]
 pub fn zone_brush_system(
     windows: Query<&Window>,
     mouse_button_input: Res<ButtonInput<MouseButton>>,
@@ -200,7 +201,11 @@ pub fn zone_brush_system(
     outcome: Option<Res<MatchOutcome>>,
     camera_query: Query<(&GlobalTransform, &Camera)>,
     mut intent_grid: ResMut<IntentGrid>,
+    menu: Option<Res<crate::ui::scenario_menu::ScenarioMenu>>,
 ) {
+    if menu.is_some_and(|menu| menu.blocks_world_input) {
+        return;
+    }
     if outcome
         .as_deref()
         .is_some_and(|outcome| *outcome != MatchOutcome::InProgress)

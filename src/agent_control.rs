@@ -1,3 +1,5 @@
+use crate::scenario_selection::{Scenario, ScenarioSelection};
+use crate::ui::scenario_menu::{MenuAction, MenuInputSet, ScenarioMenu};
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -100,6 +102,16 @@ pub enum ProtocolButton {
     IntentDefend,
     #[serde(rename = "intent.corridor")]
     IntentCorridor,
+    #[serde(rename = "menu.open")]
+    MenuOpen,
+    #[serde(rename = "menu.resume")]
+    MenuResume,
+    #[serde(rename = "menu.standard")]
+    MenuStandard,
+    #[serde(rename = "menu.sandbox")]
+    MenuSandbox,
+    #[serde(rename = "menu.quit")]
+    MenuQuit,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -143,10 +155,9 @@ pub enum AgentCommand {
 
 impl AgentCommand {
     fn is_player_action(&self) -> bool {
-        matches!(
-            self,
-            Self::ButtonPress { .. } | Self::IntentSelect { .. } | Self::MapApply { .. }
-        )
+        matches!(self, Self::IntentSelect { .. } | Self::MapApply { .. })
+            || matches!(self, Self::ButtonPress { button } if button.menu_action().is_none()
+            )
     }
 }
 
@@ -953,7 +964,9 @@ impl Plugin for AgentControlCorePlugin {
                     process_agent_requests,
                 )
                     .chain()
-                    .after(bevy::ui::UiSystems::Focus),
+                    .after(bevy::ui::UiSystems::Focus)
+                    .after(MenuInputSet::Keyboard)
+                    .before(MenuInputSet::Actions),
             )
             .add_systems(FixedLast, advance_agent_fixed_tick)
             .add_systems(
@@ -1078,6 +1091,22 @@ fn execute_agent_command(
     request: AgentRequest,
     clock: AgentControlClock,
 ) -> AgentResponse {
+    if (request.command.is_player_action()
+        || matches!(
+            request.command,
+            AgentCommand::CameraSet { .. } | AgentCommand::CameraPan { .. }
+        ))
+        && world
+            .get_resource::<ScenarioMenu>()
+            .is_some_and(|menu| menu.blocks_world_input)
+    {
+        return AgentResponse::failure(
+            request.id,
+            clock,
+            "menu_open",
+            "world controls are blocked by the menu",
+        );
+    }
     if request.command.is_player_action()
         && world
             .get_resource::<MatchOutcome>()
@@ -1114,7 +1143,40 @@ fn execute_agent_command(
             }
         },
         AgentCommand::ButtonPress { button } => {
-            let kind = button.into();
+            if let Some(action) = button.menu_action() {
+                if action != MenuAction::Open
+                    && !world
+                        .get_resource::<ScenarioMenu>()
+                        .is_some_and(|menu| menu.open)
+                {
+                    return AgentResponse::failure(
+                        request.id,
+                        clock,
+                        "button_unavailable",
+                        "open the menu first",
+                    );
+                }
+                let entity = world
+                    .query::<(Entity, &MenuAction)>()
+                    .iter(world)
+                    .find_map(|(entity, marker)| (*marker == action).then_some(entity));
+                let Some(entity) = entity else {
+                    return AgentResponse::failure(
+                        request.id,
+                        clock,
+                        "button_unavailable",
+                        "requested UI button is unavailable",
+                    );
+                };
+                world.entity_mut(entity).insert(Interaction::Pressed);
+                world.resource_mut::<PendingButtonReleases>().0.push(entity);
+                return AgentResponse::success(
+                    request.id,
+                    clock,
+                    serde_json::json!({ "button": button }),
+                );
+            }
+            let kind = button.intent().expect("intent button");
             let candidates = {
                 let mut buttons = world.query::<(Entity, &IntentLayerButton)>();
                 buttons
@@ -1509,7 +1571,12 @@ fn collect_agent_state(
         })
         .collect::<Vec<_>>();
 
+    let scenario = world.get_resource::<ScenarioSelection>().map(|selection| serde_json::json!({
+        "current": selection.current, "next_launch": selection.next_launch, "save_error": selection.error,
+        "menu_open": world.get_resource::<ScenarioMenu>().is_some_and(|menu| menu.open),
+    }));
     Ok(serde_json::json!({
+        "scenario": scenario,
         "selected_intent": selected_intent,
         "map": map,
         "camera": camera,
@@ -1850,14 +1917,25 @@ impl From<ProtocolMapAction> for PlayerIntentAction {
     }
 }
 
-impl From<ProtocolButton> for IntentKind {
-    fn from(button: ProtocolButton) -> Self {
-        match button {
-            ProtocolButton::IntentGather => Self::Gather,
-            ProtocolButton::IntentBuild => Self::Build,
-            ProtocolButton::IntentDefend => Self::Defend,
-            ProtocolButton::IntentCorridor => Self::Corridor,
-        }
+impl ProtocolButton {
+    fn intent(self) -> Option<IntentKind> {
+        Some(match self {
+            Self::IntentGather => IntentKind::Gather,
+            Self::IntentBuild => IntentKind::Build,
+            Self::IntentDefend => IntentKind::Defend,
+            Self::IntentCorridor => IntentKind::Corridor,
+            _ => return None,
+        })
+    }
+    fn menu_action(self) -> Option<MenuAction> {
+        Some(match self {
+            Self::MenuOpen => MenuAction::Open,
+            Self::MenuResume => MenuAction::Resume,
+            Self::MenuStandard => MenuAction::Select(Scenario::Standard),
+            Self::MenuSandbox => MenuAction::Select(Scenario::Sandbox),
+            Self::MenuQuit => MenuAction::Quit,
+            _ => return None,
+        })
     }
 }
 

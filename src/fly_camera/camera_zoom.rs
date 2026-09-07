@@ -1,6 +1,6 @@
 use bevy::{
     input::mouse::{MouseScrollUnit, MouseWheel},
-    prelude::{Component, MessageReader, Projection, Query},
+    prelude::{Component, MessageReader, Projection, Query, Res},
 };
 
 #[derive(Default, Component)]
@@ -16,7 +16,12 @@ pub struct CameraZoom2d {
 pub fn camera_2d_zoom_system(
     mut mouse_wheel_event_reader: MessageReader<MouseWheel>,
     mut query: Query<(&mut CameraZoom2d, &mut Projection)>,
+    menu: Option<Res<crate::ui::scenario_menu::ScenarioMenu>>,
 ) {
+    if menu.is_some_and(|menu| menu.blocks_world_input) {
+        mouse_wheel_event_reader.clear();
+        return;
+    }
     for (mut zoom, mut projection) in query.iter_mut() {
         for event in mouse_wheel_event_reader.read() {
             let dynamic_zoom_speed = zoom.zoom_speed * zoom.zoom;

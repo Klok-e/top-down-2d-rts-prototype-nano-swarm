@@ -36,3 +36,6 @@ mod construction_cancellation;
 
 #[path = "playtest/default_map.rs"]
 mod default_map;
+
+#[path = "playtest/scenario_menu.rs"]
+mod scenario_menu;
