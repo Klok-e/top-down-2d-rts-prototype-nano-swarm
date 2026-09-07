@@ -25,11 +25,13 @@ pub fn update_paint_grid(
     cameras: Query<(&Camera, &GlobalTransform)>,
     ui: Res<crate::ui::UiHandling>,
     outcome: Option<Res<crate::nanobot::MatchOutcome>>,
+    menu: Option<Res<crate::ui::scenario_menu::ScenarioMenu>>,
 ) {
     let Some(mut materials) = materials else {
         return;
     };
-    let active = !ui.is_pointer_over_ui
+    let active = !menu.is_some_and(|menu| menu.blocks_world_input)
+        && !ui.is_pointer_over_ui
         && outcome
             .as_deref()
             .is_none_or(|outcome| *outcome == crate::nanobot::MatchOutcome::InProgress)

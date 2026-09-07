@@ -130,6 +130,11 @@ pub fn spawn_default_player_scenario(
     spawn_production_facility(commands, swarm, facility_pos, &facility_texture);
 }
 
+/// Preserve the opponent-side deposit when the map has no opponent swarm.
+pub fn spawn_sandbox_resources(commands: &mut Commands<'_, '_>) {
+    spawn_deposit(commands, None, cell_origin(OPPONENT_DEPOSIT_CELL));
+}
+
 pub fn spawn_default_opponent_scenario(
     commands: &mut Commands<'_, '_>,
     asset_server: &Res<'_, AssetServer>,

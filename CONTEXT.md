@@ -4,6 +4,10 @@ Nano Swarm is a top-down RTS prototype about steering a population of autonomous
 
 ## Language
 
+**Scenario**:
+A complete starting setup defining terrain, Resource Deposits, starting swarms, opponent behavior, and match outcome rules. Standard pairs the player with an advancing Opponent Swarm and uses Production Collapse outcomes; Sandbox uses the same map and player start without an opponent or victory and defeat conditions.
+_Avoid_: Saved game, map only
+
 **Swarm**:
 The full player-controlled population of nanobots. It has no fixed subgroups; player intent is expressed through zones and tasks that eligible nanobots self-assign to.
 _Avoid_: Group, squad, unit group

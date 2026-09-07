@@ -594,6 +594,7 @@ impl Plugin for CollapsePlugin {
             .add_systems(
                 FixedUpdate,
                 production_collapse_detection_system
+                    .run_if(scenario_has_outcomes)
                     .after(crate::nanobot::production::production_facility_work_system)
                     .after(crate::nanobot::gather::source_stockpile_demand_system)
                     .after(crate::nanobot::planned::sink_stockpile_demand_system)
@@ -601,9 +602,18 @@ impl Plugin for CollapsePlugin {
             )
             .add_systems(
                 FixedUpdate,
-                match_outcome_latch_system.after(production_collapse_detection_system),
+                match_outcome_latch_system
+                    .after(production_collapse_detection_system)
+                    .run_if(scenario_has_outcomes),
             );
     }
+}
+
+fn scenario_has_outcomes(
+    selection: Option<Res<crate::scenario_selection::ScenarioSelection>>,
+) -> bool {
+    selection
+        .is_none_or(|selection| selection.current == crate::scenario_selection::Scenario::Standard)
 }
 
 #[cfg(test)]

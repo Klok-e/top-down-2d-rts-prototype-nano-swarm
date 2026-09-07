@@ -3,6 +3,7 @@ pub mod collapse_banner;
 pub mod consts;
 mod fps_count;
 pub mod intent_layer_panel;
+pub mod scenario_menu;
 mod status_panel;
 mod ui_interaction_system;
 mod ui_setup;

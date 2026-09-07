@@ -182,6 +182,7 @@ pub fn build_runtime_app(options: RuntimeOptions) -> Result<App, RuntimeBuildErr
     } else {
         build_app()
     };
+    app.insert_resource(crate::scenario_selection::ScenarioSelection::from_environment());
     #[cfg(unix)]
     if options.agent_socket {
         app.add_plugins(AgentControlPlugin::bind(

@@ -388,7 +388,11 @@ pub fn brush_key_for_kind(kind: IntentKind) -> Option<KeyCode> {
 pub fn brush_selection_keyboard_system(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut brush_selection: ResMut<BrushSelection>,
+    menu: Option<Res<crate::ui::scenario_menu::ScenarioMenu>>,
 ) {
+    if menu.is_some_and(|menu| menu.blocks_world_input) {
+        return;
+    }
     for &(main, numpad, kind) in BRUSH_KEY_BINDINGS {
         if keyboard_input.just_pressed(main) || keyboard_input.just_pressed(numpad) {
             brush_selection.kind = kind;

@@ -46,6 +46,7 @@ mod physical_logistics;
 mod production_exits;
 mod regional_allocation;
 mod route_recovery;
+mod scenario_menu;
 mod shared_navigation;
 mod smoke;
 mod world_space_nanobots;
@@ -78,6 +79,7 @@ fn main() -> std::process::ExitCode {
     // Each test is ignored so default run skips GPU setup. `--ignored` runs
     // only ignored tests, matching standard `cargo test` convention.
     let tests = vec![
+        Trial::test("scenario_menu", || run(scenario_menu::scenario_menu)).with_ignored_flag(true),
         Trial::test("approach_delivery", || {
             run(approach_delivery::approach_delivery)
         })

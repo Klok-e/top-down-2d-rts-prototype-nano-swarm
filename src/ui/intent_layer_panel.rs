@@ -188,7 +188,11 @@ pub fn intent_layer_button_click_system(
         (Changed<Interaction>, With<Button>),
     >,
     children_query: Query<&Children>,
+    menu: Option<Res<crate::ui::scenario_menu::ScenarioMenu>>,
 ) {
+    if menu.is_some_and(|menu| menu.blocks_world_input) {
+        return;
+    }
     let Ok(panel_root) = panel_root_query.single() else {
         return;
     };
