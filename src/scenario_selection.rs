@@ -14,6 +14,7 @@ pub enum Scenario {
     #[default]
     Standard,
     Sandbox,
+    AiBattle,
 }
 
 impl Scenario {
@@ -21,6 +22,7 @@ impl Scenario {
         match self {
             Self::Standard => "Standard",
             Self::Sandbox => "Sandbox",
+            Self::AiBattle => "AI Battle",
         }
     }
 }

@@ -15,6 +15,7 @@ use crate::{
     ZONE_BLOCK_SIZE,
     intent::{BrushSelection, IntentCell, IntentGrid, IntentKind},
     nanobot::{MatchOutcome, SwarmId},
+    session::SessionRules,
     ui::UiHandling,
 };
 
@@ -161,6 +162,8 @@ pub enum PlayerIntentAction {
 pub enum PlayerIntentError {
     #[error("the match is already complete")]
     MatchFinished,
+    #[error("this session is spectator-only; swarms control their own intent")]
+    SpectatorOnly,
     #[error("intent cell is outside the map")]
     OutOfBounds,
 }
@@ -170,10 +173,12 @@ pub enum PlayerIntentError {
 pub fn apply_player_intent(
     intent_grid: &mut IntentGrid,
     outcome: MatchOutcome,
+    rules: SessionRules,
     cell: IVec2,
     kind: IntentKind,
     action: PlayerIntentAction,
 ) -> Result<bool, PlayerIntentError> {
+    let owner = rules.player_swarm.ok_or(PlayerIntentError::SpectatorOnly)?;
     if outcome != MatchOutcome::InProgress {
         return Err(PlayerIntentError::MatchFinished);
     }
@@ -182,8 +187,8 @@ pub fn apply_player_intent(
         .cloned()
         .ok_or(PlayerIntentError::OutOfBounds)?;
     match action {
-        PlayerIntentAction::Paint => intent_grid.paint(cell, kind, SwarmId::PLAYER),
-        PlayerIntentAction::Erase => intent_grid.erase(cell, kind, SwarmId::PLAYER),
+        PlayerIntentAction::Paint => intent_grid.paint(cell, kind, owner),
+        PlayerIntentAction::Erase => intent_grid.erase(cell, kind, owner),
     };
     Ok(before != *intent_grid.cell(cell).expect("validated intent cell"))
 }
@@ -202,6 +207,7 @@ pub fn zone_brush_system(
     camera_query: Query<(&GlobalTransform, &Camera)>,
     mut intent_grid: ResMut<IntentGrid>,
     menu: Option<Res<crate::ui::scenario_menu::ScenarioMenu>>,
+    rules: Res<SessionRules>,
 ) {
     if menu.is_some_and(|menu| menu.blocks_world_input) {
         return;
@@ -243,6 +249,7 @@ pub fn zone_brush_system(
     let _ = apply_player_intent(
         &mut intent_grid,
         outcome.as_deref().copied().unwrap_or_default(),
+        *rules,
         get_zone_pos_from_world(cursor_pos_world),
         brush_selection.kind,
         action,
@@ -398,6 +405,7 @@ mod tests {
                 apply_player_intent(
                     &mut grid,
                     MatchOutcome::InProgress,
+                    SessionRules::default(),
                     cell,
                     kind,
                     PlayerIntentAction::Erase
@@ -408,6 +416,7 @@ mod tests {
                 apply_player_intent(
                     &mut grid,
                     MatchOutcome::InProgress,
+                    SessionRules::default(),
                     cell,
                     kind,
                     PlayerIntentAction::Paint
@@ -420,6 +429,7 @@ mod tests {
                 apply_player_intent(
                     &mut grid,
                     MatchOutcome::InProgress,
+                    SessionRules::default(),
                     cell,
                     kind,
                     PlayerIntentAction::Paint
@@ -430,6 +440,7 @@ mod tests {
                 apply_player_intent(
                     &mut grid,
                     MatchOutcome::InProgress,
+                    SessionRules::default(),
                     cell,
                     kind,
                     PlayerIntentAction::Erase

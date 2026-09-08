@@ -1,6 +1,7 @@
 //! End-of-tick Swarm Elimination and permanent match outcomes.
 
 use bevy::prelude::*;
+use std::collections::BTreeSet;
 
 use crate::resources::Stockpile;
 
@@ -9,11 +10,16 @@ use super::{
     SwarmMember, nanobot_death_cleanup_system,
 };
 
-/// Current elimination flags for the two sides of a Standard match.
-#[derive(Debug, Default, Resource, Clone, Copy)]
+/// Current elimination set for all participating swarms.
+#[derive(Debug, Default, Resource, Clone, PartialEq, Eq)]
 pub struct SwarmEliminationState {
-    pub player_eliminated: bool,
-    pub opponent_eliminated: bool,
+    pub eliminated: BTreeSet<SwarmId>,
+}
+
+impl SwarmEliminationState {
+    pub fn is_eliminated(&self, id: SwarmId) -> bool {
+        self.eliminated.contains(&id)
+    }
 }
 
 /// The first terminal result remains permanent even if simulation continues.
@@ -21,8 +27,7 @@ pub struct SwarmEliminationState {
 pub enum MatchOutcome {
     #[default]
     InProgress,
-    Victory,
-    Defeat,
+    Winner(SwarmId),
     Draw,
 }
 
@@ -40,25 +45,34 @@ fn detect_swarm_elimination(
     mut state: ResMut<SwarmEliminationState>,
     mut outcome: ResMut<MatchOutcome>,
 ) {
-    *state = SwarmEliminationState::default();
+    state.eliminated.clear();
+    let mut living = 0;
+    let mut participating = 0;
+    let mut winner = None;
     for (entity, id) in &swarms {
+        participating += 1;
         let eliminated = !nanobots.iter().any(|member| member.0 == *id)
             && !structures.iter().any(|owner| owner.0 == entity);
-        if id.is_player() {
-            state.player_eliminated = eliminated;
+        if eliminated {
+            state.eliminated.insert(*id);
         } else {
-            state.opponent_eliminated = eliminated;
+            living += 1;
+            winner = Some(*id);
         }
     }
     if *outcome == MatchOutcome::InProgress {
-        *outcome = match (state.player_eliminated, state.opponent_eliminated) {
-            (false, false) => MatchOutcome::InProgress,
-            (false, true) => MatchOutcome::Victory,
-            (true, false) => MatchOutcome::Defeat,
-            (true, true) => MatchOutcome::Draw,
+        *outcome = if participating < 2 || living > 1 {
+            MatchOutcome::InProgress
+        } else if living == 1 {
+            MatchOutcome::Winner(winner.expect("living swarm has an id"))
+        } else {
+            MatchOutcome::Draw
         };
     }
 }
+
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SwarmEliminationSet;
 
 pub struct SwarmEliminationPlugin;
 
@@ -66,18 +80,17 @@ impl Plugin for SwarmEliminationPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SwarmEliminationState>()
             .init_resource::<MatchOutcome>()
+            .init_resource::<crate::session::SessionRules>()
             .add_systems(
                 FixedLast,
                 detect_swarm_elimination
+                    .in_set(SwarmEliminationSet)
                     .after(nanobot_death_cleanup_system)
-                    .run_if(scenario_has_outcomes),
+                    .run_if(outcomes_enabled),
             );
     }
 }
 
-fn scenario_has_outcomes(
-    selection: Option<Res<crate::scenario_selection::ScenarioSelection>>,
-) -> bool {
-    selection
-        .is_none_or(|selection| selection.current == crate::scenario_selection::Scenario::Standard)
+fn outcomes_enabled(rules: Res<crate::session::SessionRules>) -> bool {
+    rules.outcomes.enabled()
 }

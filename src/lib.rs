@@ -1,5 +1,6 @@
 pub mod agent_control;
 pub mod ai;
+pub mod battle_statistics;
 pub mod building;
 pub mod deposit_presentation;
 pub mod fly_camera;
@@ -14,6 +15,7 @@ pub mod resources;
 pub mod runtime;
 pub mod scenario;
 pub mod scenario_selection;
+pub mod session;
 pub mod spatial;
 pub mod structure_overlay;
 pub mod structure_sprites;
@@ -150,6 +152,7 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
         }
     };
     app.insert_resource(fixed_simulation_time())
+        .add_plugins(scenario::ScenarioPlugin)
         .insert_resource(virtual_simulation_time())
         .insert_resource(PresentationTarget(target))
         .insert_resource(IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32))
@@ -205,6 +208,7 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
         .add_plugins(ProductionPlugin)
         // Match outcomes observe completed creation and death cleanup each tick.
         .add_plugins(SwarmEliminationPlugin)
+        .add_plugins(battle_statistics::BattleStatisticsPlugin)
         // ChargePlugin settles consumer state after movement and before regional
         // acquisition so rotation releases current allocation immediately.
         .add_plugins(nanobot::ChargePlugin)
@@ -349,18 +353,13 @@ fn setup_things_startup(
     commands.insert_resource(GameSettings::from_file_ron("config/game_settings.ron")?);
     commands.insert_resource(StructureSprites::load(&asset_server));
 
-    scenario::spawn_default_terrain(&mut commands);
-    scenario::spawn_default_player_scenario(&mut commands, &asset_server, &mut grid);
-    if selection.current == scenario_selection::Scenario::Standard {
-        scenario::spawn_default_opponent_scenario(
-            &mut commands,
-            &asset_server,
-            &mut grid,
-            opponent_id_alloc,
-        );
-    } else {
-        scenario::spawn_sandbox_resources(&mut commands);
-    }
+    scenario::spawn_selected_scenario(
+        selection.current,
+        &mut commands,
+        &asset_server,
+        &mut grid,
+        opponent_id_alloc,
+    );
 
     // background
     commands.spawn((

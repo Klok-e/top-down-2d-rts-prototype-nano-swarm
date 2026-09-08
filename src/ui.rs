@@ -35,6 +35,7 @@ pub struct NanoswarmUiSetupPlugin;
 impl Plugin for NanoswarmUiSetupPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(UiHandling::default())
+            .init_resource::<crate::session::SessionRules>()
             .add_plugins(FrameTimeDiagnosticsPlugin::default())
             .add_systems(
                 Startup,

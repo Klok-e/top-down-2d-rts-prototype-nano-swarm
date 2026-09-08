@@ -37,6 +37,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::ai::AiStateComponent;
+use crate::battle_statistics::{BattleCounters, BattleEvent};
 use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::NanobotBundle;
 use crate::nanobot::PlannedStructure;
@@ -410,6 +411,7 @@ pub fn production_facility_pick_target_system(
         )>,
     )>,
     mut ledger: ResMut<ResourceLedger>,
+    mut counters: Option<ResMut<BattleCounters>>,
 ) {
     let mut available_by_swarm = HashMap::<SwarmId, HashMap<NanobotType, u32>>::new();
     for swarm_id in &swarms {
@@ -458,6 +460,9 @@ pub fn production_facility_pick_target_system(
         }
         facility.input_amount -= PRODUCTION_COST_PER_BOT;
         ledger.remove_for(owner_id, facility.input_kind, PRODUCTION_COST_PER_BOT);
+        if let Some(counters) = counters.as_deref_mut() {
+            counters.record(owner_id, BattleEvent::Consumed(PRODUCTION_COST_PER_BOT));
+        }
         facility.current_target = Some(kind);
         facility.progress = 0;
         *counts.entry(kind).or_default() += 1;
@@ -480,6 +485,7 @@ pub fn production_facility_work_system(
     swarms: Query<&SwarmId, With<Swarm>>,
     nanobots: Query<&Transform, With<Nanobot>>,
     physical: crate::physical_world::PhysicalWorld,
+    mut counters: Option<ResMut<BattleCounters>>,
 ) {
     use crate::navigation::{BODY_RADIUS, CELL_WIDTH, Obstacle};
     *tick = tick.saturating_add(1);
@@ -549,6 +555,9 @@ pub fn production_facility_work_system(
             Commitment::Idle,
             Transform::from_translation(position.extend(0.0)),
         ));
+        if let Some(counters) = counters.as_deref_mut() {
+            counters.record(swarm_id, BattleEvent::Birth);
+        }
         occupied.push(position);
         facility.progress = 0;
         facility.finished_at = None;

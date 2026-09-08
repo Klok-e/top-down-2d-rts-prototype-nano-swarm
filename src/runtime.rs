@@ -1,14 +1,20 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use bevy::{
     app::{ScheduleRunnerPlugin, TerminalCtrlCHandlerPlugin},
     log::LogPlugin,
     prelude::*,
+    time::TimeUpdateStrategy,
 };
 
 #[cfg(unix)]
 use crate::agent_control::{AgentControlConfig, AgentControlPlugin, AgentControlServerError};
-use crate::{Presentation, build_app, build_app_with_presentation};
+use crate::{
+    Presentation,
+    battle_statistics::BattleStatisticsConfig,
+    build_app, build_app_with_presentation,
+    scenario_selection::{Scenario, ScenarioSelection},
+};
 
 pub const DEFAULT_HEADLESS_WIDTH: u32 = 1280;
 pub const DEFAULT_HEADLESS_HEIGHT: u32 = 720;
@@ -24,14 +30,22 @@ Options:\n\
     --headless         Render offscreen without creating a desktop window\n\
     --width <PIXELS>   Set headless width (default: 1280, max: 8192)\n\
     --height <PIXELS>  Set headless height (default: 720, max: 8192)\n\
-    -h, --help         Print help\n";
+    --scenario <NAME>  Select standard, sandbox, or ai-battle for this run\n\
+    --output-root <PATH>  Battle results directory (default: target/battle-runs)\n\
+    --seed <INTEGER>   Battle starting seed (default: 0)\n\
+    -h, --help         Print help\n\
+\n\
+Headless AI Battle advances at 60 simulated ticks per second without real-time pacing.\n";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeOptions {
     pub headless: bool,
     pub agent_socket: bool,
     pub width: u32,
     pub height: u32,
+    pub scenario: Option<Scenario>,
+    pub output_root: PathBuf,
+    pub seed: u64,
 }
 
 impl Default for RuntimeOptions {
@@ -41,6 +55,9 @@ impl Default for RuntimeOptions {
             agent_socket: false,
             width: DEFAULT_HEADLESS_WIDTH,
             height: DEFAULT_HEADLESS_HEIGHT,
+            scenario: None,
+            output_root: PathBuf::from("target/battle-runs"),
+            seed: 0,
         }
     }
 }
@@ -63,6 +80,12 @@ pub enum RuntimeOptionsError {
         height: u32,
         max_pixels: u64,
     },
+    #[error("unknown scenario: {0}; expected standard, sandbox, or ai-battle")]
+    UnknownScenario(String),
+    #[error("invalid unsigned integer for --seed: {0}")]
+    InvalidSeed(String),
+    #[error("--output-root cannot be empty")]
+    EmptyOutputRoot,
     #[error("unknown argument: {0}")]
     UnknownArgument(String),
 }
@@ -79,7 +102,7 @@ pub enum RuntimeBuildError {
     UnsupportedAgentSocket,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeCommand {
     Run(RuntimeOptions),
     Help,
@@ -117,6 +140,33 @@ impl RuntimeOptions {
             match argument.as_ref() {
                 "--headless" => options.headless = true,
                 "--agent-socket" => options.agent_socket = true,
+                flag @ ("--scenario" | "--output-root" | "--seed") => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| RuntimeOptionsError::MissingValue(flag.to_string()))?;
+                    let value = value.as_ref();
+                    match flag {
+                        "--scenario" => {
+                            options.scenario = Some(match value {
+                                "standard" => Scenario::Standard,
+                                "sandbox" => Scenario::Sandbox,
+                                "ai-battle" => Scenario::AiBattle,
+                                unknown => {
+                                    return Err(RuntimeOptionsError::UnknownScenario(
+                                        unknown.to_string(),
+                                    ));
+                                }
+                            })
+                        }
+                        "--output-root" => options.output_root = PathBuf::from(value),
+                        "--seed" => {
+                            options.seed = value
+                                .parse()
+                                .map_err(|_| RuntimeOptionsError::InvalidSeed(value.to_string()))?
+                        }
+                        _ => unreachable!(),
+                    }
+                }
                 flag @ ("--width" | "--height") => {
                     let value = args
                         .next()
@@ -145,6 +195,9 @@ impl RuntimeOptions {
     }
 
     fn validate(self) -> Result<Self, RuntimeOptionsError> {
+        if self.output_root.as_os_str().is_empty() {
+            return Err(RuntimeOptionsError::EmptyOutputRoot);
+        }
         for (flag, value) in [("--width", self.width), ("--height", self.height)] {
             if value > MAX_HEADLESS_DIMENSION {
                 return Err(RuntimeOptionsError::DimensionTooLarge {
@@ -168,6 +221,11 @@ impl RuntimeOptions {
 
 pub fn build_runtime_app(options: RuntimeOptions) -> Result<App, RuntimeBuildError> {
     let options = options.validate()?;
+    let mut selection = ScenarioSelection::from_environment();
+    if let Some(scenario) = options.scenario {
+        selection.current = scenario;
+    }
+    let accelerated = options.headless && selection.current.definition().rules.accelerate_headless;
     let mut app = if options.headless {
         let mut app = build_app_with_presentation(Presentation::Offscreen {
             width: options.width,
@@ -175,14 +233,27 @@ pub fn build_runtime_app(options: RuntimeOptions) -> Result<App, RuntimeBuildErr
         });
         app.add_plugins((
             LogPlugin::default(),
-            ScheduleRunnerPlugin::run_loop(HEADLESS_FRAME_DURATION),
+            ScheduleRunnerPlugin::run_loop(if accelerated {
+                Duration::ZERO
+            } else {
+                HEADLESS_FRAME_DURATION
+            }),
             TerminalCtrlCHandlerPlugin,
         ));
         app
     } else {
         build_app()
     };
-    app.insert_resource(crate::scenario_selection::ScenarioSelection::from_environment());
+    app.insert_resource(selection);
+    app.insert_resource(crate::session::SimulationSeed(options.seed));
+    app.insert_resource(BattleStatisticsConfig {
+        output_root: options.output_root,
+        seed: options.seed,
+        headless: options.headless,
+    });
+    if accelerated {
+        app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
+    }
     #[cfg(unix)]
     if options.agent_socket {
         app.add_plugins(AgentControlPlugin::bind(
@@ -207,6 +278,52 @@ mod tests {
     };
 
     #[test]
+    fn battle_options_are_accepted_for_an_explicit_benchmark_run() {
+        let options = RuntimeOptions::parse([
+            "--headless",
+            "--scenario",
+            "ai-battle",
+            "--output-root",
+            "/tmp/battle-results",
+            "--seed",
+            "42",
+        ])
+        .unwrap();
+        assert!(options.headless);
+        assert_eq!(options.scenario, Some(Scenario::AiBattle));
+        assert_eq!(options.output_root, PathBuf::from("/tmp/battle-results"));
+        assert_eq!(options.seed, 42);
+    }
+
+    #[test]
+    fn invalid_benchmark_arguments_fail_before_runtime_startup() {
+        assert_eq!(
+            RuntimeOptions::parse(["--scenario", "unknown"]),
+            Err(RuntimeOptionsError::UnknownScenario("unknown".into()))
+        );
+        assert_eq!(
+            RuntimeOptions::parse(["--seed", "-1"]),
+            Err(RuntimeOptionsError::InvalidSeed("-1".into()))
+        );
+        assert_eq!(
+            RuntimeOptions::parse(["--seed", "18446744073709551616"]),
+            Err(RuntimeOptionsError::InvalidSeed(
+                "18446744073709551616".into()
+            ))
+        );
+        assert_eq!(
+            RuntimeOptions::parse(["--output-root", ""]),
+            Err(RuntimeOptionsError::EmptyOutputRoot)
+        );
+        for flag in ["--scenario", "--output-root", "--seed"] {
+            assert_eq!(
+                RuntimeOptions::parse([flag]),
+                Err(RuntimeOptionsError::MissingValue(flag.into()))
+            );
+        }
+    }
+
+    #[test]
     fn parses_headless_agent_socket_and_resolution() {
         let options = RuntimeOptions::parse([
             "--headless",
@@ -225,6 +342,7 @@ mod tests {
                 agent_socket: true,
                 width: 1600,
                 height: 900,
+                ..RuntimeOptions::default()
             }
         );
     }

@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    nanobot::MatchOutcome,
+    nanobot::{MatchOutcome, SwarmId},
     ui::match_banner::{MatchBannerRoot, MatchBannerText},
 };
 
@@ -9,7 +9,7 @@ use crate::harness::{TestContext, TestFlow};
 pub fn victory_banner(ctx: &mut TestContext) -> TestFlow {
     banner(
         ctx,
-        MatchOutcome::Victory,
+        MatchOutcome::Winner(SwarmId::PLAYER),
         "VICTORY\nOpponent Swarm Eliminated",
         "match_victory",
     )
@@ -18,7 +18,7 @@ pub fn victory_banner(ctx: &mut TestContext) -> TestFlow {
 pub fn defeat_banner(ctx: &mut TestContext) -> TestFlow {
     banner(
         ctx,
-        MatchOutcome::Defeat,
+        MatchOutcome::Winner(SwarmId(1)),
         "DEFEAT\nPlayer Swarm Eliminated",
         "match_defeat",
     )

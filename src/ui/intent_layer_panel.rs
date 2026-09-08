@@ -17,6 +17,7 @@ use bevy::ui::{
 };
 
 use crate::intent::{BrushSelection, IntentKind};
+use crate::session::SessionRules;
 use crate::ui::ui_setup::FontsResource;
 
 use super::consts::NORMAL_BUTTON;
@@ -94,7 +95,11 @@ fn layer_button_style(is_active: bool, layer_color: Color) -> (BackgroundColor, 
 /// player knows what the controls affect. The parent spans the full width
 /// and centers its children, so the row stays centered as more buttons
 /// are added.
-pub fn setup_intent_layer_panel(mut commands: Commands, fonts: Res<FontsResource>) {
+pub fn setup_intent_layer_panel(
+    mut commands: Commands,
+    fonts: Res<FontsResource>,
+    rules: Res<SessionRules>,
+) {
     let font = fonts.font.clone();
 
     commands
@@ -115,6 +120,18 @@ pub fn setup_intent_layer_panel(mut commands: Commands, fonts: Res<FontsResource
             RelativeCursorPosition::default(),
         ))
         .with_children(|parent| {
+            if rules.spectator() {
+                parent.spawn((
+                    Text::new("Spectating | Painting disabled"),
+                    TextFont {
+                        font: font.clone(),
+                        font_size: PANEL_FONT_SIZE,
+                        ..default()
+                    },
+                    TextColor(Color::WHITE),
+                ));
+                return;
+            }
             for (kind, _) in LAYER_COLORS {
                 parent
                     .spawn(spawn_layer_button(kind))

@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::battle_statistics::{BattleCounters, BattleEvent};
 use bevy::prelude::*;
 
 use crate::nanobot::{
@@ -190,6 +191,7 @@ pub fn defender_combat_system(
     swarms: Query<&SwarmId, With<Swarm>>,
     mut commands: Commands,
     mut facts: MessageWriter<ResolvedCombatFact>,
+    mut counters: Option<ResMut<BattleCounters>>,
 ) {
     let snapshot = combatants
         .p0()
@@ -359,6 +361,9 @@ pub fn defender_combat_system(
                 destroyed_targets.insert(entity);
                 if was_alive && let Some(victim) = structure_snapshots.get(&entity).copied() {
                     combat_deaths.push(ResolvedCombatDeath { victim });
+                    if let Some(counters) = counters.as_deref_mut() {
+                        counters.record(victim.swarm, BattleEvent::StructureLost);
+                    }
                 }
                 commands.entity(entity).despawn();
             }

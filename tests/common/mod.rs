@@ -118,6 +118,7 @@ fn register_movement_systems(app: &mut App) {
 pub fn minimal_app() -> App {
     let mut app = App::new();
     app.add_plugins((
+        top_down_2d_rts_prototype_nano_swarm::scenario::ScenarioPlugin,
         bevy::time::TimePlugin,
         top_down_2d_rts_prototype_nano_swarm::navigation_runtime::NavigationPlugin,
     ));

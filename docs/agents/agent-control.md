@@ -20,7 +20,7 @@ cargo run -- --headless --agent-socket --width 1280 --height 720
 $XDG_RUNTIME_DIR/nano-swarm/control.sock
 ```
 
-Headless mode disables Winit and creates no desktop window. Rendering, UI layout, fixed simulation, and GPU screenshots remain active. The headless runner is paced at 60 application frames per second and handles `AppExit` and Ctrl-C.
+Headless mode disables Winit and creates no desktop window. Rendering, UI layout, fixed simulation, and GPU screenshots remain active. The runner handles `AppExit` and Ctrl-C; its default pacing is 60 application frames per second. AI Battle selects accelerated headless execution, advancing one 60 Hz simulation tick per application update without real-time pacing. See [AI Battle](../ai-battle.md) for launch options and saved statistics.
 
 Headless width and height are each capped at 8,192 pixels, with a total budget of 16,777,216 pixels, so invalid CLI input fails before allocating the render image.
 
@@ -110,7 +110,7 @@ Player-action commands are rejected after Victory, Defeat, or Draw. State, camer
 - Selected intent.
 - Map dimensions, sparse active cells, per-layer swarm owners.
 - Main-camera position and zoom.
-- Match outcome (`in_progress`, `victory`, `defeat`, or `draw`) and `player_eliminated` / `opponent_eliminated` flags.
+- Match outcome (`in_progress`, `victory`, `defeat`, or `draw`) and `player_eliminated` / `opponent_eliminated` flags. AI Battle uses `swarm_0_wins` / `swarm_1_wins` instead of `victory` / `defeat`; its elimination flags refer to Swarm 0 / Swarm 1 respectively.
 - Per-swarm `eliminated` flag, population, demand, aggregate health, centroid, minerals, and facility counts.
 
 Empty map cells are omitted. Active cells use deterministic row-major ordering. Each response includes at most 10,000 active cells with their independently owned intent layers, `active_cell_total`, `next_cell_offset`, and `map_revision`. Pass both `next_cell_offset` and the unchanged `map_revision` into the next `state.get` call until the offset is `null`. Page zero contains the complete non-map snapshot; continuation pages contain only `map`, preventing live simulation changes from mixing newer swarm or match data into that snapshot. If the map changes between pages, the server returns `stale_state_page`; restart from offset zero. Each layer entry has an intent kind and a non-null owner ID: `0` is the player and positive IDs are opponents. The same kind can appear more than once in a cell, once per owning swarm; consume all entries. Entries are ordered by intent kind, then owner ID. There is no `defend_contests` field.
@@ -153,6 +153,8 @@ The socket worker polls a nonblocking listener and performs bounded blocking cli
 
 `screenshot_failed`: inspect GPU adapter diagnostics in the game log. Headless mode requires a working Bevy/wgpu adapter but never falls back to a desktop window.
 
+`spectator_only`: AI Battle rejects `map.apply` painting and erasing because both swarms own their control. Use camera, state, screenshots, and menu controls to observe the run. For headless benchmark execution and saved results, read [AI Battle](../ai-battle.md).
+
 `match_finished`: use `state`, `camera`, or `screenshot` to inspect the terminal state, then `shutdown`; start a new process for more player actions.
 
-Menu buttons are `menu.open`, `menu.resume`, `menu.standard`, `menu.sandbox`, and `menu.quit`. Menu actions use the real UI buttons and remain available after a match finishes; controls inside the menu require it to be open. While the menu is open, world input commands (including camera commands) return `menu_open`. Use frame waits rather than fixed-tick waits while paused. `state.get` includes `scenario` with `current`, `next_launch`, `save_error`, and `menu_open`. The runtime reads the next-launch preference from `$XDG_CONFIG_HOME/nano-swarm/scenario.json`, or `$HOME/.config/nano-swarm/scenario.json` when XDG_CONFIG_HOME is unavailable; automated runtime checks should use an isolated configuration directory.
+Menu buttons are `menu.open`, `menu.resume`, `menu.standard`, `menu.sandbox`, `menu.ai_battle`, and `menu.quit`. Menu actions use the real UI buttons and remain available after a match finishes; controls inside the menu require it to be open. While the menu is open, world input commands (including camera commands) return `menu_open`. Use frame waits rather than fixed-tick waits while paused. `state.get` includes `scenario` with `current`, `next_launch`, `save_error`, and `menu_open`. The runtime reads the next-launch preference from `$XDG_CONFIG_HOME/nano-swarm/scenario.json`, or `$HOME/.config/nano-swarm/scenario.json` when XDG_CONFIG_HOME is unavailable; automated runtime checks should use an isolated configuration directory.

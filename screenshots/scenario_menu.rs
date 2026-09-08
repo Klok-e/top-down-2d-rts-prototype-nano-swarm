@@ -19,3 +19,31 @@ pub fn scenario_menu(ctx: &mut TestContext) -> TestFlow {
     }
     TestFlow::Exit
 }
+
+pub fn ai_battle_spectator(ctx: &mut TestContext) -> TestFlow {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{OpponentIntentController, SwarmId};
+    if ctx.frame == 2 {
+        assert_eq!(
+            ctx.world.resource::<ScenarioSelection>().current,
+            Scenario::AiBattle
+        );
+        assert_eq!(
+            ctx.world
+                .query::<(&SwarmId, &OpponentIntentController)>()
+                .iter(ctx.world)
+                .count(),
+            2
+        );
+        assert!(
+            ctx.world
+                .query::<&Text>()
+                .iter(ctx.world)
+                .any(|text| text.0.contains("Spectating"))
+        );
+        return TestFlow::Screenshot("ai_battle_spectator".into());
+    }
+    if ctx.frame > 2 {
+        return TestFlow::Exit;
+    }
+    TestFlow::Continue
+}

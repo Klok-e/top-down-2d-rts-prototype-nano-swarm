@@ -2,9 +2,10 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
+    battle_statistics::BattleCounters,
     nanobot::{
         Cargo, DirectMovementComponent, GatherAssignment, HAULER_TRANSFER_PER_TICK,
-        LogisticsReservation, OwnerSwarm, ReturningToStockpile,
+        LogisticsReservation, OwnerSwarm, ReturningToStockpile, SwarmId,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile, StockpileRole},
 };
@@ -86,6 +87,7 @@ fn worker_reserves_exact_partial_trip_without_moving_minerals() {
 #[test]
 fn extraction_moves_only_new_minerals_into_cargo_and_ledger() {
     let mut app = common::sim_app_with_gather();
+    app.init_resource::<BattleCounters>();
     let pos = Vec2::ZERO;
     let swarm = common::spawn_swarm_at(&mut app, pos);
     let worker = common::spawn_worker_at(&mut app, pos + Vec2::new(68.0, 0.0));
@@ -145,6 +147,13 @@ fn extraction_moves_only_new_minerals_into_cargo_and_ledger() {
         .unwrap();
     assert_eq!(reservation.source_remaining, 3);
     assert_eq!(reservation.destination_remaining, 4);
+    assert_eq!(
+        app.world()
+            .resource::<BattleCounters>()
+            .totals_for(SwarmId::PLAYER)
+            .minerals_gathered,
+        1
+    );
 }
 
 #[test]

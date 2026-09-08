@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
+    battle_statistics::BattleCounters,
     intent::{IntentGrid, IntentKind},
     nanobot::{
         NanobotType, OwnerSwarm, PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT,
@@ -34,6 +35,7 @@ fn add_gather_work(app: &mut App, cell: IVec2) {
 #[test]
 fn facility_commits_to_real_workload_demand_and_consumes_its_hopper() {
     let mut app = common::sim_app_with_production();
+    app.init_resource::<BattleCounters>();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     add_gather_work(&mut app, IVec2::ZERO);
     let facility = common::spawn_facility_at(&mut app, swarm, Vec2::ZERO);
@@ -58,11 +60,19 @@ fn facility_commits_to_real_workload_demand_and_consumes_its_hopper() {
             .total_for(SwarmId::PLAYER, ResourceKind::Minerals),
         ledger_before - PRODUCTION_COST_PER_BOT,
     );
+    assert_eq!(
+        app.world()
+            .resource::<BattleCounters>()
+            .totals_for(SwarmId::PLAYER)
+            .minerals_consumed,
+        u64::from(PRODUCTION_COST_PER_BOT)
+    );
 }
 
 #[test]
 fn funded_cycle_retains_its_type_and_produces_an_owned_nanobot() {
     let mut app = common::sim_app_with_production();
+    app.init_resource::<BattleCounters>();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     add_gather_work(&mut app, IVec2::ZERO);
     let facility = common::spawn_facility_at(&mut app, swarm, Vec2::ZERO);
@@ -91,6 +101,13 @@ fn funded_cycle_retains_its_type_and_produces_an_owned_nanobot() {
         .filter(|(kind, member)| **kind == NanobotType::Worker && member.0 == SwarmId::PLAYER)
         .count();
     assert_eq!(produced, 1, "funded work completes after demand disappears");
+    assert_eq!(
+        app.world()
+            .resource::<BattleCounters>()
+            .totals_for(SwarmId::PLAYER)
+            .births,
+        1
+    );
 }
 
 #[test]

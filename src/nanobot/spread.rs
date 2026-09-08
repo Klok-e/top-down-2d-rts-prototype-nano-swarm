@@ -329,6 +329,7 @@ pub fn idle_spread_system(
         )>,
     >,
     mut spread_tick: Local<u64>,
+    simulation_seed: Option<Res<crate::session::SimulationSeed>>,
 ) {
     // Per-swarm, per-type fit-cell lists are rebuilt every tick so
     // opponent paint cannot attract another swarm's idle nanobots.
@@ -399,7 +400,9 @@ pub fn idle_spread_system(
                     fit.then(|| (n, density.get(&n).copied().unwrap_or(0)))
                 })
                 .collect();
-            let seed = entity.to_bits().wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ tick.rotate_left(32);
+            let seed = entity.to_bits().wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                ^ tick.rotate_left(32)
+                ^ simulation_seed.as_ref().map_or(0, |seed| seed.0);
             let mut rng = StdRng::seed_from_u64(seed);
             gradient_step_target(own_excl, &neighbours, &mut rng)
         } else {

@@ -10,8 +10,7 @@ fn state_get_reports_draw_and_both_eliminated_swarms() {
     let mut app = App::new();
     app.insert_resource(MatchOutcome::Draw)
         .insert_resource(SwarmEliminationState {
-            player_eliminated: true,
-            opponent_eliminated: true,
+            eliminated: [SwarmId::PLAYER, SwarmId(1)].into_iter().collect(),
         });
     app.world_mut().spawn((Swarm::default(), SwarmId::PLAYER));
     app.world_mut().spawn((Swarm::default(), SwarmId(1)));
