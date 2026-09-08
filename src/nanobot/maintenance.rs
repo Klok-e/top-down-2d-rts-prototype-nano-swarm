@@ -37,6 +37,7 @@
 //! tracking issue can split maintenance into its own slot if
 //! player feedback shows crowding.
 
+use crate::battle_statistics::{BattleCounters, BattleEvent};
 use bevy::prelude::*;
 
 use crate::nanobot::InteractionRegion;
@@ -190,9 +191,11 @@ pub struct MaintenanceProgress {
 #[allow(clippy::type_complexity)]
 pub fn structure_degradation_system(
     mut commands: Commands,
-    mut structures: Query<(Entity, &mut Structure)>,
+    mut structures: Query<(Entity, &mut Structure, Option<&crate::nanobot::OwnerSwarm>)>,
+    swarms: Query<&crate::nanobot::SwarmId>,
+    mut counters: Option<ResMut<BattleCounters>>,
 ) {
-    for (entity, mut structure) in &mut structures {
+    for (entity, mut structure, owner) in &mut structures {
         // Always advance the buffer counter. Workers reset it
         // to 0 in the same tick; everything else sees it grow.
         structure.ticks_since_maintained = structure.ticks_since_maintained.saturating_add(1);
@@ -210,6 +213,11 @@ pub fn structure_degradation_system(
                 // world. The cell becomes a valid build site
                 // again because auto-creation skips cells
                 // that already hold a Structure.
+                if let Some(counters) = counters.as_deref_mut()
+                    && let Some(swarm) = owner.and_then(|owner| swarms.get(owner.0).ok())
+                {
+                    counters.record(*swarm, BattleEvent::StructureLost);
+                }
                 commands.entity(entity).despawn();
             }
         }

@@ -3,6 +3,7 @@ mod common;
 
 use approx::assert_abs_diff_eq;
 use bevy::prelude::*;
+use top_down_2d_rts_prototype_nano_swarm::battle_statistics::BattleCounters;
 use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
     intent::{IntentGrid, IntentKind},
@@ -320,6 +321,7 @@ fn zero_health_nearest_target_is_skipped_for_the_nearest_living_hostile() {
 #[test]
 fn lethal_structure_hit_publishes_stable_appearance_and_despawns_target() {
     let mut app = common::sim_app_with_combat();
+    app.init_resource::<BattleCounters>();
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
     let opponent = app.world_mut().spawn((Swarm {}, SwarmId(11))).id();
     let cell = IVec2::ZERO;
@@ -360,6 +362,13 @@ fn lethal_structure_hit_publishes_stable_appearance_and_despawns_target() {
             kind: StructureKind::Basic,
             visual: Some(StructureVisual::completed(PlannedKind::Charger)),
         }),
+    );
+    assert_eq!(
+        app.world()
+            .resource::<BattleCounters>()
+            .totals_for(SwarmId(11))
+            .structures_lost,
+        1
     );
 }
 

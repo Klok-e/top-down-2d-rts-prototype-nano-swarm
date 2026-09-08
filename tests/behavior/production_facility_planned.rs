@@ -1,6 +1,7 @@
 //! Planned Production Facility behavior under population demand.
 
 use bevy::prelude::*;
+use top_down_2d_rts_prototype_nano_swarm::battle_statistics::BattleCounters;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
@@ -92,6 +93,7 @@ fn demand_without_an_owned_build_zone_creates_no_facility_plan() {
 #[test]
 fn worker_promotes_an_owned_plan_to_an_idle_unfunded_facility() {
     let mut app = common::sim_app_with_production_planned();
+    app.init_resource::<BattleCounters>();
     let cell = IVec2::ZERO;
     let plan = common::spawn_planned_production_facility_at_cell(&mut app, cell);
     let owner = app.world().get::<OwnerSwarm>(plan).copied().unwrap();
@@ -119,5 +121,12 @@ fn worker_promotes_an_owned_plan_to_an_idle_unfunded_facility() {
     assert_eq!(
         entity.get::<Sprite>().expect("completed visual").color,
         completed_visual_color(),
+    );
+    assert_eq!(
+        app.world()
+            .resource::<BattleCounters>()
+            .totals_for(SwarmId::PLAYER)
+            .structures_built,
+        1
     );
 }

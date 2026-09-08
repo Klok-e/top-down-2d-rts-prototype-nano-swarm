@@ -22,6 +22,7 @@
 //! pressure stays in sync with the number of workers actually
 //! working a given cell.
 
+use crate::battle_statistics::{BattleCounters, BattleEvent};
 use crate::navigation::{ConnectivityStatus, Navigation, Obstacle, RouteGoal};
 use bevy::prelude::*;
 
@@ -880,6 +881,7 @@ pub fn worker_gather_extract_system(
     >,
     mut deposits: Query<(&mut ResourceDeposit, &Transform)>,
     mut ledger: ResMut<ResourceLedger>,
+    mut counters: Option<ResMut<BattleCounters>>,
 ) {
     for (entity, mut progress, transform, assignment, mut cargo, mut reservation, swarm) in
         &mut workers
@@ -930,6 +932,9 @@ pub fn worker_gather_extract_system(
         deposit.amount -= actual;
         reservation.source_remaining -= actual;
         ledger.add_for(swarm.0, deposit.kind, actual);
+        if let Some(counters) = counters.as_deref_mut() {
+            counters.record(swarm.0, BattleEvent::Gathered(actual));
+        }
     }
 }
 

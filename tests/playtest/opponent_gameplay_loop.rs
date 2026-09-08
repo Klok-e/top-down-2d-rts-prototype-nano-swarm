@@ -94,7 +94,7 @@ fn scripted_counter_assault_can_eliminate_opponent() {
 
     for _ in 0..800 {
         app.update();
-        if *app.world().resource::<MatchOutcome>() == MatchOutcome::Victory {
+        if *app.world().resource::<MatchOutcome>() == MatchOutcome::Winner(SwarmId::PLAYER) {
             assert!(
                 !app.world_mut()
                     .query_filtered::<&SwarmMember, With<Nanobot>>()
@@ -117,8 +117,8 @@ fn scripted_counter_assault_can_eliminate_opponent() {
 
     let state = app.world().resource::<SwarmEliminationState>();
     panic!(
-        "scripted counter-assault did not end the match: player_eliminated={}, opponent_eliminated={}",
-        state.player_eliminated, state.opponent_eliminated
+        "scripted counter-assault did not end the match: eliminated={:?}",
+        state.eliminated
     );
 }
 

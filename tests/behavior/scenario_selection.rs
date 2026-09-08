@@ -10,7 +10,7 @@ mod common;
 #[test]
 fn sandbox_remains_open_ended_when_player_is_eliminated() {
     for (scenario, expected) in [
-        (Scenario::Standard, MatchOutcome::Defeat),
+        (Scenario::Standard, MatchOutcome::Winner(SwarmId(1))),
         (Scenario::Sandbox, MatchOutcome::InProgress),
     ] {
         let mut app = common::sim_app_with_elimination();

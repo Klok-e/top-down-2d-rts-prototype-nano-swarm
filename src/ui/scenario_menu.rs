@@ -187,6 +187,7 @@ fn setup_menu(mut commands: Commands) {
                 for (scenario, description) in [
                     (Scenario::Standard, "Standard: Face an advancing opponent"),
                     (Scenario::Sandbox, "Sandbox: Open-ended, no opponent"),
+                    (Scenario::AiBattle, "AI Battle: Watch two autonomous swarms"),
                 ] {
                     panel
                         .spawn(button(MenuAction::Select(scenario)))

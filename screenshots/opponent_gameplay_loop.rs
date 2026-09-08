@@ -75,7 +75,7 @@ pub fn opponent_gameplay_loop(ctx: &mut TestContext) -> TestFlow {
 
     assert_eq!(
         *ctx.world.resource::<MatchOutcome>(),
-        MatchOutcome::Victory,
+        MatchOutcome::Winner(SwarmId::PLAYER),
         "scripted terminal state must be a victory"
     );
     let banner_visible = ctx

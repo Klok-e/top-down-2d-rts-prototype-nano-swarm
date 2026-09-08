@@ -7,6 +7,7 @@ use crate::{
         SupportCondition, Swarm, SwarmId, SwarmMember,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger},
+    session::SessionRules,
 };
 
 use super::ui_setup::FontsResource;
@@ -107,9 +108,10 @@ pub fn setup_status_panel(mut commands: Commands, fonts: Res<FontsResource>) {
         });
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn update_status_panel_system(
-    player_swarms: Query<(Entity, &SwarmId), (With<Swarm>, Without<OpponentSwarm>)>,
+    player_swarms: Query<(Entity, &SwarmId, Option<&OpponentSwarm>), With<Swarm>>,
+    rules: Res<SessionRules>,
     nanobots: Query<(&NanobotType, &SwarmMember), With<Nanobot>>,
     deposits: Query<(&ResourceDeposit, Option<&OwnerSwarm>)>,
     facilities: Query<(&ProductionFacility, &OwnerSwarm, Option<&SupportCondition>)>,
@@ -121,7 +123,37 @@ pub fn update_status_panel_system(
         return;
     };
 
-    let Some((player_swarm, swarm_id)) = player_swarms.iter().next() else {
+    if rules.player_swarm.is_none() {
+        let mut sides = player_swarms.iter().collect::<Vec<_>>();
+        sides.sort_by_key(|(_, id, _)| **id);
+        let mut lines = Vec::new();
+        for (entity, id, _) in sides {
+            let count = |kind| {
+                nanobots
+                    .iter()
+                    .filter(|(t, m)| **t == kind && m.0 == *id)
+                    .count()
+            };
+            lines.push(format!(
+                "Swarm {}\nPopulation: W{} H{} D{}\nMinerals: {} | Facilities: {}",
+                id.0,
+                count(NanobotType::Worker),
+                count(NanobotType::Hauler),
+                count(NanobotType::Defender),
+                ledger.total_for(*id, ResourceKind::Minerals),
+                facilities
+                    .iter()
+                    .filter(|(_, owner, _)| owner.0 == entity)
+                    .count()
+            ));
+        }
+        **text = lines.join("\n\n");
+        return;
+    }
+    let Some((player_swarm, swarm_id, _)) = player_swarms
+        .iter()
+        .find(|(_, id, _)| Some(**id) == rules.player_swarm)
+    else {
         *text = Text::new(format_status_panel(PlayerHudState::default()));
         return;
     };
@@ -212,6 +244,7 @@ mod tests {
     fn hud_minerals_use_complete_player_ledger() {
         let mut app = App::new();
         app.init_resource::<crate::resources::ResourceLedger>()
+            .init_resource::<SessionRules>()
             .add_systems(Update, update_status_panel_system);
         let player = app.world_mut().spawn((Swarm {}, SwarmId::PLAYER)).id();
         app.world_mut().spawn((
@@ -245,6 +278,7 @@ mod tests {
     fn hud_deposits_exclude_neutral_and_foreign_resources() {
         let mut app = App::new();
         app.init_resource::<crate::resources::ResourceLedger>()
+            .init_resource::<SessionRules>()
             .add_systems(Update, update_status_panel_system);
         let player = app.world_mut().spawn((Swarm {}, SwarmId::PLAYER)).id();
         let foreign = app.world_mut().spawn_empty().id();
@@ -278,6 +312,7 @@ mod tests {
     fn hud_ignores_unowned_production_facilities() {
         let mut app = App::new();
         app.init_resource::<crate::resources::ResourceLedger>()
+            .init_resource::<SessionRules>()
             .add_systems(Update, update_status_panel_system);
         app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
         let mut orphan = ProductionFacility::new();

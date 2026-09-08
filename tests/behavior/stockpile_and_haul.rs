@@ -6,6 +6,7 @@
 
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
+    battle_statistics::BattleCounters,
     intent::{IntentGrid, IntentKind},
     nanobot::{
         DirectMovementComponent, HAULER_CARRY_CAPACITY, HaulerAssignment, HaulerLoad,
@@ -40,11 +41,9 @@ fn stockpile_auto_emerges_in_gather_cell_with_demand() {
     // tick of simulation.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Gather,
-        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Gather, SwarmId::PLAYER);
     assert_eq!(
         stockpile_count(app.world_mut()),
         0,
@@ -72,11 +71,9 @@ fn stockpile_not_duplicated_when_one_already_exists() {
     // not "multiply indefinitely".
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Gather,
-        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Gather, SwarmId::PLAYER);
     let cell_world_center = common::cell_world_center(cell);
 
     // Manually pre-place a stockpile in the same cell. The
@@ -101,11 +98,9 @@ fn stockpile_not_emerged_for_corridor_only_cell() {
     // demand in the gather/build sense, so no stockpile emerges.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Corridor,
-        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Corridor, SwarmId::PLAYER);
 
     for _ in 0..3 {
         app.update();
@@ -238,6 +233,7 @@ fn hauler_fills_load_up_to_carry_capacity() {
     // deposit. The load is removed on full transition and a
     // HaulerLoad component is inserted with the full amount.
     let mut app = build_app();
+    app.init_resource::<BattleCounters>();
     let deposit_pos = Vec2::new(100.0, 0.0);
     let stockpile_pos = Vec2::new(400.0, 0.0);
     let deposit = common::spawn_deposit(
@@ -283,6 +279,13 @@ fn hauler_fills_load_up_to_carry_capacity() {
         deposit_state.amount,
         1000 - HAULER_CARRY_CAPACITY,
         "deposit lost exactly HAULER_CARRY_CAPACITY units across the load phase"
+    );
+    assert_eq!(
+        app.world()
+            .resource::<BattleCounters>()
+            .totals_for(SwarmId::PLAYER)
+            .minerals_gathered,
+        u64::from(HAULER_CARRY_CAPACITY)
     );
 }
 

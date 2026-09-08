@@ -1000,8 +1000,8 @@ fn default_front_has_readable_combat_and_staggered_sustain() {
         "combat feel flow must keep both swarms in the match"
     );
     let elimination = app.world().resource::<SwarmEliminationState>();
-    assert!(!elimination.player_eliminated);
-    assert!(!elimination.opponent_eliminated);
+    assert!(!elimination.is_eliminated(SwarmId::PLAYER));
+    assert!(!elimination.is_eliminated(SwarmId(1)));
     assert!(live_defenders(app.world_mut(), SwarmId::PLAYER) > 0);
 }
 
@@ -1131,5 +1131,66 @@ fn default_economy_loaded_bots_do_not_wait_for_clear_routes() {
         worst.0,
         worst.1,
         worst.2
+    );
+}
+
+#[test]
+fn ai_battle_starts_equal_and_both_sides_advance_without_input() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::ProductionFacility;
+    use top_down_2d_rts_prototype_nano_swarm::resources::ResourceDeposit;
+    use top_down_2d_rts_prototype_nano_swarm::scenario_selection::{Scenario, ScenarioSelection};
+    let mut app = default_headless_app();
+    let mut selection = ScenarioSelection::default();
+    selection.current = Scenario::AiBattle;
+    app.insert_resource(selection);
+    app.update();
+    for side in [SwarmId::PLAYER, SwarmId(1)] {
+        let counts = NanobotType::ALL.map(|kind| {
+            app.world_mut()
+                .query::<(&NanobotType, &SwarmMember)>()
+                .iter(app.world())
+                .filter(|(t, m)| **t == kind && m.0 == side)
+                .count()
+        });
+        assert_eq!(counts, [4, 2, 3]);
+        let owner = app
+            .world_mut()
+            .query::<(Entity, &SwarmId)>()
+            .iter(app.world())
+            .find(|(_, id)| **id == side)
+            .unwrap()
+            .0;
+        assert_eq!(
+            app.world_mut()
+                .query::<(&ProductionFacility, &OwnerSwarm)>()
+                .iter(app.world())
+                .filter(|(_, o)| o.0 == owner)
+                .count(),
+            1
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<(&ResourceDeposit, &OwnerSwarm)>()
+                .iter(app.world())
+                .find(|(_, o)| o.0 == owner)
+                .unwrap()
+                .0
+                .amount,
+            72_000
+        );
+    }
+    for _ in 0..302 {
+        app.update();
+    }
+    let grid = app.world().resource::<IntentGrid>();
+    assert!(
+        grid.cell(IVec2::new(2, 2))
+            .unwrap()
+            .has_owned(IntentKind::Defend, SwarmId::PLAYER)
+    );
+    assert!(
+        grid.cell(IVec2::new(22, 22))
+            .unwrap()
+            .has_owned(IntentKind::Defend, SwarmId(1))
     );
 }

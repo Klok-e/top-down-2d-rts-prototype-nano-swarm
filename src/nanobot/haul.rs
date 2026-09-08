@@ -6,6 +6,7 @@
 //! sources under the tiered logistics model; legacy manual hauler
 //! assignments can still drain them defensively for tests.
 
+use crate::battle_statistics::{BattleCounters, BattleEvent};
 use bevy::prelude::*;
 
 use crate::nanobot::{
@@ -323,6 +324,7 @@ pub fn hauler_load_system(
     source_chargers: Query<(&Charger, &Transform)>,
     conditions: Query<&SupportCondition>,
     mut ledger: ResMut<ResourceLedger>,
+    mut counters: Option<ResMut<BattleCounters>>,
 ) {
     for (entity, mut cargo, transform, assignment, mut reservation, swarm) in &mut haulers {
         let target_amount = reservation
@@ -385,6 +387,9 @@ pub fn hauler_load_system(
             cargo.amount += actual;
             deposit.amount -= actual;
             ledger.add_for(swarm.0, deposit.kind, actual);
+            if let Some(counters) = counters.as_deref_mut() {
+                counters.record(swarm.0, BattleEvent::Gathered(actual));
+            }
             if let Some(reservation) = reservation.as_deref_mut() {
                 reservation.source_remaining = reservation.source_remaining.saturating_sub(actual);
             }

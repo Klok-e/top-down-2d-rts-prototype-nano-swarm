@@ -119,9 +119,32 @@ pub fn run_screenshot_test(cb: fn(&mut TestContext) -> TestFlow) -> Result<PathB
     }
 }
 
+pub fn run_screenshot_test_for_scenario(
+    cb: fn(&mut TestContext) -> TestFlow,
+    scenario: top_down_2d_rts_prototype_nano_swarm::scenario_selection::Scenario,
+) -> Result<PathBuf, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_scenario_with_limits(cb, HarnessLimits::default(), scenario)
+    })) {
+        Ok(result) => result,
+        Err(payload) => Err(format!(
+            "screenshot harness panicked: {}",
+            panic_message(payload.as_ref())
+        )),
+    }
+}
+
 fn run_screenshot_test_with_limits(
     cb: fn(&mut TestContext) -> TestFlow,
     limits: HarnessLimits,
+) -> Result<PathBuf, String> {
+    run_scenario_with_limits(cb, limits, Default::default())
+}
+
+fn run_scenario_with_limits(
+    cb: fn(&mut TestContext) -> TestFlow,
+    limits: HarnessLimits,
+    scenario: top_down_2d_rts_prototype_nano_swarm::scenario_selection::Scenario,
 ) -> Result<PathBuf, String> {
     std::fs::create_dir_all(SCREENSHOT_DIR)
         .map_err(|err| format!("create {SCREENSHOT_DIR}: {err}"))?;
@@ -130,6 +153,7 @@ fn run_screenshot_test_with_limits(
         width: WIDTH,
         height: HEIGHT,
     });
+    app.world_mut().resource_mut::<top_down_2d_rts_prototype_nano_swarm::scenario_selection::ScenarioSelection>().current = scenario;
     app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_micros(
         16_667,
     )));

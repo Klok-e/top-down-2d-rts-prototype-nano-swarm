@@ -17,6 +17,7 @@ impl Plugin for ZonesPlugin {
     fn build(&self, app: &mut bevy::prelude::App) {
         app.add_plugins(Material2dPlugin::<ZoneMaterial>::default())
             .init_resource::<BrushSelection>()
+            .init_resource::<crate::session::SessionRules>()
             .add_systems(
                 Update,
                 brush_selection_keyboard_system.before(zone_brush_system),

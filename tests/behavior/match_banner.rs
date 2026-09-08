@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    nanobot::MatchOutcome,
+    nanobot::{MatchOutcome, SwarmId},
+    session::SessionRules,
     ui::{
         FontsResource,
         match_banner::{
@@ -13,13 +14,20 @@ use top_down_2d_rts_prototype_nano_swarm::{
 fn match_banner_shows_each_outcome_and_hides_in_progress() {
     let mut app = App::new();
     app.insert_resource(FontsResource { font: default() })
+        .insert_resource(SessionRules::default())
         .add_systems(Startup, setup_match_banner)
         .add_systems(Update, update_match_banner_system);
     app.update();
     assert_banner(app.world_mut(), Visibility::Hidden, "");
     for (outcome, text) in [
-        (MatchOutcome::Victory, "VICTORY\nOpponent Swarm Eliminated"),
-        (MatchOutcome::Defeat, "DEFEAT\nPlayer Swarm Eliminated"),
+        (
+            MatchOutcome::Winner(SwarmId::PLAYER),
+            "VICTORY\nOpponent Swarm Eliminated",
+        ),
+        (
+            MatchOutcome::Winner(SwarmId(1)),
+            "DEFEAT\nPlayer Swarm Eliminated",
+        ),
         (MatchOutcome::Draw, "DRAW\nBoth Swarms Eliminated"),
     ] {
         app.insert_resource(outcome);

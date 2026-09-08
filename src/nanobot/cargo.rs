@@ -1,5 +1,6 @@
 //! Shared physical cargo and Logistics Reservation components.
 
+use crate::battle_statistics::{BattleCounters, BattleEvent};
 use bevy::prelude::*;
 
 use crate::{
@@ -60,10 +61,14 @@ pub fn nanobot_death_cleanup_system(
     mut commands: Commands,
     dead: Query<(Entity, &Health, &SwarmMember, Option<&Cargo>), (With<Nanobot>, Changed<Health>)>,
     mut ledger: ResMut<ResourceLedger>,
+    mut counters: Option<ResMut<BattleCounters>>,
 ) {
     for (entity, health, swarm, cargo) in &dead {
         if health.current > 0 {
             continue;
+        }
+        if let Some(counters) = counters.as_deref_mut() {
+            counters.record(swarm.0, BattleEvent::Death);
         }
         if let Some(cargo) = cargo {
             ledger.remove_for(swarm.0, cargo.kind, cargo.amount);

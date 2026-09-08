@@ -80,6 +80,15 @@ fn main() -> std::process::ExitCode {
     // Each test is ignored so default run skips GPU setup. `--ignored` runs
     // only ignored tests, matching standard `cargo test` convention.
     let tests = vec![
+        Trial::test("ai_battle_spectator", || {
+            harness::run_screenshot_test_for_scenario(
+                scenario_menu::ai_battle_spectator,
+                top_down_2d_rts_prototype_nano_swarm::scenario_selection::Scenario::AiBattle,
+            )
+            .map(|_| ())
+            .map_err(Failed::from)
+        })
+        .with_ignored_flag(true),
         Trial::test("match_victory_banner", || run(match_banner::victory_banner))
             .with_ignored_flag(true),
         Trial::test("match_defeat_banner", || run(match_banner::defeat_banner))

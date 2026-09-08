@@ -43,6 +43,7 @@ fn main() {
         agent_socket: true,
         width: 1280,
         height: 720,
+        ..Default::default()
     })
     .expect("headless runtime");
     app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(

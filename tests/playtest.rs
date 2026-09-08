@@ -39,3 +39,6 @@ mod default_map;
 
 #[path = "playtest/scenario_menu.rs"]
 mod scenario_menu;
+
+#[path = "playtest/battle_runtime.rs"]
+mod battle_runtime;

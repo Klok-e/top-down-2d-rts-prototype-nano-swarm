@@ -41,6 +41,7 @@
 use crate::navigation::Obstacle;
 use std::collections::HashMap;
 
+use crate::battle_statistics::{BattleCounters, BattleEvent};
 use bevy::prelude::*;
 
 use crate::nanobot::InteractionRegion;
@@ -971,7 +972,7 @@ pub fn defender_charger_arrive_system(
 /// Defender whose Charger empties mid-charge is released on
 /// the same tick. The release is a marker remove; current response allocation
 /// may pick the Defender during the same pass.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn defender_charger_work_system(
     mut commands: Commands,
     mut allocation_wake: Option<ResMut<RegionalAllocationWake>>,
@@ -996,6 +997,7 @@ pub fn defender_charger_work_system(
     )>,
     swarms: Query<&SwarmId, With<Swarm>>,
     mut ledger: ResMut<ResourceLedger>,
+    mut counters: Option<ResMut<BattleCounters>>,
 ) {
     let mut ordered_defenders = defenders
         .iter_mut()
@@ -1055,6 +1057,9 @@ pub fn defender_charger_work_system(
         }
         charger.amount -= consumed;
         ledger.remove_for(member.0, charger.kind, consumed);
+        if let Some(counters) = counters.as_deref_mut() {
+            counters.record(member.0, BattleEvent::Consumed(consumed));
+        }
         charge.current = (charge.current + CHARGE_PER_PULSE).min(charge.max);
         if charge.is_full() || !charger.has_supply() {
             release_charger_state(&mut commands, entity, &mut allocation_wake);

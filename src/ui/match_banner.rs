@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use bevy::ui::{AlignItems, BorderRadius, JustifyContent, UiRect};
 
 use crate::nanobot::MatchOutcome;
+use crate::session::SessionRules;
 
 use super::{ui_interaction_system::NoPointerCapture, ui_setup::FontsResource};
 
@@ -53,6 +54,7 @@ pub fn setup_match_banner(mut commands: Commands, fonts: Res<FontsResource>) {
 
 pub fn update_match_banner_system(
     outcome: Option<Res<MatchOutcome>>,
+    rules: Res<SessionRules>,
     mut previous: Local<Option<MatchOutcome>>,
     mut roots: Query<&mut Visibility, With<MatchBannerRoot>>,
     mut texts: Query<(&mut Text, &mut TextColor), With<MatchBannerText>>,
@@ -62,27 +64,24 @@ pub fn update_match_banner_system(
         return;
     }
     *previous = Some(presentation);
+    let label = rules.outcome_label(presentation);
     for mut visibility in &mut roots {
-        *visibility = if presentation == MatchOutcome::InProgress {
-            Visibility::Hidden
-        } else {
+        *visibility = if label.is_some() {
             Visibility::Visible
+        } else {
+            Visibility::Hidden
         };
     }
     for (mut text, mut color) in &mut texts {
-        let (value, next_color) = match presentation {
-            MatchOutcome::InProgress => ("", Color::WHITE),
-            MatchOutcome::Victory => (
-                "VICTORY\nOpponent Swarm Eliminated",
-                Color::srgb(0.35, 0.95, 0.55),
-            ),
-            MatchOutcome::Draw => ("DRAW\nBoth Swarms Eliminated", Color::srgb(1.0, 0.85, 0.4)),
-            MatchOutcome::Defeat => (
-                "DEFEAT\nPlayer Swarm Eliminated",
-                Color::srgb(1.0, 0.35, 0.35),
-            ),
+        let next_color = match presentation {
+            MatchOutcome::Winner(winner) if rules.player_swarm == Some(winner) => {
+                Color::srgb(0.35, 0.95, 0.55)
+            }
+            MatchOutcome::Draw => Color::srgb(1.0, 0.85, 0.4),
+            MatchOutcome::Winner(_) => Color::srgb(1.0, 0.35, 0.35),
+            MatchOutcome::InProgress => Color::WHITE,
         };
-        **text = value.to_string();
+        **text = label.as_deref().unwrap_or_default().to_string();
         color.0 = next_color;
     }
 }

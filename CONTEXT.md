@@ -5,11 +5,15 @@ Nano Swarm is a top-down RTS prototype about steering a population of autonomous
 ## Language
 
 **Scenario**:
-A complete starting setup defining terrain, Resource Deposits, starting swarms, opponent behavior, and match outcome rules. Standard pairs the player with an advancing Opponent Swarm and uses Swarm Elimination outcomes; Sandbox uses the same map and player start without an opponent or match outcomes.
+A complete starting setup defining terrain, Resource Deposits, starting swarms, controller behavior, and match outcome rules. Standard pairs the player with an advancing Opponent Swarm, Sandbox omits the opponent and match outcomes, and AI Battle pairs two automatically controlled swarms.
 _Avoid_: Saved game, map only
 
+**AI Battle**:
+A spectator scenario in which two automatically controlled swarms battle from equal starts on the Standard map, exercising shared nanobot autonomy without player-painted intervention. The first Swarm Elimination ends the battle and its statistics collection, even if the simulation continues afterward.
+_Avoid_: Adaptive strategy AI, player-versus-AI match
+
 **Swarm**:
-The full player-controlled population of nanobots. It has no fixed subgroups; player intent is expressed through zones and tasks that eligible nanobots self-assign to.
+The full population of nanobots belonging to one side, steered by a player or an automatic controller. It has no fixed subgroups; intent is expressed through zones and tasks that eligible nanobots self-assign to.
 _Avoid_: Group, squad, unit group
 
 **Nanobot**:
@@ -97,7 +101,7 @@ A swarm's loss of all its Nanobots and completed structures, excluding Planned S
 _Avoid_: Production Collapse, population wipeout, king unit death
 
 **Match Outcome**:
-The permanent result of a Standard match: Victory when only the Opponent Swarm is eliminated, Defeat when only the player swarm is eliminated, or Draw when both are eliminated simultaneously. Sandbox has no Match Outcome.
+The permanent result established by the first Swarm Elimination: the surviving side wins, or simultaneous elimination is a Draw. Standard presents the result as player Victory, Defeat, or Draw; AI Battle identifies the winning swarm or Draw, and Sandbox has no Match Outcome.
 _Avoid_: Production status, recoverability warning
 
 **Automatic Construction**:

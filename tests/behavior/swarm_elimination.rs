@@ -38,7 +38,9 @@ fn each_nanobot_type_survives_until_its_final_death_is_cleaned_up() {
     for kind in NanobotType::ALL {
         let mut app = common::sim_app_with_elimination();
         common::spawn_swarm_with_nanobots(&mut app, Vec2::ZERO, &[(kind, 1)]);
-        common::spawn_opponent_swarm_with_nanobots(&mut app, Vec2::X * 500.0, &[(kind, 1)]);
+        let opponent =
+            common::spawn_opponent_swarm_with_nanobots(&mut app, Vec2::X * 500.0, &[(kind, 1)]);
+        let opponent_id = *app.world().get::<SwarmId>(opponent).unwrap();
         app.update();
         assert_eq!(
             *app.world().resource::<MatchOutcome>(),
@@ -57,7 +59,7 @@ fn each_nanobot_type_survives_until_its_final_death_is_cleaned_up() {
         assert!(app.world().get_entity(victim).is_err());
         assert_eq!(
             *app.world().resource::<MatchOutcome>(),
-            MatchOutcome::Defeat,
+            MatchOutcome::Winner(opponent_id),
             "{kind:?}: loss must be detected in the cleanup tick"
         );
     }
@@ -77,6 +79,7 @@ fn each_empty_completed_structure_prevents_elimination_only_for_its_owner() {
             let player = common::spawn_swarm_at(&mut app, Vec2::ZERO);
             let opponent =
                 common::spawn_opponent_swarm_with_nanobots(&mut app, Vec2::X * 500.0, &[]);
+            let opponent_id = *app.world().get::<SwarmId>(opponent).unwrap();
             let player_structure = common::spawn_empty_completed_structure(&mut app, player, kind);
             let opponent_structure =
                 common::spawn_empty_completed_structure(&mut app, opponent, kind);
@@ -94,11 +97,11 @@ fn each_empty_completed_structure_prevents_elimination_only_for_its_owner() {
             app.update();
             assert_eq!(
                 *app.world().resource::<MatchOutcome>(),
-                if remove_player {
-                    MatchOutcome::Defeat
+                MatchOutcome::Winner(if remove_player {
+                    opponent_id
                 } else {
-                    MatchOutcome::Victory
-                },
+                    SwarmId::PLAYER
+                }),
                 "{kind:?}: foreign structure cannot keep an empty swarm alive"
             );
         }
@@ -144,8 +147,8 @@ fn every_terminal_outcome_remains_latched_when_survival_changes() {
         Health, Nanobot, SwarmEliminationState, SwarmMember,
     };
     for expected in [
-        MatchOutcome::Victory,
-        MatchOutcome::Defeat,
+        MatchOutcome::Winner(SwarmId::PLAYER),
+        MatchOutcome::Winner(SwarmId(1)),
         MatchOutcome::Draw,
     ] {
         let mut app = common::sim_app_with_elimination();
@@ -161,9 +164,7 @@ fn every_terminal_outcome_remains_latched_when_survival_changes() {
             .query_filtered::<(&SwarmMember, &mut Health), With<Nanobot>>()
             .iter_mut(app.world_mut())
         {
-            if expected == MatchOutcome::Draw
-                || (member.0.is_player() == (expected == MatchOutcome::Defeat))
-            {
+            if expected == MatchOutcome::Draw || (member.0 != expected_winner(expected)) {
                 health.current = 0;
             }
         }
@@ -182,14 +183,21 @@ fn every_terminal_outcome_remains_latched_when_survival_changes() {
         assert!(
             !app.world()
                 .resource::<SwarmEliminationState>()
-                .player_eliminated
+                .is_eliminated(SwarmId::PLAYER)
         );
         assert!(
             app.world()
                 .resource::<SwarmEliminationState>()
-                .opponent_eliminated
+                .is_eliminated(SwarmId(1))
         );
         assert_eq!(*app.world().resource::<MatchOutcome>(), expected);
+    }
+}
+
+fn expected_winner(outcome: MatchOutcome) -> SwarmId {
+    match outcome {
+        MatchOutcome::Winner(id) => id,
+        _ => SwarmId::PLAYER,
     }
 }
 

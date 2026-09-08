@@ -16,6 +16,7 @@ use std::time::Duration;
 use bevy::{math::Vec2, prelude::*, time::TimeUpdateStrategy};
 use top_down_2d_rts_prototype_nano_swarm::{
     ai::AiPlugin,
+    battle_statistics::BattleCounters,
     intent::{IntentGrid, IntentKind},
     nanobot::{
         CHARGE_DRAIN_PER_TICK, CHARGE_PER_PULSE, CHARGE_PULSE_INTERVAL_TICKS,
@@ -179,6 +180,7 @@ fn low_defender_recharges_in_readable_bounded_time() {
 #[test]
 fn normal_rotation_consumes_exact_minerals() {
     let mut app = build_app();
+    app.init_resource::<BattleCounters>();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
     app.world_mut()
@@ -231,6 +233,13 @@ fn normal_rotation_consumes_exact_minerals() {
             .abs()
             < 1e-6
     );
+    assert_eq!(
+        app.world()
+            .resource::<BattleCounters>()
+            .totals_for(SwarmId::PLAYER)
+            .minerals_consumed,
+        19
+    );
 }
 
 #[test]
@@ -238,11 +247,9 @@ fn empty_unsupported_defender_dies_after_grace_period() {
     let mut app = build_app();
     common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Defend,
-        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend, SwarmId::PLAYER);
     let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
     app.world_mut()
         .entity_mut(defender)
@@ -817,11 +824,9 @@ fn defend_paint_without_low_charge_does_not_plan_charger() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(1, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Defend,
-        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend, SwarmId::PLAYER);
 
     app.update();
 
@@ -920,11 +925,9 @@ fn empty_charge_causes_defender_health_loss_when_no_charger() {
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Defend,
-        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend, SwarmId::PLAYER);
     let cell_center = common::cell_world_center(cell);
     let _charger = common::spawn_operational_charger_at(&mut app, cell, 0);
     let defender = common::spawn_defender_at(&mut app, cell_center);
@@ -2090,7 +2093,7 @@ fn charger_work_consumes_owning_swarm_resources() {
         ))
         .id();
     app.world_mut().resource_mut::<ResourceLedger>().add_for(
-        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
+        SwarmId::PLAYER,
         ResourceKind::Minerals,
         10,
     );
@@ -2123,10 +2126,9 @@ fn charger_work_consumes_owning_swarm_resources() {
         9
     );
     assert_eq!(
-        app.world().resource::<ResourceLedger>().total_for(
-            top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
-            ResourceKind::Minerals,
-        ),
+        app.world()
+            .resource::<ResourceLedger>()
+            .total_for(SwarmId::PLAYER, ResourceKind::Minerals,),
         10 - CHARGER_MATERIAL_PER_PULSE,
         "charger work removes consumed material from owning swarm",
     );
@@ -2136,6 +2138,7 @@ fn charger_work_consumes_owning_swarm_resources() {
 #[test]
 fn loaded_nanobot_death_loses_exact_cargo_and_releases_reservation() {
     let mut app = App::new();
+    app.init_resource::<BattleCounters>();
     app.init_resource::<ResourceLedger>()
         .add_systems(Update, nanobot_death_cleanup_system);
     let source = app.world_mut().spawn_empty().id();
@@ -2180,6 +2183,29 @@ fn loaded_nanobot_death_loses_exact_cargo_and_releases_reservation() {
         reservations.iter(app.world()).count(),
         0,
         "death releases reservation before entity removal",
+    );
+    assert_eq!(
+        app.world()
+            .resource::<BattleCounters>()
+            .totals_for(SwarmId::PLAYER)
+            .deaths,
+        1
+    );
+    assert_eq!(
+        app.world()
+            .resource::<BattleCounters>()
+            .totals_for(SwarmId::PLAYER)
+            .minerals_consumed,
+        0,
+        "lost cargo is not material consumption"
+    );
+    app.update();
+    assert_eq!(
+        app.world()
+            .resource::<BattleCounters>()
+            .totals_for(SwarmId::PLAYER)
+            .deaths,
+        1
     );
 }
 

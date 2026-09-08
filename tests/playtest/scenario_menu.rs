@@ -324,3 +324,19 @@ fn completed_match_still_allows_menu_selection_and_quit_through_agent_buttons() 
             .any(|exit| *exit == AppExit::Success)
     );
 }
+
+#[test]
+fn ai_battle_selector_persists_for_next_launch_without_changing_current_match() {
+    let directory = SettingsDirectory::new();
+    let mut app = menu_app(ScenarioSelection::load(directory.path()));
+    press_escape(&mut app);
+    click(&mut app, MenuAction::Select(Scenario::AiBattle));
+    assert_eq!(
+        app.world().resource::<ScenarioSelection>().current,
+        Scenario::Standard
+    );
+    assert_eq!(
+        ScenarioSelection::load(directory.path()).current,
+        Scenario::AiBattle
+    );
+}

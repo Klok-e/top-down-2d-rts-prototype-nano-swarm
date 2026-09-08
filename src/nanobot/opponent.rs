@@ -53,10 +53,10 @@ fn next_assault_cell(from: IVec2, target: IVec2) -> IVec2 {
     from + delta.signum()
 }
 
-/// Advance each configured opponent's Defend intent on fixed simulation ticks.
-/// Each advance edits only that opponent swarm's paint.
+/// Advance each configured swarm's Defend intent on fixed simulation ticks.
+/// Each advance edits only that swarm's paint.
 pub fn opponent_intent_system(
-    mut controllers: Query<(Entity, &SwarmId, &mut OpponentIntentController), With<OpponentSwarm>>,
+    mut controllers: Query<(Entity, &SwarmId, &mut OpponentIntentController)>,
     mut grid: ResMut<IntentGrid>,
     outcome: Option<Res<MatchOutcome>>,
 ) {

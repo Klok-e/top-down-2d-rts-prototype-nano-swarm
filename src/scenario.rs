@@ -278,6 +278,102 @@ fn spawn_production_facility(
     ));
 }
 
+/// Authored setup and session policy stay together in the scenario definition.
+pub struct ScenarioDefinition {
+    pub rules: crate::session::SessionRules,
+    opponent: bool,
+    automatic_player: bool,
+}
+
+impl crate::scenario_selection::Scenario {
+    pub fn definition(self) -> ScenarioDefinition {
+        use crate::session::{OutcomeMode, SessionRules};
+        match self {
+            Self::Standard => ScenarioDefinition {
+                rules: SessionRules::default(),
+                opponent: true,
+                automatic_player: false,
+            },
+            Self::Sandbox => ScenarioDefinition {
+                rules: SessionRules {
+                    scenario_name: "sandbox",
+                    outcomes: OutcomeMode::Disabled,
+                    ..default()
+                },
+                opponent: false,
+                automatic_player: false,
+            },
+            Self::AiBattle => ScenarioDefinition {
+                rules: SessionRules {
+                    scenario_name: "ai_battle",
+                    player_swarm: None,
+                    outcomes: OutcomeMode::SwarmRelative,
+                    record_statistics: true,
+                    accelerate_headless: true,
+                },
+                opponent: true,
+                automatic_player: true,
+            },
+        }
+    }
+}
+
+pub struct ScenarioPlugin;
+impl Plugin for ScenarioPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<crate::scenario_selection::ScenarioSelection>()
+            .init_resource::<crate::session::SessionRules>()
+            .init_resource::<crate::session::SimulationSeed>()
+            .add_systems(PreStartup, configure_session)
+            .add_systems(PostStartup, configure_controllers);
+    }
+}
+
+fn configure_session(
+    selection: Res<crate::scenario_selection::ScenarioSelection>,
+    mut rules: ResMut<crate::session::SessionRules>,
+) {
+    *rules = selection.current.definition().rules;
+}
+
+pub fn spawn_selected_scenario(
+    scenario: crate::scenario_selection::Scenario,
+    commands: &mut Commands<'_, '_>,
+    assets: &Res<'_, AssetServer>,
+    grid: &mut IntentGrid,
+    ids: ResMut<crate::nanobot::OpponentSwarmIdAlloc>,
+) {
+    spawn_default_terrain(commands);
+    spawn_default_player_scenario(commands, assets, grid);
+    if scenario.definition().opponent {
+        spawn_default_opponent_scenario(commands, assets, grid, ids);
+    } else {
+        spawn_sandbox_resources(commands);
+    }
+}
+
+fn configure_controllers(
+    mut commands: Commands,
+    selection: Res<crate::scenario_selection::ScenarioSelection>,
+    swarms: Query<(Entity, &SwarmId), With<Swarm>>,
+) {
+    if !selection.current.definition().automatic_player {
+        return;
+    }
+    for (entity, id) in &swarms {
+        if id.is_player() {
+            commands
+                .entity(entity)
+                .insert(OpponentIntentController::new(
+                    PLAYER_DEFEND_CELL,
+                    OPPONENT_CELL,
+                    5 * crate::SIMULATION_HZ as u32,
+                    6 * crate::SIMULATION_HZ as u32,
+                ));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use approx::assert_abs_diff_eq;

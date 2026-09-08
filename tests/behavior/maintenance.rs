@@ -8,6 +8,7 @@
 //! tests for the data layer live in `src/nanobot/maintenance.rs`.
 
 use bevy::prelude::*;
+use top_down_2d_rts_prototype_nano_swarm::battle_statistics::BattleCounters;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
@@ -132,9 +133,15 @@ fn structure_collapses_at_zero_health() {
     // A structure with no workers and enough elapsed ticks must
     // be despawned when its health reaches zero.
     let mut app = build_app();
+    app.init_resource::<BattleCounters>();
     let cell = IVec2::new(0, 0);
     let center = common::cell_world_center(cell);
     let structure = common::spawn_structure_at(&mut app, center);
+
+    let owner = common::spawn_swarm_at(&mut app, center);
+    app.world_mut()
+        .entity_mut(structure)
+        .insert(OwnerSwarm(owner));
 
     // Run past the buffer plus the full health bar plus a few
     // extra ticks so the structure is guaranteed to have
@@ -149,6 +156,13 @@ fn structure_collapses_at_zero_health() {
         app.world().get_entity(structure).is_err(),
         "structure must be despawned when it collapses"
     );
+    assert_eq!(
+        app.world()
+            .resource::<BattleCounters>()
+            .totals_for(SwarmId::PLAYER)
+            .structures_lost,
+        1
+    );
 }
 
 #[test]
@@ -161,11 +175,9 @@ fn worker_travels_to_and_maintains_stale_structure() {
     // health.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Build,
-        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Build, SwarmId::PLAYER);
     let center = common::cell_world_center(cell);
     let structure = common::spawn_structure_at(&mut app, center);
     // Make the structure stale so the maintenance system
@@ -209,11 +221,9 @@ fn maintenance_does_not_consume_stockpile_resources() {
     // unchanged after a maintenance cycle.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Build,
-        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Build, SwarmId::PLAYER);
     let center = common::cell_world_center(cell);
     let structure = common::spawn_structure_at(&mut app, center);
     app.world_mut()
@@ -267,11 +277,9 @@ fn sufficient_worker_time_keeps_structure_stable() {
     // counter must never reach the unstable regime.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Build,
-        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Build, SwarmId::PLAYER);
     let center = common::cell_world_center(cell);
     let structure = common::spawn_structure_at(&mut app, center);
     common::spawn_worker_at(&mut app, center + Vec2::new(-100.0, 0.0));
@@ -310,11 +318,9 @@ fn idle_worker_picks_maintenance_over_idling_when_structure_is_stale() {
     // observable proof.
     let mut app = build_app();
     let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Build,
-        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
-    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Build, SwarmId::PLAYER);
     let center = common::cell_world_center(cell);
     let structure = common::spawn_structure_at(&mut app, center);
     app.world_mut()
@@ -443,7 +449,7 @@ fn erased_defend_paint_leaves_charger_inactive_and_degrading() {
     assert!(app.world_mut().resource_mut::<IntentGrid>().erase(
         cell,
         IntentKind::Defend,
-        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER
+        SwarmId::PLAYER
     ),);
     {
         let mut charger_entity = app.world_mut().entity_mut(charger);

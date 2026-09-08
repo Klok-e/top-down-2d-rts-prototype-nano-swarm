@@ -41,6 +41,7 @@ use crate::{
         ProductionFacility, Swarm, SwarmEliminationState, SwarmId, SwarmMember,
     },
     resources::{ResourceKind, ResourceLedger},
+    session::SessionRules,
     ui::intent_layer_panel::{IntentLayerButton, IntentLayerPanelRoot},
     zones::{PlayerIntentAction, PlayerIntentError, apply_player_intent},
 };
@@ -110,6 +111,8 @@ pub enum ProtocolButton {
     MenuStandard,
     #[serde(rename = "menu.sandbox")]
     MenuSandbox,
+    #[serde(rename = "menu.ai_battle")]
+    MenuAiBattle,
     #[serde(rename = "menu.quit")]
     MenuQuit,
 }
@@ -949,6 +952,7 @@ impl Plugin for AgentControlCorePlugin {
         app.insert_resource(inbox)
             .insert_resource(SharedAgentControlClockResource(self.shared_clock.clone()))
             .init_resource::<AgentControlClock>()
+            .init_resource::<SessionRules>()
             .init_resource::<PendingButtonReleases>()
             .init_resource::<PendingWaits>()
             .init_resource::<PendingScreenshots>()
@@ -1322,6 +1326,7 @@ fn execute_agent_command(
                 .get_resource::<MatchOutcome>()
                 .copied()
                 .unwrap_or_default();
+            let rules = *world.resource::<SessionRules>();
             let Some(mut grid) = world.get_resource_mut::<IntentGrid>() else {
                 return AgentResponse::failure(
                     request.id,
@@ -1333,6 +1338,7 @@ fn execute_agent_command(
             match apply_player_intent(
                 &mut grid,
                 outcome,
+                rules,
                 IVec2::new(x, y),
                 intent.into(),
                 action.into(),
@@ -1344,6 +1350,14 @@ fn execute_agent_command(
                         clock,
                         "match_finished",
                         PlayerIntentError::MatchFinished.to_string(),
+                    );
+                }
+                Err(PlayerIntentError::SpectatorOnly) => {
+                    return AgentResponse::failure(
+                        request.id,
+                        clock,
+                        "spectator_only",
+                        PlayerIntentError::SpectatorOnly.to_string(),
                     );
                 }
                 Err(PlayerIntentError::OutOfBounds) => {
@@ -1440,12 +1454,24 @@ fn collect_agent_state(
         .unwrap_or_default();
     let elimination = world
         .get_resource::<SwarmEliminationState>()
+        .cloned()
+        .unwrap_or_default();
+    let rules = world
+        .get_resource::<SessionRules>()
         .copied()
         .unwrap_or_default();
+    let opponent_eliminated = rules
+        .player_swarm
+        .and_then(|player| {
+            let mut query = world.query_filtered::<&SwarmId, With<Swarm>>();
+            query.iter(world).find(|id| **id != player).copied()
+        })
+        .map(|id| elimination.is_eliminated(id))
+        .unwrap_or(false);
     let match_state = serde_json::json!({
-        "outcome": match_outcome_name(outcome),
-        "player_eliminated": elimination.player_eliminated,
-        "opponent_eliminated": elimination.opponent_eliminated,
+        "outcome": rules.outcome_name(outcome),
+        "player_eliminated": rules.player_swarm.map(|id| elimination.is_eliminated(id)).unwrap_or(false),
+        "opponent_eliminated": opponent_eliminated,
     });
 
     let mut swarms = {
@@ -1545,11 +1571,7 @@ fn collect_agent_state(
             serde_json::json!({
                 "id": id.0,
                 "opponent": opponent,
-                "eliminated": if id.is_player() {
-                    elimination.player_eliminated
-                } else {
-                    elimination.opponent_eliminated
-                },
+                "eliminated": elimination.is_eliminated(id),
                 "population": {
                     "worker": population[nanobot_type_index(NanobotType::Worker)],
                     "hauler": population[nanobot_type_index(NanobotType::Hauler)],
@@ -1590,15 +1612,6 @@ fn nanobot_type_index(kind: NanobotType) -> usize {
         NanobotType::Worker => 0,
         NanobotType::Hauler => 1,
         NanobotType::Defender => 2,
-    }
-}
-
-fn match_outcome_name(outcome: MatchOutcome) -> &'static str {
-    match outcome {
-        MatchOutcome::InProgress => "in_progress",
-        MatchOutcome::Victory => "victory",
-        MatchOutcome::Defeat => "defeat",
-        MatchOutcome::Draw => "draw",
     }
 }
 
@@ -1934,6 +1947,7 @@ impl ProtocolButton {
             Self::MenuResume => MenuAction::Resume,
             Self::MenuStandard => MenuAction::Select(Scenario::Standard),
             Self::MenuSandbox => MenuAction::Select(Scenario::Sandbox),
+            Self::MenuAiBattle => MenuAction::Select(Scenario::AiBattle),
             Self::MenuQuit => MenuAction::Quit,
             _ => return None,
         })
@@ -2557,8 +2571,8 @@ mod tests {
         use bevy::prelude::*;
 
         for outcome in [
-            MatchOutcome::Victory,
-            MatchOutcome::Defeat,
+            MatchOutcome::Winner(SwarmId::PLAYER),
+            MatchOutcome::Winner(SwarmId(1)),
             MatchOutcome::Draw,
         ] {
             let mut app = App::new();
@@ -2738,7 +2752,8 @@ mod tests {
         let map_revision = first["map"]["map_revision"].as_u64().unwrap();
         assert_eq!(first["match"]["outcome"], "in_progress");
 
-        app.world_mut().insert_resource(MatchOutcome::Victory);
+        app.world_mut()
+            .insert_resource(MatchOutcome::Winner(SwarmId::PLAYER));
         let second = control
             .submit(AgentRequest {
                 id: RequestId::Number(217),
@@ -2861,11 +2876,11 @@ mod tests {
         ledger.add_for(SwarmId::PLAYER, ResourceKind::Minerals, 37);
         let mut app = App::new();
         app.insert_resource(ledger)
-            .insert_resource(MatchOutcome::Victory)
+            .insert_resource(MatchOutcome::Winner(SwarmId::PLAYER))
             .insert_resource(SwarmEliminationState {
-                player_eliminated: false,
-                opponent_eliminated: true,
+                eliminated: [SwarmId(1)].into_iter().collect(),
             });
+        app.world_mut().spawn((Swarm::default(), SwarmId(1)));
         app.world_mut().spawn((
             MainCamera,
             Transform::from_xyz(80.0, -40.0, 0.0),

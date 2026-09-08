@@ -14,6 +14,7 @@ use bevy::ui::RelativeCursorPosition;
 use bevy::window::Window;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{BrushSelection, IntentGrid},
+    session::SessionRules,
     ui::{
         NoPointerCapture, UiHandling, check_ui_interaction,
         intent_layer_panel::IntentLayerPanelRoot,
@@ -27,6 +28,7 @@ fn build_app() -> App {
     app.insert_resource(UiHandling::default());
     app.insert_resource(BrushSelection::default());
     app.insert_resource(IntentGrid::new(16, 16));
+    app.insert_resource(SessionRules::default());
     app.insert_resource(ButtonInput::<MouseButton>::default());
     app
 }

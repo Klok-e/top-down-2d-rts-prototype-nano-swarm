@@ -1,4 +1,5 @@
 //! Owns construction reservations, validation, evacuation, activation, and cancellation.
+use crate::battle_statistics::{BattleCounters, BattleEvent};
 use bevy::prelude::*;
 
 use super::{
@@ -125,6 +126,7 @@ pub fn clear_finished_structures_system(
         ),
         With<Nanobot>,
     >,
+    mut counters: Option<ResMut<BattleCounters>>,
 ) {
     let physical = world.p0().snapshot();
     let mut plans = world.p1();
@@ -273,6 +275,9 @@ pub fn clear_finished_structures_system(
             }
         }
         if !occupied {
+            if let Some(counters) = counters.as_deref_mut() {
+                counters.record(swarm, BattleEvent::StructureBuilt);
+            }
             promote_planned_to_completion(
                 &mut commands,
                 entity,

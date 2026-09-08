@@ -31,6 +31,7 @@ fn build_app() -> App {
     // to the camera's actual world position.
     let mut app = App::new();
     app.add_plugins(bevy::time::TimePlugin)
+        .add_plugins(top_down_2d_rts_prototype_nano_swarm::scenario::ScenarioPlugin)
         .add_plugins(bevy::transform::TransformPlugin)
         .insert_resource(UiHandling::default())
         .init_resource::<BrushSelection>()
@@ -421,7 +422,7 @@ fn scripted_player_paints_and_erases_independent_overlap_for_every_kind() {
 #[test]
 fn scripted_world_paint_is_blocked_after_match_outcome() {
     let mut app = build_app();
-    app.insert_resource(MatchOutcome::Victory);
+    app.insert_resource(MatchOutcome::Winner(SwarmId::PLAYER));
     let window = spawn_window(&mut app);
     set_cursor(&mut app, window, Vec2::new(640.0, 360.0));
     spawn_camera(&mut app, Vec2::ZERO);
@@ -516,10 +517,93 @@ fn scripted_cell_guides_follow_paint_erase_and_ui_capture() {
     app.update();
     assert!(!visible(&app), "UI capture must suppress cell guides");
     app.world_mut().despawn(control);
-    app.insert_resource(MatchOutcome::Victory);
+    app.insert_resource(MatchOutcome::Winner(SwarmId::PLAYER));
     app.update();
     assert!(
         !visible(&app),
         "finished matches must not show paint guides"
     );
+}
+
+#[test]
+fn ai_battle_spectator_cannot_paint_or_erase() {
+    use top_down_2d_rts_prototype_nano_swarm::scenario_selection::{Scenario, ScenarioSelection};
+    let mut app = build_app();
+    let mut selection = ScenarioSelection::default();
+    selection.current = Scenario::AiBattle;
+    app.insert_resource(selection);
+    let window = spawn_window(&mut app);
+    set_cursor(&mut app, window, Vec2::new(640.0, 360.0));
+    spawn_camera(&mut app, Vec2::ZERO);
+    spawn_zone_material(&mut app);
+    press_mouse(&mut app, MouseButton::Left);
+    app.update();
+    assert!(
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(IVec2::ZERO)
+            .unwrap()
+            .is_empty()
+    );
+    clear_mouse(&mut app);
+    app.world_mut().resource_mut::<IntentGrid>().paint(
+        IVec2::ZERO,
+        IntentKind::Gather,
+        SwarmId::PLAYER,
+    );
+    press_mouse(&mut app, MouseButton::Right);
+    app.update();
+    assert!(
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(IVec2::ZERO)
+            .unwrap()
+            .has_owned(IntentKind::Gather, SwarmId::PLAYER)
+    );
+}
+
+#[test]
+fn ai_battle_agent_map_actions_are_rejected_without_modifying_intent() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        agent_control::{
+            AgentCommand, AgentControlCorePlugin, AgentRequest, ProtocolIntent, ProtocolMapAction,
+            RequestId,
+        },
+        scenario_selection::{Scenario, ScenarioSelection},
+    };
+    let mut app = common::minimal_app();
+    let mut selection = ScenarioSelection::default();
+    selection.current = Scenario::AiBattle;
+    app.insert_resource(selection);
+    let (control, plugin) = AgentControlCorePlugin::channel(4);
+    app.add_plugins(plugin);
+    app.world_mut().resource_mut::<IntentGrid>().paint(
+        IVec2::ZERO,
+        IntentKind::Gather,
+        SwarmId::PLAYER,
+    );
+    for action in [ProtocolMapAction::Paint, ProtocolMapAction::Erase] {
+        let reply = control
+            .submit(AgentRequest {
+                id: RequestId::Number(1),
+                command: AgentCommand::MapApply {
+                    action,
+                    intent: ProtocolIntent::Gather,
+                    x: 0,
+                    y: 0,
+                },
+            })
+            .unwrap();
+        app.update();
+        let response = reply.recv().unwrap();
+        assert!(!response.ok);
+        assert_eq!(response.error.unwrap().code, "spectator_only");
+        assert!(
+            app.world()
+                .resource::<IntentGrid>()
+                .cell(IVec2::ZERO)
+                .unwrap()
+                .has_owned(IntentKind::Gather, SwarmId::PLAYER)
+        );
+    }
 }
