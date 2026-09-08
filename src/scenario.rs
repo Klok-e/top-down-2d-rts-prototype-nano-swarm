@@ -325,7 +325,12 @@ impl Plugin for ScenarioPlugin {
             .init_resource::<crate::session::SessionRules>()
             .init_resource::<crate::session::SimulationSeed>()
             .add_systems(PreStartup, configure_session)
-            .add_systems(PostStartup, configure_controllers);
+            .add_systems(
+                PostStartup,
+                configure_controllers.run_if(not(resource_exists::<
+                    crate::session_lifecycle::SessionGeneration,
+                >)),
+            );
     }
 }
 
@@ -352,7 +357,7 @@ pub fn spawn_selected_scenario(
     }
 }
 
-fn configure_controllers(
+pub(crate) fn configure_controllers(
     mut commands: Commands,
     selection: Res<crate::scenario_selection::ScenarioSelection>,
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,

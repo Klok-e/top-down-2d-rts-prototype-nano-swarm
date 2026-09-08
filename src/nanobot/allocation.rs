@@ -8,7 +8,7 @@ pub mod projection;
 pub mod runtime;
 pub mod territory;
 
-use bevy::prelude::{Entity, IVec2};
+use bevy::prelude::{Entity, IVec2, Resource, World};
 
 use crate::nanobot::{PlannedKind, SwarmId};
 use crate::resources::ResourceKind;
@@ -22,6 +22,23 @@ pub use territory::*;
 
 /// Intent cells per deterministic allocation region axis.
 pub const ALLOCATION_REGION_CELLS: i32 = 8;
+
+fn reset_resource<T: Resource + Default>(world: &mut World) {
+    if let Some(mut resource) = world.get_resource_mut::<T>() {
+        *resource = T::default();
+    }
+}
+
+pub(super) fn reset_session(world: &mut World) {
+    reset_resource::<ActionableProjection>(world);
+    reset_resource::<TerritorySnapshot>(world);
+    reset_resource::<defender_staging::DefenderStagingLayouts>(world);
+    reset_resource::<AllocationClock>(world);
+    reset_resource::<runtime::AllocationTickDue>(world);
+    reset_resource::<RegionalAllocationWake>(world);
+    reset_resource::<TerminalDemandAges>(world);
+    reset_resource::<RegionalServiceAges>(world);
+}
 
 /// Stable allocation-region coordinate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

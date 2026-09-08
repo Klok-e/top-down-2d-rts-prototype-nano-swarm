@@ -34,7 +34,7 @@ Run the normal windowed game:
 cargo run
 ```
 
-Press **ESC** to pause and open the scenario menu. Choose **Standard** for the opponent match, **Sandbox** for open-ended play without an opponent, or **AI Battle** to watch two automatically controlled swarms and record battle statistics. The choice saves immediately and starts fresh on the next application launch; **Resume** or ESC returns to the current session. **Quit to desktop** exits the game.
+Press **ESC** to pause and open the scenario menu. Choose **Standard** for the opponent match, **Sandbox** for open-ended play without an opponent, or **AI Battle** to watch two automatically controlled swarms and record battle statistics. The choice saves immediately for future launches. **Start selected scenario** begins a fresh match in the current window and resets the camera, even when restarting the same scenario. ESC closes the menu and returns to the current session. **Quit to desktop** exits the game.
 
 Run an accelerated headless AI Battle with saved statistics:
 

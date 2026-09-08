@@ -471,10 +471,12 @@ pub fn production_facility_pick_target_system(
 
 /// Advance production and release finished output once a body-clear exterior cell
 /// is free. Output retains its funded type and cycle until release or destruction.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn production_facility_work_system(
     mut commands: Commands,
     mut tick: Local<u64>,
+    generation: Option<Res<crate::session_lifecycle::SessionGeneration>>,
+    mut previous_generation: Local<Option<u64>>,
     mut facilities: Query<(
         Entity,
         &mut ProductionFacility,
@@ -488,6 +490,12 @@ pub fn production_facility_work_system(
     mut counters: Option<ResMut<BattleCounters>>,
 ) {
     use crate::navigation::{BODY_RADIUS, CELL_WIDTH, Obstacle};
+    if let Some(generation) = generation.as_deref().map(|generation| generation.0)
+        && *previous_generation != Some(generation)
+    {
+        *tick = 0;
+        *previous_generation = Some(generation);
+    }
     *tick = tick.saturating_add(1);
     let mut occupied: Vec<_> = nanobots.iter().map(|t| t.translation.truncate()).collect();
     let geometry = physical.snapshot();

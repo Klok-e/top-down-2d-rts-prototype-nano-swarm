@@ -243,6 +243,8 @@ fn continuous_velocity(
 #[derive(SystemParam)]
 pub struct TrafficContext<'w, 's> {
     motion: Local<'s, std::collections::HashMap<Entity, LocalMotion>>,
+    previous_generation: Local<'s, Option<u64>>,
+    generation: Option<Res<'w, crate::session_lifecycle::SessionGeneration>>,
     time: Res<'w, Time<Fixed>>,
     members: Query<'w, 's, &'static SwarmMember>,
     remaining_travel: Query<'w, 's, &'static super::RemainingTravel>,
@@ -276,6 +278,8 @@ pub fn velocity_system(
 ) {
     let TrafficContext {
         mut motion,
+        mut previous_generation,
+        generation,
         time,
         members,
         remaining_travel,
@@ -286,6 +290,14 @@ pub fn velocity_system(
         queued,
         approaches,
     } = traffic;
+    if let Some(generation) = generation.as_deref().map(|generation| generation.0)
+        && *previous_generation != Some(generation)
+    {
+        motion.clear();
+        yielding.clear();
+        progress.clear();
+        *previous_generation = Some(generation);
+    }
     let physical = world.p0().snapshot();
     let mut query = world.p1();
     let diameter = crate::navigation::BODY_RADIUS * 2.0;

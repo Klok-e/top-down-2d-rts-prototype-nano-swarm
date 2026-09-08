@@ -1,6 +1,7 @@
-//! Paused session controls and next-launch scenario selection.
+//! Paused session controls and scenario selection.
 
 use crate::scenario_selection::{Scenario, ScenarioSelection};
+use crate::session_lifecycle::StartScenario;
 use bevy::{input::InputSystems, prelude::*, ui::UiSystems};
 
 #[derive(Resource, Default)]
@@ -8,6 +9,21 @@ pub struct ScenarioMenu {
     pub open: bool,
     /// Closing the menu consumes the frame's input as well.
     pub blocks_world_input: bool,
+    was_paused_before_open: Option<bool>,
+}
+
+impl ScenarioMenu {
+    pub fn toggle(&mut self) {
+        self.blocks_world_input = true;
+        self.open = !self.open;
+    }
+
+    /// Finish the menu transition after a new scenario has been installed.
+    pub fn finish_scenario_start(&mut self) {
+        self.open = false;
+        self.blocks_world_input = true;
+        self.was_paused_before_open = None;
+    }
 }
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -18,9 +34,8 @@ pub enum MenuInputSet {
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuAction {
-    Open,
-    Resume,
     Select(Scenario),
+    Start,
     Quit,
 }
 #[derive(Component)]
@@ -35,6 +50,7 @@ impl Plugin for ScenarioMenuPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ScenarioMenu>()
             .init_resource::<ScenarioSelection>()
+            .add_message::<StartScenario>()
             .configure_sets(
                 PreUpdate,
                 (MenuInputSet::Keyboard, MenuInputSet::Actions)
@@ -57,7 +73,7 @@ impl Plugin for ScenarioMenuPlugin {
 fn menu_keyboard(keys: Res<ButtonInput<KeyCode>>, mut menu: ResMut<ScenarioMenu>) {
     menu.blocks_world_input = menu.open;
     if keys.just_pressed(KeyCode::Escape) {
-        menu.open = !menu.open;
+        menu.toggle();
     }
     menu.blocks_world_input |= menu.open;
 }
@@ -66,39 +82,37 @@ fn menu_actions(
     buttons: Query<(&Interaction, &MenuAction), Changed<Interaction>>,
     mut menu: ResMut<ScenarioMenu>,
     mut selection: ResMut<ScenarioSelection>,
+    mut starts: MessageWriter<StartScenario>,
     mut exit: MessageWriter<AppExit>,
 ) {
     for (interaction, action) in &buttons {
         if *interaction != Interaction::Pressed {
             continue;
         }
-        if *action == MenuAction::Open {
-            menu.open = true;
-        } else if menu.open {
+        if menu.open {
             match action {
-                MenuAction::Resume => menu.open = false,
                 MenuAction::Select(scenario) => {
                     selection.select(*scenario);
+                }
+                MenuAction::Start => {
+                    starts.write(StartScenario(selection.next_launch));
                 }
                 MenuAction::Quit => {
                     exit.write(AppExit::Success);
                 }
-                MenuAction::Open => unreachable!(),
             }
         }
         menu.blocks_world_input = true;
     }
 }
 
-fn synchronize_pause(
-    menu: Res<ScenarioMenu>,
-    mut time: ResMut<Time<Virtual>>,
-    mut previous_pause: Local<Option<bool>>,
-) {
+fn synchronize_pause(mut menu: ResMut<ScenarioMenu>, mut time: ResMut<Time<Virtual>>) {
     if menu.open {
-        previous_pause.get_or_insert_with(|| time.is_paused());
+        if menu.was_paused_before_open.is_none() {
+            menu.was_paused_before_open = Some(time.is_paused());
+        }
         time.pause();
-    } else if let Some(was_paused) = previous_pause.take() {
+    } else if let Some(was_paused) = menu.was_paused_before_open.take() {
         if was_paused {
             time.pause();
         } else {
@@ -139,21 +153,6 @@ fn button(action: MenuAction) -> impl Bundle {
 fn setup_menu(mut commands: Commands) {
     commands
         .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                right: Val::Px(12.0),
-                bottom: Val::Px(12.0),
-                ..default()
-            },
-            ZIndex(5),
-        ))
-        .with_children(|root| {
-            root.spawn(button(MenuAction::Open)).with_children(|b| {
-                b.spawn(menu_text("ESC: Menu", 16.0));
-            });
-        });
-    commands
-        .spawn((
             MenuRoot,
             Node {
                 display: Display::None,
@@ -183,7 +182,10 @@ fn setup_menu(mut commands: Commands) {
             .with_children(|panel| {
                 panel.spawn(menu_text("Paused", 32.0));
                 panel.spawn((menu_text("", 19.0), MenuStatus));
-                panel.spawn(menu_text("Choose a fresh start for the next launch.", 16.0));
+                panel.spawn(menu_text(
+                    "Choose a scenario, then start it immediately.",
+                    16.0,
+                ));
                 for (scenario, description) in [
                     (Scenario::Standard, "Standard: Face an advancing opponent"),
                     (Scenario::Sandbox, "Sandbox: Open-ended, no opponent"),
@@ -196,8 +198,8 @@ fn setup_menu(mut commands: Commands) {
                         });
                 }
                 panel.spawn((menu_text("", 15.0), MenuError));
-                panel.spawn(button(MenuAction::Resume)).with_children(|b| {
-                    b.spawn(menu_text("Resume", 18.0));
+                panel.spawn(button(MenuAction::Start)).with_children(|b| {
+                    b.spawn(menu_text("Start selected scenario", 18.0));
                 });
                 panel.spawn(button(MenuAction::Quit)).with_children(|b| {
                     b.spawn(menu_text("Quit to desktop", 18.0));
@@ -228,7 +230,7 @@ fn refresh_menu(
     }
     for mut text in &mut status {
         text.0 = format!(
-            "Current: {}\nNext launch: {}",
+            "Current: {}\nSelected: {}",
             selection.current.label(),
             selection.next_launch.label()
         );

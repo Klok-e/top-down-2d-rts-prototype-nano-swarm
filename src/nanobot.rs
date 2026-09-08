@@ -167,5 +167,24 @@ impl Plugin for NanobotPlugin {
     }
 }
 
+fn reset_resource<T: Resource + Default>(world: &mut World) {
+    if let Some(mut resource) = world.get_resource_mut::<T>() {
+        *resource = T::default();
+    }
+}
+
+/// Clear simulation state retained outside session-owned entities.
+pub(crate) fn reset_session(world: &mut World) {
+    reset_resource::<SoftWorkSlots>(world);
+    reset_resource::<OpponentSwarmIdAlloc>(world);
+    reset_resource::<PopulationDemand>(world);
+    reset_resource::<ProductionPressure>(world);
+    reset_resource::<construction_access::CancelledSites>(world);
+    allocation::reset_session(world);
+    reset_resource::<SwarmEliminationState>(world);
+    reset_resource::<MatchOutcome>(world);
+    combat_presentation::reset_session(world);
+}
+
 pub mod structure_lifecycle;
 pub use structure_lifecycle::*;

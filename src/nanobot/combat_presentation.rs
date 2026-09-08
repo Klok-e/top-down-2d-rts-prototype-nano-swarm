@@ -328,6 +328,23 @@ struct CombatTransients<'w> {
 
 pub(crate) struct CombatPresentationPlugin;
 
+pub(super) fn reset_session(world: &mut World) {
+    fn reset<T: Resource + Default>(world: &mut World) {
+        if let Some(mut resource) = world.get_resource_mut::<T>() {
+            *resource = T::default();
+        }
+    }
+
+    reset::<ActiveCombatPulses>(world);
+    reset::<ActiveCombatDecorations>(world);
+    reset::<CombatPresentationView>(world);
+    reset::<ActiveNanobotDeathGhosts>(world);
+    reset::<ActiveStructureDeathGhosts>(world);
+    if let Some(mut facts) = world.get_resource_mut::<Messages<ResolvedCombatFact>>() {
+        facts.clear();
+    }
+}
+
 impl Plugin for CombatPresentationPlugin {
     fn build(&self, app: &mut App) {
         if !app

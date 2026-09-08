@@ -20,6 +20,7 @@ pub(crate) enum WorkReachability {
 
 #[derive(Default)]
 struct WorkOrigins {
+    generation: Option<u64>,
     tick: Option<u64>,
     by_crew: HashMap<(SwarmId, NanobotType, bool), std::sync::Arc<[Vec2]>>,
 }
@@ -28,6 +29,7 @@ struct WorkOrigins {
 #[allow(clippy::type_complexity)]
 pub struct WorkAccess<'w, 's> {
     origins: Local<'s, std::cell::RefCell<WorkOrigins>>,
+    generation: Option<Res<'w, crate::session_lifecycle::SessionGeneration>>,
     navigation: Res<'w, Navigation>,
     bots: Query<
         'w,
@@ -85,6 +87,12 @@ impl WorkAccess<'_, '_> {
         include_production: bool,
     ) -> std::sync::Arc<[Vec2]> {
         let mut origins = self.origins.borrow_mut();
+        if let Some(generation) = self.generation.as_deref().map(|generation| generation.0)
+            && origins.generation != Some(generation)
+        {
+            *origins = WorkOrigins::default();
+            origins.generation = Some(generation);
+        }
         let tick = self.navigation.work().tick;
         if origins.tick != Some(tick) {
             origins.tick = Some(tick);

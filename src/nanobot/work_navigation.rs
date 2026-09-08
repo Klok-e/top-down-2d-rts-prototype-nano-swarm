@@ -138,6 +138,8 @@ pub fn move_velocity_system(
     mut commands: Commands,
     mut approaches: Local<WorkApproaches>,
     mut routes: Local<std::collections::HashMap<Entity, ActiveRoute>>,
+    generation: Option<Res<crate::session_lifecycle::SessionGeneration>>,
+    mut previous_generation: Local<Option<u64>>,
     mut bots: Query<(
         Entity,
         &DirectMovementComponent,
@@ -155,6 +157,13 @@ pub fn move_velocity_system(
     time: Res<Time<Fixed>>,
 ) {
     use crate::navigation::{RouteGoal, RoutePriority, RouteStatus};
+    if let Some(generation) = generation.as_deref().map(|generation| generation.0)
+        && *previous_generation != Some(generation)
+    {
+        approaches.entries.clear();
+        routes.clear();
+        *previous_generation = Some(generation);
+    }
     routes.retain(|entity, route| {
         if bots.contains(*entity) {
             true

@@ -11,6 +11,13 @@ impl Plugin for NavigationPlugin {
     }
 }
 
+/// Clear route searches and derived geometry retained between fixed ticks.
+pub(crate) fn reset_session(world: &mut World) {
+    if let Some(mut navigation) = world.get_resource_mut::<Navigation>() {
+        *navigation = Navigation::default();
+    }
+}
+
 pub fn refresh_navigation(
     mut navigation: ResMut<Navigation>,
     grid: Res<IntentGrid>,

@@ -2,7 +2,7 @@ use crate::harness::{TestContext, TestFlow};
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     scenario_selection::{Scenario, ScenarioSelection},
-    ui::scenario_menu::ScenarioMenu,
+    ui::scenario_menu::{MenuAction, MenuInputSet, ScenarioMenu},
 };
 
 pub fn scenario_menu(ctx: &mut TestContext) -> TestFlow {
@@ -13,9 +13,46 @@ pub fn scenario_menu(ctx: &mut TestContext) -> TestFlow {
     if ctx.frame < 5 {
         return TestFlow::Continue;
     }
-    assert!(ctx.world.resource::<Time<Virtual>>().is_paused());
+    if ctx.frame <= 6 {
+        assert!(ctx.world.resource::<Time<Virtual>>().is_paused());
+    }
     if ctx.frame == 5 {
         return TestFlow::Screenshot("scenario_menu".into());
+    }
+    if ctx.frame == 6 {
+        let start = ctx
+            .world
+            .query::<(Entity, &MenuAction)>()
+            .iter(ctx.world)
+            .find_map(|(entity, action)| (*action == MenuAction::Start).then_some(entity))
+            .expect("start button exists");
+        // Inject after UI focus, at the same boundary used by agent-control input.
+        ctx.world
+            .resource_mut::<Schedules>()
+            .get_mut(PreUpdate)
+            .unwrap()
+            .add_systems(
+                (move |mut buttons: Query<&mut Interaction>, mut pressed: Local<bool>| {
+                    if !*pressed {
+                        *buttons.get_mut(start).unwrap() = Interaction::Pressed;
+                        *pressed = true;
+                    }
+                })
+                .after(MenuInputSet::Keyboard)
+                .before(MenuInputSet::Actions),
+            );
+        return TestFlow::Continue;
+    }
+    if ctx.frame == 7 {
+        assert_eq!(
+            ctx.world.resource::<ScenarioSelection>().current,
+            Scenario::Sandbox
+        );
+        assert!(!ctx.world.resource::<ScenarioMenu>().open);
+        return TestFlow::Screenshot("scenario_started_sandbox".into());
+    }
+    if ctx.frame < 8 {
+        return TestFlow::Continue;
     }
     TestFlow::Exit
 }
