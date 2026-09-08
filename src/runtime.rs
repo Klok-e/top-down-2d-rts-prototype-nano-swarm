@@ -1,10 +1,13 @@
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use bevy::{
-    app::{ScheduleRunnerPlugin, TerminalCtrlCHandlerPlugin},
+    app::{AppExit, PluginsState, TerminalCtrlCHandlerPlugin},
     log::LogPlugin,
     prelude::*,
-    time::TimeUpdateStrategy,
+    time::{TimeSystems, TimeUpdateStrategy},
 };
 
 #[cfg(unix)]
@@ -21,6 +24,65 @@ pub const DEFAULT_HEADLESS_HEIGHT: u32 = 720;
 pub const MAX_HEADLESS_DIMENSION: u32 = 8192;
 pub const MAX_HEADLESS_PIXELS: u64 = 16_777_216;
 const HEADLESS_FRAME_DURATION: Duration = Duration::from_nanos(16_666_667);
+
+/// Headless runner whose pacing follows the active session instead of launch options.
+pub struct DynamicHeadlessPacingPlugin;
+
+impl Plugin for DynamicHeadlessPacingPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<crate::session::SessionRules>()
+            .init_resource::<TimeUpdateStrategy>()
+            .add_systems(First, sync_headless_time_strategy.before(TimeSystems))
+            .set_runner(run_dynamic_headless);
+    }
+}
+
+fn sync_headless_time_strategy(
+    rules: Res<crate::session::SessionRules>,
+    mut strategy: ResMut<TimeUpdateStrategy>,
+) {
+    if rules.accelerate_headless {
+        if !matches!(*strategy, TimeUpdateStrategy::FixedTimesteps(1)) {
+            *strategy = TimeUpdateStrategy::FixedTimesteps(1);
+        }
+    } else if !matches!(*strategy, TimeUpdateStrategy::Automatic) {
+        *strategy = TimeUpdateStrategy::Automatic;
+    }
+}
+
+fn headless_frame_delay(accelerated: bool, elapsed: Duration) -> Duration {
+    if accelerated {
+        Duration::ZERO
+    } else {
+        HEADLESS_FRAME_DURATION.saturating_sub(elapsed)
+    }
+}
+
+fn run_dynamic_headless(mut app: App) -> AppExit {
+    if app.plugins_state() != PluginsState::Cleaned {
+        while app.plugins_state() == PluginsState::Adding {
+            bevy::tasks::tick_global_task_pools_on_main_thread();
+        }
+        app.finish();
+        app.cleanup();
+    }
+
+    loop {
+        let started = Instant::now();
+        app.update();
+        if let Some(exit) = app.should_exit() {
+            return exit;
+        }
+        let accelerated = app
+            .world()
+            .resource::<crate::session::SessionRules>()
+            .accelerate_headless;
+        let delay = headless_frame_delay(accelerated, started.elapsed());
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
+    }
+}
 
 pub const RUNTIME_HELP: &str = "\
 Usage: top-down-2d-rts-prototype-nano-swarm [OPTIONS]\n\
@@ -225,7 +287,6 @@ pub fn build_runtime_app(options: RuntimeOptions) -> Result<App, RuntimeBuildErr
     if let Some(scenario) = options.scenario {
         selection.current = scenario;
     }
-    let accelerated = options.headless && selection.current.definition().rules.accelerate_headless;
     let mut app = if options.headless {
         let mut app = build_app_with_presentation(Presentation::Offscreen {
             width: options.width,
@@ -233,11 +294,7 @@ pub fn build_runtime_app(options: RuntimeOptions) -> Result<App, RuntimeBuildErr
         });
         app.add_plugins((
             LogPlugin::default(),
-            ScheduleRunnerPlugin::run_loop(if accelerated {
-                Duration::ZERO
-            } else {
-                HEADLESS_FRAME_DURATION
-            }),
+            DynamicHeadlessPacingPlugin,
             TerminalCtrlCHandlerPlugin,
         ));
         app
@@ -251,9 +308,6 @@ pub fn build_runtime_app(options: RuntimeOptions) -> Result<App, RuntimeBuildErr
         seed: options.seed,
         headless: options.headless,
     });
-    if accelerated {
-        app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
-    }
     #[cfg(unix)]
     if options.agent_socket {
         app.add_plugins(AgentControlPlugin::bind(
@@ -271,10 +325,7 @@ pub fn build_runtime_app(options: RuntimeOptions) -> Result<App, RuntimeBuildErr
 mod tests {
     use super::*;
     use bevy::{
-        app::{ScheduleRunnerPlugin, TerminalCtrlCHandlerPlugin},
-        log::LogPlugin,
-        prelude::Window,
-        winit::WinitPlugin,
+        app::TerminalCtrlCHandlerPlugin, log::LogPlugin, prelude::Window, winit::WinitPlugin,
     };
 
     #[test]
@@ -355,7 +406,7 @@ mod tests {
         })
         .unwrap();
 
-        assert!(app.is_plugin_added::<ScheduleRunnerPlugin>());
+        assert!(app.is_plugin_added::<DynamicHeadlessPacingPlugin>());
         assert!(app.is_plugin_added::<TerminalCtrlCHandlerPlugin>());
         assert!(app.is_plugin_added::<LogPlugin>());
         assert!(!app.is_plugin_added::<WinitPlugin>());
@@ -363,6 +414,19 @@ mod tests {
             app.world_mut().query::<&Window>().iter(app.world()).count(),
             0
         );
+    }
+
+    #[test]
+    fn headless_delay_accounts_for_the_complete_app_update() {
+        assert_eq!(
+            headless_frame_delay(false, Duration::from_millis(10)),
+            HEADLESS_FRAME_DURATION - Duration::from_millis(10),
+        );
+        assert_eq!(
+            headless_frame_delay(false, Duration::from_millis(20)),
+            Duration::ZERO,
+        );
+        assert_eq!(headless_frame_delay(true, Duration::ZERO), Duration::ZERO,);
     }
 
     #[test]

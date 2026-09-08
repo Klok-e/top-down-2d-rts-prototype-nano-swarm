@@ -183,6 +183,16 @@ impl IntentGrid {
         self.height
     }
 
+    /// Clear session intent while invalidating external snapshots and render mirrors.
+    pub(crate) fn reset_session(&mut self) {
+        let revision = self.revision.saturating_add(1);
+        let mut dirty = self.render_dirty.clone();
+        dirty.extend(self.active_cells.iter().copied());
+        *self = Self::new(self.width, self.height);
+        self.revision = revision;
+        self.render_dirty.extend(dirty);
+    }
+
     /// Monotonic revision of externally visible cell state.
     pub fn revision(&self) -> u64 {
         self.revision
@@ -404,6 +414,21 @@ pub fn brush_selection_keyboard_system(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_reset_invalidates_snapshots_and_clears_previously_rendered_intent() {
+        let mut grid = IntentGrid::new(8, 8);
+        grid.paint(IVec2::ZERO, IntentKind::Build, SwarmId::PLAYER);
+        grid.paint(IVec2::ONE, IntentKind::Gather, SwarmId(2));
+        grid.render_dirty.clear();
+        grid.erase(IVec2::ONE, IntentKind::Gather, SwarmId(2));
+        let previous_revision = grid.revision();
+        grid.reset_session();
+        assert!(grid.revision() > previous_revision);
+        assert_eq!(grid.iter_active_cells().count(), 0);
+        assert!(!grid.cell(IVec2::ZERO).unwrap().has(IntentKind::Build));
+        assert_eq!(grid.render_dirty, HashSet::from([IVec2::ZERO, IVec2::ONE]));
+    }
 
     #[test]
     fn three_swarms_keep_every_kind_independently_at_one_cell() {

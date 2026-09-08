@@ -136,10 +136,18 @@ pub fn project_actionable_opportunities_system(
         With<Nanobot>,
     >,
     mut previous_maintenance_defenders: Local<BTreeMap<Entity, (SwarmId, IVec2, Option<Entity>)>>,
+    generation: Option<Res<crate::session_lifecycle::SessionGeneration>>,
+    mut previous_generation: Local<Option<u64>>,
     swarms: Query<&SwarmId>,
     facility_swarms: Query<&SwarmId, With<Swarm>>,
     entities: Query<Entity>,
 ) {
+    if let Some(generation) = generation.as_deref().map(|generation| generation.0)
+        && *previous_generation != Some(generation)
+    {
+        previous_maintenance_defenders.clear();
+        *previous_generation = Some(generation);
+    }
     for cell in grid.drain_projection_dirty() {
         projection.invalidate_cell(cell);
         for (_, deposit, transform, _) in &deposits {

@@ -56,11 +56,12 @@ const MAX_CONTROL_RESPONSE_DURATION: Duration = Duration::from_secs(310);
 const CONTROL_RESPONSE_POLL_DURATION: Duration = Duration::from_millis(10);
 #[cfg(unix)]
 const MAX_CONTROL_LINE_DURATION: Duration = Duration::from_secs(30);
-pub const AGENT_PROTOCOL_VERSION: u32 = 3;
-pub const SUPPORTED_METHODS: [&str; 10] = [
+pub const AGENT_PROTOCOL_VERSION: u32 = 4;
+pub const SUPPORTED_METHODS: [&str; 11] = [
     "session.hello",
     "state.get",
     "button.press",
+    "menu.toggle",
     "intent.select",
     "map.apply",
     "camera.set",
@@ -103,10 +104,8 @@ pub enum ProtocolButton {
     IntentDefend,
     #[serde(rename = "intent.corridor")]
     IntentCorridor,
-    #[serde(rename = "menu.open")]
-    MenuOpen,
-    #[serde(rename = "menu.resume")]
-    MenuResume,
+    #[serde(rename = "menu.start")]
+    MenuStart,
     #[serde(rename = "menu.standard")]
     MenuStandard,
     #[serde(rename = "menu.sandbox")]
@@ -128,6 +127,7 @@ pub enum AgentCommand {
     ButtonPress {
         button: ProtocolButton,
     },
+    MenuToggle,
     CameraSet {
         x: f32,
         y: f32,
@@ -1148,10 +1148,9 @@ fn execute_agent_command(
         },
         AgentCommand::ButtonPress { button } => {
             if let Some(action) = button.menu_action() {
-                if action != MenuAction::Open
-                    && !world
-                        .get_resource::<ScenarioMenu>()
-                        .is_some_and(|menu| menu.open)
+                if !world
+                    .get_resource::<ScenarioMenu>()
+                    .is_some_and(|menu| menu.open)
                 {
                     return AgentResponse::failure(
                         request.id,
@@ -1202,6 +1201,18 @@ fn execute_agent_command(
             world.entity_mut(entity).insert(Interaction::Pressed);
             world.resource_mut::<PendingButtonReleases>().0.push(entity);
             serde_json::json!({ "button": button })
+        }
+        AgentCommand::MenuToggle => {
+            let Some(mut menu) = world.get_resource_mut::<ScenarioMenu>() else {
+                return AgentResponse::failure(
+                    request.id,
+                    clock,
+                    "menu_unavailable",
+                    "the scenario menu is unavailable",
+                );
+            };
+            menu.toggle();
+            serde_json::json!({ "menu_open": menu.open })
         }
         AgentCommand::CameraSet { x, y, zoom } => {
             let camera_result = {
@@ -1943,8 +1954,7 @@ impl ProtocolButton {
     }
     fn menu_action(self) -> Option<MenuAction> {
         Some(match self {
-            Self::MenuOpen => MenuAction::Open,
-            Self::MenuResume => MenuAction::Resume,
+            Self::MenuStart => MenuAction::Start,
             Self::MenuStandard => MenuAction::Select(Scenario::Standard),
             Self::MenuSandbox => MenuAction::Select(Scenario::Sandbox),
             Self::MenuAiBattle => MenuAction::Select(Scenario::AiBattle),
@@ -2114,6 +2124,10 @@ pub fn parse_request_line(line: &[u8]) -> Result<AgentRequest, ProtocolError> {
                 button: params.button,
             }
         }
+        "menu.toggle" => {
+            require_empty_params(request.params)?;
+            AgentCommand::MenuToggle
+        }
         "camera.set" => {
             let params = serde_json::from_value::<CameraSetParams>(request.params)
                 .map_err(ProtocolError::InvalidJson)?;
@@ -2215,6 +2229,25 @@ mod tests {
                 },
             }
         );
+    }
+
+    #[test]
+    fn parses_menu_toggle_without_button_compatibility_aliases() {
+        assert_eq!(
+            parse_request_line(br#"{"id":8,"method":"menu.toggle"}"#).unwrap(),
+            AgentRequest {
+                id: RequestId::Number(8),
+                command: AgentCommand::MenuToggle,
+            }
+        );
+        for removed in ["menu.open", "menu.resume"] {
+            let line =
+                format!(r#"{{"id":8,"method":"button.press","params":{{"button":"{removed}"}}}}"#);
+            assert!(matches!(
+                parse_request_line(line.as_bytes()),
+                Err(ProtocolError::InvalidJson(_))
+            ));
+        }
     }
 
     #[test]
@@ -2617,7 +2650,7 @@ mod tests {
 
         assert!(response.ok);
         let result = response.result.unwrap();
-        assert_eq!(result["protocol_version"], 3);
+        assert_eq!(result["protocol_version"], 4);
         assert!(
             result["methods"]
                 .as_array()
@@ -2625,6 +2658,14 @@ mod tests {
                 .iter()
                 .any(|method| method == "state.get"),
             "hello must advertise state.get"
+        );
+        assert!(
+            result["methods"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|method| method == "menu.toggle"),
+            "hello must advertise menu.toggle"
         );
         assert!(
             result["methods"]
@@ -3270,7 +3311,7 @@ mod tests {
         assert_eq!(response["ok"], true);
         assert!(response["frame"].is_u64());
         assert!(response["fixed_tick"].is_u64());
-        assert_eq!(response["result"]["protocol_version"], 3);
+        assert_eq!(response["result"]["protocol_version"], 4);
 
         drop(app);
         remove_control_socket_test_directory(&directory);

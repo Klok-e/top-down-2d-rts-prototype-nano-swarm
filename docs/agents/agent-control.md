@@ -33,9 +33,9 @@ python scripts/nano_swarm_control.py hello
 python scripts/nano_swarm_control.py state
 python scripts/nano_swarm_control.py state --cell-offset 10000 --cell-limit 10000 --map-revision 42
 python scripts/nano_swarm_control.py button intent.defend
-python scripts/nano_swarm_control.py button menu.open
+python scripts/nano_swarm_control.py menu
 python scripts/nano_swarm_control.py button menu.sandbox
-python scripts/nano_swarm_control.py button menu.resume
+python scripts/nano_swarm_control.py button menu.start
 python scripts/nano_swarm_control.py select defend
 python scripts/nano_swarm_control.py paint defend 2 0
 python scripts/nano_swarm_control.py erase defend 2 0
@@ -89,6 +89,7 @@ Screenshot capture is asynchronous. A request received before any render submiss
 | `session.hello` | none | Protocol version and supported methods |
 | `state.get` | optional `cell_offset`, optional `cell_limit`, optional `map_revision` | Sparse game-state snapshot page |
 | `button.press` | `button` | Activates a stable real UI button |
+| `menu.toggle` | none | Opens or closes the scenario menu, like Escape |
 | `intent.select` | `intent` | Selects an intent directly |
 | `map.apply` | `action`, `intent`, `x`, `y` | Whether intent state changed |
 | `camera.set` | `x`, `y`, optional `zoom` | Applied camera view |
@@ -103,7 +104,7 @@ Player-action commands are rejected after Victory, Defeat, or Draw. State, camer
 
 ## State Snapshot
 
-`session.hello` reports protocol version 3. Elimination fields replace collapse fields without compatibility aliases.
+`session.hello` reports protocol version 4.
 
 `state.get` returns:
 
@@ -155,6 +156,6 @@ The socket worker polls a nonblocking listener and performs bounded blocking cli
 
 `spectator_only`: AI Battle rejects `map.apply` painting and erasing because both swarms own their control. Use camera, state, screenshots, and menu controls to observe the run. For headless benchmark execution and saved results, read [AI Battle](../ai-battle.md).
 
-`match_finished`: use `state`, `camera`, or `screenshot` to inspect the terminal state, then `shutdown`; start a new process for more player actions.
+`match_finished`: use `state`, `camera`, or `screenshot` to inspect the terminal state, or open the menu and start a fresh scenario.
 
-Menu buttons are `menu.open`, `menu.resume`, `menu.standard`, `menu.sandbox`, `menu.ai_battle`, and `menu.quit`. Menu actions use the real UI buttons and remain available after a match finishes; controls inside the menu require it to be open. While the menu is open, world input commands (including camera commands) return `menu_open`. Use frame waits rather than fixed-tick waits while paused. `state.get` includes `scenario` with `current`, `next_launch`, `save_error`, and `menu_open`. The runtime reads the next-launch preference from `$XDG_CONFIG_HOME/nano-swarm/scenario.json`, or `$HOME/.config/nano-swarm/scenario.json` when XDG_CONFIG_HOME is unavailable; automated runtime checks should use an isolated configuration directory.
+Menu buttons are `menu.start`, `menu.standard`, `menu.sandbox`, `menu.ai_battle`, and `menu.quit`. Use `menu.toggle` to open or close the menu through the same transition as Escape. Menu actions use the real UI buttons and remain available after a match finishes; buttons inside the menu require it to be open. `menu.start` immediately replaces the current match with the selected scenario. While the menu is open, world input commands (including camera commands) return `menu_open`. Use frame waits rather than fixed-tick waits while paused. `state.get` includes `scenario` with `current`, `next_launch`, `save_error`, and `menu_open`. The runtime reads the persisted preference from `$XDG_CONFIG_HOME/nano-swarm/scenario.json`, or `$HOME/.config/nano-swarm/scenario.json` when XDG_CONFIG_HOME is unavailable; automated runtime checks should use an isolated configuration directory.

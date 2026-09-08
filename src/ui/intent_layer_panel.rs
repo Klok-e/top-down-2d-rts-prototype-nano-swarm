@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use bevy::prelude::{
     BackgroundColor, BorderColor, Bundle, Button, Changed, Children, Color, Commands, Component,
     DetectChanges, Entity, Interaction, Node, PositionType, Query, Res, ResMut, Text, TextColor,
-    TextFont, Val, With, default,
+    TextFont, Val, With, World, default,
 };
 use bevy::ui::{
     AlignItems, BorderRadius, FlexDirection, JustifyContent, RelativeCursorPosition, UiRect,
@@ -148,6 +148,27 @@ pub fn setup_intent_layer_panel(
                     });
             }
         });
+}
+
+/// Rebuild the scenario-dependent panel inside the persistent application shell.
+pub(crate) fn reset_for_session(world: &mut World) {
+    if !world.contains_resource::<FontsResource>() {
+        return;
+    }
+    let roots = world
+        .query_filtered::<Entity, With<IntentLayerPanelRoot>>()
+        .iter(world)
+        .collect::<Vec<_>>();
+    for root in roots {
+        if let Ok(entity) = world.get_entity_mut(root) {
+            entity.despawn();
+        }
+    }
+    world.flush();
+    world
+        .run_system_cached(setup_intent_layer_panel)
+        .expect("intent layer panel setup has its required resources");
+    world.flush();
 }
 
 fn spawn_layer_button(kind: IntentKind) -> impl Bundle {

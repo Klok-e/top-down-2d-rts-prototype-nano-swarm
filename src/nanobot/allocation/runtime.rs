@@ -83,7 +83,7 @@ pub enum RegionalAllocationSet {
 }
 
 #[derive(Debug, Resource)]
-struct AllocationTickDue {
+pub(super) struct AllocationTickDue {
     due: bool,
     initialized: bool,
 }

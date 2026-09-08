@@ -298,7 +298,7 @@ fn type_index(ntype: NanobotType) -> usize {
 /// The two queries read `Transform` together (read-
 /// read compatible) and only `idle_bots` writes `VelocityComponent`,
 /// so they do not conflict.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn idle_spread_system(
     grid: Res<IntentGrid>,
     all_bots: Query<(&Transform, &SwarmMember), With<Nanobot>>,
@@ -329,8 +329,16 @@ pub fn idle_spread_system(
         )>,
     >,
     mut spread_tick: Local<u64>,
+    generation: Option<Res<crate::session_lifecycle::SessionGeneration>>,
+    mut previous_generation: Local<Option<u64>>,
     simulation_seed: Option<Res<crate::session::SimulationSeed>>,
 ) {
+    if let Some(generation) = generation.as_deref().map(|generation| generation.0)
+        && *previous_generation != Some(generation)
+    {
+        *spread_tick = 0;
+        *previous_generation = Some(generation);
+    }
     // Per-swarm, per-type fit-cell lists are rebuilt every tick so
     // opponent paint cannot attract another swarm's idle nanobots.
     let kind_sets: [Vec<IntentKind>; NanobotType::COUNT] =

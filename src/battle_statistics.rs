@@ -86,7 +86,12 @@ impl Plugin for BattleStatisticsPlugin {
         app.init_resource::<BattleStatisticsConfig>()
             .init_resource::<SessionRules>()
             .add_message::<AppExit>()
-            .add_systems(PostStartup, start_run)
+            .add_systems(
+                PostStartup,
+                start_run.run_if(not(resource_exists::<
+                    crate::session_lifecycle::SessionGeneration,
+                >)),
+            )
             .add_systems(
                 FixedFirst,
                 start_tick
@@ -193,7 +198,13 @@ pub struct BattleRun {
 }
 
 fn start_run(world: &mut World) {
+    start_session(world);
+}
+
+pub(crate) fn start_session(world: &mut World) {
     if !world.resource::<SessionRules>().record_statistics {
+        world.remove_resource::<BattleRun>();
+        world.remove_resource::<BattleCounters>();
         return;
     }
     let config = world.resource::<BattleStatisticsConfig>().clone();
@@ -212,6 +223,47 @@ fn start_run(world: &mut World) {
             world.write_message(AppExit::error());
         }
     }
+}
+
+/// Finalize an active recording before its ECS session is replaced.
+///
+/// A failed durable write retains the run so the menu action can retry without
+/// tearing down the session it describes.
+pub(crate) fn finish_session(world: &mut World) -> bool {
+    let Some(mut run) = world.remove_resource::<BattleRun>() else {
+        world.remove_resource::<BattleCounters>();
+        return true;
+    };
+    if run.summary.status == RunStatus::InProgress {
+        run.summary.status = RunStatus::Interrupted;
+        if let Some(mut counters) = world.get_resource_mut::<BattleCounters>() {
+            counters.frozen = true;
+        } else {
+            world.insert_resource(BattleCounters::default());
+        }
+        let result = if run.error.is_some() {
+            run.persist()
+        } else {
+            let sample = snapshot(world, &mut run);
+            run.write_sample(sample)
+        };
+        if let Err(error) = result {
+            error!("Cannot save interrupted battle: {error}");
+            run.error = Some(error.to_string());
+            world.insert_resource(run);
+            return false;
+        }
+    } else if run.error.is_some()
+        && let Err(error) = run.persist()
+    {
+        error!("Cannot finish battle results: {error}");
+        run.error = Some(error.to_string());
+        world.insert_resource(run);
+        return false;
+    }
+    run.error = None;
+    world.insert_resource(run);
+    true
 }
 
 fn create_run(

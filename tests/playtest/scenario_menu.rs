@@ -14,6 +14,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{BrushSelection, IntentKind, brush_selection_keyboard_system},
     nanobot::MatchOutcome,
     scenario_selection::{Scenario, ScenarioSelection},
+    session_lifecycle::StartScenario,
     ui::scenario_menu::{MenuAction, MenuRoot, ScenarioMenuPlugin},
 };
 
@@ -97,7 +98,7 @@ fn visible(app: &mut App) -> bool {
 }
 
 #[test]
-fn escape_pauses_before_the_next_fixed_tick_and_both_resume_controls_work() {
+fn escape_pauses_before_the_next_fixed_tick_and_toggles_the_menu() {
     let mut app = menu_app(ScenarioSelection::default());
     let ticks = app.world().resource::<SimulatedTicks>().0;
     press_escape(&mut app);
@@ -115,12 +116,6 @@ fn escape_pauses_before_the_next_fixed_tick_and_both_resume_controls_work() {
     assert!(!visible(&mut app));
     app.update();
     assert!(app.world().resource::<SimulatedTicks>().0 > ticks);
-    press_escape(&mut app);
-    let ticks = app.world().resource::<SimulatedTicks>().0;
-    click(&mut app, MenuAction::Resume);
-    assert!(!visible(&mut app));
-    app.update();
-    assert!(app.world().resource::<SimulatedTicks>().0 > ticks);
 }
 
 #[test]
@@ -130,7 +125,7 @@ fn menu_preserves_an_existing_simulation_pause() {
     let ticks = app.world().resource::<SimulatedTicks>().0;
     app.update();
     press_escape(&mut app);
-    click(&mut app, MenuAction::Resume);
+    press_escape(&mut app);
     app.update();
     assert!(app.world().resource::<Time<Virtual>>().is_paused());
     assert_eq!(app.world().resource::<SimulatedTicks>().0, ticks);
@@ -196,7 +191,7 @@ fn paused_world_controls_do_not_leak_into_resume() {
     app.world_mut()
         .resource_mut::<ButtonInput<KeyCode>>()
         .reset_all();
-    click(&mut app, MenuAction::Resume);
+    press_escape(&mut app);
     app.update();
     assert_eq!(
         app.world()
@@ -251,7 +246,7 @@ fn paused_world_controls_do_not_leak_into_resume() {
 }
 
 #[test]
-fn scenario_button_confirms_next_launch_only_and_quit_emits_app_exit() {
+fn scenario_selection_updates_the_selected_label_and_start_requests_it() {
     let directory = SettingsDirectory::new();
     let mut app = menu_app(ScenarioSelection::load(directory.path()));
     press_escape(&mut app);
@@ -263,7 +258,10 @@ fn scenario_button_confirms_next_launch_only_and_quit_emits_app_exit() {
         .map(|text| text.0.as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(labels.contains("Current: Standard\nNext launch: Sandbox"));
+    assert!(labels.contains("Current: Standard\nSelected: Sandbox"));
+    assert!(!labels.contains("ESC: Menu"));
+    assert!(!labels.lines().any(|line| line == "Resume"));
+    assert!(labels.lines().any(|line| line == "Start selected scenario"));
     assert_eq!(
         app.world().resource::<ScenarioSelection>().current,
         Scenario::Standard
@@ -271,6 +269,13 @@ fn scenario_button_confirms_next_launch_only_and_quit_emits_app_exit() {
     assert_eq!(
         ScenarioSelection::load(directory.path()).current,
         Scenario::Sandbox
+    );
+    click(&mut app, MenuAction::Start);
+    assert!(
+        app.world()
+            .resource::<Messages<StartScenario>>()
+            .iter_current_update_messages()
+            .any(|request| *request == StartScenario(Scenario::Sandbox))
     );
     click(&mut app, MenuAction::Quit);
     assert!(
@@ -282,7 +287,7 @@ fn scenario_button_confirms_next_launch_only_and_quit_emits_app_exit() {
 }
 
 #[test]
-fn completed_match_still_allows_menu_selection_and_quit_through_agent_buttons() {
+fn completed_match_still_allows_menu_start_and_quit_through_agent_controls() {
     use top_down_2d_rts_prototype_nano_swarm::agent_control::{
         AgentCommand, AgentControlCorePlugin, AgentRequest, ProtocolButton, RequestId,
     };
@@ -292,13 +297,23 @@ fn completed_match_still_allows_menu_selection_and_quit_through_agent_buttons() 
     let (control, plugin) = AgentControlCorePlugin::channel(4);
     app.add_plugins(plugin);
     for (id, button) in [
-        ProtocolButton::MenuOpen,
         ProtocolButton::MenuSandbox,
+        ProtocolButton::MenuStart,
         ProtocolButton::MenuQuit,
     ]
     .into_iter()
     .enumerate()
     {
+        if id == 0 {
+            let response = control
+                .submit(AgentRequest {
+                    id: RequestId::String("toggle".into()),
+                    command: AgentCommand::MenuToggle,
+                })
+                .unwrap();
+            app.update();
+            assert!(response.try_recv().unwrap().ok);
+        }
         let response = control
             .submit(AgentRequest {
                 id: RequestId::Number(id as u64),
@@ -317,6 +332,12 @@ fn completed_match_still_allows_menu_selection_and_quit_through_agent_buttons() 
         Scenario::Sandbox
     );
     assert_eq!(*app.world().resource::<MatchOutcome>(), MatchOutcome::Draw);
+    assert!(
+        app.world()
+            .resource::<Messages<StartScenario>>()
+            .iter_current_update_messages()
+            .any(|request| *request == StartScenario(Scenario::Sandbox))
+    );
     assert!(
         app.world()
             .resource::<Messages<AppExit>>()

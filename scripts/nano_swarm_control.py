@@ -63,8 +63,10 @@ def build_parser() -> argparse.ArgumentParser:
     button = commands.add_parser("button")
     button.add_argument(
         "button",
-        choices=tuple(f"intent.{intent}" for intent in INTENTS) + ("menu.open", "menu.resume", "menu.standard", "menu.sandbox", "menu.ai_battle", "menu.quit"),
+        choices=tuple(f"intent.{intent}" for intent in INTENTS) + ("menu.start", "menu.standard", "menu.sandbox", "menu.ai_battle", "menu.quit"),
     )
+
+    commands.add_parser("menu")
 
     select = commands.add_parser("select")
     select.add_argument("intent", choices=INTENTS)
@@ -118,6 +120,8 @@ def command_request(args: argparse.Namespace) -> tuple[str, dict | None]:
         return "state.get", params
     if args.command == "button":
         return "button.press", {"button": args.button}
+    if args.command == "menu":
+        return "menu.toggle", None
     if args.command == "select":
         return "intent.select", {"intent": args.intent}
     if args.command in ("paint", "erase"):

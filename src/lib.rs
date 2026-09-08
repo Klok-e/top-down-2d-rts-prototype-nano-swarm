@@ -16,6 +16,7 @@ pub mod runtime;
 pub mod scenario;
 pub mod scenario_selection;
 pub mod session;
+pub mod session_lifecycle;
 pub mod spatial;
 pub mod structure_overlay;
 pub mod structure_sprites;
@@ -164,6 +165,7 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
         // must be before NanobotPlugin because otherwise it receives events with despawned entities
         .add_plugins(NanoswarmUiSetupPlugin)
         .add_plugins(ui::scenario_menu::ScenarioMenuPlugin)
+        .add_plugins(session_lifecycle::SessionLifecyclePlugin)
         // must be before NanobotPlugin because otherwise it receives events with despawned entities
         .add_plugins(ZonesPlugin::default())
         .add_plugins(NanobotPlugin::default())
@@ -314,10 +316,7 @@ fn setup_things_startup(
     mut zone_mats: ResMut<Assets<ZoneMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
-    mut grid: ResMut<IntentGrid>,
-    opponent_id_alloc: ResMut<nanobot::OpponentSwarmIdAlloc>,
     presentation_target: Res<PresentationTarget>,
-    selection: Res<scenario_selection::ScenarioSelection>,
 ) -> Result<()> {
     let handle = zone_mats.add(ZoneMaterial::new(MAP_WIDTH, MAP_HEIGHT, &mut buffers));
     let is_offscreen = presentation_target.0.is_some();
@@ -352,14 +351,6 @@ fn setup_things_startup(
 
     commands.insert_resource(GameSettings::from_file_ron("config/game_settings.ron")?);
     commands.insert_resource(StructureSprites::load(&asset_server));
-
-    scenario::spawn_selected_scenario(
-        selection.current,
-        &mut commands,
-        &asset_server,
-        &mut grid,
-        opponent_id_alloc,
-    );
 
     // background
     commands.spawn((
