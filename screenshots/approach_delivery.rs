@@ -7,7 +7,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::IntentGrid,
     nanobot::{
         ApproachPhase, Cargo, Commitment, Health, LogisticsReservation, Nanobot, NanobotType,
-        OpponentIntentController, OwnerSwarm, ReturningToStockpile, SwarmId, SwarmMember,
+        OwnerSwarm, ReturningToStockpile, StrategicController, SwarmId, SwarmMember,
         VelocityComponent, WorkApproach,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile, StockpileRole},
@@ -95,13 +95,11 @@ fn prepare(world: &mut World) {
         let _ = world.despawn(entity);
     }
     for entity in world
-        .query_filtered::<Entity, With<OpponentIntentController>>()
+        .query_filtered::<Entity, With<StrategicController>>()
         .iter(world)
         .collect::<Vec<_>>()
     {
-        world
-            .entity_mut(entity)
-            .remove::<OpponentIntentController>();
+        world.entity_mut(entity).remove::<StrategicController>();
     }
     world.insert_resource(IntentGrid::new(4, 4));
     let cadence = std::time::Duration::from_secs_f64(1.0 / 60.0);

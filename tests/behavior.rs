@@ -3,6 +3,12 @@
 #[path = "behavior/battle_statistics.rs"]
 mod battle_statistics;
 
+#[path = "behavior/strategic_controller.rs"]
+mod strategic_controller;
+
+#[path = "behavior/gameplay_pacing.rs"]
+mod gameplay_pacing;
+
 #[path = "behavior/actionable_projection.rs"]
 mod actionable_projection;
 #[path = "behavior/automatic_construction_issue34.rs"]

@@ -7,9 +7,9 @@ use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
     intent::IntentGrid,
     nanobot::{
-        Commitment, DirectMovementComponent, Health, Nanobot, NanobotType,
-        OpponentIntentController, OwnerSwarm, PRODUCTION_TICKS_PER_BOT, PlannedKind,
-        ProductionFacility, Swarm, SwarmId, SwarmMember, VelocityComponent,
+        Commitment, DirectMovementComponent, Health, Nanobot, NanobotType, OwnerSwarm,
+        PRODUCTION_TICKS_PER_BOT, PlannedKind, ProductionFacility, StrategicController, Swarm,
+        SwarmId, SwarmMember, VelocityComponent,
     },
     structure_sprites::{StructureSprites, StructureVisual, StructureVisualState},
 };
@@ -141,13 +141,11 @@ fn prepare(world: &mut World) {
         let _ = world.despawn(entity);
     }
     for entity in world
-        .query_filtered::<Entity, With<OpponentIntentController>>()
+        .query_filtered::<Entity, With<StrategicController>>()
         .iter(world)
         .collect::<Vec<_>>()
     {
-        world
-            .entity_mut(entity)
-            .remove::<OpponentIntentController>();
+        world.entity_mut(entity).remove::<StrategicController>();
     }
     world.insert_resource(IntentGrid::new(8, 8));
     world.resource_mut::<GameSettings>().bot_speed = 0.;

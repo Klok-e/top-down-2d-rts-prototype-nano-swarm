@@ -120,7 +120,8 @@ pub struct RegionalAllocationPlugin;
 
 impl Plugin for RegionalAllocationPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ActionableProjection>()
+        app.init_resource::<crate::gameplay_pacing::GameplayPacing>()
+            .init_resource::<ActionableProjection>()
             .init_resource::<super::TerritorySnapshot>()
             .init_resource::<super::defender_staging::DefenderStagingLayouts>()
             .init_resource::<AllocationClock>()
@@ -220,6 +221,7 @@ pub struct TerminalLogisticsParams<'w, 's> {
 pub fn regional_allocation_acquisition_system(
     mut commands: Commands,
     clock: Res<AllocationClock>,
+    pacing: Res<crate::gameplay_pacing::GameplayPacing>,
     navigation: Res<Navigation>,
     projection: Res<ActionableProjection>,
     mut region_ages: ResMut<RegionalServiceAges>,
@@ -308,9 +310,11 @@ pub fn regional_allocation_acquisition_system(
             };
         let entry = charger_demand.entry(charger).or_insert((urgency, 0));
         entry.0 = entry.0.min(urgency);
-        entry.1 = entry
-            .1
-            .saturating_add(minerals_to_fully_charge(charge.current, charge.max));
+        entry.1 = entry.1.saturating_add(minerals_to_fully_charge(
+            charge.current,
+            charge.max,
+            pacing.charge_drain_per_tick,
+        ));
     }
 
     let mut active_terminals = BTreeMap::new();

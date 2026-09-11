@@ -6,8 +6,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
     intent::IntentGrid,
     nanobot::{
-        Commitment, Health, Nanobot, NanobotType, OpponentIntentController, PlannedKind,
-        PlannedStructure, Structure, StructureClearing, StructureKind, SwarmId, SwarmMember,
+        Commitment, Health, Nanobot, NanobotType, PlannedKind, PlannedStructure,
+        StrategicController, Structure, StructureClearing, StructureKind, SwarmId, SwarmMember,
         VelocityComponent,
     },
     resources::Stockpile,
@@ -32,13 +32,11 @@ fn prepare(world: &mut World, cancel: bool) {
         let _ = world.despawn(entity);
     }
     let controllers = world
-        .query_filtered::<Entity, With<OpponentIntentController>>()
+        .query_filtered::<Entity, With<StrategicController>>()
         .iter(world)
         .collect::<Vec<_>>();
     for entity in controllers {
-        world
-            .entity_mut(entity)
-            .remove::<OpponentIntentController>();
+        world.entity_mut(entity).remove::<StrategicController>();
     }
     world.insert_resource(IntentGrid::new(8, 8));
     for (mut transform, mut projection, mut zoom) in world

@@ -15,7 +15,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Charge, Commitment, DEFENDER_ATTACK_RANGE, DefenderResponse, DirectMovementComponent,
-        Health, Nanobot, NanobotType, OpponentIntentController, OpponentSwarm, Swarm, SwarmId,
+        Health, Nanobot, NanobotType, OpponentSwarm, StrategicController, Swarm, SwarmId,
         SwarmMember, TerritorySnapshot, VelocityComponent, world_to_cell,
     },
 };
@@ -163,13 +163,11 @@ fn setup_scene(world: &mut World) -> StagingEvidence {
     clear_intent(world);
 
     let controllers = world
-        .query_filtered::<Entity, With<OpponentIntentController>>()
+        .query_filtered::<Entity, With<StrategicController>>()
         .iter(world)
         .collect::<Vec<_>>();
     for entity in controllers {
-        world
-            .entity_mut(entity)
-            .remove::<OpponentIntentController>();
+        world.entity_mut(entity).remove::<StrategicController>();
     }
 
     world.spawn((Swarm {}, EVIDENCE_SWARM));

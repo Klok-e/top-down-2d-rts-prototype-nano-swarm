@@ -8,8 +8,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::IntentGrid,
     nanobot::{
         Cargo, Commitment, CongestionRecovery, DirectMovementComponent, HaulerAssignment, Health,
-        LogisticsReservation, Nanobot, NanobotType, OpponentIntentController, OwnerSwarm,
-        RemainingTravel, SwarmId, SwarmMember, VelocityComponent,
+        LogisticsReservation, Nanobot, NanobotType, OwnerSwarm, RemainingTravel,
+        StrategicController, SwarmId, SwarmMember, VelocityComponent,
     },
     resources::{ResourceKind, Stockpile, StockpileRole},
 };
@@ -97,13 +97,11 @@ fn prepare(world: &mut World) {
         let _ = world.despawn(entity);
     }
     for entity in world
-        .query_filtered::<Entity, With<OpponentIntentController>>()
+        .query_filtered::<Entity, With<StrategicController>>()
         .iter(world)
         .collect::<Vec<_>>()
     {
-        world
-            .entity_mut(entity)
-            .remove::<OpponentIntentController>();
+        world.entity_mut(entity).remove::<StrategicController>();
     }
     world.insert_resource(IntentGrid::new(4, 4));
     for (mut transform, mut projection, mut zoom) in world

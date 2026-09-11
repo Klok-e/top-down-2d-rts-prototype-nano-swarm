@@ -32,6 +32,8 @@ use bevy::{
 };
 use serde::{Deserialize, Serialize};
 
+mod execution;
+
 use crate::{
     MainCamera,
     fly_camera::{CameraControlError, CameraZoom2d, FlyCamera2d, set_camera_view},
@@ -123,6 +125,7 @@ pub enum AgentCommand {
         cell_offset: u32,
         cell_limit: u32,
         map_revision: Option<u64>,
+        details: bool,
     },
     ButtonPress {
         button: ProtocolButton,
@@ -1133,7 +1136,8 @@ fn execute_agent_command(
             cell_offset,
             cell_limit,
             map_revision,
-        } => match collect_agent_state(world, cell_offset, cell_limit, map_revision) {
+            details,
+        } => match collect_agent_state(world, cell_offset, cell_limit, map_revision, details) {
             Ok(state) => state,
             Err(current_revision) => {
                 return AgentResponse::failure(
@@ -1397,6 +1401,7 @@ fn collect_agent_state(
     cell_offset: u32,
     cell_limit: u32,
     map_revision: Option<u64>,
+    details: bool,
 ) -> Result<serde_json::Value, u64> {
     let map = if let Some(grid) = world.get_resource::<IntentGrid>() {
         let current_revision = grid.revision();
@@ -1608,14 +1613,18 @@ fn collect_agent_state(
         "current": selection.current, "next_launch": selection.next_launch, "save_error": selection.error,
         "menu_open": world.get_resource::<ScenarioMenu>().is_some_and(|menu| menu.open),
     }));
-    Ok(serde_json::json!({
+    let mut state = serde_json::json!({
         "scenario": scenario,
         "selected_intent": selected_intent,
         "map": map,
         "camera": camera,
         "match": match_state,
         "swarms": swarms,
-    }))
+    });
+    if details {
+        state["execution"] = execution::collect(world);
+    }
+    Ok(state)
 }
 
 fn nanobot_type_index(kind: NanobotType) -> usize {
@@ -2051,6 +2060,8 @@ struct StateGetParams {
     cell_limit: u32,
     #[serde(default)]
     map_revision: Option<u64>,
+    #[serde(default)]
+    details: bool,
 }
 
 impl Default for StateGetParams {
@@ -2059,6 +2070,7 @@ impl Default for StateGetParams {
             cell_offset: 0,
             cell_limit: DEFAULT_STATE_CELL_LIMIT,
             map_revision: None,
+            details: false,
         }
     }
 }
@@ -2115,6 +2127,7 @@ pub fn parse_request_line(line: &[u8]) -> Result<AgentRequest, ProtocolError> {
                 cell_offset: params.cell_offset,
                 cell_limit: params.cell_limit,
                 map_revision: params.map_revision,
+                details: params.details,
             }
         }
         "button.press" => {
@@ -2734,6 +2747,7 @@ mod tests {
                     cell_offset: 0,
                     cell_limit: 2,
                     map_revision: None,
+                    details: false,
                 },
             })
             .unwrap();
@@ -2752,6 +2766,7 @@ mod tests {
                     cell_offset: 2,
                     cell_limit: 2,
                     map_revision: Some(map_revision),
+                    details: false,
                 },
             })
             .unwrap();
@@ -2785,6 +2800,7 @@ mod tests {
                     cell_offset: 0,
                     cell_limit: 1,
                     map_revision: None,
+                    details: false,
                 },
             })
             .unwrap();
@@ -2802,6 +2818,7 @@ mod tests {
                     cell_offset: 1,
                     cell_limit: 1,
                     map_revision: Some(map_revision),
+                    details: false,
                 },
             })
             .unwrap();
@@ -2832,6 +2849,7 @@ mod tests {
                     cell_offset: 0,
                     cell_limit: 1,
                     map_revision: None,
+                    details: false,
                 },
             })
             .unwrap();
@@ -2852,6 +2870,7 @@ mod tests {
                     cell_offset: 1,
                     cell_limit: 1,
                     map_revision: Some(revision),
+                    details: false,
                 },
             })
             .unwrap();
@@ -2884,6 +2903,7 @@ mod tests {
                     cell_offset: 0,
                     cell_limit: 1,
                     map_revision: None,
+                    details: false,
                 },
             })
             .unwrap();
@@ -2956,6 +2976,7 @@ mod tests {
                     cell_offset: 0,
                     cell_limit: DEFAULT_STATE_CELL_LIMIT,
                     map_revision: None,
+                    details: false,
                 },
             })
             .unwrap();

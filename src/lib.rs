@@ -1,10 +1,12 @@
 pub mod agent_control;
 pub mod ai;
+pub mod battle_experiment;
 pub mod battle_statistics;
 pub mod building;
 pub mod deposit_presentation;
 pub mod fly_camera;
 pub mod game_settings;
+pub mod gameplay_pacing;
 pub mod intent;
 pub mod materials;
 pub mod nanobot;
@@ -18,6 +20,8 @@ pub mod scenario_selection;
 pub mod session;
 pub mod session_lifecycle;
 pub mod spatial;
+pub mod strategic_controller;
+pub mod strategic_runtime;
 pub mod structure_overlay;
 pub mod structure_sprites;
 pub mod tactical_overlay;
@@ -51,8 +55,8 @@ use game_settings::GameSettings;
 use intent::IntentGrid;
 use materials::BackgroundMaterial;
 use nanobot::{
-    CombatPlugin, NanobotPlugin, NanobotPresentationPlugin, OpponentIntentPlugin,
-    PlannedStructurePlugin, PopulationDemandPlugin, ProductionPlugin, RegionalAllocationPlugin,
+    CombatPlugin, NanobotPlugin, NanobotPresentationPlugin, PlannedStructurePlugin,
+    PopulationDemandPlugin, ProductionPlugin, RegionalAllocationPlugin, StrategicControllerPlugin,
     SwarmEliminationPlugin,
 };
 use resources::ResourceLedger;
@@ -218,7 +222,7 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
         .add_plugins(CombatPlugin)
         // The authored opponent changes only its own Defend intent; normal
         // allocation and role systems execute the resulting pressure.
-        .add_plugins(OpponentIntentPlugin)
+        .add_plugins(StrategicControllerPlugin)
         // Single allocator for regional work and territory-wide Defender responses.
         .add_plugins(RegionalAllocationPlugin)
         // Typed workload chooses required capacity and automatic production order.

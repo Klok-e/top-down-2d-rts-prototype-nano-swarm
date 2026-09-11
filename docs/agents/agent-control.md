@@ -31,6 +31,7 @@ The client uses only Python's standard library:
 ```bash
 python scripts/nano_swarm_control.py hello
 python scripts/nano_swarm_control.py state
+python scripts/nano_swarm_control.py state --details --cell-limit 1
 python scripts/nano_swarm_control.py state --cell-offset 10000 --cell-limit 10000 --map-revision 42
 python scripts/nano_swarm_control.py button intent.defend
 python scripts/nano_swarm_control.py menu
@@ -87,7 +88,7 @@ Screenshot capture is asynchronous. A request received before any render submiss
 | Method | Parameters | Result |
 | --- | --- | --- |
 | `session.hello` | none | Protocol version and supported methods |
-| `state.get` | optional `cell_offset`, optional `cell_limit`, optional `map_revision` | Sparse game-state snapshot page |
+| `state.get` | optional `cell_offset`, optional `cell_limit`, optional `map_revision`, optional boolean `details` | Sparse game-state snapshot page |
 | `button.press` | `button` | Activates a stable real UI button |
 | `menu.toggle` | none | Opens or closes the scenario menu, like Escape |
 | `intent.select` | `intent` | Selects an intent directly |
@@ -115,6 +116,18 @@ Player-action commands are rejected after Victory, Defeat, or Draw. State, camer
 - Per-swarm `eliminated` flag, population, demand, aggregate health, centroid, minerals, and facility counts.
 
 Empty map cells are omitted. Active cells use deterministic row-major ordering. Each response includes at most 10,000 active cells with their independently owned intent layers, `active_cell_total`, `next_cell_offset`, and `map_revision`. Pass both `next_cell_offset` and the unchanged `map_revision` into the next `state.get` call until the offset is `null`. Page zero contains the complete non-map snapshot; continuation pages contain only `map`, preventing live simulation changes from mixing newer swarm or match data into that snapshot. If the map changes between pages, the server returns `stale_state_page`; restart from offset zero. Each layer entry has an intent kind and a non-null owner ID: `0` is the player and positive IDs are opponents. The same kind can appear more than once in a cell, once per owning swarm; consume all entries. Entries are ordered by intent kind, then owner ID. There is no `defend_contests` field.
+
+### Execution detail
+
+For AI Battle execution diagnosis, request `state --details --cell-limit 1`. The optional `details: true` parameter adds an `execution` object only on page zero. It is omitted by default and on map continuation pages. Reading details does not issue commands or change gameplay state.
+
+`execution` contains `nanobots`, `structures`, and `deposits` collections, each with `total`, `items`, and `truncated`. Each collection returns at most 256 items sorted by entity ID. Check `truncated` before drawing conclusions from absence. IDs are entity bits, not stable identities across fresh matches; task references can name entities outside the returned collection or entities that no longer exist.
+
+Nanobot records expose `id`, `owner`, `type`, `position`, `health`, `charge`, `movement`, `velocity`, `work_blocked`, and `commitment`. Optional component facts are `defender_response`, `defender_attack_cooldown`, `charger_assignment`, `charger_progress`, `charger_pulse_progress`, `cargo`, `gather_assignment`, `extract_progress`, `returning_to_stockpile`, `build_assignment`, `build_progress`, `planned_structure_claim`, `planned_structure_progress`, `maintenance_assignment`, `maintenance_progress`, `hauler_assignment`, and `logistics_reservation`; `hauler_loading` is a boolean marker. Cooldown reports `ticks_remaining`, and recharge-pulse progress reports `ticks_elapsed`.
+
+Structure records expose `id`, `owner` (resolved swarm ID), `owner_entity_id`, `position`, `kind`, `health`, and `maintenance_age_ticks`, plus optional `charger`, `stockpile`, `production_facility`, `build_site`, and `planned_structure` buffer/progress facts. Deposit records expose `id`, `position`, `kind`, `amount`, and `capacity`. Absent optional components are `null`.
+
+These are observed component facts, which may coexist, rather than a guessed exclusive status. Compare snapshots using their response clocks: a single unassigned, empty, or pending observation does not establish a sustained stall.
 
 ## Player Equivalence
 

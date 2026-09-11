@@ -58,7 +58,7 @@ pub fn scenario_menu(ctx: &mut TestContext) -> TestFlow {
 }
 
 pub fn ai_battle_spectator(ctx: &mut TestContext) -> TestFlow {
-    use top_down_2d_rts_prototype_nano_swarm::nanobot::{OpponentIntentController, SwarmId};
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{StrategicController, SwarmId};
     if ctx.frame == 2 {
         assert_eq!(
             ctx.world.resource::<ScenarioSelection>().current,
@@ -66,7 +66,7 @@ pub fn ai_battle_spectator(ctx: &mut TestContext) -> TestFlow {
         );
         assert_eq!(
             ctx.world
-                .query::<(&SwarmId, &OpponentIntentController)>()
+                .query::<(&SwarmId, &StrategicController)>()
                 .iter(ctx.world)
                 .count(),
             2

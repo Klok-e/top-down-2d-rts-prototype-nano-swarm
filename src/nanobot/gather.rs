@@ -493,6 +493,7 @@ pub fn source_stockpile_demand_system(
     mut commands: Commands,
     access: super::construction_access::ConstructionAccess,
     structure_sprites: Res<StructureSprites>,
+    pacing: Res<crate::gameplay_pacing::GameplayPacing>,
     gather_assignments: Query<(&GatherAssignment, &SwarmMember)>,
     deposits: Query<(&ResourceDeposit, &Transform)>,
     stockpiles: Query<(
@@ -592,7 +593,8 @@ pub fn source_stockpile_demand_system(
         let placement_cell = world_to_cell(placement_pos);
         newly_planned_positions.push(placement_pos);
         let mut entity_commands = commands.spawn((
-            PlannedStructure::new(PlannedKind::SourceStockpile, placement_cell),
+            PlannedStructure::new(PlannedKind::SourceStockpile, placement_cell)
+                .with_work_budget(pacing.construction_work_ticks),
             planned_visual_components(
                 PlannedKind::SourceStockpile,
                 &structure_sprites,
@@ -1277,21 +1279,23 @@ pub struct GatherPlugin;
 
 impl Plugin for GatherPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            FixedUpdate,
-            (
-                source_stockpile_demand_system
-                    .before(crate::nanobot::production::production_facility_auto_creation_system),
-                worker_gather_arrive_system,
-                worker_gather_extract_system,
-                worker_gather_reroute_system,
-                worker_gather_carry_assign_system,
-                worker_gather_delivery_system,
-            )
-                .chain()
-                .after(crate::nanobot::RegionalAllocationSet::Acquire)
-                .after(crate::nanobot::NanobotSimulationSet::Movement),
-        );
+        app.init_resource::<crate::gameplay_pacing::GameplayPacing>()
+            .add_systems(
+                FixedUpdate,
+                (
+                    source_stockpile_demand_system.before(
+                        crate::nanobot::production::production_facility_auto_creation_system,
+                    ),
+                    worker_gather_arrive_system,
+                    worker_gather_extract_system,
+                    worker_gather_reroute_system,
+                    worker_gather_carry_assign_system,
+                    worker_gather_delivery_system,
+                )
+                    .chain()
+                    .after(crate::nanobot::RegionalAllocationSet::Acquire)
+                    .after(crate::nanobot::NanobotSimulationSet::Movement),
+            );
     }
 }
 

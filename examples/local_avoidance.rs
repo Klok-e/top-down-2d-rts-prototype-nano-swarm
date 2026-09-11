@@ -12,9 +12,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Commitment, DirectMovementComponent, Health, Nanobot, NanobotType,
-        OpponentIntentController, Structure, StructureKind, Swarm, SwarmId, SwarmMember,
-        VelocityComponent,
+        Commitment, DirectMovementComponent, Health, Nanobot, NanobotType, StrategicController,
+        Structure, StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent,
     },
 };
 
@@ -218,13 +217,11 @@ fn prepare(world: &mut World) {
         }
     }
     for entity in world
-        .query_filtered::<Entity, With<OpponentIntentController>>()
+        .query_filtered::<Entity, With<StrategicController>>()
         .iter(world)
         .collect::<Vec<_>>()
     {
-        world
-            .entity_mut(entity)
-            .remove::<OpponentIntentController>();
+        world.entity_mut(entity).remove::<StrategicController>();
     }
     world.insert_resource(IntentGrid::new(8, 8));
     for (mut transform, mut projection, mut zoom) in world

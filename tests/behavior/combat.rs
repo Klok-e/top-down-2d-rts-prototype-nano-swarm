@@ -8,7 +8,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        ChargerAssignment, CombatAppearance, DEFENDER_ATTACK_INTERVAL_TICKS,
+        Charge, ChargerAssignment, CombatAppearance, CombatPlugin, DEFENDER_ATTACK_INTERVAL_TICKS,
         DefenderAttackCooldown, DefenderResponse, DirectMovementComponent, Health, NanobotType,
         OwnerSwarm, PlannedKind, ResolvedCombatFact, Structure, StructureCombatAppearance,
         StructureKind, Swarm, SwarmId, SwarmMember, nanobot_death_cleanup_system,
@@ -20,6 +20,10 @@ fn resolved_facts(app: &App) -> Vec<ResolvedCombatFact> {
     let messages = app.world().resource::<Messages<ResolvedCombatFact>>();
     let mut cursor = messages.get_cursor();
     cursor.read(messages).copied().collect()
+}
+
+fn effective_damage(app: &App, swarm: SwarmId) -> serde_json::Value {
+    serde_json::to_value(app.world().resource::<BattleCounters>().totals_for(swarm)).unwrap()
 }
 
 fn assert_position(actual: Vec2, expected: Vec2) {
@@ -36,6 +40,7 @@ fn paint_player_territory(app: &mut App, cell: IVec2) {
 #[test]
 fn delivered_hit_publishes_the_resolved_combat_snapshot() {
     let mut app = common::sim_app_with_combat();
+    app.init_resource::<BattleCounters>();
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
     app.world_mut().spawn((Swarm {}, SwarmId(11)));
     let cell = IVec2::ZERO;
@@ -75,6 +80,180 @@ fn delivered_hit_publishes_the_resolved_combat_snapshot() {
     );
     assert_eq!(hit.damage, 10);
     assert!(!hit.target_destroyed);
+    let damage = effective_damage(&app, SwarmId::PLAYER);
+    assert_eq!(damage["effective_damage_total"], 10);
+    assert_eq!(damage["effective_damage_nanobots"], 10);
+    assert_eq!(damage["effective_damage_structures"], 0);
+    assert_eq!(damage["scored_damage_total"], 10);
+    assert_eq!(damage["scored_damage_nanobots"], 10);
+    assert_eq!(damage["scored_damage_structures"], 0);
+}
+
+#[test]
+fn simultaneous_overkill_is_attributed_once_with_a_stable_swarm_remainder() {
+    let mut app = common::minimal_app();
+    app.add_plugins(CombatPlugin)
+        .init_resource::<BattleCounters>();
+    for swarm in [SwarmId::PLAYER, SwarmId(11), SwarmId(22), SwarmId(99)] {
+        app.world_mut().spawn((Swarm {}, swarm));
+    }
+    let target = common::spawn_worker_at(&mut app, Vec2::ZERO);
+    app.world_mut().entity_mut(target).insert((
+        SwarmMember::new(SwarmId(99)),
+        Health {
+            current: 7,
+            max: 100,
+        },
+    ));
+    for (swarm, position) in [
+        (SwarmId::PLAYER, Vec2::new(90.0, 0.0)),
+        (SwarmId(11), Vec2::new(-45.0, 77.94)),
+        (SwarmId(22), Vec2::new(-45.0, -77.94)),
+    ] {
+        let attacker = common::spawn_defender_at(&mut app, position);
+        app.world_mut()
+            .entity_mut(attacker)
+            .insert((SwarmMember::new(swarm), DefenderResponse { target }));
+        if swarm == SwarmId(22) {
+            app.world_mut().entity_mut(attacker).insert(Charge {
+                current: 0.15,
+                max: 1.0,
+            });
+        }
+    }
+
+    app.update();
+
+    assert_eq!(app.world().get::<Health>(target).unwrap().current, 0);
+    let facts = resolved_facts(&app);
+    let mut nominal_hits = facts
+        .iter()
+        .filter_map(|fact| match fact {
+            ResolvedCombatFact::Hit(hit) if hit.target_destroyed => Some(hit.damage),
+            ResolvedCombatFact::Death(_) => None,
+            fact => panic!("expected nominal lethal hit facts and one death: {fact:?}"),
+        })
+        .collect::<Vec<_>>();
+    nominal_hits.sort_unstable();
+    assert_eq!(nominal_hits, [5, 10, 10]);
+    assert_eq!(
+        effective_damage(&app, SwarmId::PLAYER)["effective_damage_total"],
+        3
+    );
+    assert_eq!(
+        effective_damage(&app, SwarmId(11))["effective_damage_total"],
+        3
+    );
+    assert_eq!(
+        effective_damage(&app, SwarmId(22))["effective_damage_total"],
+        1
+    );
+    assert_eq!(
+        [SwarmId::PLAYER, SwarmId(11), SwarmId(22)]
+            .into_iter()
+            .map(
+                |swarm| effective_damage(&app, swarm)["effective_damage_total"]
+                    .as_u64()
+                    .unwrap()
+            )
+            .sum::<u64>(),
+        7,
+        "simultaneous nominal hits must not each claim the capped lethal damage",
+    );
+    assert_eq!(
+        effective_damage(&app, SwarmId::PLAYER)["scored_damage_total"],
+        3
+    );
+    assert_eq!(
+        effective_damage(&app, SwarmId(11))["scored_damage_total"],
+        3
+    );
+    assert_eq!(
+        effective_damage(&app, SwarmId(22))["scored_damage_total"],
+        1
+    );
+}
+
+#[test]
+fn repaired_health_can_be_removed_again_but_friendly_targets_never_count() {
+    let mut app = common::minimal_app();
+    app.add_plugins(CombatPlugin)
+        .init_resource::<BattleCounters>();
+    app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
+    let target = common::spawn_worker_at(&mut app, Vec2::ZERO);
+    app.world_mut()
+        .entity_mut(target)
+        .insert(Health { current: 5, max: 5 });
+    let attacker = common::spawn_defender_at(&mut app, Vec2::X * 20.0);
+    app.world_mut()
+        .entity_mut(attacker)
+        .insert(DefenderResponse { target });
+
+    app.update();
+    assert_eq!(
+        effective_damage(&app, SwarmId::PLAYER)["effective_damage_total"],
+        0
+    );
+    assert_eq!(app.world().get::<Health>(target).unwrap().current, 5);
+
+    app.world_mut()
+        .entity_mut(target)
+        .insert(SwarmMember::new(SwarmId(11)));
+    app.world_mut().spawn((Swarm {}, SwarmId(11)));
+    app.update();
+    assert_eq!(
+        effective_damage(&app, SwarmId::PLAYER)["effective_damage_total"],
+        5
+    );
+
+    app.world_mut()
+        .entity_mut(target)
+        .get_mut::<Health>()
+        .unwrap()
+        .current = 5;
+    app.world_mut().spawn((Swarm {}, SwarmId(22)));
+    let second_attacker = common::spawn_defender_at(&mut app, -Vec2::X * 20.0);
+    app.world_mut()
+        .entity_mut(second_attacker)
+        .insert((SwarmMember::new(SwarmId(22)), DefenderResponse { target }));
+    app.update();
+    assert_eq!(
+        effective_damage(&app, SwarmId::PLAYER)["effective_damage_total"],
+        5
+    );
+    assert_eq!(
+        effective_damage(&app, SwarmId(22))["effective_damage_total"],
+        5
+    );
+    assert_eq!(
+        effective_damage(&app, SwarmId::PLAYER)["effective_damage_total"]
+            .as_u64()
+            .unwrap()
+            + effective_damage(&app, SwarmId(22))["effective_damage_total"]
+                .as_u64()
+                .unwrap(),
+        10,
+        "repair permits more real damage to accumulate",
+    );
+    assert_eq!(
+        effective_damage(&app, SwarmId::PLAYER)["scored_damage_total"],
+        5
+    );
+    assert_eq!(
+        effective_damage(&app, SwarmId(22))["scored_damage_total"],
+        0,
+        "a second hostile swarm cannot claim another lifetime bar for the same target",
+    );
+    assert_eq!(
+        effective_damage(&app, SwarmId::PLAYER)["scored_damage_total"]
+            .as_u64()
+            .unwrap()
+            + effective_damage(&app, SwarmId(22))["scored_damage_total"]
+                .as_u64()
+                .unwrap(),
+        5,
+        "repair cannot refresh global score credit for one entity lifetime",
+    );
 }
 
 #[test]
@@ -175,6 +354,7 @@ fn pursuit_destination_tracks_the_claimed_entity_each_fixed_step() {
 #[test]
 fn combat_damage_obeys_the_existing_cooldown() {
     let mut app = common::sim_app_with_combat();
+    common::initialize_pacing(&mut app, common::PacingId::Baseline);
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
     app.world_mut().spawn((Swarm {}, SwarmId(11)));
     let cell = IVec2::ZERO;
@@ -272,6 +452,7 @@ fn simultaneous_lethal_responders_still_exchange_hits() {
 #[test]
 fn zero_health_nearest_target_is_skipped_for_the_nearest_living_hostile() {
     let mut app = common::sim_app_with_combat();
+    common::initialize_pacing(&mut app, common::PacingId::Baseline);
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
     let opponent = app.world_mut().spawn((Swarm {}, SwarmId(11))).id();
     let cell = IVec2::ZERO;
@@ -353,6 +534,10 @@ fn lethal_structure_hit_publishes_stable_appearance_and_despawns_target() {
         panic!("lethal structure combat must publish hit then death: {facts:?}");
     };
     assert_eq!(hit.attacker.entity, attacker);
+    assert_eq!(
+        hit.damage, 5,
+        "presentation retains nominal structure damage"
+    );
     assert!(hit.target_destroyed);
     assert_eq!(death.victim.entity, target);
     assert_position(death.victim.position, target_position);
@@ -370,6 +555,13 @@ fn lethal_structure_hit_publishes_stable_appearance_and_despawns_target() {
             .structures_lost,
         1
     );
+    let damage = effective_damage(&app, SwarmId::PLAYER);
+    assert_eq!(damage["effective_damage_total"], 1);
+    assert_eq!(damage["effective_damage_nanobots"], 0);
+    assert_eq!(damage["effective_damage_structures"], 1);
+    assert_eq!(damage["scored_damage_total"], 1);
+    assert_eq!(damage["scored_damage_nanobots"], 0);
+    assert_eq!(damage["scored_damage_structures"], 1);
 }
 
 #[test]

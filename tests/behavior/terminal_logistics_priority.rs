@@ -52,6 +52,7 @@ fn empty_committed_defender_makes_charger_beat_startable_production() {
 #[test]
 fn charger_emergency_reserves_only_uncovered_committed_charge_need() {
     let mut app = common::sim_app_with_gather_haul();
+    common::initialize_pacing(&mut app, common::PacingId::Baseline);
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let source = common::spawn_sink_stockpile(&mut app, Vec2::new(-200.0, 0.0), 100, 100);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));

@@ -72,7 +72,7 @@ use crate::structure_sprites::StructureSprites;
 /// working charger.
 pub const MAX_CHARGE: f32 = 1.0;
 
-/// Passive Charge drain per fixed simulation tick.
+/// Baseline passive Charge drain per fixed simulation tick.
 pub const CHARGE_DRAIN_PER_TICK: f32 = 0.00025;
 
 /// Number of fixed ticks between supplied recharge pulses.
@@ -330,13 +330,14 @@ pub fn select_defenders_for_rotation(
 
 /// Minerals consumed while refilling one defender from `current` to `max`.
 /// Each pulse spans [`CHARGE_PULSE_INTERVAL_TICKS`] drain ticks, then grants
-/// [`CHARGE_PER_PULSE`] charge when one mineral is available.
-pub fn minerals_to_fully_charge(current: f32, max: f32) -> u32 {
+/// [`CHARGE_PER_PULSE`] charge when one mineral is available. The supplied
+/// drain rate must match the shared pacing used by the runtime drain system.
+pub fn minerals_to_fully_charge(current: f32, max: f32, charge_drain_per_tick: f32) -> u32 {
     if current >= max || max <= 0.0 {
         return 0;
     }
     let net_refill =
-        CHARGE_PER_PULSE - CHARGE_DRAIN_PER_TICK * f32::from(CHARGE_PULSE_INTERVAL_TICKS);
+        CHARGE_PER_PULSE - charge_drain_per_tick * f32::from(CHARGE_PULSE_INTERVAL_TICKS);
     debug_assert!(net_refill > 0.0);
     let missing_ticks = (max - current.max(0.0)) / net_refill;
     let rounding_tolerance = f32::EPSILON * missing_ticks.abs().max(1.0) * 8.0;
@@ -393,8 +394,8 @@ pub const DEFENDER_BASE_DEFENSE: f32 = 10.0;
 // Systems
 // ---------------------------------------------------------------------------
 
-/// Drain Charge by [`CHARGE_DRAIN_PER_TICK`] for every
-/// defender that has a `Charge` component. The system runs
+/// Drain Charge at the shared gameplay pacing rate for every Defender that has
+/// a `Charge` component. The system runs
 /// every tick so the drain is uniform regardless of the
 /// defender's current state (staging, responding, in transit, or charging).
 /// A defender that is currently charging from a supplied charger recovers
@@ -403,13 +404,14 @@ pub const DEFENDER_BASE_DEFENSE: f32 = 10.0;
 /// The system iterates all defenders with `Charge`; the work
 /// is a single `f32` decrement per Defender per fixed tick.
 pub fn defender_charge_drain_system(
+    pacing: Res<crate::gameplay_pacing::GameplayPacing>,
     mut defenders: Query<(&mut Charge, &NanobotType), With<Nanobot>>,
 ) {
     for (mut charge, nanobot_type) in &mut defenders {
         if *nanobot_type != NanobotType::Defender {
             continue;
         }
-        charge.current = (charge.current - CHARGE_DRAIN_PER_TICK).max(0.0);
+        charge.current = (charge.current - pacing.charge_drain_per_tick).max(0.0);
     }
 }
 
@@ -464,6 +466,7 @@ pub fn charger_auto_creation_system(
     access: super::construction_access::ConstructionAccess,
     grid: Res<IntentGrid>,
     structure_sprites: Res<StructureSprites>,
+    pacing: Res<crate::gameplay_pacing::GameplayPacing>,
     chargers: Query<(
         Entity,
         &Charger,
@@ -644,7 +647,8 @@ pub fn charger_auto_creation_system(
             continue;
         };
         commands.spawn((
-            PlannedStructure::new(PlannedKind::Charger, cell),
+            PlannedStructure::new(PlannedKind::Charger, cell)
+                .with_work_budget(pacing.construction_work_ticks),
             OwnerSwarm(owner),
             planned_visual_components(PlannedKind::Charger, &structure_sprites, placement_pos),
         ));
@@ -1110,13 +1114,16 @@ impl Plugin for ChargePlugin {
         // on a later allocation pass; no legacy worker-claim
         // system is registered. Run before planned work so
         // the plan is present before that lifecycle reads it.
-        app.add_systems(
-            FixedUpdate,
-            charger_auto_creation_system
-                .after(crate::nanobot::planned::sink_stockpile_demand_system)
-                .after(crate::nanobot::RegionalAllocationSet::Acquire)
-                .before(crate::nanobot::structure_lifecycle::worker_planned_structure_work_system),
-        );
+        app.init_resource::<crate::gameplay_pacing::GameplayPacing>()
+            .add_systems(
+                FixedUpdate,
+                charger_auto_creation_system
+                    .after(crate::nanobot::planned::sink_stockpile_demand_system)
+                    .after(crate::nanobot::RegionalAllocationSet::Acquire)
+                    .before(
+                        crate::nanobot::structure_lifecycle::worker_planned_structure_work_system,
+                    ),
+            );
         // Consumer state settles before regional projection so Charge departure,
         // completion, and invalidation release old allocation before acquisition.
         app.add_systems(
@@ -1199,13 +1206,20 @@ mod tests {
     fn charge_mineral_need_uses_net_pulse_boundaries() {
         let net_refill =
             CHARGE_PER_PULSE - CHARGE_DRAIN_PER_TICK * f32::from(CHARGE_PULSE_INTERVAL_TICKS);
-        assert_eq!(minerals_to_fully_charge(MAX_CHARGE, MAX_CHARGE), 0);
         assert_eq!(
-            minerals_to_fully_charge(MAX_CHARGE - net_refill, MAX_CHARGE),
+            minerals_to_fully_charge(MAX_CHARGE, MAX_CHARGE, CHARGE_DRAIN_PER_TICK),
+            0
+        );
+        assert_eq!(
+            minerals_to_fully_charge(MAX_CHARGE - net_refill, MAX_CHARGE, CHARGE_DRAIN_PER_TICK,),
             CHARGER_MATERIAL_PER_PULSE
         );
         assert_eq!(
-            minerals_to_fully_charge(MAX_CHARGE - net_refill * 1.01, MAX_CHARGE),
+            minerals_to_fully_charge(
+                MAX_CHARGE - net_refill * 1.01,
+                MAX_CHARGE,
+                CHARGE_DRAIN_PER_TICK,
+            ),
             CHARGER_MATERIAL_PER_PULSE * 2
         );
     }
@@ -1217,14 +1231,17 @@ mod tests {
         let full_refill_pulses = (MAX_CHARGE / net_refill).ceil() as u32;
         let full_refill_minerals = full_refill_pulses.saturating_mul(CHARGER_MATERIAL_PER_PULSE);
         assert_eq!(
-            minerals_to_fully_charge(0.0, MAX_CHARGE),
+            minerals_to_fully_charge(0.0, MAX_CHARGE, CHARGE_DRAIN_PER_TICK),
             full_refill_minerals
         );
         assert_eq!(
-            minerals_to_fully_charge(-1.0, MAX_CHARGE),
+            minerals_to_fully_charge(-1.0, MAX_CHARGE, CHARGE_DRAIN_PER_TICK),
             full_refill_minerals
         );
-        assert_eq!(minerals_to_fully_charge(MAX_CHARGE + 1.0, MAX_CHARGE), 0);
+        assert_eq!(
+            minerals_to_fully_charge(MAX_CHARGE + 1.0, MAX_CHARGE, CHARGE_DRAIN_PER_TICK),
+            0
+        );
     }
 
     #[test]

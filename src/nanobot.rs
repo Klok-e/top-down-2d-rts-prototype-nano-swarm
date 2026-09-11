@@ -28,6 +28,7 @@ mod spread;
 mod sprites;
 mod work_access;
 
+pub use crate::strategic_runtime::{StrategicController, StrategicControllerPlugin};
 pub use allocation::*;
 pub use autonomy::*;
 pub use build::*;

@@ -1,16 +1,19 @@
 //! Per-battle measurements and durable run results.
 
 use crate::{
+    battle_experiment::BattleExperimentConfig,
+    gameplay_pacing::GameplayPacing,
     nanobot::{
         MatchOutcome, Nanobot, NanobotType, Swarm, SwarmEliminationSet, SwarmEliminationState,
         SwarmId, SwarmMember,
     },
     session::SessionRules,
+    strategic_runtime::{ControllerProfile, ControllerTelemetry},
 };
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fs::{self, File, OpenOptions},
     io::{self, BufWriter, Write},
     path::PathBuf,
@@ -42,6 +45,12 @@ pub struct BattleTotals {
     pub minerals_consumed: u64,
     pub structures_built: u64,
     pub structures_lost: u64,
+    pub effective_damage_total: u64,
+    pub effective_damage_nanobots: u64,
+    pub effective_damage_structures: u64,
+    pub scored_damage_total: u64,
+    pub scored_damage_nanobots: u64,
+    pub scored_damage_structures: u64,
 }
 
 pub enum BattleEvent {
@@ -51,11 +60,16 @@ pub enum BattleEvent {
     Consumed(u32),
     StructureBuilt,
     StructureLost,
+    EffectiveNanobotDamage(u32),
+    EffectiveStructureDamage(u32),
+    ScoredNanobotDamage(u32),
+    ScoredStructureDamage(u32),
 }
 
 #[derive(Resource, Debug, Default)]
 pub struct BattleCounters {
     totals: BTreeMap<u32, BattleTotals>,
+    scored_damage_by_target: HashMap<Entity, u32>,
     frozen: bool,
 }
 
@@ -72,7 +86,38 @@ impl BattleCounters {
             BattleEvent::Consumed(amount) => total.minerals_consumed += u64::from(amount),
             BattleEvent::StructureBuilt => total.structures_built += 1,
             BattleEvent::StructureLost => total.structures_lost += 1,
+            BattleEvent::EffectiveNanobotDamage(amount) => {
+                total.effective_damage_total += u64::from(amount);
+                total.effective_damage_nanobots += u64::from(amount);
+            }
+            BattleEvent::EffectiveStructureDamage(amount) => {
+                total.effective_damage_total += u64::from(amount);
+                total.effective_damage_structures += u64::from(amount);
+            }
+            BattleEvent::ScoredNanobotDamage(amount) => {
+                total.scored_damage_total += u64::from(amount);
+                total.scored_damage_nanobots += u64::from(amount);
+            }
+            BattleEvent::ScoredStructureDamage(amount) => {
+                total.scored_damage_total += u64::from(amount);
+                total.scored_damage_structures += u64::from(amount);
+            }
         }
+    }
+
+    pub(crate) fn claim_scored_damage(
+        &mut self,
+        target: Entity,
+        target_max_health: u32,
+        effective_damage: u32,
+    ) -> u32 {
+        if self.frozen {
+            return 0;
+        }
+        let credited = self.scored_damage_by_target.entry(target).or_default();
+        let scored = effective_damage.min(target_max_health.saturating_sub(*credited));
+        *credited += scored;
+        scored
     }
 
     pub fn totals_for(&self, swarm: SwarmId) -> BattleTotals {
@@ -156,6 +201,8 @@ pub struct BattleSample {
     pub fixed_tick: u64,
     pub tick_timing: Timing,
     pub frame_timing: Option<Timing>,
+    pub controllers: BTreeMap<u32, ControllerProfile>,
+    pub observation_max_ms: f64,
     pub swarms: BTreeMap<u32, SwarmSample>,
 }
 
@@ -164,6 +211,7 @@ pub struct BattleSample {
 pub enum RunStatus {
     InProgress,
     Completed,
+    Unresolved,
     Interrupted,
 }
 
@@ -176,10 +224,18 @@ pub struct BattleSummary {
     pub headless: bool,
     pub code_revision: String,
     pub dirty_worktree: bool,
+    pub experiment: BattleExperimentConfig,
+    pub gameplay_pacing: GameplayPacing,
     pub status: RunStatus,
     pub outcome: Option<String>,
     pub samples: u64,
     pub latest: BattleSample,
+}
+
+impl BattleSummary {
+    fn records_frame_timing(&self) -> bool {
+        !self.headless || self.experiment.realtime
+    }
 }
 
 #[derive(Resource)]
@@ -208,8 +264,18 @@ pub(crate) fn start_session(world: &mut World) {
         return;
     }
     let config = world.resource::<BattleStatisticsConfig>().clone();
+    let experiment = world
+        .get_resource::<BattleExperimentConfig>()
+        .cloned()
+        .unwrap_or_default();
+    let gameplay_pacing = world
+        .get_resource::<GameplayPacing>()
+        .cloned()
+        .unwrap_or_default();
     let result = create_run(
         &config,
+        experiment,
+        gameplay_pacing,
         world.resource::<Time<Fixed>>().timestep().as_secs_f64(),
         world.resource::<SessionRules>().scenario_name,
     );
@@ -268,6 +334,8 @@ pub(crate) fn finish_session(world: &mut World) -> bool {
 
 fn create_run(
     config: &BattleStatisticsConfig,
+    experiment: BattleExperimentConfig,
+    gameplay_pacing: GameplayPacing,
     timestep_seconds: f64,
     scenario_name: &str,
 ) -> io::Result<BattleRun> {
@@ -287,16 +355,18 @@ fn create_run(
     let mut csv = BufWriter::new(file);
     writeln!(
         csv,
-        "simulation_seconds,fixed_tick,swarm,population,workers,haulers,defenders,births,deaths,minerals_gathered,minerals_consumed,structures_built,structures_lost,elimination_seconds,tick_count,tick_mean_ms,tick_p50_ms,tick_p95_ms,tick_p99_ms,tick_max_ms,frame_count,frame_mean_ms,frame_p95_ms"
+        "simulation_seconds,fixed_tick,swarm,population,workers,haulers,defenders,births,deaths,minerals_gathered,minerals_consumed,structures_built,structures_lost,effective_damage_total,effective_damage_nanobots,effective_damage_structures,scored_damage_total,scored_damage_nanobots,scored_damage_structures,elimination_seconds,tick_count,tick_mean_ms,tick_p50_ms,tick_p95_ms,tick_p99_ms,tick_max_ms,frame_count,frame_mean_ms,frame_p95_ms,frame_max_ms,controller_reviews,controller_intent_edits,controller_work_units,controller_mean_ms,controller_p95_ms,controller_p95_window_samples,controller_max_ms,controller_last_explanation,observation_max_ms"
     )?;
     let summary = BattleSummary {
-        schema_version: 1,
+        schema_version: 3,
         scenario: scenario_name.into(),
         seed: config.seed,
         timestep_seconds,
         headless: config.headless,
         code_revision: env!("NANO_SWARM_CODE_REVISION").into(),
         dirty_worktree: env!("NANO_SWARM_DIRTY_WORKTREE") == "true",
+        experiment,
+        gameplay_pacing,
         status: RunStatus::InProgress,
         outcome: None,
         samples: 0,
@@ -348,12 +418,18 @@ impl BattleRun {
                 .frame_timing
                 .as_ref()
                 .map_or(String::new(), |t| t.p95_ms.to_string());
+            let frame_max = sample
+                .frame_timing
+                .as_ref()
+                .map_or(String::new(), |t| t.max_ms.to_string());
             let elimination = s
                 .elimination_seconds
                 .map_or(String::new(), |n| n.to_string());
+            let controller = sample.controllers.get(swarm).cloned().unwrap_or_default();
+            let explanation = csv_field(&controller.last_explanation);
             writeln!(
                 self.csv,
-                "{},{},{swarm},{},{},{},{},{},{},{},{},{},{},{elimination},{},{},{},{},{},{},{frame_count},{frame_mean},{frame_p95}",
+                "{},{},{swarm},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{elimination},{},{},{},{},{},{},{frame_count},{frame_mean},{frame_p95},{frame_max},{},{},{},{},{},{},{},{explanation},{}",
                 sample.simulation_seconds,
                 sample.fixed_tick,
                 s.population,
@@ -366,17 +442,42 @@ impl BattleRun {
                 c.minerals_consumed,
                 c.structures_built,
                 c.structures_lost,
+                c.effective_damage_total,
+                c.effective_damage_nanobots,
+                c.effective_damage_structures,
+                c.scored_damage_total,
+                c.scored_damage_nanobots,
+                c.scored_damage_structures,
                 t.count,
                 t.mean_ms,
                 t.p50_ms,
                 t.p95_ms,
                 t.p99_ms,
-                t.max_ms
+                t.max_ms,
+                controller.reviews,
+                controller.intent_edits,
+                controller.work_units,
+                controller.mean_ms,
+                controller.p95_ms,
+                controller.p95_window_samples,
+                controller.max_ms,
+                sample.observation_max_ms,
             )?;
         }
         self.summary.samples += 1;
         self.summary.latest = sample;
         self.persist()
+    }
+}
+
+fn csv_field(value: &str) -> String {
+    if value
+        .chars()
+        .any(|character| matches!(character, ',' | '"' | '\n' | '\r'))
+    {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.into()
     }
 }
 
@@ -387,6 +488,11 @@ fn start_tick(mut run: ResMut<BattleRun>) {
 }
 
 fn snapshot(world: &mut World, run: &mut BattleRun) -> BattleSample {
+    world.resource_scope(|world, mut counters: Mut<BattleCounters>| {
+        counters
+            .scored_damage_by_target
+            .retain(|entity, _| world.entities().contains(*entity));
+    });
     let mut swarms = BTreeMap::new();
     for id in world.query_filtered::<&SwarmId, With<Swarm>>().iter(world) {
         swarms.insert(
@@ -418,14 +524,22 @@ fn snapshot(world: &mut World, run: &mut BattleRun) -> BattleSample {
     }
     let tick_timing = Timing::from_samples(&mut run.tick_samples);
     run.tick_samples.clear();
-    let frame_timing =
-        (!run.summary.headless).then(|| Timing::from_samples(&mut run.frame_samples));
+    let frame_timing = run
+        .summary
+        .records_frame_timing()
+        .then(|| Timing::from_samples(&mut run.frame_samples));
     run.frame_samples.clear();
+    let (controllers, observation_max_ms) = world
+        .get_resource::<ControllerTelemetry>()
+        .map(|telemetry| (telemetry.profiles(), telemetry.observation_max_ms))
+        .unwrap_or_default();
     BattleSample {
         simulation_seconds,
         fixed_tick: run.ticks,
         tick_timing,
         frame_timing,
+        controllers,
+        observation_max_ms,
         swarms,
     }
 }
@@ -456,10 +570,17 @@ fn collect_tick(world: &mut World) {
         run.summary.status = RunStatus::Completed;
         run.summary.outcome = Some(outcome.clone());
         world.resource_mut::<BattleCounters>().frozen = true;
-    }
-    if outcome.is_some()
-        || run.ticks as f64 * run.summary.timestep_seconds >= run.next_sample_seconds
+    } else if run
+        .summary
+        .experiment
+        .cutoff_seconds
+        .is_some_and(|cutoff| run.ticks as f64 * run.summary.timestep_seconds >= f64::from(cutoff))
     {
+        run.summary.status = RunStatus::Unresolved;
+        world.resource_mut::<BattleCounters>().frozen = true;
+    }
+    let terminal = run.summary.status != RunStatus::InProgress;
+    if terminal || run.ticks as f64 * run.summary.timestep_seconds >= run.next_sample_seconds {
         let sample = snapshot(world, &mut run);
         if let Err(error) = run.write_sample(sample) {
             error!("Cannot save battle results: {error}");
@@ -468,7 +589,7 @@ fn collect_tick(world: &mut World) {
         }
         run.next_sample_seconds += 1.;
     }
-    if outcome.is_some() && run.error.is_none() && run.summary.headless {
+    if terminal && run.error.is_none() && run.summary.headless {
         world.write_message(AppExit::Success);
     }
     world.insert_resource(run);
@@ -494,7 +615,7 @@ fn finish_on_exit(world: &mut World) {
 
 fn collect_frame(mut run: ResMut<BattleRun>, time: Res<Time<Virtual>>) {
     let now = Instant::now();
-    if !run.summary.headless
+    if run.summary.records_frame_timing()
         && run.summary.status == RunStatus::InProgress
         && !time.is_paused()
         && let Some(previous) = run.frame_start

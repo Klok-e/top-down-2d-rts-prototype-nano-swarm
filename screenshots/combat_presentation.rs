@@ -4,15 +4,19 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    GAMEPLAY_SPRITE_Z, fixed_simulation_time,
+    GAMEPLAY_SPRITE_Z,
+    battle_experiment::PacingId,
+    fixed_simulation_time,
     fly_camera::CameraZoom2d,
+    gameplay_pacing::GameplayPacing,
     intent::{IntentGrid, IntentKind},
     nanobot::{
         ActiveCombatDecorations, ActiveCombatPulses, ActiveNanobotDeathGhosts,
         ActiveStructureDeathGhosts, Charge, CombatPresentationSettings, Commitment,
         DefenderAttackCooldown, DefenderResponse, Health, Nanobot, NanobotDeathGhost, NanobotType,
         NanobotVisual, OpponentSwarm, OwnerSwarm, PLANNED_STRUCTURE_FOOTPRINT, PlannedKind,
-        Structure, StructureKind, Swarm, SwarmId, SwarmMember, completed_visual_color,
+        ResolvedCombatFact, Structure, StructureKind, Swarm, SwarmId, SwarmMember,
+        completed_visual_color,
     },
     structure_sprites::{StructureSprites, StructureVisual, StructureVisualState},
 };
@@ -77,8 +81,14 @@ fn focus_camera_at_zoom(world: &mut World, position: Vec2, value: f32) {
 }
 
 fn prepare_combat_scene(world: &mut World) -> Vec2 {
+    world.insert_resource(fixed_simulation_time());
     world.resource_mut::<Time<Virtual>>().pause();
     clear_nanobots_and_sprite_entities(world);
+    world.resource_mut::<Messages<ResolvedCombatFact>>().clear();
+    world.insert_resource(ActiveCombatPulses::default());
+    world.insert_resource(ActiveCombatDecorations::default());
+    world.insert_resource(ActiveNanobotDeathGhosts::default());
+    world.insert_resource(ActiveStructureDeathGhosts::default());
     for entity in world
         .query_filtered::<Entity, With<Node>>()
         .iter(world)
@@ -110,6 +120,9 @@ fn setup_scene(world: &mut World) {
             Commitment::Idle,
             Health::default(),
             Charge::default(),
+            DefenderAttackCooldown {
+                ticks_remaining: u16::MAX,
+            },
             SwarmMember::new(SwarmId::PLAYER),
             attacker_root,
         ))
@@ -121,6 +134,9 @@ fn setup_scene(world: &mut World) {
             Commitment::Idle,
             Health::default(),
             Charge::default(),
+            DefenderAttackCooldown {
+                ticks_remaining: u16::MAX,
+            },
             SwarmMember::new(opponent),
             target_root,
         ))
@@ -174,7 +190,16 @@ pub fn combat_presentation(ctx: &mut TestContext) -> TestFlow {
         }
         let evidence = *ctx.world.resource::<CombatEvidence>();
         assert_roots_unchanged(ctx.world, &evidence);
-        assert!(is_neutral(ctx.world, &evidence));
+        assert!(
+            is_neutral(ctx.world, &evidence),
+            "attacker {:?}, target {:?}, color {:?}, pulses {}",
+            ctx.world.get::<Transform>(evidence.attacker_visual),
+            ctx.world.get::<Transform>(evidence.target_visual),
+            ctx.world
+                .get::<Sprite>(evidence.target_visual)
+                .map(|sprite| sprite.color),
+            ctx.world.resource::<ActiveCombatPulses>().len(),
+        );
         assert!(ctx.world.resource::<ActiveCombatPulses>().is_empty());
         return TestFlow::Screenshot(screenshot_name(ctx.world, "combat_presentation_neutral"));
     }
@@ -188,6 +213,7 @@ pub fn combat_presentation(ctx: &mut TestContext) -> TestFlow {
         );
         ctx.world
             .entity_mut(evidence.attacker)
+            .remove::<DefenderAttackCooldown>()
             .insert(DefenderResponse {
                 target: evidence.target,
             });
@@ -525,6 +551,7 @@ fn spawn_dense_nanobot(
 
 fn setup_dense_scene(world: &mut World) {
     let center = prepare_combat_scene(world);
+    world.insert_resource(GameplayPacing::from(PacingId::Baseline));
     focus_camera_at_zoom(world, center, 1.0);
     let opponent = *world
         .query_filtered::<&SwarmId, (With<Swarm>, With<OpponentSwarm>)>()
@@ -706,6 +733,18 @@ pub fn combat_presentation_density_and_zoom(ctx: &mut TestContext) -> TestFlow {
                 );
                 return TestFlow::Continue;
             }
+            let attackers = ctx
+                .world
+                .resource::<DenseCombatEvidence>()
+                .attackers
+                .iter()
+                .map(|(entity, _)| *entity)
+                .collect::<Vec<_>>();
+            for attacker in attackers {
+                ctx.world
+                    .entity_mut(attacker)
+                    .remove::<DefenderAttackCooldown>();
+            }
             ctx.world.resource_mut::<DenseCombatEvidence>().phase =
                 DenseCombatPhase::AwaitNearBoundary;
             TestFlow::Continue
@@ -735,6 +774,8 @@ pub fn combat_presentation_density_and_zoom(ctx: &mut TestContext) -> TestFlow {
                         .length()
                         / 7.99
                         >= minimum - 0.001,
+                    "entity {entity:?} visual displacement {:?}, minimum screen distance {minimum}",
+                    ctx.world.get::<Transform>(visual).unwrap().translation,
                 );
             }
             for (target, _) in &evidence.targets {

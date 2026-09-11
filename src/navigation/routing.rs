@@ -4,6 +4,7 @@ use crate::{
     intent::{IntentGrid, IntentKind},
     nanobot::{SwarmId, world_to_cell},
 };
+use bevy::platform::collections::HashMap as FastHashMap;
 use bevy::prelude::*;
 use std::{
     cmp::Ordering,
@@ -32,7 +33,7 @@ pub enum RouteOutcome {
     Found(Route),
     Unreachable,
 }
-type ComponentEdges = HashMap<IVec2, Vec<(IVec2, IVec2, IVec2)>>;
+type ComponentEdges = FastHashMap<IVec2, Vec<(IVec2, IVec2, IVec2)>>;
 
 /// Shared physical connectivity and clearance for all swarms and Nanobot Types.
 /// Chunk regions are materialized only where searches visit the large world.
@@ -44,17 +45,17 @@ pub struct Navigation {
     obstacle_index: std::sync::Arc<ObstacleIndex>,
     clearing: Vec<Obstacle>,
     revision: u64,
-    chunks: std::sync::Arc<Mutex<HashMap<IVec2, Chunk>>>,
+    chunks: std::sync::Arc<Mutex<FastHashMap<IVec2, Chunk>>>,
     connections: std::sync::Arc<Mutex<ComponentEdges>>,
     scheduler: Mutex<budget::Scheduler>,
-    chunk_builds: std::sync::Arc<Mutex<HashMap<IVec2, budget::ChunkBuild>>>,
+    chunk_builds: std::sync::Arc<Mutex<FastHashMap<IVec2, budget::ChunkBuild>>>,
     expansions: std::sync::Arc<budget::ExpansionCounters>,
 }
 /// Bucket coverage is capped for both shapes and queries. Huge shapes remain
 /// global candidates; long segments fall back to the bounded obstacle list.
 #[derive(Default)]
 struct ObstacleIndex {
-    buckets: HashMap<IVec2, Vec<usize>>,
+    buckets: FastHashMap<IVec2, Vec<usize>>,
     global: Vec<usize>,
     count: usize,
 }
@@ -118,7 +119,7 @@ impl ObstacleIndex {
 }
 #[derive(Clone)]
 struct Chunk {
-    regions: HashMap<IVec2, IVec2>,
+    regions: FastHashMap<IVec2, IVec2>,
 }
 #[derive(Clone, Copy, PartialEq)]
 struct Visit {
@@ -157,7 +158,7 @@ impl Navigation {
             obstacles: std::sync::Arc::new(obstacles),
             clearing: Vec::new(),
             revision: 1,
-            chunks: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            chunks: std::sync::Arc::new(Mutex::new(FastHashMap::default())),
             connections: Default::default(),
             scheduler: Mutex::new(budget::Scheduler::default()),
             expansions: Default::default(),
@@ -340,30 +341,28 @@ pub use budget::*;
 
 impl Obstacle {
     pub fn segment_clear(self, a: Vec2, b: Vec2) -> bool {
-        self.admits_body(a)
-            && self.admits_body(b)
-            && match self {
-                Obstacle::Circle { center, radius } => {
-                    point_segment_distance(center, a, b) >= radius + BODY_RADIUS
-                }
-                Obstacle::Rectangle { center, half } => {
-                    let min = center - half;
-                    let max = center + half;
-                    // A rectangle expanded by a disc consists of two strips and four round corners.
-                    !segment_box(
-                        a,
-                        b,
-                        min - Vec2::new(BODY_RADIUS, 0.0),
-                        max + Vec2::new(BODY_RADIUS, 0.0),
-                    ) && !segment_box(
-                        a,
-                        b,
-                        min - Vec2::new(0.0, BODY_RADIUS),
-                        max + Vec2::new(0.0, BODY_RADIUS),
-                    ) && [min, max, Vec2::new(min.x, max.y), Vec2::new(max.x, min.y)]
-                        .iter()
-                        .all(|&corner| point_segment_distance(corner, a, b) >= BODY_RADIUS)
-                }
+        match self {
+            Obstacle::Circle { center, radius } => {
+                point_segment_distance(center, a, b) >= radius + BODY_RADIUS
             }
+            Obstacle::Rectangle { center, half } => {
+                let min = center - half;
+                let max = center + half;
+                // A rectangle expanded by a disc consists of two strips and four round corners.
+                !segment_box(
+                    a,
+                    b,
+                    min - Vec2::new(BODY_RADIUS, 0.0),
+                    max + Vec2::new(BODY_RADIUS, 0.0),
+                ) && !segment_box(
+                    a,
+                    b,
+                    min - Vec2::new(0.0, BODY_RADIUS),
+                    max + Vec2::new(0.0, BODY_RADIUS),
+                ) && [min, max, Vec2::new(min.x, max.y), Vec2::new(max.x, min.y)]
+                    .iter()
+                    .all(|&corner| point_segment_distance(corner, a, b) >= BODY_RADIUS)
+            }
+        }
     }
 }

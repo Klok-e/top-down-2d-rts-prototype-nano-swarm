@@ -20,89 +20,7 @@ use crate::intent::{IntentGrid, IntentKind};
 use crate::nanobot::autonomy::Commitment;
 use crate::nanobot::components::{Health, Nanobot, Swarm, SwarmId, SwarmMember, VelocityComponent};
 use crate::nanobot::production::OpponentSwarm;
-use crate::nanobot::{MatchOutcome, NanobotBundle, NanobotType, RegionalAllocationSet};
-
-/// Deterministic swarm-level pressure for an authored opponent. The controller
-/// changes only Defend intent; existing autonomy executes the resulting work.
-#[derive(Debug, Component, Clone, Copy)]
-pub struct OpponentIntentController {
-    assault_cell: IVec2,
-    target_cell: IVec2,
-    ticks_until_advance: u32,
-    advance_period_ticks: u32,
-}
-
-impl OpponentIntentController {
-    pub fn new(
-        assault_cell: IVec2,
-        target_cell: IVec2,
-        initial_delay_ticks: u32,
-        advance_period_ticks: u32,
-    ) -> Self {
-        Self {
-            assault_cell,
-            target_cell,
-            ticks_until_advance: initial_delay_ticks,
-            advance_period_ticks: advance_period_ticks.max(1),
-        }
-    }
-}
-
-fn next_assault_cell(from: IVec2, target: IVec2) -> IVec2 {
-    let delta = target - from;
-    from + delta.signum()
-}
-
-/// Advance each configured swarm's Defend intent on fixed simulation ticks.
-/// Each advance edits only that swarm's paint.
-pub fn opponent_intent_system(
-    mut controllers: Query<(Entity, &SwarmId, &mut OpponentIntentController)>,
-    mut grid: ResMut<IntentGrid>,
-    outcome: Option<Res<MatchOutcome>>,
-) {
-    if outcome
-        .as_deref()
-        .is_some_and(|outcome| *outcome != MatchOutcome::InProgress)
-    {
-        return;
-    }
-
-    let mut ordered = controllers
-        .iter()
-        .map(|(entity, swarm, _)| (*swarm, entity))
-        .collect::<Vec<_>>();
-    ordered.sort_by_key(|(swarm, entity)| (*swarm, entity.to_bits()));
-
-    for (swarm, entity) in ordered {
-        let Ok((_, _, mut controller)) = controllers.get_mut(entity) else {
-            continue;
-        };
-        if controller.ticks_until_advance > 0 {
-            controller.ticks_until_advance -= 1;
-            continue;
-        }
-
-        let next = next_assault_cell(controller.assault_cell, controller.target_cell);
-        if next == controller.assault_cell {
-            continue;
-        }
-        grid.paint(next, IntentKind::Defend, swarm);
-        grid.erase(controller.assault_cell, IntentKind::Defend, swarm);
-        controller.assault_cell = next;
-        controller.ticks_until_advance = controller.advance_period_ticks;
-    }
-}
-
-pub struct OpponentIntentPlugin;
-
-impl Plugin for OpponentIntentPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(
-            FixedUpdate,
-            opponent_intent_system.before(RegionalAllocationSet::Project),
-        );
-    }
-}
+use crate::nanobot::{NanobotBundle, NanobotType};
 
 /// One prepainted intent cell on the shared grid. The
 /// opponent helper takes a slice of these at spawn time and
@@ -247,6 +165,22 @@ mod tests {
 
     #[test]
     fn assault_advances_diagonally_toward_the_target_without_overshooting() {
+        let grid = IntentGrid::new(64, 64);
+        let next_assault_cell = |from, target| {
+            let mut controller =
+                crate::strategic_controller::Controller::timed(SwarmId(1), from, target, 0, 1);
+            let decision = controller.decide(&crate::strategic_controller::GameState {
+                grid: &grid,
+                swarms: &[],
+                bots: &[],
+                structures: &[],
+                deposits: &[],
+                terrain: &[],
+                tick: 0,
+                finished: false,
+            });
+            decision.edits.first().map_or(from, |edit| edit.cell)
+        };
         assert_eq!(
             next_assault_cell(IVec2::new(23, 23), IVec2::ZERO),
             IVec2::new(22, 22)

@@ -59,6 +59,10 @@ def build_parser() -> argparse.ArgumentParser:
     state.add_argument("--cell-offset", type=int, default=0)
     state.add_argument("--cell-limit", type=int, default=MAX_STATE_CELL_LIMIT)
     state.add_argument("--map-revision", type=int)
+    state.add_argument(
+        "--details", action="store_true",
+        help="include bounded read-only execution facts on the first state page",
+    )
 
     button = commands.add_parser("button")
     button.add_argument(
@@ -117,6 +121,8 @@ def command_request(args: argparse.Namespace) -> tuple[str, dict | None]:
         }
         if args.map_revision is not None:
             params["map_revision"] = args.map_revision
+        if args.details:
+            params["details"] = True
         return "state.get", params
     if args.command == "button":
         return "button.press", {"button": args.button}

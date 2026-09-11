@@ -33,7 +33,7 @@ pub fn refresh_navigation(
 pub struct NavigationBudget(pub usize);
 impl Default for NavigationBudget {
     fn default() -> Self {
-        Self(32_768)
+        Self(12_288)
     }
 }
 fn advance_navigation(
