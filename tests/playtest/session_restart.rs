@@ -1,20 +1,23 @@
 use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
 use bevy::{asset::AssetPlugin, input::InputPlugin, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     DEFAULT_CAMERA_ZOOM, MAP_HEIGHT, MAP_WIDTH, MainCamera,
+    battle_experiment::{BattleExperimentConfig, PacingId},
     battle_statistics::{
         BattleRun, BattleStatisticsConfig, BattleStatisticsPlugin, BattleSummary, RunStatus,
     },
     building::ProcessingFacility,
     fly_camera::{CameraZoom2d, FlyCamera2d},
+    gameplay_pacing::GameplayPacing,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        MatchOutcome, Nanobot, OpponentIntentController, OpponentSwarmIdAlloc, Swarm,
-        SwarmEliminationPlugin, SwarmId,
+        MatchOutcome, Nanobot, OpponentSwarmIdAlloc, StrategicController,
+        StrategicControllerPlugin, Swarm, SwarmEliminationPlugin, SwarmId,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger},
     scenario::{PLAYER_CELL, cell_origin},
@@ -83,6 +86,7 @@ fn session_app(statistics_root: &Path) -> (App, Entity) {
         .add_plugins(InputPlugin)
         .add_plugins(ScenarioMenuPlugin)
         .add_plugins(SessionLifecyclePlugin)
+        .add_plugins(StrategicControllerPlugin)
         .add_plugins(SwarmEliminationPlugin)
         .add_plugins(BattleStatisticsPlugin)
         .add_systems(Startup, setup_intent_layer_panel)
@@ -136,15 +140,50 @@ fn assert_scenario_shape(app: &mut App, scenario: Scenario) {
     assert_eq!(count::<Nanobot>(app.world_mut()), nanobots);
     assert_eq!(count::<ProcessingFacility>(app.world_mut()), facilities);
     assert_eq!(count::<ResourceDeposit>(app.world_mut()), deposits);
-    assert_eq!(
-        count::<OpponentIntentController>(app.world_mut()),
-        controllers
-    );
+    assert_eq!(count::<StrategicController>(app.world_mut()), controllers);
 }
 
 fn request_start(app: &mut App, scenario: Scenario) {
     app.world_mut().write_message(StartScenario(scenario));
     app.update();
+}
+
+fn has_owned_intent(app: &App, owner: SwarmId) -> bool {
+    app.world()
+        .resource::<IntentGrid>()
+        .iter_active_cells()
+        .any(|(_, intent)| {
+            IntentKind::ALL
+                .into_iter()
+                .any(|kind| intent.has_owned(kind, owner))
+        })
+}
+
+fn assert_standard_opponent_recovers_owned_intent_within_one_second(app: &mut App) {
+    let opponent = app
+        .world_mut()
+        .query_filtered::<&SwarmId, (With<Swarm>, With<StrategicController>)>()
+        .single(app.world())
+        .copied()
+        .expect("Standard starts one controlled opponent swarm");
+    let owned = app.world().resource::<IntentGrid>().swarm_tiles(opponent);
+    for cell in owned {
+        for kind in IntentKind::ALL {
+            app.world_mut()
+                .resource_mut::<IntentGrid>()
+                .erase(cell, kind, opponent);
+        }
+    }
+
+    let deadline = app.world().resource::<Time<Fixed>>().elapsed() + Duration::from_secs(1);
+    while app.world().resource::<Time<Fixed>>().elapsed() < deadline {
+        app.update();
+        if has_owned_intent(app, opponent) {
+            return;
+        }
+    }
+
+    panic!("the normal Standard opponent did not recover owned intent within one simulated second");
 }
 
 fn has_spectator_label(world: &mut World) -> bool {
@@ -217,6 +256,43 @@ fn intent_panel_tracks_the_scenario_across_same_process_restarts() {
         IntentKind::COUNT
     );
     assert!(!has_spectator_label(app.world_mut()));
+}
+
+#[test]
+fn standard_opponent_recovers_owned_intent_after_startup_and_restart() {
+    let output = TemporaryDirectory::new();
+    let (mut app, _) = session_app(output.path());
+
+    assert_standard_opponent_recovers_owned_intent_within_one_second(&mut app);
+    request_start(&mut app, Scenario::Sandbox);
+    assert_scenario_shape(&mut app, Scenario::Sandbox);
+    request_start(&mut app, Scenario::Standard);
+    assert_standard_opponent_recovers_owned_intent_within_one_second(&mut app);
+}
+
+#[test]
+fn normal_scenarios_restore_deliberate_pacing_after_a_baseline_ai_battle() {
+    let output = TemporaryDirectory::new();
+    let (mut app, _) = session_app(output.path());
+    let deliberate = GameplayPacing::from(PacingId::Deliberate);
+    let baseline = GameplayPacing::from(PacingId::Baseline);
+
+    assert_eq!(*app.world().resource::<GameplayPacing>(), deliberate);
+
+    app.world_mut()
+        .resource_mut::<BattleExperimentConfig>()
+        .pacing = PacingId::Baseline;
+    request_start(&mut app, Scenario::AiBattle);
+    assert_eq!(*app.world().resource::<GameplayPacing>(), baseline);
+
+    request_start(&mut app, Scenario::Sandbox);
+    assert_eq!(*app.world().resource::<GameplayPacing>(), deliberate);
+
+    request_start(&mut app, Scenario::AiBattle);
+    assert_eq!(*app.world().resource::<GameplayPacing>(), baseline);
+
+    request_start(&mut app, Scenario::Standard);
+    assert_eq!(*app.world().resource::<GameplayPacing>(), deliberate);
 }
 
 #[test]

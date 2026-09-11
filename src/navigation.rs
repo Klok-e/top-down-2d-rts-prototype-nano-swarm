@@ -119,6 +119,66 @@ impl Obstacle {
 mod tests {
     use super::*;
 
+    fn dense_segment_clear(obstacle: Obstacle, a: Vec2, b: Vec2) -> bool {
+        const SAMPLES: u32 = 4096;
+        (0..=SAMPLES).all(|step| {
+            let point = a.lerp(b, step as f32 / SAMPLES as f32);
+            obstacle.admits_body(point)
+        })
+    }
+
+    #[test]
+    fn analytic_segment_clear_matches_dense_high_margin_cases() {
+        let obstacles = [
+            Obstacle::Circle {
+                center: Vec2::ZERO,
+                radius: 10.0,
+            },
+            Obstacle::Rectangle {
+                center: Vec2::ZERO,
+                half: Vec2::new(36.0, 24.0),
+            },
+        ];
+        let cases = [
+            (Vec2::ZERO, Vec2::new(100.0, 0.0), false),
+            (Vec2::new(-100.0, 0.0), Vec2::new(100.0, 0.0), false),
+            (Vec2::new(-100.0, 80.0), Vec2::new(100.0, 80.0), true),
+            (Vec2::ZERO, Vec2::ZERO, false),
+            (Vec2::new(100.0, 80.0), Vec2::new(100.0, 80.0), true),
+        ];
+
+        for obstacle in obstacles {
+            for (a, b, expected) in cases {
+                assert_eq!(dense_segment_clear(obstacle, a, b), expected);
+                assert_eq!(dense_segment_clear(obstacle, b, a), expected);
+                assert_eq!(obstacle.segment_clear(a, b), expected);
+                assert_eq!(obstacle.segment_clear(b, a), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn rounded_rectangle_face_and_corner_tangencies_are_clear() {
+        let obstacle = Obstacle::Rectangle {
+            center: Vec2::ZERO,
+            half: Vec2::new(36.0, 24.0),
+        };
+        let face_tangent = (Vec2::new(70.0, -20.0), Vec2::new(70.0, 20.0));
+        assert!(obstacle.segment_clear(face_tangent.0, face_tangent.1));
+
+        let corner = Vec2::new(36.0, 24.0);
+        let radial = Vec2::splat(std::f32::consts::FRAC_1_SQRT_2);
+        let tangent = Vec2::new(-radial.y, radial.x);
+        let contact = corner + radial * BODY_RADIUS;
+        let corner_tangent = (contact - tangent * 10.0, contact + tangent * 10.0);
+        assert!(obstacle.segment_clear(corner_tangent.0, corner_tangent.1));
+
+        for (a, b) in [face_tangent, corner_tangent] {
+            assert!(obstacle.segment_clear(b, a));
+            assert!(a.distance(b) > 0.0);
+        }
+    }
+
     #[test]
     fn one_cell_passage_leaves_two_units_beyond_body_on_each_side() {
         let left = Obstacle::Rectangle {

@@ -10,6 +10,7 @@ fn git(args: &[&str]) -> Option<String> {
 }
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=NANO_SWARM_SOURCE_IDENTITY");
     for path in ["src", "config", "Cargo.toml", "Cargo.lock", "build.rs"] {
         println!("cargo:rerun-if-changed={path}");
     }

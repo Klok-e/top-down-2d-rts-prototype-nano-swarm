@@ -330,3 +330,77 @@ fn partial_connectivity_build_cannot_publish_a_route_through_changed_obstacles()
     }
     assert_eq!(previous, Vec2::new(252.0, 36.0));
 }
+
+#[test]
+fn connectivity_refresh_replaces_pending_geometry_and_caches_each_final_answer() {
+    use top_down_2d_rts_prototype_nano_swarm::navigation::{
+        ConnectivityStatus, Obstacle, RouteGoal,
+    };
+
+    let grid = IntentGrid::new(4, 4);
+    let partial_wall = Obstacle::Rectangle {
+        center: Vec2::ZERO,
+        half: Vec2::new(72.0, 144.0),
+    };
+    let sealing_wall = Obstacle::Rectangle {
+        center: Vec2::ZERO,
+        half: Vec2::new(72.0, 1_100.0),
+    };
+    let start = Vec2::new(-252.0, 36.0);
+    let goal = RouteGoal::Point(Vec2::new(252.0, 36.0));
+    let mut navigation = Navigation::new(&grid, vec![partial_wall]);
+
+    assert_eq!(
+        navigation.query_connectivity(start, goal),
+        ConnectivityStatus::Pending
+    );
+    assert_eq!(navigation.advance(&grid, 1).work, 1);
+    assert_eq!(
+        navigation.query_connectivity(start, goal),
+        ConnectivityStatus::Pending
+    );
+
+    navigation.refresh(&grid, vec![sealing_wall]);
+    assert_eq!(
+        navigation.query_connectivity(start, goal),
+        ConnectivityStatus::Pending,
+        "refresh must invalidate a partial connectivity build immediately"
+    );
+    let mut status = ConnectivityStatus::Pending;
+    for _ in 0..1_000 {
+        assert!(navigation.advance(&grid, 1_000).work <= 1_000);
+        status = navigation.query_connectivity(start, goal);
+        if status != ConnectivityStatus::Pending {
+            break;
+        }
+    }
+    assert_eq!(status, ConnectivityStatus::Unreachable);
+    assert_eq!(
+        navigation.query_connectivity(start, goal),
+        ConnectivityStatus::Unreachable,
+        "the completed sealed-world answer must remain cached"
+    );
+
+    navigation.refresh(&grid, vec![partial_wall]);
+    assert_eq!(
+        navigation.query_connectivity(start, goal),
+        ConnectivityStatus::Pending,
+        "refresh must invalidate the cached sealed-world answer immediately"
+    );
+    for _ in 0..1_000 {
+        assert!(navigation.advance(&grid, 1_000).work <= 1_000);
+        status = navigation.query_connectivity(start, goal);
+        if status != ConnectivityStatus::Pending {
+            break;
+        }
+    }
+    let connected = ConnectivityStatus::Connected {
+        endpoint: Vec2::new(252.0, 36.0),
+    };
+    assert_eq!(status, connected);
+    assert_eq!(
+        navigation.query_connectivity(start, goal),
+        connected,
+        "the completed partial-wall answer must remain cached"
+    );
+}

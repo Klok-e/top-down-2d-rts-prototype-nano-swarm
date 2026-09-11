@@ -145,8 +145,11 @@ fn hauler_ignores_enemy_owned_sink() {
         .insert(OwnerSwarm(player_swarm));
     let hauler = common::spawn_hauler_at(&mut app, source_pos + Vec2::new(-68.0, 0.0));
 
-    for _ in 0..3 {
+    for _ in 0..100 {
         app.update();
+        if app.world().get::<HaulerAssignment>(hauler).is_some() {
+            break;
+        }
     }
 
     let assignment = app

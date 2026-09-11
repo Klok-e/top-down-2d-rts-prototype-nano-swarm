@@ -1,13 +1,13 @@
 //! Deterministic Defender combat and physical Defend Contest presence.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::battle_statistics::{BattleCounters, BattleEvent};
 use bevy::prelude::*;
 
 use crate::nanobot::{
-    Charge, DefenderResponse, Health, Nanobot, NanobotType, OwnerSwarm, Structure, StructureKind,
-    Swarm, SwarmId, SwarmMember, effective_attack, effective_defense,
+    Charge, DefenderResponse, Health, Nanobot, NanobotType, OwnerSwarm, STRUCTURE_MAX_HEALTH,
+    Structure, StructureKind, Swarm, SwarmId, SwarmMember, effective_attack, effective_defense,
 };
 use crate::spatial::FixedSpatialBuckets;
 use crate::structure_sprites::StructureVisual;
@@ -15,7 +15,7 @@ use crate::structure_sprites::StructureVisual;
 /// Defender attack reach in world units.
 pub const DEFENDER_ATTACK_RANGE: f32 = 96.0;
 
-/// Fixed-tick interval between delivered Defender attacks.
+/// Baseline fixed-tick interval between delivered Defender attacks.
 pub const DEFENDER_ATTACK_INTERVAL_TICKS: u16 = 15;
 
 /// Structure damage multiplier for a fully charged Defender attack.
@@ -159,11 +159,71 @@ fn structure_hit_damage(attack: f32) -> u32 {
     damage_after_defense(attack * DEFENDER_STRUCTURE_DAMAGE_FACTOR, 0.0)
 }
 
+fn nominal_damage(contributions: &BTreeMap<SwarmId, u32>) -> u32 {
+    contributions.values().copied().fold(0, u32::saturating_add)
+}
+
+fn allocate_damage(
+    contributions: &BTreeMap<SwarmId, u32>,
+    effective_damage: u32,
+) -> Vec<(SwarmId, u32)> {
+    if effective_damage == 0 {
+        return Vec::new();
+    }
+    let nominal_total = contributions.values().copied().map(u64::from).sum::<u64>();
+    debug_assert!(nominal_total > 0);
+    let mut allocations = contributions
+        .iter()
+        .map(|(&swarm, &nominal)| {
+            let amount = (u64::from(effective_damage) * u64::from(nominal) / nominal_total) as u32;
+            (swarm, amount)
+        })
+        .collect::<Vec<_>>();
+    let allocated = allocations.iter().map(|(_, amount)| *amount).sum::<u32>();
+    for (_, amount) in allocations
+        .iter_mut()
+        .take(effective_damage.saturating_sub(allocated) as usize)
+    {
+        *amount += 1;
+    }
+    allocations
+}
+
+fn record_combat_damage(
+    counters: &mut BattleCounters,
+    target: Entity,
+    target_max_health: u32,
+    contributions: &BTreeMap<SwarmId, u32>,
+    effective_damage: u32,
+    effective_event: fn(u32) -> BattleEvent,
+    scored_event: fn(u32) -> BattleEvent,
+) {
+    let effective_allocations = allocate_damage(contributions, effective_damage);
+    let scored_damage = counters.claim_scored_damage(target, target_max_health, effective_damage);
+    let scored_weights = effective_allocations
+        .iter()
+        .copied()
+        .filter(|(_, amount)| *amount > 0)
+        .collect::<BTreeMap<_, _>>();
+    let scored_allocations = allocate_damage(&scored_weights, scored_damage);
+    for (swarm, amount) in effective_allocations {
+        if amount > 0 {
+            counters.record(swarm, effective_event(amount));
+        }
+    }
+    for (swarm, amount) in scored_allocations {
+        if amount > 0 {
+            counters.record(swarm, scored_event(amount));
+        }
+    }
+}
+
 /// Resolve one simultaneous attack snapshot. Every responding Defender chooses
 /// the nearest hostile in range independently of its pursuit claim; damage is
 /// applied after target selection so entity iteration order cannot change the exchange.
 #[allow(clippy::type_complexity)]
 pub fn defender_combat_system(
+    pacing: Res<crate::gameplay_pacing::GameplayPacing>,
     mut combatants: ParamSet<(
         Query<
             (
@@ -234,8 +294,8 @@ pub fn defender_combat_system(
         structure_buckets.insert(target.position, target);
     }
 
-    let mut nanobot_damage = HashMap::<Entity, u32>::new();
-    let mut structure_damage = HashMap::<Entity, u32>::new();
+    let mut nanobot_damage = HashMap::<Entity, BTreeMap<SwarmId, u32>>::new();
+    let mut structure_damage = HashMap::<Entity, BTreeMap<SwarmId, u32>>::new();
     let mut resolved_hits = Vec::<ResolvedCombatHit>::new();
     for attacker in snapshot
         .iter()
@@ -277,7 +337,11 @@ pub fn defender_combat_system(
                     };
                     let damage = damage_after_defense(attack, defense);
                     if damage > 0 {
-                        *nanobot_damage.entry(target.entity).or_default() += damage;
+                        *nanobot_damage
+                            .entry(target.entity)
+                            .or_default()
+                            .entry(attacker.swarm)
+                            .or_default() += damage;
                         resolved_hits.push(ResolvedCombatHit {
                             attacker: attacker.presentation_snapshot(),
                             target: target.presentation_snapshot(),
@@ -290,7 +354,11 @@ pub fn defender_combat_system(
                 Some(CombatTarget::Structure(target)) => {
                     let damage = structure_hit_damage(attack);
                     if damage > 0 {
-                        *structure_damage.entry(target.entity).or_default() += damage;
+                        *structure_damage
+                            .entry(target.entity)
+                            .or_default()
+                            .entry(attacker.swarm)
+                            .or_default() += damage;
                         resolved_hits.push(ResolvedCombatHit {
                             attacker: attacker.presentation_snapshot(),
                             target: target.presentation_snapshot(),
@@ -309,7 +377,7 @@ pub fn defender_combat_system(
                 .entity(attacker.entity)
                 .insert(DefenderAttackCooldown {
                     ticks_remaining: if delivered_attack {
-                        DEFENDER_ATTACK_INTERVAL_TICKS.saturating_sub(1)
+                        pacing.attack_interval_ticks.saturating_sub(1)
                     } else {
                         attacker.cooldown.unwrap_or_default().saturating_sub(1)
                     },
@@ -330,10 +398,25 @@ pub fn defender_combat_system(
     let mut combat_deaths = Vec::new();
     {
         let mut health = combatants.p2();
-        for (entity, amount) in nanobot_damage {
+        for (entity, contributions) in nanobot_damage {
             if let Ok(mut target) = health.get_mut(entity) {
                 let was_alive = target.current > 0;
-                target.current = target.current.saturating_sub(amount);
+                let previous_health = target.current;
+                target.current = target
+                    .current
+                    .saturating_sub(nominal_damage(&contributions));
+                let effective_damage = previous_health - target.current;
+                if let Some(counters) = counters.as_deref_mut() {
+                    record_combat_damage(
+                        counters,
+                        entity,
+                        target.max,
+                        &contributions,
+                        effective_damage,
+                        BattleEvent::EffectiveNanobotDamage,
+                        BattleEvent::ScoredNanobotDamage,
+                    );
+                }
                 if was_alive {
                     resolved_targets.insert(entity);
                 }
@@ -350,10 +433,23 @@ pub fn defender_combat_system(
         }
     }
     let mut conditions = combatants.p3();
-    for (entity, amount) in structure_damage {
+    for (entity, contributions) in structure_damage {
         if let Ok(mut target) = conditions.get_mut(entity) {
             let was_alive = target.health > 0;
-            target.health = target.health.saturating_sub(amount);
+            let previous_health = target.health;
+            target.health = target.health.saturating_sub(nominal_damage(&contributions));
+            let effective_damage = previous_health - target.health;
+            if let Some(counters) = counters.as_deref_mut() {
+                record_combat_damage(
+                    counters,
+                    entity,
+                    STRUCTURE_MAX_HEALTH,
+                    &contributions,
+                    effective_damage,
+                    BattleEvent::EffectiveStructureDamage,
+                    BattleEvent::ScoredStructureDamage,
+                );
+            }
             if was_alive {
                 resolved_targets.insert(entity);
             }
@@ -386,13 +482,15 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<ResolvedCombatFact>().add_systems(
-            FixedUpdate,
-            defender_combat_system
-                .in_set(crate::nanobot::NanobotSimulationSet::Combat)
-                .after(crate::nanobot::RegionalAllocationSet::Acquire)
-                .after(crate::nanobot::defender_charger_work_system),
-        );
+        app.init_resource::<crate::gameplay_pacing::GameplayPacing>()
+            .add_message::<ResolvedCombatFact>()
+            .add_systems(
+                FixedUpdate,
+                defender_combat_system
+                    .in_set(crate::nanobot::NanobotSimulationSet::Combat)
+                    .after(crate::nanobot::RegionalAllocationSet::Acquire)
+                    .after(crate::nanobot::defender_charger_work_system),
+            );
     }
 }
 

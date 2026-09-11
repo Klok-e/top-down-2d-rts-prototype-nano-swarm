@@ -49,6 +49,22 @@ impl Future for WorkUnit {
 }
 
 impl Navigation {
+    fn region_build_snapshot(&self) -> Navigation {
+        Navigation {
+            min: self.min,
+            max: self.max,
+            obstacles: self.obstacles.clone(),
+            obstacle_index: self.obstacle_index.clone(),
+            clearing: Vec::new(),
+            revision: self.revision,
+            chunks: Arc::new(Mutex::new(FastHashMap::default())),
+            connections: Default::default(),
+            scheduler: Mutex::new(Scheduler::default()),
+            chunk_builds: Default::default(),
+            expansions: self.expansions.clone(),
+        }
+    }
+
     async fn async_regions(&self, chunk: IVec2) -> Chunk {
         std::future::poll_fn(|context| {
             if let Some(cached) = self.chunks.lock().unwrap().get(&chunk).cloned() {
@@ -58,7 +74,7 @@ impl Navigation {
             let build = builds.entry(chunk).or_insert_with(|| {
                 // The build snapshot owns independent empty caches, so retaining a
                 // partial build cannot form an Arc cycle back to this shared cache.
-                let snapshot = self.hypothetical(self.obstacles.as_ref().clone());
+                let snapshot = self.region_build_snapshot();
                 Box::pin(async move { snapshot.async_build_regions(chunk).await })
             });
             match build.as_mut().poll(context) {
@@ -77,7 +93,7 @@ impl Navigation {
         self.expansions
             .hierarchy_chunks
             .fetch_add(1, AtomicOrdering::Relaxed);
-        let mut regions = HashMap::new();
+        let mut regions = FastHashMap::default();
         for y in 0..CHUNK {
             WorkUnit::new().await;
             for x in 0..CHUNK {
@@ -916,7 +932,7 @@ impl Navigation {
                     chunks: if self.clearing.is_empty() {
                         self.chunks.clone()
                     } else {
-                        Arc::new(Mutex::new(HashMap::new()))
+                        Arc::new(Mutex::new(FastHashMap::default()))
                     },
                     connections: if self.clearing.is_empty() {
                         self.connections.clone()
@@ -1278,7 +1294,7 @@ impl Navigation {
             obstacles: Arc::new(obstacles),
             clearing: Vec::new(),
             revision: self.revision,
-            chunks: Arc::new(Mutex::new(HashMap::new())),
+            chunks: Arc::new(Mutex::new(FastHashMap::default())),
             connections: Default::default(),
             scheduler: Mutex::new(Scheduler::default()),
             expansions: self.expansions.clone(),
@@ -1538,39 +1554,85 @@ mod tests {
     #[test]
     fn indexed_geometry_keeps_bucket_edges_huge_shapes_and_long_segments_solid() {
         let grid = IntentGrid::new(1000, 1000);
-        let mut navigation = Navigation::new(
+        let brute_point_clear = |navigation: &Navigation, point: Vec2| {
+            point.is_finite()
+                && point.cmpge(navigation.min).all()
+                && point.cmplt(navigation.max).all()
+                && navigation
+                    .obstacles
+                    .iter()
+                    .all(|obstacle| obstacle.admits_body(point))
+        };
+        let brute_segment_clear = |navigation: &Navigation, a: Vec2, b: Vec2| {
+            brute_point_clear(navigation, a)
+                && brute_point_clear(navigation, b)
+                && navigation
+                    .obstacles
+                    .iter()
+                    .all(|obstacle| obstacle.segment_clear(a, b))
+        };
+        let assert_matches_brute_force =
+            |navigation: &Navigation, points: &[Vec2], segments: &[(Vec2, Vec2)]| {
+                for &point in points {
+                    assert_eq!(
+                        navigation.point_clear(point),
+                        brute_point_clear(navigation, point)
+                    );
+                }
+                for &(a, b) in segments {
+                    let expected = brute_segment_clear(navigation, a, b);
+                    assert_eq!(navigation.segment_clear(a, b), expected);
+                    assert_eq!(navigation.segment_clear(b, a), expected);
+                }
+            };
+
+        let bucket_edge_circle = Obstacle::Circle {
+            center: Vec2::new(-580.0, -572.0),
+            radius: 10.0,
+        };
+        let huge_global = Obstacle::Rectangle {
+            center: Vec2::new(0.0, 2_000.0),
+            half: Vec2::new(100_000.0, 36.0),
+        };
+        let mut navigation = Navigation::new(&grid, vec![bucket_edge_circle, huge_global]);
+        let points = [
+            Vec2::new(-614.0, -572.0),
+            Vec2::new(-624.0, -572.0),
+            Vec2::new(-580.0, -528.0),
+            Vec2::new(-535.0, -572.0),
+            Vec2::new(20_000.0, 2_050.0),
+            Vec2::new(20_000.0, 2_071.0),
+        ];
+        let segments = [
+            (Vec2::new(-700.0, -572.0), Vec2::new(-500.0, -572.0)),
+            (Vec2::new(-700.0, -528.0), Vec2::new(-500.0, -528.0)),
+            (Vec2::new(-50_000.0, -572.0), Vec2::new(50_000.0, -572.0)),
+            (Vec2::new(-50_000.0, 2_070.0), Vec2::new(50_000.0, 2_070.0)),
+            (Vec2::new(20_000.0, 1_900.0), Vec2::new(20_000.0, 2_100.0)),
+        ];
+        assert_matches_brute_force(&navigation, &points, &segments);
+
+        navigation.refresh(
             &grid,
             vec![Obstacle::Circle {
                 center: Vec2::new(580.0, 0.0),
                 radius: 10.0,
             }],
         );
-        assert!(
-            !navigation.point_clear(Vec2::new(550.0, 0.0)),
-            "body radius crosses the 576-unit bucket boundary"
-        );
-        assert!(navigation.point_clear(Vec2::new(535.0, 0.0)));
-        assert!(
-            !navigation.segment_clear(Vec2::new(-50_000.0, 0.0), Vec2::new(50_000.0, 0.0)),
-            "long segment fallback must retain small obstacles"
-        );
-        navigation.refresh(
-            &grid,
-            vec![Obstacle::Rectangle {
-                center: Vec2::ZERO,
-                half: Vec2::new(100_000.0, 36.0),
-            }],
-        );
-        assert!(
-            !navigation.point_clear(Vec2::new(20_000.0, 50.0)),
-            "huge rectangles remain global candidates"
-        );
-        assert!(!navigation.segment_clear(Vec2::new(20_000.0, -100.0), Vec2::new(20_000.0, 100.0)));
+        let refreshed_points = [
+            Vec2::new(550.0, 0.0),
+            Vec2::new(535.0, 0.0),
+            Vec2::new(-580.0, -572.0),
+        ];
+        let refreshed_segments = [
+            (Vec2::new(500.0, 0.0), Vec2::new(650.0, 0.0)),
+            (Vec2::new(500.0, 44.0), Vec2::new(650.0, 44.0)),
+            (Vec2::new(-50_000.0, 0.0), Vec2::new(50_000.0, 0.0)),
+        ];
+        assert_matches_brute_force(&navigation, &refreshed_points, &refreshed_segments);
+
         navigation.refresh(&grid, vec![]);
-        assert!(
-            navigation.point_clear(Vec2::new(20_000.0, 50.0)),
-            "refresh must discard stale blockers"
-        );
+        assert_matches_brute_force(&navigation, &points, &segments);
     }
 
     #[test]

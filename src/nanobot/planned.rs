@@ -19,12 +19,9 @@ use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
 use crate::resources::{ResourceDeposit, Stockpile, StockpileRole};
 use crate::structure_sprites::{StructureSprites, StructureVisual, StructureVisualState};
 
-/// Number of worker-time ticks required to finish a planned
-/// structure. V1 consumes no minerals; the only cost is this
-/// counter decrementing each tick the worker is at the
-/// planned structure. Picked to be small enough that a single
-/// worker finishes the demo build in a handful of ticks so
-/// the test math is obvious.
+/// Baseline worker-time ticks required to finish a planned structure.
+/// New automatic plans take their budget from the shared gameplay pacing
+/// resource; the baseline remains the default outside controlled experiments.
 pub const DEFAULT_PLANNED_WORK_TICKS: u32 = 5;
 
 /// Local sprite size shared by planned and completed visuals. The aligned
@@ -171,6 +168,7 @@ pub fn sink_stockpile_demand_system(
     access: super::construction_access::ConstructionAccess,
     grid: Res<IntentGrid>,
     structure_sprites: Res<StructureSprites>,
+    pacing: Res<crate::gameplay_pacing::GameplayPacing>,
     planned: Query<(&PlannedStructure, &Transform, Option<&OwnerSwarm>)>,
     stockpiles: Query<(
         &Stockpile,
@@ -290,7 +288,8 @@ pub fn sink_stockpile_demand_system(
         );
         newly_planned.push(placement_pos);
         let mut entity_commands = commands.spawn((
-            PlannedStructure::new(PlannedKind::SinkStockpile, placement_cell),
+            PlannedStructure::new(PlannedKind::SinkStockpile, placement_cell)
+                .with_work_budget(pacing.construction_work_ticks),
             planned_visual_components(
                 PlannedKind::SinkStockpile,
                 &structure_sprites,

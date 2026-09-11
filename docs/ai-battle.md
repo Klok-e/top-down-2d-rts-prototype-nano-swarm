@@ -1,21 +1,58 @@
 # AI Battle
 
-Select **AI Battle** in the scenario menu, then relaunch to watch two automatically controlled swarms on the Standard map. Painting and erasing are disabled; camera controls remain available. Both sides use the same timed intent controller and shared economy, navigation, and combat rules.
+Select **AI Battle** in the scenario menu to watch two automatically controlled swarms. Painting and erasing are disabled; camera controls remain available. Normal AI Battle uses the Timed pair on Standard with Baseline pacing. Standard player-versus-AI uses Adaptive; Standard and Sandbox use shared Deliberate pacing. Acceptance checks are defined in [ADR-0022](adr/0022-strategic-controller-objective.md) and [issue #72](https://github.com/Klok-e/top-down-2d-rts-prototype-nano-swarm/issues/72).
 
-Launch a headless benchmark with:
+## Real-process checks
+
+Launch an unlimited headless battle with:
 
 ```bash
 cargo run --release -- --scenario ai-battle --headless --seed 42 --output-root target/battle-runs
 ```
 
-Omit `--headless` for normal-speed watching. Both modes use 60 simulation ticks per simulated second and the supplied starting seed (default `0`). Headless AI Battle advances as fast as possible; it still uses the game's offscreen GPU renderer. Compare simulation timings between like configurations and builds. A fixed seed improves repeatability but does not guarantee identical battle outcomes.
+Headless AI Battle uses offscreen rendering and advances as fast as possible. The first Swarm Elimination ends recording and exits the headless process; normal AI Battle has no time limit. Ctrl+C records an interrupted run without inventing a winner. A seed improves repeatability but does not guarantee identical outcomes.
 
-There is no time limit. The first Swarm Elimination records the winning swarm, or Draw for simultaneous elimination, and ends statistics collection. Watchable simulation continues; headless saves and exits. Ctrl+C saves an unfinished run as `interrupted`; it does not declare a winner or Draw. A stalemate can run indefinitely until interrupted.
+For a bounded controller check:
 
-Each run creates a unique directory under the output root containing `samples.csv` and `summary.json`. CSV rows are sampled once per simulated second, with one row per swarm, and a final sample on termination even between regular sample boundaries. Summary metadata records scenario, seed, timestep, execution mode, code revision, and whether the source checkout contains changes. Periodic flushes preserve completed samples; graceful interruption flushes the current partial interval.
+```bash
+cargo run --release -- --headless --agent-socket --scenario ai-battle --experiment --controllers adaptive,timed --layout standard --seed 11 --pacing deliberate --trial-seconds 600 --output-root target/ai-smoke
+```
 
-Population columns are current counts by Nanobot Type. Births, deaths, minerals gathered/consumed, and structures built/lost are cumulative since the start of the run. Starting Nanobots and structures are excluded from birth/construction counters. Cargo lost when its carrier dies is not resource consumption. Planned Structures are excluded from completed structure counts. Elimination time is absent for a swarm that has not been eliminated when recording ends.
+Experimental trials stop at the configured simulated-time cutoff and record `unresolved` with no game outcome. Natural elimination takes precedence. `--swap-sides` exchanges controllers between physical starts; `--realtime` enables normal-speed offscreen observation. Supported controller choices are Adaptive and Timed. Standard, Flanks, Narrows, and Crossroads are controlled layouts; they are not reserved evaluation inputs.
 
-Tick timing is measured in wall-clock milliseconds over each sampling interval, with count, mean, nearest-rank p50/p95/p99, and maximum. It measures fixed simulation work through outcome evaluation, excluding report serialization and disk writes. It is not a per-system profiler. Watchable frame timing measures intervals between application frames, including pacing; headless frame fields are empty. Summary contains the latest sample; the CSV retains the full history. Post-outcome simulation never appends additional samples.
+Use [the canonical control client](agents/agent-control.md) for state inspection, camera controls, captures, and shutdown. Automated verification never creates an OS/compositor window. Copy captures out of a temporary runtime directory before its cleanup and inspect the images. Accelerated screenshots alone do not establish normal-speed readability.
 
-For background automated observation, add `--agent-socket` and use the existing agent-control client. Automated verification must use offscreen presentation without an OS window. See [agent control](agents/agent-control.md) for socket setup and capture commands, and [ADR-0021](adr/0021-ai-battle-benchmark.md) for the agreed scope.
+## Small smoke matrix
+
+The runner defaults to four games: Adaptive against Timed, Standard/Flanks, seed 11, both physical starts, Baseline pacing, and a 600-second cutoff:
+
+```bash
+python scripts/ai_battle_experiment.py --output target/ai-smoke-matrix
+python scripts/ai_battle_experiment.py --pacing deliberate --output target/ai-smoke-deliberate
+```
+
+Explicit `--controller`, `--opponent`, `--layouts`, `--seeds`, `--pacing`, and `--trial-seconds` select another bounded check. Hold controller matchups fixed when comparing shared pacing. Do not repeat smoke matrices solely to obtain a better score; inspect economy, sustained attacks, recovery, and finishing instead.
+
+Freeze source and configuration for the whole matrix. Each release-build game has a private runtime directory, process log, and successful-exit receipt. The manifest and source bundle identify exact dirty source, settings, and trials. Ignored output directories such as `target/` prevent artifacts from changing the source fingerprint. Re-run an unchanged command to resume; do not restart a live process merely because observation timed out. Failed or interrupted runs require investigation, not reclassification as competitive outcomes.
+
+`--report-only` validates an existing matrix against its recorded manifest and source bundle without requiring the current source to match. Reports contain actual damage, outcomes, and per-layout/start observations, not statistical promotion decisions. Historical research artifacts and source bundles remain under their original output paths; removed policy versions and old report schemas are not compatibility interfaces.
+
+## Controller and shared pacing
+
+Adaptive receives immutable world observations and returns only its owner's intent edits. Its stateful planner keeps one active resource site, retargets exhausted or lost deposits, coordinates economic and combat intent, and retains useful attacks. Proactive multi-site expansion is omitted to limit economic complexity. The shared simulation chooses individual work assignments, movement, resupply, and attacks. Full-state observation does not grant direct mutation authority.
+
+Planning shares 100,000 accounted work units per 30-tick review window, including urgent checks. Exhaustion retains existing intent until a fresh allowance is available. Telemetry records review count, edits, work, explanation, mean/max cost, and p95 over at most 4,096 recent reviews; `p95_window_samples` gives the actual count. Observation cost is measured separately.
+
+`baseline` retains the original shared timing values; `deliberate` uses 90 construction ticks, 30 ticks between attacks, and 0.000125 Charge drain per tick. Both apply to every swarm. Summaries record numeric values, not just profile names. A profile's existence is not evidence of good feel; inspect normal-speed response, travel, construction, resupply, and combat before selecting it.
+
+## Recorded evidence
+
+Each battle writes `samples.csv` and `summary.json`. Sampling uses simulated seconds, includes the final partial interval, and freezes at termination or experiment cutoff. Metadata identifies scenario, seed, physical swarm identities, controllers, settings, revision, and dirty state. Wins, losses, Draws, unresolved attempts, and technical interruptions remain distinct.
+
+Population counts are current; births, deaths, gathered/consumed minerals, and built/lost structures are cumulative. Starting entities are excluded from birth/construction totals. Cargo loss is not resource consumption. Planned structures are not completed structures.
+
+Damage schema 3 records gross `effective_damage_total` and lifetime-capped `scored_damage_total`, each with Nanobot and structure subtotals. Only actual hostile combat HP removed counts: no overkill, friendly/self damage, Charge attrition, maintenance decay, or unfinished-structure damage. All attackers share one maximum-health-bar credit limit per enemy lifetime; repair cannot renew it. Old records without authoritative counters cannot be interpreted as zero damage.
+
+Damage is diagnostic, not a shipping contest. Gross-versus-scored differences expose repeat damage; they do not prove intentional farming. A per-entity cap cannot prevent farming newly produced enemies, so inspect viable finishing opportunities and retain autonomous finishing tests. Unresolved games are not wins or Draws, and an early loss is not fast completion.
+
+Tick timings measure fixed simulation through outcome evaluation, excluding report serialization and writes. Normal-speed frame timings include pacing; accelerated frame fields are empty. CSV history retains transient maxima. Report measured runtime cost, but do not apply the superseded statistical promotion or 128-game evaluation gates. Current acceptance and historical observations are separated in the [verification record](verification/strategic-controller.md).

@@ -32,15 +32,21 @@ impl Plugin for TerrainPresentationPlugin {
 }
 fn present_rocks(
     mut commands: Commands,
-    roots: Query<(Entity, &Transform), Added<RockSurfaceRoot>>,
+    roots: Query<
+        (Entity, &Transform, Option<&crate::scenario::TerrainLayout>),
+        Added<RockSurfaceRoot>,
+    >,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<RockMaterial>>,
 ) {
-    for (root, transform) in &roots {
+    for (root, transform, layout) in &roots {
         commands.entity(root).with_children(|children| {
             children.spawn((
                 Mesh2d(meshes.add(crate::scenario::rock_surface_mesh(
                     transform.translation.truncate(),
+                    layout.map_or(crate::battle_experiment::LayoutId::Standard, |layout| {
+                        layout.0
+                    }),
                 ))),
                 MeshMaterial2d(materials.add(RockMaterial { tint: Vec4::ONE })),
                 Transform::default(),

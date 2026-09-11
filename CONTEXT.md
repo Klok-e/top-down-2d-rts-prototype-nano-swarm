@@ -9,12 +9,24 @@ A complete starting setup defining terrain, Resource Deposits, starting swarms, 
 _Avoid_: Saved game, map only
 
 **AI Battle**:
-A spectator scenario in which two automatically controlled swarms battle from equal starts on the Standard map, exercising shared nanobot autonomy without player-painted intervention. The first Swarm Elimination ends the battle and its statistics collection, even if the simulation continues afterward.
+A spectator scenario in which two automatically controlled swarms battle from balanced starts on the Standard map or controlled experimental layouts, exercising shared nanobot autonomy without player-painted intervention. The first Swarm Elimination ends the battle and its statistics collection, even if the simulation continues afterward.
 _Avoid_: Adaptive strategy AI, player-versus-AI match
 
 **Swarm**:
 The full population of nanobots belonging to one side, steered by a player or an automatic controller. It has no fixed subgroups; intent is expressed through zones and tasks that eligible nanobots self-assign to.
 _Avoid_: Group, squad, unit group
+
+**Strategic Controller**:
+An automatic controller with full knowledge of the current game state that adapts its own swarm's Intent Allocation to maintain an economy, attack, and respond to changing conditions. Nanobots execute its intent through the same autonomy and gameplay rules as the player swarm.
+_Avoid_: Nanobot autonomy, scripted assault, direct unit control
+
+**Intent Plan**:
+A Strategic Controller's coordinated arrangement of Gather, Build, Defend, and Corridor intent across the map. It expresses intended economic, support, and combat work without assigning individual Nanobots.
+_Avoid_: Build order, squad orders
+
+**Combat Damage Credit**:
+Hostile combat HP removed from Nanobots and completed structures that counts toward AI Battle strategy evaluation, capped at one maximum-health bar per enemy lifetime across all attackers. Gross damage remains observable, but repairing an enemy cannot renew its credit allowance.
+_Avoid_: Damage per second, kill score, game winner
 
 **Nanobot**:
 An individual autonomous agent within the swarm. It may choose tasks from player intent, but is not a persistent command target.

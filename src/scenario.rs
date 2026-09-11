@@ -8,17 +8,21 @@ use bevy::{math::vec3, prelude::*};
 use crate::{
     GAMEPLAY_SPRITE_Z,
     ai::{AiStateComponent, get_world_from_zone},
+    battle_experiment::{BattleExperimentConfig, ControllerId, LayoutId},
     building::{Minerals, ProcessingFacility},
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Commitment, Health, Nanobot, NanobotBundle, NanobotType, OpponentIntentController,
-        OpponentSwarm, OwnerSwarm, ProductionFacility, Swarm, SwarmBundle, SwarmId, SwarmMember,
+        Commitment, Health, Nanobot, NanobotBundle, NanobotType, OpponentSwarm, OwnerSwarm,
+        ProductionFacility, StrategicController, Swarm, SwarmBundle, SwarmId, SwarmMember,
         VelocityComponent,
     },
     resources::{ResourceDeposit, ResourceKind},
 };
 
+mod layout;
 mod map;
+pub use layout::LayoutSetup;
+pub use map::TerrainLayout;
 pub(crate) use map::rock_surface_mesh;
 pub use map::{default_rock_geometry, spawn_default_terrain};
 
@@ -85,11 +89,42 @@ pub fn spawn_default_player_scenario(
     asset_server: &Res<'_, AssetServer>,
     grid: &mut IntentGrid,
 ) {
-    paint_default_player_intent(grid);
+    spawn_player_scenario(
+        commands,
+        asset_server,
+        grid,
+        LayoutSetup::for_layout(LayoutId::Standard),
+    );
+}
 
-    let player_pos = cell_origin(PLAYER_CELL);
+fn paint_economy(
+    grid: &mut IntentGrid,
+    owner: SwarmId,
+    home: IVec2,
+    deposit: IVec2,
+    direction: i32,
+) {
+    for (cell, kind) in [
+        (deposit, IntentKind::Gather),
+        (home, IntentKind::Build),
+        (home + IVec2::Y * direction, IntentKind::Build),
+        (home + IVec2::ONE * direction, IntentKind::Defend),
+    ] {
+        grid.paint(cell, kind, owner);
+    }
+}
+
+fn spawn_player_scenario(
+    commands: &mut Commands<'_, '_>,
+    asset_server: &Res<'_, AssetServer>,
+    grid: &mut IntentGrid,
+    setup: LayoutSetup,
+) {
+    paint_economy(grid, SwarmId::PLAYER, setup.home, setup.home_deposit, 1);
+
+    let player_pos = cell_origin(setup.home);
     let facility_pos = player_pos + SEED_FACILITY_OFFSET;
-    let deposit_pos = cell_origin(PLAYER_DEPOSIT_CELL);
+    let deposit_pos = cell_origin(setup.home_deposit);
     let facility_texture = asset_server.load("production_facility.png");
 
     let swarm = commands
@@ -124,7 +159,7 @@ pub fn spawn_default_player_scenario(
     );
 
     spawn_deposit(commands, Some(swarm), deposit_pos);
-    for cell in NEUTRAL_DEPOSIT_CELLS {
+    for cell in setup.neutral_deposits {
         spawn_deposit(commands, None, cell_origin(cell));
     }
     spawn_production_facility(commands, swarm, facility_pos, &facility_texture);
@@ -139,7 +174,23 @@ pub fn spawn_default_opponent_scenario(
     commands: &mut Commands<'_, '_>,
     asset_server: &Res<'_, AssetServer>,
     grid: &mut IntentGrid,
+    id_alloc: ResMut<crate::nanobot::OpponentSwarmIdAlloc>,
+) {
+    spawn_opponent_scenario(
+        commands,
+        asset_server,
+        grid,
+        id_alloc,
+        LayoutSetup::for_layout(LayoutId::Standard),
+    );
+}
+
+fn spawn_opponent_scenario(
+    commands: &mut Commands<'_, '_>,
+    asset_server: &Res<'_, AssetServer>,
+    grid: &mut IntentGrid,
     mut id_alloc: ResMut<crate::nanobot::OpponentSwarmIdAlloc>,
+    setup: LayoutSetup,
 ) {
     // The opponent id is allocated from the world's
     // `OpponentSwarmIdAlloc` resource so the swarm entity, the
@@ -148,23 +199,20 @@ pub fn spawn_default_opponent_scenario(
     // route opponent paint to the wrong workers.
     let opponent_swarm_id = id_alloc.allocate();
 
-    paint_default_opponent_intent(grid, opponent_swarm_id);
+    let home = LayoutSetup::opposite(setup.home);
+    let deposit = LayoutSetup::opposite(setup.home_deposit);
+    paint_economy(grid, opponent_swarm_id, home, deposit, -1);
 
-    let opponent_pos = cell_origin(OPPONENT_CELL);
+    let opponent_pos = cell_origin(home);
     let facility_pos = opponent_pos + OPPONENT_FACILITY_OFFSET;
-    let deposit_pos = cell_origin(OPPONENT_DEPOSIT_CELL);
+    let deposit_pos = cell_origin(deposit);
     let facility_texture = asset_server.load("production_facility.png");
 
     let opponent = commands
         .spawn((
             Swarm {},
             OpponentSwarm {},
-            OpponentIntentController::new(
-                OPPONENT_DEFEND_CELL,
-                PLAYER_CELL,
-                5 * crate::SIMULATION_HZ as u32,
-                6 * crate::SIMULATION_HZ as u32,
-            ),
+            StrategicController::adaptive(opponent_swarm_id),
             opponent_swarm_id,
             Transform::from_translation(opponent_pos.extend(0.0)),
             GlobalTransform::default(),
@@ -324,6 +372,8 @@ impl Plugin for ScenarioPlugin {
         app.init_resource::<crate::scenario_selection::ScenarioSelection>()
             .init_resource::<crate::session::SessionRules>()
             .init_resource::<crate::session::SimulationSeed>()
+            .init_resource::<BattleExperimentConfig>()
+            .init_resource::<crate::gameplay_pacing::GameplayPacing>()
             .add_systems(PreStartup, configure_session)
             .add_systems(
                 PostStartup,
@@ -336,9 +386,34 @@ impl Plugin for ScenarioPlugin {
 
 fn configure_session(
     selection: Res<crate::scenario_selection::ScenarioSelection>,
+    experiment: Res<BattleExperimentConfig>,
     mut rules: ResMut<crate::session::SessionRules>,
+    mut pacing: ResMut<crate::gameplay_pacing::GameplayPacing>,
 ) {
-    *rules = selection.current.definition().rules;
+    *rules = session_rules(selection.current, &experiment);
+    *pacing = gameplay_pacing(selection.current, &experiment);
+}
+
+pub(crate) fn gameplay_pacing(
+    scenario: crate::scenario_selection::Scenario,
+    experiment: &BattleExperimentConfig,
+) -> crate::gameplay_pacing::GameplayPacing {
+    if scenario == crate::scenario_selection::Scenario::AiBattle {
+        experiment.pacing.into()
+    } else {
+        crate::gameplay_pacing::GameplayPacing::from(crate::battle_experiment::PacingId::Deliberate)
+    }
+}
+
+pub(crate) fn session_rules(
+    scenario: crate::scenario_selection::Scenario,
+    experiment: &BattleExperimentConfig,
+) -> crate::session::SessionRules {
+    let mut rules = scenario.definition().rules;
+    if experiment.realtime {
+        rules.accelerate_headless = false;
+    }
+    rules
 }
 
 pub fn spawn_selected_scenario(
@@ -347,11 +422,18 @@ pub fn spawn_selected_scenario(
     assets: &Res<'_, AssetServer>,
     grid: &mut IntentGrid,
     ids: ResMut<crate::nanobot::OpponentSwarmIdAlloc>,
+    layout: LayoutId,
 ) {
-    spawn_default_terrain(commands);
-    spawn_default_player_scenario(commands, assets, grid);
+    let layout = if scenario == crate::scenario_selection::Scenario::AiBattle {
+        layout
+    } else {
+        LayoutId::Standard
+    };
+    let setup = LayoutSetup::for_layout(layout);
+    map::spawn_terrain(commands, layout);
+    spawn_player_scenario(commands, assets, grid, setup);
     if scenario.definition().opponent {
-        spawn_default_opponent_scenario(commands, assets, grid, ids);
+        spawn_opponent_scenario(commands, assets, grid, ids, setup);
     } else {
         spawn_sandbox_resources(commands);
     }
@@ -360,22 +442,32 @@ pub fn spawn_selected_scenario(
 pub(crate) fn configure_controllers(
     mut commands: Commands,
     selection: Res<crate::scenario_selection::ScenarioSelection>,
+    experiment: Res<BattleExperimentConfig>,
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,
 ) {
     if !selection.current.definition().automatic_player {
         return;
     }
     for (entity, id) in &swarms {
-        if id.is_player() {
-            commands
-                .entity(entity)
-                .insert(OpponentIntentController::new(
-                    PLAYER_DEFEND_CELL,
-                    OPPONENT_CELL,
-                    5 * crate::SIMULATION_HZ as u32,
-                    6 * crate::SIMULATION_HZ as u32,
-                ));
-        }
+        let side = usize::from(!id.is_player());
+        let controller_id = experiment.controllers[side ^ usize::from(experiment.swap_sides)];
+        let setup = LayoutSetup::for_layout(experiment.layout);
+        let (home, target, direction) = if side == 0 {
+            (setup.home, LayoutSetup::opposite(setup.home), 1)
+        } else {
+            (LayoutSetup::opposite(setup.home), setup.home, -1)
+        };
+        let controller = match controller_id {
+            ControllerId::Timed => StrategicController::timed(
+                *id,
+                home + IVec2::ONE * direction,
+                target,
+                5 * crate::SIMULATION_HZ as u32,
+                6 * crate::SIMULATION_HZ as u32,
+            ),
+            ControllerId::Adaptive => StrategicController::adaptive(*id),
+        };
+        commands.entity(entity).insert(controller);
     }
 }
 

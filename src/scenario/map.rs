@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 
+use crate::battle_experiment::LayoutId;
 use crate::{ZONE_BLOCK_SIZE, terrain::RockFormation};
 
 use super::{PLAYER_CELL, cell_origin};
@@ -75,14 +76,26 @@ fn solid_at(point: Vec2) -> bool {
             || landforms(Vec2::splat(24.0) - point))
 }
 
+fn layout_solid_at(point: Vec2, layout: LayoutId) -> bool {
+    solid_at(point)
+        || (layout == LayoutId::Narrows
+            && (point.x - 12.0).abs() < 0.5
+            && (point.y - 12.0).abs() > 1.5
+            && (point.y - 12.0).abs() < 9.0)
+}
+
 /// Solid rectangles exactly cover the authored rock silhouette. Merging adjacent
 /// tiles keeps rendering and physical geometry small without changing openings.
 pub fn default_rock_geometry() -> Vec<(RockFormation, Transform)> {
+    rock_geometry(LayoutId::Standard)
+}
+
+pub fn rock_geometry(layout: LayoutId) -> Vec<(RockFormation, Transform)> {
     let mut solid = [[false; SIDE]; SIDE];
     for (y, row) in solid.iter_mut().enumerate() {
         for (x, tile) in row.iter_mut().enumerate() {
             let point = Vec2::splat(MIN) + Vec2::new(x as f32 + 0.5, y as f32 + 0.5) * TILE;
-            *tile = solid_at(point);
+            *tile = layout_solid_at(point, layout);
         }
     }
     let mut rocks = Vec::new();
@@ -111,17 +124,45 @@ pub fn default_rock_geometry() -> Vec<(RockFormation, Transform)> {
     rocks
 }
 
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn narrows_closes_central_approaches_but_preserves_the_gateway() {
+        let blocked = |layout, cell| {
+            rock_geometry(layout)
+                .iter()
+                .any(|(rock, transform)| !rock.obstacle(transform).admits_body(cell_origin(cell)))
+        };
+        assert!(!blocked(LayoutId::Standard, IVec2::new(12, 7)));
+        assert!(blocked(LayoutId::Narrows, IVec2::new(12, 7)));
+        assert!(blocked(LayoutId::Narrows, IVec2::new(12, 17)));
+        assert!(!blocked(LayoutId::Narrows, IVec2::new(12, 12)));
+    }
+}
+
 pub fn spawn_default_terrain(commands: &mut Commands<'_, '_>) {
-    for (index, (rock, transform)) in default_rock_geometry().into_iter().enumerate() {
+    spawn_terrain(commands, LayoutId::Standard);
+}
+
+pub fn spawn_terrain(commands: &mut Commands<'_, '_>, layout: LayoutId) {
+    for (index, (rock, transform)) in rock_geometry(layout).into_iter().enumerate() {
         let mut entity = commands.spawn((rock, transform, Visibility::default()));
         if index == 0 {
-            entity.insert(crate::terrain_presentation::RockSurfaceRoot);
+            entity.insert((
+                crate::terrain_presentation::RockSurfaceRoot,
+                TerrainLayout(layout),
+            ));
         }
     }
 }
 
 /// The surface and its exposed edge bands share the physical terrain mask.
-pub(crate) fn rock_surface_mesh(origin: Vec2) -> Mesh {
+#[derive(Component)]
+pub struct TerrainLayout(pub LayoutId);
+
+pub(crate) fn rock_surface_mesh(origin: Vec2, layout: LayoutId) -> Mesh {
     use bevy::{asset::RenderAssetUsages, mesh::PrimitiveTopology};
     let mut positions = Vec::<[f32; 3]>::new();
     let mut colors = Vec::<[f32; 4]>::new();
@@ -132,7 +173,7 @@ pub(crate) fn rock_surface_mesh(origin: Vec2) -> Mesh {
             colors.push(shades[index]);
         }
     };
-    for (rock, transform) in default_rock_geometry() {
+    for (rock, transform) in rock_geometry(layout) {
         let RockFormation::Rectangle { half } = rock else {
             unreachable!()
         };
@@ -147,7 +188,10 @@ pub(crate) fn rock_surface_mesh(origin: Vec2) -> Mesh {
     let is_solid = |x: i32, y: i32| {
         (0..SIDE as i32).contains(&x)
             && (0..SIDE as i32).contains(&y)
-            && solid_at(Vec2::splat(MIN) + Vec2::new(x as f32 + 0.5, y as f32 + 0.5) * TILE)
+            && layout_solid_at(
+                Vec2::splat(MIN) + Vec2::new(x as f32 + 0.5, y as f32 + 0.5) * TILE,
+                layout,
+            )
     };
     for y in 0..SIDE as i32 {
         for x in 0..SIDE as i32 {

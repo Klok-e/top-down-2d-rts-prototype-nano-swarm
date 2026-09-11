@@ -265,6 +265,7 @@ pub fn production_facility_auto_creation_system(
     access: super::construction_access::ConstructionAccess,
     grid: Res<IntentGrid>,
     structure_sprites: Res<StructureSprites>,
+    pacing: Res<crate::gameplay_pacing::GameplayPacing>,
     population_demand: Res<crate::nanobot::PopulationDemand>,
     mut pressure: ResMut<ProductionPressure>,
     nanobots: Query<(&NanobotType, &crate::nanobot::components::SwarmMember), With<Nanobot>>,
@@ -374,7 +375,8 @@ pub fn production_facility_auto_creation_system(
             )),
         );
         commands.spawn((
-            PlannedStructure::new(PlannedKind::ProductionFacility, build_cell),
+            PlannedStructure::new(PlannedKind::ProductionFacility, build_cell)
+                .with_work_budget(pacing.construction_work_ticks),
             OwnerSwarm(swarm_entity),
             planned_visual_components(
                 PlannedKind::ProductionFacility,
@@ -596,17 +598,19 @@ pub struct ProductionPlugin;
 
 impl Plugin for ProductionPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ProductionPressure>().add_systems(
-            FixedUpdate,
-            (
-                production_facility_pick_target_system,
-                production_facility_work_system,
-                production_facility_auto_creation_system
-                    .before(crate::nanobot::planned::sink_stockpile_demand_system),
-            )
-                .chain()
-                .after(crate::nanobot::NanobotSimulationSet::Movement),
-        );
+        app.init_resource::<crate::gameplay_pacing::GameplayPacing>()
+            .init_resource::<ProductionPressure>()
+            .add_systems(
+                FixedUpdate,
+                (
+                    production_facility_pick_target_system,
+                    production_facility_work_system,
+                    production_facility_auto_creation_system
+                        .before(crate::nanobot::planned::sink_stockpile_demand_system),
+                )
+                    .chain()
+                    .after(crate::nanobot::NanobotSimulationSet::Movement),
+            );
     }
 }
 

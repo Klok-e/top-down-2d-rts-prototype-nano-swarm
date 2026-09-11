@@ -6,8 +6,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Charge, NanobotBundle, NanobotType, OpponentIntentController, OwnerSwarm, PlannedKind,
-        PlannedStructure, Swarm, SwarmId,
+        Charge, NanobotBundle, NanobotType, OwnerSwarm, PlannedKind, PlannedStructure,
+        StrategicController, Swarm, SwarmId,
     },
     resources::{ResourceKind, Stockpile},
 };
@@ -83,7 +83,7 @@ fn prepare(world: &mut World) {
             With<Mesh2d>,
             With<Node>,
             With<Swarm>,
-            With<OpponentIntentController>,
+            With<StrategicController>,
         )>>()
         .iter(world)
         .collect::<Vec<_>>()

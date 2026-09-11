@@ -296,6 +296,7 @@ pub fn clear_finished_structures_system(
 pub struct PlannedStructure {
     pub kind: PlannedKind,
     pub cell: IVec2,
+    work_budget: u32,
     work_remaining: u32,
     active_worker: Option<Entity>,
 }
@@ -307,9 +308,20 @@ impl PlannedStructure {
         Self {
             kind,
             cell,
+            work_budget: DEFAULT_PLANNED_WORK_TICKS,
             work_remaining: DEFAULT_PLANNED_WORK_TICKS,
             active_worker: None,
         }
+    }
+
+    /// Set the total and remaining work for a newly created plan.
+    pub fn with_work_budget(mut self, ticks: u32) -> Self {
+        self.work_budget = ticks;
+        self.work_remaining = ticks;
+        if ticks == 0 {
+            self.active_worker = None;
+        }
+        self
     }
 
     /// Construct an authored construction state with an explicit remaining work budget.
@@ -359,11 +371,11 @@ impl PlannedStructure {
         true
     }
 
-    /// Completed work and the authored baseline used by the progress display.
+    /// Completed work and the plan's original total used by the progress display.
     pub fn construction_progress(&self) -> (u32, u32) {
         (
-            DEFAULT_PLANNED_WORK_TICKS.saturating_sub(self.work_remaining),
-            DEFAULT_PLANNED_WORK_TICKS,
+            self.work_budget.saturating_sub(self.work_remaining),
+            self.work_budget,
         )
     }
 
@@ -693,7 +705,8 @@ pub struct PlannedStructurePlugin;
 
 impl Plugin for PlannedStructurePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<crate::nanobot::construction_access::CancelledSites>()
+        app.init_resource::<crate::gameplay_pacing::GameplayPacing>()
+            .init_resource::<crate::nanobot::construction_access::CancelledSites>()
             .add_systems(
                 FixedUpdate,
                 crate::structure_overlay::animate_cancelled_plans_system,

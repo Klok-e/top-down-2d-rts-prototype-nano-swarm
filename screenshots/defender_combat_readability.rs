@@ -8,7 +8,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Charge, Charger, ChargerAssignment, Commitment, DefenderResponse, Health, Nanobot,
-        NanobotType, OpponentIntentController, OpponentSwarm, OwnerSwarm, Structure, StructureKind,
+        NanobotType, OpponentSwarm, OwnerSwarm, StrategicController, Structure, StructureKind,
         Swarm, SwarmId, SwarmMember, VelocityComponent,
     },
     terrain::RockFormation,
@@ -86,13 +86,11 @@ fn setup_scene(world: &mut World) {
         world.despawn(rock);
     }
     for opponent in world
-        .query_filtered::<Entity, With<OpponentIntentController>>()
+        .query_filtered::<Entity, With<StrategicController>>()
         .iter(world)
         .collect::<Vec<_>>()
     {
-        world
-            .entity_mut(opponent)
-            .remove::<OpponentIntentController>();
+        world.entity_mut(opponent).remove::<StrategicController>();
     }
     world.insert_resource(IntentGrid::new(32, 32));
     let player_swarm = swarm_entity(world, SwarmId::PLAYER);

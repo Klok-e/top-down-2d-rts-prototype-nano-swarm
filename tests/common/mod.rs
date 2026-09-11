@@ -40,8 +40,10 @@
 use std::time::Duration;
 
 use bevy::{math::Vec2, prelude::*, time::TimeUpdateStrategy};
+pub use top_down_2d_rts_prototype_nano_swarm::battle_experiment::PacingId;
 use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
+    gameplay_pacing::GameplayPacing,
     intent::{IntentGrid, IntentKind},
     nanobot::{
         ActionableProjection, Charge, ChargePlugin, Charger, CombatPlugin, Commitment,
@@ -59,6 +61,12 @@ use top_down_2d_rts_prototype_nano_swarm::{
     structure_sprites::StructureSprites,
     tactical_overlay::TacticalOverlayPlugin,
 };
+
+/// Complete startup, then select the numeric pacing profile intended by a fixture.
+pub fn initialize_pacing(app: &mut App, pacing: PacingId) {
+    app.update();
+    app.insert_resource(GameplayPacing::from(pacing));
+}
 
 /// Default `GameSettings` for behaviour tests. The values match the
 /// starter map size and the project's per-tick movement speed so

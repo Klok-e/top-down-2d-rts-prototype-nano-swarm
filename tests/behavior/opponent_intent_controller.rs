@@ -5,14 +5,14 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        MatchOutcome, OpponentIntentController, OpponentIntentPlugin, OpponentSwarm, Swarm, SwarmId,
+        MatchOutcome, OpponentSwarm, StrategicController, StrategicControllerPlugin, Swarm, SwarmId,
     },
 };
 
 #[test]
 fn opponent_intent_advances_one_defend_cell_toward_the_player() {
     let mut app = common::sim_app();
-    app.add_plugins(OpponentIntentPlugin);
+    app.add_plugins(StrategicControllerPlugin);
     let opponent = SwarmId(11);
     let start = IVec2::new(3, 0);
     let target = IVec2::ZERO;
@@ -23,7 +23,7 @@ fn opponent_intent_advances_one_defend_cell_toward_the_player() {
         Swarm {},
         OpponentSwarm {},
         opponent,
-        OpponentIntentController::new(start, target, 0, 1),
+        StrategicController::timed(opponent, start, target, 0, 1),
     ));
 
     app.update();
@@ -42,7 +42,7 @@ fn opponent_intent_advances_one_defend_cell_toward_the_player() {
 #[test]
 fn opponent_intent_advances_through_enemy_paint_without_erasing_it() {
     let mut app = common::sim_app();
-    app.add_plugins(OpponentIntentPlugin);
+    app.add_plugins(StrategicControllerPlugin);
     let opponent = SwarmId(11);
     let start = IVec2::new(3, 0);
     let hostile_front = IVec2::new(2, 0);
@@ -58,7 +58,7 @@ fn opponent_intent_advances_through_enemy_paint_without_erasing_it() {
         Swarm {},
         OpponentSwarm {},
         opponent,
-        OpponentIntentController::new(start, IVec2::ZERO, 0, 1),
+        StrategicController::timed(opponent, start, IVec2::ZERO, 0, 1),
     ));
 
     app.update();
@@ -92,7 +92,7 @@ fn opponent_intent_advances_through_enemy_paint_without_erasing_it() {
 fn opponent_intent_stops_after_match_outcome_is_latched() {
     let mut app = common::sim_app();
     app.insert_resource(MatchOutcome::Winner(SwarmId::PLAYER));
-    app.add_plugins(OpponentIntentPlugin);
+    app.add_plugins(StrategicControllerPlugin);
     let opponent = SwarmId(11);
     let start = IVec2::new(3, 0);
     app.world_mut()
@@ -102,7 +102,7 @@ fn opponent_intent_stops_after_match_outcome_is_latched() {
         Swarm {},
         OpponentSwarm {},
         opponent,
-        OpponentIntentController::new(start, IVec2::ZERO, 0, 1),
+        StrategicController::timed(opponent, start, IVec2::ZERO, 0, 1),
     ));
 
     app.update();
@@ -121,7 +121,7 @@ fn opponent_intent_stops_after_match_outcome_is_latched() {
 #[test]
 fn two_ai_swarms_advance_into_shared_defend_cell() {
     let mut app = common::sim_app();
-    app.add_plugins(OpponentIntentPlugin);
+    app.add_plugins(StrategicControllerPlugin);
     for (id, start, target) in [
         (SwarmId::PLAYER, IVec2::new(1, 1), IVec2::new(4, 4)),
         (SwarmId(1), IVec2::new(3, 3), IVec2::ZERO),
@@ -132,7 +132,7 @@ fn two_ai_swarms_advance_into_shared_defend_cell() {
         app.world_mut().spawn((
             Swarm {},
             id,
-            OpponentIntentController::new(start, target, 0, 1),
+            StrategicController::timed(id, start, target, 0, 1),
         ));
     }
     app.update();

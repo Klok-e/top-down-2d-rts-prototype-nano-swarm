@@ -4,7 +4,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 use top_down_2d_rts_prototype_nano_swarm::{
+    battle_experiment::{BattleExperimentConfig, ControllerId, LayoutId, PacingId},
     battle_statistics::{BattleStatisticsConfig, BattleStatisticsPlugin},
+    gameplay_pacing::GameplayPacing,
     nanobot::NanobotType,
     scenario_selection::{Scenario, ScenarioSelection},
 };
@@ -30,7 +32,83 @@ impl Output {
             .path();
         serde_json::from_slice(&std::fs::read(directory.join("summary.json")).unwrap()).unwrap()
     }
+
+    fn samples_csv(&self) -> String {
+        let directory = std::fs::read_dir(&self.0)
+            .expect("battle must create a run directory")
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        std::fs::read_to_string(directory.join("samples.csv")).unwrap()
+    }
 }
+
+#[test]
+fn experiment_cutoff_saves_an_unresolved_frozen_result_without_a_match_outcome() {
+    let output = Output::new();
+    let mut app = battle(&output);
+    app.insert_resource(BattleExperimentConfig {
+        controllers: [ControllerId::Adaptive, ControllerId::Timed],
+        layout: LayoutId::Narrows,
+        swap_sides: true,
+        pacing: PacingId::Deliberate,
+        cutoff_seconds: Some(1),
+        realtime: true,
+    });
+    app.insert_resource(GameplayPacing::from(PacingId::Deliberate));
+    app.world_mut()
+        .resource_mut::<BattleStatisticsConfig>()
+        .headless = true;
+
+    for _ in 0..60 {
+        app.update();
+    }
+
+    let terminal = output.summary();
+    assert_eq!(terminal["status"], "unresolved");
+    assert!(terminal["outcome"].is_null());
+    assert_eq!(terminal["latest"]["fixed_tick"], 60);
+    assert_eq!(terminal["experiment"]["controllers"][0], "adaptive");
+    assert_eq!(terminal["experiment"]["controllers"][1], "timed");
+    assert_eq!(terminal["experiment"]["layout"], "narrows");
+    assert_eq!(terminal["experiment"]["swap_sides"], true);
+    assert_eq!(terminal["experiment"]["pacing"], "deliberate");
+    assert_eq!(terminal["experiment"]["cutoff_seconds"], 1);
+    assert_eq!(terminal["experiment"]["realtime"], true);
+    assert_eq!(terminal["gameplay_pacing"]["construction_work_ticks"], 90);
+    assert_eq!(terminal["gameplay_pacing"]["attack_interval_ticks"], 30);
+    assert_eq!(
+        terminal["gameplay_pacing"]["charge_drain_per_tick"],
+        0.000125
+    );
+    assert_eq!(app.should_exit(), Some(bevy::app::AppExit::Success));
+
+    for _ in 0..60 {
+        app.update();
+    }
+    assert_eq!(output.summary(), terminal);
+}
+
+#[test]
+fn normal_ai_battle_remains_in_progress_beyond_the_experiment_budget() {
+    let output = Output::new();
+    let mut app = battle(&output);
+
+    for _ in 0..36_060 {
+        app.update();
+    }
+
+    let summary = output.summary();
+    assert_eq!(summary["status"], "in_progress");
+    assert!(summary["outcome"].is_null());
+    assert_eq!(
+        summary["experiment"]["cutoff_seconds"],
+        serde_json::Value::Null
+    );
+    assert!(summary["latest"]["simulation_seconds"].as_f64().unwrap() >= 601.0);
+}
+
 impl Drop for Output {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -78,6 +156,69 @@ fn battle_persists_per_second_samples_using_simulation_time() {
             > 0,
         "watchable runs need frame timing"
     );
+}
+
+#[test]
+fn headless_frame_timing_is_recorded_only_for_realtime_experiments() {
+    for (realtime, expects_frame_timing) in [(false, false), (true, true)] {
+        let output = Output::new();
+        let mut app = battle(&output);
+        app.world_mut()
+            .resource_mut::<BattleStatisticsConfig>()
+            .headless = true;
+        app.insert_resource(BattleExperimentConfig {
+            realtime,
+            ..default()
+        });
+
+        for _ in 0..60 {
+            app.update();
+        }
+
+        let summary = output.summary();
+        let csv = output.samples_csv();
+        let frame_peak_column = csv
+            .lines()
+            .next()
+            .unwrap()
+            .split(',')
+            .position(|name| name == "frame_max_ms")
+            .expect("frame peaks must remain available after later samples replace the summary");
+        let frame_peak = csv
+            .lines()
+            .last()
+            .unwrap()
+            .split(',')
+            .nth(frame_peak_column)
+            .unwrap();
+        if expects_frame_timing {
+            assert!(
+                summary["latest"]["frame_timing"]["count"]
+                    .as_u64()
+                    .is_some_and(|count| count > 0)
+            );
+            let recorded_peak = frame_peak.parse::<f64>().unwrap();
+            let latest_peak = summary["latest"]["frame_timing"]["max_ms"]
+                .as_f64()
+                .unwrap();
+            assert!((recorded_peak - latest_peak).abs() <= 1e-9 * latest_peak.abs().max(1.0));
+        } else {
+            assert!(summary["latest"]["frame_timing"].is_null());
+            assert!(frame_peak.is_empty());
+        }
+    }
+}
+
+#[test]
+fn csv_names_the_recent_p95_window_sample_count() {
+    let output = Output::new();
+    let mut app = battle(&output);
+    for _ in 0..60 {
+        app.update();
+    }
+
+    let header = output.samples_csv().lines().next().unwrap().to_string();
+    assert!(header.contains(",controller_p95_ms,controller_p95_window_samples,controller_max_ms,"));
 }
 
 #[test]
@@ -171,6 +312,28 @@ fn samples_preserve_gross_events_and_stop_counters_after_draw() {
     }
     assert_eq!(summary["latest"]["swarms"]["0"]["minerals_gathered"], 30);
     assert_eq!(summary["latest"]["swarms"]["0"]["minerals_consumed"], 30);
+    assert_eq!(summary["schema_version"], 3);
+    assert_eq!(
+        summary["latest"]["swarms"]["0"]["effective_damage_total"],
+        0
+    );
+    assert_eq!(
+        summary["latest"]["swarms"]["0"]["effective_damage_nanobots"],
+        0
+    );
+    assert_eq!(
+        summary["latest"]["swarms"]["0"]["effective_damage_structures"], 0,
+        "non-combat structure loss must not count as hostile combat damage",
+    );
+    assert_eq!(summary["latest"]["swarms"]["0"]["scored_damage_total"], 0);
+    assert_eq!(
+        summary["latest"]["swarms"]["0"]["scored_damage_nanobots"],
+        0
+    );
+    assert_eq!(
+        summary["latest"]["swarms"]["0"]["scored_damage_structures"],
+        0
+    );
     assert_eq!(summary["latest"]["swarms"]["1"]["births"], 0);
     for mut health in app
         .world_mut()
@@ -196,6 +359,14 @@ fn samples_preserve_gross_events_and_stop_counters_after_draw() {
             .births,
         1
     );
+    let frozen = serde_json::to_value(
+        app.world()
+            .resource::<BattleCounters>()
+            .totals_for(SwarmId::PLAYER),
+    )
+    .unwrap();
+    assert_eq!(frozen["effective_damage_total"], 0);
+    assert_eq!(frozen["scored_damage_total"], 0);
     app.world_mut().write_message(AppExit::from_code(130));
     app.update();
     assert_eq!(
@@ -203,6 +374,76 @@ fn samples_preserve_gross_events_and_stop_counters_after_draw() {
         completed,
         "interrupting a completed battle preserves its result"
     );
+}
+
+#[test]
+fn effective_damage_is_cumulative_in_json_and_csv_and_freezes_at_cutoff() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        battle_statistics::{BattleCounters, BattleEvent},
+        nanobot::SwarmId,
+    };
+    let output = Output::new();
+    let mut app = battle(&output);
+    app.insert_resource(BattleExperimentConfig {
+        cutoff_seconds: Some(1),
+        ..default()
+    });
+    app.update();
+    {
+        let mut counters = app.world_mut().resource_mut::<BattleCounters>();
+        counters.record(SwarmId::PLAYER, BattleEvent::EffectiveNanobotDamage(17));
+        counters.record(SwarmId::PLAYER, BattleEvent::EffectiveStructureDamage(5));
+        counters.record(SwarmId::PLAYER, BattleEvent::ScoredNanobotDamage(13));
+        counters.record(SwarmId::PLAYER, BattleEvent::ScoredStructureDamage(3));
+    }
+    for _ in 1..60 {
+        app.update();
+    }
+
+    let terminal = output.summary();
+    assert_eq!(terminal["schema_version"], 3);
+    let swarm = &terminal["latest"]["swarms"]["0"];
+    assert_eq!(swarm["effective_damage_total"], 22);
+    assert_eq!(swarm["effective_damage_nanobots"], 17);
+    assert_eq!(swarm["effective_damage_structures"], 5);
+    assert_eq!(swarm["scored_damage_total"], 16);
+    assert_eq!(swarm["scored_damage_nanobots"], 13);
+    assert_eq!(swarm["scored_damage_structures"], 3);
+
+    let csv = output.samples_csv();
+    let header = csv.lines().next().unwrap().split(',').collect::<Vec<_>>();
+    let row = csv
+        .lines()
+        .skip(1)
+        .map(|line| line.split(',').collect::<Vec<_>>())
+        .find(|columns| columns.get(2) == Some(&"0"))
+        .expect("the cutoff sample must contain the player swarm");
+    for (field, expected) in [
+        ("effective_damage_total", "22"),
+        ("effective_damage_nanobots", "17"),
+        ("effective_damage_structures", "5"),
+        ("scored_damage_total", "16"),
+        ("scored_damage_nanobots", "13"),
+        ("scored_damage_structures", "3"),
+    ] {
+        let index = header.iter().position(|name| *name == field).unwrap();
+        assert_eq!(row[index], expected);
+    }
+
+    app.world_mut()
+        .resource_mut::<BattleCounters>()
+        .record(SwarmId::PLAYER, BattleEvent::EffectiveNanobotDamage(100));
+    app.world_mut()
+        .resource_mut::<BattleCounters>()
+        .record(SwarmId::PLAYER, BattleEvent::ScoredNanobotDamage(100));
+    let frozen = serde_json::to_value(
+        app.world()
+            .resource::<BattleCounters>()
+            .totals_for(SwarmId::PLAYER),
+    )
+    .unwrap();
+    assert_eq!(frozen["effective_damage_total"], 22);
+    assert_eq!(frozen["scored_damage_total"], 16);
 }
 
 #[test]
