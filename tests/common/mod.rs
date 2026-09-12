@@ -40,7 +40,6 @@
 use std::time::Duration;
 
 use bevy::{math::Vec2, prelude::*, time::TimeUpdateStrategy};
-pub use top_down_2d_rts_prototype_nano_swarm::battle_experiment::PacingId;
 use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
     gameplay_pacing::GameplayPacing,
@@ -62,10 +61,19 @@ use top_down_2d_rts_prototype_nano_swarm::{
     tactical_overlay::TacticalOverlayPlugin,
 };
 
-/// Complete startup, then select the numeric pacing profile intended by a fixture.
-pub fn initialize_pacing(app: &mut App, pacing: PacingId) {
+/// Faster numeric timing for tests whose contract does not use shipped pacing.
+pub fn fast_pacing_fixture() -> GameplayPacing {
+    GameplayPacing {
+        construction_work_ticks: 5,
+        attack_interval_ticks: 15,
+        charge_drain_per_tick: 0.00025,
+    }
+}
+
+/// Complete startup, then install faster numeric timing for the fixture.
+pub fn initialize_fast_pacing(app: &mut App) {
     app.update();
-    app.insert_resource(GameplayPacing::from(pacing));
+    app.insert_resource(fast_pacing_fixture());
 }
 
 /// Default `GameSettings` for behaviour tests. The values match the

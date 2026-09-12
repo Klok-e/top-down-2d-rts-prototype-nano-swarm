@@ -2,10 +2,7 @@
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{BTreeMap, VecDeque},
-    time::Instant,
-};
+use std::collections::BTreeMap;
 
 use crate::{
     intent::IntentGrid,
@@ -16,7 +13,8 @@ use crate::{
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole},
     strategic_controller::{
-        BotState, Controller, DepositState, GameState, StructureKind, StructureState, SwarmState,
+        BotState, Controller, DepositState, GameState, IntentEditAction, StructureKind,
+        StructureState, SwarmState,
     },
     terrain::RockFormation,
 };
@@ -27,15 +25,9 @@ pub struct StrategicController {
 }
 
 impl StrategicController {
-    pub fn adaptive(owner: SwarmId) -> Self {
+    pub fn new(owner: SwarmId) -> Self {
         Self {
-            planner: Controller::adaptive(owner),
-        }
-    }
-
-    pub fn timed(owner: SwarmId, assault: IVec2, target: IVec2, delay: u32, period: u32) -> Self {
-        Self {
-            planner: Controller::timed(owner, assault, target, delay, period),
+            planner: Controller::new(owner),
         }
     }
 
@@ -60,68 +52,22 @@ pub struct ControllerProfile {
     pub reviews: u64,
     pub intent_edits: u64,
     pub work_units: u64,
-    pub mean_ms: f64,
-    pub p95_ms: f64,
-    /// Number of most recent reviews represented by `p95_ms`.
-    pub p95_window_samples: usize,
-    pub max_ms: f64,
     pub last_explanation: String,
-}
-
-/// Maximum number of recent controller reviews represented by `ControllerProfile::p95_ms`.
-pub const CONTROLLER_P95_WINDOW_REVIEWS: usize = 4_096;
-
-#[derive(Default)]
-struct ReviewDurationWindow {
-    samples: VecDeque<f64>,
-}
-
-impl ReviewDurationWindow {
-    fn record(&mut self, duration_ms: f64) {
-        if self.samples.len() == CONTROLLER_P95_WINDOW_REVIEWS {
-            self.samples.pop_front();
-        }
-        self.samples.push_back(duration_ms);
-    }
-
-    fn p95_ms(&self) -> Option<f64> {
-        if self.samples.is_empty() {
-            return None;
-        }
-        let mut sorted = self.samples.iter().copied().collect::<Vec<_>>();
-        sorted.sort_unstable_by(f64::total_cmp);
-        Some(sorted[(sorted.len() * 95).div_ceil(100).saturating_sub(1)])
-    }
 }
 
 #[derive(Resource, Default)]
 pub struct ControllerTelemetry {
     profiles: BTreeMap<u32, ControllerProfile>,
-    samples: BTreeMap<u32, ReviewDurationWindow>,
-    pub observation_max_ms: f64,
 }
 
 impl ControllerTelemetry {
     pub fn profiles(&self) -> BTreeMap<u32, ControllerProfile> {
-        self.profiles
-            .iter()
-            .map(|(&owner, profile)| {
-                let mut profile = profile.clone();
-                if let Some(window) = self.samples.get(&owner) {
-                    profile.p95_window_samples = window.samples.len();
-                    if let Some(p95_ms) = window.p95_ms() {
-                        profile.p95_ms = p95_ms;
-                    }
-                }
-                (owner, profile)
-            })
-            .collect()
+        self.profiles.clone()
     }
 
     fn record_review(
         &mut self,
         owner: u32,
-        elapsed_ms: f64,
         intent_edits: usize,
         work_units: usize,
         explanation: String,
@@ -130,10 +76,7 @@ impl ControllerTelemetry {
         profile.reviews += 1;
         profile.intent_edits += intent_edits as u64;
         profile.work_units += work_units as u64;
-        profile.mean_ms += (elapsed_ms - profile.mean_ms) / profile.reviews as f64;
-        profile.max_ms = profile.max_ms.max(elapsed_ms);
         profile.last_explanation = explanation;
-        self.samples.entry(owner).or_default().record(elapsed_ms);
     }
 }
 
@@ -188,7 +131,6 @@ fn strategic_intent_system(
     {
         return;
     }
-    let started = Instant::now();
     let owners: BTreeMap<_, _> = swarms.iter().map(|(entity, id, _)| (entity, *id)).collect();
     let mut swarm_states: Vec<_> = swarms
         .iter()
@@ -262,9 +204,6 @@ fn strategic_intent_system(
         .iter()
         .map(|(rock, transform)| rock.obstacle(transform))
         .collect();
-    telemetry.observation_max_ms = telemetry
-        .observation_max_ms
-        .max(started.elapsed().as_secs_f64() * 1000.0);
     let state = GameState {
         grid: &grid,
         swarms: &swarm_states,
@@ -289,13 +228,10 @@ fn strategic_intent_system(
             continue;
         }
         telemetry.profiles.entry(owner.0).or_default();
-        let started = Instant::now();
         let decision = controller.planner.decide(&state);
         if decision.reviewed {
-            let elapsed = started.elapsed().as_secs_f64() * 1000.0;
             telemetry.record_review(
                 owner.0,
-                elapsed,
                 decision.edits.len(),
                 decision.work_units,
                 decision.explanation.clone(),
@@ -307,62 +243,10 @@ fn strategic_intent_system(
     }
     for (owner, decision) in decisions {
         for edit in decision.edits {
-            if edit.paint {
-                grid.paint(edit.cell, edit.kind, owner);
-            } else {
-                grid.erase(edit.cell, edit.kind, owner);
-            }
+            match edit.action {
+                IntentEditAction::Paint => grid.paint(edit.cell, edit.kind, owner),
+                IntentEditAction::Erase => grid.erase(edit.cell, edit.kind, owner),
+            };
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn review_duration_history_is_bounded_for_unlimited_matches() {
-        let mut telemetry = ControllerTelemetry::default();
-        for duration in 0..=4_096 {
-            telemetry.record_review(7, f64::from(duration), 0, 0, String::new());
-        }
-
-        let window = &telemetry.samples[&7];
-        assert_eq!(window.samples.len(), CONTROLLER_P95_WINDOW_REVIEWS);
-        assert_eq!(window.samples.front(), Some(&1.0));
-        assert_eq!(window.samples.back(), Some(&4_096.0));
-    }
-
-    #[test]
-    fn profile_p95_uses_the_nearest_rank_of_the_recent_window() {
-        let mut telemetry = ControllerTelemetry::default();
-        for duration in 1..=20 {
-            telemetry.record_review(7, f64::from(duration), 0, 0, String::new());
-        }
-
-        let profiles = telemetry.profiles();
-        let profile = &profiles[&7];
-        assert_eq!(profile.p95_ms, 19.0);
-        assert_eq!(profile.p95_window_samples, 20);
-    }
-
-    #[test]
-    fn lifetime_totals_and_mean_are_not_reduced_to_the_recent_window() {
-        let mut telemetry = ControllerTelemetry::default();
-        telemetry.record_review(7, 100.0, 2, 3, "first".into());
-        for _ in 0..CONTROLLER_P95_WINDOW_REVIEWS {
-            telemetry.record_review(7, 0.0, 1, 2, "recent".into());
-        }
-
-        let profiles = telemetry.profiles();
-        let profile = &profiles[&7];
-        assert_eq!(profile.reviews, 4_097);
-        assert_eq!(profile.intent_edits, 4_098);
-        assert_eq!(profile.work_units, 8_195);
-        assert!((profile.mean_ms - 100.0 / 4_097.0).abs() < 1e-12);
-        assert_eq!(profile.p95_ms, 0.0);
-        assert_eq!(profile.max_ms, 100.0);
-        assert_eq!(profile.p95_window_samples, CONTROLLER_P95_WINDOW_REVIEWS);
-        assert_eq!(profile.last_explanation, "recent");
     }
 }

@@ -9,24 +9,20 @@ A complete starting setup defining terrain, Resource Deposits, starting swarms, 
 _Avoid_: Saved game, map only
 
 **AI Battle**:
-A spectator scenario in which two automatically controlled swarms battle from balanced starts on the Standard map or controlled experimental layouts, exercising shared nanobot autonomy without player-painted intervention. The first Swarm Elimination ends the battle and its statistics collection, even if the simulation continues afterward.
-_Avoid_: Adaptive strategy AI, player-versus-AI match
+A spectator scenario in which two swarms governed by the Strategic Controller battle from balanced Standard or Flanks starts, exercising shared nanobot autonomy without player-painted intervention. It reveals economy, combat, finishing, geographic sensitivity, and regressions without comparing controller policies; the first Swarm Elimination ends the battle and its statistics collection, even if the simulation continues afterward.
+_Avoid_: Controller comparison, scripted-policy benchmark, player-versus-AI match
 
 **Swarm**:
 The full population of nanobots belonging to one side, steered by a player or an automatic controller. It has no fixed subgroups; intent is expressed through zones and tasks that eligible nanobots self-assign to.
 _Avoid_: Group, squad, unit group
 
 **Strategic Controller**:
-An automatic controller with full knowledge of the current game state that adapts its own swarm's Intent Allocation to maintain an economy, attack, and respond to changing conditions. Nanobots execute its intent through the same autonomy and gameplay rules as the player swarm.
-_Avoid_: Nanobot autonomy, scripted assault, direct unit control
+The game's single automatic controller, with full knowledge of the current game state, that adapts its own swarm's Intent Allocation to maintain an economy, attack, and respond to changing conditions. Nanobots execute its intent through the same autonomy and gameplay rules as the player swarm.
+_Avoid_: AI variant, opponent policy, Nanobot autonomy, scripted assault, direct unit control
 
 **Intent Plan**:
 A Strategic Controller's coordinated arrangement of Gather, Build, Defend, and Corridor intent across the map. It expresses intended economic, support, and combat work without assigning individual Nanobots.
 _Avoid_: Build order, squad orders
-
-**Combat Damage Credit**:
-Hostile combat HP removed from Nanobots and completed structures that counts toward AI Battle strategy evaluation, capped at one maximum-health bar per enemy lifetime across all attackers. Gross damage remains observable, but repairing an enemy cannot renew its credit allowance.
-_Avoid_: Damage per second, kill score, game winner
 
 **Nanobot**:
 An individual autonomous agent within the swarm. It may choose tasks from player intent, but is not a persistent command target.
@@ -105,7 +101,7 @@ An end-of-chain structure that only receives material and never serves as a haul
 _Avoid_: Sink, consumer building, final destination
 
 **Opponent Swarm**:
-A non-player swarm governed by the same intent, production, logistics, maintenance, and Charge rules as the player swarm. An authored opponent may use a deterministic intent controller that advances its Defend intent toward a target while leaving nanobot allocation, production, logistics, Maintenance, Charge, and combat to the shared simulation.
+A non-player swarm governed by the same intent, production, logistics, maintenance, and Charge rules as the player swarm. When automatically controlled, it uses the Strategic Controller to edit only its own intent while shared simulation executes the resulting work.
 _Avoid_: Enemy AI faction, scripted attackers
 
 **Swarm Elimination**:

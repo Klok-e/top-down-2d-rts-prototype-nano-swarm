@@ -135,11 +135,9 @@ fn populate_session(world: &mut World, scenario: Scenario) {
         selection.current = scenario;
         selection.error = None;
     }
-    let experiment = world
-        .resource::<crate::battle_experiment::BattleExperimentConfig>()
-        .clone();
-    world.insert_resource::<SessionRules>(crate::scenario::session_rules(scenario, &experiment));
-    world.insert_resource(crate::scenario::gameplay_pacing(scenario, &experiment));
+    let ai_battle = world.resource::<crate::ai_battle::AiBattleConfig>().clone();
+    world.insert_resource::<SessionRules>(crate::scenario::session_rules(scenario, &ai_battle));
+    world.insert_resource(crate::scenario::gameplay_pacing());
     world.insert_resource(crate::strategic_runtime::ControllerTelemetry::default());
     let mut state = SystemState::<(
         Commands,
@@ -154,7 +152,7 @@ fn populate_session(world: &mut World, scenario: Scenario) {
         &assets,
         &mut grid,
         ids,
-        experiment.layout,
+        ai_battle.layout,
     );
     state.apply(world);
     world

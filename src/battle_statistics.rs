@@ -1,7 +1,7 @@
 //! Per-battle measurements and durable run results.
 
 use crate::{
-    battle_experiment::BattleExperimentConfig,
+    ai_battle::AiBattleConfig,
     gameplay_pacing::GameplayPacing,
     nanobot::{
         MatchOutcome, Nanobot, NanobotType, Swarm, SwarmEliminationSet, SwarmEliminationState,
@@ -13,7 +13,7 @@ use crate::{
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{self, BufWriter, Write},
     path::PathBuf,
@@ -48,9 +48,6 @@ pub struct BattleTotals {
     pub effective_damage_total: u64,
     pub effective_damage_nanobots: u64,
     pub effective_damage_structures: u64,
-    pub scored_damage_total: u64,
-    pub scored_damage_nanobots: u64,
-    pub scored_damage_structures: u64,
 }
 
 pub enum BattleEvent {
@@ -62,14 +59,11 @@ pub enum BattleEvent {
     StructureLost,
     EffectiveNanobotDamage(u32),
     EffectiveStructureDamage(u32),
-    ScoredNanobotDamage(u32),
-    ScoredStructureDamage(u32),
 }
 
 #[derive(Resource, Debug, Default)]
 pub struct BattleCounters {
     totals: BTreeMap<u32, BattleTotals>,
-    scored_damage_by_target: HashMap<Entity, u32>,
     frozen: bool,
 }
 
@@ -94,30 +88,7 @@ impl BattleCounters {
                 total.effective_damage_total += u64::from(amount);
                 total.effective_damage_structures += u64::from(amount);
             }
-            BattleEvent::ScoredNanobotDamage(amount) => {
-                total.scored_damage_total += u64::from(amount);
-                total.scored_damage_nanobots += u64::from(amount);
-            }
-            BattleEvent::ScoredStructureDamage(amount) => {
-                total.scored_damage_total += u64::from(amount);
-                total.scored_damage_structures += u64::from(amount);
-            }
         }
-    }
-
-    pub(crate) fn claim_scored_damage(
-        &mut self,
-        target: Entity,
-        target_max_health: u32,
-        effective_damage: u32,
-    ) -> u32 {
-        if self.frozen {
-            return 0;
-        }
-        let credited = self.scored_damage_by_target.entry(target).or_default();
-        let scored = effective_damage.min(target_max_health.saturating_sub(*credited));
-        *credited += scored;
-        scored
     }
 
     pub fn totals_for(&self, swarm: SwarmId) -> BattleTotals {
@@ -202,7 +173,6 @@ pub struct BattleSample {
     pub tick_timing: Timing,
     pub frame_timing: Option<Timing>,
     pub controllers: BTreeMap<u32, ControllerProfile>,
-    pub observation_max_ms: f64,
     pub swarms: BTreeMap<u32, SwarmSample>,
 }
 
@@ -211,7 +181,6 @@ pub struct BattleSample {
 pub enum RunStatus {
     InProgress,
     Completed,
-    Unresolved,
     Interrupted,
 }
 
@@ -224,7 +193,7 @@ pub struct BattleSummary {
     pub headless: bool,
     pub code_revision: String,
     pub dirty_worktree: bool,
-    pub experiment: BattleExperimentConfig,
+    pub ai_battle: AiBattleConfig,
     pub gameplay_pacing: GameplayPacing,
     pub status: RunStatus,
     pub outcome: Option<String>,
@@ -234,7 +203,7 @@ pub struct BattleSummary {
 
 impl BattleSummary {
     fn records_frame_timing(&self) -> bool {
-        !self.headless || self.experiment.realtime
+        !self.headless || self.ai_battle.realtime
     }
 }
 
@@ -264,8 +233,8 @@ pub(crate) fn start_session(world: &mut World) {
         return;
     }
     let config = world.resource::<BattleStatisticsConfig>().clone();
-    let experiment = world
-        .get_resource::<BattleExperimentConfig>()
+    let ai_battle = world
+        .get_resource::<AiBattleConfig>()
         .cloned()
         .unwrap_or_default();
     let gameplay_pacing = world
@@ -274,7 +243,7 @@ pub(crate) fn start_session(world: &mut World) {
         .unwrap_or_default();
     let result = create_run(
         &config,
-        experiment,
+        ai_battle,
         gameplay_pacing,
         world.resource::<Time<Fixed>>().timestep().as_secs_f64(),
         world.resource::<SessionRules>().scenario_name,
@@ -334,7 +303,7 @@ pub(crate) fn finish_session(world: &mut World) -> bool {
 
 fn create_run(
     config: &BattleStatisticsConfig,
-    experiment: BattleExperimentConfig,
+    ai_battle: AiBattleConfig,
     gameplay_pacing: GameplayPacing,
     timestep_seconds: f64,
     scenario_name: &str,
@@ -355,17 +324,17 @@ fn create_run(
     let mut csv = BufWriter::new(file);
     writeln!(
         csv,
-        "simulation_seconds,fixed_tick,swarm,population,workers,haulers,defenders,births,deaths,minerals_gathered,minerals_consumed,structures_built,structures_lost,effective_damage_total,effective_damage_nanobots,effective_damage_structures,scored_damage_total,scored_damage_nanobots,scored_damage_structures,elimination_seconds,tick_count,tick_mean_ms,tick_p50_ms,tick_p95_ms,tick_p99_ms,tick_max_ms,frame_count,frame_mean_ms,frame_p95_ms,frame_max_ms,controller_reviews,controller_intent_edits,controller_work_units,controller_mean_ms,controller_p95_ms,controller_p95_window_samples,controller_max_ms,controller_last_explanation,observation_max_ms"
+        "simulation_seconds,fixed_tick,swarm,population,workers,haulers,defenders,births,deaths,minerals_gathered,minerals_consumed,structures_built,structures_lost,effective_damage_total,effective_damage_nanobots,effective_damage_structures,elimination_seconds,tick_count,tick_mean_ms,tick_p50_ms,tick_p95_ms,tick_p99_ms,tick_max_ms,frame_count,frame_mean_ms,frame_p95_ms,frame_max_ms,controller_reviews,controller_intent_edits,controller_work_units,controller_last_explanation"
     )?;
     let summary = BattleSummary {
-        schema_version: 3,
+        schema_version: 4,
         scenario: scenario_name.into(),
         seed: config.seed,
         timestep_seconds,
         headless: config.headless,
         code_revision: env!("NANO_SWARM_CODE_REVISION").into(),
         dirty_worktree: env!("NANO_SWARM_DIRTY_WORKTREE") == "true",
-        experiment,
+        ai_battle,
         gameplay_pacing,
         status: RunStatus::InProgress,
         outcome: None,
@@ -429,7 +398,7 @@ impl BattleRun {
             let explanation = csv_field(&controller.last_explanation);
             writeln!(
                 self.csv,
-                "{},{},{swarm},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{elimination},{},{},{},{},{},{},{frame_count},{frame_mean},{frame_p95},{frame_max},{},{},{},{},{},{},{},{explanation},{}",
+                "{},{},{swarm},{},{},{},{},{},{},{},{},{},{},{},{},{},{elimination},{},{},{},{},{},{},{frame_count},{frame_mean},{frame_p95},{frame_max},{},{},{},{explanation}",
                 sample.simulation_seconds,
                 sample.fixed_tick,
                 s.population,
@@ -445,9 +414,6 @@ impl BattleRun {
                 c.effective_damage_total,
                 c.effective_damage_nanobots,
                 c.effective_damage_structures,
-                c.scored_damage_total,
-                c.scored_damage_nanobots,
-                c.scored_damage_structures,
                 t.count,
                 t.mean_ms,
                 t.p50_ms,
@@ -457,11 +423,6 @@ impl BattleRun {
                 controller.reviews,
                 controller.intent_edits,
                 controller.work_units,
-                controller.mean_ms,
-                controller.p95_ms,
-                controller.p95_window_samples,
-                controller.max_ms,
-                sample.observation_max_ms,
             )?;
         }
         self.summary.samples += 1;
@@ -488,11 +449,6 @@ fn start_tick(mut run: ResMut<BattleRun>) {
 }
 
 fn snapshot(world: &mut World, run: &mut BattleRun) -> BattleSample {
-    world.resource_scope(|world, mut counters: Mut<BattleCounters>| {
-        counters
-            .scored_damage_by_target
-            .retain(|entity, _| world.entities().contains(*entity));
-    });
     let mut swarms = BTreeMap::new();
     for id in world.query_filtered::<&SwarmId, With<Swarm>>().iter(world) {
         swarms.insert(
@@ -529,9 +485,9 @@ fn snapshot(world: &mut World, run: &mut BattleRun) -> BattleSample {
         .records_frame_timing()
         .then(|| Timing::from_samples(&mut run.frame_samples));
     run.frame_samples.clear();
-    let (controllers, observation_max_ms) = world
+    let controllers = world
         .get_resource::<ControllerTelemetry>()
-        .map(|telemetry| (telemetry.profiles(), telemetry.observation_max_ms))
+        .map(ControllerTelemetry::profiles)
         .unwrap_or_default();
     BattleSample {
         simulation_seconds,
@@ -539,7 +495,6 @@ fn snapshot(world: &mut World, run: &mut BattleRun) -> BattleSample {
         tick_timing,
         frame_timing,
         controllers,
-        observation_max_ms,
         swarms,
     }
 }
@@ -569,14 +524,6 @@ fn collect_tick(world: &mut World) {
     if let Some(ref outcome) = outcome {
         run.summary.status = RunStatus::Completed;
         run.summary.outcome = Some(outcome.clone());
-        world.resource_mut::<BattleCounters>().frozen = true;
-    } else if run
-        .summary
-        .experiment
-        .cutoff_seconds
-        .is_some_and(|cutoff| run.ticks as f64 * run.summary.timestep_seconds >= f64::from(cutoff))
-    {
-        run.summary.status = RunStatus::Unresolved;
         world.resource_mut::<BattleCounters>().frozen = true;
     }
     let terminal = run.summary.status != RunStatus::InProgress;

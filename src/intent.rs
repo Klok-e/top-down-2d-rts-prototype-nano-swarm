@@ -291,6 +291,21 @@ impl IntentGrid {
             .map(|point| (point, &self.cells[self.index(point)]))
     }
 
+    /// Iterate non-empty cells strictly after `after` in deterministic row-major order.
+    pub(crate) fn iter_active_cells_after(
+        &self,
+        after: Option<IVec2>,
+    ) -> impl Iterator<Item = (IVec2, &IntentCell)> {
+        let start = after.map_or(0, |point| {
+            self.active_cells
+                .partition_point(|candidate| (candidate.y, candidate.x) <= (point.y, point.x))
+        });
+        self.active_cells[start..]
+            .iter()
+            .copied()
+            .map(|point| (point, &self.cells[self.index(point)]))
+    }
+
     /// Unique cells containing any of `swarm`'s intent, in row-major order.
     /// Overlapping cells independently belong to each owner.
     pub fn swarm_tiles(&self, swarm: SwarmId) -> Vec<IVec2> {

@@ -303,7 +303,7 @@ fn worker_builds_planned_source_stockpile() {
     // structure foundation's reservation tests; here we
     // verify the build completes end-to-end.
     let mut app = build_app();
-    common::initialize_pacing(&mut app, common::PacingId::Baseline);
+    common::initialize_fast_pacing(&mut app);
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
@@ -368,7 +368,7 @@ fn worker_resumes_extraction_after_stockpile_built() {
     // arrive system inserts `ExtractProgress`. The deposit's
     // amount is the visible end of the resume.
     let mut app = build_app();
-    common::initialize_pacing(&mut app, common::PacingId::Baseline);
+    common::initialize_fast_pacing(&mut app);
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
@@ -583,7 +583,7 @@ fn completed_source_stockpile_keeps_swarm_ownership() {
     // `Stockpile`, so the ownership is stable across the
     // build.
     let mut app = build_app();
-    common::initialize_pacing(&mut app, common::PacingId::Baseline);
+    common::initialize_fast_pacing(&mut app);
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
@@ -791,7 +791,7 @@ fn second_worker_can_claim_and_build_planned_source_stockpile() {
     // the deposit and resumes extraction once the build
     // finishes.
     let mut app = build_app();
-    common::initialize_pacing(&mut app, common::PacingId::Baseline);
+    common::initialize_fast_pacing(&mut app);
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);

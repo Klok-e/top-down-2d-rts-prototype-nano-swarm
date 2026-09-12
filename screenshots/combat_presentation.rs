@@ -4,9 +4,7 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    GAMEPLAY_SPRITE_Z,
-    battle_experiment::PacingId,
-    fixed_simulation_time,
+    GAMEPLAY_SPRITE_Z, fixed_simulation_time,
     fly_camera::CameraZoom2d,
     gameplay_pacing::GameplayPacing,
     intent::{IntentGrid, IntentKind},
@@ -551,7 +549,11 @@ fn spawn_dense_nanobot(
 
 fn setup_dense_scene(world: &mut World) {
     let center = prepare_combat_scene(world);
-    world.insert_resource(GameplayPacing::from(PacingId::Baseline));
+    world.insert_resource(GameplayPacing {
+        construction_work_ticks: 5,
+        attack_interval_ticks: 15,
+        charge_drain_per_tick: 0.00025,
+    });
     focus_camera_at_zoom(world, center, 1.0);
     let opponent = *world
         .query_filtered::<&SwarmId, (With<Swarm>, With<OpponentSwarm>)>()

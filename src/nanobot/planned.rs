@@ -21,7 +21,7 @@ use crate::structure_sprites::{StructureSprites, StructureVisual, StructureVisua
 
 /// Baseline worker-time ticks required to finish a planned structure.
 /// New automatic plans take their budget from the shared gameplay pacing
-/// resource; the baseline remains the default outside controlled experiments.
+/// resource; tests can install explicit numeric timing fixtures.
 pub const DEFAULT_PLANNED_WORK_TICKS: u32 = 5;
 
 /// Local sprite size shared by planned and completed visuals. The aligned
