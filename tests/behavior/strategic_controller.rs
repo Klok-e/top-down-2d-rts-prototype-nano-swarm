@@ -6,8 +6,18 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{MatchOutcome, Swarm, SwarmId},
     resources::{ResourceKind, ResourceLedger},
+    strategic_controller::{Decision, IntentEditAction},
     strategic_runtime::{StrategicController, StrategicControllerPlugin},
 };
+
+fn apply_decision(grid: &mut IntentGrid, owner: SwarmId, decision: &Decision) {
+    for edit in &decision.edits {
+        match edit.action {
+            IntentEditAction::Paint => grid.paint(edit.cell, edit.kind, owner),
+            IntentEditAction::Erase => grid.erase(edit.cell, edit.kind, owner),
+        };
+    }
+}
 
 #[test]
 fn strategic_adapter_applies_only_its_owners_intent_without_mutating_resources() {
@@ -15,12 +25,12 @@ fn strategic_adapter_applies_only_its_owners_intent_without_mutating_resources()
     app.add_plugins(StrategicControllerPlugin);
     let owner = SwarmId(7);
     let old = IVec2::new(2, 0);
-    let next = IVec2::new(1, 0);
+    let next = IVec2::ZERO;
     app.world_mut().spawn((
         Swarm {},
         owner,
         Transform::default(),
-        StrategicController::timed(owner, old, IVec2::ZERO, 0, 1),
+        StrategicController::new(owner),
     ));
     for swarm in [SwarmId::PLAYER, owner] {
         app.world_mut()
@@ -76,7 +86,7 @@ fn controller_telemetry_counts_invalidation_checks_between_reviews() {
         Swarm {},
         owner,
         Transform::default(),
-        StrategicController::adaptive(owner),
+        StrategicController::new(owner),
     ));
     common::spawn_deposit(
         &mut app,
@@ -101,104 +111,312 @@ fn controller_telemetry_counts_invalidation_checks_between_reviews() {
 }
 
 #[test]
-fn controller_pair_and_side_swap_drive_the_authored_experimental_layout() {
-    use top_down_2d_rts_prototype_nano_swarm::{
-        battle_experiment::{BattleExperimentConfig, ControllerId, LayoutId},
-        nanobot::{Nanobot, NanobotType, OpponentSwarmIdAlloc, SwarmMember},
-        resources::ResourceDeposit,
-        scenario::{cell_origin, spawn_selected_scenario},
-        scenario_selection::{Scenario, ScenarioSelection},
-        strategic_runtime::ControllerTelemetry,
+fn controller_eventually_erases_stale_owned_intent_after_large_foreign_prefix() {
+    use top_down_2d_rts_prototype_nano_swarm::strategic_controller::{
+        Controller, GameState, REVIEW_PERIOD_TICKS, SwarmState,
     };
-    for swap_sides in [false, true] {
-        let mut app = common::minimal_app();
-        app.insert_resource(IntentGrid::new(64, 64))
-            .insert_resource(BattleExperimentConfig {
-                controllers: [ControllerId::Adaptive, ControllerId::Timed],
-                layout: LayoutId::Flanks,
-                swap_sides,
-                ..default()
-            })
-            .init_resource::<OpponentSwarmIdAlloc>()
-            .add_plugins((
-                TaskPoolPlugin::default(),
-                AssetPlugin::default(),
-                StrategicControllerPlugin,
-            ))
-            .init_asset::<Image>()
-            .add_systems(
-                Startup,
-                |mut commands: Commands,
-                 assets: Res<AssetServer>,
-                 mut grid: ResMut<IntentGrid>,
-                 ids: ResMut<OpponentSwarmIdAlloc>,
-                 config: Res<BattleExperimentConfig>| {
-                    spawn_selected_scenario(
-                        Scenario::AiBattle,
-                        &mut commands,
-                        &assets,
-                        &mut grid,
-                        ids,
-                        config.layout,
-                    );
-                },
-            );
-        app.world_mut().resource_mut::<ScenarioSelection>().current = Scenario::AiBattle;
-        app.update();
-        let world = app.world_mut();
-        let homes: Vec<_> = world
-            .query_filtered::<(&SwarmId, &Transform), With<Swarm>>()
-            .iter(world)
-            .map(|(owner, transform)| (*owner, transform.translation.truncate()))
-            .collect();
-        assert!(homes.contains(&(SwarmId(0), cell_origin(IVec2::new(0, 2)))));
-        assert!(homes.contains(&(SwarmId(1), cell_origin(IVec2::new(24, 22)))));
-        for owner in [SwarmId(0), SwarmId(1)] {
-            let bots: Vec<_> = world
-                .query_filtered::<(&SwarmMember, &NanobotType), With<Nanobot>>()
-                .iter(world)
-                .filter(|(member, _)| member.0 == owner)
-                .map(|(_, kind)| *kind)
-                .collect();
-            assert_eq!(bots.len(), 9);
-            assert_eq!(
-                bots.iter()
-                    .filter(|kind| **kind == NanobotType::Worker)
-                    .count(),
-                4
-            );
+
+    let owner = SwarmId(4);
+    let foreign = SwarmId(9);
+    let foreign_sentinel = IVec2::new(-32, -32);
+    let stale = IVec2::new(31, 31);
+    let mut grid = IntentGrid::new(64, 64);
+    for y in -32..-27 {
+        for x in -32..32 {
+            grid.paint(IVec2::new(x, y), IntentKind::Gather, foreign);
         }
-        let deposits: Vec<_> = world
-            .query::<(&Transform, &ResourceDeposit)>()
-            .iter(world)
-            .map(|(transform, deposit)| (transform.translation.truncate(), deposit.amount))
-            .collect();
-        assert_eq!(deposits.len(), 6);
-        assert!(deposits.contains(&(cell_origin(IVec2::new(-1, 1)), 72_000)));
-        assert!(deposits.contains(&(cell_origin(IVec2::new(25, 23)), 72_000)));
-        let adaptive = SwarmId(u32::from(swap_sides));
-        let timed = SwarmId(u32::from(!swap_sides));
-        let profiles = world.resource::<ControllerTelemetry>().profiles();
-        assert!(
-            profiles
-                .get(&adaptive.0)
-                .is_some_and(|profile| profile.reviews == 1)
-        );
-        assert_eq!(
-            profiles[&timed.0].reviews, 0,
-            "the frozen timed policy is still in its initial delay"
-        );
-        let grid = world.resource::<IntentGrid>();
-        assert!(
-            grid.iter_active_cells()
-                .any(|(_, cell)| cell.has_owned(IntentKind::Corridor, adaptive))
-        );
-        assert!(
-            !grid
-                .iter_active_cells()
-                .any(|(_, cell)| cell.has_owned(IntentKind::Corridor, timed))
-        );
     }
+    grid.paint(stale, IntentKind::Defend, owner);
+
+    let swarms = [SwarmState {
+        id: owner,
+        home: Vec2::ZERO,
+        minerals: 0,
+    }];
+    let mut controller = Controller::new(owner);
+    for review in 0..3 {
+        let decision = controller.decide(&GameState {
+            grid: &grid,
+            swarms: &swarms,
+            bots: &[],
+            structures: &[],
+            deposits: &[],
+            terrain: &[],
+            tick: review * REVIEW_PERIOD_TICKS,
+            finished: false,
+        });
+        apply_decision(&mut grid, owner, &decision);
+    }
+
+    assert!(
+        !grid
+            .cell(stale)
+            .unwrap()
+            .has_owned(IntentKind::Defend, owner),
+        "bounded cleanup must eventually pass foreign cells and erase stale owned intent"
+    );
+    assert!(
+        grid.cell(foreign_sentinel)
+            .unwrap()
+            .has_owned(IntentKind::Gather, foreign),
+        "cleanup must preserve foreign intent"
+    );
+}
+
+#[test]
+fn controller_retargets_when_its_primary_resource_is_exhausted() {
+    use top_down_2d_rts_prototype_nano_swarm::strategic_controller::{
+        Controller, DepositState, GameState, SwarmState,
+    };
+
+    let mut grid = IntentGrid::new(32, 32);
+    let owner = SwarmId(4);
+    let world = |cell: IVec2| {
+        (cell.as_vec2() + Vec2::splat(0.5)) * top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE
+    };
+    let swarms = [SwarmState {
+        id: owner,
+        home: world(IVec2::ZERO),
+        minerals: 0,
+    }];
+    let deposits = [
+        DepositState {
+            id: 20,
+            position: world(IVec2::new(2, 0)),
+            amount: 1_000,
+            radius: 100.0,
+        },
+        DepositState {
+            id: 21,
+            position: world(IVec2::new(4, 0)),
+            amount: 50,
+            radius: 100.0,
+        },
+    ];
+    let mut controller = Controller::new(owner);
+    let initial = controller.decide(&GameState {
+        grid: &grid,
+        swarms: &swarms,
+        bots: &[],
+        structures: &[],
+        deposits: &deposits,
+        terrain: &[],
+        tick: 0,
+        finished: false,
+    });
+    apply_decision(&mut grid, owner, &initial);
+
+    let depleted = [
+        DepositState {
+            amount: 0,
+            ..deposits[0]
+        },
+        deposits[1],
+    ];
+    let urgent = controller.decide(&GameState {
+        grid: &grid,
+        swarms: &swarms,
+        bots: &[],
+        structures: &[],
+        deposits: &depleted,
+        terrain: &[],
+        tick: 1,
+        finished: false,
+    });
+
+    assert!(urgent.reviewed, "depletion must bypass the regular cadence");
+    assert!(urgent.explanation.contains("exhausted"));
+    assert!(urgent.edits.iter().any(|edit| {
+        edit.action == IntentEditAction::Paint
+            && edit.kind == IntentKind::Gather
+            && edit.cell == IVec2::new(4, 0)
+    }));
+    assert!(urgent.edits.iter().any(|edit| {
+        edit.action == IntentEditAction::Erase
+            && edit.kind == IntentKind::Gather
+            && edit.cell == IVec2::new(2, 0)
+    }));
+}
+
+#[test]
+fn controller_urgently_replans_when_key_support_is_lost() {
+    use top_down_2d_rts_prototype_nano_swarm::strategic_controller::{
+        Controller, DepositState, GameState, StructureKind, StructureState, SwarmState,
+    };
+
+    let mut grid = IntentGrid::new(32, 32);
+    let owner = SwarmId(4);
+    let world = |cell: IVec2| {
+        (cell.as_vec2() + Vec2::splat(0.5)) * top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE
+    };
+    let swarms = [SwarmState {
+        id: owner,
+        home: world(IVec2::ZERO),
+        minerals: 20,
+    }];
+    let deposits = [DepositState {
+        id: 20,
+        position: world(IVec2::new(2, 0)),
+        amount: 500,
+        radius: 100.0,
+    }];
+    let charger = [StructureState {
+        id: 42,
+        owner,
+        position: world(IVec2::new(1, 0)),
+        kind: StructureKind::Charger,
+        health: 100,
+        minerals: 25,
+    }];
+    let mut controller = Controller::new(owner);
+    let initial = controller.decide(&GameState {
+        grid: &grid,
+        swarms: &swarms,
+        bots: &[],
+        structures: &charger,
+        deposits: &deposits,
+        terrain: &[],
+        tick: 0,
+        finished: false,
+    });
+    apply_decision(&mut grid, owner, &initial);
+
+    let urgent = controller.decide(&GameState {
+        grid: &grid,
+        swarms: &swarms,
+        bots: &[],
+        structures: &[],
+        deposits: &deposits,
+        terrain: &[],
+        tick: 1,
+        finished: false,
+    });
+
+    assert!(urgent.reviewed);
+    assert!(urgent.explanation.contains("key Charger 42 was lost"));
+}
+
+#[test]
+fn regular_and_urgent_reviews_share_one_public_work_allowance() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::NanobotType,
+        strategic_controller::{
+            BotState, Controller, DepositState, GameState, PLANNING_WORK_BUDGET, StructureKind,
+            StructureState, SwarmState,
+        },
+    };
+
+    let mut grid = IntentGrid::new(64, 64);
+    assert_eq!(PLANNING_WORK_BUDGET, 100_000);
+    let owner = SwarmId(4);
+    let enemy = SwarmId(9);
+    let world = |cell: IVec2| {
+        (cell.as_vec2() + Vec2::splat(0.5)) * top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE
+    };
+    let swarms = [
+        SwarmState {
+            id: owner,
+            home: world(IVec2::ZERO),
+            minerals: 100,
+        },
+        SwarmState {
+            id: enemy,
+            home: world(IVec2::new(24, 24)),
+            minerals: 0,
+        },
+    ];
+    let deposit = [DepositState {
+        id: 20,
+        position: world(IVec2::new(-1, 0)),
+        amount: 500,
+        radius: 100.0,
+    }];
+    let remnant = BotState {
+        id: 50,
+        owner: enemy,
+        kind: NanobotType::Worker,
+        position: world(IVec2::new(12, 3)),
+        health: 20,
+        charge: 1.0,
+        cargo: 0,
+    };
+    let charger = StructureState {
+        id: 42,
+        owner,
+        position: world(IVec2::new(1, 0)),
+        kind: StructureKind::Charger,
+        health: 100,
+        minerals: 25,
+    };
+    let mut controller = Controller::new(owner);
+    let initial = controller.decide(&GameState {
+        grid: &grid,
+        swarms: &swarms,
+        bots: &[remnant],
+        structures: &[charger],
+        deposits: &deposit,
+        terrain: &[],
+        tick: 0,
+        finished: false,
+    });
+    apply_decision(&mut grid, owner, &initial);
+
+    let crowded_structures = (0..60_000)
+        .map(|id| StructureState {
+            id: 1_000 + id,
+            owner,
+            position: swarms[0].home,
+            kind: StructureKind::Planned,
+            health: 100,
+            minerals: 0,
+        })
+        .collect::<Vec<_>>();
+    let support_loss = controller.decide(&GameState {
+        grid: &grid,
+        swarms: &swarms,
+        bots: &[remnant],
+        structures: &crowded_structures,
+        deposits: &deposit,
+        terrain: &[],
+        tick: 1,
+        finished: false,
+    });
+    apply_decision(&mut grid, owner, &support_loss);
+
+    let moved = BotState {
+        position: world(IVec2::new(13, 3)),
+        ..remnant
+    };
+    let mut crowded_bots = (0..60_000)
+        .map(|id| BotState {
+            id: 1_000 + id,
+            owner,
+            kind: NanobotType::Worker,
+            position: swarms[0].home,
+            health: 100,
+            charge: 1.0,
+            cargo: 0,
+        })
+        .collect::<Vec<_>>();
+    crowded_bots.push(moved);
+    let target_move = controller.decide(&GameState {
+        grid: &grid,
+        swarms: &swarms,
+        bots: &crowded_bots,
+        structures: &[],
+        deposits: &deposit,
+        terrain: &[],
+        tick: 2,
+        finished: false,
+    });
+
+    assert!(support_loss.reviewed);
+    assert!(
+        initial.work_units + support_loss.work_units + target_move.work_units
+            <= PLANNING_WORK_BUDGET
+    );
+    assert!(!target_move.reviewed);
+    assert!(target_move.edits.is_empty());
 }
 
 #[test]
@@ -282,7 +500,7 @@ fn mature_economy_keeps_one_active_resource_site() {
         },
     ];
 
-    let decision = Controller::adaptive(owner).decide(&GameState {
+    let decision = Controller::new(owner).decide(&GameState {
         grid: &grid,
         swarms: &swarms,
         bots: &bots,
@@ -295,21 +513,22 @@ fn mature_economy_keeps_one_active_resource_site() {
     let mut painted_gather = decision
         .edits
         .iter()
-        .filter(|edit| edit.paint && edit.kind == IntentKind::Gather)
+        .filter(|edit| edit.action == IntentEditAction::Paint && edit.kind == IntentKind::Gather)
         .map(|edit| edit.cell)
         .collect::<Vec<_>>();
     painted_gather.sort_by_key(|cell| (cell.y, cell.x));
 
     assert_eq!(painted_gather, vec![IVec2::new(-1, 0)]);
     assert!(decision.edits.iter().any(|edit| {
-        !edit.paint && edit.kind == IntentKind::Gather && edit.cell == IVec2::new(0, 7)
+        edit.action == IntentEditAction::Erase
+            && edit.kind == IntentKind::Gather
+            && edit.cell == IVec2::new(0, 7)
     }));
 }
 
 #[test]
-fn adaptive_primary_site_extracts_and_hauls_under_normal_pacing() {
+fn controller_primary_site_extracts_and_hauls_under_normal_pacing() {
     use top_down_2d_rts_prototype_nano_swarm::{
-        battle_experiment::PacingId,
         gameplay_pacing::GameplayPacing,
         nanobot::{Cargo, HaulerAssignment, NanobotType, OwnerSwarm, world_to_cell},
         resources::ResourceDeposit,
@@ -325,7 +544,7 @@ fn adaptive_primary_site_extracts_and_hauls_under_normal_pacing() {
     );
     app.world_mut()
         .entity_mut(own)
-        .insert(StrategicController::adaptive(SwarmId::PLAYER));
+        .insert(StrategicController::new(SwarmId::PLAYER));
     let positions =
         [IVec2::new(-1, 0), IVec2::new(4, 0), IVec2::new(0, 7)].map(common::cell_world_center);
     let deposits = positions.map(|world_pos| {
@@ -350,7 +569,7 @@ fn adaptive_primary_site_extracts_and_hauls_under_normal_pacing() {
         app.update();
         assert_eq!(
             *app.world().resource::<GameplayPacing>(),
-            GameplayPacing::from(PacingId::Deliberate),
+            GameplayPacing::default(),
             "the flow must run with normal gameplay pacing"
         );
         let grid = app.world().resource::<IntentGrid>();
@@ -393,7 +612,7 @@ fn adaptive_primary_site_extracts_and_hauls_under_normal_pacing() {
 }
 
 #[test]
-fn adaptive_new_front_keeps_the_progressing_fronts_shared_defender_response() {
+fn controller_new_front_keeps_the_progressing_fronts_shared_defender_response() {
     use top_down_2d_rts_prototype_nano_swarm::nanobot::{
         DefenderResponse, OwnerSwarm, PlannedKind, Structure, StructureKind,
     };
@@ -405,7 +624,7 @@ fn adaptive_new_front_keeps_the_progressing_fronts_shared_defender_response() {
     let own = common::spawn_swarm_at(&mut app, home);
     app.world_mut()
         .entity_mut(own)
-        .insert(StrategicController::adaptive(SwarmId::PLAYER));
+        .insert(StrategicController::new(SwarmId::PLAYER));
     let enemy_cell = IVec2::new(12, 0);
     let enemy = app
         .world_mut()

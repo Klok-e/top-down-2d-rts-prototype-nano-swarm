@@ -53,8 +53,6 @@ mod movement;
 mod nanobot_presentation;
 #[path = "behavior/no_instant_spawning.rs"]
 mod no_instant_spawning;
-#[path = "behavior/opponent_intent_controller.rs"]
-mod opponent_intent_controller;
 #[path = "behavior/opponent_swarm.rs"]
 mod opponent_swarm;
 #[path = "behavior/per_swarm_intent_ownership.rs"]

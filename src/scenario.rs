@@ -8,7 +8,7 @@ use bevy::{math::vec3, prelude::*};
 use crate::{
     GAMEPLAY_SPRITE_Z,
     ai::{AiStateComponent, get_world_from_zone},
-    battle_experiment::{BattleExperimentConfig, ControllerId, LayoutId},
+    ai_battle::{AiBattleConfig, AiBattleLayout},
     building::{Minerals, ProcessingFacility},
     intent::{IntentGrid, IntentKind},
     nanobot::{
@@ -22,7 +22,6 @@ use crate::{
 mod layout;
 mod map;
 pub use layout::LayoutSetup;
-pub use map::TerrainLayout;
 pub(crate) use map::rock_surface_mesh;
 pub use map::{default_rock_geometry, spawn_default_terrain};
 
@@ -93,7 +92,7 @@ pub fn spawn_default_player_scenario(
         commands,
         asset_server,
         grid,
-        LayoutSetup::for_layout(LayoutId::Standard),
+        LayoutSetup::for_layout(AiBattleLayout::Standard),
     );
 }
 
@@ -181,7 +180,7 @@ pub fn spawn_default_opponent_scenario(
         asset_server,
         grid,
         id_alloc,
-        LayoutSetup::for_layout(LayoutId::Standard),
+        LayoutSetup::for_layout(AiBattleLayout::Standard),
     );
 }
 
@@ -212,7 +211,7 @@ fn spawn_opponent_scenario(
         .spawn((
             Swarm {},
             OpponentSwarm {},
-            StrategicController::adaptive(opponent_swarm_id),
+            StrategicController::new(opponent_swarm_id),
             opponent_swarm_id,
             Transform::from_translation(opponent_pos.extend(0.0)),
             GlobalTransform::default(),
@@ -372,7 +371,7 @@ impl Plugin for ScenarioPlugin {
         app.init_resource::<crate::scenario_selection::ScenarioSelection>()
             .init_resource::<crate::session::SessionRules>()
             .init_resource::<crate::session::SimulationSeed>()
-            .init_resource::<BattleExperimentConfig>()
+            .init_resource::<AiBattleConfig>()
             .init_resource::<crate::gameplay_pacing::GameplayPacing>()
             .add_systems(PreStartup, configure_session)
             .add_systems(
@@ -386,31 +385,24 @@ impl Plugin for ScenarioPlugin {
 
 fn configure_session(
     selection: Res<crate::scenario_selection::ScenarioSelection>,
-    experiment: Res<BattleExperimentConfig>,
+    ai_battle: Res<AiBattleConfig>,
     mut rules: ResMut<crate::session::SessionRules>,
     mut pacing: ResMut<crate::gameplay_pacing::GameplayPacing>,
 ) {
-    *rules = session_rules(selection.current, &experiment);
-    *pacing = gameplay_pacing(selection.current, &experiment);
+    *rules = session_rules(selection.current, &ai_battle);
+    *pacing = gameplay_pacing();
 }
 
-pub(crate) fn gameplay_pacing(
-    scenario: crate::scenario_selection::Scenario,
-    experiment: &BattleExperimentConfig,
-) -> crate::gameplay_pacing::GameplayPacing {
-    if scenario == crate::scenario_selection::Scenario::AiBattle {
-        experiment.pacing.into()
-    } else {
-        crate::gameplay_pacing::GameplayPacing::from(crate::battle_experiment::PacingId::Deliberate)
-    }
+pub(crate) fn gameplay_pacing() -> crate::gameplay_pacing::GameplayPacing {
+    crate::gameplay_pacing::GameplayPacing::default()
 }
 
 pub(crate) fn session_rules(
     scenario: crate::scenario_selection::Scenario,
-    experiment: &BattleExperimentConfig,
+    ai_battle: &AiBattleConfig,
 ) -> crate::session::SessionRules {
     let mut rules = scenario.definition().rules;
-    if experiment.realtime {
+    if scenario == crate::scenario_selection::Scenario::AiBattle && ai_battle.realtime {
         rules.accelerate_headless = false;
     }
     rules
@@ -422,15 +414,15 @@ pub fn spawn_selected_scenario(
     assets: &Res<'_, AssetServer>,
     grid: &mut IntentGrid,
     ids: ResMut<crate::nanobot::OpponentSwarmIdAlloc>,
-    layout: LayoutId,
+    layout: AiBattleLayout,
 ) {
     let layout = if scenario == crate::scenario_selection::Scenario::AiBattle {
         layout
     } else {
-        LayoutId::Standard
+        AiBattleLayout::Standard
     };
     let setup = LayoutSetup::for_layout(layout);
-    map::spawn_terrain(commands, layout);
+    map::spawn_terrain(commands);
     spawn_player_scenario(commands, assets, grid, setup);
     if scenario.definition().opponent {
         spawn_opponent_scenario(commands, assets, grid, ids, setup);
@@ -442,32 +434,15 @@ pub fn spawn_selected_scenario(
 pub(crate) fn configure_controllers(
     mut commands: Commands,
     selection: Res<crate::scenario_selection::ScenarioSelection>,
-    experiment: Res<BattleExperimentConfig>,
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,
 ) {
     if !selection.current.definition().automatic_player {
         return;
     }
     for (entity, id) in &swarms {
-        let side = usize::from(!id.is_player());
-        let controller_id = experiment.controllers[side ^ usize::from(experiment.swap_sides)];
-        let setup = LayoutSetup::for_layout(experiment.layout);
-        let (home, target, direction) = if side == 0 {
-            (setup.home, LayoutSetup::opposite(setup.home), 1)
-        } else {
-            (LayoutSetup::opposite(setup.home), setup.home, -1)
-        };
-        let controller = match controller_id {
-            ControllerId::Timed => StrategicController::timed(
-                *id,
-                home + IVec2::ONE * direction,
-                target,
-                5 * crate::SIMULATION_HZ as u32,
-                6 * crate::SIMULATION_HZ as u32,
-            ),
-            ControllerId::Adaptive => StrategicController::adaptive(*id),
-        };
-        commands.entity(entity).insert(controller);
+        commands
+            .entity(entity)
+            .insert(StrategicController::new(*id));
     }
 }
 

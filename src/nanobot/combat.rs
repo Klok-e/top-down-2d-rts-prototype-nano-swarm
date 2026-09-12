@@ -6,8 +6,8 @@ use crate::battle_statistics::{BattleCounters, BattleEvent};
 use bevy::prelude::*;
 
 use crate::nanobot::{
-    Charge, DefenderResponse, Health, Nanobot, NanobotType, OwnerSwarm, STRUCTURE_MAX_HEALTH,
-    Structure, StructureKind, Swarm, SwarmId, SwarmMember, effective_attack, effective_defense,
+    Charge, DefenderResponse, Health, Nanobot, NanobotType, OwnerSwarm, Structure, StructureKind,
+    Swarm, SwarmId, SwarmMember, effective_attack, effective_defense,
 };
 use crate::spatial::FixedSpatialBuckets;
 use crate::structure_sprites::StructureVisual;
@@ -191,29 +191,14 @@ fn allocate_damage(
 
 fn record_combat_damage(
     counters: &mut BattleCounters,
-    target: Entity,
-    target_max_health: u32,
     contributions: &BTreeMap<SwarmId, u32>,
     effective_damage: u32,
     effective_event: fn(u32) -> BattleEvent,
-    scored_event: fn(u32) -> BattleEvent,
 ) {
     let effective_allocations = allocate_damage(contributions, effective_damage);
-    let scored_damage = counters.claim_scored_damage(target, target_max_health, effective_damage);
-    let scored_weights = effective_allocations
-        .iter()
-        .copied()
-        .filter(|(_, amount)| *amount > 0)
-        .collect::<BTreeMap<_, _>>();
-    let scored_allocations = allocate_damage(&scored_weights, scored_damage);
     for (swarm, amount) in effective_allocations {
         if amount > 0 {
             counters.record(swarm, effective_event(amount));
-        }
-    }
-    for (swarm, amount) in scored_allocations {
-        if amount > 0 {
-            counters.record(swarm, scored_event(amount));
         }
     }
 }
@@ -409,12 +394,9 @@ pub fn defender_combat_system(
                 if let Some(counters) = counters.as_deref_mut() {
                     record_combat_damage(
                         counters,
-                        entity,
-                        target.max,
                         &contributions,
                         effective_damage,
                         BattleEvent::EffectiveNanobotDamage,
-                        BattleEvent::ScoredNanobotDamage,
                     );
                 }
                 if was_alive {
@@ -442,12 +424,9 @@ pub fn defender_combat_system(
             if let Some(counters) = counters.as_deref_mut() {
                 record_combat_damage(
                     counters,
-                    entity,
-                    STRUCTURE_MAX_HEALTH,
                     &contributions,
                     effective_damage,
                     BattleEvent::EffectiveStructureDamage,
-                    BattleEvent::ScoredStructureDamage,
                 );
             }
             if was_alive {

@@ -94,7 +94,7 @@ fn authored_default_scenario_keeps_separated_economies_operational() {
     assert_eq!(territory.tile_count(SwarmId::PLAYER), 4);
     assert!(
         territory.tile_count(SwarmId(1)) >= 4,
-        "the adaptive opponent must retain at least its authored starting territory"
+        "the strategic opponent must retain at least its authored starting territory"
     );
     let demand = app.world().resource::<PopulationDemand>();
     assert_eq!(
@@ -104,7 +104,7 @@ fn authored_default_scenario_keeps_separated_economies_operational() {
     );
     assert!(
         demand.desired_for(SwarmId(1), NanobotType::Defender) >= 2,
-        "the adaptive opponent must retain a peaceful Defender reserve",
+        "the strategic opponent must retain a peaceful Defender reserve",
     );
 
     {
@@ -140,7 +140,7 @@ fn authored_default_scenario_keeps_separated_economies_operational() {
     );
     assert!(
         initial_defenders(app.world_mut(), SwarmId(1)) >= 3,
-        "the peaceful adaptive opponent must preserve its seeded Defenders",
+        "the peaceful strategic opponent must preserve its seeded Defenders",
     );
     let mut previous = positions(app.world_mut());
     for _ in 0..300 {
@@ -1123,7 +1123,7 @@ fn default_economy_loaded_bots_do_not_wait_for_clear_routes() {
 }
 
 #[test]
-fn ai_battle_starts_equal_and_both_sides_advance_without_input() {
+fn ai_battle_starts_with_equal_symmetric_economies() {
     use top_down_2d_rts_prototype_nano_swarm::nanobot::ProductionFacility;
     use top_down_2d_rts_prototype_nano_swarm::resources::ResourceDeposit;
     use top_down_2d_rts_prototype_nano_swarm::scenario_selection::{Scenario, ScenarioSelection};
@@ -1167,18 +1167,12 @@ fn ai_battle_starts_equal_and_both_sides_advance_without_input() {
             72_000
         );
     }
-    for _ in 0..302 {
-        app.update();
-    }
     let grid = app.world().resource::<IntentGrid>();
-    assert!(
-        grid.cell(IVec2::new(2, 2))
-            .unwrap()
-            .has_owned(IntentKind::Defend, SwarmId::PLAYER)
-    );
-    assert!(
-        grid.cell(IVec2::new(22, 22))
-            .unwrap()
-            .has_owned(IntentKind::Defend, SwarmId(1))
-    );
+    for side in [SwarmId::PLAYER, SwarmId(1)] {
+        assert!(
+            grid.iter_active_cells()
+                .any(|(_, cell)| cell.has_owned(IntentKind::Defend, side)),
+            "each side starts with an independently owned Defend intent"
+        );
+    }
 }

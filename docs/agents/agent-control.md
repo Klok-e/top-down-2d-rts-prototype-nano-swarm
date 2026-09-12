@@ -20,7 +20,7 @@ cargo run -- --headless --agent-socket --width 1280 --height 720
 $XDG_RUNTIME_DIR/nano-swarm/control.sock
 ```
 
-Headless mode disables Winit and creates no desktop window. Rendering, UI layout, fixed simulation, and GPU screenshots remain active. The runner handles `AppExit` and Ctrl-C; its default pacing is 60 application frames per second. AI Battle selects accelerated headless execution, advancing one 60 Hz simulation tick per application update without real-time pacing. See [AI Battle](../ai-battle.md) for launch options and saved statistics.
+Headless mode disables Winit and creates no desktop window. Rendering, UI layout, fixed simulation, and GPU screenshots remain active. The runner handles `AppExit` and Ctrl-C; its default pacing is 60 application frames per second. AI Battle advances one 60 Hz simulation tick per application update unless it launches with `--scenario ai-battle --realtime`. See [AI Battle](../ai-battle.md) for launch options and saved statistics.
 
 Headless width and height are each capped at 8,192 pixels, with a total budget of 16,777,216 pixels, so invalid CLI input fails before allocating the render image.
 
@@ -167,7 +167,7 @@ The socket worker polls a nonblocking listener and performs bounded blocking cli
 
 `screenshot_failed`: inspect GPU adapter diagnostics in the game log. Headless mode requires a working Bevy/wgpu adapter but never falls back to a desktop window.
 
-`spectator_only`: AI Battle rejects `map.apply` painting and erasing because both swarms own their control. Use camera, state, screenshots, and menu controls to observe the run. For headless benchmark execution and saved results, read [AI Battle](../ai-battle.md).
+`spectator_only`: AI Battle rejects `map.apply` painting and erasing because both swarms own their control. Use camera, state, screenshots, and menu controls to observe the run. For headless self-play execution and saved results, read [AI Battle](../ai-battle.md).
 
 `match_finished`: use `state`, `camera`, or `screenshot` to inspect the terminal state, or open the menu and start a fresh scenario.
 

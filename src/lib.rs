@@ -1,6 +1,6 @@
 pub mod agent_control;
 pub mod ai;
-pub mod battle_experiment;
+pub mod ai_battle;
 pub mod battle_statistics;
 pub mod building;
 pub mod deposit_presentation;

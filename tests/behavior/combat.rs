@@ -84,9 +84,6 @@ fn delivered_hit_publishes_the_resolved_combat_snapshot() {
     assert_eq!(damage["effective_damage_total"], 10);
     assert_eq!(damage["effective_damage_nanobots"], 10);
     assert_eq!(damage["effective_damage_structures"], 0);
-    assert_eq!(damage["scored_damage_total"], 10);
-    assert_eq!(damage["scored_damage_nanobots"], 10);
-    assert_eq!(damage["scored_damage_structures"], 0);
 }
 
 #[test]
@@ -160,18 +157,6 @@ fn simultaneous_overkill_is_attributed_once_with_a_stable_swarm_remainder() {
         7,
         "simultaneous nominal hits must not each claim the capped lethal damage",
     );
-    assert_eq!(
-        effective_damage(&app, SwarmId::PLAYER)["scored_damage_total"],
-        3
-    );
-    assert_eq!(
-        effective_damage(&app, SwarmId(11))["scored_damage_total"],
-        3
-    );
-    assert_eq!(
-        effective_damage(&app, SwarmId(22))["scored_damage_total"],
-        1
-    );
 }
 
 #[test]
@@ -234,25 +219,6 @@ fn repaired_health_can_be_removed_again_but_friendly_targets_never_count() {
                 .unwrap(),
         10,
         "repair permits more real damage to accumulate",
-    );
-    assert_eq!(
-        effective_damage(&app, SwarmId::PLAYER)["scored_damage_total"],
-        5
-    );
-    assert_eq!(
-        effective_damage(&app, SwarmId(22))["scored_damage_total"],
-        0,
-        "a second hostile swarm cannot claim another lifetime bar for the same target",
-    );
-    assert_eq!(
-        effective_damage(&app, SwarmId::PLAYER)["scored_damage_total"]
-            .as_u64()
-            .unwrap()
-            + effective_damage(&app, SwarmId(22))["scored_damage_total"]
-                .as_u64()
-                .unwrap(),
-        5,
-        "repair cannot refresh global score credit for one entity lifetime",
     );
 }
 
@@ -354,7 +320,7 @@ fn pursuit_destination_tracks_the_claimed_entity_each_fixed_step() {
 #[test]
 fn combat_damage_obeys_the_existing_cooldown() {
     let mut app = common::sim_app_with_combat();
-    common::initialize_pacing(&mut app, common::PacingId::Baseline);
+    common::initialize_fast_pacing(&mut app);
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
     app.world_mut().spawn((Swarm {}, SwarmId(11)));
     let cell = IVec2::ZERO;
@@ -452,7 +418,7 @@ fn simultaneous_lethal_responders_still_exchange_hits() {
 #[test]
 fn zero_health_nearest_target_is_skipped_for_the_nearest_living_hostile() {
     let mut app = common::sim_app_with_combat();
-    common::initialize_pacing(&mut app, common::PacingId::Baseline);
+    common::initialize_fast_pacing(&mut app);
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
     let opponent = app.world_mut().spawn((Swarm {}, SwarmId(11))).id();
     let cell = IVec2::ZERO;
@@ -559,9 +525,6 @@ fn lethal_structure_hit_publishes_stable_appearance_and_despawns_target() {
     assert_eq!(damage["effective_damage_total"], 1);
     assert_eq!(damage["effective_damage_nanobots"], 0);
     assert_eq!(damage["effective_damage_structures"], 1);
-    assert_eq!(damage["scored_damage_total"], 1);
-    assert_eq!(damage["scored_damage_nanobots"], 0);
-    assert_eq!(damage["scored_damage_structures"], 1);
 }
 
 #[test]

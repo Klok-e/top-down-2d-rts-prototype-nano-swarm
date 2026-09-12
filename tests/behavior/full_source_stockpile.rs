@@ -348,7 +348,7 @@ fn worker_resumes_extraction_after_full_stockpile_expansion() {
     // extraction, the carried load is delivered to the
     // new stockpile, and the deposit drains.
     let mut app = common::sim_app_with_gather_planned();
-    common::initialize_pacing(&mut app, common::PacingId::Baseline);
+    common::initialize_fast_pacing(&mut app);
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);

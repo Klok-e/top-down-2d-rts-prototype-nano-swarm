@@ -4,7 +4,6 @@ mod common;
 use approx::assert_abs_diff_eq;
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    battle_experiment::{BattleExperimentConfig, PacingId},
     gameplay_pacing::GameplayPacing,
     nanobot::{
         Charge, ChargerAssignment, CombatPlugin, DefenderResponse, Health, LogisticsReservation,
@@ -35,9 +34,9 @@ fn observe_attack_ticks(mut observations: ResMut<AttackObservations>, health: Qu
 }
 
 #[test]
-fn deliberate_construction_uses_one_real_budget_for_both_swarms() {
+fn shipped_construction_pacing_uses_one_real_budget_for_both_swarms() {
     let mut app = common::sim_app_with_planned();
-    let pacing = GameplayPacing::from(PacingId::Deliberate);
+    let pacing = GameplayPacing::default();
     app.update();
     app.insert_resource(pacing.clone());
     let player = app.world_mut().spawn((Swarm {}, SwarmId::PLAYER)).id();
@@ -91,10 +90,10 @@ fn deliberate_construction_uses_one_real_budget_for_both_swarms() {
 }
 
 #[test]
-fn deliberate_attack_interval_is_shared_by_both_swarms() {
+fn shipped_attack_interval_is_shared_by_both_swarms() {
     let mut app = common::sim_app_with_movement();
     app.add_plugins(CombatPlugin);
-    let pacing = GameplayPacing::from(PacingId::Deliberate);
+    let pacing = GameplayPacing::default();
     app.update();
     app.insert_resource(pacing.clone());
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
@@ -159,9 +158,9 @@ fn deliberate_attack_interval_is_shared_by_both_swarms() {
 }
 
 #[test]
-fn deliberate_charge_drain_is_shared_by_both_swarms() {
+fn shipped_charge_drain_is_shared_by_both_swarms() {
     let mut app = common::sim_app_with_charge();
-    let pacing = GameplayPacing::from(PacingId::Deliberate);
+    let pacing = GameplayPacing::default();
     app.update();
     app.insert_resource(pacing.clone());
     let player = common::spawn_defender_at(&mut app, Vec2::ZERO);
@@ -185,14 +184,10 @@ fn deliberate_charge_drain_is_shared_by_both_swarms() {
 }
 
 #[test]
-fn deliberate_charge_drain_sets_the_actual_charger_delivery_demand() {
+fn shipped_charge_drain_sets_the_actual_charger_delivery_demand() {
     let mut app = common::sim_app_with_gather_haul();
-    app.insert_resource(BattleExperimentConfig {
-        pacing: PacingId::Deliberate,
-        ..default()
-    });
     app.world_mut().resource_mut::<ScenarioSelection>().current = Scenario::AiBattle;
-    app.insert_resource(GameplayPacing::from(PacingId::Deliberate));
+    app.insert_resource(GameplayPacing::default());
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let source = common::spawn_sink_stockpile(&mut app, Vec2::new(-200.0, 0.0), 100, 100);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
@@ -226,19 +221,19 @@ fn deliberate_charge_drain_sets_the_actual_charger_delivery_demand() {
     assert_eq!(reservation.destination, charger);
     assert_eq!(
         reservation.amount, 18,
-        "Deliberate refill pulses must reserve their actual mineral demand",
+        "shipped refill pulses must reserve their actual mineral demand",
     );
 }
 
 #[test]
-fn gameplay_plugins_install_the_baseline_when_no_profile_is_supplied() {
+fn gameplay_plugins_install_the_shipped_pacing() {
     let combat = common::sim_app_with_combat();
     assert_eq!(
         combat
             .world()
             .resource::<GameplayPacing>()
             .attack_interval_ticks,
-        15,
+        30,
     );
     let charge = common::sim_app_with_charge();
     assert_abs_diff_eq!(
@@ -246,7 +241,7 @@ fn gameplay_plugins_install_the_baseline_when_no_profile_is_supplied() {
             .world()
             .resource::<GameplayPacing>()
             .charge_drain_per_tick,
-        0.00025,
+        0.000125,
     );
     let planned = common::sim_app_with_planned();
     assert_eq!(
@@ -254,6 +249,6 @@ fn gameplay_plugins_install_the_baseline_when_no_profile_is_supplied() {
             .world()
             .resource::<GameplayPacing>()
             .construction_work_ticks,
-        5,
+        90,
     );
 }

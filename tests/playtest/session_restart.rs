@@ -7,7 +7,6 @@ use std::{
 use bevy::{asset::AssetPlugin, input::InputPlugin, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     DEFAULT_CAMERA_ZOOM, MAP_HEIGHT, MAP_WIDTH, MainCamera,
-    battle_experiment::{BattleExperimentConfig, PacingId},
     battle_statistics::{
         BattleRun, BattleStatisticsConfig, BattleStatisticsPlugin, BattleSummary, RunStatus,
     },
@@ -271,25 +270,21 @@ fn standard_opponent_recovers_owned_intent_after_startup_and_restart() {
 }
 
 #[test]
-fn normal_scenarios_restore_deliberate_pacing_after_a_baseline_ai_battle() {
+fn session_restarts_keep_the_shared_gameplay_pacing() {
     let output = TemporaryDirectory::new();
     let (mut app, _) = session_app(output.path());
-    let deliberate = GameplayPacing::from(PacingId::Deliberate);
-    let baseline = GameplayPacing::from(PacingId::Baseline);
+    let deliberate = GameplayPacing::default();
 
     assert_eq!(*app.world().resource::<GameplayPacing>(), deliberate);
 
-    app.world_mut()
-        .resource_mut::<BattleExperimentConfig>()
-        .pacing = PacingId::Baseline;
     request_start(&mut app, Scenario::AiBattle);
-    assert_eq!(*app.world().resource::<GameplayPacing>(), baseline);
+    assert_eq!(*app.world().resource::<GameplayPacing>(), deliberate);
 
     request_start(&mut app, Scenario::Sandbox);
     assert_eq!(*app.world().resource::<GameplayPacing>(), deliberate);
 
     request_start(&mut app, Scenario::AiBattle);
-    assert_eq!(*app.world().resource::<GameplayPacing>(), baseline);
+    assert_eq!(*app.world().resource::<GameplayPacing>(), deliberate);
 
     request_start(&mut app, Scenario::Standard);
     assert_eq!(*app.world().resource::<GameplayPacing>(), deliberate);

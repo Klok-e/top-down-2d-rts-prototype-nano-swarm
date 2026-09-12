@@ -76,7 +76,7 @@ fn read_health(app: &App, defender: Entity) -> Option<u32> {
 #[test]
 fn full_defender_remains_on_duty_until_field_endurance_threshold() {
     let mut app = build_app();
-    common::initialize_pacing(&mut app, common::PacingId::Baseline);
+    common::initialize_fast_pacing(&mut app);
     common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
     app.world_mut()
@@ -123,7 +123,7 @@ fn full_defender_remains_on_duty_until_field_endurance_threshold() {
 #[test]
 fn low_defender_recharges_in_readable_bounded_time() {
     let mut app = build_app();
-    common::initialize_pacing(&mut app, common::PacingId::Baseline);
+    common::initialize_fast_pacing(&mut app);
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
     app.world_mut()
@@ -182,7 +182,7 @@ fn low_defender_recharges_in_readable_bounded_time() {
 #[test]
 fn normal_rotation_consumes_exact_minerals() {
     let mut app = build_app();
-    common::initialize_pacing(&mut app, common::PacingId::Baseline);
+    common::initialize_fast_pacing(&mut app);
     app.init_resource::<BattleCounters>();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
@@ -1963,7 +1963,7 @@ fn defender_charge_drains_passively_when_idle() {
     // time even when no charger is reachable. The drain
     // rate is CHARGE_DRAIN_PER_TICK per tick.
     let mut app = build_app();
-    common::initialize_pacing(&mut app, common::PacingId::Baseline);
+    common::initialize_fast_pacing(&mut app);
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let defender = common::spawn_defender_at(&mut app, Vec2::new(0.0, 0.0));
     let start = read_charge(&app, defender).expect("defender has Charge");
@@ -1994,7 +1994,7 @@ fn defender_charge_refills_in_supplied_pulses() {
     // state directly so arrival mechanics do not interfere
     // with the rate check.
     let mut app = build_app();
-    common::initialize_pacing(&mut app, common::PacingId::Baseline);
+    common::initialize_fast_pacing(&mut app);
     let swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(0, 0);
     app.world_mut()

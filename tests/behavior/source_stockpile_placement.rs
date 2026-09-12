@@ -360,7 +360,7 @@ fn placement_replaces_planned_structure_with_completed_stockpile() {
     // full plan-build-gather-deliver flow" half of the
     // contract.
     let mut app = build_app();
-    common::initialize_pacing(&mut app, common::PacingId::Baseline);
+    common::initialize_fast_pacing(&mut app);
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
@@ -404,7 +404,7 @@ fn no_floating_planned_source_stockpile_after_demand_satisfied() {
     // Stockpile" check sees the completed stockpile and
     // the demand system stays quiet.
     let mut app = build_app();
-    common::initialize_pacing(&mut app, common::PacingId::Baseline);
+    common::initialize_fast_pacing(&mut app);
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);

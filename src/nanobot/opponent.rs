@@ -163,35 +163,6 @@ pub fn next_opponent_swarm_id(world: &mut World) -> SwarmId {
 mod tests {
     use super::*;
 
-    #[test]
-    fn assault_advances_diagonally_toward_the_target_without_overshooting() {
-        let grid = IntentGrid::new(64, 64);
-        let next_assault_cell = |from, target| {
-            let mut controller =
-                crate::strategic_controller::Controller::timed(SwarmId(1), from, target, 0, 1);
-            let decision = controller.decide(&crate::strategic_controller::GameState {
-                grid: &grid,
-                swarms: &[],
-                bots: &[],
-                structures: &[],
-                deposits: &[],
-                terrain: &[],
-                tick: 0,
-                finished: false,
-            });
-            decision.edits.first().map_or(from, |edit| edit.cell)
-        };
-        assert_eq!(
-            next_assault_cell(IVec2::new(23, 23), IVec2::ZERO),
-            IVec2::new(22, 22)
-        );
-        assert_eq!(
-            next_assault_cell(IVec2::new(1, 0), IVec2::ZERO),
-            IVec2::ZERO
-        );
-        assert_eq!(next_assault_cell(IVec2::ZERO, IVec2::ZERO), IVec2::ZERO);
-    }
-
     fn build_app() -> App {
         let mut app = App::new();
         app.insert_resource(IntentGrid::new(8, 8));
