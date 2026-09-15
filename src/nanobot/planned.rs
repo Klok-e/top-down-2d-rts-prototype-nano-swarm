@@ -323,8 +323,7 @@ pub(crate) fn planned_visual_components(
 }
 
 /// Default capacity for completed Source and Sink Stockpiles.
-/// One full hauler load is one twentieth of this buffer.
-pub const DEFAULT_STOCKPILE_CAPACITY: u32 = 400;
+pub const DEFAULT_STOCKPILE_CAPACITY: u32 = 150;
 
 #[cfg(test)]
 mod tests {
