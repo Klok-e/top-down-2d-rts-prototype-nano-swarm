@@ -111,7 +111,12 @@ fn reachable_haul_is_assigned_while_another_destination_search_is_pending() {
     }
     app.world_mut().resource_mut::<NavigationBudget>().0 = 0;
     let hauler = common::spawn_hauler_at(&mut app, origin);
-    app.update();
+    for _ in 0..60 {
+        app.update();
+        if app.world().get::<HaulerAssignment>(hauler).is_some() {
+            break;
+        }
+    }
     assert_eq!(
         app.world()
             .get::<HaulerAssignment>(hauler)

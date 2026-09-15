@@ -34,7 +34,7 @@ fn exhausted_gather_zone_persists_without_invalid_worker_retries() {
     let worker = common::spawn_worker_at(&mut app, deposit_pos - Vec2::new(68.0, 0.0));
     paint_gather(&mut app, gather_cell);
 
-    for _ in 0..8 {
+    for _ in 0..300 {
         app.update();
     }
 
@@ -64,7 +64,7 @@ fn exhausted_gather_zone_persists_without_invalid_worker_retries() {
         "regional Gather lease should be revoked once supporting work disappears"
     );
 
-    for _ in 0..20 {
+    for _ in 0..300 {
         app.update();
     }
 

@@ -54,7 +54,7 @@ fn unclaimed_planned_structure_projects_remaining_build_work() {
     let opportunities = projection.opportunities(AllocationRegion::for_cell(IVec2::new(9, 1)));
     assert_eq!(opportunities.len(), 1);
     assert_eq!(opportunities[0].category, OpportunityCategory::PlannedBuild);
-    assert_eq!(opportunities[0].available_work, 5);
+    assert_eq!(opportunities[0].available_work, 1_500);
 }
 
 #[test]

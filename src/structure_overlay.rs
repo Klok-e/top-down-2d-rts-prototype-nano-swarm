@@ -958,7 +958,7 @@ mod tests {
         planned = planned.with_work_remaining(DEFAULT_PLANNED_WORK_TICKS);
         assert_abs_diff_eq!(planned_fill_fraction(&planned), 0.0, epsilon = 1e-5);
         planned = planned.with_work_remaining(DEFAULT_PLANNED_WORK_TICKS / 2);
-        assert_abs_diff_eq!(planned_fill_fraction(&planned), 0.6, epsilon = 1e-5);
+        assert_abs_diff_eq!(planned_fill_fraction(&planned), 0.5, epsilon = 1e-5);
         planned = planned.with_work_remaining(0);
         assert_abs_diff_eq!(planned_fill_fraction(&planned), 1.0, epsilon = 1e-5);
     }

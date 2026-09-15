@@ -189,7 +189,7 @@ fn erasing_corridor_preserves_active_leg_but_changes_the_next_leg() {
 
     let mut reached_source = false;
     let mut source_leg_entered_corridor = false;
-    for _ in 0..600 {
+    for _ in 0..4_000 {
         let positions = twins.each_mut().map(|(app, hauler, _)| {
             app.update();
             app.world()
@@ -234,7 +234,7 @@ fn erasing_corridor_preserves_active_leg_but_changes_the_next_leg() {
 
     let mut delivery_max_y = [256.0_f32; 2];
     let mut delivered = [false; 2];
-    for _ in 0..600 {
+    for _ in 0..4_000 {
         for (index, (app, hauler, sink)) in twins.iter_mut().enumerate() {
             app.update();
             let bot = app.world().entity(*hauler);

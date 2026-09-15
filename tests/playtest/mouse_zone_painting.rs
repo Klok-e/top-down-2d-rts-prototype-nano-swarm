@@ -11,6 +11,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     },
     materials::{BackgroundMaterial, update_paint_grid},
     nanobot::{MatchOutcome, SwarmId},
+    navigation::Obstacle,
+    reachability::SwarmReachabilityMap,
     ui::{UiHandling, check_ui_interaction},
     zones::{
         ZoneMaterial, ZoneMaterialHandleComponent, ZoneOwnership, ZonePointData,
@@ -29,13 +31,17 @@ fn build_app() -> App {
     // resources the brush does not read. `TransformPlugin` keeps
     // `GlobalTransform` in sync so `viewport_to_world_2d` projects
     // to the camera's actual world position.
+    let grid = IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32);
+    let reachability = SwarmReachabilityMap::new(&grid, [], [(SwarmId::PLAYER, Vec2::ZERO)])
+        .expect("the empty paint-playtest map has a reachable player home");
     let mut app = App::new();
     app.add_plugins(bevy::time::TimePlugin)
         .add_plugins(top_down_2d_rts_prototype_nano_swarm::scenario::ScenarioPlugin)
         .add_plugins(bevy::transform::TransformPlugin)
         .insert_resource(UiHandling::default())
         .init_resource::<BrushSelection>()
-        .insert_resource(IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32))
+        .insert_resource(grid)
+        .insert_resource(reachability)
         .init_resource::<ButtonInput<KeyCode>>()
         .init_resource::<ButtonInput<MouseButton>>()
         .init_resource::<Assets<ZoneMaterial>>()
@@ -51,6 +57,20 @@ fn build_app() -> App {
                 .chain(),
         );
     app
+}
+
+fn install_dividing_rock_wall(app: &mut App) {
+    let grid = app.world().resource::<IntentGrid>();
+    let reachability = SwarmReachabilityMap::new(
+        grid,
+        [Obstacle::Rectangle {
+            center: Vec2::ZERO,
+            half: Vec2::new(36.0, 8_000.0),
+        }],
+        [(SwarmId::PLAYER, Vec2::new(-252.0, 36.0))],
+    )
+    .expect("the player home remains clear on the left of the test wall");
+    app.insert_resource(reachability);
 }
 
 fn spawn_window(app: &mut App) -> Entity {
@@ -240,6 +260,39 @@ fn scripted_mouse_paint_off_world_does_not_touch_zone_overlay() {
     for kind in IntentKind::ALL {
         assert!(!cell.present(kind.index() as u32));
     }
+}
+
+#[test]
+fn scripted_mouse_paint_skips_cells_behind_permanent_rock() {
+    let mut app = build_app();
+    app.insert_resource(IntentGrid::new(8, 8));
+    install_dividing_rock_wall(&mut app);
+    let target = IVec2::new(1, 0);
+    let window = spawn_window(&mut app);
+    set_cursor(&mut app, window, Vec2::new(640.0, 360.0));
+    spawn_camera(&mut app, cell_world_center(target));
+
+    assert!(
+        !app.world().resource::<SwarmReachabilityMap>().contains(
+            SwarmId::PLAYER,
+            target,
+            app.world().resource::<IntentGrid>()
+        ),
+        "the test wall must isolate the target before the brush runs"
+    );
+
+    press_mouse(&mut app, MouseButton::Left);
+    app.update();
+
+    assert!(
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(target)
+            .expect("target remains inside the test map")
+            .is_empty(),
+        "the brush must not create intent behind an impassable rock wall"
+    );
+    assert_eq!(app.world().resource::<IntentGrid>().revision(), 0);
 }
 
 #[test]

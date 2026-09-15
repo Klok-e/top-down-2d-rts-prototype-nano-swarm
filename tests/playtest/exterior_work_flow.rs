@@ -39,7 +39,7 @@ fn exterior_gather_trip_extracts_and_delivers_at_scaled_target_surfaces() {
     let worker = common::spawn_worker_at(&mut app, Vec2::new(30.0, 140.0));
     let mut remaining = 8;
     let mut delivered = 0;
-    for _ in 0..500 {
+    for _ in 0..2_000 {
         app.update();
         let position = app
             .world()
@@ -96,7 +96,7 @@ fn exterior_hauler_trip_loads_and_unloads_without_center_teleports() {
     let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
     let mut source_amount = 20;
     let mut terminal_amount = 0;
-    for _ in 0..300 {
+    for _ in 0..5_000 {
         app.update();
         let position = app
             .world()

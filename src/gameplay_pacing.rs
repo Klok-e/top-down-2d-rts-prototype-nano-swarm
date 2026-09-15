@@ -14,7 +14,7 @@ pub struct GameplayPacing {
 impl Default for GameplayPacing {
     fn default() -> Self {
         Self {
-            construction_work_ticks: 90,
+            construction_work_ticks: 1_500,
             attack_interval_ticks: 30,
             charge_drain_per_tick: 0.000125,
         }

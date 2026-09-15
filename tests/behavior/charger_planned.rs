@@ -727,10 +727,14 @@ fn completed_planned_charger_provides_charge_to_defenders() {
         c.current = LOW_CHARGE_THRESHOLD;
     }
 
-    // Drive enough ticks for rotation, 19 supplied pulses, and
-    // re-entry through current allocation.
-    for _ in 0..300 {
+    // Drive through the shipped 150-tick recharge pulses and re-entry.
+    let mut charging_started = false;
+    for _ in 0..7_000 {
         app.update();
+        charging_started |= app.world().get::<ChargerAssignment>(defender).is_some();
+        if charging_started && app.world().get::<ChargerAssignment>(defender).is_none() {
+            break;
+        }
     }
 
     // The Defender has left Charger duty with Charge above the rotation threshold.
@@ -809,7 +813,7 @@ fn hauler_delivers_to_completed_planned_charger() {
     // The distance is ~120 world units; at bot_speed
     // 5.0 the hauler needs ~25 ticks for the one-way
     // trip. 500 is a safe margin.
-    for _ in 0..500 {
+    for _ in 0..4_000 {
         app.update();
     }
 

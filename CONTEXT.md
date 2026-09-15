@@ -21,7 +21,7 @@ The game's single automatic controller, with full knowledge of the current game 
 _Avoid_: AI variant, opponent policy, Nanobot autonomy, scripted assault, direct unit control
 
 **Intent Plan**:
-A Strategic Controller's coordinated arrangement of Gather, Build, Defend, and Corridor intent across the map. It expresses intended economic, support, and combat work without assigning individual Nanobots.
+A Strategic Controller's coordinated arrangement of Gather, Build, Defend, and Corridor intent across its Swarm-Reachable Map. It expresses intended economic, support, and combat work without assigning individual Nanobots; paint outside that map is removed at the next review.
 _Avoid_: Build order, squad orders
 
 **Nanobot**:
@@ -29,7 +29,7 @@ An individual autonomous agent within the swarm. It may choose tasks from player
 _Avoid_: Unit, soldier, worker
 
 **Intent Zone**:
-A swarm-owned spatial region that expresses what kind of work should happen there. Intent is binary per swarm, kind, and location: painting adds only that swarm's orders, erasing removes only its orders, and combat never captures or erases them; unowned paint does not exist.
+A swarm-owned spatial region inside its Swarm-Reachable Map that expresses what kind of work should happen there. Intent is binary per swarm, kind, and location: painting adds only that swarm's orders, erasing removes only its orders, and combat never captures or erases them; unowned paint does not exist. Brushes skip unreachable cells, while programmatic attempts to create them are rejected.
 _Avoid_: Group zone, activity zone, command area
 
 **Swarm Tile**:
@@ -55,6 +55,14 @@ _Avoid_: Mineral node, mineral patch, resource pile
 **Rock Formation**:
 Permanent, impassable terrain that shapes base entrances, travel routes, and mineral pockets. Rock Formations cannot be destroyed or harvested and enclose the default map's playable area.
 _Avoid_: Destructible rock, Resource Deposit
+
+**Swarm-Reachable Map**:
+The connected, traversable area that a swarm can access from its home through permanent Rock Formation geometry. It is fixed when the Scenario starts; an Intent Grid cell belongs to it only when a nanobot can reach its center with normal clearance, excluding obstacle-covered and disconnected exterior pockets even when they lie inside the Intent Grid.
+_Avoid_: Available map, grid bounds, map edge
+
+**Unreachable Target**:
+A resource or hostile outside a swarm's Swarm-Reachable Map. It is not a strategic objective and does not receive intent or staging paint from that swarm.
+_Avoid_: Deferred target, exterior objective, blocked target
 
 **Build Zone**:
 A swarm's intent marking space where automatic construction may place support structures, providing placement options without creating construction demand or reserving space. Overlapping swarms may each build in physically free space, subject to structures and construction reservations of every swarm; paint never transfers structure ownership.

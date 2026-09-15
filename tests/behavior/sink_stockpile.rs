@@ -30,7 +30,8 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        DEFAULT_PLANNED_WORK_TICKS, HaulerAssignment, OwnerSwarm, PlannedKind, PlannedStructure,
+        DEFAULT_PLANNED_WORK_TICKS, HAULER_CARRY_CAPACITY, HaulerAssignment,
+        MATERIAL_WORK_TICKS_PER_UNIT, OwnerSwarm, PlannedKind, PlannedStructure,
         PlannedStructureClaim, PlannedStructureProgress, ProductionFacility, SwarmId,
         completed_visual_color,
     },
@@ -39,6 +40,13 @@ use top_down_2d_rts_prototype_nano_swarm::{
 
 #[path = "../common/mod.rs"]
 mod common;
+
+/// Shipped construction work plus bounded claim and exterior-approach time.
+const PLAN_COMPLETION_TICK_BUDGET: u32 = DEFAULT_PLANNED_WORK_TICKS + 120;
+/// Bounded real-time wait for demand and claim allocation at 60 Hz.
+const DEMAND_TICK_BUDGET: u32 = 600;
+const CLAIM_PROGRESS_TICK_BUDGET: u32 = 120;
+const HAUL_DELIVERY_TICK_BUDGET: u32 = HAULER_CARRY_CAPACITY * MATERIAL_WORK_TICKS_PER_UNIT + 300;
 
 fn build_app() -> App {
     common::sim_app_with_planned()
@@ -156,7 +164,7 @@ fn worker_builds_planned_sink_stockpile_into_completed() {
         common::spawn_planned_structure_of_kind_at_cell(&mut app, cell, PlannedKind::SinkStockpile);
     let _worker = common::spawn_worker_at(&mut app, center + Vec2::new(68.0, 0.0));
 
-    let total_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize + 5;
+    let total_ticks = PLAN_COMPLETION_TICK_BUDGET as usize;
     for _ in 0..total_ticks {
         app.update();
     }
@@ -238,8 +246,9 @@ fn completed_sink_stockpile_receives_hauled_resources() {
         .entity_mut(hauler)
         .insert(HaulerAssignment { source, sink });
 
-    // 1 arrive + 5 load + travel + delivery + buffer.
-    for _ in 0..60 {
+    // Fill the shipped 20-mineral load at the real material-work cadence,
+    // then travel and complete at least one unload pulse.
+    for _ in 0..HAUL_DELIVERY_TICK_BUDGET {
         app.update();
     }
 
@@ -381,7 +390,7 @@ fn source_stockpile_demand_ignores_sink_stockpile_in_same_cell() {
         Transform::from_translation((center + Vec2::new(180.0, 0.0)).extend(0.0)),
     ));
 
-    for _ in 0..5 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
     }
 
@@ -539,10 +548,9 @@ fn idle_worker_at_planned_sink_stockpile_claims_and_works() {
     let worker = common::spawn_worker_at(&mut app, center + Vec2::new(68.0, 0.0));
 
     // Run a few ticks so the claim -> arrive -> progress
-    // chain has time to fire for the worker at the exterior
-    // work position. The build has 5 ticks of work, so a handful
-    // of ticks is enough to observe the progress marker.
-    for _ in 0..3 {
+    // chain has time to fire for the worker at the exterior work position.
+    // This stops before the shipped 1,500-tick construction completes.
+    for _ in 0..CLAIM_PROGRESS_TICK_BUDGET {
         app.update();
     }
 

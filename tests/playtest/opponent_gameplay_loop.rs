@@ -9,11 +9,21 @@ use top_down_2d_rts_prototype_nano_swarm::{
         StrategicController, StrategicControllerPlugin, SwarmEliminationPlugin, SwarmId,
         SwarmMember, nanobot_death_cleanup_system,
     },
+    reachability::SwarmReachabilityMap,
     ui::{
         FontsResource,
         match_banner::{MatchBannerText, setup_match_banner, update_match_banner_system},
     },
 };
+
+fn install_empty_reachability(app: &mut App) {
+    let reachability = {
+        let grid = app.world().resource::<IntentGrid>();
+        SwarmReachabilityMap::new(grid, [], [(SwarmId::PLAYER, Vec2::ZERO)])
+            .expect("the empty strategic playtest map has a reachable player home")
+    };
+    app.insert_resource(reachability);
+}
 
 #[test]
 fn strategic_intent_finishes_a_remnant_away_from_its_former_home() {
@@ -44,6 +54,7 @@ fn strategic_intent_finishes_a_remnant_away_from_its_former_home() {
     app.world_mut()
         .entity_mut(own)
         .insert(StrategicController::new(SwarmId::PLAYER));
+    install_empty_reachability(&mut app);
     let enemy = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
         remnant_position,
@@ -144,6 +155,7 @@ fn strategic_intent_clears_a_structure_and_distant_hauler_concurrently() {
     app.world_mut()
         .entity_mut(own)
         .insert(StrategicController::new(SwarmId::PLAYER));
+    install_empty_reachability(&mut app);
     app.world_mut().resource_mut::<ResourceLedger>().add_for(
         SwarmId::PLAYER,
         ResourceKind::Minerals,
@@ -324,12 +336,13 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
     app.world_mut()
         .entity_mut(own)
         .insert(StrategicController::new(SwarmId::PLAYER));
+    install_empty_reachability(&mut app);
 
     let mut first_birth_tick = None;
     let mut facility_health_at_birth = None;
     let mut facility_progressed_after_birth = false;
     let mut victory_tick = None;
-    for tick in 1..=1_800 {
+    for tick in 1..=3_600 {
         app.update();
         if tick == 1 {
             assert!(
@@ -383,7 +396,7 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
     assert_eq!(
         *app.world().resource::<MatchOutcome>(),
         MatchOutcome::Winner(SwarmId::PLAYER),
-        "producer and natural reinforcements must be eliminated within thirty simulated seconds"
+        "producer and natural reinforcements must be eliminated within sixty simulated seconds"
     );
     println!(
         "reinforcement at tick {}, natural victory at tick {}",
@@ -417,6 +430,7 @@ fn strategic_combat_support_follows_defenders_as_they_advance() {
     app.world_mut()
         .entity_mut(own)
         .insert(StrategicController::new(SwarmId::PLAYER));
+    install_empty_reachability(&mut app);
     app.world_mut().resource_mut::<ResourceLedger>().add_for(
         SwarmId::PLAYER,
         ResourceKind::Minerals,

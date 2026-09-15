@@ -4,8 +4,9 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     battle_statistics::BattleCounters,
     nanobot::{
-        Cargo, DirectMovementComponent, GatherAssignment, HAULER_TRANSFER_PER_TICK,
-        LogisticsReservation, OwnerSwarm, ReturningToStockpile, SwarmId,
+        Cargo, DirectMovementComponent, GatherAssignment, HAULER_TRANSFER_PER_PULSE,
+        LogisticsReservation, MATERIAL_WORK_TICKS_PER_UNIT, OwnerSwarm, ReturningToStockpile,
+        SwarmId,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile, StockpileRole},
 };
@@ -114,7 +115,9 @@ fn extraction_moves_only_new_minerals_into_cargo_and_ledger() {
             break;
         }
     }
-    app.update();
+    for _ in 0..MATERIAL_WORK_TICKS_PER_UNIT {
+        app.update();
+    }
 
     assert_eq!(app.world().entity(worker).get::<Cargo>().unwrap().amount, 1);
     assert_eq!(
@@ -272,11 +275,11 @@ fn worker_unloads_gradually_at_shared_rate_without_changing_ledger() {
             .get::<Stockpile>()
             .unwrap()
             .amount,
-        3 + HAULER_TRANSFER_PER_TICK,
+        3 + HAULER_TRANSFER_PER_PULSE,
     );
     assert_eq!(
         app.world().entity(worker).get::<Cargo>().unwrap().amount,
-        10 - HAULER_TRANSFER_PER_TICK,
+        10 - HAULER_TRANSFER_PER_PULSE,
     );
     assert_eq!(
         app.world()
@@ -284,7 +287,7 @@ fn worker_unloads_gradually_at_shared_rate_without_changing_ledger() {
             .get::<LogisticsReservation>()
             .unwrap()
             .destination_remaining,
-        10 - HAULER_TRANSFER_PER_TICK,
+        10 - HAULER_TRANSFER_PER_PULSE,
     );
     assert_eq!(
         app.world()

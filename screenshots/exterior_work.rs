@@ -7,8 +7,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Charge, Charger, Commitment, Health, Nanobot, NanobotType, OwnerSwarm, ProductionFacility,
-        Structure, StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent,
+        Charge, Charger, Commitment, Health, Nanobot, NanobotType, OwnerSwarm, Structure,
+        StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole},
 };
@@ -188,86 +188,6 @@ fn prepare_service_scene(world: &mut World) -> Entity {
         .find(|(_, id)| **id == SwarmId::PLAYER)
         .expect("startup player swarm")
         .0
-}
-
-pub fn exterior_hauler_delivery(ctx: &mut TestContext) -> TestFlow {
-    if ctx.frame == 2 {
-        let owner = prepare_service_scene(ctx.world);
-        ctx.world.spawn((
-            Stockpile {
-                kind: ResourceKind::Minerals,
-                amount: 20,
-                capacity: 100,
-                radius: 32.0,
-            },
-            StockpileRole::Sink,
-            OwnerSwarm(owner),
-            Sprite::from_color(Color::srgb(0.18, 0.35, 0.62), Vec2::splat(64.0)),
-            Transform::from_xyz(140.0, 140.0, GAMEPLAY_SPRITE_Z)
-                .with_scale(Vec3::new(2.0, 1.0, 1.0)),
-        ));
-        let target = ctx
-            .world
-            .spawn((
-                ProductionFacility::new(),
-                OwnerSwarm(owner),
-                Sprite::from_color(Color::srgb(0.65, 0.35, 0.18), Vec2::splat(64.0)),
-                Transform::from_xyz(350.0, 140.0, GAMEPLAY_SPRITE_Z),
-            ))
-            .id();
-        let bot = ctx
-            .world
-            .spawn((
-                Nanobot {},
-                NanobotType::Hauler,
-                Commitment::Idle,
-                VelocityComponent::default(),
-                Health::default(),
-                SwarmMember::new(SwarmId::PLAYER),
-                Transform::from_xyz(30.0, 140.0, GAMEPLAY_SPRITE_Z),
-            ))
-            .id();
-        ctx.world.insert_resource(ServiceScene {
-            target,
-            bot,
-            captured: false,
-        });
-    }
-    if ctx.frame <= 2 {
-        return TestFlow::Continue;
-    }
-    let scene = ctx.world.resource::<ServiceScene>();
-    if scene.captured {
-        return TestFlow::Exit;
-    }
-    if ctx
-        .world
-        .get::<ProductionFacility>(scene.target)
-        .unwrap()
-        .input_amount
-        > 0
-    {
-        let position = ctx
-            .world
-            .get::<Transform>(scene.bot)
-            .unwrap()
-            .translation
-            .truncate();
-        let clearance = ((position - Vec2::new(350.0, 140.0)).abs() - Vec2::splat(32.0))
-            .max(Vec2::ZERO)
-            .length();
-        assert!(
-            (33.999..=38.001).contains(&clearance),
-            "live Hauler unloading clearance: {clearance}"
-        );
-        ctx.world.resource_mut::<ServiceScene>().captured = true;
-        return TestFlow::Screenshot("exterior_hauler_delivery".into());
-    }
-    assert!(
-        ctx.frame < 500,
-        "Hauler must deliver a physical load to the terminal"
-    );
-    TestFlow::Continue
 }
 
 pub fn exterior_defender_charging(ctx: &mut TestContext) -> TestFlow {

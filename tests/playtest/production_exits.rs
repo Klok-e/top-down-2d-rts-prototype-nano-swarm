@@ -3,8 +3,8 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         Commitment, DirectMovementComponent, Nanobot, NanobotType, OwnerSwarm,
-        PRODUCTION_COST_PER_BOT, ProductionFacility, SwarmId, SwarmMember,
-        production_facility_work_system,
+        PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT, ProductionFacility, SwarmId,
+        SwarmMember, production_facility_work_system,
     },
     resources::{ResourceKind, ResourceLedger},
 };
@@ -18,8 +18,9 @@ fn both_swarms_release_paid_output_once_when_movement_opens_the_shared_exit() {
     app.add_systems(Update, production_facility_work_system);
     let mut facilities = Vec::new();
     for (owner, kind, x, minerals) in [
-        (SwarmId::PLAYER, NanobotType::Defender, 36., 20),
-        (SwarmId(1), NanobotType::Hauler, 180., 33),
+        // One bot costs 40 minerals: exactly two shipped 20-mineral hauler loads.
+        (SwarmId::PLAYER, NanobotType::Defender, 36., 40),
+        (SwarmId(1), NanobotType::Hauler, 180., 53),
     ] {
         let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
         app.world_mut().entity_mut(swarm).insert(owner);
@@ -55,7 +56,7 @@ fn both_swarms_release_paid_output_once_when_movement_opens_the_shared_exit() {
             }
         }
     }
-    for _ in 0..250 {
+    for _ in 0..PRODUCTION_TICKS_PER_BOT {
         app.update();
         assert_clear_bodies(app.world_mut());
     }
@@ -72,7 +73,7 @@ fn both_swarms_release_paid_output_once_when_movement_opens_the_shared_exit() {
     ] {
         let state = app.world().get::<ProductionFacility>(facility).unwrap();
         assert_eq!(state.current_target, Some(kind));
-        assert_eq!(state.progress, 120);
+        assert_eq!(state.progress, PRODUCTION_TICKS_PER_BOT);
         assert_eq!(state.input_amount, remainder);
         assert!(!state.is_busy());
     }

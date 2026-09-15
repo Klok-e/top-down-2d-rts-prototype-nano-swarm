@@ -120,7 +120,7 @@ fn gather_paint_does_not_instant_spawn_any_support_structure() {
     );
     paint_owned(&mut app, cell, IntentKind::Gather);
 
-    for _ in 0..3 {
+    for _ in 0..60 {
         app.update();
     }
 

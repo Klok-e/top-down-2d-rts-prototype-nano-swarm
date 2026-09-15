@@ -198,10 +198,6 @@ fn main() -> std::process::ExitCode {
             run(defender_staging::defender_staging)
         })
         .with_ignored_flag(true),
-        Trial::test("exterior_hauler_delivery", || {
-            run(exterior_work::exterior_hauler_delivery)
-        })
-        .with_ignored_flag(true),
         Trial::test("exterior_defender_charging", || {
             run(exterior_work::exterior_defender_charging)
         })

@@ -15,6 +15,9 @@ use top_down_2d_rts_prototype_nano_swarm::{
 #[path = "../common/mod.rs"]
 mod common;
 
+/// Bounded real-time wait for automatic demand and route work at 60 Hz.
+const DEMAND_TICK_BUDGET: u32 = 600;
+
 fn paint_build(app: &mut App, cell: IVec2) {
     let mut grid = app.world_mut().resource_mut::<IntentGrid>();
     assert!(grid.paint(cell, IntentKind::Build, SwarmId::PLAYER));
@@ -71,7 +74,7 @@ fn pending_consumer_creates_non_overlapping_sink_stockpile() {
     paint_build(&mut app, cell);
     let consumer = spawn_owned_planned_production(&mut app, cell);
 
-    for _ in 0..100 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
         if app
             .world_mut()
@@ -121,7 +124,7 @@ fn scaled_consumer_does_not_hide_its_sink_stockpile() {
         .expect("consumer must have Transform")
         .scale = Vec3::new(3.0, 3.0, 1.0);
 
-    for _ in 0..100 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
         if app
             .world_mut()
@@ -253,7 +256,7 @@ fn source_stockpile_placement_rejects_production_facility_overlap() {
     let facility = common::spawn_idle_facility_at(&mut app, facility_pos);
     let _hauler = common::spawn_hauler_at(&mut app, center);
 
-    for _ in 0..5 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
     }
 
@@ -299,7 +302,7 @@ fn source_stockpile_placement_respects_scaled_facility_footprint() {
         .expect("facility must have Transform")
         .scale = Vec3::new(3.0, 3.0, 1.0);
 
-    for _ in 0..5 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
     }
 
@@ -341,7 +344,7 @@ fn source_stockpile_placement_rejects_charger_overlap() {
         .entity_mut(charger)
         .insert(Transform::from_translation(charger_pos.extend(0.0)));
 
-    for _ in 0..5 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
     }
 
@@ -426,7 +429,7 @@ fn automatic_sink_edges_align_to_fine_cells_inside_owned_build_paint() {
     let cell = IVec2::new(-1, 0);
     paint_build(&mut app, cell);
     spawn_owned_planned_production(&mut app, cell);
-    for _ in 0..100 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
         if app
             .world_mut()

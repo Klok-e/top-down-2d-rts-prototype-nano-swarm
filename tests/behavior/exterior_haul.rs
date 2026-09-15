@@ -1,7 +1,10 @@
 //! Physical logistics work at scaled exterior interaction positions.
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    nanobot::{Cargo, HaulerAssignment, LogisticsReservation, OwnerSwarm, SwarmId, SwarmMember},
+    nanobot::{
+        Cargo, HAULER_TRANSFER_PER_PULSE, HaulerAssignment, LogisticsReservation, OwnerSwarm,
+        SwarmId, SwarmMember,
+    },
     resources::{ResourceKind, ResourceLedger, Stockpile},
 };
 
@@ -30,10 +33,19 @@ fn scaled_pickup_pauses_when_displaced_and_keeps_material_custody() {
         app.world_mut()
             .resource_mut::<ResourceLedger>()
             .add_for(swarm, ResourceKind::Minerals, 20);
-        app.update();
+        for _ in 0..2_000 {
+            app.update();
+            if app
+                .world()
+                .get::<Cargo>(bot)
+                .is_some_and(|cargo| cargo.amount > 0)
+            {
+                break;
+            }
+        }
         assert_eq!(
             app.world().get::<Cargo>(bot).map(|cargo| cargo.amount),
-            Some(4)
+            Some(HAULER_TRANSFER_PER_PULSE)
         );
         assert!(app.world().get::<Transform>(bot).unwrap().translation.x >= 98.0);
         app.world_mut()
@@ -44,20 +56,23 @@ fn scaled_pickup_pauses_when_displaced_and_keeps_material_custody() {
         app.update();
         assert_eq!(
             app.world().get::<Cargo>(bot).unwrap().amount,
-            4,
+            HAULER_TRANSFER_PER_PULSE,
             "displacement suspends pickup"
         );
-        assert_eq!(app.world().get::<Stockpile>(source).unwrap().amount, 16);
+        assert_eq!(
+            app.world().get::<Stockpile>(source).unwrap().amount,
+            20 - HAULER_TRANSFER_PER_PULSE
+        );
         let reservation = app.world().get::<LogisticsReservation>(bot).unwrap();
-        assert_eq!(reservation.source_remaining, 16);
+        assert_eq!(reservation.source_remaining, 20 - HAULER_TRANSFER_PER_PULSE);
         assert_eq!(reservation.destination_remaining, 20);
         let mut resumed = false;
-        for _ in 0..100 {
+        for _ in 0..2_000 {
             app.update();
             if app
                 .world()
                 .get::<Cargo>(bot)
-                .is_some_and(|cargo| cargo.amount > 4)
+                .is_some_and(|cargo| cargo.amount > HAULER_TRANSFER_PER_PULSE)
             {
                 let pos = app.world().get::<Transform>(bot).unwrap().translation;
                 assert!(
@@ -153,10 +168,15 @@ fn both_swarms_deliver_to_scaled_exteriors_and_resume_after_displacement() {
                 }
                 DestinationKind::Charger => app.world().get::<Charger>(sink).unwrap().amount,
             };
-            app.update();
+            for _ in 0..2_000 {
+                app.update();
+                if delivered(&app) > 0 {
+                    break;
+                }
+            }
             assert_eq!(
                 delivered(&app),
-                4,
+                HAULER_TRANSFER_PER_PULSE,
                 "{swarm:?} {destination_kind:?} exterior unload"
             );
             app.world_mut()
@@ -165,10 +185,17 @@ fn both_swarms_deliver_to_scaled_exteriors_and_resume_after_displacement() {
                 .translation
                 .x = 200.0;
             app.update();
-            assert_eq!(delivered(&app), 4, "displaced delivery pauses");
-            assert_eq!(app.world().get::<Cargo>(bot).unwrap().amount, 8);
-            let mut previous = 4;
-            for _ in 0..100 {
+            assert_eq!(
+                delivered(&app),
+                HAULER_TRANSFER_PER_PULSE,
+                "displaced delivery pauses"
+            );
+            assert_eq!(
+                app.world().get::<Cargo>(bot).unwrap().amount,
+                12 - HAULER_TRANSFER_PER_PULSE
+            );
+            let mut previous = HAULER_TRANSFER_PER_PULSE;
+            for _ in 0..2_000 {
                 app.update();
                 let current = delivered(&app);
                 if current > previous {

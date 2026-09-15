@@ -137,14 +137,18 @@ pub struct OpponentSwarmIdAlloc {
 }
 
 impl OpponentSwarmIdAlloc {
+    /// Return the next opponent [`SwarmId`] without consuming it.
+    pub fn next(&self) -> SwarmId {
+        SwarmId(self.next.max(1))
+    }
+
     /// Take the next opponent [`SwarmId`] and bump the counter.
     /// The player id (`SwarmId::PLAYER`, 0) is skipped so the
     /// returned id is never ambiguous with the player swarm.
     pub fn allocate(&mut self) -> SwarmId {
-        // Skip SwarmId::PLAYER (0); opponent ids start at 1.
-        let candidate = self.next.max(1);
-        self.next = candidate.saturating_add(1);
-        SwarmId(candidate)
+        let candidate = self.next();
+        self.next = candidate.0.saturating_add(1);
+        candidate
     }
 }
 

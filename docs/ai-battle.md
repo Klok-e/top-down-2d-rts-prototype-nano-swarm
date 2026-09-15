@@ -8,12 +8,12 @@ Select **AI Battle** in the scenario menu to watch two automatically controlled 
 cargo run --release -- --headless --agent-socket --scenario ai-battle --seed 42 --output-root target/battle-runs
 ```
 
-AI Battle is an ordinary symmetric self-play scenario. It uses the shared gameplay pacing: 90 construction work ticks, a 30-tick Defender attack interval, and 0.000125 Charge drain per tick. Standard and Sandbox use the same values.
+AI Battle is an ordinary symmetric self-play scenario. It uses the shared gameplay pacing: 1,500 construction work ticks, a 30-tick Defender attack interval, and 0.000125 Charge drain per tick. Standard and Sandbox use the same values.
 
-Headless AI Battle advances one 60 Hz simulation tick per application update. Add `--realtime` to run it at normal headless pacing:
+Headless runs use normal pacing by default. Add `--unbounded` to advance one 60 Hz simulation tick per application update without frame sleeping; this startup option applies to Standard and Sandbox as well:
 
 ```bash
-cargo run --release -- --headless --scenario ai-battle --realtime --seed 42
+cargo run --release -- --headless --unbounded --scenario ai-battle --seed 42
 ```
 
 Choose one of the two balanced layouts with `--layout standard` or `--layout flanks`:
@@ -22,7 +22,7 @@ Choose one of the two balanced layouts with `--layout standard` or `--layout fla
 cargo run --release -- --headless --scenario ai-battle --layout flanks --seed 11 --output-root target/battle-runs
 ```
 
-`--layout` and `--realtime` require `--scenario ai-battle`. A battle ends when Swarm Elimination resolves it. There is no automatic time cutoff; Ctrl+C records an interrupted result without inventing an outcome.
+`--layout` requires `--scenario ai-battle`; `--unbounded` requires `--headless`. A battle ends when Swarm Elimination resolves it. There is no automatic time cutoff; Ctrl+C records an interrupted result without inventing an outcome.
 
 ## Recorded results
 

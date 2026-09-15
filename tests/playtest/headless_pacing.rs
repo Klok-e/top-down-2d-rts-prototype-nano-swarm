@@ -2,32 +2,26 @@ use bevy::{
     prelude::*,
     time::{TimePlugin, TimeUpdateStrategy},
 };
-use top_down_2d_rts_prototype_nano_swarm::{
-    runtime::DynamicHeadlessPacingPlugin, scenario_selection::Scenario, session::SessionRules,
-};
+use top_down_2d_rts_prototype_nano_swarm::runtime::{HeadlessPacing, HeadlessRunnerPlugin};
 
 #[test]
-fn headless_pacing_follows_same_process_scenario_changes() {
-    let mut app = App::new();
-    app.add_plugins((TimePlugin, DynamicHeadlessPacingPlugin));
+fn headless_pacing_follows_the_startup_option_not_the_active_scenario() {
+    for unbounded in [false, true] {
+        let mut app = App::new();
+        app.insert_resource(HeadlessPacing { unbounded })
+            .add_plugins((TimePlugin, HeadlessRunnerPlugin));
 
-    app.update();
-    assert!(matches!(
-        app.world().resource::<TimeUpdateStrategy>(),
-        TimeUpdateStrategy::Automatic,
-    ));
-
-    app.insert_resource::<SessionRules>(Scenario::AiBattle.definition().rules);
-    app.update();
-    assert!(matches!(
-        app.world().resource::<TimeUpdateStrategy>(),
-        TimeUpdateStrategy::FixedTimesteps(1),
-    ));
-
-    app.insert_resource::<SessionRules>(Scenario::Sandbox.definition().rules);
-    app.update();
-    assert!(matches!(
-        app.world().resource::<TimeUpdateStrategy>(),
-        TimeUpdateStrategy::Automatic,
-    ));
+        app.update();
+        if unbounded {
+            assert!(matches!(
+                app.world().resource::<TimeUpdateStrategy>(),
+                TimeUpdateStrategy::FixedTimesteps(1),
+            ));
+        } else {
+            assert!(matches!(
+                app.world().resource::<TimeUpdateStrategy>(),
+                TimeUpdateStrategy::Automatic,
+            ));
+        }
+    }
 }

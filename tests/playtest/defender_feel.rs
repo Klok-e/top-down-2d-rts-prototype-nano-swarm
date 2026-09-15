@@ -7,7 +7,9 @@ use bevy::{asset::AssetPlugin, math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     MAP_HEIGHT, MAP_WIDTH,
     ai::AiPlugin,
+    ai_battle::AiBattleLayout,
     game_settings::GameSettings,
+    gameplay_pacing::GameplayPacing,
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Charge, ChargePlugin, Charger, ChargerAssignment, ChargerProgress, CombatPlugin,
@@ -15,13 +17,15 @@ use top_down_2d_rts_prototype_nano_swarm::{
         HaulPlugin, Health, LOW_CHARGE_THRESHOLD, MAINTENANCE_BUFFER_TICKS,
         MAINTENANCE_NEEDS_THRESHOLD, MaintenanceAssignment, MaintenancePlugin, MaintenanceProgress,
         MatchOutcome, Nanobot, NanobotPlugin, NanobotType, OpponentSwarmIdAlloc, OwnerSwarm,
-        PlannedKind, PlannedStructure, PlannedStructurePlugin, PopulationDemand,
-        PopulationDemandPlugin, ProductionPlugin, RegionalAllocationPlugin, STRUCTURE_MAX_HEALTH,
-        StrategicControllerPlugin, Structure, Swarm, SwarmEliminationPlugin, SwarmEliminationState,
-        SwarmId, SwarmMember, TerritorySnapshot, nanobot_death_cleanup_system, world_to_cell,
+        PlannedKind, PlannedStructure, PlannedStructureClaim, PlannedStructurePlugin,
+        PlannedStructureProgress, PopulationDemand, PopulationDemandPlugin, ProductionPlugin,
+        RegionalAllocationPlugin, STRUCTURE_MAX_HEALTH, StrategicControllerPlugin, Structure,
+        Swarm, SwarmEliminationPlugin, SwarmEliminationState, SwarmId, SwarmMember,
+        TerritorySnapshot, nanobot_death_cleanup_system, world_to_cell,
     },
     resources::{ResourceKind, ResourceLedger},
-    scenario::{spawn_default_opponent_scenario, spawn_default_player_scenario},
+    scenario::spawn_selected_scenario,
+    scenario_selection::Scenario,
 };
 
 #[path = "../common/mod.rs"]
@@ -43,9 +47,16 @@ fn spawn_default_scenario_startup(
     mut grid: ResMut<IntentGrid>,
     opponent_id_alloc: ResMut<OpponentSwarmIdAlloc>,
 ) {
-    top_down_2d_rts_prototype_nano_swarm::scenario::spawn_default_terrain(&mut commands);
-    spawn_default_player_scenario(&mut commands, &asset_server, &mut grid);
-    spawn_default_opponent_scenario(&mut commands, &asset_server, &mut grid, opponent_id_alloc);
+    let reachability = spawn_selected_scenario(
+        Scenario::Standard,
+        &mut commands,
+        &asset_server,
+        &mut grid,
+        opponent_id_alloc,
+        AiBattleLayout::Standard,
+    )
+    .expect("the authored standard scenario must be reachable");
+    commands.insert_resource(reachability);
 }
 
 fn default_headless_app() -> App {
@@ -161,9 +172,9 @@ fn authored_default_scenario_keeps_separated_economies_operational() {
         *app.world().resource::<MatchOutcome>(),
         MatchOutcome::InProgress
     );
-    // Allow startup work allocation and crowd movement to settle within twenty
+    // Allow startup work allocation and crowd movement to settle within thirty
     // simulated seconds while continuing to enforce movement safety each tick.
-    for _ in 0..600 {
+    for _ in 0..1_200 {
         let rotations = RotationSnapshot::capture(app.world_mut());
         app.update();
         rotations.assert_admissions(app.world_mut());
@@ -178,7 +189,7 @@ fn authored_default_scenario_keeps_separated_economies_operational() {
             return;
         }
     }
-    panic!("both sheltered economies must extract their home minerals within twenty seconds");
+    panic!("both sheltered economies must extract their home minerals within thirty seconds");
 }
 
 #[test]
@@ -537,7 +548,25 @@ fn authored_charger_planning_and_maintenance_follow_observed_service_need() {
         .expect("authored Defender has Charge")
         .current = 1.0;
 
-    for _ in 0..180 {
+    let plan_position = app
+        .world()
+        .entity(planned_charger)
+        .get::<Transform>()
+        .expect("planned Charger has a position")
+        .translation;
+    app.world_mut().entity_mut(builder).insert((
+        Transform::from_translation(plan_position),
+        PlannedStructureClaim {
+            cell: charger_cell,
+            target: planned_charger,
+        },
+        PlannedStructureProgress {
+            cell: charger_cell,
+            target: planned_charger,
+        },
+    ));
+
+    for _ in 0..(GameplayPacing::default().construction_work_ticks as usize + 300) {
         app.update();
         if app.world().get::<Charger>(planned_charger).is_some() {
             break;

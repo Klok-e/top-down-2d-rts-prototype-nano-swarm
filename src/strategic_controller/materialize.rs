@@ -29,6 +29,7 @@ pub(super) fn materialize_plan(
         let deposit_cell = world_to_intent_cell(deposit.position);
         push_desired(
             &mut desired,
+            owner,
             DesiredIntent {
                 cell: deposit_cell,
                 kind: IntentKind::Gather,
@@ -40,6 +41,7 @@ pub(super) fn materialize_plan(
         for cell in line_cells(deposit_cell, home_cell, 32) {
             push_desired(
                 &mut desired,
+                owner,
                 DesiredIntent {
                     cell,
                     kind: IntentKind::Corridor,
@@ -56,6 +58,7 @@ pub(super) fn materialize_plan(
         for kind in [IntentKind::Defend, IntentKind::Corridor] {
             push_desired(
                 &mut desired,
+                owner,
                 DesiredIntent {
                     cell: charger_cell,
                     kind,
@@ -69,6 +72,7 @@ pub(super) fn materialize_plan(
 
     push_desired(
         &mut desired,
+        owner,
         DesiredIntent {
             cell: home_cell,
             kind: IntentKind::Build,
@@ -80,6 +84,7 @@ pub(super) fn materialize_plan(
     for cell in [anchor, anchor + IVec2::new(0, 1), anchor + IVec2::X] {
         if push_desired(
             &mut desired,
+            owner,
             DesiredIntent {
                 cell,
                 kind: IntentKind::Build,
@@ -134,6 +139,7 @@ pub(super) fn materialize_plan(
         }
         push_desired(
             &mut desired,
+            owner,
             DesiredIntent {
                 cell,
                 kind: IntentKind::Defend,
@@ -147,6 +153,7 @@ pub(super) fn materialize_plan(
     for cell in line_cells(home_cell, anchor, 32) {
         push_desired(
             &mut desired,
+            owner,
             DesiredIntent {
                 cell,
                 kind: IntentKind::Corridor,
@@ -169,6 +176,7 @@ pub(super) fn materialize_plan(
 
 pub(super) fn push_desired(
     desired: &mut Vec<DesiredIntent>,
+    owner: SwarmId,
     intent: DesiredIntent,
     state: &GameState<'_>,
     avoid_terrain: bool,
@@ -176,6 +184,9 @@ pub(super) fn push_desired(
 ) -> bool {
     if desired.len() >= MAX_PLAN_CELLS
         || !state.grid.in_bounds(intent.cell)
+        || state
+            .reachability
+            .is_some_and(|reachability| !reachability.contains(owner, intent.cell, state.grid))
         || desired.contains(&intent)
         || !budget.spend(1)
     {
@@ -199,11 +210,48 @@ pub(super) fn push_desired(
 pub(super) fn intent_edits(
     owner: SwarmId,
     grid: &IntentGrid,
+    reachability: Option<&crate::reachability::SwarmReachabilityMap>,
     desired: &[DesiredIntent],
     cleanup_cursor: &mut Option<IVec2>,
+    unreachable_cleanup_cursor: &mut Option<IVec2>,
     budget: &mut WorkBudget,
 ) -> Vec<IntentEdit> {
     let mut edits = Vec::new();
+    if let Some(reachability) = reachability {
+        let previous_cursor = *unreachable_cleanup_cursor;
+        let mut last_completed = None;
+        let mut active_cells = grid.iter_active_cells_after(previous_cursor).peekable();
+        let mut scanned = 0;
+        while scanned < MAX_ACTIVE_CELLS {
+            let Some((cell, existing)) = active_cells.next() else {
+                *unreachable_cleanup_cursor = None;
+                break;
+            };
+            if !budget.spend(1) {
+                *unreachable_cleanup_cursor = last_completed.or(previous_cursor);
+                break;
+            }
+            if reachability.contains(owner, cell, grid) {
+                last_completed = Some(cell);
+                scanned += 1;
+                continue;
+            }
+            for kind in IntentKind::ALL {
+                if existing.has_owned(kind, owner) {
+                    edits.push(IntentEdit {
+                        cell,
+                        kind,
+                        action: IntentEditAction::Erase,
+                    });
+                }
+            }
+            last_completed = Some(cell);
+            scanned += 1;
+        }
+        if scanned == MAX_ACTIVE_CELLS {
+            *unreachable_cleanup_cursor = last_completed;
+        }
+    }
     for intent in desired {
         if !budget.spend(1) {
             break;
@@ -234,6 +282,11 @@ pub(super) fn intent_edits(
                 break 'cleanup;
             }
             if existing.has_owned(kind, owner) && !desired.contains(&DesiredIntent { cell, kind }) {
+                if edits.iter().any(|edit| {
+                    edit.cell == cell && edit.kind == kind && edit.action == IntentEditAction::Erase
+                }) {
+                    continue;
+                }
                 edits.push(IntentEdit {
                     cell,
                     kind,

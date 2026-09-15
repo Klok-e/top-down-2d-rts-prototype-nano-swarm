@@ -16,14 +16,17 @@ use crate::{
         ProductionFacility, StrategicController, Swarm, SwarmBundle, SwarmId, SwarmMember,
         VelocityComponent,
     },
+    reachability::{
+        IntentWriteAction, ReachabilitySetupError, SwarmReachabilityMap, apply_reachable_intent,
+    },
     resources::{ResourceDeposit, ResourceKind},
 };
 
 mod layout;
 mod map;
 pub use layout::LayoutSetup;
+pub use map::default_rock_geometry;
 pub(crate) use map::rock_surface_mesh;
-pub use map::{default_rock_geometry, spawn_default_terrain};
 
 pub const PLAYER_CELL: IVec2 = IVec2::new(0, 0);
 pub const PLAYER_BUILD_FLANK_CELL: IVec2 = IVec2::new(0, 1);
@@ -52,7 +55,6 @@ pub const OPPONENT_START_WORKERS: u32 = 4;
 pub const OPPONENT_START_HAULERS: u32 = 2;
 pub const OPPONENT_START_DEFENDERS: u32 = 3;
 
-// Four starting workers extracting one unit per 60 Hz tick consume this in about five minutes.
 pub const STARTING_DEPOSIT_AMOUNT: u32 = 72_000;
 pub const STARTING_WORK_RADIUS: f32 = 64.0;
 
@@ -60,66 +62,128 @@ pub fn cell_origin(cell: IVec2) -> Vec2 {
     get_world_from_zone(cell)
 }
 
-pub fn paint_default_player_intent(grid: &mut IntentGrid) {
-    for (cell, kind) in [
-        (PLAYER_DEPOSIT_CELL, IntentKind::Gather),
-        (PLAYER_CELL, IntentKind::Build),
-        (PLAYER_BUILD_FLANK_CELL, IntentKind::Build),
-        (PLAYER_DEFEND_CELL, IntentKind::Defend),
-    ] {
-        grid.paint(cell, kind, SwarmId::PLAYER);
-    }
+pub fn paint_default_player_intent(
+    grid: &mut IntentGrid,
+    reachability: &SwarmReachabilityMap,
+) -> Result<(), ReachabilitySetupError> {
+    paint_initial_intents(
+        grid,
+        reachability,
+        SwarmId::PLAYER,
+        &[
+            (PLAYER_DEPOSIT_CELL, IntentKind::Gather),
+            (PLAYER_CELL, IntentKind::Build),
+            (PLAYER_BUILD_FLANK_CELL, IntentKind::Build),
+            (PLAYER_DEFEND_CELL, IntentKind::Defend),
+        ],
+    )
 }
 
 /// Paint the default opponent's independent Gather, Build, and Defend orders.
-pub fn paint_default_opponent_intent(grid: &mut IntentGrid, owner: SwarmId) {
-    for (cell, kind) in [
-        (OPPONENT_DEPOSIT_CELL, IntentKind::Gather),
-        (OPPONENT_CELL, IntentKind::Build),
-        (OPPONENT_BUILD_FLANK_CELL, IntentKind::Build),
-        (OPPONENT_DEFEND_CELL, IntentKind::Defend),
-    ] {
-        grid.paint(cell, kind, owner);
-    }
+pub fn paint_default_opponent_intent(
+    grid: &mut IntentGrid,
+    reachability: &SwarmReachabilityMap,
+    owner: SwarmId,
+) -> Result<(), ReachabilitySetupError> {
+    paint_initial_intents(
+        grid,
+        reachability,
+        owner,
+        &[
+            (OPPONENT_DEPOSIT_CELL, IntentKind::Gather),
+            (OPPONENT_CELL, IntentKind::Build),
+            (OPPONENT_BUILD_FLANK_CELL, IntentKind::Build),
+            (OPPONENT_DEFEND_CELL, IntentKind::Defend),
+        ],
+    )
 }
 
-pub fn spawn_default_player_scenario(
-    commands: &mut Commands<'_, '_>,
-    asset_server: &Res<'_, AssetServer>,
+fn paint_initial_intents(
     grid: &mut IntentGrid,
-) {
-    spawn_player_scenario(
-        commands,
-        asset_server,
+    reachability: &SwarmReachabilityMap,
+    owner: SwarmId,
+    intents: &[(IVec2, IntentKind)],
+) -> Result<(), ReachabilitySetupError> {
+    validate_initial_intents(grid, reachability, owner, intents)?;
+    for &(cell, kind) in intents {
+        paint_initial_intent(grid, reachability, owner, cell, kind)?;
+    }
+    Ok(())
+}
+
+fn validate_initial_intents(
+    grid: &IntentGrid,
+    reachability: &SwarmReachabilityMap,
+    owner: SwarmId,
+    intents: &[(IVec2, IntentKind)],
+) -> Result<(), ReachabilitySetupError> {
+    for &(cell, _) in intents {
+        if !reachability.contains(owner, cell, grid) {
+            return Err(ReachabilitySetupError::UnreachableInitialIntent { owner, cell });
+        }
+    }
+    Ok(())
+}
+
+fn paint_initial_intent(
+    grid: &mut IntentGrid,
+    reachability: &SwarmReachabilityMap,
+    owner: SwarmId,
+    cell: IVec2,
+    kind: IntentKind,
+) -> Result<(), ReachabilitySetupError> {
+    apply_reachable_intent(
         grid,
-        LayoutSetup::for_layout(AiBattleLayout::Standard),
-    );
+        reachability,
+        owner,
+        cell,
+        kind,
+        IntentWriteAction::Paint,
+    )
+    .map(|_| ())
+    .map_err(|_| ReachabilitySetupError::UnreachableInitialIntent { owner, cell })
 }
 
 fn paint_economy(
     grid: &mut IntentGrid,
+    reachability: &SwarmReachabilityMap,
     owner: SwarmId,
     home: IVec2,
     deposit: IVec2,
     direction: i32,
-) {
-    for (cell, kind) in [
+) -> Result<(), ReachabilitySetupError> {
+    let intents = economy_initial_intents(home, deposit, direction);
+    paint_initial_intents(grid, reachability, owner, &intents)
+}
+
+fn economy_initial_intents(
+    home: IVec2,
+    deposit: IVec2,
+    direction: i32,
+) -> [(IVec2, IntentKind); 4] {
+    [
         (deposit, IntentKind::Gather),
         (home, IntentKind::Build),
         (home + IVec2::Y * direction, IntentKind::Build),
         (home + IVec2::ONE * direction, IntentKind::Defend),
-    ] {
-        grid.paint(cell, kind, owner);
-    }
+    ]
 }
 
 fn spawn_player_scenario(
     commands: &mut Commands<'_, '_>,
     asset_server: &Res<'_, AssetServer>,
     grid: &mut IntentGrid,
+    reachability: &SwarmReachabilityMap,
     setup: LayoutSetup,
-) {
-    paint_economy(grid, SwarmId::PLAYER, setup.home, setup.home_deposit, 1);
+) -> Result<(), ReachabilitySetupError> {
+    paint_economy(
+        grid,
+        reachability,
+        SwarmId::PLAYER,
+        setup.home,
+        setup.home_deposit,
+        1,
+    )?;
 
     let player_pos = cell_origin(setup.home);
     let facility_pos = player_pos + SEED_FACILITY_OFFSET;
@@ -162,6 +226,7 @@ fn spawn_player_scenario(
         spawn_deposit(commands, None, cell_origin(cell));
     }
     spawn_production_facility(commands, swarm, facility_pos, &facility_texture);
+    Ok(())
 }
 
 /// Preserve the opponent-side deposit when the map has no opponent swarm.
@@ -169,38 +234,17 @@ pub fn spawn_sandbox_resources(commands: &mut Commands<'_, '_>) {
     spawn_deposit(commands, None, cell_origin(OPPONENT_DEPOSIT_CELL));
 }
 
-pub fn spawn_default_opponent_scenario(
-    commands: &mut Commands<'_, '_>,
-    asset_server: &Res<'_, AssetServer>,
-    grid: &mut IntentGrid,
-    id_alloc: ResMut<crate::nanobot::OpponentSwarmIdAlloc>,
-) {
-    spawn_opponent_scenario(
-        commands,
-        asset_server,
-        grid,
-        id_alloc,
-        LayoutSetup::for_layout(AiBattleLayout::Standard),
-    );
-}
-
 fn spawn_opponent_scenario(
     commands: &mut Commands<'_, '_>,
     asset_server: &Res<'_, AssetServer>,
     grid: &mut IntentGrid,
-    mut id_alloc: ResMut<crate::nanobot::OpponentSwarmIdAlloc>,
+    reachability: &SwarmReachabilityMap,
+    opponent_swarm_id: SwarmId,
     setup: LayoutSetup,
-) {
-    // The opponent id is allocated from the world's
-    // `OpponentSwarmIdAlloc` resource so the swarm entity, the
-    // prepainted intent, and the seed nanobots all share it.
-    // Without a shared id the per-swarm intent filter would
-    // route opponent paint to the wrong workers.
-    let opponent_swarm_id = id_alloc.allocate();
-
+) -> Result<(), ReachabilitySetupError> {
     let home = LayoutSetup::opposite(setup.home);
     let deposit = LayoutSetup::opposite(setup.home_deposit);
-    paint_economy(grid, opponent_swarm_id, home, deposit, -1);
+    paint_economy(grid, reachability, opponent_swarm_id, home, deposit, -1)?;
 
     let opponent_pos = cell_origin(home);
     let facility_pos = opponent_pos + OPPONENT_FACILITY_OFFSET;
@@ -238,6 +282,7 @@ fn spawn_opponent_scenario(
 
     spawn_deposit(commands, Some(opponent), deposit_pos);
     spawn_production_facility(commands, opponent, facility_pos, &facility_texture);
+    Ok(())
 }
 
 /// Spawn the seed nanobots described by `seeds` as top-level
@@ -356,7 +401,6 @@ impl crate::scenario_selection::Scenario {
                     player_swarm: None,
                     outcomes: OutcomeMode::SwarmRelative,
                     record_statistics: true,
-                    accelerate_headless: true,
                 },
                 opponent: true,
                 automatic_player: true,
@@ -385,11 +429,10 @@ impl Plugin for ScenarioPlugin {
 
 fn configure_session(
     selection: Res<crate::scenario_selection::ScenarioSelection>,
-    ai_battle: Res<AiBattleConfig>,
     mut rules: ResMut<crate::session::SessionRules>,
     mut pacing: ResMut<crate::gameplay_pacing::GameplayPacing>,
 ) {
-    *rules = session_rules(selection.current, &ai_battle);
+    *rules = session_rules(selection.current);
     *pacing = gameplay_pacing();
 }
 
@@ -399,13 +442,8 @@ pub(crate) fn gameplay_pacing() -> crate::gameplay_pacing::GameplayPacing {
 
 pub(crate) fn session_rules(
     scenario: crate::scenario_selection::Scenario,
-    ai_battle: &AiBattleConfig,
 ) -> crate::session::SessionRules {
-    let mut rules = scenario.definition().rules;
-    if scenario == crate::scenario_selection::Scenario::AiBattle && ai_battle.realtime {
-        rules.accelerate_headless = false;
-    }
-    rules
+    scenario.definition().rules
 }
 
 pub fn spawn_selected_scenario(
@@ -413,22 +451,60 @@ pub fn spawn_selected_scenario(
     commands: &mut Commands<'_, '_>,
     assets: &Res<'_, AssetServer>,
     grid: &mut IntentGrid,
-    ids: ResMut<crate::nanobot::OpponentSwarmIdAlloc>,
+    mut ids: ResMut<crate::nanobot::OpponentSwarmIdAlloc>,
     layout: AiBattleLayout,
-) {
+) -> Result<SwarmReachabilityMap, ReachabilitySetupError> {
     let layout = if scenario == crate::scenario_selection::Scenario::AiBattle {
         layout
     } else {
         AiBattleLayout::Standard
     };
     let setup = LayoutSetup::for_layout(layout);
-    map::spawn_terrain(commands);
-    spawn_player_scenario(commands, assets, grid, setup);
+    let opponent = scenario.definition().opponent.then(|| ids.next());
+    let terrain = default_rock_geometry();
+    let mut homes = vec![(SwarmId::PLAYER, cell_origin(setup.home))];
+    if let Some(opponent) = opponent {
+        homes.push((opponent, cell_origin(LayoutSetup::opposite(setup.home))));
+    }
+    let reachability = SwarmReachabilityMap::new(
+        grid,
+        terrain
+            .iter()
+            .map(|(rock, transform)| rock.obstacle(transform)),
+        homes,
+    )?;
+    let player_intents = economy_initial_intents(setup.home, setup.home_deposit, 1);
+    validate_initial_intents(grid, &reachability, SwarmId::PLAYER, &player_intents)?;
+    if let Some(opponent) = opponent {
+        let opponent_intents = economy_initial_intents(
+            LayoutSetup::opposite(setup.home),
+            LayoutSetup::opposite(setup.home_deposit),
+            -1,
+        );
+        validate_initial_intents(grid, &reachability, opponent, &opponent_intents)?;
+    }
+    if let Some(opponent) = opponent {
+        assert_eq!(
+            ids.allocate(),
+            opponent,
+            "an opponent id reservation must remain stable until scenario commit"
+        );
+    }
+    map::spawn_terrain_geometry(commands, terrain);
+    spawn_player_scenario(commands, assets, grid, &reachability, setup)?;
     if scenario.definition().opponent {
-        spawn_opponent_scenario(commands, assets, grid, ids, setup);
+        spawn_opponent_scenario(
+            commands,
+            assets,
+            grid,
+            &reachability,
+            opponent.expect("opponent scenario allocated an opponent swarm"),
+            setup,
+        )?;
     } else {
         spawn_sandbox_resources(commands);
     }
+    Ok(reachability)
 }
 
 pub(crate) fn configure_controllers(
@@ -451,11 +527,62 @@ mod tests {
     use approx::assert_abs_diff_eq;
 
     use super::*;
+    use crate::navigation::Obstacle;
+
+    fn default_reachability(
+        grid: &IntentGrid,
+        homes: impl IntoIterator<Item = (SwarmId, IVec2)>,
+    ) -> SwarmReachabilityMap {
+        SwarmReachabilityMap::new(
+            grid,
+            default_rock_geometry()
+                .into_iter()
+                .map(|(rock, transform)| rock.obstacle(&transform)),
+            homes
+                .into_iter()
+                .map(|(owner, home)| (owner, cell_origin(home))),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn invalid_initial_intent_leaves_the_grid_unchanged() {
+        let mut grid = IntentGrid::new(8, 8);
+        let reachability = SwarmReachabilityMap::new(
+            &grid,
+            [Obstacle::Rectangle {
+                center: Vec2::ZERO,
+                half: Vec2::new(36.0, 8_000.0),
+            }],
+            [(SwarmId::PLAYER, Vec2::new(-252.0, 36.0))],
+        )
+        .unwrap();
+
+        let result = paint_initial_intents(
+            &mut grid,
+            &reachability,
+            SwarmId::PLAYER,
+            &[
+                (IVec2::new(-1, 0), IntentKind::Gather),
+                (IVec2::new(1, 0), IntentKind::Build),
+            ],
+        );
+
+        assert_eq!(
+            result,
+            Err(ReachabilitySetupError::UnreachableInitialIntent {
+                owner: SwarmId::PLAYER,
+                cell: IVec2::new(1, 0),
+            })
+        );
+        assert!(grid.iter_active_cells().next().is_none());
+    }
 
     #[test]
     fn default_player_intent_prepaints_gather_build_and_defend() {
         let mut grid = IntentGrid::new(64, 64);
-        paint_default_player_intent(&mut grid);
+        let reachability = default_reachability(&grid, [(SwarmId::PLAYER, PLAYER_CELL)]);
+        paint_default_player_intent(&mut grid, &reachability).unwrap();
 
         let deposit_cell = grid.cell(PLAYER_DEPOSIT_CELL).unwrap();
         assert!(deposit_cell.has(IntentKind::Gather));
@@ -496,7 +623,8 @@ mod tests {
         // free gather cell. The owner stamp on the
         // prepainted cell is what enforces that.
         let mut grid = IntentGrid::new(64, 64);
-        paint_default_player_intent(&mut grid);
+        let reachability = default_reachability(&grid, [(SwarmId::PLAYER, PLAYER_CELL)]);
+        paint_default_player_intent(&mut grid, &reachability).unwrap();
 
         let cell = grid.cell(PLAYER_DEPOSIT_CELL).unwrap();
         assert_eq!(
@@ -537,7 +665,8 @@ mod tests {
     fn default_opponent_intent_prepaints_gather_build_and_defend() {
         let mut grid = IntentGrid::new(64, 64);
         let opponent_id = SwarmId(7);
-        paint_default_opponent_intent(&mut grid, opponent_id);
+        let reachability = default_reachability(&grid, [(opponent_id, OPPONENT_CELL)]);
+        paint_default_opponent_intent(&mut grid, &reachability, opponent_id).unwrap();
 
         let gather_cell = grid.cell(OPPONENT_DEPOSIT_CELL).unwrap();
         assert!(gather_cell.has(IntentKind::Gather));

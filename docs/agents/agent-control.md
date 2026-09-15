@@ -20,7 +20,7 @@ cargo run -- --headless --agent-socket --width 1280 --height 720
 $XDG_RUNTIME_DIR/nano-swarm/control.sock
 ```
 
-Headless mode disables Winit and creates no desktop window. Rendering, UI layout, fixed simulation, and GPU screenshots remain active. The runner handles `AppExit` and Ctrl-C; its default pacing is 60 application frames per second. AI Battle advances one 60 Hz simulation tick per application update unless it launches with `--scenario ai-battle --realtime`. See [AI Battle](../ai-battle.md) for launch options and saved statistics.
+Headless mode disables Winit and creates no desktop window. Rendering, UI layout, fixed simulation, and GPU screenshots remain active. The runner handles `AppExit` and Ctrl-C; its default pacing is 60 application frames per second. `--headless --unbounded` advances one fixed simulation tick per application update without frame sleeping for any scenario. See [AI Battle](../ai-battle.md) for launch options and saved statistics.
 
 Headless width and height are each capped at 8,192 pixels, with a total budget of 16,777,216 pixels, so invalid CLI input fails before allocating the render image.
 
@@ -135,6 +135,8 @@ Socket map edits call the same semantic path as mouse painting:
 
 - Painting any kind adds the player's own intent, including over enemy paint.
 - Erasing removes only the player's selected kind and preserves all enemy orders.
+- Painting a cell separated from the player's home by permanent terrain returns
+  `unreachable_intent_cell`; it does not create intent.
 - Out-of-bounds edits and post-match player actions return errors.
 
 `button.press` sets the real button's `Interaction::Pressed`, lets the existing UI click system process it, and releases it on the next frame. Camera commands preserve camera depth, synchronize projection and zoom state, and clear keyboard movement velocity.

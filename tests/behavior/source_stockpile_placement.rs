@@ -28,15 +28,20 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        GatherAssignment, PlannedKind, PlannedStructure, SOURCE_STOCKPILE_JITTER_AMPLITUDE,
-        SOURCE_STOCKPILE_PADDING, SOURCE_STOCKPILE_PLACEMENT_RADIUS, SwarmId,
-        completed_visual_color,
+        DEFAULT_PLANNED_WORK_TICKS, GatherAssignment, PlannedKind, PlannedStructure,
+        SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PADDING,
+        SOURCE_STOCKPILE_PLACEMENT_RADIUS, SwarmId, completed_visual_color,
     },
     resources::Stockpile,
 };
 
 #[path = "../common/mod.rs"]
 mod common;
+
+/// Bounded real-time wait for the demand pipeline to settle at 60 Hz.
+const DEMAND_TICK_BUDGET: u32 = 600;
+/// Shipped construction work plus bounded allocation and travel time.
+const PLAN_COMPLETION_TICK_BUDGET: u32 = DEFAULT_PLANNED_WORK_TICKS + 600;
 
 fn build_app() -> App {
     common::sim_app_with_gather_planned()
@@ -94,7 +99,7 @@ fn candidate_placements_lie_on_the_configured_ring() {
         },
     );
 
-    for _ in 0..100 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
         if planned_source_stockpile_position(&mut app).is_some() {
             break;
@@ -141,7 +146,7 @@ fn placement_jitter_is_stable_across_ticks() {
         },
     );
 
-    for _ in 0..100 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
         if planned_source_stockpile_position(&mut app).is_some() {
             break;
@@ -166,7 +171,7 @@ fn placement_jitter_is_stable_across_ticks() {
         }
     }
 
-    for _ in 0..100 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
         if planned_source_stockpile_position(&mut app).is_some() {
             break;
@@ -218,7 +223,7 @@ fn candidates_outside_the_gather_zone_are_rejected() {
         .entity_mut(worker)
         .insert(GatherAssignment::new(gather_cell, deposit));
 
-    for _ in 0..5 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
     }
 
@@ -270,7 +275,7 @@ fn haul_direction_bias_picks_aligned_candidate() {
         },
     );
 
-    for _ in 0..5 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
     }
 
@@ -360,7 +365,6 @@ fn placement_replaces_planned_structure_with_completed_stockpile() {
     // full plan-build-gather-deliver flow" half of the
     // contract.
     let mut app = build_app();
-    common::initialize_fast_pacing(&mut app);
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
@@ -379,7 +383,7 @@ fn placement_replaces_planned_structure_with_completed_stockpile() {
     // the worker to start gathering. We do not pin a
     // specific number of ticks; we just check the
     // post-build state.
-    for _ in 0..100 {
+    for _ in 0..PLAN_COMPLETION_TICK_BUDGET {
         app.update();
     }
 
@@ -404,7 +408,6 @@ fn no_floating_planned_source_stockpile_after_demand_satisfied() {
     // Stockpile" check sees the completed stockpile and
     // the demand system stays quiet.
     let mut app = build_app();
-    common::initialize_fast_pacing(&mut app);
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
@@ -420,7 +423,7 @@ fn no_floating_planned_source_stockpile_after_demand_satisfied() {
     );
 
     // Drive long enough for the build to finish.
-    for _ in 0..100 {
+    for _ in 0..PLAN_COMPLETION_TICK_BUDGET {
         app.update();
     }
 

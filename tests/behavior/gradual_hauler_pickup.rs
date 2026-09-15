@@ -3,15 +3,21 @@
 use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
-        Cargo, Charger, DirectMovementComponent, HAULER_EXTRACT_PER_TICK, HaulerAssignment,
-        LogisticsReservation, OwnerSwarm, ProductionFacility, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD,
-        Structure, StructureKind, SwarmId,
+        Cargo, Charger, DirectMovementComponent, HAULER_TRANSFER_PER_PULSE, HaulerAssignment,
+        LogisticsReservation, MATERIAL_WORK_TICKS_PER_UNIT, OwnerSwarm, ProductionFacility,
+        SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, SwarmId,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
 };
 
 #[path = "../common/mod.rs"]
 mod common;
+
+fn complete_material_work_interval(app: &mut App) {
+    for _ in 0..MATERIAL_WORK_TICKS_PER_UNIT {
+        app.update();
+    }
+}
 
 #[test]
 fn hauler_reserves_partial_terminal_load_then_picks_it_up_gradually() {
@@ -75,7 +81,7 @@ fn hauler_reserves_partial_terminal_load_then_picks_it_up_gradually() {
         .entity_mut(hauler)
         .insert(Transform::from_translation(Vec3::new(32.0, 0.0, 0.0)))
         .remove::<DirectMovementComponent>();
-    app.update();
+    complete_material_work_interval(&mut app);
 
     let stockpile_amount = app
         .world()
@@ -89,8 +95,8 @@ fn hauler_reserves_partial_terminal_load_then_picks_it_up_gradually() {
         .get::<Cargo>()
         .expect("loading creates explicit hauler cargo");
     assert_eq!(cargo.kind, ResourceKind::Minerals);
-    assert_eq!(cargo.amount, HAULER_EXTRACT_PER_TICK);
-    assert_eq!(stockpile_amount, source_amount - HAULER_EXTRACT_PER_TICK);
+    assert_eq!(cargo.amount, HAULER_TRANSFER_PER_PULSE);
+    assert_eq!(stockpile_amount, source_amount - HAULER_TRANSFER_PER_PULSE);
     let remaining_claim = app
         .world()
         .entity(hauler)
@@ -98,7 +104,7 @@ fn hauler_reserves_partial_terminal_load_then_picks_it_up_gradually() {
         .expect("reservation remains throughout gradual loading");
     assert_eq!(
         remaining_claim.source_remaining,
-        source_amount - HAULER_EXTRACT_PER_TICK,
+        source_amount - HAULER_TRANSFER_PER_PULSE,
         "physical pickup releases only the transferred source claim",
     );
     assert_eq!(
@@ -184,20 +190,25 @@ fn hauler_unloads_into_stockpile_gradually_and_ledger_neutrally() {
         .resource_mut::<ResourceLedger>()
         .add(ResourceKind::Minerals, 13);
 
-    app.update();
+    for _ in 0..500 {
+        app.update();
+        if app.world().entity(sink).get::<Stockpile>().unwrap().amount > 3 {
+            break;
+        }
+    }
 
     assert_eq!(
         app.world().entity(sink).get::<Stockpile>().unwrap().amount,
-        7
+        4
     );
-    assert_eq!(app.world().entity(hauler).get::<Cargo>().unwrap().amount, 6);
+    assert_eq!(app.world().entity(hauler).get::<Cargo>().unwrap().amount, 9);
     let reservation = app
         .world()
         .entity(hauler)
         .get::<LogisticsReservation>()
         .unwrap();
     assert_eq!(reservation.source_remaining, 0);
-    assert_eq!(reservation.destination_remaining, 6);
+    assert_eq!(reservation.destination_remaining, 9);
     assert_eq!(
         app.world()
             .resource::<ResourceLedger>()
@@ -232,9 +243,14 @@ fn simultaneous_hauler_unloads_into_stockpile_conserve_all_cargo() {
         haulers.push(hauler);
     }
 
-    app.update();
+    for _ in 0..500 {
+        app.update();
+        if app.world().entity(sink).get::<Stockpile>().unwrap().amount > 3 {
+            break;
+        }
+    }
 
-    let delivered = HAULER_EXTRACT_PER_TICK * haulers.len() as u32;
+    let delivered = HAULER_TRANSFER_PER_PULSE * haulers.len() as u32;
     assert_eq!(
         app.world().entity(sink).get::<Stockpile>().unwrap().amount,
         3 + delivered,
@@ -277,17 +293,22 @@ fn simultaneous_haulers_unload_against_exact_independent_reservations() {
         ));
     }
 
-    app.update();
+    for _ in 0..500 {
+        app.update();
+        if app.world().entity(sink).get::<Stockpile>().unwrap().amount > 0 {
+            break;
+        }
+    }
 
     assert_eq!(
         app.world().entity(sink).get::<Stockpile>().unwrap().amount,
-        HAULER_EXTRACT_PER_TICK * haulers.len() as u32,
+        HAULER_TRANSFER_PER_PULSE * haulers.len() as u32,
         "completed same-tick deliveries release capacity for later reserved Haulers",
     );
     for hauler in haulers {
         assert_eq!(
             app.world().entity(hauler).get::<Cargo>().unwrap().amount,
-            10 - HAULER_EXTRACT_PER_TICK,
+            10 - HAULER_TRANSFER_PER_PULSE,
         );
     }
 }
@@ -318,7 +339,19 @@ fn hauler_unloads_into_facility_gradually() {
         reservation,
     ));
 
-    app.update();
+    for _ in 0..500 {
+        app.update();
+        if app
+            .world()
+            .entity(sink)
+            .get::<ProductionFacility>()
+            .unwrap()
+            .input_amount
+            > 0
+        {
+            break;
+        }
+    }
 
     assert_eq!(
         app.world()
@@ -326,9 +359,9 @@ fn hauler_unloads_into_facility_gradually() {
             .get::<ProductionFacility>()
             .unwrap()
             .input_amount,
-        HAULER_EXTRACT_PER_TICK,
+        HAULER_TRANSFER_PER_PULSE,
     );
-    assert_eq!(app.world().entity(hauler).get::<Cargo>().unwrap().amount, 6);
+    assert_eq!(app.world().entity(hauler).get::<Cargo>().unwrap().amount, 9);
 }
 
 #[test]
@@ -355,13 +388,18 @@ fn hauler_unloads_into_charger_gradually() {
         reservation,
     ));
 
-    app.update();
+    for _ in 0..500 {
+        app.update();
+        if app.world().entity(sink).get::<Charger>().unwrap().amount > 0 {
+            break;
+        }
+    }
 
     assert_eq!(
         app.world().entity(sink).get::<Charger>().unwrap().amount,
-        HAULER_EXTRACT_PER_TICK,
+        HAULER_TRANSFER_PER_PULSE,
     );
-    assert_eq!(app.world().entity(hauler).get::<Cargo>().unwrap().amount, 6);
+    assert_eq!(app.world().entity(hauler).get::<Cargo>().unwrap().amount, 9);
 }
 
 #[test]

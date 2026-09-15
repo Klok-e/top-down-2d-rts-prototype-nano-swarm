@@ -1,10 +1,14 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+/// Bounded real-time wait for shared defender allocation at 60 Hz.
+const DEFENDER_RESPONSE_TICK_BUDGET: u32 = 300;
+
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{MatchOutcome, Swarm, SwarmId},
+    reachability::SwarmReachabilityMap,
     resources::{ResourceKind, ResourceLedger},
     strategic_controller::{Decision, IntentEditAction},
     strategic_runtime::{StrategicController, StrategicControllerPlugin},
@@ -17,6 +21,19 @@ fn apply_decision(grid: &mut IntentGrid, owner: SwarmId, decision: &Decision) {
             IntentEditAction::Erase => grid.erase(edit.cell, edit.kind, owner),
         };
     }
+}
+
+fn install_empty_reachability(app: &mut App, owners: impl IntoIterator<Item = SwarmId>) {
+    let reachability = {
+        let grid = app.world().resource::<IntentGrid>();
+        SwarmReachabilityMap::new(
+            grid,
+            [],
+            owners.into_iter().map(|owner| (owner, Vec2::ZERO)),
+        )
+        .expect("the controller fixture has clear swarm homes")
+    };
+    app.insert_resource(reachability);
 }
 
 #[test]
@@ -32,6 +49,7 @@ fn strategic_adapter_applies_only_its_owners_intent_without_mutating_resources()
         Transform::default(),
         StrategicController::new(owner),
     ));
+    install_empty_reachability(&mut app, [owner]);
     for swarm in [SwarmId::PLAYER, owner] {
         app.world_mut()
             .resource_mut::<IntentGrid>()
@@ -88,6 +106,7 @@ fn controller_telemetry_counts_invalidation_checks_between_reviews() {
         Transform::default(),
         StrategicController::new(owner),
     ));
+    install_empty_reachability(&mut app, [owner]);
     common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -142,6 +161,7 @@ fn controller_eventually_erases_stale_owned_intent_after_large_foreign_prefix() 
             structures: &[],
             deposits: &[],
             terrain: &[],
+            reachability: None,
             tick: review * REVIEW_PERIOD_TICKS,
             finished: false,
         });
@@ -201,6 +221,7 @@ fn controller_retargets_when_its_primary_resource_is_exhausted() {
         structures: &[],
         deposits: &deposits,
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -220,6 +241,7 @@ fn controller_retargets_when_its_primary_resource_is_exhausted() {
         structures: &[],
         deposits: &depleted,
         terrain: &[],
+        reachability: None,
         tick: 1,
         finished: false,
     });
@@ -276,6 +298,7 @@ fn controller_urgently_replans_when_key_support_is_lost() {
         structures: &charger,
         deposits: &deposits,
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -288,6 +311,7 @@ fn controller_urgently_replans_when_key_support_is_lost() {
         structures: &[],
         deposits: &deposits,
         terrain: &[],
+        reachability: None,
         tick: 1,
         finished: false,
     });
@@ -356,6 +380,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
         structures: &[charger],
         deposits: &deposit,
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -378,6 +403,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
         structures: &crowded_structures,
         deposits: &deposit,
         terrain: &[],
+        reachability: None,
         tick: 1,
         finished: false,
     });
@@ -406,6 +432,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
         structures: &[],
         deposits: &deposit,
         terrain: &[],
+        reachability: None,
         tick: 2,
         finished: false,
     });
@@ -507,6 +534,7 @@ fn mature_economy_keeps_one_active_resource_site() {
         structures: &structures,
         deposits: &deposits,
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -545,6 +573,7 @@ fn controller_primary_site_extracts_and_hauls_under_normal_pacing() {
     app.world_mut()
         .entity_mut(own)
         .insert(StrategicController::new(SwarmId::PLAYER));
+    install_empty_reachability(&mut app, [SwarmId::PLAYER]);
     let positions =
         [IVec2::new(-1, 0), IVec2::new(4, 0), IVec2::new(0, 7)].map(common::cell_world_center);
     let deposits = positions.map(|world_pos| {
@@ -625,6 +654,7 @@ fn controller_new_front_keeps_the_progressing_fronts_shared_defender_response() 
     app.world_mut()
         .entity_mut(own)
         .insert(StrategicController::new(SwarmId::PLAYER));
+    install_empty_reachability(&mut app, [SwarmId::PLAYER]);
     let enemy_cell = IVec2::new(12, 0);
     let enemy = app
         .world_mut()
@@ -663,7 +693,7 @@ fn controller_new_front_keeps_the_progressing_fronts_shared_defender_response() 
         })
         .collect::<Vec<_>>();
     let mut original_responder = None;
-    for _ in 0..5 {
+    for _ in 0..DEFENDER_RESPONSE_TICK_BUDGET {
         app.update();
         original_responder = defenders.iter().copied().find(|defender| {
             app.world()
@@ -702,7 +732,7 @@ fn controller_new_front_keeps_the_progressing_fronts_shared_defender_response() 
         .get_mut::<Structure>(new_front)
         .unwrap()
         .health = 20;
-    for _ in 0..5 {
+    for _ in 0..DEFENDER_RESPONSE_TICK_BUDGET {
         app.update();
     }
 

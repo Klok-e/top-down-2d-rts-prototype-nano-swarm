@@ -73,16 +73,16 @@ use crate::structure_sprites::StructureSprites;
 pub const MAX_CHARGE: f32 = 1.0;
 
 /// Baseline passive Charge drain per fixed simulation tick.
-pub const CHARGE_DRAIN_PER_TICK: f32 = 0.00025;
+pub const CHARGE_DRAIN_PER_TICK: f32 = 0.000125;
 
 /// Number of fixed ticks between supplied recharge pulses.
-pub const CHARGE_PULSE_INTERVAL_TICKS: u16 = 10;
+pub const CHARGE_PULSE_INTERVAL_TICKS: u16 = 150;
 
 /// Charge granted by one supplied recharge pulse.
 pub const CHARGE_PER_PULSE: f32 = 0.03;
 
 /// Minerals consumed by one supplied recharge pulse.
-pub const CHARGER_MATERIAL_PER_PULSE: u32 = 1;
+pub const CHARGER_MATERIAL_PER_PULSE: u32 = 2;
 
 /// Charge level below which a defender's attack and defense
 /// are weakened. Above the threshold the modifier is 1.0;
@@ -116,7 +116,7 @@ pub const EMPTY_CHARGE_HEALTH_DAMAGE: u32 = 1;
 /// with headroom so the first hauler trip can complete in
 /// one go, and to give a defended cell a meaningful logistics
 /// target before the next visit is needed.
-pub const AUTO_CHARGER_CAPACITY: u32 = 60;
+pub const AUTO_CHARGER_CAPACITY: u32 = 120;
 
 /// World-units reach of a charger's charging radius. Matches
 /// the default stockpile radius so the hauler's "free
@@ -340,7 +340,10 @@ pub fn minerals_to_fully_charge(current: f32, max: f32, charge_drain_per_tick: f
         CHARGE_PER_PULSE - charge_drain_per_tick * f32::from(CHARGE_PULSE_INTERVAL_TICKS);
     debug_assert!(net_refill > 0.0);
     let missing_ticks = (max - current.max(0.0)) / net_refill;
-    let rounding_tolerance = f32::EPSILON * missing_ticks.abs().max(1.0) * 8.0;
+    // The pulse and drain values are f32 gameplay values. A value constructed
+    // by subtracting one net refill can land just above one because of their
+    // representation, so retain a small domain tolerance before rounding.
+    let rounding_tolerance = 1e-5 * missing_ticks.abs().max(1.0);
     (missing_ticks - rounding_tolerance).ceil() as u32 * CHARGER_MATERIAL_PER_PULSE
 }
 

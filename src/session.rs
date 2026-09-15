@@ -23,7 +23,6 @@ pub struct SessionRules {
     pub player_swarm: Option<SwarmId>,
     pub outcomes: OutcomeMode,
     pub record_statistics: bool,
-    pub accelerate_headless: bool,
 }
 
 impl Default for SessionRules {
@@ -33,7 +32,6 @@ impl Default for SessionRules {
             player_swarm: Some(SwarmId::PLAYER),
             outcomes: OutcomeMode::PlayerRelative,
             record_statistics: false,
-            accelerate_headless: false,
         }
     }
 }

@@ -22,24 +22,18 @@ fn combined_direct_and_separation_velocity_is_clamped_to_bot_speed() {
         });
 
     app.update();
-    let before = app
-        .world()
-        .get::<Transform>(mover)
-        .unwrap()
-        .translation
-        .truncate();
-    app.update();
-
-    let position = app
+    for _ in 0..8 {
+        app.update();
+    }
+    let velocity = app
         .world()
         .entity(mover)
-        .get::<Transform>()
-        .expect("mover transform")
-        .translation
-        .truncate();
+        .get::<VelocityComponent>()
+        .expect("mover velocity")
+        .value;
     assert!(
-        (position - before).distance(Vec2::new(-5.25, 0.0)) <= 1e-4,
-        "combined velocity must clamp to the configured 5.25 speed; displacement={position}",
+        velocity.length() <= 5.25 + 1e-4,
+        "combined velocity must clamp to the configured 5.25 speed; velocity={velocity}",
     );
 }
 

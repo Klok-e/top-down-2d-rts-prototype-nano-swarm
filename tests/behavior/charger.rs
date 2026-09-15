@@ -76,7 +76,6 @@ fn read_health(app: &App, defender: Entity) -> Option<u32> {
 #[test]
 fn full_defender_remains_on_duty_until_field_endurance_threshold() {
     let mut app = build_app();
-    common::initialize_fast_pacing(&mut app);
     common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
     app.world_mut()
@@ -84,7 +83,7 @@ fn full_defender_remains_on_duty_until_field_endurance_threshold() {
         .paint(cell, IntentKind::Defend, SwarmId::PLAYER);
     let defender = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
 
-    for _ in 0..1_999 {
+    for _ in 0..3_999 {
         app.update();
     }
     assert!(app.world().entities().contains(defender));
@@ -95,7 +94,7 @@ fn full_defender_remains_on_duty_until_field_endurance_threshold() {
             .unwrap()
             .current
             > LOW_CHARGE_THRESHOLD,
-        "full Defender must stay above rotation threshold through tick 1,999",
+        "full Defender must stay above rotation threshold through tick 3,999",
     );
 
     app.update();
@@ -106,7 +105,7 @@ fn full_defender_remains_on_duty_until_field_endurance_threshold() {
             .unwrap()
             .current
             > LOW_CHARGE_THRESHOLD,
-        "f32 drain boundary remains above threshold at tick 2,000",
+        "f32 drain boundary remains above threshold at tick 4,000",
     );
     app.update();
     assert!(
@@ -116,20 +115,19 @@ fn full_defender_remains_on_duty_until_field_endurance_threshold() {
             .unwrap()
             .current
             <= LOW_CHARGE_THRESHOLD,
-        "rotation threshold must be reached on tick 2,001",
+        "rotation threshold must be reached on tick 4,001",
     );
 }
 
 #[test]
 fn low_defender_recharges_in_readable_bounded_time() {
     let mut app = build_app();
-    common::initialize_fast_pacing(&mut app);
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
     app.world_mut()
         .resource_mut::<IntentGrid>()
         .paint(cell, IntentKind::Defend, SwarmId::PLAYER);
-    let charger = common::spawn_operational_charger_at(&mut app, cell, 60);
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 120);
     app.world_mut()
         .entity_mut(charger)
         .insert(OwnerSwarm(swarm));
@@ -146,7 +144,7 @@ fn low_defender_recharges_in_readable_bounded_time() {
         .unwrap()
         .current = LOW_CHARGE_THRESHOLD;
 
-    for _ in 0..180 {
+    for _ in 0..(CHARGE_PULSE_INTERVAL_TICKS as usize - 1) {
         app.update();
     }
     assert!(
@@ -156,11 +154,11 @@ fn low_defender_recharges_in_readable_bounded_time() {
             .unwrap()
             .current
             < MAX_CHARGE,
-        "recharge must not finish before 180 fixed ticks",
+        "recharge must not finish before the first supplied pulse",
     );
 
     let mut reached_full = false;
-    for _ in 0..120 {
+    for _ in 0..7_000 {
         app.update();
         if (app
             .world()
@@ -176,27 +174,29 @@ fn low_defender_recharges_in_readable_bounded_time() {
             break;
         }
     }
-    assert!(reached_full, "recharge must finish by fixed tick 300");
+    assert!(
+        reached_full,
+        "recharge must finish within 7,000 fixed ticks"
+    );
 }
 
 #[test]
 fn normal_rotation_consumes_exact_minerals() {
     let mut app = build_app();
-    common::initialize_fast_pacing(&mut app);
     app.init_resource::<BattleCounters>();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let cell = IVec2::ZERO;
     app.world_mut()
         .resource_mut::<IntentGrid>()
         .paint(cell, IntentKind::Defend, SwarmId::PLAYER);
-    let charger = common::spawn_operational_charger_at(&mut app, cell, 60);
+    let charger = common::spawn_operational_charger_at(&mut app, cell, 120);
     app.world_mut()
         .entity_mut(charger)
         .insert(OwnerSwarm(swarm));
     app.world_mut().resource_mut::<ResourceLedger>().add_for(
         SwarmId::PLAYER,
         ResourceKind::Minerals,
-        60,
+        120,
     );
     let defender =
         common::spawn_defender_at(&mut app, common::cell_world_center(cell) + Vec2::X * 68.0);
@@ -211,20 +211,23 @@ fn normal_rotation_consumes_exact_minerals() {
         .unwrap()
         .current = LOW_CHARGE_THRESHOLD;
 
-    for _ in 0..190 {
+    for _ in 0..7_000 {
         app.update();
+        if app.world().get::<ChargerAssignment>(defender).is_none() {
+            break;
+        }
     }
 
     assert_eq!(
         app.world().entity(charger).get::<Charger>().unwrap().amount,
-        41,
-        "0.5-to-full rotation must consume exactly 19 supplied pulses",
+        30,
+        "0.5-to-full rotation must consume exactly 45 supplied pulses",
     );
     assert_eq!(
         app.world()
             .resource::<ResourceLedger>()
             .total_for(SwarmId::PLAYER, ResourceKind::Minerals,),
-        41,
+        30,
     );
     assert!(
         (app.world()
@@ -241,7 +244,7 @@ fn normal_rotation_consumes_exact_minerals() {
             .resource::<BattleCounters>()
             .totals_for(SwarmId::PLAYER)
             .minerals_consumed,
-        19
+        90
     );
 }
 
@@ -382,7 +385,7 @@ fn casualty_preserves_accepted_travel_and_charging_until_completion() {
         .current = 0.5;
     let mut completed = [false; 3];
     let mut waited_at_capacity = false;
-    for _ in 0..400 {
+    for _ in 0..7_500 {
         let active_before = accepted
             .iter()
             .filter(|&&defender| app.world().entity(defender).contains::<ChargerAssignment>())
@@ -498,7 +501,12 @@ fn destroyed_charger_ends_rotation_without_grandfathering_replacement_admission(
         .get_mut::<Charge>()
         .unwrap()
         .current = 0.99;
-    for _ in 0..12 {
+    app.world_mut()
+        .entity_mut(accepted[1])
+        .insert(ChargerPulseProgress {
+            ticks_elapsed: CHARGE_PULSE_INTERVAL_TICKS - 1,
+        });
+    for _ in 0..2 {
         app.update();
     }
     assert!(
@@ -506,10 +514,11 @@ fn destroyed_charger_ends_rotation_without_grandfathering_replacement_admission(
             .entity(accepted[1])
             .contains::<ChargerAssignment>()
     );
-    let replacement = app
-        .world()
-        .entity(accepted[0])
-        .get::<ChargerAssignment>()
+    let replacement = (0..120)
+        .find_map(|_| {
+            app.update();
+            app.world().get::<ChargerAssignment>(accepted[0]).copied()
+        })
         .expect("the released Defender can seek another Charger after capacity opens");
     assert_ne!(replacement.charger, chargers[0]);
 }
@@ -1324,9 +1333,13 @@ fn charge_departure_releases_response_for_same_step_replacement() {
         &mut app,
         common::cell_world_center(cell) + Vec2::new(140.0, 72.0),
     );
-    app.world_mut()
-        .entity_mut(threat)
-        .insert(SwarmMember::new(SwarmId(11)));
+    app.world_mut().entity_mut(threat).insert((
+        SwarmMember::new(SwarmId(11)),
+        Health {
+            current: 100_000,
+            max: 100_000,
+        },
+    ));
     app.world_mut()
         .entity_mut(defender)
         .insert(DefenderResponse { target: threat });
@@ -1560,7 +1573,7 @@ fn defender_does_not_rotate_to_degraded_charger() {
 }
 
 #[test]
-fn completed_rotation_reenters_current_allocation_without_old_ownership() {
+fn completed_rotation_reenters_current_allocation() {
     let mut app = common::sim_app_with_charge();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::ZERO;
@@ -1600,20 +1613,23 @@ fn completed_rotation_reenters_current_allocation_without_old_ownership() {
         Some(threat),
     );
 
-    for _ in 0..700 {
+    let mut charging_started = false;
+    for _ in 0..12_000 {
         app.update();
+        charging_started |= app.world().get::<ChargerAssignment>(defender).is_some();
+        if charging_started && app.world().get::<ChargerAssignment>(defender).is_none() {
+            break;
+        }
     }
 
+    let defender_state = app.world().entity(defender);
     assert_eq!(
-        app.world()
-            .entity(replacement)
+        defender_state
             .get::<DefenderResponse>()
             .map(|response| response.target),
         Some(threat),
-        "the recharged Defender must not displace the current responder",
+        "a completed rotation must return the Defender through current response allocation",
     );
-    let defender_state = app.world().entity(defender);
-    assert!(defender_state.get::<DefenderResponse>().is_none());
     let charge = read_charge(&app, defender).expect("defender has Charge");
     assert!(
         charge >= LOW_CHARGE_THRESHOLD,
@@ -1896,12 +1912,12 @@ fn hauler_delivers_minerals_to_a_charger_with_free_space() {
         .entity_mut(charger)
         .insert(OwnerSwarm(swarm));
     let _hauler = common::spawn_hauler_at(&mut app, source_pos + Vec2::X * 68.0);
-    // Drive enough ticks for the hauler to load (5 ticks at
-    // HAULER_EXTRACT_PER_TICK) and walk from the deposit at
+    // Drive enough ticks for the hauler to load and unload at the shipped
+    // 75-tick material cadence, then walk from the deposit at
     // (100, 0) to the charger at the cell (2, 0) center
     // (~1280, 256). Distance ~ 1200 world units; at
-    // bot_speed 5.0 = ~240 ticks. 500 is a safe margin.
-    for _ in 0..500 {
+    // bot_speed 5.0 = ~240 ticks. 4,000 ticks cover both transfer phases.
+    for _ in 0..4_000 {
         app.update();
     }
 
@@ -1963,7 +1979,6 @@ fn defender_charge_drains_passively_when_idle() {
     // time even when no charger is reachable. The drain
     // rate is CHARGE_DRAIN_PER_TICK per tick.
     let mut app = build_app();
-    common::initialize_fast_pacing(&mut app);
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let defender = common::spawn_defender_at(&mut app, Vec2::new(0.0, 0.0));
     let start = read_charge(&app, defender).expect("defender has Charge");
@@ -1994,7 +2009,6 @@ fn defender_charge_refills_in_supplied_pulses() {
     // state directly so arrival mechanics do not interfere
     // with the rate check.
     let mut app = build_app();
-    common::initialize_fast_pacing(&mut app);
     let swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let cell = IVec2::new(0, 0);
     app.world_mut()
@@ -2128,7 +2142,7 @@ fn charger_work_consumes_owning_swarm_resources() {
 
     assert_eq!(
         app.world().entity(charger).get::<Charger>().unwrap().amount,
-        9
+        8
     );
     assert_eq!(
         app.world()

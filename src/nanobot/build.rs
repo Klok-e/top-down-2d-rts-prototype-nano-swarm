@@ -55,17 +55,16 @@ pub const STRUCTURE_MAX_HEALTH: u32 = 100;
 /// Each tick a working worker consumes one unit of
 /// `ResourceKind::Minerals` from the nearest local stockpile and
 /// the site's `consumed_materials` rises by one. When the counter
-/// reaches the budget, the site is replaced by a completed
-/// `Structure`. The number is small enough that a single worker
-/// finishes the site in a handful of ticks, keeping the
-/// end-to-end tests fast.
-pub const BUILD_REQUIRED_MATERIALS: u32 = 10;
+/// reaches the budget, the site is replaced by a completed `Structure`.
+/// At the shared material-work rate, one Worker completes the site in
+/// twenty-five seconds when supplied continuously.
+pub const BUILD_REQUIRED_MATERIALS: u32 = 20;
 
 /// Health restored per unit of material consumed during repair.
 /// Matches `BUILD_REQUIRED_MATERIALS * BUILD_HEALTH_PER_MATERIAL`
 /// == `STRUCTURE_MAX_HEALTH` so a fully degraded structure can be
 /// repaired with the same material budget as a fresh build.
-pub const BUILD_HEALTH_PER_MATERIAL: u32 = 10;
+pub const BUILD_HEALTH_PER_MATERIAL: u32 = 5;
 
 /// Distinct kinds of structures the swarm can build. The first
 /// implementation only models `Basic`; later issues (production
@@ -188,7 +187,7 @@ pub struct BuildProgress {
 /// skipped so the swarm cannot pile multiple construction
 /// targets into a single cell. The site is spawned at the
 /// cell's world center so workers can walk straight to it.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn structure_auto_creation_system(
     mut commands: Commands,
     grid: Res<IntentGrid>,
@@ -377,10 +376,13 @@ pub fn worker_build_arrive_system(
         };
         let region = InteractionRegion::structure(target_transform);
         if region.contains(transform.translation.truncate()) {
-            commands.entity(entity).insert(BuildProgress {
-                cell: assignment.cell,
-                target: assignment.target,
-            });
+            commands.entity(entity).insert((
+                BuildProgress {
+                    cell: assignment.cell,
+                    target: assignment.target,
+                },
+                super::MaterialWorkProgress::default(),
+            ));
         } else {
             commands
                 .entity(entity)
@@ -398,12 +400,17 @@ pub fn worker_build_arrive_system(
 /// site completes, the structure is at full health, or the
 /// nearest stockpile has no more material (the worker then
 /// waits in place for haulers to deliver more).
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn worker_build_work_system(
     mut commands: Commands,
     mut slots: ResMut<SoftWorkSlots>,
     mut workers: Query<
-        (Entity, &Transform, &BuildProgress),
+        (
+            Entity,
+            &Transform,
+            &BuildProgress,
+            &mut super::MaterialWorkProgress,
+        ),
         (
             Without<super::WorkBlocked>,
             With<Nanobot>,
@@ -415,7 +422,7 @@ pub fn worker_build_work_system(
     mut stockpiles: Query<(Entity, &mut Stockpile, &Transform)>,
     mut ledger: ResMut<ResourceLedger>,
 ) {
-    for (entity, transform, progress) in &mut workers {
+    for (entity, transform, progress, mut work) in &mut workers {
         let worker_pos = transform.translation.truncate();
 
         // Construction branch: a worker at a BuildSite consumes
@@ -423,6 +430,7 @@ pub fn worker_build_work_system(
         if let Ok((site_entity, mut site, target)) = build_sites.get_mut(progress.target) {
             let region = InteractionRegion::structure(target);
             if !region.contains(worker_pos) {
+                work.reset();
                 commands
                     .entity(entity)
                     .insert(region.movement_from(worker_pos));
@@ -433,6 +441,9 @@ pub fn worker_build_work_system(
                 // ticks.
                 promote_site_to_structure(&mut commands, site_entity, site.kind);
                 release_build_worker(&mut commands, &mut slots, entity, progress.cell);
+                continue;
+            }
+            if !work.completes_unit() {
                 continue;
             }
             if let Some(amount) = take_one_from_nearest_stockpile(
@@ -458,6 +469,7 @@ pub fn worker_build_work_system(
         if let Ok((mut structure, target)) = structures.get_mut(progress.target) {
             let region = InteractionRegion::structure(target);
             if !region.contains(worker_pos) {
+                work.reset();
                 commands
                     .entity(entity)
                     .insert(region.movement_from(worker_pos));
@@ -465,6 +477,9 @@ pub fn worker_build_work_system(
             }
             if structure.is_full_health() {
                 release_build_worker(&mut commands, &mut slots, entity, progress.cell);
+                continue;
+            }
+            if !work.completes_unit() {
                 continue;
             }
             if let Some(amount) = take_one_from_nearest_stockpile(
@@ -500,7 +515,8 @@ fn release_build_worker(
     commands
         .entity(entity)
         .remove::<BuildAssignment>()
-        .remove::<BuildProgress>();
+        .remove::<BuildProgress>()
+        .remove::<super::MaterialWorkProgress>();
 }
 
 /// Take one unit of `kind` from the stockpile closest to

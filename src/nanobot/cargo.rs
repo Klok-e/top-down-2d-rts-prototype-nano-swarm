@@ -8,6 +8,40 @@ use crate::{
     resources::{ResourceKind, ResourceLedger},
 };
 
+/// Fixed ticks of uninterrupted material work required to move one mineral.
+///
+/// At the canonical 60 Hz simulation cadence, four pulses fill a Worker's
+/// four-mineral load in five seconds. Gathering, hauling, and construction
+/// share this cadence so the economy has one observable material-work rate.
+pub const MATERIAL_WORK_TICKS_PER_UNIT: u32 = crate::SIMULATION_HZ as u32 * 5 / 4;
+
+/// Progress toward the next mineral moved by active material work.
+///
+/// This component exists only while a nanobot is stationary and performing
+/// gathering, hauling, or construction. Removing it resets partial progress
+/// when the work changes or movement resumes.
+#[derive(Debug, Component, Default, Clone, Copy, PartialEq, Eq)]
+pub struct MaterialWorkProgress {
+    pub ticks_elapsed: u32,
+}
+
+impl MaterialWorkProgress {
+    /// Advance one fixed tick and report whether one mineral may move.
+    pub fn completes_unit(&mut self) -> bool {
+        self.ticks_elapsed = self.ticks_elapsed.saturating_add(1);
+        if self.ticks_elapsed < MATERIAL_WORK_TICKS_PER_UNIT {
+            return false;
+        }
+        self.ticks_elapsed = 0;
+        true
+    }
+
+    /// Discard incomplete work after an interruption.
+    pub fn reset(&mut self) {
+        self.ticks_elapsed = 0;
+    }
+}
+
 /// Minerals physically carried by a nanobot.
 ///
 /// Cargo remains owned by the nanobot's swarm while in transit, so changing
