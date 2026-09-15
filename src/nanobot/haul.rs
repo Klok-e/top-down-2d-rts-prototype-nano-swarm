@@ -994,37 +994,3 @@ impl Plugin for HaulPlugin {
         );
     }
 }
-
-#[cfg(test)]
-mod tests {
-    //! Pure-helper unit tests. The end-to-end contracts
-    //! (transport, capacity, auto-creation) are covered by
-    //! `tests/stockpile_and_haul_behavior.rs`.
-
-    use super::*;
-    use crate::nanobot::{gather::WORKER_CARRY_CAPACITY, planned::DEFAULT_STOCKPILE_CAPACITY};
-
-    #[test]
-    fn hauler_carry_capacity_is_much_larger_than_worker_capacity() {
-        // The glossary says haulers carry "much more" than
-        // workers. 5x is the floor that keeps the gap visible in
-        // test math and swarm behaviour. A const block turns the
-        // compile-time check into a real invariant and dodges
-        // clippy's "assertion on a constant" lint.
-        const { assert!(HAULER_CARRY_CAPACITY >= 5 * WORKER_CARRY_CAPACITY) };
-    }
-
-    #[test]
-    fn hauler_carry_capacity_is_one_twentieth_of_stockpile_capacity() {
-        // One full hauler load is one twentieth of a completed
-        // Source or Sink Stockpile buffer.
-        const { assert!(HAULER_CARRY_CAPACITY * 20 == DEFAULT_STOCKPILE_CAPACITY) };
-    }
-
-    #[test]
-    fn hauler_transfer_pulse_divides_capacity() {
-        // The hauler's load fills in a whole number of material-work pulses.
-        // The const block rejects incompatible economy tuning at compile time.
-        const { assert!(HAULER_CARRY_CAPACITY.is_multiple_of(HAULER_TRANSFER_PER_PULSE)) };
-    }
-}

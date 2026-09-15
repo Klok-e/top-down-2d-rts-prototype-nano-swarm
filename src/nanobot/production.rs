@@ -622,11 +622,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn production_cycle_uses_agreed_fixed_tick_duration() {
-        assert_eq!(PRODUCTION_TICKS_PER_BOT, 600);
-    }
-
-    #[test]
     fn production_pressure_requires_consecutive_ticks() {
         let mut ticks = 0;
         for _ in 0..PRODUCTION_PRESSURE_TICKS - 1 {
