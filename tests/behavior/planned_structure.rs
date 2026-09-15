@@ -23,6 +23,9 @@ use top_down_2d_rts_prototype_nano_swarm::{
 #[path = "../common/mod.rs"]
 mod common;
 
+/// Shipped construction work plus bounded claim and exterior-approach time.
+const PLAN_COMPLETION_TICK_BUDGET: u32 = DEFAULT_PLANNED_WORK_TICKS + 120;
+
 fn build_app() -> App {
     common::sim_app_with_planned()
 }
@@ -252,7 +255,7 @@ fn surviving_worker_finishes_plan_after_claiming_worker_dies() {
         .unwrap()
         .current = 0;
 
-    for _ in 0..(DEFAULT_PLANNED_WORK_TICKS + 3) {
+    for _ in 0..PLAN_COMPLETION_TICK_BUDGET {
         app.update();
     }
 
@@ -289,7 +292,7 @@ fn replacement_worker_finishes_plan_after_live_claim_is_revoked() {
         app.world_mut().entity_mut(planned).insert(state);
     }
 
-    for _ in 0..(DEFAULT_PLANNED_WORK_TICKS + 4) {
+    for _ in 0..PLAN_COMPLETION_TICK_BUDGET {
         app.update();
     }
 
@@ -387,7 +390,7 @@ fn worker_time_advances_build_progress() {
 
     // 1 tick for claim + arrive (worker is already at the
     // cell center), then DEFAULT ticks to consume the budget.
-    let total_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize + 5;
+    let total_ticks = PLAN_COMPLETION_TICK_BUDGET as usize;
     for _ in 0..total_ticks {
         app.update();
     }
@@ -425,7 +428,7 @@ fn completion_replaces_planned_with_stockpile() {
     // 1 tick for claim + arrive, then the work budget, then
     // a buffer. The build should be done well before the loop
     // ends.
-    let total_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize + 5;
+    let total_ticks = PLAN_COMPLETION_TICK_BUDGET as usize;
     for _ in 0..total_ticks {
         app.update();
     }
@@ -468,7 +471,7 @@ fn completion_does_not_consume_any_minerals() {
     // empty ledger and never complete.
     let _worker = common::spawn_worker_at(&mut app, center + Vec2::X * 68.0);
 
-    let total_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize + 5;
+    let total_ticks = PLAN_COMPLETION_TICK_BUDGET as usize;
     for _ in 0..total_ticks {
         app.update();
     }
@@ -536,7 +539,7 @@ fn demand_spawned_planned_structure_preserves_swarm_ownership() {
         .insert(OwnerSwarm(swarm));
     let _worker = common::spawn_worker_at(&mut app, center + Vec2::X * 68.0);
 
-    let total_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize + 5;
+    let total_ticks = PLAN_COMPLETION_TICK_BUDGET as usize;
     for _ in 0..total_ticks {
         app.update();
     }
@@ -594,7 +597,7 @@ fn planned_structure_visual_flip_is_observable_via_sprite_color() {
     );
 
     // Drive the build to completion.
-    let total_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize + 5;
+    let total_ticks = PLAN_COMPLETION_TICK_BUDGET as usize;
     for _ in 0..total_ticks {
         app.update();
     }

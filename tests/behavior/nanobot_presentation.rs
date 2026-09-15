@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use approx::assert_abs_diff_eq;
 use bevy::{asset::AssetPlugin, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
-    GAMEPLAY_SPRITE_Z,
+    GAMEPLAY_SPRITE_Z, MAP_HEIGHT, MAP_WIDTH,
+    ai_battle::AiBattleLayout,
     intent::IntentGrid,
     nanobot::{
         Commitment, Health, Nanobot, NanobotPresentationPlugin, NanobotSprites, NanobotType,
@@ -13,8 +14,9 @@ use top_down_2d_rts_prototype_nano_swarm::{
     scenario::{
         OPPONENT_START_DEFENDERS, OPPONENT_START_HAULERS, OPPONENT_START_WORKERS,
         PLAYER_START_DEFENDERS, PLAYER_START_HAULERS, PLAYER_START_WORKERS,
-        spawn_default_opponent_scenario, spawn_default_player_scenario,
+        spawn_selected_scenario,
     },
+    scenario_selection::Scenario,
 };
 
 #[path = "../common/mod.rs"]
@@ -26,8 +28,16 @@ fn spawn_authored_scenarios(
     mut grid: ResMut<IntentGrid>,
     opponent_id_alloc: ResMut<OpponentSwarmIdAlloc>,
 ) {
-    spawn_default_player_scenario(&mut commands, &asset_server, &mut grid);
-    spawn_default_opponent_scenario(&mut commands, &asset_server, &mut grid, opponent_id_alloc);
+    let reachability = spawn_selected_scenario(
+        Scenario::Standard,
+        &mut commands,
+        &asset_server,
+        &mut grid,
+        opponent_id_alloc,
+        AiBattleLayout::Standard,
+    )
+    .expect("the authored standard scenario must be reachable");
+    commands.insert_resource(reachability);
 }
 
 #[test]
@@ -36,7 +46,7 @@ fn authored_nanobots_render_through_one_neutral_presentation_child() {
     app.add_plugins(TaskPoolPlugin::default())
         .add_plugins(AssetPlugin::default())
         .init_asset::<Image>()
-        .insert_resource(IntentGrid::new(32, 32))
+        .insert_resource(IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32))
         .init_resource::<OpponentSwarmIdAlloc>()
         .add_plugins(NanobotPresentationPlugin)
         .add_systems(Startup, spawn_authored_scenarios);

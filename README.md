@@ -39,7 +39,7 @@ Press **ESC** to pause and open the scenario menu. Choose **Standard** for the o
 Run an accelerated headless AI Battle with saved statistics:
 
 ```bash
-cargo run --release -- --scenario ai-battle --headless --seed 42 --output-root target/battle-runs
+cargo run --release -- --scenario ai-battle --headless --unbounded --seed 42 --output-root target/battle-runs
 ```
 
 See [AI Battle](docs/ai-battle.md) for recording fields, termination behavior, and comparison guidance.

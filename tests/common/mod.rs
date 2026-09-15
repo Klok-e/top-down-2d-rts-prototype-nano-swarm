@@ -42,7 +42,6 @@ use std::time::Duration;
 use bevy::{math::Vec2, prelude::*, time::TimeUpdateStrategy};
 use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
-    gameplay_pacing::GameplayPacing,
     intent::{IntentGrid, IntentKind},
     nanobot::{
         ActionableProjection, Charge, ChargePlugin, Charger, CombatPlugin, Commitment,
@@ -60,33 +59,6 @@ use top_down_2d_rts_prototype_nano_swarm::{
     structure_sprites::StructureSprites,
     tactical_overlay::TacticalOverlayPlugin,
 };
-
-/// Faster numeric timing for tests whose contract does not use shipped pacing.
-pub fn fast_pacing_fixture() -> GameplayPacing {
-    GameplayPacing {
-        construction_work_ticks: 5,
-        attack_interval_ticks: 15,
-        charge_drain_per_tick: 0.00025,
-    }
-}
-
-/// Complete startup, then install faster numeric timing for the fixture.
-pub fn initialize_fast_pacing(app: &mut App) {
-    app.update();
-    app.insert_resource(fast_pacing_fixture());
-}
-
-/// Default `GameSettings` for behaviour tests. The values match the
-/// starter map size and the project's per-tick movement speed so
-/// distance / tick math is obvious to a reader of the test.
-pub fn default_game_settings() -> GameSettings {
-    GameSettings {
-        width: 1000.0,
-        height: 1000.0,
-        bot_speed: 5.0,
-        debug_draw_circles: false,
-    }
-}
 
 /// Default `IntentGrid` size for behaviour tests. The starter
 /// map is 8 cells per side, which covers a 4096x4096 world
@@ -126,7 +98,7 @@ fn register_movement_systems(app: &mut App) {
 }
 
 /// Build the smallest Bevy `App` that can host the simulation
-/// plugins: a time resource, a default `GameSettings`, an
+/// plugins: a time resource, the shipped `GameSettings`, an
 /// `IntentGrid`, and the two swarm-wide resources the autonomy
 /// scoring and resource economy code read. No movement systems,
 /// no plugins -- use this for tests that drive the pure scoring
@@ -139,17 +111,17 @@ pub fn minimal_app() -> App {
         top_down_2d_rts_prototype_nano_swarm::navigation_runtime::NavigationPlugin,
     ));
     app.insert_resource(IntentGrid::new(DEFAULT_GRID_WIDTH, DEFAULT_GRID_HEIGHT));
-    app.insert_resource(default_game_settings());
+    app.insert_resource(
+        GameSettings::from_file_ron("config/game_settings.ron")
+            .expect("production game settings must load for application tests"),
+    );
     app.init_resource::<SoftWorkSlots>();
     app.init_resource::<ResourceLedger>();
     app.insert_resource(StructureSprites::from_single_handle(Handle::default()));
-    // Most existing behavior tests treat one 100 ms app update as one simulation
-    // tick. Runtime uses 60 Hz; tests may override this resource when exercising
-    // frame-partition invariance.
-    app.insert_resource(Time::<Fixed>::from_duration(Duration::from_millis(100)));
-    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
-        100,
-    )));
+    app.insert_resource(top_down_2d_rts_prototype_nano_swarm::fixed_simulation_time());
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(
+        top_down_2d_rts_prototype_nano_swarm::fixed_simulation_time().timestep(),
+    ));
     // Prime real-time bookkeeping without running Startup. The first test update then
     // advances one full manual duration and still runs plugins' Startup systems.
     app.world_mut()

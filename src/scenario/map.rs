@@ -115,12 +115,11 @@ fn rock_geometry() -> Vec<(RockFormation, Transform)> {
     rocks
 }
 
-pub fn spawn_default_terrain(commands: &mut Commands<'_, '_>) {
-    spawn_terrain(commands);
-}
-
-pub fn spawn_terrain(commands: &mut Commands<'_, '_>) {
-    for (index, (rock, transform)) in rock_geometry().into_iter().enumerate() {
+pub fn spawn_terrain_geometry(
+    commands: &mut Commands<'_, '_>,
+    geometry: impl IntoIterator<Item = (RockFormation, Transform)>,
+) {
+    for (index, (rock, transform)) in geometry.into_iter().enumerate() {
         let mut entity = commands.spawn((rock, transform, Visibility::default()));
         if index == 0 {
             entity.insert(crate::terrain_presentation::RockSurfaceRoot);

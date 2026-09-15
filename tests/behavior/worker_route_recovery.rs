@@ -144,7 +144,7 @@ fn worker_retains_cargo_and_releases_unreachable_capacity_then_resumes_after_obs
         ResourceKind::Minerals,
         4,
     );
-    for _ in 0..100 {
+    for _ in 0..600 {
         app.update();
     }
     assert_eq!(app.world().get::<Cargo>(worker).unwrap().amount, 4);
@@ -165,7 +165,7 @@ fn worker_retains_cargo_and_releases_unreachable_capacity_then_resumes_after_obs
         4
     );
     app.world_mut().despawn(blocker);
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         app.update();
     }
     assert_eq!(app.world().get::<Stockpile>(destination).unwrap().amount, 4);
@@ -204,7 +204,7 @@ fn worker_without_a_reservation_delivers_to_reachable_stockpile_instead_of_neare
         ResourceKind::Minerals,
         4,
     );
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         app.update();
     }
     assert_eq!(app.world().get::<Stockpile>(blocked).unwrap().amount, 0);
@@ -323,7 +323,7 @@ fn worker_does_not_extract_until_reserved_delivery_stockpile_is_reachable() {
         0
     );
     app.world_mut().despawn(blocker);
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         app.update();
     }
     assert_eq!(

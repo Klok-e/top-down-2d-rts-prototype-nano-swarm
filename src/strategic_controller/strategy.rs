@@ -4,6 +4,12 @@ use super::{
     *,
 };
 
+fn is_reachable(owner: SwarmId, state: &GameState<'_>, cell: IVec2) -> bool {
+    state
+        .reachability
+        .is_none_or(|reachability| reachability.contains(owner, cell, state.grid))
+}
+
 pub(super) fn coordinate_attack_targets(
     selected: &mut PlanCandidate,
     candidates: &[PlanCandidate],
@@ -174,7 +180,7 @@ pub(super) fn adapt_pressure_anchor(
                     .grid
                     .cell(intent.cell)
                     .is_some_and(|cell| cell.has_owned(IntentKind::Build, owner))
-                && pressure_anchor_is_open(intent.cell, state, budget)
+                && pressure_anchor_is_open(owner, intent.cell, state, budget)
             {
                 candidate.anchor = intent.cell;
                 return;
@@ -188,7 +194,7 @@ pub(super) fn adapt_pressure_anchor(
     let lateral = IVec2::new(-direction.y, direction.x);
     let mut best = None;
     for anchor in [nominal, nominal + lateral, nominal - lateral] {
-        if !pressure_anchor_is_open(anchor, state, budget) {
+        if !pressure_anchor_is_open(owner, anchor, state, budget) {
             continue;
         }
         let anchor_position = intent_cell_center(anchor);
@@ -208,11 +214,12 @@ pub(super) fn adapt_pressure_anchor(
 }
 
 pub(super) fn pressure_anchor_is_open(
+    owner: SwarmId,
     anchor: IVec2,
     state: &GameState<'_>,
     budget: &mut WorkBudget,
 ) -> bool {
-    if !state.grid.in_bounds(anchor) {
+    if !state.grid.in_bounds(anchor) || !is_reachable(owner, state, anchor) {
         return false;
     }
     let anchor_position = intent_cell_center(anchor);
@@ -299,6 +306,16 @@ pub(super) fn validate_plan(
     state: &GameState<'_>,
     budget: &mut WorkBudget,
 ) -> Result<PlanValidation, ()> {
+    if plan
+        .desired
+        .iter()
+        .any(|intent| !is_reachable(owner, state, intent.cell))
+    {
+        return Ok(PlanValidation {
+            invalidation: Some("existing Intent Plan left the swarm-reachable map".to_string()),
+            ..PlanValidation::default()
+        });
+    }
     if let Some(id) = plan.primary_deposit
         && !deposit_is_available(id, state, budget)?
     {
@@ -474,7 +491,8 @@ pub(super) fn generate_candidates(
         if !budget.spend(1) {
             break;
         }
-        if deposit.amount > 0 {
+        if deposit.amount > 0 && is_reachable(owner, state, world_to_intent_cell(deposit.position))
+        {
             let value = deposit_value(deposit, home, state, budget);
             available.push((deposit, value));
         }
@@ -520,6 +538,7 @@ pub(super) fn generate_candidates(
                 && structure.owner == owner
                 && structure.kind == StructureKind::Charger
                 && structure.health > 0
+                && is_reachable(owner, state, world_to_intent_cell(structure.position))
         })
         .copied();
     let pressure_readiness_penalty = (80.0 - supply).max(0.0) * 2.0;
@@ -571,24 +590,26 @@ pub(super) fn generate_candidates(
     if let Some(enemy_home) = enemy_home {
         let target = world_to_intent_cell(enemy_home);
         let anchor = midpoint_cell(home_cell, target);
-        let distance = home.distance(enemy_home) / crate::ZONE_BLOCK_SIZE;
-        let score =
-            economy.value + 160.0 + supply.min(120.0) * 0.7 + forces.friendly_strength * 0.04
-                - forces.enemy_strength * 0.035
-                - forces.low_charge_defenders as f32 * 18.0
-                - pressure_readiness_penalty
-                - distance * 2.0
-                - route_exposure(home, enemy_home, state.terrain, budget) * 12.0;
-        candidates.push(PlanCandidate {
-            objective: Objective::ForwardPressure(anchor),
-            economy,
-            attack_targets: Vec::new(),
-            anchor,
-            attack_target: Some(target),
-            key_charger,
-            defend_target,
-            score,
-        });
+        if is_reachable(owner, state, target) && is_reachable(owner, state, anchor) {
+            let distance = home.distance(enemy_home) / crate::ZONE_BLOCK_SIZE;
+            let score =
+                economy.value + 160.0 + supply.min(120.0) * 0.7 + forces.friendly_strength * 0.04
+                    - forces.enemy_strength * 0.035
+                    - forces.low_charge_defenders as f32 * 18.0
+                    - pressure_readiness_penalty
+                    - distance * 2.0
+                    - route_exposure(home, enemy_home, state.terrain, budget) * 12.0;
+            candidates.push(PlanCandidate {
+                objective: Objective::ForwardPressure(anchor),
+                economy,
+                attack_targets: Vec::new(),
+                anchor,
+                attack_target: Some(target),
+                key_charger,
+                defend_target,
+                score,
+            });
+        }
     }
 
     for structure in state
@@ -612,6 +633,9 @@ pub(super) fn generate_candidates(
         }
         let target = world_to_intent_cell(structure.position);
         let anchor = midpoint_cell(home_cell, target);
+        if !is_reachable(owner, state, target) || !is_reachable(owner, state, anchor) {
+            continue;
+        }
         let strategic_value = match structure.kind {
             StructureKind::Charger => 95.0,
             StructureKind::Source | StructureKind::Sink => 80.0,
@@ -677,6 +701,9 @@ pub(super) fn generate_candidates(
         }
         let target = world_to_intent_cell(bot.position);
         let anchor = midpoint_cell(home_cell, target);
+        if !is_reachable(owner, state, target) || !is_reachable(owner, state, anchor) {
+            continue;
+        }
         let danger = match bot.kind {
             NanobotType::Defender => 60.0,
             NanobotType::Hauler => 25.0,

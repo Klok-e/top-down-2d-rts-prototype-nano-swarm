@@ -25,6 +25,7 @@ pub struct BattleStatisticsConfig {
     pub output_root: PathBuf,
     pub seed: u64,
     pub headless: bool,
+    pub unbounded: bool,
 }
 
 impl Default for BattleStatisticsConfig {
@@ -33,6 +34,7 @@ impl Default for BattleStatisticsConfig {
             output_root: PathBuf::from("target/battle-runs"),
             seed: 0,
             headless: false,
+            unbounded: false,
         }
     }
 }
@@ -191,6 +193,7 @@ pub struct BattleSummary {
     pub seed: u64,
     pub timestep_seconds: f64,
     pub headless: bool,
+    pub unbounded: bool,
     pub code_revision: String,
     pub dirty_worktree: bool,
     pub ai_battle: AiBattleConfig,
@@ -203,7 +206,7 @@ pub struct BattleSummary {
 
 impl BattleSummary {
     fn records_frame_timing(&self) -> bool {
-        !self.headless || self.ai_battle.realtime
+        !self.headless || !self.unbounded
     }
 }
 
@@ -327,11 +330,12 @@ fn create_run(
         "simulation_seconds,fixed_tick,swarm,population,workers,haulers,defenders,births,deaths,minerals_gathered,minerals_consumed,structures_built,structures_lost,effective_damage_total,effective_damage_nanobots,effective_damage_structures,elimination_seconds,tick_count,tick_mean_ms,tick_p50_ms,tick_p95_ms,tick_p99_ms,tick_max_ms,frame_count,frame_mean_ms,frame_p95_ms,frame_max_ms,controller_reviews,controller_intent_edits,controller_work_units,controller_last_explanation"
     )?;
     let summary = BattleSummary {
-        schema_version: 4,
+        schema_version: 5,
         scenario: scenario_name.into(),
         seed: config.seed,
         timestep_seconds,
         headless: config.headless,
+        unbounded: config.unbounded,
         code_revision: env!("NANO_SWARM_CODE_REVISION").into(),
         dirty_worktree: env!("NANO_SWARM_DIRTY_WORKTREE") == "true",
         ai_battle,

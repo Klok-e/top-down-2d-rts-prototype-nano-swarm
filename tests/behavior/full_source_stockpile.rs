@@ -33,8 +33,8 @@ use std::f32::consts::TAU;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        ExtractProgress, GatherAssignment, PlannedKind, PlannedStructure,
-        SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PLACEMENT_COUNT,
+        ExtractProgress, GatherAssignment, MATERIAL_WORK_TICKS_PER_UNIT, OwnerSwarm, PlannedKind,
+        PlannedStructure, SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PLACEMENT_COUNT,
         SOURCE_STOCKPILE_PLACEMENT_RADIUS, SwarmId, WORKER_CARRY_CAPACITY, WorkerLoad,
     },
     resources::{ResourceKind, Stockpile},
@@ -42,6 +42,12 @@ use top_down_2d_rts_prototype_nano_swarm::{
 
 #[path = "../common/mod.rs"]
 mod common;
+
+/// Bounded real-time wait for demand and navigation work at the shipped 60 Hz rate.
+const DEMAND_TICK_BUDGET: u32 = 600;
+/// Shipped construction work plus bounded demand allocation and travel time.
+const PLAN_COMPLETION_TICK_BUDGET: u32 =
+    top_down_2d_rts_prototype_nano_swarm::nanobot::DEFAULT_PLANNED_WORK_TICKS + 600;
 
 /// Bot speed from the default game settings. Pulled into a
 /// constant so the travel-time math in the test is obvious.
@@ -168,7 +174,7 @@ fn full_source_stockpile_triggers_new_planned_source_stockpile() {
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
-    let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos + Vec2::new(0.0, -100.0));
+    let (swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos + Vec2::new(0.0, -100.0));
     let _deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -181,14 +187,17 @@ fn full_source_stockpile_triggers_new_planned_source_stockpile() {
     // A full Source Stockpile inside the cell. The demand
     // system must treat it as "not usable" and plan a
     // new one.
-    let _full_stockpile = common::spawn_stockpile(
+    let full_stockpile = common::spawn_stockpile(
         &mut app,
         deposit_pos + Vec2::new(60.0, 0.0),
         /* amount */ 1000,
         /* capacity */ 1000,
     );
+    app.world_mut()
+        .entity_mut(full_stockpile)
+        .insert(OwnerSwarm(swarm));
 
-    for _ in 0..5 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
     }
 
@@ -240,7 +249,7 @@ fn full_source_stockpile_with_existing_planned_does_not_duplicate() {
     // system must not plan a second one.
     let _planned = common::spawn_planned_structure_at_cell(&mut app, cell);
 
-    for _ in 0..5 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
     }
 
@@ -318,7 +327,7 @@ fn no_valid_placement_with_full_stockpile_creates_no_plan() {
         .entity_mut(worker)
         .insert(GatherAssignment::new(cell, deposit));
 
-    for _ in 0..5 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
     }
 
@@ -348,7 +357,6 @@ fn worker_resumes_extraction_after_full_stockpile_expansion() {
     // extraction, the carried load is delivered to the
     // new stockpile, and the deposit drains.
     let mut app = common::sim_app_with_gather_planned();
-    common::initialize_fast_pacing(&mut app);
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
@@ -380,9 +388,9 @@ fn worker_resumes_extraction_after_full_stockpile_expansion() {
     // + 24 + 4 + 1 + 24 + 1 + buffer.
     let total_ticks = 1
         + travel_ticks(PLANNED_TRAVEL_DISTANCE)
-        + top_down_2d_rts_prototype_nano_swarm::nanobot::DEFAULT_PLANNED_WORK_TICKS
+        + PLAN_COMPLETION_TICK_BUDGET
         + travel_ticks(PLANNED_TRAVEL_DISTANCE)
-        + WORKER_CARRY_CAPACITY
+        + WORKER_CARRY_CAPACITY * MATERIAL_WORK_TICKS_PER_UNIT
         + 1
         + travel_ticks(PLANNED_TRAVEL_DISTANCE)
         + 1
@@ -438,7 +446,7 @@ fn worker_carry_assign_skips_full_stockpile() {
     let _full_stockpile =
         common::spawn_stockpile(&mut app, worker_pos + Vec2::new(100.0, 0.0), 1000, 1000);
 
-    for _ in 0..5 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
     }
 
@@ -598,7 +606,7 @@ fn two_nearby_deposits_with_full_stockpiles_share_one_plan() {
     let _full_b =
         common::spawn_stockpile(&mut app, deposit_b_pos + Vec2::new(60.0, 0.0), 1000, 1000);
 
-    for _ in 0..5 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
     }
 

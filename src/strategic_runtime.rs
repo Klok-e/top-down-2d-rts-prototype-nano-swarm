@@ -11,6 +11,7 @@ use crate::{
         PlannedStructure, ProductionFacility, RegionalAllocationSet, Structure, Swarm, SwarmId,
         SwarmMember,
     },
+    reachability::{IntentWriteAction, SwarmReachabilityMap, apply_reachable_intent},
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole},
     strategic_controller::{
         BotState, Controller, DepositState, GameState, IntentEditAction, StructureKind,
@@ -42,7 +43,9 @@ impl Plugin for StrategicControllerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ControllerTelemetry>().add_systems(
             FixedUpdate,
-            strategic_intent_system.before(RegionalAllocationSet::Project),
+            strategic_intent_system
+                .before(RegionalAllocationSet::Project)
+                .run_if(resource_exists::<SwarmReachabilityMap>),
         );
     }
 }
@@ -120,6 +123,7 @@ fn strategic_intent_system(
     rocks: Query<(&RockFormation, &Transform)>,
     ledger: Res<ResourceLedger>,
     mut grid: ResMut<IntentGrid>,
+    reachability: Res<SwarmReachabilityMap>,
     time: Res<Time<Fixed>>,
     outcome: Option<Res<MatchOutcome>>,
     mut telemetry: ResMut<ControllerTelemetry>,
@@ -211,6 +215,7 @@ fn strategic_intent_system(
         structures: &structure_states,
         deposits: &deposit_states,
         terrain: &terrain,
+        reachability: Some(&reachability),
         tick: (time.elapsed_secs_f64() * crate::SIMULATION_HZ).round() as u64,
         finished: false,
     };
@@ -243,10 +248,20 @@ fn strategic_intent_system(
     }
     for (owner, decision) in decisions {
         for edit in decision.edits {
-            match edit.action {
-                IntentEditAction::Paint => grid.paint(edit.cell, edit.kind, owner),
-                IntentEditAction::Erase => grid.erase(edit.cell, edit.kind, owner),
+            let action = match edit.action {
+                IntentEditAction::Paint => IntentWriteAction::Paint,
+                IntentEditAction::Erase => IntentWriteAction::Erase,
             };
+            if let Err(error) = apply_reachable_intent(
+                &mut grid,
+                &reachability,
+                owner,
+                edit.cell,
+                edit.kind,
+                action,
+            ) {
+                log::error!("Strategic Controller emitted rejected intent edit: {error}");
+            }
         }
     }
 }

@@ -23,19 +23,12 @@ use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile,
 
 /// Maximum units a Hauler can carry in a single trip. The glossary is
 /// explicit that Haulers carry "much more" than Workers; this cap is
-/// deliberately five times the worker cap so the gap is visible in the
-/// swarm output and obvious in the test math.
+/// deliberately five times the worker cap so the gap remains visible in
+/// the swarm output.
 pub const HAULER_CARRY_CAPACITY: u32 = 20;
 
-/// Units a Hauler pulls from its source per `app.update()` tick.
-/// Four units/tick means a hauler fills the 20-unit load in 5 ticks;
-/// large enough that the trip is short relative to the load but
-/// small enough that the test can drive the simulation forward with
-/// a handful of updates.
-pub const HAULER_EXTRACT_PER_TICK: u32 = 4;
-
-/// Units a Hauler transfers into a destination per simulation tick.
-pub const HAULER_TRANSFER_PER_TICK: u32 = HAULER_EXTRACT_PER_TICK;
+/// Minerals a Hauler moves after each completed material-work interval.
+pub const HAULER_TRANSFER_PER_PULSE: u32 = 1;
 
 /// Backwards-compatible name for the shared cargo carried by a Hauler.
 /// Cargo exists during gradual loading and remains after loading completes.
@@ -284,9 +277,11 @@ pub fn hauler_arrive_source_system(
             let kind = reservation
                 .map(|reservation| reservation.kind)
                 .unwrap_or(ResourceKind::Minerals);
-            commands
-                .entity(entity)
-                .insert((HaulerLoading, Cargo::empty(kind)));
+            commands.entity(entity).insert((
+                HaulerLoading,
+                Cargo::empty(kind),
+                super::MaterialWorkProgress::default(),
+            ));
         } else {
             // Restore the final work goal while the source commitment remains active.
             commands
@@ -296,8 +291,8 @@ pub fn hauler_arrive_source_system(
     }
 }
 
-/// Drain `HAULER_EXTRACT_PER_TICK` units from the assigned source
-/// every tick while the hauler is at the source and the load is
+/// Drain one mineral from the assigned source after each material-work
+/// interval while the hauler is at the source and the load is
 /// not full. When the load is full or the source empties (or
 /// disappears), transition the hauler to Carrying.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
@@ -312,6 +307,7 @@ pub fn hauler_load_system(
             &HaulerAssignment,
             Option<&mut LogisticsReservation>,
             &SwarmMember,
+            &mut super::MaterialWorkProgress,
         ),
         (
             Without<super::WorkBlocked>,
@@ -326,7 +322,8 @@ pub fn hauler_load_system(
     mut ledger: ResMut<ResourceLedger>,
     mut counters: Option<ResMut<BattleCounters>>,
 ) {
-    for (entity, mut cargo, transform, assignment, mut reservation, swarm) in &mut haulers {
+    for (entity, mut cargo, transform, assignment, mut reservation, swarm, mut work) in &mut haulers
+    {
         let target_amount = reservation
             .as_ref()
             .map(|reservation| reservation.amount)
@@ -356,6 +353,7 @@ pub fn hauler_load_system(
         if let Some(region) = region
             && !region.contains(transform.translation.truncate())
         {
+            work.reset();
             if matches!(
                 navigation.query_connectivity(
                     transform.translation.truncate(),
@@ -374,6 +372,10 @@ pub fn hauler_load_system(
             continue;
         }
 
+        if !work.completes_unit() {
+            continue;
+        }
+
         if let Ok((mut deposit, _)) = deposits.get_mut(assignment.source) {
             if deposit.amount == 0 {
                 finish_reservation(reservation.as_deref_mut(), cargo.amount);
@@ -381,7 +383,7 @@ pub fn hauler_load_system(
                 continue;
             }
             let can_still_carry = target_amount - cargo.amount;
-            let actual = HAULER_EXTRACT_PER_TICK
+            let actual = HAULER_TRANSFER_PER_PULSE
                 .min(deposit.amount)
                 .min(can_still_carry);
             cargo.amount += actual;
@@ -408,7 +410,7 @@ pub fn hauler_load_system(
                 continue;
             }
             let can_still_carry = target_amount - cargo.amount;
-            let actual = HAULER_EXTRACT_PER_TICK
+            let actual = HAULER_TRANSFER_PER_PULSE
                 .min(stockpile.amount)
                 .min(can_still_carry);
             cargo.amount += actual;
@@ -431,7 +433,10 @@ pub fn hauler_load_system(
 }
 
 fn transition_to_carrying(commands: &mut Commands, entity: Entity, amount: u32) {
-    commands.entity(entity).remove::<HaulerLoading>();
+    commands
+        .entity(entity)
+        .remove::<HaulerLoading>()
+        .remove::<super::MaterialWorkProgress>();
     if amount == 0 {
         commands
             .entity(entity)
@@ -815,6 +820,7 @@ pub fn hauler_delivery_system(
             Option<&LogisticsReservation>,
             &SwarmMember,
             Option<&ReturningCargo>,
+            Option<&mut super::MaterialWorkProgress>,
         ),
         (
             Without<super::WorkBlocked>,
@@ -851,7 +857,7 @@ pub fn hauler_delivery_system(
         *total = total.saturating_add(reservation.destination_remaining);
     }
 
-    for (entity, transform, mut load, assignment, reservation, swarm_member, returning) in
+    for (entity, transform, mut load, assignment, reservation, swarm_member, returning, work) in
         &mut haulers
     {
         let tier = source_tier(
@@ -891,9 +897,21 @@ pub fn hauler_delivery_system(
             continue;
         };
         if !endpoint.region.contains(transform.translation.truncate()) {
+            if let Some(mut work) = work {
+                work.reset();
+            }
             continue;
         }
-        let transfer_limit = load.amount.min(HAULER_TRANSFER_PER_TICK);
+        let Some(mut work) = work else {
+            commands
+                .entity(entity)
+                .insert(super::MaterialWorkProgress::default());
+            continue;
+        };
+        if !work.completes_unit() {
+            continue;
+        }
+        let transfer_limit = load.amount.min(HAULER_TRANSFER_PER_PULSE);
         let actual = if let Ok((_, mut stockpile, _, _, _)) = stockpiles.get_mut(assignment.sink) {
             let actual = transfer_limit.min(stockpile.free_space());
             stockpile.amount += actual;
@@ -931,7 +949,8 @@ pub fn hauler_delivery_system(
                 .remove::<HaulerAssignment>()
                 .remove::<Cargo>()
                 .remove::<ReturningCargo>()
-                .remove::<LogisticsReservation>();
+                .remove::<LogisticsReservation>()
+                .remove::<super::MaterialWorkProgress>();
         } else if let Some(reservation) = reservation {
             let mut updated = *reservation;
             updated.destination_remaining = updated.destination_remaining.saturating_sub(actual);
@@ -996,20 +1015,16 @@ mod tests {
     }
 
     #[test]
-    fn hauler_carry_capacity_is_one_tenth_of_stockpile_capacity() {
-        // One full hauler load is one tenth of a completed
+    fn hauler_carry_capacity_is_one_twentieth_of_stockpile_capacity() {
+        // One full hauler load is one twentieth of a completed
         // Source or Sink Stockpile buffer.
-        const { assert!(HAULER_CARRY_CAPACITY * 10 == DEFAULT_STOCKPILE_CAPACITY) };
+        const { assert!(HAULER_CARRY_CAPACITY * 20 == DEFAULT_STOCKPILE_CAPACITY) };
     }
 
     #[test]
-    fn hauler_extract_per_tick_divides_capacity() {
-        // The hauler's load fills in a small whole number of
-        // ticks. This keeps test math simple and avoids a
-        // "stuck at the source for an awkward number of ticks"
-        // pattern. Const block keeps the check compile-time so
-        // a future tuning pass that breaks the invariant fails
-        // the build, not just a test run.
-        const { assert!(HAULER_CARRY_CAPACITY.is_multiple_of(HAULER_EXTRACT_PER_TICK)) };
+    fn hauler_transfer_pulse_divides_capacity() {
+        // The hauler's load fills in a whole number of material-work pulses.
+        // The const block rejects incompatible economy tuning at compile time.
+        const { assert!(HAULER_CARRY_CAPACITY.is_multiple_of(HAULER_TRANSFER_PER_PULSE)) };
     }
 }

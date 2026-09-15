@@ -22,9 +22,54 @@ fn empty_state<'a>(grid: &'a IntentGrid, tick: u64) -> GameState<'a> {
         structures: &[],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick,
         finished: false,
     }
+}
+
+#[test]
+fn controller_erases_legacy_intent_and_never_paints_across_permanent_terrain() {
+    use crate::{navigation::Obstacle, reachability::SwarmReachabilityMap};
+
+    let mut grid = IntentGrid::new(8, 8);
+    let owner = SwarmId::PLAYER;
+    let blocked = IVec2::new(1, 0);
+    grid.paint(blocked, IntentKind::Defend, owner);
+    let wall = Obstacle::Rectangle {
+        center: Vec2::ZERO,
+        half: Vec2::new(36.0, 8_000.0),
+    };
+    let reachability =
+        SwarmReachabilityMap::new(&grid, [wall], [(owner, Vec2::new(-252.0, 36.0))]).unwrap();
+    let swarms = [SwarmState {
+        id: owner,
+        home: Vec2::new(-252.0, 36.0),
+        minerals: 0,
+    }];
+    let terrain = [wall];
+    let state = GameState {
+        grid: &grid,
+        swarms: &swarms,
+        bots: &[],
+        structures: &[],
+        deposits: &[],
+        terrain: &terrain,
+        reachability: Some(&reachability),
+        tick: 0,
+        finished: false,
+    };
+
+    let decision = Controller::new(owner).decide(&state);
+
+    assert!(decision.edits.contains(&IntentEdit {
+        cell: blocked,
+        kind: IntentKind::Defend,
+        action: IntentEditAction::Erase,
+    }));
+    assert!(decision.edits.iter().all(|edit| {
+        edit.action == IntentEditAction::Erase || reachability.contains(owner, edit.cell, &grid)
+    }));
 }
 
 fn mature_economy_bots(owner: SwarmId, home: Vec2) -> Vec<BotState> {
@@ -148,6 +193,7 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
         structures: &structures,
         deposits: &deposits,
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     };
@@ -221,6 +267,7 @@ fn raid_retains_the_established_primary() {
         structures: &primary_chain,
         deposits: &deposits,
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -288,6 +335,7 @@ fn raid_retains_the_established_primary() {
         ],
         deposits: &deposits,
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS,
         finished: false,
     });
@@ -350,6 +398,7 @@ fn advantaged_raid_paints_enemy_logistics_and_keeps_home_economy() {
         structures: &structures,
         deposits: &deposits,
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -429,6 +478,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
         structures: &[],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -457,6 +507,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
         structures: &[rich_charger],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS,
         finished: false,
     });
@@ -535,6 +586,7 @@ fn progressing_live_attack_remains_when_a_supported_new_target_appears() {
         structures: &[friendly_charger, incumbent],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -563,6 +615,7 @@ fn progressing_live_attack_remains_when_a_supported_new_target_appears() {
         structures: &[friendly_charger, progressing_incumbent, new_forward_target],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS,
         finished: false,
     });
@@ -603,6 +656,7 @@ fn progressing_live_attack_remains_when_a_supported_new_target_appears() {
         structures: &[empty_charger, progressing_incumbent, new_forward_target],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS * 2,
         finished: false,
     });
@@ -681,6 +735,7 @@ fn supported_attack_targets_a_recovery_bot_while_enemy_structures_remain() {
         structures: &structures,
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -749,6 +804,7 @@ fn progressing_incumbent_wins_redeployment_when_only_one_front_is_supportable() 
         structures: &[friendly_charger, incumbent],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -773,6 +829,7 @@ fn progressing_incumbent_wins_redeployment_when_only_one_front_is_supportable() 
         structures: &[friendly_charger, progressing_incumbent, new_forward_target],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS,
         finished: false,
     });
@@ -820,6 +877,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
         structures: &[],
         deposits: &deposits,
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -832,6 +890,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
         structures: &[],
         deposits: &deposits,
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS - 1,
         finished: false,
     });
@@ -845,6 +904,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
         structures: &[],
         deposits: &deposits,
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS,
         finished: false,
     });
@@ -877,6 +937,7 @@ fn clearly_better_resource_opportunity_replaces_a_viable_plan() {
         structures: &[],
         deposits: &[original],
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -898,6 +959,7 @@ fn clearly_better_resource_opportunity_replaces_a_viable_plan() {
         structures: &[],
         deposits: &opportunities,
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS,
         finished: false,
     });
@@ -973,6 +1035,7 @@ fn accumulated_supply_and_a_logistics_target_replace_the_economy_plan() {
         structures: &[facility],
         deposits: &deposit,
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -999,6 +1062,7 @@ fn accumulated_supply_and_a_logistics_target_replace_the_economy_plan() {
         structures: &[facility, sink],
         deposits: &deposit,
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS,
         finished: false,
     });
@@ -1050,6 +1114,7 @@ fn terrain_exposure_changes_which_equal_deposit_is_secured() {
         structures: &[],
         deposits: &deposits,
         terrain: &terrain,
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -1106,6 +1171,7 @@ fn irrelevant_far_rocks_do_not_dilute_an_obstructed_deposit_approach() {
             structures: &[],
             deposits: &deposits,
             terrain,
+            reachability: None,
             tick: 0,
             finished: false,
         });
@@ -1230,6 +1296,7 @@ fn combat_support_build_follows_the_living_defender_cohort_without_outlier_drift
         structures: &structures,
         deposits: &deposit,
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -1282,6 +1349,7 @@ fn combat_support_build_follows_the_living_defender_cohort_without_outlier_drift
         structures: &structures,
         deposits: &deposit,
         terrain: &[obstruction],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS,
         finished: false,
     });
@@ -1369,6 +1437,7 @@ fn combat_support_retains_a_nearby_open_build_during_small_cohort_drift() {
         structures: &structures,
         deposits: &deposits,
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -1395,6 +1464,7 @@ fn combat_support_retains_a_nearby_open_build_during_small_cohort_drift() {
         structures: &structures,
         deposits: &deposits,
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS,
         finished: false,
     });
@@ -1423,6 +1493,7 @@ fn combat_support_retains_a_nearby_open_build_during_small_cohort_drift() {
         structures: &structures,
         deposits: &deposits,
         terrain: &[obstruction],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS * 2,
         finished: false,
     });
@@ -1495,6 +1566,7 @@ fn even_split_cohort_support_uses_an_occupied_flank_instead_of_the_empty_median_
         structures: &structures,
         deposits: &deposits,
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -1602,6 +1674,7 @@ fn pressure_support_uses_the_open_side_of_a_swapped_obstruction() {
             structures: &enemy_sink,
             deposits: &deposit,
             terrain: &terrain,
+            reachability: None,
             tick: 0,
             finished: false,
         });
@@ -1692,6 +1765,7 @@ fn authored_terrain_leaves_budget_for_a_coordinated_plan() {
         structures: &[],
         deposits: &deposits,
         terrain: &terrain,
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -1776,6 +1850,7 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
         structures: &structures,
         deposits: &deposits,
         terrain: &terrain,
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -1840,6 +1915,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
         structures: &[],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -1864,6 +1940,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
         structures: &[],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 1,
         finished: false,
     });
@@ -1877,6 +1954,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
         structures: &[],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS,
         finished: false,
     });
@@ -1947,6 +2025,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
         structures: &[],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -1967,6 +2046,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
         structures: &[],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 1,
         finished: false,
     });
@@ -1979,6 +2059,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
         structures: &[alternative],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS,
         finished: false,
     });
@@ -1991,6 +2072,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
         structures: &[alternative],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS * 2,
         finished: false,
     });
@@ -2048,6 +2130,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
         structures: &[],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -2075,6 +2158,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
         structures: &[],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 1,
         finished: false,
     });
@@ -2093,6 +2177,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
         structures: &[],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 2,
         finished: false,
     });
@@ -2159,6 +2244,7 @@ fn stalled_covered_target_yields_to_a_clearly_better_plan_after_one_grace_review
         structures: &[],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -2180,6 +2266,7 @@ fn stalled_covered_target_yields_to_a_clearly_better_plan_after_one_grace_review
         structures: &[],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 1,
         finished: false,
     });
@@ -2192,6 +2279,7 @@ fn stalled_covered_target_yields_to_a_clearly_better_plan_after_one_grace_review
         structures: &[],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS,
         finished: false,
     });
@@ -2205,6 +2293,7 @@ fn stalled_covered_target_yields_to_a_clearly_better_plan_after_one_grace_review
         structures: &[alternative],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS * 2,
         finished: false,
     });
@@ -2217,6 +2306,7 @@ fn stalled_covered_target_yields_to_a_clearly_better_plan_after_one_grace_review
         structures: &[alternative],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS * 3,
         finished: false,
     });
@@ -2283,6 +2373,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
         structures: &[],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -2304,6 +2395,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
         structures: &[],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 1,
         finished: false,
     });
@@ -2316,6 +2408,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
         structures: &[],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS,
         finished: false,
     });
@@ -2327,6 +2420,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
         structures: &[alternative],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS * 2,
         finished: false,
     });
@@ -2340,6 +2434,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
         structures: &[alternative],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS * 3,
         finished: false,
     });
@@ -2352,6 +2447,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
         structures: &[alternative],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS * 4,
         finished: false,
     });
@@ -2364,6 +2460,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
         structures: &[alternative],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS * 5,
         finished: false,
     });
@@ -2435,6 +2532,7 @@ fn covered_progress_restores_owned_defend_lost_by_another_target() {
         structures: &[friendly_charger, moving_target, other_target],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -2468,6 +2566,7 @@ fn covered_progress_restores_owned_defend_lost_by_another_target() {
         structures: &[friendly_charger, moving_target, other_target],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 1,
         finished: false,
     });
@@ -2482,6 +2581,7 @@ fn covered_progress_restores_owned_defend_lost_by_another_target() {
         structures: &[friendly_charger, moving_target, other_target],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 2,
         finished: false,
     });
@@ -2554,6 +2654,7 @@ fn covered_progress_reduces_an_attack_front_when_ready_force_falls() {
         structures: &[friendly_charger, moving_target, other_target],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -2582,6 +2683,7 @@ fn covered_progress_reduces_an_attack_front_when_ready_force_falls() {
         structures: &[friendly_charger, moving_target, other_target],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 1,
         finished: false,
     });
@@ -2606,6 +2708,7 @@ fn covered_progress_reduces_an_attack_front_when_ready_force_falls() {
         structures: &[empty_charger, moving_target, other_target],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS,
         finished: false,
     });
@@ -2672,6 +2775,7 @@ fn covered_progress_opens_a_new_front_when_ready_force_grows() {
         structures: &[],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -2693,6 +2797,7 @@ fn covered_progress_opens_a_new_front_when_ready_force_grows() {
         structures: &[],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: 1,
         finished: false,
     });
@@ -2729,6 +2834,7 @@ fn covered_progress_opens_a_new_front_when_ready_force_grows() {
         structures: &[supplied_charger],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS,
         finished: false,
     });
@@ -2751,6 +2857,7 @@ fn covered_progress_opens_a_new_front_when_ready_force_grows() {
         structures: &[supplied_charger, new_target],
         deposits: &[],
         terrain: &[],
+        reachability: None,
         tick: REVIEW_PERIOD_TICKS * 2,
         finished: false,
     });
@@ -2805,6 +2912,7 @@ fn structure_free_remnant_is_followed_across_cells_and_after_disappearance() {
         structures: &[],
         deposits: &deposit,
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -2827,6 +2935,7 @@ fn structure_free_remnant_is_followed_across_cells_and_after_disappearance() {
         structures: &[],
         deposits: &deposit,
         terrain: &[],
+        reachability: None,
         tick: 1,
         finished: false,
     });
@@ -2846,6 +2955,7 @@ fn structure_free_remnant_is_followed_across_cells_and_after_disappearance() {
         structures: &[],
         deposits: &deposit,
         terrain: &[],
+        reachability: None,
         tick: 2,
         finished: false,
     });
@@ -2923,6 +3033,7 @@ fn mature_funded_force_retains_attack_and_primary_mining_for_a_minute() {
         structures: &[primary_chain[0], primary_chain[1], enemy_facility],
         deposits: &deposits,
         terrain: &[],
+        reachability: None,
         tick: 0,
         finished: false,
     });
@@ -2964,6 +3075,7 @@ fn mature_funded_force_retains_attack_and_primary_mining_for_a_minute() {
             structures: &[primary_chain[0], primary_chain[1], enemy_facility],
             deposits: &deposits,
             terrain: &[],
+            reachability: None,
             tick: review * REVIEW_PERIOD_TICKS,
             finished: false,
         });

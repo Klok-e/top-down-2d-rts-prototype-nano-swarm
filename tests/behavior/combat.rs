@@ -6,12 +6,13 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::battle_statistics::BattleCounters;
 use top_down_2d_rts_prototype_nano_swarm::{
     game_settings::GameSettings,
+    gameplay_pacing::GameplayPacing,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Charge, ChargerAssignment, CombatAppearance, CombatPlugin, DEFENDER_ATTACK_INTERVAL_TICKS,
-        DefenderAttackCooldown, DefenderResponse, DirectMovementComponent, Health, NanobotType,
-        OwnerSwarm, PlannedKind, ResolvedCombatFact, Structure, StructureCombatAppearance,
-        StructureKind, Swarm, SwarmId, SwarmMember, nanobot_death_cleanup_system,
+        Charge, ChargerAssignment, CombatAppearance, CombatPlugin, DefenderAttackCooldown,
+        DefenderResponse, DirectMovementComponent, Health, NanobotType, OwnerSwarm, PlannedKind,
+        ResolvedCombatFact, Structure, StructureCombatAppearance, StructureKind, Swarm, SwarmId,
+        SwarmMember, nanobot_death_cleanup_system,
     },
     structure_sprites::StructureVisual,
 };
@@ -320,7 +321,6 @@ fn pursuit_destination_tracks_the_claimed_entity_each_fixed_step() {
 #[test]
 fn combat_damage_obeys_the_existing_cooldown() {
     let mut app = common::sim_app_with_combat();
-    common::initialize_fast_pacing(&mut app);
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
     app.world_mut().spawn((Swarm {}, SwarmId(11)));
     let cell = IVec2::ZERO;
@@ -337,7 +337,11 @@ fn combat_damage_obeys_the_existing_cooldown() {
         app.world().entity(target).get::<Health>().unwrap().current,
         90
     );
-    for _ in 0..DEFENDER_ATTACK_INTERVAL_TICKS.saturating_sub(1) {
+    let attack_interval = app
+        .world()
+        .resource::<GameplayPacing>()
+        .attack_interval_ticks;
+    for _ in 0..attack_interval.saturating_sub(1) {
         app.update();
     }
     assert_eq!(
@@ -418,7 +422,6 @@ fn simultaneous_lethal_responders_still_exchange_hits() {
 #[test]
 fn zero_health_nearest_target_is_skipped_for_the_nearest_living_hostile() {
     let mut app = common::sim_app_with_combat();
-    common::initialize_fast_pacing(&mut app);
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
     let opponent = app.world_mut().spawn((Swarm {}, SwarmId(11))).id();
     let cell = IVec2::ZERO;
@@ -461,7 +464,12 @@ fn zero_health_nearest_target_is_skipped_for_the_nearest_living_hostile() {
             .entity(responder)
             .get::<DefenderAttackCooldown>()
             .map(|cooldown| cooldown.ticks_remaining),
-        Some(DEFENDER_ATTACK_INTERVAL_TICKS.saturating_sub(1)),
+        Some(
+            app.world()
+                .resource::<GameplayPacing>()
+                .attack_interval_ticks
+                .saturating_sub(1),
+        ),
     );
 }
 

@@ -500,8 +500,20 @@ fn idle_work_approach_occupant_departs_for_distant_friendly_demand() {
                 since: 0.,
             },
         ));
-        for _ in 0..20 {
+        for _ in 0..120 {
             app.update();
+            if !should_depart
+                || app
+                    .world()
+                    .get::<Transform>(occupant)
+                    .unwrap()
+                    .translation
+                    .truncate()
+                    .distance(region.approach(Vec2::new(328., 300.)))
+                    >= 67.99
+            {
+                break;
+            }
         }
         let position = app
             .world()
@@ -580,13 +592,8 @@ fn newly_arrived_cargo_and_loading_assignments_stay_put_until_work_effects_run()
 
 #[test]
 fn normal_steering_accelerates_and_turns_without_velocity_snaps() {
-    use bevy::time::TimeUpdateStrategy;
-    use std::time::Duration;
     use top_down_2d_rts_prototype_nano_swarm::nanobot::{VelocityComponent, velocity_system};
     let mut app = common::minimal_app();
-    let cadence = Duration::from_secs_f64(1.0 / 60.0);
-    app.insert_resource(Time::<Fixed>::from_duration(cadence));
-    app.insert_resource(TimeUpdateStrategy::ManualDuration(cadence));
     app.add_systems(FixedUpdate, velocity_system);
     let bot = common::spawn_worker_at(&mut app, Vec2::new(200., 300.));
     app.world_mut()
@@ -640,15 +647,10 @@ fn normal_steering_accelerates_and_turns_without_velocity_snaps() {
 
 #[test]
 fn arrival_brakes_progressively_without_overshooting_the_destination() {
-    use bevy::time::TimeUpdateStrategy;
-    use std::time::Duration;
     use top_down_2d_rts_prototype_nano_swarm::nanobot::{
         RemainingTravel, VelocityComponent, velocity_system,
     };
     let mut app = common::minimal_app();
-    let cadence = Duration::from_secs_f64(1.0 / 60.0);
-    app.insert_resource(Time::<Fixed>::from_duration(cadence));
-    app.insert_resource(TimeUpdateStrategy::ManualDuration(cadence));
     app.add_systems(FixedUpdate, velocity_system);
     let bot = common::spawn_worker_at(&mut app, Vec2::new(200., 300.));
     app.world_mut()

@@ -14,6 +14,8 @@ use bevy::ui::RelativeCursorPosition;
 use bevy::window::Window;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{BrushSelection, IntentGrid},
+    nanobot::SwarmId,
+    reachability::SwarmReachabilityMap,
     session::SessionRules,
     ui::{
         NoPointerCapture, UiHandling, check_ui_interaction,
@@ -25,9 +27,13 @@ use top_down_2d_rts_prototype_nano_swarm::{
 fn build_app() -> App {
     let mut app = App::new();
     app.add_plugins(bevy::time::TimePlugin);
+    let grid = IntentGrid::new(16, 16);
+    let reachability = SwarmReachabilityMap::new(&grid, [], [(SwarmId::PLAYER, Vec2::ZERO)])
+        .expect("the empty UI-capture test map has a reachable player home");
     app.insert_resource(UiHandling::default());
     app.insert_resource(BrushSelection::default());
-    app.insert_resource(IntentGrid::new(16, 16));
+    app.insert_resource(grid);
+    app.insert_resource(reachability);
     app.insert_resource(SessionRules::default());
     app.insert_resource(ButtonInput::<MouseButton>::default());
     app

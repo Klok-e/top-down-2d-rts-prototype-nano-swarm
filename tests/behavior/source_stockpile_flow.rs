@@ -38,6 +38,11 @@ use top_down_2d_rts_prototype_nano_swarm::{
 #[path = "../common/mod.rs"]
 mod common;
 
+/// Bounded real-time wait for demand and navigation work at the shipped 60 Hz rate.
+const DEMAND_TICK_BUDGET: u32 = 600;
+/// Shipped construction work plus bounded demand allocation and travel time.
+const PLAN_COMPLETION_TICK_BUDGET: u32 = DEFAULT_PLANNED_WORK_TICKS + 600;
+
 /// Bot speed from the default game settings. Pulled into a
 /// constant so the travel-time math in the test is obvious.
 const BOT_SPEED: f32 = 5.0;
@@ -90,7 +95,7 @@ fn no_completed_source_stockpile_from_gather_paint_alone() {
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
 
-    for _ in 0..5 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
     }
 
@@ -146,7 +151,7 @@ fn opponent_gather_demand_creates_opponent_owned_source_plan() {
         },
     );
 
-    for _ in 0..100 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
         if app
             .world_mut()
@@ -238,7 +243,7 @@ fn gather_assignment_triggers_planned_source_stockpile() {
         },
     );
 
-    for _ in 0..100 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
         if app
             .world_mut()
@@ -303,7 +308,6 @@ fn worker_builds_planned_source_stockpile() {
     // structure foundation's reservation tests; here we
     // verify the build completes end-to-end.
     let mut app = build_app();
-    common::initialize_fast_pacing(&mut app);
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
@@ -324,7 +328,7 @@ fn worker_builds_planned_source_stockpile() {
     //   travel: travel_ticks(PLANNED_TRAVEL_DISTANCE) ticks
     //   work: DEFAULT_PLANNED_WORK_TICKS ticks
     //   margin: a small buffer
-    let total_ticks = 1 + travel_ticks(PLANNED_TRAVEL_DISTANCE) + DEFAULT_PLANNED_WORK_TICKS + 5;
+    let total_ticks = PLAN_COMPLETION_TICK_BUDGET + travel_ticks(PLANNED_TRAVEL_DISTANCE);
     for _ in 0..total_ticks {
         app.update();
         let world = app.world_mut();
@@ -368,7 +372,6 @@ fn worker_resumes_extraction_after_stockpile_built() {
     // arrive system inserts `ExtractProgress`. The deposit's
     // amount is the visible end of the resume.
     let mut app = build_app();
-    common::initialize_fast_pacing(&mut app);
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
@@ -388,7 +391,7 @@ fn worker_resumes_extraction_after_stockpile_built() {
     // deposit's `amount`.
     let total_ticks = 1
         + travel_ticks(PLANNED_TRAVEL_DISTANCE)
-        + DEFAULT_PLANNED_WORK_TICKS
+        + PLAN_COMPLETION_TICK_BUDGET
         + travel_ticks(PLANNED_TRAVEL_DISTANCE)
         + 10;
     for _ in 0..total_ticks {
@@ -432,7 +435,7 @@ fn worker_delivers_minerals_to_completed_source_stockpile() {
     // Advance the complete build, extraction, and delivery flow.
     let total_ticks = 1
         + travel_ticks(PLANNED_TRAVEL_DISTANCE)
-        + DEFAULT_PLANNED_WORK_TICKS
+        + PLAN_COMPLETION_TICK_BUDGET
         + travel_ticks(PLANNED_TRAVEL_DISTANCE)
         + 4  // extract to fill a load
         + 1  // carry-assign tick
@@ -507,7 +510,7 @@ fn planned_source_stockpile_is_reused_for_nearby_deposits() {
     let _worker_a = common::spawn_worker_at(&mut app, deposit_pos + Vec2::new(0.0, -100.0));
     let _worker_b = common::spawn_worker_at(&mut app, deposit_pos + Vec2::new(40.0, -100.0));
 
-    for _ in 0..5 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
     }
 
@@ -546,7 +549,7 @@ fn source_stockpile_stays_in_gather_painted_cell() {
         },
     );
 
-    for _ in 0..100 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
         if app
             .world_mut()
@@ -583,7 +586,6 @@ fn completed_source_stockpile_keeps_swarm_ownership() {
     // `Stockpile`, so the ownership is stable across the
     // build.
     let mut app = build_app();
-    common::initialize_fast_pacing(&mut app);
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
@@ -599,7 +601,7 @@ fn completed_source_stockpile_keeps_swarm_ownership() {
     );
 
     // Build phase + buffer.
-    let total_ticks = 1 + travel_ticks(PLANNED_TRAVEL_DISTANCE) + DEFAULT_PLANNED_WORK_TICKS + 5;
+    let total_ticks = PLAN_COMPLETION_TICK_BUDGET + travel_ticks(PLANNED_TRAVEL_DISTANCE);
     for _ in 0..total_ticks {
         app.update();
     }
@@ -637,7 +639,7 @@ fn scenario_sized_deposit_at_authored_cell_center_gets_source_stockpile() {
         ))
         .id();
 
-    for _ in 0..100 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
         if app
             .world_mut()
@@ -667,7 +669,7 @@ fn scenario_sized_deposit_at_authored_cell_center_gets_source_stockpile() {
     );
     drop(q);
 
-    for _ in 0..500 {
+    for _ in 0..(PLAN_COMPLETION_TICK_BUDGET + 2 * DEMAND_TICK_BUDGET) {
         app.update();
     }
 
@@ -706,7 +708,7 @@ fn worker_waits_for_planned_source_stockpile_before_extracting() {
 
     // Observe the first accepted plan after queued route and access checks.
     // The creation tick precedes any Worker construction on that plan.
-    for _ in 0..100 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
         assert_eq!(
             app.world().get::<ResourceDeposit>(deposit).unwrap().amount,
@@ -723,7 +725,7 @@ fn worker_waits_for_planned_source_stockpile_before_extracting() {
     }
 
     // Construction allocation can itself wait for a route after site acceptance.
-    for _ in 0..100 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         let assigned = app.world().get::<GatherAssignment>(worker).is_some()
             || app.world().get::<PlannedStructureClaim>(worker).is_some()
             || app
@@ -791,7 +793,6 @@ fn second_worker_can_claim_and_build_planned_source_stockpile() {
     // the deposit and resumes extraction once the build
     // finishes.
     let mut app = build_app();
-    common::initialize_fast_pacing(&mut app);
     let cell = IVec2::new(0, 0);
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
@@ -814,7 +815,7 @@ fn second_worker_can_claim_and_build_planned_source_stockpile() {
     let second_worker = common::spawn_worker_at(&mut app, far_pos);
 
     // Build phase + buffer.
-    let total_ticks = 1 + travel_ticks(PLANNED_TRAVEL_DISTANCE) + DEFAULT_PLANNED_WORK_TICKS + 5;
+    let total_ticks = PLAN_COMPLETION_TICK_BUDGET + travel_ticks(PLANNED_TRAVEL_DISTANCE);
     for _ in 0..total_ticks {
         app.update();
     }
@@ -866,7 +867,7 @@ fn demand_system_does_not_double_plan_when_planned_already_exists() {
     let (_swarm, _worker) = spawn_swarm_and_worker(&mut app, deposit_pos + Vec2::new(0.0, -100.0));
 
     // First tick of demand.
-    for _ in 0..100 {
+    for _ in 0..DEMAND_TICK_BUDGET {
         app.update();
         if app
             .world_mut()

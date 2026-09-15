@@ -20,9 +20,8 @@ use crate::resources::{ResourceDeposit, Stockpile, StockpileRole};
 use crate::structure_sprites::{StructureSprites, StructureVisual, StructureVisualState};
 
 /// Baseline worker-time ticks required to finish a planned structure.
-/// New automatic plans take their budget from the shared gameplay pacing
-/// resource; tests can install explicit numeric timing fixtures.
-pub const DEFAULT_PLANNED_WORK_TICKS: u32 = 5;
+/// Automatic plans take the same shipped budget through [`GameplayPacing`].
+pub const DEFAULT_PLANNED_WORK_TICKS: u32 = 1_500;
 
 /// Local sprite size shared by planned and completed visuals. The aligned
 /// transform determines the physical whole-cell rectangle.
@@ -324,8 +323,8 @@ pub(crate) fn planned_visual_components(
 }
 
 /// Default capacity for completed Source and Sink Stockpiles.
-/// One full hauler load is one tenth of this buffer.
-pub const DEFAULT_STOCKPILE_CAPACITY: u32 = 200;
+/// One full hauler load is one twentieth of this buffer.
+pub const DEFAULT_STOCKPILE_CAPACITY: u32 = 400;
 
 #[cfg(test)]
 mod tests {
@@ -415,13 +414,10 @@ mod tests {
     }
 
     #[test]
-    fn default_work_budget_is_small_for_fast_tests() {
-        // The demo budget must be small enough that a single
-        // worker finishes the build in a handful of ticks.
-        // Pinning the value (rather than recomputing it) keeps
-        // the test math obvious.
+    fn default_work_budget_matches_shipped_construction_duration() {
+        // The default is the shipped automatic-construction duration.
         const { assert!(DEFAULT_PLANNED_WORK_TICKS > 0) };
-        const { assert!(DEFAULT_PLANNED_WORK_TICKS <= 32) };
+        const { assert!(DEFAULT_PLANNED_WORK_TICKS <= 1_500) };
     }
 
     #[test]

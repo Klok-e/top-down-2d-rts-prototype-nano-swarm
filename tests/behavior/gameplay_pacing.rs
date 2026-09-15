@@ -74,7 +74,7 @@ fn shipped_construction_pacing_uses_one_real_budget_for_both_swarms() {
                 .get::<PlannedStructure>()
                 .unwrap()
                 .construction_progress(),
-            (0, 90),
+            (0, pacing.construction_work_ticks),
         );
     }
 
@@ -84,8 +84,11 @@ fn shipped_construction_pacing_uses_one_real_budget_for_both_swarms() {
 
     for plan in plans {
         let plan = app.world().entity(plan).get::<PlannedStructure>().unwrap();
-        assert_eq!(plan.construction_progress(), (30, 90));
-        assert_eq!(plan.available_work(), 60);
+        assert_eq!(
+            plan.construction_progress(),
+            (30, pacing.construction_work_ticks)
+        );
+        assert_eq!(plan.available_work(), pacing.construction_work_ticks - 30);
     }
 }
 
@@ -220,7 +223,7 @@ fn shipped_charge_drain_sets_the_actual_charger_delivery_demand() {
     assert_eq!(reservation.source, source);
     assert_eq!(reservation.destination, charger);
     assert_eq!(
-        reservation.amount, 18,
+        reservation.amount, 20,
         "shipped refill pulses must reserve their actual mineral demand",
     );
 }
@@ -249,6 +252,6 @@ fn gameplay_plugins_install_the_shipped_pacing() {
             .world()
             .resource::<GameplayPacing>()
             .construction_work_ticks,
-        90,
+        1_500,
     );
 }

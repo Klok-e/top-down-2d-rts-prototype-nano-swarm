@@ -3,9 +3,8 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
-        Cargo, DirectMovementComponent, HAULER_EXTRACT_PER_TICK, HAULER_TRANSFER_PER_TICK,
-        HaulerAssignment, HaulerLoading, LogisticsReservation, OwnerSwarm, ProductionFacility,
-        SwarmId,
+        Cargo, DirectMovementComponent, HAULER_TRANSFER_PER_PULSE, HaulerAssignment, HaulerLoading,
+        LogisticsReservation, OwnerSwarm, ProductionFacility, SwarmId,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile},
 };
@@ -66,13 +65,18 @@ fn assignment_load_transit_and_terminal_unload_preserve_physical_custody() {
         .entity_mut(hauler)
         .insert(Transform::from_xyz(168.0, 0.0, 0.0))
         .remove::<DirectMovementComponent>();
-    app.update();
+    for _ in 0..500 {
+        app.update();
+        if cargo_amount(&app, hauler) > 0 {
+            break;
+        }
+    }
 
     assert!(app.world().entity(hauler).contains::<HaulerLoading>());
-    assert_eq!(cargo_amount(&app, hauler), HAULER_EXTRACT_PER_TICK);
+    assert_eq!(cargo_amount(&app, hauler), HAULER_TRANSFER_PER_PULSE);
     assert_eq!(
         stockpile_amount(&app, source),
-        INITIAL_MINERALS - HAULER_EXTRACT_PER_TICK
+        INITIAL_MINERALS - HAULER_TRANSFER_PER_PULSE
     );
     let reservation = app
         .world()
@@ -81,12 +85,12 @@ fn assignment_load_transit_and_terminal_unload_preserve_physical_custody() {
         .unwrap();
     assert_eq!(
         reservation.source_remaining,
-        INITIAL_MINERALS - HAULER_EXTRACT_PER_TICK
+        INITIAL_MINERALS - HAULER_TRANSFER_PER_PULSE
     );
     assert_eq!(reservation.destination_remaining, INITIAL_MINERALS);
     assert_custody_and_ledger(&app, source, hauler, terminal);
 
-    for _ in 0..16 {
+    for _ in 0..2_000 {
         app.update();
         if !app.world().entity(hauler).contains::<HaulerLoading>() {
             break;
@@ -111,7 +115,9 @@ fn assignment_load_transit_and_terminal_unload_preserve_physical_custody() {
         .get::<DirectMovementComponent>()
         .expect("runtime carry assignment starts terminal transit");
     assert!(movement.xy.distance(Vec2::new(232.0, 0.0)) < 0.001);
-    app.update();
+    for _ in 0..top_down_2d_rts_prototype_nano_swarm::nanobot::MATERIAL_WORK_TICKS_PER_UNIT {
+        app.update();
+    }
     let transit_pos = app
         .world()
         .entity(hauler)
@@ -130,12 +136,14 @@ fn assignment_load_transit_and_terminal_unload_preserve_physical_custody() {
         .entity_mut(hauler)
         .insert(Transform::from_xyz(232.0, 0.0, 0.0))
         .remove::<DirectMovementComponent>();
-    app.update();
+    for _ in 0..top_down_2d_rts_prototype_nano_swarm::nanobot::MATERIAL_WORK_TICKS_PER_UNIT {
+        app.update();
+    }
 
-    assert_eq!(facility_amount(&app, terminal), HAULER_TRANSFER_PER_TICK);
+    assert_eq!(facility_amount(&app, terminal), HAULER_TRANSFER_PER_PULSE);
     assert_eq!(
         cargo_amount(&app, hauler),
-        INITIAL_MINERALS - HAULER_TRANSFER_PER_TICK
+        INITIAL_MINERALS - HAULER_TRANSFER_PER_PULSE
     );
     let reservation = app
         .world()
@@ -145,11 +153,11 @@ fn assignment_load_transit_and_terminal_unload_preserve_physical_custody() {
     assert_eq!(reservation.source_remaining, 0);
     assert_eq!(
         reservation.destination_remaining,
-        INITIAL_MINERALS - HAULER_TRANSFER_PER_TICK
+        INITIAL_MINERALS - HAULER_TRANSFER_PER_PULSE
     );
     assert_custody_and_ledger(&app, source, hauler, terminal);
 
-    for _ in 0..16 {
+    for _ in 0..2_000 {
         app.update();
         if app.world().entity(hauler).get::<Cargo>().is_none() {
             break;
@@ -240,7 +248,7 @@ fn blocked_delivery_returns_cargo_to_source_stockpile_physically() {
         ResourceKind::Minerals,
         12,
     );
-    for _ in 0..100 {
+    for _ in 0..2_000 {
         app.update();
         let carried = app
             .world()
@@ -313,7 +321,7 @@ fn blocked_delivery_waits_with_cargo_then_reopens_without_duplicate_transfer() {
         "pending access preserves the commitment"
     );
     app.world_mut().resource_mut::<NavigationBudget>().0 = 32768;
-    for _ in 0..30 {
+    for _ in 0..2_000 {
         app.update();
     }
     assert_eq!(app.world().get::<Cargo>(bot).unwrap().amount, 12);
@@ -328,7 +336,7 @@ fn blocked_delivery_waits_with_cargo_then_reopens_without_duplicate_transfer() {
     assert_eq!(stockpile_amount(&app, sink), 0);
     assert!(app.world().get::<Transform>(bot).unwrap().translation.x < -65.9);
     app.world_mut().despawn(wall);
-    for _ in 0..180 {
+    for _ in 0..2_000 {
         app.update();
         assert_eq!(
             app.world().get::<Cargo>(bot).map_or(0, |c| c.amount) + stockpile_amount(&app, sink),
@@ -383,7 +391,7 @@ fn blocked_delivery_prefers_another_sink_before_returning_to_source_for_both_swa
         app.world_mut()
             .resource_mut::<ResourceLedger>()
             .add_for(swarm, ResourceKind::Minerals, 12);
-        for _ in 0..150 {
+        for _ in 0..2_000 {
             app.update();
             assert_eq!(
                 stockpile_amount(&app, source),
@@ -409,45 +417,73 @@ fn blocked_delivery_prefers_another_sink_before_returning_to_source_for_both_swa
 
 #[test]
 fn interrupted_partial_pickup_delivers_only_the_cargo_already_loaded() {
-    use top_down_2d_rts_prototype_nano_swarm::intent::IntentGrid;
     let mut app = common::sim_app_with_gather_haul();
-    app.world_mut().insert_resource(IntentGrid::new(2, 2));
-    let owner = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    let source = common::spawn_stockpile(&mut app, Vec2::new(350.0, 0.0), 16, 100);
-    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(-350.0, 0.0), 0, 100);
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let source = common::spawn_stockpile(&mut app, Vec2::new(150.0, 0.0), 20, 100);
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(400.0, 0.0), 0, 100);
     for endpoint in [source, sink] {
         app.world_mut()
             .entity_mut(endpoint)
-            .insert(OwnerSwarm(owner));
+            .insert(OwnerSwarm(swarm));
     }
-    let wall = common::spawn_stockpile(&mut app, Vec2::ZERO, 0, 0);
-    app.world_mut().get_mut::<Transform>(wall).unwrap().scale = Vec3::new(1.0, 40.0, 1.0);
-    let bot = common::spawn_hauler_at(&mut app, Vec2::new(-180.0, 0.0));
-    let mut reservation = LogisticsReservation::new(source, sink, ResourceKind::Minerals, 20);
-    reservation.source_remaining = 16;
-    app.world_mut().entity_mut(bot).insert((
-        Cargo {
-            kind: ResourceKind::Minerals,
-            amount: 4,
-        },
-        HaulerAssignment { source, sink },
-        HaulerLoading,
-        reservation,
-    ));
-    for _ in 0..100 {
-        app.update();
-        assert_eq!(
-            app.world().get::<Cargo>(bot).map_or(0, |c| c.amount) + stockpile_amount(&app, sink),
-            4
-        );
-        assert_eq!(stockpile_amount(&app, source), 16);
-    }
-    assert_eq!(
-        stockpile_amount(&app, sink),
-        4,
-        "failed remaining pickup must not strand a partial load"
+    app.world_mut().resource_mut::<ResourceLedger>().add_for(
+        SwarmId::PLAYER,
+        ResourceKind::Minerals,
+        20,
     );
-    assert!(app.world().get::<LogisticsReservation>(bot).is_none());
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
+
+    for _ in 0..1_000 {
+        app.update();
+        if app
+            .world()
+            .get::<Cargo>(hauler)
+            .is_some_and(|cargo| cargo.amount > 0)
+        {
+            break;
+        }
+    }
+    let partial_cargo = app
+        .world()
+        .get::<Cargo>(hauler)
+        .expect("hauler must physically load before its source is interrupted")
+        .amount;
+    assert!(partial_cargo < INITIAL_MINERALS);
+    assert!(app.world().get::<HaulerLoading>(hauler).is_some());
+
+    app.world_mut().get_mut::<Stockpile>(source).unwrap().amount = 0;
+    for _ in 0..1_000 {
+        app.update();
+        if app.world().get::<HaulerLoading>(hauler).is_none() {
+            break;
+        }
+    }
+    assert!(
+        app.world().get::<HaulerLoading>(hauler).is_none(),
+        "an empty committed source ends the loading phase"
+    );
+    assert_eq!(
+        app.world().get::<Cargo>(hauler).map(|cargo| cargo.amount),
+        Some(partial_cargo),
+        "interrupting the remaining supply preserves the already physical cargo"
+    );
+
+    for _ in 0..2_000 {
+        app.update();
+        if stockpile_amount(&app, sink) == partial_cargo {
+            break;
+        }
+    }
+    assert_eq!(stockpile_amount(&app, sink), partial_cargo);
+    assert!(app.world().get::<Cargo>(hauler).is_none());
+    assert!(app.world().get::<LogisticsReservation>(hauler).is_none());
+    assert_eq!(
+        app.world()
+            .resource::<ResourceLedger>()
+            .total_for(SwarmId::PLAYER, ResourceKind::Minerals),
+        20,
+        "the interruption moves no already-owned cargo out of the swarm ledger"
+    );
 }
 
 #[test]
@@ -482,7 +518,7 @@ fn terminal_delivery_tries_another_terminal_before_returning_to_pickup_sink() {
         },
         reservation,
     ));
-    for _ in 0..150 {
+    for _ in 0..2_000 {
         app.update();
         assert_eq!(
             stockpile_amount(&app, source),

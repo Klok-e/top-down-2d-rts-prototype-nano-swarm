@@ -15,6 +15,9 @@ use crate::{
     ZONE_BLOCK_SIZE,
     intent::{BrushSelection, IntentCell, IntentGrid, IntentKind},
     nanobot::{MatchOutcome, SwarmId},
+    reachability::{
+        IntentWriteAction, IntentWriteError, SwarmReachabilityMap, apply_reachable_intent,
+    },
     session::SessionRules,
     ui::UiHandling,
 };
@@ -166,12 +169,15 @@ pub enum PlayerIntentError {
     SpectatorOnly,
     #[error("intent cell is outside the map")]
     OutOfBounds,
+    #[error("intent cell is outside the swarm-reachable map")]
+    Unreachable,
 }
 
 /// Apply one player-owned intent edit from mouse or agent input.
 /// Other swarms' orders remain unchanged.
 pub fn apply_player_intent(
     intent_grid: &mut IntentGrid,
+    reachability: &SwarmReachabilityMap,
     outcome: MatchOutcome,
     rules: SessionRules,
     cell: IVec2,
@@ -182,15 +188,21 @@ pub fn apply_player_intent(
     if outcome != MatchOutcome::InProgress {
         return Err(PlayerIntentError::MatchFinished);
     }
-    let before = intent_grid
-        .cell(cell)
-        .cloned()
-        .ok_or(PlayerIntentError::OutOfBounds)?;
-    match action {
-        PlayerIntentAction::Paint => intent_grid.paint(cell, kind, owner),
-        PlayerIntentAction::Erase => intent_grid.erase(cell, kind, owner),
-    };
-    Ok(before != *intent_grid.cell(cell).expect("validated intent cell"))
+    apply_reachable_intent(
+        intent_grid,
+        reachability,
+        owner,
+        cell,
+        kind,
+        match action {
+            PlayerIntentAction::Paint => IntentWriteAction::Paint,
+            PlayerIntentAction::Erase => IntentWriteAction::Erase,
+        },
+    )
+    .map_err(|error| match error {
+        IntentWriteError::OutOfBounds => PlayerIntentError::OutOfBounds,
+        IntentWriteError::Unreachable => PlayerIntentError::Unreachable,
+    })
 }
 
 /// Reads mouse input and writes player intent into the [`IntentGrid`]
@@ -206,6 +218,7 @@ pub fn zone_brush_system(
     outcome: Option<Res<MatchOutcome>>,
     camera_query: Query<(&GlobalTransform, &Camera)>,
     mut intent_grid: ResMut<IntentGrid>,
+    reachability: Option<Res<SwarmReachabilityMap>>,
     menu: Option<Res<crate::ui::scenario_menu::ScenarioMenu>>,
     rules: Res<SessionRules>,
 ) {
@@ -246,8 +259,12 @@ pub fn zone_brush_system(
     } else {
         return;
     };
+    let Some(reachability) = reachability else {
+        return;
+    };
     let _ = apply_player_intent(
         &mut intent_grid,
+        &reachability,
         outcome.as_deref().copied().unwrap_or_default(),
         *rules,
         get_zone_pos_from_world(cursor_pos_world),
@@ -326,6 +343,11 @@ pub fn get_zone_pos_from_world(world_pos: Vec2) -> IVec2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{navigation::Obstacle, reachability::SwarmReachabilityMap};
+
+    fn reachability(grid: &IntentGrid) -> SwarmReachabilityMap {
+        SwarmReachabilityMap::new(grid, [], [(SwarmId::PLAYER, Vec2::ZERO)]).unwrap()
+    }
 
     #[test]
     fn presence_bits_do_not_corrupt_each_other() {
@@ -398,12 +420,14 @@ mod tests {
     fn player_actions_add_and_erase_only_player_intent_on_enemy_paint() {
         for kind in IntentKind::ALL {
             let mut grid = IntentGrid::new(5, 5);
+            let reachability = reachability(&grid);
             let cell = ivec2(1, -1);
             let opponent = SwarmId(9);
             grid.paint(cell, kind, opponent);
             assert_eq!(
                 apply_player_intent(
                     &mut grid,
+                    &reachability,
                     MatchOutcome::InProgress,
                     SessionRules::default(),
                     cell,
@@ -415,6 +439,7 @@ mod tests {
             assert_eq!(
                 apply_player_intent(
                     &mut grid,
+                    &reachability,
                     MatchOutcome::InProgress,
                     SessionRules::default(),
                     cell,
@@ -428,6 +453,7 @@ mod tests {
             assert_eq!(
                 apply_player_intent(
                     &mut grid,
+                    &reachability,
                     MatchOutcome::InProgress,
                     SessionRules::default(),
                     cell,
@@ -439,6 +465,7 @@ mod tests {
             assert_eq!(
                 apply_player_intent(
                     &mut grid,
+                    &reachability,
                     MatchOutcome::InProgress,
                     SessionRules::default(),
                     cell,
@@ -450,6 +477,34 @@ mod tests {
             assert!(!grid.cell(cell).unwrap().has_owned(kind, SwarmId::PLAYER));
             assert!(grid.cell(cell).unwrap().has_owned(kind, opponent));
         }
+    }
+
+    #[test]
+    fn player_paint_skips_an_unreachable_cell() {
+        let mut grid = IntentGrid::new(8, 8);
+        let reachability = SwarmReachabilityMap::new(
+            &grid,
+            [Obstacle::Rectangle {
+                center: Vec2::ZERO,
+                half: Vec2::new(36.0, 8_000.0),
+            }],
+            [(SwarmId::PLAYER, Vec2::new(-252.0, 36.0))],
+        )
+        .unwrap();
+
+        assert_eq!(
+            apply_player_intent(
+                &mut grid,
+                &reachability,
+                MatchOutcome::InProgress,
+                SessionRules::default(),
+                IVec2::new(1, 0),
+                IntentKind::Defend,
+                PlayerIntentAction::Paint,
+            ),
+            Err(PlayerIntentError::Unreachable)
+        );
+        assert!(grid.iter_active_cells().next().is_none());
     }
 
     #[test]

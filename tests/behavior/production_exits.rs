@@ -36,11 +36,11 @@ fn retained_output_satisfies_typed_demand_without_funding_a_duplicate() {
     app.world_mut()
         .get_mut::<ProductionFacility>(retained)
         .unwrap()
-        .input_amount = 20;
+        .input_amount = 40;
     app.world_mut().resource_mut::<ResourceLedger>().add_for(
         SwarmId::PLAYER,
         ResourceKind::Minerals,
-        20,
+        40,
     );
     for y in -1..=1 {
         for x in -1..=1 {
@@ -53,12 +53,12 @@ fn retained_output_satisfies_typed_demand_without_funding_a_duplicate() {
             }
         }
     }
-    for _ in 0..250 {
+    for _ in 0..700 {
         app.update();
     }
     let waiting = app.world().get::<ProductionFacility>(retained).unwrap();
     assert_eq!(waiting.current_target, Some(NanobotType::Defender));
-    assert_eq!(waiting.progress, 120);
+    assert_eq!(waiting.progress, PRODUCTION_TICKS_PER_BOT);
     let idle = app
         .world_mut()
         .spawn((
@@ -188,7 +188,7 @@ fn retained_output_keeps_one_funded_cycle_and_is_lost_with_its_facility() {
         app.world_mut().entity_mut(swarm).insert(owner);
         let mut facility = ProductionFacility::new();
         facility.current_target = Some(NanobotType::Defender);
-        facility.input_amount = 30;
+        facility.input_amount = 40;
         let facility = app
             .world_mut()
             .spawn((
@@ -199,7 +199,7 @@ fn retained_output_keeps_one_funded_cycle_and_is_lost_with_its_facility() {
             .id();
         app.world_mut()
             .resource_mut::<ResourceLedger>()
-            .add_for(owner, ResourceKind::Minerals, 30);
+            .add_for(owner, ResourceKind::Minerals, 40);
         for y in -1..=1 {
             for x in -1..=1 {
                 if x != 0 || y != 0 {
@@ -213,14 +213,14 @@ fn retained_output_keeps_one_funded_cycle_and_is_lost_with_its_facility() {
                 }
             }
         }
-        for _ in 0..250 {
+        for _ in 0..700 {
             app.update();
         }
         let retained = app.world().get::<ProductionFacility>(facility).unwrap();
         assert_eq!(retained.current_target, Some(NanobotType::Defender));
         assert_eq!(
-            retained.input_amount, 30,
-            "only one twenty-mineral cycle is charged while exits are blocked"
+            retained.input_amount, 40,
+            "only one forty-mineral cycle is charged while exits are blocked"
         );
         assert!(
             !retained.is_busy(),
@@ -230,7 +230,7 @@ fn retained_output_keeps_one_funded_cycle_and_is_lost_with_its_facility() {
             app.world()
                 .resource::<ResourceLedger>()
                 .total_for(owner, ResourceKind::Minerals),
-            30
+            40
         );
         app.world_mut().despawn(facility);
         for _ in 0..5 {
@@ -247,7 +247,7 @@ fn retained_output_keeps_one_funded_cycle_and_is_lost_with_its_facility() {
             app.world()
                 .resource::<ResourceLedger>()
                 .total_for(owner, ResourceKind::Minerals),
-            30,
+            40,
             "destroying retained output cannot refund the paid production cost"
         );
     }

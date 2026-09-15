@@ -9,6 +9,7 @@ use crate::{
     nanobot::{
         Nanobot, OpponentSwarmIdAlloc, PlannedStructure, ProductionFacility, Structure, Swarm,
     },
+    reachability::SwarmReachabilityMap,
     resources::{ResourceDeposit, ResourceLedger, Stockpile},
     scenario_selection::{Scenario, ScenarioSelection},
     session::SessionRules,
@@ -53,7 +54,9 @@ impl Plugin for SessionLifecyclePlugin {
 
 fn start_initial_session(world: &mut World) {
     let scenario = world.resource::<ScenarioSelection>().current;
-    populate_session(world, scenario);
+    if let Err(error) = populate_session(world, scenario) {
+        world.resource_mut::<ScenarioSelection>().error = Some(error.to_string());
+    }
 }
 
 fn process_start_requests(world: &mut World) {
@@ -86,6 +89,7 @@ fn process_start_requests(world: &mut World) {
     world.insert_resource(BrushSelection::default());
     crate::nanobot::reset_session(world);
     crate::navigation_runtime::reset_session(world);
+    world.remove_resource::<SwarmReachabilityMap>();
     world.resource_mut::<SessionGeneration>().0 += 1;
 
     // The real clock and agent transport clock remain process-scoped.
@@ -122,21 +126,27 @@ fn process_start_requests(world: &mut World) {
         )
         .expect("main camera uses an orthographic projection");
     }
-    populate_session(world, scenario);
+    if let Err(error) = populate_session(world, scenario) {
+        world.resource_mut::<ScenarioSelection>().error = Some(error.to_string());
+        return;
+    }
     crate::ui::intent_layer_panel::reset_for_session(world);
     if let Some(mut menu) = world.get_resource_mut::<ScenarioMenu>() {
         menu.finish_scenario_start();
     }
 }
 
-fn populate_session(world: &mut World, scenario: Scenario) {
+fn populate_session(
+    world: &mut World,
+    scenario: Scenario,
+) -> Result<(), crate::reachability::ReachabilitySetupError> {
     {
         let mut selection = world.resource_mut::<ScenarioSelection>();
         selection.current = scenario;
         selection.error = None;
     }
     let ai_battle = world.resource::<crate::ai_battle::AiBattleConfig>().clone();
-    world.insert_resource::<SessionRules>(crate::scenario::session_rules(scenario, &ai_battle));
+    world.insert_resource::<SessionRules>(crate::scenario::session_rules(scenario));
     world.insert_resource(crate::scenario::gameplay_pacing());
     world.insert_resource(crate::strategic_runtime::ControllerTelemetry::default());
     let mut state = SystemState::<(
@@ -146,18 +156,20 @@ fn populate_session(world: &mut World, scenario: Scenario) {
         ResMut<OpponentSwarmIdAlloc>,
     )>::new(world);
     let (mut commands, assets, mut grid, ids) = state.get_mut(world);
-    crate::scenario::spawn_selected_scenario(
+    let reachability = crate::scenario::spawn_selected_scenario(
         scenario,
         &mut commands,
         &assets,
         &mut grid,
         ids,
         ai_battle.layout,
-    );
+    )?;
     state.apply(world);
+    world.insert_resource(reachability);
     world
         .run_system_cached(crate::scenario::configure_controllers)
         .expect("scenario controllers initialize");
     world.flush();
     crate::battle_statistics::start_session(world);
+    Ok(())
 }

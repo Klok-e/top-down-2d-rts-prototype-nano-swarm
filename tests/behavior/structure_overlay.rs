@@ -105,7 +105,7 @@ fn planned_overlay_bar_uses_build_progress() {
             .world_mut()
             .get_mut::<PlannedStructure>(planned)
             .unwrap();
-        *state = state.with_work_remaining(3);
+        *state = state.with_work_remaining(900);
     }
 
     app.update();

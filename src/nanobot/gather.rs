@@ -35,7 +35,7 @@ use crate::nanobot::SupportCondition;
 use crate::nanobot::autonomy::{Commitment, NanobotType, SoftWorkSlots, best_candidate};
 use crate::nanobot::cargo::{Cargo, LogisticsReservation};
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm, SwarmId, SwarmMember};
-use crate::nanobot::haul::HAULER_TRANSFER_PER_TICK;
+use crate::nanobot::haul::HAULER_TRANSFER_PER_PULSE;
 use crate::nanobot::placement::{
     SOURCE_STOCKPILE_FOOTPRINT_RADIUS, SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PADDING,
     SOURCE_STOCKPILE_PLACEMENT_COUNT, SOURCE_STOCKPILE_PLACEMENT_RADIUS,
@@ -50,16 +50,12 @@ use crate::structure_sprites::StructureSprites;
 
 /// Maximum units a Worker can carry in a single trip. The glossary
 /// is explicit: Workers carry "small" amounts; Haulers carry more.
-/// Four units is a deliberately small number so the trip is
-/// visible (the worker leaves with a partial load and comes back
-/// for more) and the test math is obvious.
+/// Four units keeps the trip visible and makes an uninterrupted load
+/// take five seconds at the shared material-work rate.
 pub const WORKER_CARRY_CAPACITY: u32 = 4;
 
-/// Units extracted per `app.update()` tick. Fixed instead of
-/// time-based so tests can drive the simulation with deterministic
-/// `app.update()` calls. The real game can scale this with
-/// `Time::delta_secs()` once the simulation has a real clock.
-pub const EXTRACT_PER_TICK: u32 = 1;
+/// Minerals extracted by a Worker after each completed material-work interval.
+pub const WORKER_EXTRACT_PER_PULSE: u32 = 1;
 
 /// Maximum distance (world units) from a Resource Deposit at
 /// which a Source Stockpile is considered "near" the deposit.
@@ -855,14 +851,15 @@ pub fn worker_gather_arrive_system(
         *same_tick_destinations.entry(destination).or_default() += amount;
         commands.entity(entity).insert((
             ExtractProgress::default(),
+            super::MaterialWorkProgress::default(),
             Cargo::empty(deposit.kind),
             LogisticsReservation::new(assignment.deposit, destination, deposit.kind, amount),
         ));
     }
 }
 
-/// Drain `EXTRACT_PER_TICK` units from the assigned deposit every
-/// tick while the worker is at the deposit and the load is not
+/// Drain one mineral from the assigned deposit after each material-work
+/// interval while the worker is at the deposit and the load is not
 /// full. When the load is full or the deposit empties (or
 /// disappears), transition the worker to Carrying.
 #[allow(clippy::type_complexity)]
@@ -878,6 +875,7 @@ pub fn worker_gather_extract_system(
             &mut Cargo,
             &mut LogisticsReservation,
             &SwarmMember,
+            &mut super::MaterialWorkProgress,
         ),
         (With<Nanobot>, Without<super::WorkBlocked>),
     >,
@@ -885,8 +883,16 @@ pub fn worker_gather_extract_system(
     mut ledger: ResMut<ResourceLedger>,
     mut counters: Option<ResMut<BattleCounters>>,
 ) {
-    for (entity, mut progress, transform, assignment, mut cargo, mut reservation, swarm) in
-        &mut workers
+    for (
+        entity,
+        mut progress,
+        transform,
+        assignment,
+        mut cargo,
+        mut reservation,
+        swarm,
+        mut work,
+    ) in &mut workers
     {
         if reservation.is_added() {
             continue;
@@ -904,6 +910,7 @@ pub fn worker_gather_extract_system(
         let region = InteractionRegion::deposit(deposit_transform, deposit.radius);
         let position = transform.translation.truncate();
         if !region.contains(position) {
+            work.reset();
             if matches!(
                 navigation.query_connectivity(position, RouteGoal::Interaction(region)),
                 ConnectivityStatus::Unreachable
@@ -919,7 +926,10 @@ pub fn worker_gather_extract_system(
                 .insert(region.movement_from(position));
             continue;
         }
-        let actual = EXTRACT_PER_TICK
+        if !work.completes_unit() {
+            continue;
+        }
+        let actual = WORKER_EXTRACT_PER_PULSE
             .min(deposit.amount)
             .min(reservation.source_remaining)
             .min(WORKER_CARRY_CAPACITY.saturating_sub(cargo.amount));
@@ -944,6 +954,7 @@ fn transition_worker_to_carrying(commands: &mut Commands, entity: Entity, amount
     commands
         .entity(entity)
         .remove::<ExtractProgress>()
+        .remove::<super::MaterialWorkProgress>()
         .remove::<GatherAssignment>();
     if amount == 0 {
         commands
@@ -1244,7 +1255,7 @@ pub fn worker_gather_delivery_system(
 
         let delivered = load
             .amount
-            .min(HAULER_TRANSFER_PER_TICK)
+            .min(HAULER_TRANSFER_PER_PULSE)
             .min(stockpile.free_space());
         stockpile.amount += delivered;
         load.amount -= delivered;

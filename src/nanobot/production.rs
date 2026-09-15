@@ -52,19 +52,19 @@ use crate::structure_sprites::StructureSprites;
 /// nanobot. Shared across all three early types per the project's
 /// "shared cost/time" decision. The facility takes the full cost
 /// up-front at the start of a production cycle.
-pub const PRODUCTION_COST_PER_BOT: u32 = 20;
+pub const PRODUCTION_COST_PER_BOT: u32 = 40;
 
 /// Number of ticks a facility needs to finish a production cycle
 /// after consuming material. Shared across all three early types.
-/// At the runtime fixed-update frequency, 120 ticks is two seconds.
-pub const PRODUCTION_TICKS_PER_BOT: u32 = 120;
+/// At the runtime fixed-update frequency, 600 ticks is ten seconds.
+pub const PRODUCTION_TICKS_PER_BOT: u32 = 600;
 
 /// Capacity of a [`ProductionFacility`]'s own input hopper. Haulers
 /// (logistics leg 3) deliver minerals into this buffer; production
 /// consumes exclusively from it. Sized to hold two production cycles
 /// so a facility can buffer short delivery gaps without hoarding at
 /// stockpile scale.
-pub const PRODUCTION_INPUT_CAPACITY: u32 = 40;
+pub const PRODUCTION_INPUT_CAPACITY: u32 = 80;
 
 /// Consecutive fixed ticks of Production Pressure required before committing
 /// another Production Facility.
@@ -623,7 +623,7 @@ mod tests {
 
     #[test]
     fn production_cycle_uses_agreed_fixed_tick_duration() {
-        assert_eq!(PRODUCTION_TICKS_PER_BOT, 120);
+        assert_eq!(PRODUCTION_TICKS_PER_BOT, 600);
     }
 
     #[test]

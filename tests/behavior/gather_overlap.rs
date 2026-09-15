@@ -24,12 +24,15 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
-    nanobot::{Commitment, GatherAssignment, SwarmId},
+    nanobot::{ActionableProjection, Commitment, GatherAssignment, OpportunityTarget, SwarmId},
     resources::ResourceDeposit,
 };
 
 #[path = "../common/mod.rs"]
 mod common;
+
+/// Bounded real-time wait for regional allocation at the shipped 60 Hz rate.
+const GATHER_ASSIGNMENT_TICK_BUDGET: u32 = 600;
 
 #[test]
 fn deposit_overlapping_painted_cell_is_eligible_when_center_in_other_cell() {
@@ -41,7 +44,7 @@ fn deposit_overlapping_painted_cell_is_eligible_when_center_in_other_cell() {
     // GatherAssignment that points at this deposit. This is the
     // "eligible even when its center is not in the same intent
     // grid cell as the selected paint" acceptance bullet.
-    let mut app = common::sim_app_with_gather();
+    let mut app = common::minimal_app_with_actionable_projection();
     let painted_cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
@@ -62,27 +65,21 @@ fn deposit_overlapping_painted_cell_is_eligible_when_center_in_other_cell() {
             radius: 300.0,
         },
     );
-    // Worker at the painted cell center so scoring picks it.
-    let worker_pos = common::cell_world_center(painted_cell);
-    let worker = common::spawn_worker_at(&mut app, worker_pos);
+    app.update();
 
-    for _ in 0..5 {
-        app.update();
-    }
-
-    let assignment = app
+    let opportunity = app
         .world()
-        .entity(worker)
-        .get::<GatherAssignment>()
-        .expect("deposit whose circle overlaps the painted cell must be eligible");
-    assert_eq!(
-        assignment.deposit, deposit,
-        "worker must be assigned to the overlapping deposit, not skipped"
-    );
-    assert_eq!(
-        assignment.cell, painted_cell,
-        "assignment still points at the painted cell the worker scored against"
-    );
+        .resource::<ActionableProjection>()
+        .iter_regions()
+        .flat_map(|(_, opportunities)| opportunities.iter())
+        .find(|opportunity| {
+            matches!(opportunity.target, OpportunityTarget::Gather { deposit: target, .. } if target == deposit)
+        })
+        .expect("deposit whose circle overlaps the painted cell must project gather work");
+    assert!(matches!(
+        opportunity.target,
+        OpportunityTarget::Gather { deposit: target, cell } if target == deposit && cell == painted_cell
+    ));
 }
 
 #[test]
@@ -93,7 +90,7 @@ fn deposit_with_no_visual_overlap_remains_ineligible() {
     // overlap the painted cell's rectangle, so the worker must
     // not receive a GatherAssignment. The deposit amount must
     // stay at its starting value (no extraction).
-    let mut app = common::sim_app_with_gather();
+    let mut app = common::minimal_app_with_actionable_projection();
     let painted_cell = IVec2::new(0, 0);
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
@@ -116,7 +113,7 @@ fn deposit_with_no_visual_overlap_remains_ineligible() {
     let worker_pos = common::cell_world_center(painted_cell);
     let worker = common::spawn_worker_at(&mut app, worker_pos);
 
-    for _ in 0..5 {
+    for _ in 0..GATHER_ASSIGNMENT_TICK_BUDGET {
         app.update();
     }
 
@@ -163,25 +160,26 @@ fn deposit_overlapping_two_painted_cells_uses_canonical_anchor() {
             radius: 300.0,
         },
     );
-    // Worker starts closer to the noncanonical cell; anchor selection remains
-    // deterministic and independent from worker position.
-    let worker_pos = Vec2::new(1_200.0, ZONE_BLOCK_SIZE * 0.5);
-    let worker = common::spawn_worker_at(&mut app, worker_pos);
+    app.update();
 
-    for _ in 0..5 {
-        app.update();
-    }
-
-    let assignment = app
+    let gather_opportunities = app
         .world()
-        .entity(worker)
-        .get::<GatherAssignment>()
-        .expect("overlapping deposit must be eligible in both cells");
+        .resource::<ActionableProjection>()
+        .iter_regions()
+        .flat_map(|(_, opportunities)| opportunities.iter())
+        .filter_map(|opportunity| match opportunity.target {
+            OpportunityTarget::Gather {
+                deposit: target,
+                cell,
+            } if target == deposit => Some(cell),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
-        assignment.deposit, deposit,
-        "worker must be assigned to the deposit that overlaps both cells"
+        gather_opportunities,
+        vec![near_cell],
+        "overlap must project one gather opportunity at its canonical cell anchor"
     );
-    assert_eq!(assignment.cell, near_cell);
 }
 
 #[test]
@@ -216,7 +214,7 @@ fn opponent_overlap_eligibility_does_not_leak_to_player_workers() {
     let worker_pos = common::cell_world_center(opponent_cell);
     let worker = common::spawn_worker_at(&mut app, worker_pos);
 
-    for _ in 0..5 {
+    for _ in 0..GATHER_ASSIGNMENT_TICK_BUDGET {
         app.update();
     }
 

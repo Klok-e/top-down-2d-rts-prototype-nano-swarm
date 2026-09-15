@@ -77,7 +77,6 @@ fn battle_persists_per_second_samples_using_simulation_time() {
     let mut app = battle(&output);
     app.insert_resource(AiBattleConfig {
         layout: AiBattleLayout::Flanks,
-        ..default()
     });
     for _ in 0..60 {
         app.update();
@@ -99,17 +98,13 @@ fn battle_persists_per_second_samples_using_simulation_time() {
 }
 
 #[test]
-fn headless_frame_timing_is_recorded_only_for_realtime_battles() {
-    for (realtime, expects_frame_timing) in [(false, false), (true, true)] {
+fn headless_frame_timing_follows_the_generic_unbounded_option() {
+    for (unbounded, expects_frame_timing) in [(true, false), (false, true)] {
         let output = Output::new();
         let mut app = battle(&output);
-        app.world_mut()
-            .resource_mut::<BattleStatisticsConfig>()
-            .headless = true;
-        app.insert_resource(AiBattleConfig {
-            realtime,
-            ..default()
-        });
+        let mut config = app.world_mut().resource_mut::<BattleStatisticsConfig>();
+        config.headless = true;
+        config.unbounded = unbounded;
 
         for _ in 0..60 {
             app.update();
@@ -240,7 +235,7 @@ fn samples_preserve_gross_events_and_stop_counters_after_draw() {
     }
     assert_eq!(summary["latest"]["swarms"]["0"]["minerals_gathered"], 30);
     assert_eq!(summary["latest"]["swarms"]["0"]["minerals_consumed"], 30);
-    assert_eq!(summary["schema_version"], 4);
+    assert_eq!(summary["schema_version"], 5);
     assert_eq!(
         summary["latest"]["swarms"]["0"]["effective_damage_total"],
         0
@@ -322,7 +317,7 @@ fn effective_damage_is_cumulative_in_json_and_csv_and_freezes_at_match_end() {
     app.update();
 
     let terminal = output.summary();
-    assert_eq!(terminal["schema_version"], 4);
+    assert_eq!(terminal["schema_version"], 5);
     let swarm = &terminal["latest"]["swarms"]["0"];
     assert_eq!(swarm["effective_damage_total"], 22);
     assert_eq!(swarm["effective_damage_nanobots"], 17);

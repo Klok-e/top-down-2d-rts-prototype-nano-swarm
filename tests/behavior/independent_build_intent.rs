@@ -2,10 +2,12 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
+    gameplay_pacing::GameplayPacing,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        OwnerSwarm, PRODUCTION_PRESSURE_TICKS, PlannedKind, PlannedStructure, ProductionFacility,
-        Swarm, SwarmId, SwarmMember,
+        OwnerSwarm, PRODUCTION_PRESSURE_TICKS, PlannedKind, PlannedStructure,
+        PlannedStructureClaim, PlannedStructureProgress, ProductionFacility, Swarm, SwarmId,
+        SwarmMember,
     },
 };
 
@@ -56,19 +58,25 @@ fn overlapping_build_orders_construct_separate_owned_facilities() {
         "reservations must occupy separate physical space"
     );
 
-    for (_, owner, center) in &plans {
+    for (plan, owner, center) in &plans {
         let worker = if *owner == player {
             player_worker
         } else {
             enemy_worker
         };
-        app.world_mut()
-            .entity_mut(worker)
-            .insert(Transform::from_translation(
-                (*center + Vec2::Y * 72.0).extend(0.0),
-            ));
+        app.world_mut().entity_mut(worker).insert((
+            Transform::from_translation(center.extend(0.0)),
+            PlannedStructureClaim {
+                target: *plan,
+                cell: IVec2::new(2, 0),
+            },
+            PlannedStructureProgress {
+                target: *plan,
+                cell: IVec2::new(2, 0),
+            },
+        ));
     }
-    for _ in 0..220 {
+    for _ in 0..(GameplayPacing::default().construction_work_ticks as usize + 500) {
         app.update();
         if plans
             .iter()

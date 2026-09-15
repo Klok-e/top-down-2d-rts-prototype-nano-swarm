@@ -12,6 +12,7 @@ use crate::{
     intent::{IntentGrid, IntentKind},
     nanobot::{NanobotType, SwarmId},
     navigation::Obstacle,
+    reachability::SwarmReachabilityMap,
 };
 
 /// Maximum accounted planner operations shared by all decisions in one review window.
@@ -83,6 +84,8 @@ pub struct GameState<'a> {
     pub structures: &'a [StructureState],
     pub deposits: &'a [DepositState],
     pub terrain: &'a [Obstacle],
+    /// Present for gameplay controllers; omitted by terrain-agnostic unit fixtures.
+    pub reachability: Option<&'a SwarmReachabilityMap>,
     pub tick: u64,
     pub finished: bool,
 }

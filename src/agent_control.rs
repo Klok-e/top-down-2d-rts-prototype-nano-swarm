@@ -42,6 +42,7 @@ use crate::{
         Health, MatchOutcome, Nanobot, NanobotType, OpponentSwarm, OwnerSwarm, PopulationDemand,
         ProductionFacility, Swarm, SwarmEliminationState, SwarmId, SwarmMember,
     },
+    reachability::SwarmReachabilityMap,
     resources::{ResourceKind, ResourceLedger},
     session::SessionRules,
     ui::intent_layer_panel::{IntentLayerButton, IntentLayerPanelRoot},
@@ -1342,6 +1343,30 @@ fn execute_agent_command(
                 .copied()
                 .unwrap_or_default();
             let rules = *world.resource::<SessionRules>();
+            if rules.player_swarm.is_none() {
+                return AgentResponse::failure(
+                    request.id,
+                    clock,
+                    "spectator_only",
+                    PlayerIntentError::SpectatorOnly.to_string(),
+                );
+            }
+            if outcome != MatchOutcome::InProgress {
+                return AgentResponse::failure(
+                    request.id,
+                    clock,
+                    "match_finished",
+                    PlayerIntentError::MatchFinished.to_string(),
+                );
+            }
+            let Some(reachability) = world.get_resource::<SwarmReachabilityMap>().cloned() else {
+                return AgentResponse::failure(
+                    request.id,
+                    clock,
+                    "runtime_unavailable",
+                    "SwarmReachabilityMap resource is unavailable",
+                );
+            };
             let Some(mut grid) = world.get_resource_mut::<IntentGrid>() else {
                 return AgentResponse::failure(
                     request.id,
@@ -1352,6 +1377,7 @@ fn execute_agent_command(
             };
             match apply_player_intent(
                 &mut grid,
+                &reachability,
                 outcome,
                 rules,
                 IVec2::new(x, y),
@@ -1381,6 +1407,14 @@ fn execute_agent_command(
                         clock,
                         "out_of_bounds",
                         PlayerIntentError::OutOfBounds.to_string(),
+                    );
+                }
+                Err(PlayerIntentError::Unreachable) => {
+                    return AgentResponse::failure(
+                        request.id,
+                        clock,
+                        "unreachable_intent_cell",
+                        PlayerIntentError::Unreachable.to_string(),
                     );
                 }
             }
@@ -2345,6 +2379,7 @@ mod tests {
         use crate::{
             intent::{IntentGrid, IntentKind},
             nanobot::{MatchOutcome, SwarmId},
+            reachability::SwarmReachabilityMap,
         };
         use bevy::prelude::*;
 
@@ -2352,8 +2387,11 @@ mod tests {
         let opponent = SwarmId(4);
         let mut grid = IntentGrid::new(11, 11);
         grid.paint(cell, IntentKind::Defend, opponent);
+        let reachability =
+            SwarmReachabilityMap::new(&grid, [], [(SwarmId::PLAYER, Vec2::ZERO)]).unwrap();
         let mut app = App::new();
         app.insert_resource(grid)
+            .insert_resource(reachability)
             .insert_resource(MatchOutcome::InProgress);
         let (control, plugin) = AgentControlCorePlugin::channel(4);
         app.add_plugins(plugin);
@@ -2384,6 +2422,59 @@ mod tests {
                 .owners(IntentKind::Defend)
                 .collect::<Vec<_>>(),
             vec![SwarmId::PLAYER, opponent]
+        );
+    }
+
+    #[test]
+    fn map_command_rejects_an_unreachable_player_paint() {
+        use crate::{
+            intent::IntentGrid, nanobot::SwarmId, navigation::Obstacle,
+            reachability::SwarmReachabilityMap,
+        };
+        use bevy::prelude::*;
+
+        let grid = IntentGrid::new(8, 8);
+        let reachability = SwarmReachabilityMap::new(
+            &grid,
+            [Obstacle::Rectangle {
+                center: Vec2::ZERO,
+                half: Vec2::new(36.0, 8_000.0),
+            }],
+            [(SwarmId::PLAYER, Vec2::new(-252.0, 36.0))],
+        )
+        .unwrap();
+        let mut app = App::new();
+        app.insert_resource(grid).insert_resource(reachability);
+        let (control, plugin) = AgentControlCorePlugin::channel(4);
+        app.add_plugins(plugin);
+
+        let response = control
+            .submit(AgentRequest {
+                id: RequestId::Number(13),
+                command: AgentCommand::MapApply {
+                    action: ProtocolMapAction::Paint,
+                    intent: ProtocolIntent::Defend,
+                    x: 1,
+                    y: 0,
+                },
+            })
+            .unwrap();
+        app.update();
+        let response = response.recv().unwrap();
+
+        assert!(!response.ok);
+        let error = response.error.unwrap();
+        assert_eq!(error.code, "unreachable_intent_cell");
+        assert_eq!(
+            error.message,
+            "intent cell is outside the swarm-reachable map"
+        );
+        assert!(
+            app.world()
+                .resource::<IntentGrid>()
+                .iter_active_cells()
+                .next()
+                .is_none()
         );
     }
 

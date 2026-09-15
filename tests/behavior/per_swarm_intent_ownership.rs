@@ -59,7 +59,7 @@ fn player_painted_gather_drives_player_worker() {
     );
     let worker = common::spawn_worker_at(&mut app, cell_center + Vec2::new(0.0, -100.0));
 
-    for _ in 0..5 {
+    for _ in 0..60 {
         app.update();
     }
 
@@ -134,7 +134,7 @@ fn opponent_prepainted_gather_drives_opponent_worker() {
         .copied()
         .expect("opponent must carry a SwarmId");
 
-    for _ in 0..5 {
+    for _ in 0..60 {
         app.update();
     }
 
@@ -312,7 +312,7 @@ fn overlapping_swarms_extract_from_one_finite_deposit() {
         .entity_mut(enemy_worker)
         .insert(SwarmMember::new(SwarmId(7)));
 
-    for _ in 0..120 {
+    for _ in 0..600 {
         app.update();
     }
 

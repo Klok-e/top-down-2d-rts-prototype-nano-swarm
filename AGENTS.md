@@ -13,10 +13,6 @@ For coding-agent implementation work, follow `docs/agents/testing.md`. Don't edi
 
 For agent control and real-process verification, read `docs/agents/agent-control.md`.
 
-## Comments
-
-All comments must be written in a timeless manner.
-
 ## Agent skills
 
 ### Issue tracker

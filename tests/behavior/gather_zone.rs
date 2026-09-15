@@ -21,9 +21,9 @@ use top_down_2d_rts_prototype_nano_swarm::{
     ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Commitment, DirectMovementComponent, EXTRACT_PER_TICK, ExtractProgress, GatherAssignment,
-        NanobotType, ReturningToStockpile, SoftWorkSlots, SwarmId, WORKER_CARRY_CAPACITY,
-        WorkerLoad, best_candidate,
+        Commitment, DirectMovementComponent, ExtractProgress, GatherAssignment,
+        MATERIAL_WORK_TICKS_PER_UNIT, NanobotType, ReturningToStockpile, SoftWorkSlots, SwarmId,
+        WORKER_CARRY_CAPACITY, WORKER_EXTRACT_PER_PULSE, WorkerLoad, best_candidate,
     },
     resources::{ResourceDeposit, Stockpile},
 };
@@ -38,9 +38,9 @@ fn build_app() -> App {
 }
 
 #[test]
-fn worker_extracts_one_unit_per_tick_when_at_deposit() {
+fn worker_extracts_one_unit_after_one_material_work_interval() {
     // Tracer bullet: a worker assigned to a deposit and standing on
-    // it extracts EXTRACT_PER_TICK units per update, draining the
+    // it extracts one mineral per material-work interval, draining the
     // deposit and building an ExtractProgress component.
     //
     // The worker also needs a usable Source Stockpile nearby
@@ -79,7 +79,19 @@ fn worker_extracts_one_unit_per_tick_when_at_deposit() {
             break;
         }
     }
-    app.update(); // transfer first physical unit into Cargo
+    for _ in 0..MATERIAL_WORK_TICKS_PER_UNIT - 1 {
+        app.update();
+    }
+    assert_eq!(
+        app.world()
+            .entity(deposit)
+            .get::<ResourceDeposit>()
+            .unwrap()
+            .amount,
+        10,
+        "a partial work interval must not move a mineral"
+    );
+    app.update();
 
     let world = app.world();
     let deposit = world.entity(deposit).get::<ResourceDeposit>().unwrap();
@@ -89,12 +101,12 @@ fn worker_extracts_one_unit_per_tick_when_at_deposit() {
         .expect("worker should start ExtractProgress when at deposit");
     assert_eq!(
         deposit.amount,
-        10 - EXTRACT_PER_TICK,
-        "deposit loses one unit per tick"
+        10 - WORKER_EXTRACT_PER_PULSE,
+        "deposit loses one unit after a full material-work interval"
     );
     assert_eq!(
-        progress.collected, EXTRACT_PER_TICK,
-        "ExtractProgress collects one unit per tick"
+        progress.collected, WORKER_EXTRACT_PER_PULSE,
+        "ExtractProgress records the completed material-work pulse"
     );
 }
 
@@ -123,7 +135,7 @@ fn worker_fills_small_load_then_head_to_stockpile() {
         .entity_mut(worker)
         .insert(GatherAssignment::new(IVec2::new(0, 0), deposit));
 
-    for _ in 0..120 {
+    for _ in 0..1_000 {
         app.update();
         if app.world().get::<ReturningToStockpile>(worker).is_some() {
             break;
@@ -191,13 +203,22 @@ fn worker_delivers_carry_to_nearest_stockpile() {
         .entity_mut(worker)
         .insert(GatherAssignment::new(IVec2::new(0, 0), deposit));
 
-    // Fill the load. EXTRACT_PER_TICK ticks of extraction at the
+    // Fill the load. MATERIAL_WORK_TICKS_PER_UNIT ticks per mineral at the
     // deposit (no travel), plus one more for the transition.
-    for _ in 0..(WORKER_CARRY_CAPACITY as usize) {
+    for _ in 0..1_000 {
         app.update();
+        if app
+            .world()
+            .entity(worker)
+            .get::<ExtractProgress>()
+            .is_none()
+            && app.world().entity(worker).get::<WorkerLoad>().is_some()
+        {
+            break;
+        }
     }
     // Allow the exterior route around the deposit, and stop at delivery.
-    for _ in 0..120 {
+    for _ in 0..1_000 {
         app.update();
         if app
             .world()
@@ -336,7 +357,7 @@ fn idle_worker_reactivates_when_deposit_refills() {
     }
 
     // Finish extraction and the exterior delivery route before refilling.
-    for _ in 0..120 {
+    for _ in 0..1_000 {
         app.update();
         if app
             .world()
@@ -385,7 +406,7 @@ fn idle_worker_reactivates_when_deposit_refills() {
         .unwrap()
         .amount = 8;
 
-    for _ in 0..120 {
+    for _ in 0..1_000 {
         app.update();
         if app.world().get::<ResourceDeposit>(deposit).unwrap().amount < 8 {
             break;
@@ -467,7 +488,7 @@ fn idle_worker_chooses_gather_via_autonomy_scoring() {
 
     // Drive the assignment system; the worker should end up with a
     // GatherAssignment pointing at the deposit in the gather cell.
-    for _ in 0..5 {
+    for _ in 0..60 {
         app.update();
     }
 

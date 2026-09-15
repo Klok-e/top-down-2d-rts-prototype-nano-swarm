@@ -134,15 +134,10 @@ fn idle_friend_steps_aside_before_approaching_traffic_stalls() {
 
 #[test]
 fn route_progress_away_from_goal_does_not_count_as_a_traffic_stall() {
-    use bevy::time::TimeUpdateStrategy;
-    use std::time::Duration;
     use top_down_2d_rts_prototype_nano_swarm::nanobot::{
         Commitment, RemainingTravel, VelocityComponent, velocity_system,
     };
     let mut app = common::minimal_app();
-    let step = Duration::from_millis(100);
-    app.insert_resource(Time::<Fixed>::from_duration(step));
-    app.insert_resource(TimeUpdateStrategy::ManualDuration(step));
     app.add_systems(FixedUpdate, velocity_system);
     let traveller = common::spawn_worker_at(&mut app, Vec2::ZERO);
     app.world_mut()
@@ -217,7 +212,7 @@ fn queued_recovery_separates_from_a_working_body_without_losing_cargo() {
         },
     ));
     let mut crossed = false;
-    for _ in 0..40 {
+    for _ in 0..180 {
         let x = app.world().get::<Transform>(loaded).unwrap().translation.x;
         app.world_mut().entity_mut(loaded).insert((
             RemainingTravel(504. - x),
@@ -232,7 +227,7 @@ fn queued_recovery_separates_from_a_working_body_without_losing_cargo() {
             .unwrap()
             .translation
             .truncate();
-        if position.distance(Vec2::new(432., 324.)) < 68. {
+        if position.distance(Vec2::new(432., 324.)) <= 68.001 {
             crossed = true;
             break;
         }
@@ -246,7 +241,7 @@ fn queued_recovery_separates_from_a_working_body_without_losing_cargo() {
         .entity_mut(loaded)
         .insert(WaitingForWork)
         .remove::<RemainingTravel>();
-    for _ in 0..80 {
+    for _ in 0..180 {
         app.update();
     }
     let position = app

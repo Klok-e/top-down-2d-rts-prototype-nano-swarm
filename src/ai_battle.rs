@@ -45,5 +45,4 @@ impl FromStr for AiBattleLayout {
 #[derive(Resource, Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AiBattleConfig {
     pub layout: AiBattleLayout,
-    pub realtime: bool,
 }

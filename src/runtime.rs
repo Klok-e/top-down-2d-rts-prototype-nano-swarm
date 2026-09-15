@@ -7,7 +7,7 @@ use bevy::{
     app::{AppExit, PluginsState, TerminalCtrlCHandlerPlugin},
     log::LogPlugin,
     prelude::*,
-    time::{TimeSystems, TimeUpdateStrategy},
+    time::TimeUpdateStrategy,
 };
 
 #[cfg(unix)]
@@ -26,33 +26,37 @@ pub const MAX_HEADLESS_DIMENSION: u32 = 8192;
 pub const MAX_HEADLESS_PIXELS: u64 = 16_777_216;
 const HEADLESS_FRAME_DURATION: Duration = Duration::from_nanos(16_666_667);
 
-/// Headless runner whose pacing follows the active session instead of launch options.
-pub struct DynamicHeadlessPacingPlugin;
+/// Startup-selected pacing policy for a headless process.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HeadlessPacing {
+    pub unbounded: bool,
+}
 
-impl Plugin for DynamicHeadlessPacingPlugin {
+/// No-window application runner with an explicit startup pacing policy.
+pub struct HeadlessRunnerPlugin;
+
+impl Plugin for HeadlessRunnerPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<crate::session::SessionRules>()
+        app.init_resource::<HeadlessPacing>()
             .init_resource::<TimeUpdateStrategy>()
-            .add_systems(First, sync_headless_time_strategy.before(TimeSystems))
+            .add_systems(PreStartup, configure_headless_time_strategy)
             .set_runner(run_dynamic_headless);
     }
 }
 
-fn sync_headless_time_strategy(
-    rules: Res<crate::session::SessionRules>,
+fn configure_headless_time_strategy(
+    pacing: Res<HeadlessPacing>,
     mut strategy: ResMut<TimeUpdateStrategy>,
 ) {
-    if rules.accelerate_headless {
-        if !matches!(*strategy, TimeUpdateStrategy::FixedTimesteps(1)) {
-            *strategy = TimeUpdateStrategy::FixedTimesteps(1);
-        }
-    } else if !matches!(*strategy, TimeUpdateStrategy::Automatic) {
-        *strategy = TimeUpdateStrategy::Automatic;
-    }
+    *strategy = if pacing.unbounded {
+        TimeUpdateStrategy::FixedTimesteps(1)
+    } else {
+        TimeUpdateStrategy::Automatic
+    };
 }
 
-fn headless_frame_delay(accelerated: bool, elapsed: Duration) -> Duration {
-    if accelerated {
+fn headless_frame_delay(unbounded: bool, elapsed: Duration) -> Duration {
+    if unbounded {
         Duration::ZERO
     } else {
         HEADLESS_FRAME_DURATION.saturating_sub(elapsed)
@@ -74,11 +78,10 @@ fn run_dynamic_headless(mut app: App) -> AppExit {
         if let Some(exit) = app.should_exit() {
             return exit;
         }
-        let accelerated = app
-            .world()
-            .resource::<crate::session::SessionRules>()
-            .accelerate_headless;
-        let delay = headless_frame_delay(accelerated, started.elapsed());
+        let delay = headless_frame_delay(
+            app.world().resource::<HeadlessPacing>().unbounded,
+            started.elapsed(),
+        );
         if !delay.is_zero() {
             std::thread::sleep(delay);
         }
@@ -97,14 +100,15 @@ Options:\n\
     --output-root <PATH>  Battle results directory (default: target/battle-runs)\n\
     --seed <INTEGER>   Battle starting seed (default: 0)\n\
     --layout <NAME>   Select standard or flanks for AI Battle\n\
-    --realtime        Use real-time headless pacing for AI Battle\n\
+    --unbounded       Run headless simulation without frame pacing\n\
     -h, --help         Print help\n\
 \n\
-Headless AI Battle advances without real-time pacing unless --realtime is set.\n";
+`--unbounded` requires `--headless` and applies to every scenario.\n";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeOptions {
     pub headless: bool,
+    pub unbounded: bool,
     pub agent_socket: bool,
     pub width: u32,
     pub height: u32,
@@ -118,6 +122,7 @@ impl Default for RuntimeOptions {
     fn default() -> Self {
         Self {
             headless: false,
+            unbounded: false,
             agent_socket: false,
             width: DEFAULT_HEADLESS_WIDTH,
             height: DEFAULT_HEADLESS_HEIGHT,
@@ -155,6 +160,8 @@ pub enum RuntimeOptionsError {
     UnknownLayout(String),
     #[error("{flag} is valid only with --scenario ai-battle")]
     OptionRequiresAiBattle { flag: String },
+    #[error("{flag} requires --headless")]
+    OptionRequiresHeadless { flag: String },
     #[error("--output-root cannot be empty")]
     EmptyOutputRoot,
     #[error("unknown argument: {0}")]
@@ -211,11 +218,8 @@ impl RuntimeOptions {
         while let Some(argument) = args.next() {
             match argument.as_ref() {
                 "--headless" => options.headless = true,
+                "--unbounded" => options.unbounded = true,
                 "--agent-socket" => options.agent_socket = true,
-                "--realtime" => {
-                    options.ai_battle.realtime = true;
-                    ai_battle_option.get_or_insert_with(|| "--realtime".to_string());
-                }
                 flag @ ("--scenario" | "--output-root" | "--seed" | "--layout") => {
                     let value = args
                         .next()
@@ -282,6 +286,11 @@ impl RuntimeOptions {
     }
 
     fn validate(self) -> Result<Self, RuntimeOptionsError> {
+        if self.unbounded && !self.headless {
+            return Err(RuntimeOptionsError::OptionRequiresHeadless {
+                flag: "--unbounded".to_string(),
+            });
+        }
         if self.output_root.as_os_str().is_empty() {
             return Err(RuntimeOptionsError::EmptyOutputRoot);
         }
@@ -319,7 +328,7 @@ pub fn build_runtime_app(options: RuntimeOptions) -> Result<App, RuntimeBuildErr
         });
         app.add_plugins((
             LogPlugin::default(),
-            DynamicHeadlessPacingPlugin,
+            HeadlessRunnerPlugin,
             TerminalCtrlCHandlerPlugin,
         ));
         app
@@ -327,12 +336,16 @@ pub fn build_runtime_app(options: RuntimeOptions) -> Result<App, RuntimeBuildErr
         build_app()
     };
     app.insert_resource(selection);
+    app.insert_resource(HeadlessPacing {
+        unbounded: options.unbounded,
+    });
     app.insert_resource(crate::session::SimulationSeed(options.seed));
     app.insert_resource(options.ai_battle.clone());
     app.insert_resource(BattleStatisticsConfig {
         output_root: options.output_root,
         seed: options.seed,
         headless: options.headless,
+        unbounded: options.unbounded,
     });
     #[cfg(unix)]
     if options.agent_socket {
@@ -374,14 +387,13 @@ mod tests {
     }
 
     #[test]
-    fn ai_battle_options_describe_the_layout_and_realtime_execution() {
+    fn ai_battle_options_describe_the_layout() {
         let options = RuntimeOptions::parse([
             "--headless",
             "--scenario",
             "ai-battle",
             "--layout",
             "flanks",
-            "--realtime",
         ])
         .unwrap();
 
@@ -389,7 +401,6 @@ mod tests {
             options.ai_battle,
             AiBattleConfig {
                 layout: AiBattleLayout::Flanks,
-                realtime: true,
             }
         );
     }
@@ -400,10 +411,22 @@ mod tests {
             RuntimeOptions::parse(["--layout", "flanks"]),
             Err(RuntimeOptionsError::OptionRequiresAiBattle { .. })
         ));
-        assert!(matches!(
-            RuntimeOptions::parse(["--scenario", "standard", "--realtime"]),
-            Err(RuntimeOptionsError::OptionRequiresAiBattle { .. })
-        ));
+    }
+
+    #[test]
+    fn unbounded_headless_execution_is_available_to_every_scenario() {
+        for scenario in ["standard", "sandbox", "ai-battle"] {
+            let options =
+                RuntimeOptions::parse(["--headless", "--unbounded", "--scenario", scenario])
+                    .unwrap();
+            assert!(options.unbounded);
+        }
+        assert_eq!(
+            RuntimeOptions::parse(["--unbounded"]),
+            Err(RuntimeOptionsError::OptionRequiresHeadless {
+                flag: "--unbounded".to_string(),
+            })
+        );
     }
 
     #[test]
@@ -466,7 +489,7 @@ mod tests {
         })
         .unwrap();
 
-        assert!(app.is_plugin_added::<DynamicHeadlessPacingPlugin>());
+        assert!(app.is_plugin_added::<HeadlessRunnerPlugin>());
         assert!(app.is_plugin_added::<TerminalCtrlCHandlerPlugin>());
         assert!(app.is_plugin_added::<LogPlugin>());
         assert!(!app.is_plugin_added::<WinitPlugin>());
@@ -478,23 +501,19 @@ mod tests {
             app.world().resource::<AiBattleConfig>(),
             &AiBattleConfig::default()
         );
+        assert_eq!(
+            app.world().resource::<HeadlessPacing>(),
+            &HeadlessPacing::default()
+        );
     }
 
     #[test]
-    fn runtime_installs_the_parsed_ai_battle_configuration() {
-        let options = RuntimeOptions::parse([
-            "--headless",
-            "--scenario",
-            "ai-battle",
-            "--layout",
-            "flanks",
-            "--realtime",
-        ])
-        .unwrap();
-        let expected = options.ai_battle.clone();
+    fn runtime_installs_startup_unbounded_pacing_independently_of_scenario() {
+        let options =
+            RuntimeOptions::parse(["--headless", "--unbounded", "--scenario", "standard"]).unwrap();
         let app = build_runtime_app(options).unwrap();
 
-        assert_eq!(app.world().resource::<AiBattleConfig>(), &expected);
+        assert!(app.world().resource::<HeadlessPacing>().unbounded);
     }
 
     #[test]

@@ -13,6 +13,7 @@ pub(super) struct PlannerState {
     work_window_start_tick: Option<u64>,
     work_used: usize,
     cleanup_cursor: Option<IVec2>,
+    unreachable_cleanup_cursor: Option<IVec2>,
     last_grid_revision: Option<u64>,
     retained_covered_movement: bool,
     covered_stall_grace_used: bool,
@@ -83,6 +84,7 @@ impl PlannerState {
             .is_some_and(|revision| state.grid.revision() < revision)
         {
             self.cleanup_cursor = None;
+            self.unreachable_cleanup_cursor = None;
         }
         self.last_grid_revision = Some(state.grid.revision());
         let window_start = state.tick - state.tick % REVIEW_PERIOD_TICKS;
@@ -362,8 +364,10 @@ impl PlannerState {
         let edits = intent_edits(
             owner,
             state.grid,
+            state.reachability,
             &selected.desired,
             &mut self.cleanup_cursor,
+            &mut self.unreachable_cleanup_cursor,
             &mut budget,
         );
         self.work_used = budget.used;

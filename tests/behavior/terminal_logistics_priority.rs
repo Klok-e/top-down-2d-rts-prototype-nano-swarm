@@ -52,7 +52,6 @@ fn empty_committed_defender_makes_charger_beat_startable_production() {
 #[test]
 fn charger_emergency_reserves_only_uncovered_committed_charge_need() {
     let mut app = common::sim_app_with_gather_haul();
-    common::initialize_fast_pacing(&mut app);
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let source = common::spawn_sink_stockpile(&mut app, Vec2::new(-200.0, 0.0), 100, 100);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
@@ -85,9 +84,9 @@ fn charger_emergency_reserves_only_uncovered_committed_charge_need() {
         .get::<LogisticsReservation>()
         .expect("partial emergency demand is reservable");
     assert_eq!(reservation.destination, charger);
-    assert_eq!(reservation.amount, 10);
-    assert_eq!(reservation.source_remaining, 10);
-    assert_eq!(reservation.destination_remaining, 10);
+    assert_eq!(reservation.amount, 20);
+    assert_eq!(reservation.source_remaining, 20);
+    assert_eq!(reservation.destination_remaining, 20);
 }
 
 #[test]
@@ -148,7 +147,10 @@ fn waiting_production_eventually_beats_continuous_charger_emergency() {
     let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-600.0, -200.0));
 
     let mut production_selected = false;
-    for _ in 0..120 {
+    // The production terminal needs four eight-tick fairness promotions. At
+    // the shipped 60 Hz simulation clock, the 10 Hz allocation clock reaches
+    // that debt within four seconds.
+    for _ in 0..240 {
         app.update();
         let sink = app
             .world()
@@ -188,7 +190,7 @@ fn startable_production_beats_nearer_ordinary_charger_refill() {
         .entity_mut(charger)
         .insert(OwnerSwarm(swarm));
     let mut production = ProductionFacility::new();
-    production.input_amount = 1;
+    production.input_amount = 20;
     let facility = app
         .world_mut()
         .spawn((

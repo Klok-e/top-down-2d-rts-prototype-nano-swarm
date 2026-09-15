@@ -91,7 +91,7 @@ fn gathering_preserves_cargo_on_displacement_then_unloads_outside_owned_scaled_s
             SwarmMember(swarm_id),
             GatherAssignment::new(IVec2::ZERO, deposit),
         ));
-        for _ in 0..120 {
+        for _ in 0..2_000 {
             app.update();
             if app
                 .world()
@@ -122,7 +122,7 @@ fn gathering_preserves_cargo_on_displacement_then_unloads_outside_owned_scaled_s
             1,
             "displacement retains cargo"
         );
-        for _ in 0..120 {
+        for _ in 0..2_000 {
             app.update();
             if app.world().get::<ExtractProgress>(worker).is_some() {
                 let position = app
@@ -270,7 +270,7 @@ fn charging_resumes_from_exterior_without_spending_supply_while_displaced() {
             },
             ChargerAssignment { charger },
         ));
-        for _ in 0..10 {
+        for _ in 0..1_000 {
             app.update();
         }
         assert!(
@@ -292,7 +292,7 @@ fn charging_resumes_from_exterior_without_spending_supply_while_displaced() {
         assert!(
             (app.world().get::<Charge>(defender).unwrap().current - charge_before).abs() < 0.00001
         );
-        for _ in 0..140 {
+        for _ in 0..1_000 {
             app.update();
             if app.world().get::<Charge>(defender).unwrap().current > charge_before {
                 break;
