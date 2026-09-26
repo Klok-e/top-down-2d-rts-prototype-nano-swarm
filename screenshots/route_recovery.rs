@@ -17,6 +17,7 @@ struct Scene {
     sink: Entity,
     wall: Entity,
     phase: u8,
+    opened_at: f64,
 }
 
 pub fn route_recovery(ctx: &mut TestContext) -> TestFlow {
@@ -31,6 +32,7 @@ pub fn route_recovery(ctx: &mut TestContext) -> TestFlow {
         sink,
         wall,
         phase,
+        opened_at,
     } = *ctx.world.resource::<Scene>();
     let carried = ctx.world.get::<Cargo>(bot).map_or(0, |c| c.amount);
     let stored = ctx.world.get::<Stockpile>(sink).unwrap().amount;
@@ -57,7 +59,10 @@ pub fn route_recovery(ctx: &mut TestContext) -> TestFlow {
         1 => {
             assert_eq!(carried, 12);
             ctx.world.despawn(wall);
-            ctx.world.resource_mut::<Scene>().phase = 2;
+            let now = ctx.world.resource::<Time<Fixed>>().elapsed_secs_f64();
+            let mut scene = ctx.world.resource_mut::<Scene>();
+            scene.phase = 2;
+            scene.opened_at = now;
             TestFlow::Continue
         }
         2 if stored == 12 => {
@@ -67,7 +72,11 @@ pub fn route_recovery(ctx: &mut TestContext) -> TestFlow {
         }
         3 => TestFlow::Exit,
         _ => {
-            assert!(ctx.frame < 1000, "cargo must resume after removal");
+            let elapsed = ctx.world.resource::<Time<Fixed>>().elapsed_secs_f64() - opened_at;
+            assert!(
+                elapsed < 30.0,
+                "cargo must resume after removal: carried={carried}, stored={stored}, elapsed={elapsed}s"
+            );
             TestFlow::Continue
         }
     }
@@ -161,5 +170,6 @@ fn prepare(world: &mut World) {
         sink,
         wall,
         phase: 0,
+        opened_at: 0.0,
     });
 }

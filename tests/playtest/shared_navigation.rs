@@ -7,6 +7,99 @@ use top_down_2d_rts_prototype_nano_swarm::nanobot::{
 mod common;
 
 #[test]
+fn idle_bots_cross_the_diagonal_join_between_work_zones() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        intent::{IntentGrid, IntentKind},
+        nanobot::Commitment,
+    };
+    for swarm in [SwarmId::PLAYER, SwarmId(1)] {
+        for kind in [NanobotType::Worker, NanobotType::Hauler] {
+            let mut app = common::sim_app_with_movement();
+            for (cell, intent) in [
+                (IVec2::new(-1, -1), IntentKind::Gather),
+                (IVec2::new(-1, -1), IntentKind::Corridor),
+                (IVec2::ZERO, IntentKind::Build),
+                (IVec2::ZERO, IntentKind::Corridor),
+            ] {
+                app.world_mut()
+                    .resource_mut::<IntentGrid>()
+                    .paint(cell, intent, swarm);
+            }
+            let bot = common::spawn_worker_at(&mut app, Vec2::new(72.0, 240.0));
+            app.world_mut()
+                .entity_mut(bot)
+                .insert((kind, SwarmMember(swarm)));
+            let mut crossed = false;
+            let mut returned = false;
+            for _ in 0..1200 {
+                app.update();
+                assert_eq!(app.world().get::<Commitment>(bot), Some(&Commitment::Idle));
+                assert!(app.world().get::<DirectMovementComponent>(bot).is_none());
+                let position = app.world().get::<Transform>(bot).unwrap().translation;
+                crossed |= position.x < -72.0 && position.y < -72.0;
+                if crossed && position.x > 72.0 && position.y > 72.0 {
+                    returned = true;
+                    break;
+                }
+            }
+            let position = app.world().get::<Transform>(bot).unwrap().translation;
+            assert!(
+                crossed && returned,
+                "{swarm:?}/{kind:?} must keep crossing between the interiors of the two diagonal work zones, stopped at {position:?}; crossed={crossed}, returned={returned}"
+            );
+        }
+    }
+}
+
+#[test]
+fn idle_bot_reconsiders_a_destination_blocked_by_a_deposit() {
+    use top_down_2d_rts_prototype_nano_swarm::intent::{IntentGrid, IntentKind};
+    let mut app = common::sim_app_with_movement();
+    for cell in [IVec2::ZERO, IVec2::X] {
+        app.world_mut().resource_mut::<IntentGrid>().paint(
+            cell,
+            IntentKind::Gather,
+            SwarmId::PLAYER,
+        );
+    }
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(768.0, 256.0),
+            amount: 1,
+            capacity: 1,
+            radius: 160.0,
+        },
+    );
+    let bot = common::spawn_worker_at(&mut app, Vec2::splat(256.0));
+    let mut approached = false;
+    let mut returned = false;
+    for _ in 0..1200 {
+        app.update();
+        let position = app
+            .world()
+            .get::<Transform>(bot)
+            .unwrap()
+            .translation
+            .truncate();
+        assert!(
+            position.distance(Vec2::new(768.0, 256.0)) >= 193.99,
+            "idle steering must preserve body clearance around the deposit: {position:?}"
+        );
+        approached |= position.x > 540.0;
+        if approached && position.x < 384.0 {
+            returned = true;
+            break;
+        }
+    }
+    assert!(
+        approached && returned,
+        "idle bot must leave a blocked approach instead of retaining it forever: {:?}",
+        app.world().get::<Transform>(bot).unwrap().translation
+    );
+}
+
+#[test]
 fn both_swarms_and_all_types_detour_around_completed_structure() {
     for swarm in [SwarmId::PLAYER, SwarmId(42)] {
         for kind in [

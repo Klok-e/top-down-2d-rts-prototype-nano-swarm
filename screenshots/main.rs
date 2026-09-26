@@ -204,6 +204,10 @@ fn main() -> std::process::ExitCode {
         .with_ignored_flag(true),
         Trial::test("exterior_work", || run(exterior_work::exterior_work)).with_ignored_flag(true),
         Trial::test("idle_spread", || run(idle_spread::idle_spread)).with_ignored_flag(true),
+        Trial::test("idle_spread_diagonal_crossing", || {
+            run(idle_spread::idle_spread_diagonal_crossing)
+        })
+        .with_ignored_flag(true),
         Trial::test("navigation_geometry", || {
             run(navigation_geometry::navigation_geometry)
         })
