@@ -10,17 +10,10 @@
 //!
 //! ## What the screenshot shows
 //!
-//! The in-region gradient path (a stacked cluster on painted cells)
-//! is a gentle random walk -- per-tick re-evaluation with the random
-//! tie-break produces sub-cell "quivering" liveness rather than rapid
-//! cross-cell redistribution, which a single static frame cannot
-//! capture. The stranded-seek path, by contrast, is deterministic:
-//! an idle bot on an unpainted cell drifts in a straight line toward
-//! the nearest fit-paint cell. That straight-line drift is the
-//! clearest visible evidence of the spread system in a static frame,
-//! so the screenshot exercises it: a small cluster of idle haulers
-//! starts stranded just west of a Corridor segment and is captured
-//! mid-drift heading east into it.
+//! The stranded-seek scene shows a small cluster of idle haulers starting
+//! west of a Corridor segment and drifting east into it. The diagonal
+//! crossing scene checks that a bot moves fully across both tile boundaries
+//! instead of reversing and accumulating at their shared corner.
 //!
 //! ## Keeping the haulers idle + the frame clean
 //!
@@ -47,15 +40,18 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    ZONE_BLOCK_SIZE,
+    GAMEPLAY_SPRITE_Z, ZONE_BLOCK_SIZE,
+    fly_camera::CameraZoom2d,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Commitment, DirectMovementComponent, Health, Nanobot, NanobotType, SwarmId, SwarmMember,
-        VelocityComponent, world_to_cell,
+        Commitment, DirectMovementComponent, Health, Nanobot, NanobotType, StrategicController,
+        SwarmId, SwarmMember, VelocityComponent, world_to_cell,
     },
 };
 
-use crate::harness::{TestContext, TestFlow, run_screenshot_test};
+use crate::harness::{
+    TestContext, TestFlow, clear_nanobots_and_sprite_entities, run_screenshot_test,
+};
 
 /// Marker component tagging the haulers under test.
 #[derive(Debug, Component)]
@@ -192,4 +188,139 @@ pub fn idle_spread(ctx: &mut TestContext) -> TestFlow {
 #[allow(dead_code)]
 pub fn run() -> Result<std::path::PathBuf, String> {
     run_screenshot_test(idle_spread)
+}
+
+#[derive(Resource)]
+struct DiagonalCrossingScene {
+    bot: Entity,
+    started_at: f64,
+    crossed: bool,
+}
+
+/// Run with `cargo test --test screenshots -- --ignored idle_spread_diagonal_crossing`.
+pub fn idle_spread_diagonal_crossing(ctx: &mut TestContext) -> TestFlow {
+    if ctx.frame < 2 {
+        return TestFlow::Continue;
+    }
+    if ctx.frame == 2 {
+        prepare_diagonal_crossing(ctx.world);
+        return TestFlow::Screenshot("idle_spread_diagonal_start".into());
+    }
+
+    let scene = ctx.world.resource::<DiagonalCrossingScene>();
+    let position = ctx
+        .world
+        .get::<Transform>(scene.bot)
+        .unwrap()
+        .translation
+        .truncate();
+    assert_eq!(
+        ctx.world.get::<Commitment>(scene.bot),
+        Some(&Commitment::Idle),
+        "cosmetic spreading must preserve the idle commitment"
+    );
+    assert!(
+        ctx.world
+            .get::<DirectMovementComponent>(scene.bot)
+            .is_none(),
+        "cosmetic spreading must not create a movement task"
+    );
+    // Readback advances gameplay: completion records a crossing already observed,
+    // rather than requiring the bot to remain at its capture-request position.
+    if scene.crossed {
+        return TestFlow::Exit;
+    }
+    let elapsed = ctx.world.resource::<Time<Fixed>>().elapsed_secs_f64() - scene.started_at;
+    assert!(
+        elapsed < 20.0,
+        "idle hauler must cross fully into the diagonal tile within 20 simulated seconds; at {position} after {elapsed}s"
+    );
+    if position.x < -34.0 && position.y < -34.0 {
+        assert_eq!(world_to_cell(position), IVec2::new(-1, -1));
+        ctx.world.resource_mut::<DiagonalCrossingScene>().crossed = true;
+        return TestFlow::Screenshot("idle_spread_diagonal_crossed".into());
+    }
+    TestFlow::Continue
+}
+
+fn prepare_diagonal_crossing(world: &mut World) {
+    clear_nanobots_and_sprite_entities(world);
+    for entity in world
+        .query_filtered::<Entity, With<Node>>()
+        .iter(world)
+        .collect::<Vec<_>>()
+    {
+        let _ = world.despawn(entity);
+    }
+    for entity in world
+        .query_filtered::<Entity, With<StrategicController>>()
+        .iter(world)
+        .collect::<Vec<_>>()
+    {
+        world.entity_mut(entity).remove::<StrategicController>();
+    }
+    {
+        let mut grid = world.resource_mut::<IntentGrid>();
+        let mut existing_paint = Vec::new();
+        for (point, cell) in grid.iter_active_cells() {
+            for kind in IntentKind::ALL {
+                for owner in cell.owners(kind) {
+                    existing_paint.push((point, kind, owner));
+                }
+            }
+        }
+        for (point, kind, owner) in existing_paint {
+            grid.erase(point, kind, owner);
+        }
+        for cell in [IVec2::ZERO, IVec2::new(-1, -1)] {
+            for kind in [
+                IntentKind::Defend,
+                IntentKind::Gather,
+                IntentKind::Build,
+                IntentKind::Corridor,
+            ] {
+                grid.paint(cell, kind, SwarmId::PLAYER);
+            }
+        }
+    }
+    for (mut transform, mut projection, mut zoom) in world
+        .query::<(&mut Transform, &mut Projection, &mut CameraZoom2d)>()
+        .iter_mut(world)
+    {
+        transform.translation.x = 0.0;
+        transform.translation.y = 0.0;
+        zoom.zoom = 1.65;
+        if let Projection::Orthographic(ortho) = &mut *projection {
+            ortho.scale = 1.65;
+        }
+    }
+    for (label, position) in [
+        ("START TILE", Vec2::new(256.0, 430.0)),
+        ("DIAGONAL TARGET", Vec2::new(-256.0, -430.0)),
+    ] {
+        world.spawn((
+            Text2d::new(label),
+            TextFont {
+                font_size: 26.0,
+                ..default()
+            },
+            Transform::from_translation(position.extend(GAMEPLAY_SPRITE_Z + 1.0)),
+        ));
+    }
+    let bot = world
+        .spawn((
+            Nanobot {},
+            NanobotType::Hauler,
+            Commitment::Idle,
+            Health::default(),
+            VelocityComponent::default(),
+            SwarmMember::new(SwarmId::PLAYER),
+            Transform::from_xyz(72.0, 240.0, GAMEPLAY_SPRITE_Z + 1.0),
+        ))
+        .id();
+    world.insert_resource(DiagonalCrossingScene {
+        bot,
+        started_at: world.resource::<Time<Fixed>>().elapsed_secs_f64(),
+        crossed: false,
+    });
 }

@@ -379,3 +379,66 @@ fn stranded_bot_with_no_fit_paint_anywhere_stays_put() {
         velocity
     );
 }
+
+#[test]
+fn erasing_an_idle_destination_redirects_the_bot_to_owned_paint() {
+    let mut app = spread_only_app();
+    paint(&mut app, IVec2::ZERO, IntentKind::Gather);
+    paint(&mut app, IVec2::X, IntentKind::Build);
+    let bot = common::spawn_worker_at(&mut app, center(IVec2::ZERO));
+    app.update();
+    assert!(app.world().get::<VelocityComponent>(bot).unwrap().value.x > 0.0);
+
+    app.world_mut().resource_mut::<IntentGrid>().erase(
+        IVec2::X,
+        IntentKind::Build,
+        SwarmId::PLAYER,
+    );
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(IVec2::X, IntentKind::Build, SwarmId(1));
+    paint(&mut app, -IVec2::X, IntentKind::Gather);
+    app.world_mut()
+        .get_mut::<VelocityComponent>(bot)
+        .unwrap()
+        .value = Vec2::ZERO;
+    app.update();
+
+    assert!(
+        app.world().get::<VelocityComponent>(bot).unwrap().value.x < 0.0,
+        "erased player paint must stop guiding an idle bot even when enemy paint remains"
+    );
+}
+
+#[test]
+fn completing_real_work_discards_the_previous_idle_destination() {
+    let mut app = spread_only_app();
+    paint(&mut app, IVec2::ZERO, IntentKind::Gather);
+    paint(&mut app, IVec2::X, IntentKind::Build);
+    let bot = common::spawn_worker_at(&mut app, center(IVec2::ZERO));
+    app.update();
+    assert!(app.world().get::<VelocityComponent>(bot).unwrap().value.x > 0.0);
+
+    app.world_mut().entity_mut(bot).insert(Commitment::Working);
+    app.world_mut()
+        .get_mut::<VelocityComponent>(bot)
+        .unwrap()
+        .value = Vec2::ZERO;
+    app.update();
+    assert_eq!(
+        app.world().get::<VelocityComponent>(bot).unwrap().value,
+        Vec2::ZERO
+    );
+    app.world_mut().entity_mut(bot).insert((
+        Commitment::Idle,
+        Transform::from_translation(center(IVec2::new(-2, 0)).extend(0.0)),
+    ));
+    paint(&mut app, IVec2::new(-2, 0), IntentKind::Gather);
+    paint(&mut app, IVec2::new(-3, 0), IntentKind::Gather);
+    app.update();
+
+    assert!(
+        app.world().get::<VelocityComponent>(bot).unwrap().value.x < 0.0,
+        "newly idle workers must spread from their current worksite instead of resuming an obsolete destination"
+    );
+}

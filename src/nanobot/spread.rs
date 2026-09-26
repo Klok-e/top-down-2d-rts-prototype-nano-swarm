@@ -35,6 +35,9 @@
 //! 4. **Tie-break = random exploration.** When no neighbour is
 //!    strictly less dense, the bot nudges toward a random fit-painted
 //!    neighbour. When there is no fit-painted neighbour, no nudge.
+//!    A chosen cell stays the target until the bot reaches its central
+//!    half, stops making progress, the paint becomes ineligible, or
+//!    real work takes over.
 //! 5. **Velocity only.** The spread is a per-tick nudge applied to
 //!    [`VelocityComponent`]. It runs before `velocity_system` so the
 //!    force composes with `separation_system` and is consumed the same
@@ -74,6 +77,12 @@ use crate::nanobot::{
 /// freshly painted zone visibly fills without ever outrunning the
 /// demand allocator's grab of the same idle bot.
 pub const BOT_SPREAD_FORCE: f32 = 1.5;
+
+pub struct SpreadTarget {
+    cell: IVec2,
+    best_distance: f32,
+    last_progress: f64,
+}
 
 /// Intent kinds a `ntype` treats as in-region: those whose
 /// [`NanobotType::fit_for`] scores exactly `1.0`. The `0.5`
@@ -301,6 +310,7 @@ fn type_index(ntype: NanobotType) -> usize {
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn idle_spread_system(
     grid: Res<IntentGrid>,
+    time: Res<Time<Fixed>>,
     all_bots: Query<(&Transform, &SwarmMember), With<Nanobot>>,
     mut idle_bots: Query<
         (
@@ -329,6 +339,7 @@ pub fn idle_spread_system(
         )>,
     >,
     mut spread_tick: Local<u64>,
+    mut targets: Local<HashMap<Entity, SpreadTarget>>,
     generation: Option<Res<crate::session_lifecycle::SessionGeneration>>,
     mut previous_generation: Local<Option<u64>>,
     simulation_seed: Option<Res<crate::session::SimulationSeed>>,
@@ -337,6 +348,7 @@ pub fn idle_spread_system(
         && *previous_generation != Some(generation)
     {
         *spread_tick = 0;
+        targets.clear();
         *previous_generation = Some(generation);
     }
     // Per-swarm, per-type fit-cell lists are rebuilt every tick so
@@ -374,6 +386,14 @@ pub fn idle_spread_system(
 
     let tick = *spread_tick;
     *spread_tick = spread_tick.wrapping_add(1);
+    let now = time.elapsed_secs_f64();
+    targets.retain(|entity, _| {
+        idle_bots
+            .get(*entity)
+            .is_ok_and(|(_, _, _, _, commitment, _)| {
+                *commitment == Commitment::Idle && !active_tasks.contains(*entity)
+            })
+    });
     for (entity, transform, nanobot_type, member, commitment, mut velocity) in &mut idle_bots {
         if *commitment != Commitment::Idle || active_tasks.contains(entity) {
             continue;
@@ -385,7 +405,26 @@ pub fn idle_spread_system(
             continue;
         };
 
-        let target = if grid.cell(own_cell).is_some_and(|cell| {
+        let retained = targets.get_mut(&entity).and_then(|target| {
+            let offset = pos - get_world_from_zone(target.cell);
+            let distance = offset.length();
+            if distance + 2.0 < target.best_distance {
+                target.best_distance = distance;
+                target.last_progress = now;
+            }
+            let arrived = offset.abs().max_element() <= crate::ZONE_BLOCK_SIZE * 0.25;
+            (!arrived
+                && now - target.last_progress < 1.0
+                && grid.cell(target.cell).is_some_and(|cell| {
+                    kind_sets[type_idx]
+                        .iter()
+                        .any(|kind| cell.has_owned(*kind, member.0))
+                }))
+            .then_some(target.cell)
+        });
+        let target = if retained.is_some() {
+            retained
+        } else if grid.cell(own_cell).is_some_and(|cell| {
             kind_sets[type_idx]
                 .iter()
                 .any(|kind| cell.has_owned(*kind, member.0))
@@ -420,12 +459,24 @@ pub fn idle_spread_system(
 
         if let Some(target_cell) = target {
             let target_center = get_world_from_zone(target_cell);
+            if retained.is_none() {
+                targets.insert(
+                    entity,
+                    SpreadTarget {
+                        cell: target_cell,
+                        best_distance: pos.distance(target_center),
+                        last_progress: now,
+                    },
+                );
+            }
             let dir = target_center - pos;
             // Near-zero direction (bot already on the target center)
             // yields no nudge rather than a NaN from normalising zero.
             if dir.length() > 1e-3 {
                 velocity.value += dir.normalize() * BOT_SPREAD_FORCE;
             }
+        } else {
+            targets.remove(&entity);
         }
     }
 }
