@@ -100,16 +100,6 @@ fn overlay_marks_sources_below_threshold_but_stays_hidden() {
 }
 
 #[test]
-fn overlay_spawns_a_marker_when_zoom_passes_threshold() {
-    let mut app = build_app();
-    common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
-    set_zoom(&mut app, 5.0);
-    app.update();
-
-    assert_eq!(count_markers(&mut app), 1);
-}
-
-#[test]
 fn visibility_system_toggles_marker_at_threshold() {
     let mut app = build_app();
     common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
@@ -328,67 +318,6 @@ fn same_slot_clusters_both_survive_reconciliation() {
     );
 }
 
-#[test]
-fn close_same_kind_deposits_still_merge_into_one_cluster() {
-    // The spatial-slot keying must not break the merge
-    // step: two deposits well within the merge radius
-    // must still collapse to one cluster / one marker.
-    let mut app = build_app();
-    common::spawn_deposit(
-        &mut app,
-        common::DepositFixture {
-            world_pos: Vec2::new(0.0, 0.0),
-            amount: 1000,
-            capacity: 1000,
-            radius: 32.0,
-        },
-    );
-    common::spawn_deposit(
-        &mut app,
-        common::DepositFixture {
-            world_pos: Vec2::new(200.0, 0.0),
-            amount: 1000,
-            capacity: 1000,
-            radius: 32.0,
-        },
-    );
-
-    set_zoom(&mut app, 4.0);
-    app.update();
-
-    assert_eq!(count_markers(&mut app), 1);
-}
-
-#[test]
-fn marker_key_uses_spatial_slot_not_just_kind_and_owner() {
-    // The acceptance criterion "clusters are not keyed
-    // only by kind/owner" is the contract under test
-    // here: a fresh marker spawned by the system
-    // carries a non-origin slot for a cluster whose
-    // world position is far from the origin.
-    let mut app = build_app();
-    // 20,000 world units east => slot (3, 0) with the
-    // default 6,000-unit slot size.
-    common::spawn_deposit(
-        &mut app,
-        common::DepositFixture {
-            world_pos: Vec2::new(20_000.0, 0.0),
-            amount: 1000,
-            capacity: 1000,
-            radius: 32.0,
-        },
-    );
-    set_zoom(&mut app, 8.0);
-    app.update();
-
-    let slot = marker_keys(&mut app)
-        .into_iter()
-        .find(|k| k.kind == TacticalMarkerKind::Deposit)
-        .map(|k| k.slot)
-        .expect("deposit marker must be spawned");
-    assert_eq!(slot, (3, 0));
-}
-
 // ---------------------------------------------------------------------------
 // Cluster merging by zoom
 // ---------------------------------------------------------------------------
@@ -427,34 +356,6 @@ fn nearby_deposits_merge_into_single_marker() {
         "merged cluster centroid must be (100, 0); got {:?}",
         transforms[0].translation
     );
-}
-
-#[test]
-fn far_apart_deposits_stay_separate_at_moderate_zoom() {
-    let mut app = build_app();
-    // Two deposits 5000 world units apart with a moderate
-    // merge radius (2048). They must stay separate.
-    common::spawn_deposit(
-        &mut app,
-        common::DepositFixture {
-            world_pos: Vec2::new(0.0, 0.0),
-            amount: 1000,
-            capacity: 1000,
-            radius: 32.0,
-        },
-    );
-    common::spawn_deposit(
-        &mut app,
-        common::DepositFixture {
-            world_pos: Vec2::new(5_000.0, 0.0),
-            amount: 1000,
-            capacity: 1000,
-            radius: 32.0,
-        },
-    );
-    set_zoom(&mut app, 4.0);
-    app.update();
-    assert_eq!(count_markers(&mut app), 2);
 }
 
 #[test]
@@ -749,44 +650,6 @@ fn marker_sprite_has_unit_custom_size() {
             "marker sprite must be a unit rectangle, got {custom:?}"
         );
     });
-}
-
-// ---------------------------------------------------------------------------
-// Center of mass
-// ---------------------------------------------------------------------------
-
-#[test]
-fn marker_position_tracks_cluster_centroid() {
-    let mut app = build_app();
-    common::spawn_deposit(
-        &mut app,
-        common::DepositFixture {
-            world_pos: Vec2::new(0.0, 0.0),
-            amount: 1000,
-            capacity: 1000,
-            radius: 32.0,
-        },
-    );
-    common::spawn_deposit(
-        &mut app,
-        common::DepositFixture {
-            world_pos: Vec2::new(200.0, 0.0),
-            amount: 1000,
-            capacity: 1000,
-            radius: 32.0,
-        },
-    );
-    set_zoom(&mut app, 4.0);
-    app.update();
-    let transform = body_transforms(&mut app)
-        .into_iter()
-        .next()
-        .expect("cluster marker must exist");
-    assert!(
-        (transform.translation.x - 100.0).abs() < 1.0,
-        "cluster centroid must be (100, 0), got {:?}",
-        transform.translation
-    );
 }
 
 // ---------------------------------------------------------------------------

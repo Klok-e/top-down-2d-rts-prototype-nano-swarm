@@ -394,12 +394,17 @@ pub fn worker_maintenance_arrive_system(
 pub fn worker_maintenance_work_system(
     mut commands: Commands,
     mut workers: Query<
-        (Entity, &Transform, &mut MaintenanceProgress),
+        (
+            Entity,
+            &Transform,
+            &mut MaintenanceProgress,
+            Option<&mut super::RegionalLease>,
+        ),
         (With<Nanobot>, Without<super::WorkBlocked>),
     >,
     mut structures: Query<(&mut Structure, &Transform)>,
 ) {
-    for (entity, transform, mut progress) in &mut workers {
+    for (entity, transform, mut progress, lease) in &mut workers {
         let Ok((mut structure, target_transform)) = structures.get_mut(progress.target) else {
             // Target collapsed between arrival and work (e.g.
             // a previous test or a future system despawned it).
@@ -426,6 +431,9 @@ pub fn worker_maintenance_work_system(
             .min(super::build::STRUCTURE_MAX_HEALTH);
 
         progress.ticks_worked += 1;
+        if let Some(mut lease) = lease {
+            lease.record_work();
+        }
         if progress.ticks_worked >= MAINTENANCE_WORK_DURATION_TICKS {
             release_maintenance_worker(&mut commands, entity);
         }

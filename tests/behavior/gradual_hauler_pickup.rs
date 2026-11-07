@@ -7,7 +7,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         LogisticsReservation, MATERIAL_WORK_TICKS_PER_UNIT, OwnerSwarm, ProductionFacility,
         SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, SwarmId,
     },
-    resources::{ResourceKind, ResourceLedger, Stockpile},
+    resources::{ResourceKind, ResourceLedger, Stockpile, StockpileRole},
 };
 
 #[path = "../common/mod.rs"]
@@ -183,7 +183,11 @@ fn hauler_unloads_into_stockpile_gradually_and_ledger_neutrally() {
             kind: ResourceKind::Minerals,
             amount: 10,
         },
-        HaulerAssignment { source, sink },
+        HaulerAssignment {
+            source,
+            sink,
+            pickup_role: StockpileRole::Source,
+        },
         reservation,
     ));
     app.world_mut()
@@ -237,7 +241,11 @@ fn simultaneous_hauler_unloads_into_stockpile_conserve_all_cargo() {
                 kind: ResourceKind::Minerals,
                 amount: 10,
             },
-            HaulerAssignment { source, sink },
+            HaulerAssignment {
+                source,
+                sink,
+                pickup_role: StockpileRole::Source,
+            },
             reservation,
         ));
         haulers.push(hauler);
@@ -288,7 +296,11 @@ fn simultaneous_haulers_unload_against_exact_independent_reservations() {
                 kind: ResourceKind::Minerals,
                 amount: 10,
             },
-            HaulerAssignment { source, sink },
+            HaulerAssignment {
+                source,
+                sink,
+                pickup_role: StockpileRole::Source,
+            },
             reservation,
         ));
     }
@@ -335,7 +347,11 @@ fn hauler_unloads_into_facility_gradually() {
             kind: ResourceKind::Minerals,
             amount: 10,
         },
-        HaulerAssignment { source, sink },
+        HaulerAssignment {
+            source,
+            sink,
+            pickup_role: StockpileRole::Sink,
+        },
         reservation,
     ));
 
@@ -384,7 +400,11 @@ fn hauler_unloads_into_charger_gradually() {
             kind: ResourceKind::Minerals,
             amount: 10,
         },
-        HaulerAssignment { source, sink },
+        HaulerAssignment {
+            source,
+            sink,
+            pickup_role: StockpileRole::Sink,
+        },
         reservation,
     ));
 
@@ -444,6 +464,7 @@ fn loaded_hauler_from_source_reroutes_only_to_same_swarm_sink() {
         HaulerAssignment {
             source,
             sink: full_sink,
+            pickup_role: StockpileRole::Source,
         },
         reservation,
     ));
@@ -513,6 +534,7 @@ fn loaded_hauler_returns_to_source_when_destination_is_missing_and_no_terminal_e
         HaulerAssignment {
             source,
             sink: missing,
+            pickup_role: StockpileRole::Sink,
         },
         reservation,
     ));
@@ -577,6 +599,7 @@ fn owned_hauler_waits_and_releases_claim_when_only_foreign_or_unowned_destinatio
         HaulerAssignment {
             source,
             sink: foreign,
+            pickup_role: StockpileRole::Sink,
         },
         reservation,
     ));
@@ -643,7 +666,11 @@ fn same_tick_reroutes_cannot_overbook_replacement_capacity() {
                 kind: ResourceKind::Minerals,
                 amount: 10,
             },
-            HaulerAssignment { source, sink: full },
+            HaulerAssignment {
+                source,
+                sink: full,
+                pickup_role: StockpileRole::Source,
+            },
             reservation,
         ));
     }

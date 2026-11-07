@@ -876,6 +876,7 @@ pub fn worker_gather_extract_system(
             &mut LogisticsReservation,
             &SwarmMember,
             &mut super::MaterialWorkProgress,
+            Option<&mut super::RegionalLease>,
         ),
         (With<Nanobot>, Without<super::WorkBlocked>),
     >,
@@ -892,6 +893,7 @@ pub fn worker_gather_extract_system(
         mut reservation,
         swarm,
         mut work,
+        lease,
     ) in &mut workers
     {
         if reservation.is_added() {
@@ -926,13 +928,18 @@ pub fn worker_gather_extract_system(
                 .insert(region.movement_from(position));
             continue;
         }
-        if !work.completes_unit() {
-            continue;
-        }
         let actual = WORKER_EXTRACT_PER_PULSE
             .min(deposit.amount)
             .min(reservation.source_remaining)
             .min(WORKER_CARRY_CAPACITY.saturating_sub(cargo.amount));
+        if actual > 0
+            && let Some(mut lease) = lease
+        {
+            lease.record_work();
+        }
+        if !work.completes_unit() {
+            continue;
+        }
         if actual == 0 {
             reservation.source_remaining = 0;
             reservation.destination_remaining = cargo.amount;

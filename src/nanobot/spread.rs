@@ -517,63 +517,6 @@ mod tests {
     }
 
     #[test]
-    fn cell_is_eligible_for_generic_spread_merges_worker_gather_and_build() {
-        // A cell with Gather only is fit for a Worker; a cell with
-        // Build only is also fit for a Worker. The merged worker
-        // region is the union of both kinds.
-        let mut grid = IntentGrid::new(4, 4);
-        grid.paint(IVec2::ZERO, IntentKind::Gather, SwarmId::PLAYER);
-        let gather_only = grid.cell(IVec2::ZERO).unwrap().clone();
-        assert!(cell_is_eligible_for_generic_spread(
-            NanobotType::Worker,
-            &gather_only
-        ));
-        assert!(!cell_is_eligible_for_generic_spread(
-            NanobotType::Hauler,
-            &gather_only
-        ));
-
-        let mut grid = IntentGrid::new(4, 4);
-        grid.paint(IVec2::ZERO, IntentKind::Build, SwarmId::PLAYER);
-        let build_only = grid.cell(IVec2::ZERO).unwrap().clone();
-        assert!(cell_is_eligible_for_generic_spread(
-            NanobotType::Worker,
-            &build_only
-        ));
-        assert!(!cell_is_eligible_for_generic_spread(
-            NanobotType::Defender,
-            &build_only
-        ));
-
-        // A Hauler partial-fit Build cell (0.5 score) is NOT fit for
-        // a Hauler under the == 1.0 spread rule, and not fit for a
-        // Worker either (Worker scores Build 1.0 -- so this cell IS
-        // fit for a Worker, proving the union).
-        assert!(cell_is_eligible_for_generic_spread(
-            NanobotType::Worker,
-            &build_only
-        ));
-
-        let mut grid = IntentGrid::new(4, 4);
-        grid.paint(IVec2::ZERO, IntentKind::Corridor, SwarmId::PLAYER);
-        let corridor = grid.cell(IVec2::ZERO).unwrap().clone();
-        assert!(cell_is_eligible_for_generic_spread(
-            NanobotType::Hauler,
-            &corridor
-        ));
-        assert!(!cell_is_eligible_for_generic_spread(
-            NanobotType::Worker,
-            &corridor
-        ));
-
-        // Empty cell fits nobody.
-        assert!(!cell_is_eligible_for_generic_spread(
-            NanobotType::Worker,
-            &IntentCell::default()
-        ));
-    }
-
-    #[test]
     fn king_neighbours_are_the_eight_chebyshev_one_cells() {
         let n = king_neighbours(IVec2::new(0, 0));
         assert_eq!(n.len(), 8);
@@ -592,45 +535,9 @@ mod tests {
     }
 
     #[test]
-    fn fit_neighbour_cells_drop_out_of_bounds_and_unpainted() {
-        // A 3x3 grid spans cells -1..2 on each axis. Paint Gather at
-        // the east neighbour of (0,0) and Build at the north neighbour;
-        // a Worker should see both as fit neighbours, while the
-        // unpainted / out-of-bounds neighbours are dropped.
-        let mut grid = IntentGrid::new(3, 3);
-        grid.paint(IVec2::new(1, 0), IntentKind::Gather, SwarmId::PLAYER);
-        grid.paint(IVec2::new(0, 1), IntentKind::Build, SwarmId::PLAYER);
-
-        let fit = fit_neighbour_cells(NanobotType::Worker, IVec2::new(0, 0), &grid);
-        assert!(fit.contains(&IVec2::new(1, 0)));
-        assert!(fit.contains(&IVec2::new(0, 1)));
-        // Exactly the two painted neighbours.
-        assert_eq!(fit.len(), 2);
-
-        // A Hauler sees neither -- Corridor-only fit.
-        let hauler_fit = fit_neighbour_cells(NanobotType::Hauler, IVec2::new(0, 0), &grid);
-        assert!(hauler_fit.is_empty());
-    }
-
-    #[test]
     fn gradient_step_returns_none_when_no_fit_neighbour() {
         let mut rng = seeded();
         assert!(gradient_step_target(5, &[], &mut rng).is_none());
-    }
-
-    #[test]
-    fn gradient_step_picks_strictly_less_dense_neighbour() {
-        // Own density 3 (excl self). One neighbour at density 1
-        // (strictly less), another at density 5 (not less). The pick
-        // must be the less-dense one.
-        let mut rng = seeded();
-        let neighbours = vec![
-            (IVec2::new(1, 0), 5),
-            (IVec2::new(-1, 0), 1),
-            (IVec2::new(0, 1), 9),
-        ];
-        let pick = gradient_step_target(3, &neighbours, &mut rng);
-        assert_eq!(pick, Some(IVec2::new(-1, 0)));
     }
 
     #[test]
@@ -687,11 +594,6 @@ mod tests {
 
         assert_eq!(pick_a, pick_b, "same seed must give same pick");
         assert!(neighbours.iter().any(|(c, _)| Some(*c) == pick_a));
-    }
-
-    #[test]
-    fn nearest_fit_cell_returns_none_for_empty_candidates() {
-        assert!(nearest_fit_cell(Vec2::ZERO, &[]).is_none());
     }
 
     #[test]

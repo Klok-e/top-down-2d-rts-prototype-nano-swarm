@@ -5,16 +5,22 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::IntentGrid,
     nanobot::{
         ActionableOpportunity, ActionableProjection, AllocationCandidate, AllocationClock,
-        AllocationRegion, CandidateBounds, CategoryEligibility, CategoryValues, LeaseDecision,
-        OpportunityCategory, OpportunityTarget, PlannedKind, PlannedStructure,
+        AllocationRegion, CandidateBounds, Cargo, CategoryEligibility, CategoryValues,
+        ExtractProgress, GatherAssignment, InteractionRegion, LeaseDecision, LogisticsReservation,
+        MaterialWorkProgress, Nanobot, NanobotSimulationSet, OpportunityCategory,
+        OpportunityTarget, PlannedKind, PlannedStructure, PlannedStructureProgress,
         REGIONAL_FAIRNESS_PROMOTION_TICKS, RUNTIME_MAX_CANDIDATES, ReassignmentPolicy,
-        RegionalLease, RegionalLeaseConfig, RegionalPressure, allocate_category_budget,
-        allocate_regional_candidates, choose_bounded_candidate,
+        RegionalLease, RegionalLeaseConfig, RegionalPressure, SwarmId, WorkBlocked,
+        allocate_category_budget, allocate_regional_candidates, choose_bounded_candidate,
         choose_bounded_candidate_with_claims, evaluate_lease, maintain_regional_leases_system,
         outward_pull_budget, project_actionable_opportunities_system, region_fairness_sort_key,
+        worker_planned_structure_work_system,
     },
     resources::ResourceKind,
 };
+
+#[path = "../common/mod.rs"]
+mod common;
 
 fn region(x: i32, y: i32) -> AllocationRegion {
     AllocationRegion { x, y }
@@ -313,6 +319,153 @@ fn unsupported_opportunity_revokes_lease_in_the_same_app_update() {
 
 #[test]
 fn supported_lease_without_motion_or_work_expires() {
+    let (app, bot, _) = run_construction_lease(false, false);
+    assert!(!app.world().entity(bot).contains::<RegionalLease>());
+}
+
+#[test]
+fn a_blocked_worker_loses_its_lease_while_actual_construction_renews_it() {
+    let (app, bot, plan) = run_construction_lease(true, true);
+    assert_eq!(
+        app.world()
+            .get::<PlannedStructure>(plan)
+            .unwrap()
+            .construction_progress(),
+        (0, 10)
+    );
+    assert!(
+        !app.world().entity(bot).contains::<RegionalLease>(),
+        "a blocked Worker's progress marker must not renew the lease"
+    );
+
+    let (app, bot, plan) = run_construction_lease(true, false);
+    assert_eq!(
+        app.world()
+            .get::<PlannedStructure>(plan)
+            .unwrap()
+            .construction_progress(),
+        (4, 10)
+    );
+    assert!(
+        app.world().entity(bot).contains::<RegionalLease>(),
+        "a Worker reducing the remaining construction work keeps the lease"
+    );
+}
+
+#[test]
+fn movement_toward_the_work_site_renews_the_lease() {
+    let mut app = common::sim_app_with_movement();
+    app.init_resource::<ActionableProjection>()
+        .init_resource::<AllocationClock>()
+        .insert_resource(RegionalLeaseConfig {
+            no_progress_ttl_ticks: 2,
+        })
+        .add_systems(
+            FixedUpdate,
+            (
+                project_actionable_opportunities_system,
+                maintain_regional_leases_system,
+            )
+                .chain()
+                .after(NanobotSimulationSet::Movement),
+        );
+    let site = Transform::from_xyz(700.0, 0.0, 0.0);
+    let cell = IVec2::X;
+    let plan = app
+        .world_mut()
+        .spawn((PlannedStructure::new(PlannedKind::Charger, cell), site))
+        .id();
+    let start = Vec2::new(100.0, 0.0);
+    let bot = common::spawn_worker_at(&mut app, start);
+    app.world_mut().entity_mut(bot).insert((
+        InteractionRegion::structure(&site).movement_from(start),
+        RegionalLease::new(
+            AllocationRegion::for_cell(cell),
+            OpportunityCategory::PlannedBuild,
+            OpportunityTarget::PlannedBuild {
+                structure: plan,
+                kind: PlannedKind::Charger,
+            },
+            None,
+            0,
+            0,
+            2,
+        ),
+    ));
+
+    for _ in 0..8 {
+        app.world_mut()
+            .resource_mut::<AllocationClock>()
+            .advance_by(Duration::from_millis(100));
+        app.update();
+    }
+
+    assert!(app.world().get::<Transform>(bot).unwrap().translation.x > start.x);
+    assert!(
+        app.world().entity(bot).contains::<RegionalLease>(),
+        "actual travel should keep the lease beyond its original deadline"
+    );
+}
+
+#[test]
+fn losing_a_deposit_clears_an_empty_gather_job_and_preserves_collected_minerals() {
+    let mut app = common::minimal_app();
+    app.init_resource::<ActionableProjection>()
+        .init_resource::<AllocationClock>()
+        .init_resource::<RegionalLeaseConfig>()
+        .add_systems(Update, maintain_regional_leases_system);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::ZERO,
+            amount: 10,
+            capacity: 10,
+            radius: 32.0,
+        },
+    );
+    let stockpile = common::spawn_stockpile(&mut app, Vec2::new(100.0, 0.0), 0, 10);
+    let cell = IVec2::ZERO;
+    let kind = ResourceKind::Minerals;
+    let [empty, loaded] = [0, 1].map(|amount| {
+        let bot = common::spawn_worker_at(&mut app, Vec2::new(0.0, 48.0));
+        app.world_mut().entity_mut(bot).insert((
+            RegionalLease::new(
+                AllocationRegion::for_cell(cell),
+                OpportunityCategory::Gather,
+                OpportunityTarget::Gather { deposit, cell },
+                Some(SwarmId::PLAYER),
+                0,
+                0,
+                30,
+            ),
+            GatherAssignment::new(cell, deposit),
+            ExtractProgress { collected: amount },
+            Cargo { kind, amount },
+            MaterialWorkProgress { ticks_elapsed: 10 },
+            LogisticsReservation::new(deposit, stockpile, kind, 2),
+        ));
+        bot
+    });
+    app.update();
+    assert!(app.world().entity(empty).contains::<RegionalLease>());
+
+    app.world_mut().despawn(deposit);
+    app.update();
+
+    let empty = app.world().entity(empty);
+    assert!(!empty.contains::<RegionalLease>());
+    assert!(!empty.contains::<GatherAssignment>());
+    assert!(!empty.contains::<ExtractProgress>());
+    assert!(!empty.contains::<Cargo>());
+    assert!(!empty.contains::<MaterialWorkProgress>());
+    assert!(!empty.contains::<LogisticsReservation>());
+    assert_eq!(
+        app.world().get::<Cargo>(loaded),
+        Some(&Cargo { kind, amount: 1 })
+    );
+}
+
+fn run_construction_lease(working: bool, blocked: bool) -> (App, Entity, Entity) {
     let mut app = App::new();
     app.insert_resource(IntentGrid::new(16, 16))
         .init_resource::<top_down_2d_rts_prototype_nano_swarm::navigation::Navigation>()
@@ -326,11 +479,18 @@ fn supported_lease_without_motion_or_work_expires() {
             (
                 project_actionable_opportunities_system,
                 maintain_regional_leases_system,
+                worker_planned_structure_work_system,
             )
                 .chain(),
         );
-    app.world_mut()
-        .spawn(PlannedStructure::new(PlannedKind::Charger, IVec2::ZERO));
+    let site = Transform::default();
+    let plan = app
+        .world_mut()
+        .spawn((
+            PlannedStructure::new(PlannedKind::Charger, IVec2::ZERO).with_work_budget(10),
+            site,
+        ))
+        .id();
     app.update();
     let opportunity = app
         .world()
@@ -338,16 +498,35 @@ fn supported_lease_without_motion_or_work_expires() {
         .opportunities(region(0, 0))[0];
     let bot = app
         .world_mut()
-        .spawn(RegionalLease::new(
-            opportunity.region,
-            opportunity.category,
-            opportunity.target,
-            None,
-            0,
-            0,
-            2,
+        .spawn((
+            Nanobot {},
+            Transform::from_translation(
+                InteractionRegion::structure(&site)
+                    .approach(Vec2::X * 100.0)
+                    .extend(0.0),
+            ),
+            RegionalLease::new(
+                opportunity.region,
+                opportunity.category,
+                opportunity.target,
+                None,
+                0,
+                0,
+                2,
+            ),
         ))
         .id();
+    if working {
+        app.world_mut()
+            .entity_mut(bot)
+            .insert(PlannedStructureProgress {
+                cell: IVec2::ZERO,
+                target: plan,
+            });
+    }
+    if blocked {
+        app.world_mut().entity_mut(bot).insert(WorkBlocked);
+    }
 
     for _ in 0..4 {
         app.world_mut()
@@ -356,10 +535,7 @@ fn supported_lease_without_motion_or_work_expires() {
         app.update();
     }
 
-    assert!(
-        !app.world().entity(bot).contains::<RegionalLease>(),
-        "projection support without measurable work must not keep a stalled lease alive",
-    );
+    (app, bot, plan)
 }
 
 #[test]

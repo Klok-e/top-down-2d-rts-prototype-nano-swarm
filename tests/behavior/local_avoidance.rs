@@ -542,7 +542,7 @@ fn newly_arrived_cargo_and_loading_assignments_stay_put_until_work_effects_run()
             ApproachPhase, Cargo, HaulerAssignment, InteractionRegion, PlannedStructureClaim,
             WorkApproach, velocity_system,
         },
-        resources::ResourceKind,
+        resources::{ResourceKind, StockpileRole},
     };
     for assignment in 0..3 {
         let mut app = common::minimal_app();
@@ -566,6 +566,7 @@ fn newly_arrived_cargo_and_loading_assignments_stay_put_until_work_effects_run()
                 .insert(HaulerAssignment {
                     source: demand,
                     sink: demand,
+                    pickup_role: StockpileRole::Source,
                 });
         } else {
             app.world_mut()

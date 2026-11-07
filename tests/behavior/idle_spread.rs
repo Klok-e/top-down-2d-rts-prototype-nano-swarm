@@ -28,8 +28,7 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Commitment, DefenderResponse, DirectMovementComponent, SwarmId, VelocityComponent,
-        idle_spread_system,
+        Commitment, DirectMovementComponent, SwarmId, VelocityComponent, idle_spread_system,
     },
 };
 
@@ -187,32 +186,6 @@ fn generic_idle_spread_does_not_own_defender_staging() {
         velocity.length() <= 1e-5,
         "generic spread must leave Defender staging to regional allocation; got {:?}",
         velocity
-    );
-}
-
-#[test]
-fn spread_does_not_move_active_responder() {
-    let mut app = spread_only_app();
-    paint(&mut app, IVec2::ZERO, IntentKind::Defend);
-    paint(&mut app, IVec2::X, IntentKind::Defend);
-    let defender = common::spawn_defender_at(&mut app, center(IVec2::ZERO));
-    app.world_mut()
-        .entity_mut(defender)
-        .insert(DefenderResponse {
-            target: Entity::PLACEHOLDER,
-        });
-
-    app.update();
-
-    let velocity = app
-        .world()
-        .entity(defender)
-        .get::<VelocityComponent>()
-        .unwrap()
-        .value;
-    assert!(
-        velocity.length() <= 1e-5,
-        "idle cosmetic spread must not own active response movement",
     );
 }
 

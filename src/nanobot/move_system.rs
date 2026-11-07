@@ -268,6 +268,7 @@ pub fn velocity_system(
             Option<&Nanobot>,
             Option<&TrafficYield>,
             Option<&DirectMovementComponent>,
+            Option<&mut super::RegionalLease>,
         )>,
     )>,
     mut yielding: Local<std::collections::HashMap<Entity, Yielding>>,
@@ -303,8 +304,8 @@ pub fn velocity_system(
     let diameter = crate::navigation::BODY_RADIUS * 2.0;
     let mut bodies: Vec<_> = query
         .iter()
-        .filter(|(_, _, _, bot, _, _)| bot.is_some())
-        .map(|(entity, velocity, transform, _, _, _)| {
+        .filter(|(_, _, _, bot, ..)| bot.is_some())
+        .map(|(entity, velocity, transform, ..)| {
             (
                 TrafficBody {
                     entity,
@@ -683,7 +684,7 @@ pub fn velocity_system(
             && query
                 .get(body.entity)
                 .ok()
-                .and_then(|(_, _, _, _, marker, _)| marker.and_then(|marker| marker.rejoin))
+                .and_then(|(_, _, _, _, marker, ..)| marker.and_then(|marker| marker.rejoin))
                 .is_some_and(|point| navigation.segment_clear(body.start, point))
         {
             yielding.remove(&body.entity);
@@ -799,7 +800,7 @@ pub fn velocity_system(
         }
         bodies[i].0.delta = applied;
     }
-    for (entity, mut velocity, mut transform, bot, _, _) in &mut query {
+    for (entity, mut velocity, mut transform, bot, _, _, lease) in &mut query {
         let start = transform.translation.truncate();
         let applied_velocity = if bot.is_some() {
             bodies[indices[&entity]].0.delta
@@ -812,6 +813,9 @@ pub fn velocity_system(
             }
         };
         transform.translation += applied_velocity.extend(0.);
+        if let Some(mut lease) = lease {
+            lease.finish_travel_step(start, transform.translation.truncate());
+        }
         if let Some(rotation) = rotation_for_direction(applied_velocity) {
             transform.rotation = rotation;
         }

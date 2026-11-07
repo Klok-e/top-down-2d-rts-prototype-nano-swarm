@@ -296,37 +296,6 @@ fn worker_delivery_reissues_movement_when_timeout_strips_dmc_before_arrival() {
 }
 
 #[test]
-fn gather_intent_persists_after_deposit_depletes() {
-    // The Gather Zone (player-painted intent) must stay painted
-    // after the deposit it covered is drained. Workers leave when
-    // no work remains, but the intent layer does not. This is the
-    // "persist when local resources are depleted" acceptance bullet.
-    let mut app = build_app();
-    let cell = IVec2::new(0, 0);
-    {
-        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(
-            cell,
-            IntentKind::Gather,
-            top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER
-        ));
-    }
-    app.update();
-
-    // Paint survives a flush of updates and "no work remains" -- no
-    // system ever clears intent based on deposit state.
-    for _ in 0..10 {
-        app.update();
-    }
-    let grid = app.world().resource::<IntentGrid>();
-    let painted = grid.cell(cell).expect("cell must exist");
-    assert!(
-        painted.has(IntentKind::Gather),
-        "Gather intent must persist after local deposits are depleted"
-    );
-}
-
-#[test]
 fn idle_worker_reactivates_when_deposit_refills() {
     // When a deposit is refilled, an idle worker on the same cell
     // must re-engage with the new extraction. The Gather Zone

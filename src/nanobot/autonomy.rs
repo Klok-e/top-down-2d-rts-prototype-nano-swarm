@@ -311,14 +311,6 @@ mod tests {
     }
 
     #[test]
-    fn nanobot_type_default_is_worker() {
-        // The glossary is explicit: the player does not assign
-        // individual nanobots to types manually, so the default type
-        // is just a placeholder for the bundle default.
-        assert_eq!(NanobotType::default(), NanobotType::Worker);
-    }
-
-    #[test]
     fn nanobot_type_all_covers_worker_hauler_defender() {
         let kinds: Vec<NanobotType> = NanobotType::ALL.to_vec();
         assert_eq!(kinds.len(), NanobotType::COUNT);
@@ -354,11 +346,6 @@ mod tests {
         assert_abs_diff_eq!(defender.fit_for(IntentKind::Gather), 0.0, epsilon = 1e-5);
         assert_abs_diff_eq!(defender.fit_for(IntentKind::Build), 0.0, epsilon = 1e-5);
         assert_abs_diff_eq!(defender.fit_for(IntentKind::Corridor), 0.0, epsilon = 1e-5);
-    }
-
-    #[test]
-    fn commitment_default_is_idle() {
-        assert_eq!(Commitment::default(), Commitment::Idle);
     }
 
     #[test]

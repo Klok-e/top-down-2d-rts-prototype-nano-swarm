@@ -12,7 +12,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         LogisticsReservation, OwnerSwarm, ProductionFacility, Swarm, SwarmId,
         WORKER_CARRY_CAPACITY,
     },
-    resources::{ResourceKind, ResourceLedger, Stockpile},
+    resources::{ResourceKind, ResourceLedger, Stockpile, StockpileRole},
 };
 
 #[path = "../common/mod.rs"]
@@ -207,9 +207,11 @@ fn hauler_source_arrival_reissues_movement_when_timeout_strips_dmc_before_arriva
     let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 0, 1000);
     let hauler = common::spawn_hauler_at(&mut app, hauler_pos);
 
-    app.world_mut()
-        .entity_mut(hauler)
-        .insert(HaulerAssignment { source, sink });
+    app.world_mut().entity_mut(hauler).insert(HaulerAssignment {
+        source,
+        sink,
+        pickup_role: StockpileRole::Source,
+    });
 
     app.update();
 
@@ -260,6 +262,7 @@ fn hauler_delivers_full_load_to_sink() {
         HaulerAssignment {
             source,
             sink: sink_entity,
+            pickup_role: StockpileRole::Source,
         },
         HaulerLoad {
             kind: ResourceKind::Minerals,

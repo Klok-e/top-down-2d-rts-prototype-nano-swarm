@@ -43,6 +43,8 @@ pub type HaulerLoad = Cargo;
 pub struct HaulerAssignment {
     pub source: Entity,
     pub sink: Entity,
+    /// The original pickup tier remains authoritative if the source is destroyed.
+    pub pickup_role: StockpileRole,
 }
 
 /// Marks a Hauler as standing at its assigned source and loading cargo.
@@ -142,6 +144,7 @@ pub fn hauler_load_system(
             Option<&mut LogisticsReservation>,
             &SwarmMember,
             &mut super::MaterialWorkProgress,
+            Option<&mut super::RegionalLease>,
         ),
         (
             Without<super::WorkBlocked>,
@@ -156,7 +159,8 @@ pub fn hauler_load_system(
     mut ledger: ResMut<ResourceLedger>,
     mut counters: Option<ResMut<BattleCounters>>,
 ) {
-    for (entity, mut cargo, transform, assignment, mut reservation, swarm, mut work) in &mut haulers
+    for (entity, mut cargo, transform, assignment, mut reservation, swarm, mut work, lease) in
+        &mut haulers
     {
         let target_amount = reservation
             .as_ref()
@@ -174,15 +178,24 @@ pub fn hauler_load_system(
             continue;
         }
 
-        let region = if let Ok((deposit, target)) = deposits.get(assignment.source) {
-            Some(InteractionRegion::deposit(target, deposit.radius))
-        } else if let Ok((_, target)) = source_stockpiles.get(assignment.source) {
-            Some(InteractionRegion::structure(target))
+        let (region, can_load) = if let Ok((deposit, target)) = deposits.get(assignment.source) {
+            (
+                Some(InteractionRegion::deposit(target, deposit.radius)),
+                deposit.amount > 0,
+            )
+        } else if let Ok((stockpile, target)) = source_stockpiles.get(assignment.source) {
+            (
+                Some(InteractionRegion::structure(target)),
+                stockpile.amount > 0 && endpoint_is_operational(assignment.source, &conditions),
+            )
         } else {
-            source_chargers
-                .get(assignment.source)
-                .ok()
-                .map(|(_, target)| InteractionRegion::structure(target))
+            (
+                source_chargers
+                    .get(assignment.source)
+                    .ok()
+                    .map(|(_, target)| InteractionRegion::structure(target)),
+                false,
+            )
         };
         if let Some(region) = region
             && !region.contains(transform.translation.truncate())
@@ -206,6 +219,9 @@ pub fn hauler_load_system(
             continue;
         }
 
+        if can_load && let Some(mut lease) = lease {
+            lease.record_work();
+        }
         if !work.completes_unit() {
             continue;
         }
@@ -289,27 +305,6 @@ fn logistics_owner(
     swarms: &Query<&SwarmId, With<Swarm>>,
 ) -> Option<SwarmId> {
     owner.and_then(|owner| swarms.get(owner.0).ok()).copied()
-}
-
-#[allow(clippy::type_complexity)]
-fn source_role(
-    source: Entity,
-    kind: ResourceKind,
-    swarm: SwarmId,
-    stockpiles: &Query<(
-        Entity,
-        &Stockpile,
-        &Transform,
-        Option<&StockpileRole>,
-        Option<&OwnerSwarm>,
-    )>,
-    swarms: &Query<&SwarmId, With<Swarm>>,
-) -> Option<StockpileRole> {
-    let (_, stockpile, _, role, owner) = stockpiles.get(source).ok()?;
-    if stockpile.kind != kind || logistics_owner(owner, swarms) != Some(swarm) {
-        return None;
-    }
-    Some(role.copied().unwrap_or_default())
 }
 
 fn reserved_destination_capacity(
@@ -435,14 +430,7 @@ pub fn hauler_reroute_system(
         if cargo.amount == 0 {
             continue;
         }
-        let role = source_role(
-            assignment.source,
-            cargo.kind,
-            swarm_member.0,
-            &stockpiles,
-            &swarms,
-        )
-        .unwrap_or_default();
+        let role = assignment.pickup_role;
         let position = transform.translation.truncate();
         let endpoint = |candidate, is_return| {
             let incoming = reserved_destination_capacity(&reservations, candidate, Some(entity))
@@ -583,14 +571,6 @@ pub fn hauler_carry_assign_system(
     reservations: Query<(Entity, &LogisticsReservation)>,
 ) {
     for (entity, transform, cargo, assignment, swarm_member, returning) in &haulers {
-        let role = source_role(
-            assignment.source,
-            cargo.kind,
-            swarm_member.0,
-            &stockpiles,
-            &swarms,
-        )
-        .unwrap_or_default();
         if !reservation_covers_destination(
             reservations
                 .get(entity)
@@ -604,7 +584,7 @@ pub fn hauler_carry_assign_system(
         let incoming = reserved_destination_capacity(&reservations, assignment.sink, Some(entity));
         let Some(sink) = valid_destination_region(
             assignment.sink,
-            role,
+            assignment.pickup_role,
             returning.is_some(),
             *cargo,
             swarm_member.0,
@@ -679,14 +659,6 @@ pub fn hauler_delivery_system(
     for (entity, transform, mut load, assignment, reservation, swarm_member, returning, work) in
         &mut haulers
     {
-        let role = source_role(
-            assignment.source,
-            load.kind,
-            swarm_member.0,
-            &stockpiles.as_readonly(),
-            &swarms,
-        )
-        .unwrap_or_default();
         if !reservation_covers_destination(reservation, assignment.sink, load.amount) {
             continue;
         }
@@ -701,7 +673,7 @@ pub fn hauler_delivery_system(
             .saturating_sub(own_claim);
         let Some(endpoint) = valid_destination_region(
             assignment.sink,
-            role,
+            assignment.pickup_role,
             returning.is_some(),
             *load,
             swarm_member.0,

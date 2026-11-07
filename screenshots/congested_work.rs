@@ -179,7 +179,11 @@ fn prepare(world: &mut World) {
                 kind: ResourceKind::Minerals,
                 amount: 20,
             },
-            HaulerAssignment { source, sink },
+            HaulerAssignment {
+                source,
+                sink,
+                pickup_role: StockpileRole::Source,
+            },
             reservation,
             Transform::from_xyz(150.0, 0.0, GAMEPLAY_SPRITE_Z),
         ))

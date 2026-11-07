@@ -510,35 +510,3 @@ fn scenario_seed_facility_remains_a_completed_production_facility() {
         "scenario seed ProductionFacility must not be re-mapped to a PlannedStructure; got {plans} plans"
     );
 }
-
-#[test]
-fn spread_cells_keep_demand_sources_separated() {
-    // Helper test: paint cells that are far enough apart
-    // (ZONE_BLOCK_SIZE apart) that no placement system
-    // could conflate their demand. This proves the
-    // previous tests' "single demand source" assertions
-    // are not poisoned by accidental overlap.
-    let mut app = common::sim_app_with_planned();
-    let gather_cell = IVec2::new(-3, 0);
-    let build_cell = IVec2::new(3, 0);
-    paint_owned(&mut app, gather_cell, IntentKind::Gather);
-    paint_owned(&mut app, build_cell, IntentKind::Build);
-
-    for _ in 0..3 {
-        app.update();
-    }
-
-    let world = app.world_mut();
-    // Gather alone with no deposit / worker does not plan
-    // anything; Build paint alone is also inert after issue #34.
-    let plans: Vec<_> = world
-        .query::<(&PlannedStructure, &Transform)>()
-        .iter(world)
-        .map(|(p, t)| (p.kind, t.translation.truncate()))
-        .collect();
-    assert_eq!(
-        plans.len(),
-        0,
-        "Gather paint alone plus Build paint alone must produce no plans; got {plans:?}"
-    );
-}

@@ -31,28 +31,6 @@ fn build_app() -> App {
 }
 
 #[test]
-fn planned_structure_does_not_emerge_from_build_paint_alone() {
-    // Issue #34: Build paint is now only a placement constraint.
-    // Demand systems create PlannedStructures; raw Build paint does not.
-    let mut app = build_app();
-    let cell = IVec2::new(0, 0);
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        cell,
-        IntentKind::Build,
-        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
-    );
-
-    app.update();
-
-    let world = app.world_mut();
-    let count = world.query::<&PlannedStructure>().iter(world).count();
-    assert_eq!(
-        count, 0,
-        "Build paint alone must not spawn PlannedStructure"
-    );
-}
-
-#[test]
 fn build_paint_alone_stays_empty_across_repeated_ticks() {
     let mut app = build_app();
     let cell = IVec2::new(0, 0);

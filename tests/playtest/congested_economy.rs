@@ -4,7 +4,7 @@ use bevy::{prelude::*, time::TimeUpdateStrategy};
 use std::time::Duration;
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{Cargo, Commitment, OwnerSwarm, PlannedStructure, ProductionFacility},
-    resources::Stockpile,
+    resources::{Stockpile, StockpileRole},
 };
 
 #[path = "../common/mod.rs"]
@@ -408,7 +408,11 @@ fn loaded_haulers_approach_before_waiting_and_each_complete_delivery() {
                 LogisticsReservation::new(source, sink, ResourceKind::Minerals, 20);
             reservation.source_remaining = 0;
             app.world_mut().entity_mut(e).insert((
-                HaulerAssignment { source, sink },
+                HaulerAssignment {
+                    source,
+                    sink,
+                    pickup_role: StockpileRole::Source,
+                },
                 reservation,
                 Cargo {
                     kind: ResourceKind::Minerals,

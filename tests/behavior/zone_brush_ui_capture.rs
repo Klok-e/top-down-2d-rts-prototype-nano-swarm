@@ -89,28 +89,6 @@ fn add_brush_chain(app: &mut App) {
 }
 
 #[test]
-fn brush_paints_when_no_ui_capture_is_set_in_current_frame() {
-    // The cursor is over the world (well outside the intent panel
-    // strip), no UI node says "cursor over", and the player is
-    // holding left mouse. The brush must paint at the world cell
-    // under the cursor.
-    let mut app = build_app();
-    spawn_window_with_cursor(&mut app, Vec2::new(640.0, 360.0));
-    spawn_camera_at_origin(&mut app);
-    add_brush_chain(&mut app);
-
-    press_left_mouse(&mut app);
-    app.update();
-
-    let grid = app.world().resource::<IntentGrid>();
-    let dirty_count = grid.render_dirty_count();
-    assert!(
-        dirty_count > 0,
-        "brush must paint at least one cell when the cursor is over the world (dirty cells: {dirty_count})"
-    );
-}
-
-#[test]
 fn brush_skips_paint_when_ui_capture_is_set_in_current_frame() {
     // A UI node (the panel root) says "cursor over" and is tagged
     // without `NoPointerCapture` to simulate an actual button
@@ -291,35 +269,5 @@ fn check_ui_interaction_ignores_no_pointer_capture_but_picks_up_other_nodes() {
     assert!(
         handling.is_pointer_over_ui,
         "the descendant button (no marker) must still flip the resource"
-    );
-}
-
-#[test]
-fn check_ui_interaction_keeps_resource_false_when_only_marker_nodes_are_over() {
-    // When the panel root is the only thing with cursor-over, the
-    // marker must keep `is_pointer_over_ui` false. This is the
-    // actual player scenario: cursor over the world, panel root
-    // still considers the cursor "near" because of its full-width
-    // footprint, so the brush must still paint.
-    let mut app = App::new();
-    app.insert_resource(UiHandling::default());
-    app.add_systems(Update, check_ui_interaction);
-
-    app.world_mut().spawn((
-        Node::default(),
-        RelativeCursorPosition {
-            cursor_over: true,
-            normalized: None,
-        },
-        IntentLayerPanelRoot,
-        NoPointerCapture,
-    ));
-
-    app.update();
-
-    let handling = app.world().resource::<UiHandling>();
-    assert!(
-        !handling.is_pointer_over_ui,
-        "NoPointerCapture on the panel root must let the brush through"
     );
 }

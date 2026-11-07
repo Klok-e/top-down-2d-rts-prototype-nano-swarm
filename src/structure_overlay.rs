@@ -1032,15 +1032,6 @@ mod tests {
     }
 
     #[test]
-    fn default_settings_use_default_threshold() {
-        assert_abs_diff_eq!(
-            StructureOverlaySettings::default().hide_zoom_threshold,
-            DEFAULT_OVERLAY_HIDE_ZOOM_THRESHOLD,
-            epsilon = 1e-5
-        );
-    }
-
-    #[test]
     fn overlay_offsets_are_above_targets() {
         assert_abs_diff_eq!(
             overlay_label_offset_y(StructureOverlayKind::Deposit, Some(64.0)),

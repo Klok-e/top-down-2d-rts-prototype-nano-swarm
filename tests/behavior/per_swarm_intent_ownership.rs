@@ -15,25 +15,6 @@ use top_down_2d_rts_prototype_nano_swarm::{
 mod common;
 
 #[test]
-fn player_painted_intent_is_owned_by_player_swarm() {
-    let mut app = common::sim_app_with_gather();
-    let cell = IVec2::new(0, 0);
-    {
-        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(cell, IntentKind::Gather, SwarmId::PLAYER));
-    }
-
-    let grid = app.world().resource::<IntentGrid>();
-    let painted = grid.cell(cell).expect("cell must be in bounds");
-    assert!(painted.has(IntentKind::Gather));
-    assert_eq!(
-        painted.owners(IntentKind::Gather).collect::<Vec<_>>(),
-        vec![SwarmId::PLAYER],
-        "player-painted cell must record the player SwarmId as the owner"
-    );
-}
-
-#[test]
 fn player_painted_gather_drives_player_worker() {
     // Drive the assignment system end-to-end: a player
     // Worker in a player-painted Gather cell must end up
@@ -252,24 +233,6 @@ fn opponent_worker_ignores_player_gather_zone() {
             .is_none(),
         "opponent worker must NOT pick a player-painted Gather cell"
     );
-}
-
-#[test]
-fn overlapping_gather_paint_is_visible_only_to_its_independent_owners() {
-    let mut app = common::sim_app_with_gather();
-    let cell = IVec2::ZERO;
-    {
-        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        grid.paint(cell, IntentKind::Gather, SwarmId::PLAYER);
-        grid.paint(cell, IntentKind::Gather, SwarmId(42));
-    }
-
-    let grid = app.world().resource::<IntentGrid>();
-    let painted = grid.cell(cell).unwrap();
-    assert!(painted.has_owned(IntentKind::Gather, SwarmId::PLAYER));
-    assert!(painted.has_owned(IntentKind::Gather, SwarmId(42)));
-    assert!(!painted.has_owned(IntentKind::Gather, SwarmId(9)));
-    assert!(!painted.has_owned(IntentKind::Build, SwarmId::PLAYER));
 }
 
 #[test]

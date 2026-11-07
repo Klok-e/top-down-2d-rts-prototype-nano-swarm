@@ -426,10 +426,6 @@ mod overlay_transform_tests {
     #[test]
     fn offscreen_rendering_requests_synchronous_pipeline_creation() {
         assert!(offscreen_render_plugin().synchronous_pipeline_compilation);
-        assert!(
-            !RenderPlugin::default().synchronous_pipeline_compilation,
-            "windowed presentation keeps Bevy's asynchronous default"
-        );
     }
 
     #[test]

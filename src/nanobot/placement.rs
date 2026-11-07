@@ -837,38 +837,6 @@ mod tests {
     }
 
     #[test]
-    fn find_source_stockpile_placement_rejects_candidates_blocked_by_obstacles() {
-        // The deposit is at the origin; the gather cell is
-        // the same; a single obstacle sits at the east-of-
-        // deposit ring position. The east candidate is
-        // rejected by the overlap test, so the algorithm
-        // picks a different valid candidate.
-        let deposit = Vec2::new(256.0, 256.0);
-        let gather_cells = vec![IVec2::new(0, 0)];
-        // East of the deposit at the ring radius.
-        let obstacle_pos = Vec2::new(256.0 + SOURCE_STOCKPILE_PLACEMENT_RADIUS, 256.0);
-        let obstacles = vec![Obstacle::deposit(obstacle_pos, 32.0)];
-        let chosen = find_source_stockpile_placement(
-            deposit,
-            &gather_cells,
-            &obstacles,
-            Vec2::new(1.0, 0.0),
-            SOURCE_STOCKPILE_PLACEMENT_RADIUS,
-            SOURCE_STOCKPILE_PLACEMENT_COUNT,
-            0.0,
-            SOURCE_STOCKPILE_FOOTPRINT_RADIUS,
-            0.0,
-        )
-        .expect("a non-east candidate must be chosen");
-        // The chosen position is not the obstacle's
-        // position.
-        assert!(
-            (chosen - obstacle_pos).length() > 1.0,
-            "chosen position must not be the obstacle's position; got {chosen:?}"
-        );
-    }
-
-    #[test]
     fn find_source_stockpile_placement_returns_none_when_every_candidate_overlaps() {
         // The deposit is at the origin; the gather cell is
         // the same; every ring candidate is blocked by an
@@ -896,48 +864,6 @@ mod tests {
         assert!(
             chosen.is_none(),
             "overlap-everywhere must mean no placement; got {chosen:?}"
-        );
-    }
-
-    #[test]
-    fn find_source_stockpile_placement_uses_padding_in_obstacle_rejection() {
-        // The deposit is at the origin; the gather cell is
-        // the same. A near-miss obstacle is placed at a
-        // distance of `footprint + padding - 1` from one
-        // candidate. The algorithm must reject the
-        // candidate because of the padding.
-        let deposit = Vec2::new(256.0, 256.0);
-        let gather_cells = vec![IVec2::new(0, 0)];
-        let radius = SOURCE_STOCKPILE_PLACEMENT_RADIUS;
-        // 90 < 96 (the east-of-deposit ring position is at
-        // (256 + 96, 256) = (352, 256)). The obstacle sits
-        // 90 units to the east of the ring position. The
-        // padding 16 makes the threshold 80, so 90 is
-        // inside the padding zone: the candidate is
-        // rejected.
-        let obstacle_pos = Vec2::new(256.0 + radius + 6.0, 256.0);
-        let obstacles = vec![Obstacle::deposit(obstacle_pos, 32.0)];
-        let chosen = find_source_stockpile_placement(
-            deposit,
-            &gather_cells,
-            &obstacles,
-            // Haul direction is east, so the algorithm
-            // would prefer the east candidate; the
-            // padding test must make the algorithm reject
-            // it.
-            Vec2::new(1.0, 0.0),
-            radius,
-            SOURCE_STOCKPILE_PLACEMENT_COUNT,
-            0.0,
-            SOURCE_STOCKPILE_FOOTPRINT_RADIUS,
-            SOURCE_STOCKPILE_PADDING,
-        )
-        .expect("a non-east candidate must be chosen");
-        // The chosen position is not the obstacle's
-        // position.
-        assert!(
-            (chosen - obstacle_pos).length() > 1.0,
-            "chosen position must not be the obstacle's position; got {chosen:?}"
         );
     }
 

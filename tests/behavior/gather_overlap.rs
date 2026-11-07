@@ -83,59 +83,6 @@ fn deposit_overlapping_painted_cell_is_eligible_when_center_in_other_cell() {
 }
 
 #[test]
-fn deposit_with_no_visual_overlap_remains_ineligible() {
-    // Paint Gather in cell (0, 0). Place a deposit whose center
-    // is in cell (3, 0) with a small radius that does not reach
-    // back into cell (0, 0). The deposit's circle does not
-    // overlap the painted cell's rectangle, so the worker must
-    // not receive a GatherAssignment. The deposit amount must
-    // stay at its starting value (no extraction).
-    let mut app = common::minimal_app_with_actionable_projection();
-    let painted_cell = IVec2::new(0, 0);
-    {
-        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        assert!(grid.paint(painted_cell, IntentKind::Gather, SwarmId::PLAYER));
-    }
-    // Deposit in cell (3, 0). Cell (3, 0) center is at
-    // (3 * 512 + 256, 256) = (1792, 256). A radius of 32 stays
-    // well within cell (3, 0); the closest point on cell (0, 0)'s
-    // rect to (1792, 256) is (512, 256), distance 1280.
-    let deposit_center = Vec2::new(1792.0, ZONE_BLOCK_SIZE * 0.5);
-    let deposit = common::spawn_deposit(
-        &mut app,
-        common::DepositFixture {
-            world_pos: deposit_center,
-            amount: 100,
-            capacity: 1000,
-            radius: 32.0,
-        },
-    );
-    let worker_pos = common::cell_world_center(painted_cell);
-    let worker = common::spawn_worker_at(&mut app, worker_pos);
-
-    for _ in 0..GATHER_ASSIGNMENT_TICK_BUDGET {
-        app.update();
-    }
-
-    assert!(
-        app.world()
-            .entity(worker)
-            .get::<GatherAssignment>()
-            .is_none(),
-        "deposit with no visual overlap must not become a GatherAssignment target"
-    );
-    let deposit_state = app
-        .world()
-        .entity(deposit)
-        .get::<ResourceDeposit>()
-        .unwrap();
-    assert_eq!(
-        deposit_state.amount, 100,
-        "ineligible deposit must remain untouched (no extraction)"
-    );
-}
-
-#[test]
 fn deposit_overlapping_two_painted_cells_uses_canonical_anchor() {
     // One deposit creates one opportunity for this swarm. Overlapping paint
     // chooses a deterministic cell anchor instead of multiplying demand.

@@ -579,13 +579,18 @@ pub fn worker_planned_structure_arrive_system(
 #[allow(clippy::type_complexity)]
 pub fn worker_planned_structure_work_system(
     mut commands: Commands,
-    workers: Query<
-        (Entity, &Transform, &PlannedStructureProgress),
+    mut workers: Query<
+        (
+            Entity,
+            &Transform,
+            &PlannedStructureProgress,
+            Option<&mut super::RegionalLease>,
+        ),
         (With<Nanobot>, Without<super::WorkBlocked>),
     >,
     mut planned: Query<(&mut PlannedStructure, &Transform)>,
 ) {
-    for (worker, transform, progress) in &workers {
+    for (worker, transform, progress, lease) in &mut workers {
         let Ok((mut plan, site)) = planned.get_mut(progress.target) else {
             release_planned_worker(&mut commands, worker);
             continue;
@@ -598,7 +603,12 @@ pub fn worker_planned_structure_work_system(
                 .insert(region.movement_from(position));
             continue;
         }
-        plan.work_remaining = plan.work_remaining.saturating_sub(1);
+        if plan.work_remaining > 0 {
+            plan.work_remaining -= 1;
+            if let Some(mut lease) = lease {
+                lease.record_work();
+            }
+        }
         if plan.is_complete() {
             plan.active_worker = None;
             commands

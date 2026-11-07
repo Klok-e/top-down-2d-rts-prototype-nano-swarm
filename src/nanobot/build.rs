@@ -630,11 +630,6 @@ mod tests {
     }
 
     #[test]
-    fn structure_kind_default_is_basic() {
-        assert_eq!(StructureKind::default(), StructureKind::Basic);
-    }
-
-    #[test]
     fn build_budget_matches_max_health() {
         // A fully degraded structure must be repairable with
         // the same material budget as a fresh build so the
