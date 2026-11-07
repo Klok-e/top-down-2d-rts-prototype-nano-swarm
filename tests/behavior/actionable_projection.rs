@@ -385,6 +385,42 @@ fn haul_opportunity_is_indexed_by_source_region() {
 }
 
 #[test]
+fn haul_projection_only_pairs_adjacent_logistics_tiers() {
+    let mut app = common::minimal_app_with_actionable_projection();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let source = common::spawn_stockpile(&mut app, Vec2::new(32.0, 32.0), 20, 20);
+    let stocked_sink = common::spawn_sink_stockpile(&mut app, Vec2::new(96.0, 32.0), 20, 20);
+    let empty_sink = common::spawn_sink_stockpile(&mut app, Vec2::new(160.0, 32.0), 0, 20);
+    let facility = app
+        .world_mut()
+        .spawn((ProductionFacility::new(), OwnerSwarm(swarm)))
+        .id();
+    let charger = common::spawn_operational_charger_at(&mut app, IVec2::ZERO, 0);
+    for endpoint in [source, stocked_sink, empty_sink, charger] {
+        app.world_mut()
+            .entity_mut(endpoint)
+            .insert(OwnerSwarm(swarm));
+    }
+
+    app.update();
+
+    let haul_pairs: Vec<_> = app
+        .world()
+        .resource::<ActionableProjection>()
+        .opportunities(AllocationRegion::for_cell(IVec2::ZERO))
+        .iter()
+        .filter_map(|work| match work.target {
+            OpportunityTarget::Haul { source, sink, .. } => Some((source, sink)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(haul_pairs.len(), 3, "projected haul pairs: {haul_pairs:?}");
+    assert!(haul_pairs.contains(&(source, empty_sink)));
+    assert!(haul_pairs.contains(&(stocked_sink, facility)));
+    assert!(haul_pairs.contains(&(stocked_sink, charger)));
+}
+
+#[test]
 fn degraded_stockpile_does_not_project_haul_work() {
     let mut app = common::minimal_app_with_actionable_projection();
     let swarm = app.world_mut().spawn(SwarmId::PLAYER).id();

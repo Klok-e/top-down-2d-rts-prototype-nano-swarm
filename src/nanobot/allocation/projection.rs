@@ -11,6 +11,7 @@ use crate::nanobot::{
     Charger, ChargerAssignment, ChargerProgress, Health, Nanobot, NanobotType, OwnerSwarm,
     PlannedStructure, ProductionFacility, Structure, SupportCondition, Swarm, SwarmId, SwarmMember,
     cell_overlaps_circle, charger_can_serve_in_owned_zone,
+    logistics_leg::{Destination, DestinationRole},
 };
 use crate::resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole};
 
@@ -68,10 +69,7 @@ struct StockpileSnapshot {
 #[derive(Clone, Copy)]
 struct SinkSnapshot {
     entity: Entity,
-    kind: ResourceKind,
-    free_space: u32,
-    owner: Option<SwarmId>,
-    source_role: SourceRole,
+    destination: Destination,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -79,12 +77,6 @@ struct DefenderMaintenanceSnapshot {
     swarm: SwarmId,
     cell: IVec2,
     active_charger: Option<Entity>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SourceRole {
-    Source,
-    Sink,
 }
 
 /// Consume independent projection dirtiness, include changed ECS work, then
@@ -354,10 +346,12 @@ pub fn project_actionable_opportunities_system(
         .filter(|stockpile| stockpile.role == StockpileRole::Sink)
         .map(|stockpile| SinkSnapshot {
             entity: stockpile.entity,
-            kind: stockpile.kind,
-            free_space: stockpile.free_space,
-            owner: stockpile.owner,
-            source_role: SourceRole::Source,
+            destination: Destination {
+                kind: stockpile.kind,
+                free_space: stockpile.free_space,
+                owner: stockpile.owner,
+                role: DestinationRole::Stockpile(stockpile.role),
+            },
         })
         .collect::<Vec<_>>();
     sinks.extend(
@@ -371,10 +365,12 @@ pub fn project_actionable_opportunities_system(
                 let owner = facility_swarms.get(owner.0).ok().copied()?;
                 Some(SinkSnapshot {
                     entity,
-                    kind: facility.input_kind,
-                    free_space: facility.input_free_space(),
-                    owner: Some(owner),
-                    source_role: SourceRole::Sink,
+                    destination: Destination {
+                        kind: facility.input_kind,
+                        free_space: facility.input_free_space(),
+                        owner: Some(owner),
+                        role: DestinationRole::ProductionFacility,
+                    },
                 })
             }),
     );
@@ -387,10 +383,12 @@ pub fn project_actionable_opportunities_system(
                 }
                 Some(SinkSnapshot {
                     entity,
-                    kind: charger.kind,
-                    free_space: charger.free_space(),
-                    owner: resolve_owner(owner.as_deref(), &swarms)?,
-                    source_role: SourceRole::Sink,
+                    destination: Destination {
+                        kind: charger.kind,
+                        free_space: charger.free_space(),
+                        owner: resolve_owner(owner.as_deref(), &swarms)?,
+                        role: DestinationRole::Charger,
+                    },
                 })
             }),
     );
@@ -610,13 +608,13 @@ fn project_haul_work(
             continue;
         }
         for sink in sinks {
-            if source.entity == sink.entity
-                || source.kind != sink.kind
-                || sink.free_space == 0
-                || !source_role_matches(source.role, sink.source_role)
-                || source.owner.is_none()
-                || source.owner != sink.owner
-            {
+            let available_work = sink.destination.projected_amount(
+                source.owner,
+                source.kind,
+                source.role,
+                source.amount,
+            );
+            if source.entity == sink.entity || available_work == 0 {
                 continue;
             }
             out.push(ActionableOpportunity {
@@ -629,7 +627,7 @@ fn project_haul_work(
                 },
                 cell: source.cell,
                 owner: source.owner,
-                available_work: source.amount.min(sink.free_space),
+                available_work,
             });
         }
     }
@@ -657,13 +655,6 @@ fn resolve_owner(owner: Option<&OwnerSwarm>, swarms: &Query<&SwarmId>) -> Option
     match owner {
         None => Some(None),
         Some(owner) => swarms.get(owner.0).ok().copied().map(Some),
-    }
-}
-
-fn source_role_matches(role: StockpileRole, required: SourceRole) -> bool {
-    match required {
-        SourceRole::Source => role == StockpileRole::Source,
-        SourceRole::Sink => role == StockpileRole::Sink,
     }
 }
 

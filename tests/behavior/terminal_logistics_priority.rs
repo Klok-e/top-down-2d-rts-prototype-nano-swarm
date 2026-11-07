@@ -55,7 +55,7 @@ fn charger_emergency_reserves_only_uncovered_committed_charge_need() {
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let source = common::spawn_sink_stockpile(&mut app, Vec2::new(-200.0, 0.0), 100, 100);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
-    let charger = common::spawn_operational_charger_at(&mut app, IVec2::ZERO, 8);
+    let charger = common::spawn_operational_charger_at(&mut app, IVec2::ZERO, 80);
     app.world_mut()
         .entity_mut(charger)
         .insert(OwnerSwarm(swarm));
@@ -84,9 +84,9 @@ fn charger_emergency_reserves_only_uncovered_committed_charge_need() {
         .get::<LogisticsReservation>()
         .expect("partial emergency demand is reservable");
     assert_eq!(reservation.destination, charger);
-    assert_eq!(reservation.amount, 20);
-    assert_eq!(reservation.source_remaining, 20);
-    assert_eq!(reservation.destination_remaining, 20);
+    assert_eq!(reservation.amount, 9);
+    assert_eq!(reservation.source_remaining, 9);
+    assert_eq!(reservation.destination_remaining, 9);
 }
 
 #[test]

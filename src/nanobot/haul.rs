@@ -10,13 +10,11 @@ use crate::battle_statistics::{BattleCounters, BattleEvent};
 use bevy::prelude::*;
 
 use crate::nanobot::{
-    Cargo, InteractionRegion, LogisticsReservation, NanobotType, OwnerSwarm, ProductionFacility,
+    Cargo, InteractionRegion, LogisticsReservation, OwnerSwarm, ProductionFacility,
     SupportCondition,
     charge::Charger,
     components::{DirectMovementComponent, Nanobot, Swarm, SwarmId, SwarmMember},
-    logistics_leg::{
-        HaulerContext, StockpileCandidate, TerminalCandidate, pick_logistics_leg_with_cost,
-    },
+    logistics_leg::{Destination, DestinationRole},
 };
 use crate::navigation::{ConnectivityStatus, Navigation, RouteGoal};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole};
@@ -51,174 +49,10 @@ pub struct HaulerAssignment {
 #[derive(Debug, Component, Default, Clone, Copy)]
 pub struct HaulerLoading;
 
-/// Convert an optional [`OwnerSwarm`] marker into the concrete [`SwarmId`]
-/// used by the pure Logistics Leg picker. A broken owner reference
-/// makes the candidate unusable, matching the old `owner_matches`
-/// behaviour.
-fn candidate_owner(
-    owner: Option<&OwnerSwarm>,
-    swarms: &Query<&SwarmId, With<Swarm>>,
-) -> Option<Option<SwarmId>> {
-    match owner {
-        None => Some(None),
-        Some(OwnerSwarm(owner_entity)) => swarms.get(*owner_entity).ok().copied().map(Some),
-    }
-}
-
 fn endpoint_is_operational(entity: Entity, conditions: &Query<&SupportCondition>) -> bool {
     conditions
         .get(entity)
         .map_or(true, |condition| condition.is_operational())
-}
-
-/// For each idle Hauler with no in-flight transport work, pick a
-/// `(source, sink)` pair from the resource economy and head to the
-/// source. The hauler keeps a single [`HaulerAssignment`] for the
-/// whole trip so the carry-to-sink step does not need to re-select
-/// the sink from scratch.
-#[allow(clippy::type_complexity, clippy::too_many_arguments)]
-pub fn hauler_assignment_system(
-    mut commands: Commands,
-    haulers: Query<
-        (Entity, &Transform, &NanobotType, &SwarmMember),
-        (
-            With<Nanobot>,
-            With<NanobotType>,
-            Without<HaulerAssignment>,
-            Without<HaulerLoad>,
-            Without<HaulerLoading>,
-            Without<DirectMovementComponent>,
-        ),
-    >,
-    stockpiles: Query<(
-        Entity,
-        &Stockpile,
-        &Transform,
-        Option<&StockpileRole>,
-        Option<&OwnerSwarm>,
-    )>,
-    facilities: Query<(Entity, &ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
-    chargers: Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
-    conditions: Query<&SupportCondition>,
-    swarms: Query<&SwarmId, With<Swarm>>,
-    navigation: Res<Navigation>,
-) {
-    let stockpile_candidates: Vec<StockpileCandidate> = stockpiles
-        .iter()
-        .filter_map(|(entity, stockpile, transform, role, owner)| {
-            if !endpoint_is_operational(entity, &conditions) {
-                return None;
-            }
-            let owner = candidate_owner(owner, &swarms)?;
-            Some(StockpileCandidate {
-                entity,
-                pos: transform.translation.truncate(),
-                kind: stockpile.kind,
-                role: role.copied().unwrap_or(StockpileRole::Source),
-                amount: stockpile.amount,
-                free_space: stockpile.free_space(),
-                owner,
-            })
-        })
-        .collect();
-    let mut terminal_candidates: Vec<TerminalCandidate> = facilities
-        .iter()
-        .filter_map(|(entity, facility, transform, owner)| {
-            if !endpoint_is_operational(entity, &conditions) {
-                return None;
-            }
-            let owner = candidate_owner(owner, &swarms)?;
-            Some(TerminalCandidate::Facility {
-                entity,
-                pos: transform.translation.truncate(),
-                kind: facility.input_kind,
-                free_space: facility.input_free_space(),
-                owner,
-            })
-        })
-        .collect();
-    terminal_candidates.extend(chargers.iter().filter_map(
-        |(entity, charger, transform, owner)| {
-            if !endpoint_is_operational(entity, &conditions) {
-                return None;
-            }
-            let owner = candidate_owner(owner, &swarms)?;
-            Some(TerminalCandidate::Charger {
-                entity,
-                pos: transform.translation.truncate(),
-                kind: charger.kind,
-                free_space: charger.free_space(),
-                owner,
-            })
-        },
-    ));
-
-    for (entity, transform, nanobot_type, swarm_member) in &haulers {
-        if *nanobot_type != NanobotType::Hauler {
-            continue;
-        }
-        let hauler_pos = transform.translation.truncate();
-        let swarm = swarm_member.0;
-        let Some(leg) = pick_logistics_leg_with_cost(
-            HaulerContext {
-                pos: hauler_pos,
-                swarm,
-                kind: ResourceKind::Minerals,
-                carry_capacity: HAULER_CARRY_CAPACITY,
-            },
-            &stockpile_candidates,
-            &terminal_candidates,
-            |from, to| {
-                let region_at = |position: Vec2| {
-                    stockpiles
-                        .iter()
-                        .map(|(_, _, t, _, _)| t)
-                        .chain(facilities.iter().map(|(_, _, t, _)| t))
-                        .chain(chargers.iter().map(|(_, _, t, _)| t))
-                        .find(|t| t.translation.truncate() == position)
-                        .map(InteractionRegion::structure)
-                };
-                let start = if from == hauler_pos {
-                    from
-                } else if let Some(region) = region_at(from) {
-                    match navigation.query_connectivity(hauler_pos, RouteGoal::Interaction(region))
-                    {
-                        ConnectivityStatus::Connected { endpoint } => endpoint,
-                        ConnectivityStatus::Pending => {
-                            return f32::INFINITY;
-                        }
-                        ConnectivityStatus::Unreachable => return f32::INFINITY,
-                    }
-                } else {
-                    from
-                };
-                let outcome = if let Some(region) = region_at(to) {
-                    navigation.query_connectivity(start, RouteGoal::Interaction(region))
-                } else {
-                    navigation.query_connectivity(start, RouteGoal::Point(to))
-                };
-                match outcome {
-                    ConnectivityStatus::Connected { endpoint } => start.distance(endpoint),
-                    ConnectivityStatus::Pending => f32::INFINITY,
-                    ConnectivityStatus::Unreachable => f32::INFINITY,
-                }
-            },
-        ) else {
-            continue;
-        };
-        let source = leg.source;
-        let sink = leg.sink;
-        let Ok((_, _, source_transform, _, _)) = stockpiles.get(source) else {
-            continue;
-        };
-        let movement = InteractionRegion::structure(source_transform).movement_from(hauler_pos);
-
-        commands.entity(entity).insert((
-            HaulerAssignment { source, sink },
-            LogisticsReservation::new(source, sink, ResourceKind::Minerals, leg.amount),
-            movement,
-        ));
-    }
 }
 
 /// Detect a hauler that has arrived at its assigned source and
@@ -446,34 +280,19 @@ fn transition_to_carrying(commands: &mut Commands, entity: Entity, amount: u32) 
     }
 }
 
-/// Snapshot of a validated destination endpoint.
-#[derive(Debug, Clone, Copy)]
-struct SinkEndpointSnapshot {
-    region: InteractionRegion,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HaulSourceTier {
-    Source,
-    Sink,
-}
-
 /// A loaded Hauler returning minerals to a compatible Stockpile.
 #[derive(Component)]
 pub struct ReturningCargo;
 
-fn owner_is_swarm(
+fn logistics_owner(
     owner: Option<&OwnerSwarm>,
     swarms: &Query<&SwarmId, With<Swarm>>,
-    swarm: SwarmId,
-) -> bool {
-    owner
-        .and_then(|owner| swarms.get(owner.0).ok())
-        .is_some_and(|owner| *owner == swarm)
+) -> Option<SwarmId> {
+    owner.and_then(|owner| swarms.get(owner.0).ok()).copied()
 }
 
 #[allow(clippy::type_complexity)]
-fn source_tier(
+fn source_role(
     source: Entity,
     kind: ResourceKind,
     swarm: SwarmId,
@@ -485,15 +304,12 @@ fn source_tier(
         Option<&OwnerSwarm>,
     )>,
     swarms: &Query<&SwarmId, With<Swarm>>,
-) -> Option<HaulSourceTier> {
+) -> Option<StockpileRole> {
     let (_, stockpile, _, role, owner) = stockpiles.get(source).ok()?;
-    if stockpile.kind != kind || !owner_is_swarm(owner, swarms, swarm) {
+    if stockpile.kind != kind || logistics_owner(owner, swarms) != Some(swarm) {
         return None;
     }
-    match role.copied().unwrap_or(StockpileRole::Source) {
-        StockpileRole::Source => Some(HaulSourceTier::Source),
-        StockpileRole::Sink => Some(HaulSourceTier::Sink),
-    }
+    Some(role.copied().unwrap_or_default())
 }
 
 fn reserved_destination_capacity(
@@ -521,12 +337,11 @@ fn reservation_covers_destination(
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn valid_destination_snapshot(
+fn valid_destination_region(
     destination: Entity,
-    tier: HaulSourceTier,
+    source_role: StockpileRole,
     returning: bool,
-    kind: ResourceKind,
-    amount: u32,
+    cargo: Cargo,
     swarm: SwarmId,
     incoming_claims: u32,
     stockpiles: &Query<(
@@ -540,40 +355,47 @@ fn valid_destination_snapshot(
     chargers: &Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
     swarms: &Query<&SwarmId, With<Swarm>>,
     conditions: &Query<&SupportCondition>,
-) -> Option<SinkEndpointSnapshot> {
+) -> Option<InteractionRegion> {
     if !endpoint_is_operational(destination, conditions) {
         return None;
     }
-    if let Ok((_, stockpile, transform, role, owner)) = stockpiles.get(destination) {
-        return (stockpile.kind == kind
-            && (returning
-                || role.copied().unwrap_or(StockpileRole::Source) == StockpileRole::Sink)
-            && owner_is_swarm(owner, swarms, swarm)
-            && stockpile.free_space().saturating_sub(incoming_claims) >= amount)
-            .then_some(SinkEndpointSnapshot {
-                region: InteractionRegion::structure(transform),
-            });
-    }
-    if tier != HaulSourceTier::Sink {
-        return None;
-    }
-    if let Ok((_, facility, transform, owner)) = facilities.get(destination) {
-        return (facility.input_kind == kind
-            && owner_is_swarm(owner, swarms, swarm)
-            && facility.input_free_space().saturating_sub(incoming_claims) >= amount)
-            .then_some(SinkEndpointSnapshot {
-                region: InteractionRegion::structure(transform),
-            });
-    }
-    if let Ok((_, charger, transform, owner)) = chargers.get(destination) {
-        return (charger.kind == kind
-            && owner_is_swarm(owner, swarms, swarm)
-            && charger.free_space().saturating_sub(incoming_claims) >= amount)
-            .then_some(SinkEndpointSnapshot {
-                region: InteractionRegion::structure(transform),
-            });
-    }
-    None
+    let (endpoint, transform) =
+        if let Ok((_, stockpile, transform, role, owner)) = stockpiles.get(destination) {
+            (
+                Destination {
+                    kind: stockpile.kind,
+                    role: DestinationRole::Stockpile(role.copied().unwrap_or_default()),
+                    free_space: stockpile.free_space(),
+                    owner: logistics_owner(owner, swarms),
+                },
+                transform,
+            )
+        } else if let Ok((_, facility, transform, owner)) = facilities.get(destination) {
+            (
+                Destination {
+                    kind: facility.input_kind,
+                    role: DestinationRole::ProductionFacility,
+                    free_space: facility.input_free_space(),
+                    owner: logistics_owner(owner, swarms),
+                },
+                transform,
+            )
+        } else if let Ok((_, charger, transform, owner)) = chargers.get(destination) {
+            (
+                Destination {
+                    kind: charger.kind,
+                    role: DestinationRole::Charger,
+                    free_space: charger.free_space(),
+                    owner: logistics_owner(owner, swarms),
+                },
+                transform,
+            )
+        } else {
+            return None;
+        };
+    endpoint
+        .can_receive_load(swarm, cargo, source_role, returning, incoming_claims)
+        .then(|| InteractionRegion::structure(transform))
 }
 
 /// Redirect loaded cargo when its destination is no longer valid.
@@ -613,14 +435,14 @@ pub fn hauler_reroute_system(
         if cargo.amount == 0 {
             continue;
         }
-        let tier = source_tier(
+        let role = source_role(
             assignment.source,
             cargo.kind,
             swarm_member.0,
             &stockpiles,
             &swarms,
         )
-        .unwrap_or(HaulSourceTier::Source);
+        .unwrap_or_default();
         let position = transform.translation.truncate();
         let endpoint = |candidate, is_return| {
             let incoming = reserved_destination_capacity(&reservations, candidate, Some(entity))
@@ -630,12 +452,11 @@ pub fn hauler_reroute_system(
                         .copied()
                         .unwrap_or_default(),
                 );
-            valid_destination_snapshot(
+            valid_destination_region(
                 candidate,
-                tier,
+                role,
                 is_return,
-                cargo.kind,
-                cargo.amount,
+                *cargo,
                 swarm_member.0,
                 incoming,
                 &stockpiles,
@@ -648,12 +469,12 @@ pub fn hauler_reroute_system(
         if reservation_covers_destination(reservation, assignment.sink, cargo.amount)
             && let Some(current) = endpoint(assignment.sink, returning.is_some())
         {
-            match navigation.query_connectivity(position, RouteGoal::Interaction(current.region)) {
+            match navigation.query_connectivity(position, RouteGoal::Interaction(current)) {
                 ConnectivityStatus::Connected { .. } | ConnectivityStatus::Pending => continue,
                 ConnectivityStatus::Unreachable => {}
             }
         }
-        let mut best: Option<(bool, f32, Entity, SinkEndpointSnapshot)> = None;
+        let mut best: Option<(bool, f32, Entity, InteractionRegion)> = None;
         let mut pending_destination = false;
         for candidate in stockpiles
             .iter()
@@ -662,7 +483,7 @@ pub fn hauler_reroute_system(
             .chain(chargers.iter().map(|(e, ..)| e))
         {
             let is_stockpile = stockpiles.contains(candidate);
-            let ordinary = (tier != HaulSourceTier::Sink || !is_stockpile)
+            let ordinary = (role != StockpileRole::Sink || !is_stockpile)
                 .then(|| endpoint(candidate, false))
                 .flatten();
             let (is_return, target) = if let Some(target) = ordinary {
@@ -672,8 +493,7 @@ pub fn hauler_reroute_system(
             } else {
                 continue;
             };
-            let cost = match navigation
-                .query_connectivity(position, RouteGoal::Interaction(target.region))
+            let cost = match navigation.query_connectivity(position, RouteGoal::Interaction(target))
             {
                 ConnectivityStatus::Connected { endpoint } => position.distance(endpoint),
                 ConnectivityStatus::Pending => {
@@ -707,7 +527,7 @@ pub fn hauler_reroute_system(
         redirected.source_remaining = 0;
         commands
             .entity(entity)
-            .insert((redirected, target.region.movement_from(position)));
+            .insert((redirected, target.movement_from(position)));
         if is_return {
             commands.entity(entity).insert(ReturningCargo);
         } else {
@@ -763,14 +583,14 @@ pub fn hauler_carry_assign_system(
     reservations: Query<(Entity, &LogisticsReservation)>,
 ) {
     for (entity, transform, cargo, assignment, swarm_member, returning) in &haulers {
-        let tier = source_tier(
+        let role = source_role(
             assignment.source,
             cargo.kind,
             swarm_member.0,
             &stockpiles,
             &swarms,
         )
-        .unwrap_or(HaulSourceTier::Source);
+        .unwrap_or_default();
         if !reservation_covers_destination(
             reservations
                 .get(entity)
@@ -782,12 +602,11 @@ pub fn hauler_carry_assign_system(
             continue;
         }
         let incoming = reserved_destination_capacity(&reservations, assignment.sink, Some(entity));
-        let Some(sink) = valid_destination_snapshot(
+        let Some(sink) = valid_destination_region(
             assignment.sink,
-            tier,
+            role,
             returning.is_some(),
-            cargo.kind,
-            cargo.amount,
+            *cargo,
             swarm_member.0,
             incoming,
             &stockpiles,
@@ -799,10 +618,10 @@ pub fn hauler_carry_assign_system(
             continue;
         };
         let hauler_pos = transform.translation.truncate();
-        if sink.region.contains(hauler_pos) {
+        if sink.contains(hauler_pos) {
             continue;
         }
-        let movement = sink.region.movement_from(hauler_pos);
+        let movement = sink.movement_from(hauler_pos);
         commands.entity(entity).insert(movement);
     }
 }
@@ -860,14 +679,14 @@ pub fn hauler_delivery_system(
     for (entity, transform, mut load, assignment, reservation, swarm_member, returning, work) in
         &mut haulers
     {
-        let tier = source_tier(
+        let role = source_role(
             assignment.source,
             load.kind,
             swarm_member.0,
             &stockpiles.as_readonly(),
             &swarms,
         )
-        .unwrap_or(HaulSourceTier::Source);
+        .unwrap_or_default();
         if !reservation_covers_destination(reservation, assignment.sink, load.amount) {
             continue;
         }
@@ -880,12 +699,11 @@ pub fn hauler_delivery_system(
             .copied()
             .unwrap_or_default()
             .saturating_sub(own_claim);
-        let Some(endpoint) = valid_destination_snapshot(
+        let Some(endpoint) = valid_destination_region(
             assignment.sink,
-            tier,
+            role,
             returning.is_some(),
-            load.kind,
-            load.amount,
+            *load,
             swarm_member.0,
             incoming,
             &stockpiles.as_readonly(),
@@ -896,7 +714,7 @@ pub fn hauler_delivery_system(
         ) else {
             continue;
         };
-        if !endpoint.region.contains(transform.translation.truncate()) {
+        if !endpoint.contains(transform.translation.truncate()) {
             if let Some(mut work) = work {
                 work.reset();
             }
