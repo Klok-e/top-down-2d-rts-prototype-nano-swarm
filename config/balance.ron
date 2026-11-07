@@ -1,21 +1,21 @@
 (
     production: (
-        cost_per_bot: 40,
-        ticks_per_bot: 600,
-        input_capacity: 80,
+        cost_per_bot: 5,
+        ticks_per_bot: 120,
+        input_capacity: 5,
         pressure_ticks: 60,
     ),
     construction: (
-        work_ticks: 1500,
+        work_ticks: 300,
         max_health: 100,
     ),
     logistics: (
         worker_carry_capacity: 4,
-        hauler_carry_capacity: 20,
+        hauler_carry_capacity: 10,
         worker_extract_per_pulse: 1,
         hauler_transfer_per_pulse: 1,
-        material_work_ticks: 75,
-        stockpile_capacity: 150,
+        material_work_ticks: 24,
+        stockpile_capacity: 60,
         source_proximity_radius: 384.0,
         bot_speed: 5.0,
         corridor_cost_multiplier: 0.35,
