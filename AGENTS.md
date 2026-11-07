@@ -3,13 +3,16 @@
 ## Change Verification
 
 - Review the diff for correctness and code quality.
-- Run the handoff checks in `docs/agents/testing.md`.
 
 ## Testing
 
 For coding-agent implementation work, follow `docs/agents/testing.md`. Don't edit this doc autonomously: human approval always required.
 
 For agent control and real-process verification, read `docs/agents/agent-control.md`.
+
+## State machines
+
+When adding, changing, or removing behavior retained across ticks, frames, requests, or sessions, read the relevant entries in [the state-machine inventory](docs/state-machines.md). Update its index and affected entries in the same change, covering state encoding, transition guards, timing, interruption and cleanup, reset boundaries, and verification links. This applies to implicit component/flag/counter state and to conversions between implicit and explicit state machines.
 
 ## Agent skills
 

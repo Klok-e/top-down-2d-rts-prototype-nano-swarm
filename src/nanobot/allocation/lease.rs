@@ -9,20 +9,29 @@ use super::{
 };
 use crate::nanobot::{
     DirectMovementComponent, ExtractProgress, GatherAssignment, HaulerAssignment, HaulerLoading,
-    LogisticsReservation, MaintenanceAssignment, MaintenanceProgress, PlannedStructureClaim,
-    PlannedStructureProgress, SwarmId,
+    LogisticsReservation, MaintenanceAssignment, MaintenanceProgress, MaterialWorkProgress,
+    PlannedStructureClaim, PlannedStructureProgress, SwarmId,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LeaseTravel {
+    waypoint: Vec2,
+    best_distance: f32,
+    pending_step: bool,
+}
 
 /// Temporary ownership of projected capacity, not ownership of authoritative
 /// intent or category-specific work state.
-#[derive(Debug, Clone, Copy, Component, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Component, PartialEq)]
 pub struct RegionalLease {
     pub region: AllocationRegion,
     pub category: OpportunityCategory,
     pub target: OpportunityTarget,
     pub owner: Option<SwarmId>,
+    progress: u64,
     progress_checkpoint: u64,
     expires_at_tick: u64,
+    travel: Option<LeaseTravel>,
 }
 
 impl RegionalLease {
@@ -40,8 +49,10 @@ impl RegionalLease {
             category,
             target,
             owner,
+            progress,
             progress_checkpoint: progress,
             expires_at_tick: now_tick.saturating_add(no_progress_ttl_ticks.max(1)),
+            travel: None,
         }
     }
 
@@ -52,11 +63,39 @@ impl RegionalLease {
     pub fn expires_at_tick(self) -> u64 {
         self.expires_at_tick
     }
-}
 
-/// Monotonic progress supplied by category-specific adapters.
-#[derive(Debug, Clone, Copy, Component, Default, PartialEq, Eq)]
-pub struct LeaseProgress(pub u64);
+    pub(crate) fn record_work(&mut self) {
+        self.progress = self.progress.saturating_add(1);
+    }
+
+    pub(crate) fn begin_travel_step(&mut self, position: Vec2, waypoint: Vec2) {
+        if let Some(travel) = &mut self.travel
+            && travel.waypoint == waypoint
+        {
+            travel.pending_step = true;
+        } else {
+            self.travel = Some(LeaseTravel {
+                waypoint,
+                best_distance: position.distance(waypoint),
+                pending_step: true,
+            });
+        }
+    }
+
+    pub(crate) fn finish_travel_step(&mut self, start: Vec2, end: Vec2) {
+        let Some(travel) = &mut self.travel else {
+            return;
+        };
+        if !std::mem::take(&mut travel.pending_step) || start == end {
+            return;
+        }
+        let distance = end.distance(travel.waypoint);
+        if distance + 0.001 < travel.best_distance && distance < start.distance(travel.waypoint) {
+            travel.best_distance = distance;
+            self.progress = self.progress.saturating_add(1);
+        }
+    }
+}
 
 /// No-progress lifetime measured in allocation ticks.
 #[derive(Debug, Clone, Copy, Resource, PartialEq, Eq)]
@@ -124,72 +163,46 @@ pub fn maintain_regional_leases_system(
     config: Res<RegionalLeaseConfig>,
     projection: Res<ActionableProjection>,
     access: WorkAccess,
-    bodies: Query<(&Transform, &SwarmMember, &NanobotType, Option<&Cargo>)>,
+    bodies: Query<&Transform, (With<SwarmMember>, With<NanobotType>)>,
     mut leases: Query<(
         Entity,
         &mut RegionalLease,
-        Option<&LeaseProgress>,
+        Option<&Cargo>,
         Option<&LogisticsReservation>,
     )>,
-    active_progress: Query<
-        (),
-        Or<(
-            With<DirectMovementComponent>,
-            With<ExtractProgress>,
-            With<PlannedStructureProgress>,
-            With<MaintenanceProgress>,
-            With<HaulerLoading>,
-        )>,
-    >,
 ) {
-    for (entity, mut lease, progress, reservation) in &mut leases {
-        let reachability = bodies
-            .get(entity)
-            .ok()
-            .and_then(|(transform, _, _, cargo)| {
-                if cargo.is_some_and(|cargo| cargo.amount > 0) {
-                    return None;
-                }
-                let target = match lease.target {
-                    OpportunityTarget::Gather { deposit, .. } => deposit,
-                    OpportunityTarget::PlannedBuild { structure, .. }
-                    | OpportunityTarget::Maintenance { structure } => structure,
-                    OpportunityTarget::Haul { source, .. } => source,
-                };
-                let Some(region) = access.region(target) else {
-                    return Some(WorkReachability::Unreachable);
-                };
-                let approach = access.reachability_from(transform.translation.truncate(), region);
-                if approach == WorkReachability::Unreachable {
-                    return Some(approach);
-                }
-                if let OpportunityTarget::Haul { sink, .. } = lease.target {
-                    let Some(destination) = access.region(sink) else {
-                        return Some(WorkReachability::Unreachable);
-                    };
-                    let delivery =
-                        access.chain_from(transform.translation.truncate(), region, destination);
-                    if delivery == WorkReachability::Unreachable {
-                        return Some(delivery);
-                    }
-                }
-                Some(approach)
-            });
+    for (entity, mut lease, cargo, reservation) in &mut leases {
         // Physical loads outlive task leases; their delivery systems retain custody.
-        if bodies
-            .get(entity)
-            .is_ok_and(|(_, _, _, cargo)| cargo.is_some_and(|cargo| cargo.amount > 0))
-        {
+        if cargo.is_some_and(|cargo| cargo.amount > 0) {
             continue;
         }
-        let observed_progress = progress.map_or_else(
-            || {
-                lease
-                    .progress_checkpoint
-                    .saturating_add(u64::from(active_progress.contains(entity)))
-            },
-            |value| value.0,
-        );
+        let reachability = bodies.get(entity).ok().map(|transform| {
+            let target = match lease.target {
+                OpportunityTarget::Gather { deposit, .. } => deposit,
+                OpportunityTarget::PlannedBuild { structure, .. }
+                | OpportunityTarget::Maintenance { structure } => structure,
+                OpportunityTarget::Haul { source, .. } => source,
+            };
+            let Some(region) = access.region(target) else {
+                return WorkReachability::Unreachable;
+            };
+            let approach = access.reachability_from(transform.translation.truncate(), region);
+            if approach == WorkReachability::Unreachable {
+                return approach;
+            }
+            if let OpportunityTarget::Haul { sink, .. } = lease.target {
+                let Some(destination) = access.region(sink) else {
+                    return WorkReachability::Unreachable;
+                };
+                let delivery =
+                    access.chain_from(transform.translation.truncate(), region, destination);
+                if delivery == WorkReachability::Unreachable {
+                    return delivery;
+                }
+            }
+            approach
+        });
+        let observed_progress = lease.progress;
         let supported = reachability != Some(WorkReachability::Unreachable)
             && (reservation.is_some() || projection_supports_lease(&projection, &lease));
         let decision = evaluate_lease(
@@ -211,7 +224,8 @@ pub fn maintain_regional_leases_system(
                     entity_commands
                         .remove::<GatherAssignment>()
                         .remove::<ExtractProgress>()
-                        .remove::<LogisticsReservation>();
+                        .remove::<LogisticsReservation>()
+                        .remove::<(Cargo, MaterialWorkProgress)>();
                 }
                 OpportunityCategory::PlannedBuild => {
                     entity_commands
@@ -227,7 +241,8 @@ pub fn maintain_regional_leases_system(
                     entity_commands
                         .remove::<HaulerAssignment>()
                         .remove::<HaulerLoading>()
-                        .remove::<LogisticsReservation>();
+                        .remove::<LogisticsReservation>()
+                        .remove::<(Cargo, MaterialWorkProgress)>();
                 }
             }
         }

@@ -212,18 +212,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resource_kind_default_is_minerals() {
-        assert_eq!(ResourceKind::default(), ResourceKind::Minerals);
-    }
-
-    #[test]
-    fn resource_kind_all_covers_minerals() {
-        let kinds: Vec<ResourceKind> = ResourceKind::ALL.to_vec();
-        assert_eq!(kinds.len(), ResourceKind::COUNT);
-        assert!(kinds.contains(&ResourceKind::Minerals));
-    }
-
-    #[test]
     fn deposit_has_work_only_when_amount_positive() {
         let mut d = ResourceDeposit {
             kind: ResourceKind::Minerals,

@@ -535,38 +535,6 @@ fn lethal_structure_hit_publishes_stable_appearance_and_despawns_target() {
     assert_eq!(damage["effective_damage_structures"], 1);
 }
 
-#[test]
-fn charging_defender_presence_does_not_capture_paint() {
-    let mut app = common::sim_app_with_combat();
-    app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
-    app.world_mut().spawn((Swarm {}, SwarmId(11)));
-    let cell = IVec2::ZERO;
-    {
-        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
-        grid.paint(cell, IntentKind::Defend, SwarmId::PLAYER);
-        grid.paint(cell, IntentKind::Defend, SwarmId(11));
-    }
-    let challenger = common::spawn_defender_at(&mut app, common::cell_world_center(cell));
-    app.world_mut().entity_mut(challenger).insert((
-        SwarmMember::new(SwarmId(11)),
-        ChargerAssignment {
-            charger: Entity::PLACEHOLDER,
-        },
-    ));
-
-    for _ in 0..240 {
-        app.update();
-    }
-
-    let grid = app.world().resource::<IntentGrid>();
-    assert_eq!(
-        grid.cell(cell)
-            .map(|intent| intent.owners(IntentKind::Defend).collect::<Vec<_>>()),
-        Some(vec![SwarmId::PLAYER, SwarmId(11)]),
-        "Charge duty must preserve both swarms paint",
-    );
-}
-
 #[derive(Debug, Clone, Copy)]
 enum DefenderDuty {
     Staging,

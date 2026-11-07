@@ -183,7 +183,8 @@ fn advance_allocation_clock_system(
     mut wake: ResMut<RegionalAllocationWake>,
 ) {
     let elapsed = clock.advance_by(time.delta()) > 0;
-    due.due = !due.initialized || elapsed || wake.take();
+    let requested = wake.take();
+    due.due = !due.initialized || elapsed || requested;
     due.initialized = true;
 }
 
@@ -261,7 +262,7 @@ pub fn regional_allocation_acquisition_system(
     deposits: Query<(&ResourceDeposit, &Transform)>,
     mut planned: Query<(Entity, &mut PlannedStructure, &Transform)>,
     structures: Query<&Transform>,
-    stockpiles: Query<(&Stockpile, &Transform)>,
+    stockpiles: Query<(&Stockpile, &Transform, Option<&StockpileRole>)>,
     mut terminal: TerminalLogisticsParams,
 ) {
     if projection
@@ -512,6 +513,7 @@ pub fn regional_allocation_acquisition_system(
                 HaulerAssignment {
                     source: reservation.source,
                     sink: reservation.destination,
+                    pickup_role: selection.pickup_role,
                 },
                 reservation,
                 selection.pickup.movement_from(bot.position),
@@ -634,6 +636,7 @@ impl TerminalLogisticsScore {
 struct SelectedHaul {
     work: ActionableOpportunity,
     pickup: InteractionRegion,
+    pickup_role: StockpileRole,
     reservation: LogisticsReservation,
 }
 
@@ -644,7 +647,7 @@ fn choose_terminal_logistics_work(
     ordered: &[(AllocationRegion, &[ActionableOpportunity])],
     bounds: CandidateBounds,
     rejected: Option<InteractionRegion>,
-    stockpiles: &Query<(&Stockpile, &Transform)>,
+    stockpiles: &Query<(&Stockpile, &Transform, Option<&StockpileRole>)>,
     facilities: &Query<(&ProductionFacility, &Transform)>,
     chargers: &Query<(&Charger, &Transform)>,
     navigation: &Navigation,
@@ -670,7 +673,7 @@ fn choose_terminal_logistics_work(
             if work.owner.is_some_and(|owner| owner != bot.swarm) {
                 continue;
             }
-            let Ok((source_state, source_transform)) = stockpiles.get(source) else {
+            let Ok((source_state, source_transform, source_role)) = stockpiles.get(source) else {
                 continue;
             };
             let pickup = InteractionRegion::structure(source_transform);
@@ -695,7 +698,7 @@ fn choose_terminal_logistics_work(
                     },
                     transform,
                 )
-            } else if let Ok((stockpile, transform)) = stockpiles.get(sink) {
+            } else if let Ok((stockpile, transform, _)) = stockpiles.get(sink) {
                 (
                     PickupBuffer {
                         role: DestinationRole::Stockpile(StockpileRole::Sink),
@@ -717,9 +720,9 @@ fn choose_terminal_logistics_work(
                 continue;
             }
             let age = ages.waiting_ticks(sink);
-            let urgency = quote
-                .base_urgency
-                .saturating_sub((age / TERMINAL_FAIRNESS_PROMOTION_TICKS) as u8);
+            let urgency = u32::from(quote.base_urgency)
+                .saturating_sub(age / TERMINAL_FAIRNESS_PROMOTION_TICKS)
+                as u8;
             let deficit_ratio = u64::from(quote.unclaimed_space).saturating_mul(1_000_000)
                 / u64::from(buffer.capacity.max(1));
             let source_pos =
@@ -755,6 +758,7 @@ fn choose_terminal_logistics_work(
                     SelectedHaul {
                         work: *work,
                         pickup,
+                        pickup_role: source_role.copied().unwrap_or_default(),
                         reservation: LogisticsReservation::new(source, sink, kind, quote.amount),
                     },
                 ));
@@ -804,7 +808,7 @@ fn target_available(
     planned_workers: &BTreeMap<u64, Option<u64>>,
     deposits: &Query<(&ResourceDeposit, &Transform)>,
     structures: &Query<&Transform>,
-    stockpiles: &Query<(&Stockpile, &Transform)>,
+    stockpiles: &Query<(&Stockpile, &Transform, Option<&StockpileRole>)>,
 ) -> bool {
     if claims >= opportunity_capacity(work) {
         return false;
@@ -817,7 +821,7 @@ fn target_available(
         OpportunityTarget::Maintenance { structure } => structures.get(structure).is_ok(),
         OpportunityTarget::Haul { source, .. } => stockpiles
             .get(source)
-            .is_ok_and(|(stockpile, _)| stockpile.amount > 0 && work.available_work > 0),
+            .is_ok_and(|(stockpile, _, _)| stockpile.amount > 0 && work.available_work > 0),
     }
 }
 

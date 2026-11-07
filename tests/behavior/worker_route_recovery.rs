@@ -3,7 +3,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         Cargo, DirectMovementComponent, LogisticsReservation, ReturningToStockpile, SwarmId,
     },
-    resources::{ResourceKind, ResourceLedger, Stockpile},
+    resources::{ResourceKind, ResourceLedger, Stockpile, StockpileRole},
 };
 #[path = "../common/mod.rs"]
 mod common;
@@ -69,6 +69,7 @@ fn loaded_delivery_revalidation_keeps_commitments_without_materializing_routes()
             app.world_mut().entity_mut(bot).insert(HaulerAssignment {
                 source,
                 sink: destination,
+                pickup_role: StockpileRole::Source,
             });
         } else {
             app.world_mut()

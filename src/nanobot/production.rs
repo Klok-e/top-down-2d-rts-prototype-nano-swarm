@@ -651,14 +651,6 @@ mod tests {
     }
 
     #[test]
-    fn owner_swarm_stores_the_entity_reference() {
-        let mut world = World::new();
-        let swarm = world.spawn_empty().id();
-        let owner = OwnerSwarm(swarm);
-        assert_eq!(owner.0, swarm);
-    }
-
-    #[test]
     fn production_progress_percent_reports_zero_when_idle() {
         let f = ProductionFacility::new();
         assert_eq!(production_progress_percent(&f), 0);

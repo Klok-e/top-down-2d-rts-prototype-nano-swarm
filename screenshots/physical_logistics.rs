@@ -5,8 +5,9 @@ use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z,
     fly_camera::CameraZoom2d,
     nanobot::{
-        Cargo, Charger, Health, LogisticsReservation, Nanobot, NanobotType, ProductionFacility,
-        SwarmId, SwarmMember,
+        Cargo, Charger, HaulerAssignment, Health, InteractionRegion, LogisticsReservation,
+        MATERIAL_WORK_TICKS_PER_UNIT, MaterialWorkProgress, Nanobot, NanobotType, OwnerSwarm,
+        ProductionFacility, Swarm, SwarmId, SwarmMember,
     },
     resources::{ResourceKind, Stockpile, StockpileRole},
     structure_overlay::{
@@ -19,7 +20,17 @@ use top_down_2d_rts_prototype_nano_swarm::{
 use crate::harness::{TestContext, TestFlow, clear_nanobots_and_sprite_entities};
 
 #[derive(Resource)]
-struct PhysicalLogisticsTargets(Vec<(Entity, StructureOverlayKind)>);
+struct PhysicalLogisticsTargets {
+    indicators: Vec<(Entity, StructureOverlayKind)>,
+    delivery: Option<Delivery>,
+}
+
+#[derive(Clone, Copy)]
+struct Delivery {
+    pickup: Entity,
+    facility: Entity,
+    hauler: Entity,
+}
 
 pub fn physical_logistics(ctx: &mut TestContext) -> TestFlow {
     if ctx.frame == 2 {
@@ -27,7 +38,7 @@ pub fn physical_logistics(ctx: &mut TestContext) -> TestFlow {
         clear_nanobots_and_sprite_entities(ctx.world);
         despawn_match_banner(ctx.world);
         let targets = spawn_scene(ctx.world);
-        ctx.world.insert_resource(PhysicalLogisticsTargets(targets));
+        ctx.world.insert_resource(targets);
         return TestFlow::Continue;
     }
     if ctx.frame < 12 {
@@ -38,7 +49,74 @@ pub fn physical_logistics(ctx: &mut TestContext) -> TestFlow {
         assert_match_banner_absent(ctx.world);
         return TestFlow::Screenshot("physical_logistics".to_string());
     }
-    TestFlow::Exit
+    let Some(delivery) = ctx.world.resource::<PhysicalLogisticsTargets>().delivery else {
+        return TestFlow::Exit;
+    };
+    if ctx.frame == 13 {
+        begin_delivery_after_pickup_loss(ctx.world, delivery);
+        return TestFlow::Continue;
+    }
+    let buffered = ctx
+        .world
+        .get::<ProductionFacility>(delivery.facility)
+        .unwrap()
+        .input_amount;
+    let carried = ctx
+        .world
+        .get::<Cargo>(delivery.hauler)
+        .map_or(0, |cargo| cargo.amount);
+    assert_eq!(buffered + carried, 5);
+    if carried > 0 {
+        assert!(
+            ctx.frame < 40,
+            "the reserved delivery should finish after losing its pickup"
+        );
+        return TestFlow::Continue;
+    }
+    assert!(ctx.world.get_entity(delivery.pickup).is_err());
+    ctx.world
+        .resource_mut::<PhysicalLogisticsTargets>()
+        .delivery = None;
+    TestFlow::Screenshot("physical_logistics_delivered_after_pickup_loss".into())
+}
+
+fn begin_delivery_after_pickup_loss(world: &mut World, delivery: Delivery) {
+    let owner = world
+        .query_filtered::<(Entity, &SwarmId), With<Swarm>>()
+        .iter(world)
+        .find(|(_, id)| **id == SwarmId::PLAYER)
+        .unwrap()
+        .0;
+    world
+        .entity_mut(delivery.facility)
+        .insert(OwnerSwarm(owner));
+    let facility = world.get::<Transform>(delivery.facility).unwrap();
+    let current = world.get::<Transform>(delivery.hauler).unwrap();
+    let position = InteractionRegion::structure(facility).approach(current.translation.truncate());
+    let mut reservation = LogisticsReservation::new(
+        delivery.pickup,
+        delivery.facility,
+        ResourceKind::Minerals,
+        1,
+    );
+    reservation.source_remaining = 0;
+    world.entity_mut(delivery.hauler).insert((
+        Transform::from_translation(position.extend(GAMEPLAY_SPRITE_Z)),
+        Cargo {
+            kind: ResourceKind::Minerals,
+            amount: 1,
+        },
+        HaulerAssignment {
+            source: delivery.pickup,
+            sink: delivery.facility,
+            pickup_role: StockpileRole::Sink,
+        },
+        reservation,
+        MaterialWorkProgress {
+            ticks_elapsed: MATERIAL_WORK_TICKS_PER_UNIT - 1,
+        },
+    ));
+    assert!(world.despawn(delivery.pickup));
 }
 
 fn despawn_match_banner(world: &mut World) {
@@ -73,7 +151,7 @@ fn focus_camera(world: &mut World) {
     }
 }
 
-fn spawn_scene(world: &mut World) -> Vec<(Entity, StructureOverlayKind)> {
+fn spawn_scene(world: &mut World) -> PhysicalLogisticsTargets {
     let source = spawn_stockpile(world, Vec2::new(-150.0, -35.0), 16, StockpileRole::Source);
     let sink = spawn_stockpile(world, Vec2::new(-50.0, -35.0), 12, StockpileRole::Sink);
     let facility = spawn_facility(world, Vec2::new(50.0, -35.0));
@@ -97,14 +175,21 @@ fn spawn_scene(world: &mut World) -> Vec<(Entity, StructureOverlayKind)> {
         destination_remaining: 8,
     });
 
-    vec![
-        (source, StructureOverlayKind::Stockpile),
-        (sink, StructureOverlayKind::Stockpile),
-        (facility, StructureOverlayKind::Facility),
-        (charger, StructureOverlayKind::Charger),
-        (worker, StructureOverlayKind::Worker),
-        (hauler, StructureOverlayKind::Hauler),
-    ]
+    PhysicalLogisticsTargets {
+        indicators: vec![
+            (source, StructureOverlayKind::Stockpile),
+            (sink, StructureOverlayKind::Stockpile),
+            (facility, StructureOverlayKind::Facility),
+            (charger, StructureOverlayKind::Charger),
+            (worker, StructureOverlayKind::Worker),
+            (hauler, StructureOverlayKind::Hauler),
+        ],
+        delivery: Some(Delivery {
+            pickup: sink,
+            facility,
+            hauler,
+        }),
+    }
 }
 
 fn spawn_stockpile(world: &mut World, pos: Vec2, amount: u32, role: StockpileRole) -> Entity {
@@ -181,7 +266,10 @@ fn spawn_cargo_bot(world: &mut World, pos: Vec2, kind: NanobotType, amount: u32)
 }
 
 fn assert_scene_indicators(world: &mut World) {
-    let targets = world.resource::<PhysicalLogisticsTargets>().0.clone();
+    let targets = world
+        .resource::<PhysicalLogisticsTargets>()
+        .indicators
+        .clone();
     let overlays: Vec<_> = world
         .query::<&StructureOverlay>()
         .iter(world)

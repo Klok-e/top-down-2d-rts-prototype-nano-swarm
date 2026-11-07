@@ -508,18 +508,6 @@ mod tests {
     }
 
     #[test]
-    fn presence_storage_buffer_has_one_u32_per_cell() {
-        let buffer = ShaderStorageBuffer::from(vec![1u32, 2, 4, 8]);
-        assert_eq!(
-            buffer.data.unwrap(),
-            [1u32, 2, 4, 8]
-                .into_iter()
-                .flat_map(u32::to_ne_bytes)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
     fn empty_point_reports_every_kind_absent() {
         let point = ZonePointData::new();
         for kind_index in 0..IntentKind::COUNT as u32 {

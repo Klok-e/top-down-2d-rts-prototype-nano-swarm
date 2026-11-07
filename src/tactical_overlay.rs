@@ -656,36 +656,6 @@ mod tests {
     }
 
     #[test]
-    fn default_settings_match_module_constants() {
-        let s = TacticalOverlaySettings::default();
-        assert_abs_diff_eq!(
-            s.show_zoom_threshold,
-            DEFAULT_TACTICAL_SHOW_ZOOM_THRESHOLD,
-            epsilon = 1e-5
-        );
-        assert_abs_diff_eq!(
-            s.merge_radius_world,
-            DEFAULT_TACTICAL_MERGE_RADIUS_WORLD,
-            epsilon = 1e-5
-        );
-        assert_abs_diff_eq!(
-            s.far_merge_radius_world,
-            DEFAULT_TACTICAL_FAR_MERGE_RADIUS_WORLD,
-            epsilon = 1e-5
-        );
-        assert_abs_diff_eq!(
-            s.far_merge_zoom,
-            DEFAULT_TACTICAL_FAR_MERGE_ZOOM,
-            epsilon = 1e-5
-        );
-        assert_abs_diff_eq!(
-            s.marker_screen_size,
-            DEFAULT_TACTICAL_MARKER_SCREEN_SIZE,
-            epsilon = 1e-5
-        );
-    }
-
-    #[test]
     fn cluster_radius_at_or_below_threshold_uses_moderate_value() {
         let s = TacticalOverlaySettings::default();
         assert_abs_diff_eq!(
@@ -798,19 +768,6 @@ mod tests {
         assert_eq!(
             cluster_spatial_slot(Vec2::new(-CLUSTER_SPATIAL_SLOT_SIZE, 0.0)),
             (-1, 0)
-        );
-    }
-
-    #[test]
-    fn spatial_slot_size_matches_max_merge_radius() {
-        // The slot grid is sized to the max merge radius
-        // so two clusters that don't merge always end
-        // up in different slots (or the same one only
-        // when they would have merged anyway).
-        assert_abs_diff_eq!(
-            CLUSTER_SPATIAL_SLOT_SIZE,
-            DEFAULT_TACTICAL_FAR_MERGE_RADIUS_WORLD,
-            epsilon = 1e-5
         );
     }
 

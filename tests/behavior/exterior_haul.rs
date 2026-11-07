@@ -5,7 +5,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         Cargo, HAULER_TRANSFER_PER_PULSE, HaulerAssignment, LogisticsReservation, OwnerSwarm,
         SwarmId, SwarmMember,
     },
-    resources::{ResourceKind, ResourceLedger, Stockpile},
+    resources::{ResourceKind, ResourceLedger, Stockpile, StockpileRole},
 };
 
 #[path = "../common/mod.rs"]
@@ -27,7 +27,11 @@ fn scaled_pickup_pauses_when_displaced_and_keeps_material_custody() {
         let bot = common::spawn_hauler_at(&mut app, Vec2::new(100.0, 0.0));
         app.world_mut().entity_mut(bot).insert((
             SwarmMember::new(swarm),
-            HaulerAssignment { source, sink },
+            HaulerAssignment {
+                source,
+                sink,
+                pickup_role: StockpileRole::Source,
+            },
             LogisticsReservation::new(source, sink, ResourceKind::Minerals, 20),
         ));
         app.world_mut()
@@ -113,11 +117,15 @@ fn both_swarms_deliver_to_scaled_exteriors_and_resume_after_displacement() {
             let mut app = common::sim_app_with_gather_haul();
             let owner = common::spawn_swarm_at(&mut app, Vec2::ZERO);
             app.world_mut().entity_mut(owner).insert(swarm);
-            let source = match destination_kind {
-                DestinationKind::Stockpile => common::spawn_stockpile(&mut app, Vec2::ZERO, 0, 100),
-                DestinationKind::Facility | DestinationKind::Charger => {
-                    common::spawn_sink_stockpile(&mut app, Vec2::ZERO, 0, 100)
-                }
+            let (source, pickup_role) = match destination_kind {
+                DestinationKind::Stockpile => (
+                    common::spawn_stockpile(&mut app, Vec2::ZERO, 0, 100),
+                    StockpileRole::Source,
+                ),
+                DestinationKind::Facility | DestinationKind::Charger => (
+                    common::spawn_sink_stockpile(&mut app, Vec2::ZERO, 0, 100),
+                    StockpileRole::Sink,
+                ),
             };
             app.world_mut().entity_mut(source).insert(OwnerSwarm(owner));
             let target_transform =
@@ -155,7 +163,11 @@ fn both_swarms_deliver_to_scaled_exteriors_and_resume_after_displacement() {
                     kind: ResourceKind::Minerals,
                     amount: 12,
                 },
-                HaulerAssignment { source, sink },
+                HaulerAssignment {
+                    source,
+                    sink,
+                    pickup_role,
+                },
                 LogisticsReservation::new(source, sink, ResourceKind::Minerals, 12),
             ));
             let delivered = |app: &App| match destination_kind {

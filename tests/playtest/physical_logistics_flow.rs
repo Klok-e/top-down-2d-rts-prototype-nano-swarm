@@ -4,9 +4,9 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         Cargo, DirectMovementComponent, HAULER_TRANSFER_PER_PULSE, HaulerAssignment, HaulerLoading,
-        LogisticsReservation, OwnerSwarm, ProductionFacility, SwarmId,
+        LogisticsReservation, MaterialWorkProgress, OwnerSwarm, ProductionFacility, SwarmId,
     },
-    resources::{ResourceKind, ResourceLedger, Stockpile},
+    resources::{ResourceKind, ResourceLedger, Stockpile, StockpileRole},
 };
 
 #[path = "../common/mod.rs"]
@@ -221,6 +221,125 @@ fn assert_custody_and_ledger(app: &App, source: Entity, hauler: Entity, terminal
 }
 
 #[test]
+fn losing_either_endpoint_during_empty_pickup_allows_reassignment() {
+    for lose_pickup in [true, false] {
+        let (mut app, owner, mut source, mut terminal, hauler) = terminal_trip();
+        for _ in 0..300 {
+            app.update();
+            if app.world().get::<HaulerLoading>(hauler).is_some() {
+                break;
+            }
+        }
+        assert!(app.world().get::<HaulerLoading>(hauler).is_some());
+        assert_eq!(app.world().get::<Cargo>(hauler).unwrap().amount, 0);
+        assert_custody_and_ledger(&app, source, hauler, terminal);
+
+        let lost = if lose_pickup { source } else { terminal };
+        assert!(app.world_mut().despawn(lost));
+        app.update();
+        assert!(app.world().get::<Cargo>(hauler).is_none());
+        assert!(app.world().get::<MaterialWorkProgress>(hauler).is_none());
+        assert!(app.world().get::<LogisticsReservation>(hauler).is_none());
+
+        if lose_pickup {
+            source = spawn_trip_pickup(&mut app, owner);
+        } else {
+            terminal = spawn_trip_terminal(&mut app, owner);
+        }
+
+        for _ in 0..500 {
+            app.update();
+            if cargo_amount(&app, hauler) > 0 {
+                break;
+            }
+        }
+        let assignment = app
+            .world()
+            .get::<HaulerAssignment>(hauler)
+            .expect("the interrupted Hauler should acquire the replacement trip");
+        assert_eq!((assignment.source, assignment.sink), (source, terminal));
+        assert!(cargo_amount(&app, hauler) > 0);
+        assert_custody_and_ledger(&app, source, hauler, terminal);
+    }
+}
+
+#[test]
+fn losing_pickup_stockpile_during_delivery_preserves_terminal_cargo() {
+    for lose_during_unload in [false, true] {
+        let (mut app, _, source, terminal, hauler) = terminal_trip();
+        let delivered_before_loss = if lose_during_unload {
+            HAULER_TRANSFER_PER_PULSE
+        } else {
+            0
+        };
+        for _ in 0..2_000 {
+            app.update();
+            if cargo_amount(&app, hauler) == INITIAL_MINERALS - delivered_before_loss
+                && facility_amount(&app, terminal) == delivered_before_loss
+                && app.world().get::<HaulerLoading>(hauler).is_none()
+            {
+                break;
+            }
+        }
+        assert!(app.world().get::<HaulerLoading>(hauler).is_none());
+        assert_eq!(stockpile_amount(&app, source), 0);
+        assert_eq!(facility_amount(&app, terminal), delivered_before_loss);
+        assert_eq!(
+            cargo_amount(&app, hauler),
+            INITIAL_MINERALS - delivered_before_loss
+        );
+        assert!(app.world_mut().despawn(source));
+
+        for _ in 0..2_000 {
+            app.update();
+            if facility_amount(&app, terminal) == INITIAL_MINERALS {
+                break;
+            }
+        }
+        assert_eq!(facility_amount(&app, terminal), INITIAL_MINERALS);
+        assert!(app.world().get::<Cargo>(hauler).is_none());
+        assert!(app.world().get::<HaulerAssignment>(hauler).is_none());
+        assert!(app.world().get::<LogisticsReservation>(hauler).is_none());
+        assert_eq!(
+            app.world()
+                .resource::<ResourceLedger>()
+                .total_for(SwarmId::PLAYER, ResourceKind::Minerals),
+            INITIAL_MINERALS,
+        );
+    }
+}
+
+fn terminal_trip() -> (App, Entity, Entity, Entity, Entity) {
+    let mut app = common::sim_app_with_gather_haul();
+    let owner = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let source = spawn_trip_pickup(&mut app, owner);
+    let terminal = spawn_trip_terminal(&mut app, owner);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-120.0, 0.0));
+    app.world_mut().resource_mut::<ResourceLedger>().add_for(
+        SwarmId::PLAYER,
+        ResourceKind::Minerals,
+        INITIAL_MINERALS,
+    );
+    (app, owner, source, terminal, hauler)
+}
+
+fn spawn_trip_pickup(app: &mut App, owner: Entity) -> Entity {
+    let source = common::spawn_sink_stockpile(app, Vec2::new(-200.0, 0.0), INITIAL_MINERALS, 100);
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(owner));
+    source
+}
+
+fn spawn_trip_terminal(app: &mut App, owner: Entity) -> Entity {
+    app.world_mut()
+        .spawn((
+            ProductionFacility::new(),
+            OwnerSwarm(owner),
+            Transform::from_xyz(200.0, 0.0, 0.0),
+        ))
+        .id()
+}
+
+#[test]
 fn blocked_delivery_returns_cargo_to_source_stockpile_physically() {
     use top_down_2d_rts_prototype_nano_swarm::intent::IntentGrid;
     let mut app = common::sim_app_with_gather_haul();
@@ -240,7 +359,11 @@ fn blocked_delivery_returns_cargo_to_source_stockpile_physically() {
             kind: ResourceKind::Minerals,
             amount: 12,
         },
-        HaulerAssignment { source, sink },
+        HaulerAssignment {
+            source,
+            sink,
+            pickup_role: StockpileRole::Source,
+        },
         reservation,
     ));
     app.world_mut().resource_mut::<ResourceLedger>().add_for(
@@ -300,7 +423,11 @@ fn blocked_delivery_waits_with_cargo_then_reopens_without_duplicate_transfer() {
             kind: ResourceKind::Minerals,
             amount: 12,
         },
-        HaulerAssignment { source, sink },
+        HaulerAssignment {
+            source,
+            sink,
+            pickup_role: StockpileRole::Source,
+        },
         reservation,
     ));
     app.world_mut().resource_mut::<ResourceLedger>().add_for(
@@ -385,6 +512,7 @@ fn blocked_delivery_prefers_another_sink_before_returning_to_source_for_both_swa
             HaulerAssignment {
                 source,
                 sink: blocked,
+                pickup_role: StockpileRole::Source,
             },
             reservation,
         ));
@@ -515,6 +643,7 @@ fn terminal_delivery_tries_another_terminal_before_returning_to_pickup_sink() {
         HaulerAssignment {
             source,
             sink: blocked,
+            pickup_role: StockpileRole::Sink,
         },
         reservation,
     ));

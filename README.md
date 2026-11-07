@@ -70,3 +70,5 @@ python scripts/nano_swarm_control.py shutdown
 ```
 
 Run `cargo run -- --help` for runtime options and see [`docs/agents/agent-control.md`](docs/agents/agent-control.md) for the protocol and synchronization contract.
+
+The [state-machine inventory](docs/state-machines.md) maps retained gameplay, runtime, presentation, and tooling state to its transitions, cleanup rules, and owning code.

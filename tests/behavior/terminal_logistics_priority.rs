@@ -1,11 +1,139 @@
 use bevy::prelude::*;
-use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-    Charge, ChargerAssignment, DirectMovementComponent, HaulerAssignment, LogisticsReservation,
-    OwnerSwarm, ProductionFacility, RegionalLease,
+use top_down_2d_rts_prototype_nano_swarm::{
+    intent::IntentGrid,
+    nanobot::{
+        AllocationClock, Charge, ChargerAssignment, DirectMovementComponent, HaulerAssignment,
+        InteractionRegion, LogisticsReservation, OwnerSwarm, PRODUCTION_COST_PER_BOT,
+        ProductionFacility, RegionalAllocationWake, RegionalLease, TerminalDemandAges,
+    },
+    navigation::{ConnectivityStatus, Navigation, RouteGoal},
+    navigation_runtime::NavigationBudget,
 };
 
 #[path = "../common/mod.rs"]
 mod common;
+
+#[test]
+fn allocation_wakes_are_consumed_by_the_pass_that_serves_them() {
+    let mut app = common::sim_app_with_gather_haul();
+    let (_, terminal) = waiting_terminal(&mut app);
+    let wake = |app: &mut App| {
+        app.world_mut()
+            .resource_mut::<RegionalAllocationWake>()
+            .request_current_pass();
+    };
+
+    wake(&mut app);
+    app.update();
+    assert_eq!(waiting_age(&app, terminal), 1);
+    app.update();
+    assert_eq!(waiting_age(&app, terminal), 1, "initial pass consumed wake");
+
+    wake(&mut app);
+    app.update();
+    assert_eq!(waiting_age(&app, terminal), 2, "standalone wake ran a pass");
+    app.update();
+    app.update();
+    assert_eq!(waiting_age(&app, terminal), 2);
+    assert_eq!(app.world().resource::<AllocationClock>().tick(), 0);
+
+    wake(&mut app);
+    app.update();
+    assert_eq!(app.world().resource::<AllocationClock>().tick(), 1);
+    assert_eq!(waiting_age(&app, terminal), 3);
+    app.update();
+    assert_eq!(
+        waiting_age(&app, terminal),
+        3,
+        "scheduled pass consumed wake"
+    );
+}
+
+#[test]
+fn terminal_priority_stays_promoted_across_the_waiting_age_boundary() {
+    for age_at_assignment in [2047, 2048] {
+        let mut app = common::sim_app_with_gather_haul();
+        let (source, oldest) = waiting_terminal(&mut app);
+        for _ in 0..13_000 {
+            if waiting_age(&app, oldest) == age_at_assignment - 1 {
+                break;
+            }
+            app.update();
+        }
+        assert_eq!(waiting_age(&app, oldest), age_at_assignment - 1);
+
+        let owner = *app.world().get::<OwnerSwarm>(source).unwrap();
+        let mut facility = ProductionFacility::new();
+        facility.input_amount = PRODUCTION_COST_PER_BOT - 10;
+        let newest = app
+            .world_mut()
+            .spawn((facility, owner, Transform::from_xyz(200.0, 120.0, 0.0)))
+            .id();
+        app.update();
+        assert_eq!(waiting_age(&app, oldest), age_at_assignment - 1);
+
+        let start = Vec2::new(-120.0, 0.0);
+        let pickup = resolve_connection(&app, start, source);
+        resolve_connection(&app, pickup, oldest);
+        resolve_connection(&app, pickup, newest);
+        let hauler = common::spawn_hauler_at(&mut app, start);
+        for _ in 0..6 {
+            app.update();
+            if app.world().get::<HaulerAssignment>(hauler).is_some() {
+                break;
+            }
+        }
+        let assignment = app
+            .world()
+            .get::<HaulerAssignment>(hauler)
+            .expect("the first allocation pass should assign a connected terminal");
+        assert_eq!(
+            assignment.sink, oldest,
+            "the older terminal should still have priority at age {age_at_assignment}"
+        );
+    }
+}
+
+fn waiting_terminal(app: &mut App) -> (Entity, Entity) {
+    let swarm = common::spawn_swarm_at(app, Vec2::ZERO);
+    let source = common::spawn_sink_stockpile(app, Vec2::new(-200.0, 0.0), 10, 100);
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
+    let terminal = app
+        .world_mut()
+        .spawn((
+            ProductionFacility::new(),
+            OwnerSwarm(swarm),
+            Transform::from_xyz(200.0, 0.0, 0.0),
+        ))
+        .id();
+    (source, terminal)
+}
+
+fn waiting_age(app: &App, terminal: Entity) -> u32 {
+    app.world()
+        .resource::<TerminalDemandAges>()
+        .waiting_ticks(terminal)
+}
+
+fn resolve_connection(app: &App, start: Vec2, target: Entity) -> Vec2 {
+    let world = app.world();
+    let goal = RouteGoal::Interaction(InteractionRegion::structure(
+        world.get::<Transform>(target).unwrap(),
+    ));
+    let navigation = world.resource::<Navigation>();
+    for _ in 0..32 {
+        if let ConnectivityStatus::Connected { endpoint } =
+            navigation.query_connectivity(start, goal)
+        {
+            return endpoint;
+        }
+        navigation.advance(
+            world.resource::<IntentGrid>(),
+            world.resource::<NavigationBudget>().0,
+        );
+    }
+    panic!("the logistics connection should resolve")
+}
 
 #[test]
 fn empty_committed_defender_makes_charger_beat_startable_production() {

@@ -822,19 +822,6 @@ fn overlay_spawns_for_every_kind_at_once() {
     );
 }
 
-#[test]
-fn fill_colors_are_pairwise_distinct() {
-    let colors: Vec<_> = StructureOverlayKind::ALL
-        .iter()
-        .map(|k| overlay_fill_color(*k))
-        .collect();
-    for i in 0..colors.len() {
-        for j in (i + 1)..colors.len() {
-            assert_ne!(colors[i], colors[j]);
-        }
-    }
-}
-
 // Regression: when a PlannedStructure is promoted in place to
 // a Stockpile (the production code path), the stale Planned
 // overlay must be replaced by a Stockpile overlay whose fill

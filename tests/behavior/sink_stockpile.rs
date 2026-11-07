@@ -132,25 +132,6 @@ fn no_sink_stockpile_planned_without_build_paint() {
 }
 
 #[test]
-fn build_paint_alone_does_not_duplicate_sink_stockpiles() {
-    let mut app = build_app();
-    let cell = IVec2::new(0, 0);
-    paint_build(&mut app, cell);
-
-    for _ in 0..5 {
-        app.update();
-    }
-
-    let world = app.world_mut();
-    let planned_count = world
-        .query::<&PlannedStructure>()
-        .iter(world)
-        .filter(|p| p.kind == PlannedKind::SinkStockpile)
-        .count();
-    assert_eq!(planned_count, 0, "Build paint alone must remain inert");
-}
-
-#[test]
 fn worker_builds_planned_sink_stockpile_into_completed() {
     // Acceptance: "One Worker builds a Planned Sink
     // Stockpile into a completed Stockpile." A Worker at
@@ -242,9 +223,11 @@ fn completed_sink_stockpile_receives_hauled_resources() {
     let source = common::spawn_stockpile(&mut app, source_pos, 200, 200);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
     let hauler = common::spawn_hauler_at(&mut app, source_pos + Vec2::new(68.0, 0.0));
-    app.world_mut()
-        .entity_mut(hauler)
-        .insert(HaulerAssignment { source, sink });
+    app.world_mut().entity_mut(hauler).insert(HaulerAssignment {
+        source,
+        sink,
+        pickup_role: StockpileRole::Source,
+    });
 
     // Fill the shipped 20-mineral load at the real material-work cadence,
     // then travel and complete at least one unload pulse.

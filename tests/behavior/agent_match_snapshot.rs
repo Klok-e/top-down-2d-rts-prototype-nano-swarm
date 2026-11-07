@@ -300,6 +300,7 @@ fn detailed_state_get_reports_distinct_owners_and_overlapping_component_facts() 
             HaulerAssignment {
                 source: stockpile,
                 sink: facility,
+                pickup_role: StockpileRole::Sink,
             },
             HaulerLoading,
             LogisticsReservation {

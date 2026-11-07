@@ -149,6 +149,7 @@ pub fn move_velocity_system(
         Option<&super::SwarmMember>,
         Option<&super::ClearingEvacuation>,
         Option<&TrafficYield>,
+        Option<&mut super::RegionalLease>,
     )>,
     bodies: Query<(Entity, &Transform, Has<super::CongestionRecovery>), With<super::Nanobot>>,
     loads: Query<&super::Cargo>,
@@ -228,8 +229,17 @@ pub fn move_velocity_system(
     }
     let mut claims = FixedSpatialBuckets::new(2.0 * crate::navigation::BODY_RADIUS);
     for entity in ordered {
-        let Ok((entity, destination, transform, mut velocity, kind, member, evacuation, yielding)) =
-            bots.get_mut(entity)
+        let Ok((
+            entity,
+            destination,
+            transform,
+            mut velocity,
+            kind,
+            member,
+            evacuation,
+            yielding,
+            lease,
+        )) = bots.get_mut(entity)
         else {
             continue;
         };
@@ -575,6 +585,12 @@ pub fn move_velocity_system(
         );
         let next_index = route.follower.target_index(route.current);
         if let Some(next) = route.waypoints.get(next_index) {
+            if let Some(mut lease) = lease
+                && evacuation.is_none()
+                && step != Vec2::ZERO
+            {
+                lease.begin_travel_step(position, *next);
+            }
             let remaining = position.distance(*next)
                 + route.waypoints[next_index..]
                     .windows(2)
