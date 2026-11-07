@@ -4,6 +4,10 @@
 
 - Review the diff for correctness and code quality.
 
+## Temporary files
+
+Use the repository-root `.tmp/` directory for agent scratch files and temporary verification artifacts. Create it when needed, use a unique subdirectory per run, and remove only your run's artifacts.
+
 ## Testing
 
 For coding-agent implementation work, follow `docs/agents/testing.md`. Don't edit this doc autonomously: human approval always required.
