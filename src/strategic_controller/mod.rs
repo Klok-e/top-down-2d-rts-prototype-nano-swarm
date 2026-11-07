@@ -6,6 +6,8 @@
 
 use std::collections::BTreeSet;
 
+use crate::tuning::AutonomyTuning;
+
 use bevy::prelude::{IVec2, Vec2};
 
 use crate::{
@@ -17,7 +19,7 @@ use crate::{
 
 /// Maximum accounted planner operations shared by all decisions in one review window.
 pub const PLANNING_WORK_BUDGET: usize = 100_000;
-pub const REVIEW_PERIOD_TICKS: u64 = crate::SIMULATION_HZ as u64 / 2;
+const WORK_WINDOW_TICKS: u64 = crate::SIMULATION_HZ as u64 / 2;
 
 const EDIT_WORK_RESERVE: usize = 4_096;
 const MAX_BOTS: usize = 256;
@@ -25,10 +27,6 @@ const MAX_STRUCTURES: usize = 128;
 const MAX_DEPOSITS: usize = 24;
 const MAX_ACTIVE_CELLS: usize = 256;
 const MAX_PLAN_CELLS: usize = 96;
-const SWITCH_MARGIN: f32 = 1.15;
-const MIN_SECOND_FRONT_DEFENDERS: usize = 4;
-const MIN_FRONT_HEALTH: u32 = crate::nanobot::NANOBOT_DEFAULT_MAX_HEALTH / 2;
-const MIN_FRONT_CHARGE: f32 = 0.45;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SwarmState {
@@ -44,7 +42,9 @@ pub struct BotState {
     pub kind: NanobotType,
     pub position: Vec2,
     pub health: u32,
+    pub max_health: u32,
     pub charge: f32,
+    pub max_charge: f32,
     pub cargo: u32,
 }
 
@@ -65,6 +65,7 @@ pub struct StructureState {
     pub position: Vec2,
     pub kind: StructureKind,
     pub health: u32,
+    pub max_health: u32,
     pub minerals: u32,
 }
 

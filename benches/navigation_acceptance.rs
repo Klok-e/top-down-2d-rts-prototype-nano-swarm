@@ -10,10 +10,10 @@ use std::{
     time::{Duration, Instant},
 };
 use top_down_2d_rts_prototype_nano_swarm::{
-    game_settings::GameSettings,
     intent::IntentGrid,
     nanobot::DirectMovementComponent,
     navigation::{BODY_RADIUS, CELL_WIDTH, Navigation, Obstacle},
+    tuning::Tuning,
 };
 const BOTS: usize = 5000;
 const MAP: i32 = 64;
@@ -87,7 +87,7 @@ fn main() {
         app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_nanos(
             16_666_667,
         )));
-        app.world_mut().resource_mut::<GameSettings>().bot_speed = 5.0;
+        app.world_mut().resource_mut::<Tuning>().logistics.bot_speed = 5.0;
         let shapes = obstacles(name);
         if name != "simultaneous_replanning" {
             install_obstacles(&mut app, &shapes);

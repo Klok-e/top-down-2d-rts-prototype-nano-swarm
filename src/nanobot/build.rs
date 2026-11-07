@@ -27,12 +27,13 @@
 //! resources that were already moved physically. No teleporting
 //! resources; no global stockpile.
 //!
-//! Repair: a completed `Structure` with `health < STRUCTURE_MAX_HEALTH`
+//! Repair: a completed `Structure` with `health < tuning.construction.max_health`
 //! is also valid build work. A worker assigned to a Build cell
 //! that already holds a damaged Structure (and no BuildSite) will
 //! be assigned to the Structure, then consume material to restore
 //! health up to the cap.
 
+use crate::tuning::Tuning;
 use bevy::prelude::*;
 
 use crate::ZONE_BLOCK_SIZE;
@@ -43,12 +44,6 @@ use crate::nanobot::autonomy::{Commitment, NanobotType, SoftWorkSlots, best_cand
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, SwarmMember};
 use crate::nanobot::gather::world_to_cell;
 use crate::resources::{ResourceKind, ResourceLedger, Stockpile};
-
-/// Maximum health a `Structure` can have. Repair and construction
-/// stop raising health at this cap. A structure starts at full
-/// health and can degrade (e.g. via the maintenance system from
-/// issue #12, modelled as a manual health drop in tests for now).
-pub const STRUCTURE_MAX_HEALTH: u32 = 100;
 
 /// Material budget required to construct a fresh `BuildSite`.
 ///
@@ -61,9 +56,6 @@ pub const STRUCTURE_MAX_HEALTH: u32 = 100;
 pub const BUILD_REQUIRED_MATERIALS: u32 = 20;
 
 /// Health restored per unit of material consumed during repair.
-/// Matches `BUILD_REQUIRED_MATERIALS * BUILD_HEALTH_PER_MATERIAL`
-/// == `STRUCTURE_MAX_HEALTH` so a fully degraded structure can be
-/// repaired with the same material budget as a fresh build.
 pub const BUILD_HEALTH_PER_MATERIAL: u32 = 5;
 
 /// Distinct kinds of structures the swarm can build. The first
@@ -76,7 +68,7 @@ pub enum StructureKind {
 }
 
 /// A completed structure in the world. `health` is in
-/// `[0, STRUCTURE_MAX_HEALTH]`. A new structure starts at full
+/// `[0, tuning.construction.max_health]`. A new structure starts at full
 /// health; degradation (issue #12) lowers it. The build work
 /// system treats a `Structure` with `health < max` as repair work
 /// and raises the value back to the cap.
@@ -99,9 +91,13 @@ impl Structure {
     /// Build a new structure at full health. Used by tests and
     /// by the completion system when a build site finishes.
     pub fn new(kind: StructureKind) -> Self {
+        Self::with_tuning(kind, &Tuning::default())
+    }
+
+    pub fn with_tuning(kind: StructureKind, tuning: &Tuning) -> Self {
         Self {
             kind,
-            health: STRUCTURE_MAX_HEALTH,
+            health: tuning.construction.max_health,
             ticks_since_maintained: 0,
         }
     }
@@ -109,8 +105,8 @@ impl Structure {
     /// True when the structure is at or above max health. Used
     /// by the build work system to decide whether repair is
     /// still useful.
-    pub fn is_full_health(&self) -> bool {
-        self.health >= STRUCTURE_MAX_HEALTH
+    pub fn is_full_health(&self, tuning: &Tuning) -> bool {
+        self.health >= tuning.construction.max_health
     }
 
     /// True when the structure has just collapsed (no health
@@ -229,6 +225,7 @@ pub fn structure_auto_creation_system(
 /// tick if the cell still has Build paint and no structure yet.
 #[allow(clippy::type_complexity)]
 pub fn worker_build_assignment_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     grid: Res<IntentGrid>,
     mut slots: ResMut<SoftWorkSlots>,
@@ -276,6 +273,7 @@ pub fn worker_build_assignment_system(
             worker_pos,
             &build_sites,
             &damaged_structures,
+            &tuning,
         ) else {
             // No build target in the painted cell. The Build
             // Zone stays painted; the worker stays idle. A
@@ -311,6 +309,7 @@ fn find_nearest_build_target(
     worker_pos: Vec2,
     build_sites: &Query<(Entity, &Transform, &BuildSite)>,
     damaged_structures: &Query<(Entity, &Transform, &Structure)>,
+    tuning: &Tuning,
 ) -> Option<Entity> {
     let mut best_site: Option<(f32, Entity)> = None;
     for (entity, transform, site) in build_sites.iter() {
@@ -324,7 +323,7 @@ fn find_nearest_build_target(
     }
     let mut best_damaged: Option<(f32, Entity)> = None;
     for (entity, transform, structure) in damaged_structures.iter() {
-        if structure.is_full_health() {
+        if structure.is_full_health(tuning) {
             continue;
         }
         if world_to_cell(transform.translation.truncate()) != cell {
@@ -402,6 +401,7 @@ pub fn worker_build_arrive_system(
 /// waits in place for haulers to deliver more).
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn worker_build_work_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     mut slots: ResMut<SoftWorkSlots>,
     mut workers: Query<
@@ -439,11 +439,11 @@ pub fn worker_build_work_system(
             if site.is_complete() {
                 // Another worker finished the site between
                 // ticks.
-                promote_site_to_structure(&mut commands, site_entity, site.kind);
+                promote_site_to_structure(&mut commands, site_entity, site.kind, &tuning);
                 release_build_worker(&mut commands, &mut slots, entity, progress.cell);
                 continue;
             }
-            if !work.completes_unit() {
+            if !work.completes_unit(tuning.logistics.material_work_ticks) {
                 continue;
             }
             if let Some(amount) = take_one_from_nearest_stockpile(
@@ -455,7 +455,7 @@ pub fn worker_build_work_system(
                 site.consumed_materials =
                     (site.consumed_materials + amount).min(site.required_materials);
                 if site.is_complete() {
-                    promote_site_to_structure(&mut commands, site_entity, site.kind);
+                    promote_site_to_structure(&mut commands, site_entity, site.kind, &tuning);
                     release_build_worker(&mut commands, &mut slots, entity, progress.cell);
                 }
             }
@@ -475,11 +475,11 @@ pub fn worker_build_work_system(
                     .insert(region.movement_from(worker_pos));
                 continue;
             }
-            if structure.is_full_health() {
+            if structure.is_full_health(&tuning) {
                 release_build_worker(&mut commands, &mut slots, entity, progress.cell);
                 continue;
             }
-            if !work.completes_unit() {
+            if !work.completes_unit(tuning.logistics.material_work_ticks) {
                 continue;
             }
             if let Some(amount) = take_one_from_nearest_stockpile(
@@ -489,8 +489,8 @@ pub fn worker_build_work_system(
                 ResourceKind::Minerals,
             ) {
                 let heal = amount * BUILD_HEALTH_PER_MATERIAL;
-                structure.health = (structure.health + heal).min(STRUCTURE_MAX_HEALTH);
-                if structure.is_full_health() {
+                structure.health = (structure.health + heal).min(tuning.construction.max_health);
+                if structure.is_full_health(&tuning) {
                     release_build_worker(&mut commands, &mut slots, entity, progress.cell);
                 }
             }
@@ -555,9 +555,16 @@ fn take_one_from_nearest_stockpile(
 /// the same entity. The Transform is preserved by Bevy's
 /// component-merge semantics. The completion transition is the
 /// visible end of the "construct" contract.
-fn promote_site_to_structure(commands: &mut Commands, site_entity: Entity, kind: StructureKind) {
+fn promote_site_to_structure(
+    commands: &mut Commands,
+    site_entity: Entity,
+    kind: StructureKind,
+    tuning: &Tuning,
+) {
     commands.entity(site_entity).remove::<BuildSite>();
-    commands.entity(site_entity).insert(Structure::new(kind));
+    commands
+        .entity(site_entity)
+        .insert(Structure::with_tuning(kind, tuning));
 }
 
 /// Plugin that wires the build systems into the Update schedule.
@@ -568,7 +575,7 @@ pub struct BuildPlugin;
 
 impl Plugin for BuildPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.init_resource::<Tuning>().add_systems(
             Update,
             (
                 structure_auto_creation_system,
@@ -594,19 +601,19 @@ mod tests {
     #[test]
     fn structure_starts_at_full_health() {
         let s = Structure::new(StructureKind::Basic);
-        assert_eq!(s.health, STRUCTURE_MAX_HEALTH);
-        assert!(s.is_full_health());
+        assert_eq!(s.health, Tuning::default().construction.max_health);
+        assert!(s.is_full_health(&Tuning::default()));
     }
 
     #[test]
     fn structure_reports_full_health_correctly_after_damage() {
         let mut s = Structure::new(StructureKind::Basic);
-        s.health = STRUCTURE_MAX_HEALTH - 1;
-        assert!(!s.is_full_health());
+        s.health = Tuning::default().construction.max_health - 1;
+        assert!(!s.is_full_health(&Tuning::default()));
         s.health = 0;
-        assert!(!s.is_full_health());
-        s.health = STRUCTURE_MAX_HEALTH;
-        assert!(s.is_full_health());
+        assert!(!s.is_full_health(&Tuning::default()));
+        s.health = Tuning::default().construction.max_health;
+        assert!(s.is_full_health(&Tuning::default()));
     }
 
     #[test]
@@ -634,6 +641,11 @@ mod tests {
         // A fully degraded structure must be repairable with
         // the same material budget as a fresh build so the
         // "construct or repair" contract is symmetric.
-        const { assert!(BUILD_REQUIRED_MATERIALS * BUILD_HEALTH_PER_MATERIAL == STRUCTURE_MAX_HEALTH) };
+        {
+            assert!(
+                BUILD_REQUIRED_MATERIALS * BUILD_HEALTH_PER_MATERIAL
+                    == Tuning::default().construction.max_health
+            )
+        };
     }
 }

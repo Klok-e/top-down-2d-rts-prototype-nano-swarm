@@ -16,6 +16,8 @@ use bevy::{
     sprite_render::{ExtractedSprite, ExtractedSpriteKind, ExtractedSprites, SpriteSystems},
 };
 
+use crate::tuning::{PresentationTuning, Tuning};
+
 use crate::{
     GAMEPLAY_SPRITE_Z,
     fly_camera::CameraZoom2d,
@@ -27,53 +29,7 @@ use crate::{
     structure_sprites::{StructureSprites, StructureVisual},
 };
 
-/// Tunable combat-presentation values shared by windowed and offscreen apps.
-#[derive(Debug, Clone, Copy, Resource)]
-pub struct CombatPresentationSettings {
-    pub pulse_duration: Duration,
-    pub recovery_duration: Duration,
-    pub death_duration: Duration,
-    pub jab_distance: f32,
-    pub recoil_distance: f32,
-    /// Minimum visible jab and recoil displacement in screen pixels.
-    pub minimum_impact_screen_distance: f32,
-    pub reaction_flash_per_hit: f32,
-    pub reaction_flash_cap: f32,
-    /// Pulse width in screen pixels.
-    pub pulse_thickness: f32,
-    pub decoration_length: f32,
-    /// Impact-decoration width in screen pixels.
-    pub decoration_thickness: f32,
-    pub structure_ring_start_radius: f32,
-    pub structure_ring_end_radius: f32,
-    /// Structure-destruction ring width in screen pixels.
-    pub structure_ring_thickness: f32,
-    pub zoom_cutoff: f32,
-    pub max_decorative_effects: usize,
-}
-
-impl Default for CombatPresentationSettings {
-    fn default() -> Self {
-        Self {
-            pulse_duration: Duration::from_millis(60),
-            recovery_duration: Duration::from_millis(180),
-            death_duration: Duration::from_millis(320),
-            jab_distance: 12.0,
-            recoil_distance: 10.0,
-            minimum_impact_screen_distance: 2.0,
-            reaction_flash_per_hit: 0.65,
-            reaction_flash_cap: 0.9,
-            pulse_thickness: 3.0,
-            decoration_length: 10.0,
-            decoration_thickness: 2.0,
-            structure_ring_start_radius: 18.0,
-            structure_ring_end_radius: 42.0,
-            structure_ring_thickness: 3.0,
-            zoom_cutoff: 8.0,
-            max_decorative_effects: 24,
-        }
-    }
-}
+const MAX_DECORATIVE_EFFECTS: usize = 24;
 
 /// One visible connection produced by a resolved hit.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -260,7 +216,7 @@ struct StructureDeathRingGizmos;
 struct CombatPose {
     attack_direction: Option<Vec2>,
     reaction_direction: Option<Vec2>,
-    reaction_flash: f32,
+    reaction_hits: f32,
     elapsed: Duration,
     just_started: bool,
 }
@@ -274,7 +230,7 @@ struct PendingCombatPose {
 #[derive(Debug, Component)]
 struct StructureCombatFlash {
     neutral_color: Color,
-    intensity: f32,
+    hit_count: f32,
     elapsed: Duration,
     just_started: bool,
 }
@@ -328,6 +284,66 @@ struct CombatTransients<'w> {
 
 pub(crate) struct CombatPresentationPlugin;
 
+pub fn reconcile_combat_presentation_tuning(world: &mut World, old: &Tuning, new: &Tuning) {
+    let old = &old.presentation;
+    let new = &new.presentation;
+    let rescale = |elapsed: &mut Duration, previous: f32, next: f32| {
+        if previous != next {
+            *elapsed = Duration::from_secs_f32(elapsed.as_secs_f32() / previous * next);
+        }
+    };
+    for mut pose in world.query::<&mut CombatPose>().iter_mut(world) {
+        rescale(
+            &mut pose.elapsed,
+            old.combat_recovery_duration_secs,
+            new.combat_recovery_duration_secs,
+        );
+    }
+    for mut flash in world.query::<&mut StructureCombatFlash>().iter_mut(world) {
+        rescale(
+            &mut flash.elapsed,
+            old.combat_recovery_duration_secs,
+            new.combat_recovery_duration_secs,
+        );
+    }
+    if let Some(mut pulses) = world.get_resource_mut::<ActiveCombatPulses>() {
+        for pulse in &mut pulses.active {
+            rescale(
+                &mut pulse.elapsed,
+                old.combat_pulse_duration_secs,
+                new.combat_pulse_duration_secs,
+            );
+        }
+    }
+    if let Some(mut decorations) = world.get_resource_mut::<ActiveCombatDecorations>() {
+        for decoration in &mut decorations.active {
+            rescale(
+                &mut decoration.elapsed,
+                old.combat_pulse_duration_secs,
+                new.combat_pulse_duration_secs,
+            );
+        }
+    }
+    if let Some(mut ghosts) = world.get_resource_mut::<ActiveNanobotDeathGhosts>() {
+        for ghost in &mut ghosts.active {
+            rescale(
+                &mut ghost.elapsed,
+                old.combat_death_duration_secs,
+                new.combat_death_duration_secs,
+            );
+        }
+    }
+    if let Some(mut ghosts) = world.get_resource_mut::<ActiveStructureDeathGhosts>() {
+        for ghost in &mut ghosts.active {
+            rescale(
+                &mut ghost.elapsed,
+                old.combat_death_duration_secs,
+                new.combat_death_duration_secs,
+            );
+        }
+    }
+}
+
 pub(super) fn reset_session(world: &mut World) {
     fn reset<T: Resource + Default>(world: &mut World) {
         if let Some(mut resource) = world.get_resource_mut::<T>() {
@@ -353,7 +369,7 @@ impl Plugin for CombatPresentationPlugin {
         {
             app.add_message::<ResolvedCombatFact>();
         }
-        app.init_resource::<CombatPresentationSettings>()
+        app.init_resource::<Tuning>()
             .init_resource::<ActiveCombatPulses>()
             .init_resource::<ActiveCombatDecorations>()
             .init_resource::<CombatPresentationView>()
@@ -392,12 +408,13 @@ impl Plugin for CombatPresentationPlugin {
 }
 
 fn update_combat_view(
-    settings: Res<CombatPresentationSettings>,
+    tuning: Res<Tuning>,
     zooms: Query<&CameraZoom2d>,
     mut view: ResMut<CombatPresentationView>,
 ) {
+    let settings = &tuning.presentation;
     view.zoom = zooms.iter().next().map_or(1.0, |zoom| zoom.zoom);
-    view.visible = view.zoom < settings.zoom_cutoff;
+    view.visible = view.zoom < settings.combat_zoom_cutoff;
 }
 
 fn faction_color(swarm: SwarmId) -> Color {
@@ -425,9 +442,10 @@ fn consume_resolved_combat(
     mut commands: Commands,
     mut facts: MessageReader<ResolvedCombatFact>,
     participants: CombatFactParticipants,
-    settings: Res<CombatPresentationSettings>,
+    tuning: Res<Tuning>,
     transients: CombatTransients,
 ) {
+    let settings = &tuning.presentation;
     let CombatFactParticipants {
         visuals,
         structures,
@@ -452,7 +470,7 @@ fn consume_resolved_combat(
         &mut commands,
         &visuals,
         &structures,
-        &settings,
+        settings,
         &mut pulses,
         &mut decorations,
         hits,
@@ -461,7 +479,7 @@ fn consume_resolved_combat(
         present_death(
             &nanobot_sprites,
             structure_sprites.as_deref(),
-            &settings,
+            settings,
             &mut ghosts,
             &mut structure_ghosts,
             death,
@@ -472,7 +490,7 @@ fn consume_resolved_combat(
 fn present_death(
     sprites: &NanobotSprites,
     structure_sprites: Option<&StructureSprites>,
-    settings: &CombatPresentationSettings,
+    settings: &PresentationTuning,
     ghosts: &mut ActiveNanobotDeathGhosts,
     structure_ghosts: &mut ActiveStructureDeathGhosts,
     death: ResolvedCombatDeath,
@@ -496,7 +514,7 @@ fn present_death(
                 ),
                 color: Color::WHITE,
                 image: structure_sprites.handle(visual.kind, visual.state),
-                ring_radius: settings.structure_ring_start_radius.max(0.0),
+                ring_radius: settings.combat_structure_ring_start_radius.max(0.0),
                 ring_color: faction_color(death.victim.swarm),
             });
         }
@@ -533,7 +551,7 @@ fn present_hits(
     commands: &mut Commands,
     visuals: &Query<(Entity, &ChildOf), With<NanobotVisual>>,
     structures: &Query<(&Sprite, Option<&StructureCombatFlash>), With<StructureVisual>>,
-    settings: &CombatPresentationSettings,
+    settings: &PresentationTuning,
     pulses: &mut ActiveCombatPulses,
     decorations: &mut ActiveCombatDecorations,
     hits: Vec<ResolvedCombatHit>,
@@ -566,14 +584,15 @@ fn present_hits(
             end: hit.target.position,
             color: faction_color(hit.attacker.swarm),
         });
-        let decoration_half_extent = direction.perp() * settings.decoration_length.max(0.0) * 0.5;
+        let decoration_half_extent =
+            direction.perp() * settings.combat_decoration_length.max(0.0) * 0.5;
         decorations.push(
             CombatDecoration {
                 start: hit.target.position - decoration_half_extent,
                 end: hit.target.position + decoration_half_extent,
                 color: faction_color(hit.attacker.swarm),
             },
-            settings.max_decorative_effects,
+            MAX_DECORATIVE_EFFECTS,
         );
     }
 
@@ -584,9 +603,7 @@ fn present_hits(
         commands.entity(visual).insert(CombatPose {
             attack_direction: aggregate_direction(&mut pending.attack_directions),
             reaction_direction: aggregate_direction(&mut pending.reaction_directions),
-            reaction_flash: (settings.reaction_flash_per_hit * reaction_count)
-                .min(settings.reaction_flash_cap)
-                .clamp(0.0, 1.0),
+            reaction_hits: reaction_count,
             elapsed: Duration::ZERO,
             just_started: true,
         });
@@ -600,9 +617,7 @@ fn present_hits(
         };
         commands.entity(structure).insert(StructureCombatFlash {
             neutral_color: active_flash.map_or(sprite.color, |flash| flash.neutral_color),
-            intensity: (settings.reaction_flash_per_hit * hit_count as f32)
-                .min(settings.reaction_flash_cap)
-                .clamp(0.0, 1.0),
+            hit_count: hit_count as f32,
             elapsed: Duration::ZERO,
             just_started: true,
         });
@@ -626,11 +641,12 @@ fn transient_progress(
 fn animate_combat(
     mut commands: Commands,
     time: Option<Res<Time>>,
-    settings: Res<CombatPresentationSettings>,
+    tuning: Res<Tuning>,
     view: Res<CombatPresentationView>,
     entities: AnimatedCombatEntities,
     transients: CombatTransients,
 ) {
+    let settings = &tuning.presentation;
     let AnimatedCombatEntities {
         roots,
         mut visuals,
@@ -649,7 +665,7 @@ fn animate_combat(
             &mut pose.elapsed,
             &mut pose.just_started,
             delta,
-            settings.recovery_duration,
+            Duration::from_secs_f32(settings.combat_recovery_duration_secs),
         );
         if progress >= 1.0 {
             *visual.transform = Transform::IDENTITY;
@@ -670,14 +686,14 @@ fn animate_combat(
         };
         let inverse_root_rotation = root.rotation.inverse();
         let jab_distance = impact_world_distance(
-            settings.jab_distance,
+            settings.combat_jab_distance,
             view.zoom,
-            settings.minimum_impact_screen_distance,
+            settings.combat_minimum_impact_screen_distance,
         );
         let recoil_distance = impact_world_distance(
-            settings.recoil_distance,
+            settings.combat_recoil_distance,
             view.zoom,
-            settings.minimum_impact_screen_distance,
+            settings.combat_minimum_impact_screen_distance,
         );
         let attack_offset = visual
             .pose
@@ -702,7 +718,10 @@ fn animate_combat(
                 inverse_root_rotation * world_facing
             });
         visual.transform.rotation = Quat::IDENTITY.slerp(attack_rotation, strength);
-        let flash_gain = visual.pose.reaction_flash * strength;
+        let flash_gain = (settings.combat_reaction_flash_per_hit * visual.pose.reaction_hits)
+            .min(settings.combat_reaction_flash_cap)
+            .clamp(0.0, 1.0)
+            * strength;
         visual.sprite.color =
             Color::linear_rgb(1.0 + flash_gain, 1.0 + flash_gain, 1.0 + flash_gain);
     }
@@ -713,7 +732,7 @@ fn animate_combat(
             &mut flash.elapsed,
             &mut flash.just_started,
             delta,
-            settings.recovery_duration,
+            Duration::from_secs_f32(settings.combat_recovery_duration_secs),
         );
         if progress >= 1.0 {
             structure.sprite.color = flash.neutral_color;
@@ -727,7 +746,10 @@ fn animate_combat(
             continue;
         }
         let neutral = flash.neutral_color.to_srgba();
-        let strength = flash.intensity * (1.0 - progress);
+        let strength = (settings.combat_reaction_flash_per_hit * flash.hit_count)
+            .min(settings.combat_reaction_flash_cap)
+            .clamp(0.0, 1.0)
+            * (1.0 - progress);
         structure.sprite.color = Color::srgba(
             neutral.red + (1.0 - neutral.red) * strength,
             neutral.green + (1.0 - neutral.green) * strength,
@@ -741,7 +763,7 @@ fn animate_combat(
             &mut ghost.elapsed,
             &mut ghost.just_started,
             delta,
-            settings.death_duration,
+            Duration::from_secs_f32(settings.combat_death_duration_secs),
         );
         if progress >= 1.0 {
             return false;
@@ -765,7 +787,7 @@ fn animate_combat(
             &mut ghost.elapsed,
             &mut ghost.just_started,
             delta,
-            settings.death_duration,
+            Duration::from_secs_f32(settings.combat_death_duration_secs),
         );
         if progress >= 1.0 {
             return false;
@@ -781,9 +803,9 @@ fn animate_combat(
             alpha,
         );
         ghost.visual.ring_radius = settings
-            .structure_ring_start_radius
+            .combat_structure_ring_start_radius
             .max(0.0)
-            .lerp(settings.structure_ring_end_radius.max(0.0), progress);
+            .lerp(settings.combat_structure_ring_end_radius.max(0.0), progress);
         let ring = faction_color(ghost.visual.victim.swarm).to_srgba();
         ghost.visual.ring_color = Color::srgba(ring.red, ring.green, ring.blue, 1.0 - progress);
         true
@@ -794,15 +816,21 @@ fn animate_combat(
             &mut pulse.elapsed,
             &mut pulse.just_started,
             delta,
-            settings.pulse_duration,
+            Duration::from_secs_f32(settings.combat_pulse_duration_secs),
         ) < 1.0
     });
     decorations.active.retain_mut(|decoration| {
+        let midpoint = (decoration.visual.start + decoration.visual.end) * 0.5;
+        let half_extent = (decoration.visual.end - decoration.visual.start).normalize_or(Vec2::Y)
+            * settings.combat_decoration_length
+            * 0.5;
+        decoration.visual.start = midpoint - half_extent;
+        decoration.visual.end = midpoint + half_extent;
         transient_progress(
             &mut decoration.elapsed,
             &mut decoration.just_started,
             delta,
-            settings.pulse_duration,
+            Duration::from_secs_f32(settings.combat_pulse_duration_secs),
         ) < 1.0
     });
 }
@@ -851,17 +879,16 @@ fn extract_combat_death_ghosts(
     }
 }
 
-fn sync_combat_gizmo_settings(
-    settings: Res<CombatPresentationSettings>,
-    mut configs: ResMut<GizmoConfigStore>,
-) {
-    configs.config_mut::<CombatGizmos>().0.line.width = settings.pulse_thickness;
-    configs.config_mut::<CombatDecorationGizmos>().0.line.width = settings.decoration_thickness;
+fn sync_combat_gizmo_settings(tuning: Res<Tuning>, mut configs: ResMut<GizmoConfigStore>) {
+    let settings = &tuning.presentation;
+    configs.config_mut::<CombatGizmos>().0.line.width = settings.combat_pulse_thickness;
+    configs.config_mut::<CombatDecorationGizmos>().0.line.width =
+        settings.combat_decoration_thickness;
     configs
         .config_mut::<StructureDeathRingGizmos>()
         .0
         .line
-        .width = settings.structure_ring_thickness;
+        .width = settings.combat_structure_ring_thickness;
 }
 
 fn draw_combat_pulses(

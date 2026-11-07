@@ -30,13 +30,13 @@
 //!      include the new Charger variant.
 
 use bevy::{math::Vec2, prelude::*};
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         BUILDING_FOOTPRINT_PADDING, BUILDING_FOOTPRINT_RADIUS, Charge, ChargePlugin, Charger,
-        ChargerAssignment, ChargerProgress, DEFAULT_PLANNED_WORK_TICKS, Health,
-        LOW_CHARGE_THRESHOLD, MaintenancePlugin, NANOBOT_DEFAULT_MAX_HEALTH, OwnerSwarm,
-        PlannedKind, PlannedStructure, PlannedStructureClaim, Swarm, SwarmId, SwarmMember,
+        ChargerAssignment, ChargerProgress, Health, MaintenancePlugin, OwnerSwarm, PlannedKind,
+        PlannedStructure, PlannedStructureClaim, Swarm, SwarmId, SwarmMember,
         completed_visual_color, planned_visual_color,
     },
     resources::{ResourceKind, ResourceLedger},
@@ -84,7 +84,7 @@ fn unassigned_low_charge_defender_creates_planned_charger() {
         .entity_mut(defender)
         .get_mut::<Charge>()
         .expect("Defender has Charge")
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
 
     for _ in 0..100 {
         app.update();
@@ -135,7 +135,7 @@ fn remote_available_charger_capacity_suppresses_plan() {
         .entity_mut(defender)
         .get_mut::<Charge>()
         .expect("Defender has Charge")
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
     let charger = common::spawn_operational_charger_at(&mut app, charger_cell, 12);
     app.world_mut()
         .entity_mut(charger)
@@ -163,7 +163,7 @@ fn remote_pending_capacity_prevents_duplicate_plans_across_ticks() {
         .entity_mut(defender)
         .get_mut::<Charge>()
         .expect("Defender has Charge")
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
     let plan = common::spawn_planned_charger_at_cell(&mut app, plan_cell);
     app.world_mut().entity_mut(plan).insert(OwnerSwarm(swarm));
 
@@ -192,7 +192,7 @@ fn pending_capacity_beyond_rotation_cap_suppresses_another_plan() {
             .entity_mut(defender)
             .get_mut::<Charge>()
             .expect("Defender has Charge")
-            .current = LOW_CHARGE_THRESHOLD;
+            .current = Tuning::default().charge.low_threshold;
     }
 
     app.update();
@@ -219,7 +219,7 @@ fn rotation_cap_limits_pending_charger_capacity() {
             .entity_mut(defender)
             .get_mut::<Charge>()
             .expect("Defender has Charge")
-            .current = LOW_CHARGE_THRESHOLD;
+            .current = Tuning::default().charge.low_threshold;
     }
 
     for _ in 0..100 {
@@ -252,7 +252,7 @@ fn plan_uses_nearest_non_overlapping_owned_defend_site() {
         .insert(Transform::from_translation(nearest_center.extend(0.0)))
         .get_mut::<Charge>()
         .expect("Defender has Charge")
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
     let deposit_radius = 32.0;
     common::spawn_deposit(
         &mut app,
@@ -447,7 +447,7 @@ fn each_swarm_plans_only_in_its_owned_defend_paint() {
         .entity_mut(player_defender)
         .get_mut::<Charge>()
         .expect("player Defender has Charge")
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
     let opponent_defender =
         common::spawn_defender_at(&mut app, common::cell_world_center(opponent_cell));
     app.world_mut()
@@ -457,7 +457,7 @@ fn each_swarm_plans_only_in_its_owned_defend_paint() {
         .entity_mut(opponent_defender)
         .get_mut::<Charge>()
         .expect("opponent Defender has Charge")
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
 
     for _ in 0..100 {
         app.update();
@@ -588,7 +588,7 @@ fn only_one_worker_claims_a_planned_charger() {
 fn worker_builds_planned_charger_to_completion() {
     // Acceptance: "One Worker builds the Planned Charger
     // to completion." A Worker at the cell claims the
-    // plan, spends `DEFAULT_PLANNED_WORK_TICKS` ticks of
+    // plan, spends `Tuning::default().construction.work_ticks` ticks of
     // worker time, and the plan promotes to an empty
     // `Charger`. The visual flips to the completed color.
     // `OwnerSwarm` remains through promotion.
@@ -609,7 +609,7 @@ fn worker_builds_planned_charger_to_completion() {
         .total_for(SwarmId::PLAYER, ResourceKind::Minerals);
 
     // Allow queued access validation after the Worker finishes construction.
-    let build_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize + 1;
+    let build_ticks = 1 + Tuning::default().construction.work_ticks as usize + 1;
     for _ in 0..build_ticks + 100 {
         app.update();
         if app.world().get::<PlannedStructure>(plan).is_none() {
@@ -690,9 +690,9 @@ fn completed_planned_charger_provides_charge_to_defenders() {
     paint_defend_owned(&mut app, cell);
 
     // Build the plan first. 1 tick claim+arrive,
-    // DEFAULT_PLANNED_WORK_TICKS ticks of work, +1 for
+    // Tuning::default().construction.work_ticks ticks of work, +1 for
     // the promotion tick.
-    let build_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize + 1;
+    let build_ticks = 1 + Tuning::default().construction.work_ticks as usize + 1;
     for _ in 0..build_ticks + 100 {
         app.update();
         if app.world().get::<PlannedStructure>(plan).is_none() {
@@ -724,7 +724,7 @@ fn completed_planned_charger_provides_charge_to_defenders() {
         let w = &mut app.world_mut();
         let mut entity = w.entity_mut(defender);
         let mut c = entity.get_mut::<Charge>().expect("defender has Charge");
-        c.current = LOW_CHARGE_THRESHOLD;
+        c.current = Tuning::default().charge.low_threshold;
     }
 
     // Drive through the shipped 150-tick recharge pulses and re-entry.
@@ -753,7 +753,7 @@ fn completed_planned_charger_provides_charge_to_defenders() {
         .expect("defender still has Charge")
         .current;
     assert!(
-        charge >= LOW_CHARGE_THRESHOLD,
+        charge >= Tuning::default().charge.low_threshold,
         "defender's charge must be at or above the rotation threshold after charging; got {charge}"
     );
     // The defender must reach the completed Charger before
@@ -769,7 +769,8 @@ fn completed_planned_charger_provides_charge_to_defenders() {
         .expect("defender still alive")
         .current;
     assert_eq!(
-        health, NANOBOT_DEFAULT_MAX_HEALTH,
+        health,
+        Tuning::default().combat.nanobot_max_health,
         "defender must reach the completed Charger before health loss collapses them"
     );
     // The charger has been drained by the per-tick rate
@@ -803,7 +804,7 @@ fn hauler_delivers_to_completed_planned_charger() {
     let _hauler = common::spawn_hauler_at(&mut app, source_pos + Vec2::X * 68.0);
 
     // Build the plan first.
-    let build_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize + 1;
+    let build_ticks = 1 + Tuning::default().construction.work_ticks as usize + 1;
     for _ in 0..build_ticks {
         app.update();
     }

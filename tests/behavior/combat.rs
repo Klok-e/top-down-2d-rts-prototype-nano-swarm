@@ -5,8 +5,6 @@ use approx::assert_abs_diff_eq;
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::battle_statistics::BattleCounters;
 use top_down_2d_rts_prototype_nano_swarm::{
-    game_settings::GameSettings,
-    gameplay_pacing::GameplayPacing,
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Charge, ChargerAssignment, CombatAppearance, CombatPlugin, DefenderAttackCooldown,
@@ -15,6 +13,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         SwarmMember, nanobot_death_cleanup_system,
     },
     structure_sprites::StructureVisual,
+    tuning::Tuning,
 };
 
 fn resolved_facts(app: &App) -> Vec<ResolvedCombatFact> {
@@ -339,7 +338,8 @@ fn combat_damage_obeys_the_existing_cooldown() {
     );
     let attack_interval = app
         .world()
-        .resource::<GameplayPacing>()
+        .resource::<Tuning>()
+        .combat
         .attack_interval_ticks;
     for _ in 0..attack_interval.saturating_sub(1) {
         app.update();
@@ -466,7 +466,8 @@ fn zero_health_nearest_target_is_skipped_for_the_nearest_living_hostile() {
             .map(|cooldown| cooldown.ticks_remaining),
         Some(
             app.world()
-                .resource::<GameplayPacing>()
+                .resource::<Tuning>()
+                .combat
                 .attack_interval_ticks
                 .saturating_sub(1),
         ),
@@ -556,7 +557,7 @@ fn defender_presence_never_captures_paint_in_any_duty() {
         let mut app = common::sim_app_with_combat();
         app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
         app.world_mut().spawn((Swarm {}, SwarmId(11)));
-        app.world_mut().resource_mut::<GameSettings>().bot_speed = 0.0;
+        app.world_mut().resource_mut::<Tuning>().logistics.bot_speed = 0.0;
         let cell = IVec2::ZERO;
         {
             let mut grid = app.world_mut().resource_mut::<IntentGrid>();

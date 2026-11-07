@@ -27,12 +27,12 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Cargo, Commitment, DEFAULT_PLANNED_WORK_TICKS, ExtractProgress, GatherAssignment, Health,
-        Nanobot, NanobotType, OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructureClaim,
-        PlannedStructureProgress, Swarm, SwarmId, SwarmMember, VelocityComponent,
-        completed_visual_color,
+        Cargo, Commitment, ExtractProgress, GatherAssignment, Health, Nanobot, NanobotType,
+        OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructureClaim, PlannedStructureProgress,
+        Swarm, SwarmId, SwarmMember, VelocityComponent, completed_visual_color,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile},
+    tuning::Tuning,
 };
 
 #[path = "../common/mod.rs"]
@@ -41,11 +41,9 @@ mod common;
 /// Bounded real-time wait for demand and navigation work at the shipped 60 Hz rate.
 const DEMAND_TICK_BUDGET: u32 = 600;
 /// Shipped construction work plus bounded demand allocation and travel time.
-const PLAN_COMPLETION_TICK_BUDGET: u32 = DEFAULT_PLANNED_WORK_TICKS + 600;
-
-/// Bot speed from the default game settings. Pulled into a
-/// constant so the travel-time math in the test is obvious.
-const BOT_SPEED: f32 = 5.0;
+fn plan_completion_tick_budget() -> u32 {
+    Tuning::default().construction.work_ticks + 600
+}
 
 /// Distance the gather worker has to walk to reach the planned
 /// Source Stockpile from the deposit (or back). The demand
@@ -59,12 +57,12 @@ const BOT_SPEED: f32 = 5.0;
 const PLANNED_TRAVEL_DISTANCE: f32 = 170.0;
 
 /// Ticks of simulation needed for the worker to walk
-/// `distance` world units at `BOT_SPEED`. The arrival is
+/// `distance` world units at the configured speed. The arrival is
 /// "distance / speed" rounded up to the next tick because
 /// the movement system only prunes `DirectMovementComponent`
 /// on the tick the bot reaches its target.
 fn travel_ticks(distance: f32) -> u32 {
-    (distance / BOT_SPEED).ceil() as u32 + 1
+    (distance / Tuning::default().logistics.bot_speed).ceil() as u32 + 1
 }
 
 fn build_app() -> App {
@@ -328,7 +326,7 @@ fn worker_builds_planned_source_stockpile() {
     //   travel: travel_ticks(PLANNED_TRAVEL_DISTANCE) ticks
     //   work: DEFAULT_PLANNED_WORK_TICKS ticks
     //   margin: a small buffer
-    let total_ticks = PLAN_COMPLETION_TICK_BUDGET + travel_ticks(PLANNED_TRAVEL_DISTANCE);
+    let total_ticks = plan_completion_tick_budget() + travel_ticks(PLANNED_TRAVEL_DISTANCE);
     for _ in 0..total_ticks {
         app.update();
         let world = app.world_mut();
@@ -391,7 +389,7 @@ fn worker_resumes_extraction_after_stockpile_built() {
     // deposit's `amount`.
     let total_ticks = 1
         + travel_ticks(PLANNED_TRAVEL_DISTANCE)
-        + PLAN_COMPLETION_TICK_BUDGET
+        + plan_completion_tick_budget()
         + travel_ticks(PLANNED_TRAVEL_DISTANCE)
         + 10;
     for _ in 0..total_ticks {
@@ -435,7 +433,7 @@ fn worker_delivers_minerals_to_completed_source_stockpile() {
     // Advance the complete build, extraction, and delivery flow.
     let total_ticks = 1
         + travel_ticks(PLANNED_TRAVEL_DISTANCE)
-        + PLAN_COMPLETION_TICK_BUDGET
+        + plan_completion_tick_budget()
         + travel_ticks(PLANNED_TRAVEL_DISTANCE)
         + 4  // extract to fill a load
         + 1  // carry-assign tick
@@ -601,7 +599,7 @@ fn completed_source_stockpile_keeps_swarm_ownership() {
     );
 
     // Build phase + buffer.
-    let total_ticks = PLAN_COMPLETION_TICK_BUDGET + travel_ticks(PLANNED_TRAVEL_DISTANCE);
+    let total_ticks = plan_completion_tick_budget() + travel_ticks(PLANNED_TRAVEL_DISTANCE);
     for _ in 0..total_ticks {
         app.update();
     }
@@ -669,7 +667,7 @@ fn scenario_sized_deposit_at_authored_cell_center_gets_source_stockpile() {
     );
     drop(q);
 
-    for _ in 0..(PLAN_COMPLETION_TICK_BUDGET + 2 * DEMAND_TICK_BUDGET) {
+    for _ in 0..(plan_completion_tick_budget() + 2 * DEMAND_TICK_BUDGET) {
         app.update();
     }
 
@@ -815,7 +813,7 @@ fn second_worker_can_claim_and_build_planned_source_stockpile() {
     let second_worker = common::spawn_worker_at(&mut app, far_pos);
 
     // Build phase + buffer.
-    let total_ticks = PLAN_COMPLETION_TICK_BUDGET + travel_ticks(PLANNED_TRAVEL_DISTANCE);
+    let total_ticks = plan_completion_tick_budget() + travel_ticks(PLANNED_TRAVEL_DISTANCE);
     for _ in 0..total_ticks {
         app.update();
     }

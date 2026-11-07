@@ -28,30 +28,7 @@ use crate::nanobot::{
     Charger, OpponentSwarm, OwnerSwarm, PlannedStructure, ProductionFacility, Swarm, SwarmId,
 };
 use crate::resources::{ResourceDeposit, Stockpile};
-
-/// Camera zoom at or above which the tactical overlay
-/// appears. Matches
-/// [`crate::structure_overlay::DEFAULT_OVERLAY_HIDE_ZOOM_THRESHOLD`]
-/// so the two layers fade at the same boundary.
-pub const DEFAULT_TACTICAL_SHOW_ZOOM_THRESHOLD: f32 = 8.0;
-
-/// World-units radius at which two same-key markers
-/// collapse into a single cluster at moderate zoom.
-pub const DEFAULT_TACTICAL_MERGE_RADIUS_WORLD: f32 = 2048.0;
-
-/// World-units radius used at the far end of the camera's
-/// zoom range.
-pub const DEFAULT_TACTICAL_FAR_MERGE_RADIUS_WORLD: f32 = 6000.0;
-
-/// Camera zoom at which the merge radius reaches the far
-/// value. The radius scales linearly between
-/// [`DEFAULT_TACTICAL_MERGE_RADIUS_WORLD`] and the far
-/// value across
-/// `[show_zoom_threshold, far_merge_zoom]`.
-pub const DEFAULT_TACTICAL_FAR_MERGE_ZOOM: f32 = 16.0;
-
-/// On-screen pixel size for the marker body.
-pub const DEFAULT_TACTICAL_MARKER_SCREEN_SIZE: f32 = 32.0;
+use crate::tuning::{PresentationTuning, Tuning};
 
 /// Alpha (0..=1) of every tactical marker body. Issue
 /// #36 commits the overlay to a semi-transparent icon
@@ -68,7 +45,7 @@ pub const TACTICAL_MARKER_Z: f32 = 0.5;
 /// clusters during marker reconciliation. Distinct clusters
 /// may share a slot when they are diagonally separated, so a
 /// slot is deliberately not treated as a unique identity.
-pub const CLUSTER_SPATIAL_SLOT_SIZE: f32 = DEFAULT_TACTICAL_FAR_MERGE_RADIUS_WORLD;
+pub const CLUSTER_SPATIAL_SLOT_SIZE: f32 = 6000.0;
 
 /// Number of relaxation iterations the de-overlap pass
 /// runs. Eight passes is enough to spread a dozen
@@ -80,32 +57,6 @@ pub const DEOVERLAP_ITERATIONS: u32 = 8;
 /// [`OwnerSwarm`] so unowned landmarks never collide with a real
 /// [`SwarmId`].
 pub const UNOWNED_SWARM_ID: SwarmId = SwarmId(u32::MAX);
-
-/// Configuration for the tactical overlay layer. Inserted
-/// as a Bevy [`Resource`] so it can be mutated by the
-/// player or by tests. Setting `show_zoom_threshold` to
-/// `0.0` keeps the overlay always visible; setting it to
-/// `f32::INFINITY` hides it for every zoom.
-#[derive(Debug, Resource, Clone, Copy, PartialEq)]
-pub struct TacticalOverlaySettings {
-    pub show_zoom_threshold: f32,
-    pub merge_radius_world: f32,
-    pub far_merge_radius_world: f32,
-    pub far_merge_zoom: f32,
-    pub marker_screen_size: f32,
-}
-
-impl Default for TacticalOverlaySettings {
-    fn default() -> Self {
-        Self {
-            show_zoom_threshold: DEFAULT_TACTICAL_SHOW_ZOOM_THRESHOLD,
-            merge_radius_world: DEFAULT_TACTICAL_MERGE_RADIUS_WORLD,
-            far_merge_radius_world: DEFAULT_TACTICAL_FAR_MERGE_RADIUS_WORLD,
-            far_merge_zoom: DEFAULT_TACTICAL_FAR_MERGE_ZOOM,
-            marker_screen_size: DEFAULT_TACTICAL_MARKER_SCREEN_SIZE,
-        }
-    }
-}
 
 /// Marker category. The cluster key is
 /// `(kind, owner_swarm_id, slot)` so two deposits
@@ -185,9 +136,9 @@ pub struct TacticalCluster {
 
 /// Pick the merge radius for the current camera zoom.
 /// Grows linearly from
-/// [`TacticalOverlaySettings::merge_radius_world`] at
+/// [`PresentationTuning::tactical_merge_radius_world`] at
 /// `zoom = show_zoom_threshold` to
-/// [`TacticalOverlaySettings::far_merge_radius_world`] at
+/// [`PresentationTuning::tactical_far_merge_radius_world`] at
 /// `zoom = far_merge_zoom`, then stays at the far value.
 ///
 /// Edge cases:
@@ -196,24 +147,24 @@ pub struct TacticalCluster {
 ///   stands alone regardless of zoom).
 /// - `far_merge_radius_world <= merge_radius_world`
 ///   collapses the linear ramp to a constant.
-pub fn cluster_radius_for_zoom(zoom: f32, settings: &TacticalOverlaySettings) -> f32 {
-    if settings.merge_radius_world <= 0.0 {
+pub fn cluster_radius_for_zoom(zoom: f32, settings: &PresentationTuning) -> f32 {
+    if settings.tactical_merge_radius_world <= 0.0 {
         return 0.0;
     }
-    if settings.far_merge_radius_world <= settings.merge_radius_world {
-        return settings.merge_radius_world;
+    if settings.tactical_far_merge_radius_world <= settings.tactical_merge_radius_world {
+        return settings.tactical_merge_radius_world;
     }
     let effective_zoom = zoom.max(0.0);
-    if effective_zoom <= settings.show_zoom_threshold {
-        return settings.merge_radius_world;
+    if effective_zoom <= settings.overlay_zoom_threshold {
+        return settings.tactical_merge_radius_world;
     }
-    if effective_zoom >= settings.far_merge_zoom {
-        return settings.far_merge_radius_world;
+    if effective_zoom >= settings.tactical_far_merge_zoom {
+        return settings.tactical_far_merge_radius_world;
     }
-    let t = (effective_zoom - settings.show_zoom_threshold)
-        / (settings.far_merge_zoom - settings.show_zoom_threshold);
-    settings.merge_radius_world
-        + t * (settings.far_merge_radius_world - settings.merge_radius_world)
+    let t = (effective_zoom - settings.overlay_zoom_threshold)
+        / (settings.tactical_far_merge_zoom - settings.overlay_zoom_threshold);
+    settings.tactical_merge_radius_world
+        + t * (settings.tactical_far_merge_radius_world - settings.tactical_merge_radius_world)
 }
 
 /// Quantize a world position to a discrete `(i32, i32)`
@@ -427,9 +378,7 @@ pub struct TacticalOverlayPlugin;
 
 impl Plugin for TacticalOverlayPlugin {
     fn build(&self, app: &mut App) {
-        if !app.world().contains_resource::<TacticalOverlaySettings>() {
-            app.init_resource::<TacticalOverlaySettings>();
-        }
+        app.init_resource::<Tuning>();
         app.add_systems(Update, tactical_overlay_update_system);
     }
 }
@@ -449,7 +398,7 @@ impl Plugin for TacticalOverlayPlugin {
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn tactical_overlay_update_system(
     mut commands: Commands,
-    settings: Res<TacticalOverlaySettings>,
+    tuning: Res<Tuning>,
     zoom_query: Query<&CameraZoom2d>,
     swarms: Query<
         (Entity, &Transform, Option<&OpponentSwarm>, Option<&SwarmId>),
@@ -481,9 +430,10 @@ pub fn tactical_overlay_update_system(
     >,
     mut source_cache: Local<Vec<TacticalSource>>,
 ) {
+    let settings = &tuning.presentation;
     let zoom = zoom_query.iter().next().map(|z| z.zoom).unwrap_or(1.0);
-    let visibility = tactical_visibility_for_zoom(zoom, settings.show_zoom_threshold);
-    let marker_size = marker_world_size_for_zoom(zoom, settings.marker_screen_size);
+    let visibility = tactical_visibility_for_zoom(zoom, settings.overlay_zoom_threshold);
+    let marker_size = marker_world_size_for_zoom(zoom, settings.tactical_marker_screen_size);
 
     source_cache.clear();
     let mut swarm_ids = HashMap::new();
@@ -546,9 +496,9 @@ pub fn tactical_overlay_update_system(
     }
     let mut clusters = cluster_tactical_markers(
         source_cache.as_slice(),
-        cluster_radius_for_zoom(zoom, &settings),
+        cluster_radius_for_zoom(zoom, settings),
     );
-    clusters = deoverlap_clusters(clusters, zoom, settings.marker_screen_size);
+    clusters = deoverlap_clusters(clusters, zoom, settings.tactical_marker_screen_size);
 
     // Keep every marker in a coarse key bucket. Diagonally separated
     // clusters can share a slot even when they survive merging.
@@ -657,43 +607,43 @@ mod tests {
 
     #[test]
     fn cluster_radius_at_or_below_threshold_uses_moderate_value() {
-        let s = TacticalOverlaySettings::default();
+        let s = PresentationTuning::default();
         assert_abs_diff_eq!(
             cluster_radius_for_zoom(1.0, &s),
-            s.merge_radius_world,
+            s.tactical_merge_radius_world,
             epsilon = 1e-5
         );
         assert_abs_diff_eq!(
-            cluster_radius_for_zoom(s.show_zoom_threshold, &s),
-            s.merge_radius_world,
+            cluster_radius_for_zoom(s.overlay_zoom_threshold, &s),
+            s.tactical_merge_radius_world,
             epsilon = 1e-5
         );
     }
 
     #[test]
     fn cluster_radius_at_or_above_far_zoom_uses_far_value() {
-        let s = TacticalOverlaySettings::default();
+        let s = PresentationTuning::default();
         assert_abs_diff_eq!(
-            cluster_radius_for_zoom(s.far_merge_zoom, &s),
-            s.far_merge_radius_world,
+            cluster_radius_for_zoom(s.tactical_far_merge_zoom, &s),
+            s.tactical_far_merge_radius_world,
             epsilon = 1e-5
         );
         assert_abs_diff_eq!(
-            cluster_radius_for_zoom(s.far_merge_zoom + 50.0, &s),
-            s.far_merge_radius_world,
+            cluster_radius_for_zoom(s.tactical_far_merge_zoom + 50.0, &s),
+            s.tactical_far_merge_radius_world,
             epsilon = 1e-5
         );
     }
 
     #[test]
     fn cluster_radius_grows_linearly_between_thresholds() {
-        let s = TacticalOverlaySettings::default();
+        let s = PresentationTuning::default();
         // Midpoint between show_zoom_threshold (8) and
         // far_merge_zoom (16) is zoom 12, which sits at
         // t=0.5 along the ramp and produces the
         // arithmetic midpoint of the two radii.
-        let mid_zoom = (s.show_zoom_threshold + s.far_merge_zoom) * 0.5;
-        let expected = (s.merge_radius_world + s.far_merge_radius_world) * 0.5;
+        let mid_zoom = (s.overlay_zoom_threshold + s.tactical_far_merge_zoom) * 0.5;
+        let expected = (s.tactical_merge_radius_world + s.tactical_far_merge_radius_world) * 0.5;
         let got = cluster_radius_for_zoom(mid_zoom, &s);
         assert!(
             (got - expected).abs() < 1.0,
@@ -703,8 +653,8 @@ mod tests {
 
     #[test]
     fn cluster_radius_zero_settings_returns_zero() {
-        let s = TacticalOverlaySettings {
-            merge_radius_world: 0.0,
+        let s = PresentationTuning {
+            tactical_merge_radius_world: 0.0,
             ..Default::default()
         };
         assert_abs_diff_eq!(cluster_radius_for_zoom(10.0, &s), 0.0, epsilon = 1e-5);
@@ -717,9 +667,9 @@ mod tests {
         // not produce a negative slope; the function
         // collapses to a constant.
         let moderate = 2048.0;
-        let s = TacticalOverlaySettings {
-            merge_radius_world: moderate,
-            far_merge_radius_world: moderate - 100.0,
+        let s = PresentationTuning {
+            tactical_merge_radius_world: moderate,
+            tactical_far_merge_radius_world: moderate - 100.0,
             ..Default::default()
         };
         assert_abs_diff_eq!(cluster_radius_for_zoom(10.0, &s), moderate, epsilon = 1e-5);

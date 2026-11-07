@@ -5,6 +5,7 @@ pub mod intent_layer_panel;
 pub mod match_banner;
 pub mod scenario_menu;
 mod status_panel;
+pub mod tuning_panel;
 mod ui_interaction_system;
 mod ui_setup;
 
@@ -35,6 +36,7 @@ pub struct NanoswarmUiSetupPlugin;
 impl Plugin for NanoswarmUiSetupPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(UiHandling::default())
+            .add_plugins(tuning_panel::TuningPanelPlugin)
             .init_resource::<crate::session::SessionRules>()
             .add_plugins(FrameTimeDiagnosticsPlugin::default())
             .add_systems(

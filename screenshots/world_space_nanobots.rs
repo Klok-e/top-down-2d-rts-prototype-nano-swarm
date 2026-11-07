@@ -13,8 +13,9 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    nanobot::{OwnerSwarm, ProductionFacility, STRUCTURE_MAX_HEALTH, Structure, SwarmId},
+    nanobot::{OwnerSwarm, ProductionFacility, Structure, SwarmId},
     scenario::{PLAYER_DEPOSIT_CELL, cell_origin},
+    tuning::Tuning,
 };
 
 use super::harness::{TestContext, TestFlow, run_screenshot_test};
@@ -79,7 +80,8 @@ pub fn world_space_nanobots(ctx: &mut TestContext) -> TestFlow {
                 )
             });
         assert_eq!(
-            seed_facility.1, STRUCTURE_MAX_HEALTH,
+            seed_facility.1,
+            Tuning::default().construction.max_health,
             "default Worker allocation must keep the seed facility fully maintained"
         );
 

@@ -5,9 +5,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Commitment, NanobotType, OpponentSwarm, PRODUCTION_TICKS_PER_BOT, PrepaintedIntent,
-        ProductionFacility, SeedNanobots, SoftWorkSlots, Swarm, SwarmId, SwarmMember,
-        best_candidate, spawn_opponent_swarm,
+        Commitment, NanobotType, OpponentSwarm, PrepaintedIntent, ProductionFacility, SeedNanobots,
+        SoftWorkSlots, Swarm, SwarmId, SwarmMember, best_candidate, spawn_opponent_swarm,
     },
 };
 
@@ -100,7 +99,10 @@ fn opponent_workload_demand_drives_opponent_owned_production() {
             .current_target,
         Some(NanobotType::Worker),
     );
-    for _ in 0..PRODUCTION_TICKS_PER_BOT {
+    for _ in 0..top_down_2d_rts_prototype_nano_swarm::tuning::Tuning::default()
+        .production
+        .ticks_per_bot
+    {
         app.update();
     }
 

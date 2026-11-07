@@ -3,7 +3,6 @@ use std::time::{Duration, Instant};
 use bevy::{prelude::*, time::TimeUpdateStrategy};
 use criterion::{Criterion, Throughput};
 use top_down_2d_rts_prototype_nano_swarm::{
-    game_settings::GameSettings,
     intent::{IntentGrid, IntentKind},
     nanobot::{
         CombatPlugin, Commitment, DefenderResponse, DirectMovementComponent, Health, Nanobot,
@@ -12,6 +11,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         separation_system, world_to_cell,
     },
     resources::ResourceLedger,
+    tuning::Tuning,
 };
 
 const BOT_COUNT: usize = 5_000;
@@ -167,12 +167,7 @@ fn app_with_bots(scenario: AcceptanceScenario) -> App {
         )))
         .insert_resource(Time::<Fixed>::from_hz(60.0))
         .insert_resource(IntentGrid::new(1000, 1000))
-        .insert_resource(GameSettings {
-            width: 512_000.0,
-            height: 512_000.0,
-            bot_speed: 5.0,
-            debug_draw_circles: false,
-        })
+        .init_resource::<Tuning>()
         .init_resource::<ResourceLedger>()
         .add_plugins(NanobotPlugin::default())
         .add_plugins(CombatPlugin)

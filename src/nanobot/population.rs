@@ -6,9 +6,9 @@ use super::work_access::{WorkAccess, WorkReachability};
 use bevy::prelude::*;
 
 use crate::nanobot::{
-    ActionableProjection, HAULER_CARRY_CAPACITY, NanobotType, OpportunityCategory,
-    OpportunityTarget, RegionalAllocationSet, SwarmId, TerritorySnapshot,
-    defender_population_demand, production_facility_pick_target_system,
+    ActionableProjection, NanobotType, OpportunityCategory, OpportunityTarget,
+    RegionalAllocationSet, SwarmId, TerritorySnapshot, defender_population_demand,
+    production_facility_pick_target_system,
 };
 
 /// Desired population by swarm and Nanobot Type, derived from discrete useful
@@ -76,6 +76,7 @@ impl PopulationDemand {
 /// never summed directly: one large deposit is one extraction slot, not one slot
 /// per mineral.
 pub fn population_demand_system(
+    tuning: Res<crate::tuning::Tuning>,
     projection: Res<ActionableProjection>,
     territory: Res<TerritorySnapshot>,
     mut demand: ResMut<PopulationDemand>,
@@ -104,7 +105,7 @@ pub fn population_demand_system(
                         };
                         let trips = opportunity
                             .available_work
-                            .div_ceil(HAULER_CARRY_CAPACITY)
+                            .div_ceil(tuning.logistics.hauler_carry_capacity.max(1))
                             .max(1);
                         haul_slots
                             .entry((swarm, source))
@@ -133,12 +134,14 @@ pub struct PopulationDemandPlugin;
 
 impl Plugin for PopulationDemandPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<PopulationDemand>().add_systems(
-            FixedUpdate,
-            population_demand_system
-                .after(RegionalAllocationSet::Project)
-                .before(production_facility_pick_target_system),
-        );
+        app.init_resource::<crate::tuning::Tuning>()
+            .init_resource::<PopulationDemand>()
+            .add_systems(
+                FixedUpdate,
+                population_demand_system
+                    .after(RegionalAllocationSet::Project)
+                    .before(production_facility_pick_target_system),
+            );
     }
 }
 

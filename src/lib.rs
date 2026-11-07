@@ -5,8 +5,6 @@ pub mod battle_statistics;
 pub mod building;
 pub mod deposit_presentation;
 pub mod fly_camera;
-pub mod game_settings;
-pub mod gameplay_pacing;
 pub mod intent;
 pub mod materials;
 pub mod nanobot;
@@ -28,6 +26,7 @@ pub mod structure_sprites;
 pub mod tactical_overlay;
 pub mod terrain;
 pub mod terrain_presentation;
+pub mod tuning;
 pub mod ui;
 pub mod zones;
 
@@ -52,7 +51,6 @@ use bevy::{
     winit::WinitPlugin,
 };
 use fly_camera::{Camera2dFlyPlugin, CameraZoom2d, FlyCamera2d};
-use game_settings::GameSettings;
 use intent::IntentGrid;
 use materials::BackgroundMaterial;
 use nanobot::{
@@ -125,7 +123,29 @@ pub fn build_app() -> App {
 }
 
 pub fn build_app_with_presentation(presentation: Presentation) -> App {
+    build_app_with_tuning(presentation, tuning::default_path()).expect("cannot load game tuning")
+}
+
+pub fn build_app_with_tuning(
+    presentation: Presentation,
+    path: impl AsRef<std::path::Path>,
+) -> Result<App, String> {
+    let (store, values) = tuning::TuningStore::load(path.as_ref().to_path_buf())?;
     let mut app = App::new();
+    app.insert_resource(values)
+        .insert_resource(store)
+        .init_resource::<tuning::TuningRevision>()
+        .init_resource::<tuning::TuningJournal>()
+        .insert_resource(tuning::TuningReconciliation(vec![
+            nanobot::reconcile_economy_tuning,
+            nanobot::reconcile_combat_tuning,
+            nanobot::reconcile_charge_tuning,
+            nanobot::reconcile_logistics_tuning,
+            nanobot::allocation::reconcile_autonomy_tuning,
+            strategic_runtime::reconcile_controller_tuning,
+            nanobot::reconcile_combat_presentation_tuning,
+            fly_camera::reconcile_camera_tuning,
+        ]));
     let target = match presentation {
         Presentation::Windowed => {
             app.add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -246,7 +266,7 @@ pub fn build_app_with_presentation(presentation: Presentation) -> App {
         .add_plugins(AiPlugin)
         .add_plugins(Camera2dFlyPlugin)
         .add_systems(Startup, setup_things_startup.pipe(error_handler));
-    app
+    Ok(app)
 }
 
 pub fn run() {
@@ -322,6 +342,7 @@ fn setup_things_startup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
     presentation_target: Res<PresentationTarget>,
+    tuning: Res<tuning::Tuning>,
 ) -> Result<()> {
     let handle = zone_mats.add(ZoneMaterial::new(MAP_WIDTH, MAP_HEIGHT, &mut buffers));
     let is_offscreen = presentation_target.0.is_some();
@@ -344,9 +365,14 @@ fn setup_things_startup(
         camera.insert(IsDefaultUiCamera);
     }
     camera
-        .insert(FlyCamera2d::default())
+        .insert(FlyCamera2d {
+            accel: tuning.presentation.camera_accel,
+            max_speed: tuning.presentation.camera_max_speed,
+            friction: tuning.presentation.camera_friction,
+            ..default()
+        })
         .insert(CameraZoom2d {
-            zoom_speed: 0.15,
+            zoom_speed: tuning.presentation.camera_zoom_speed,
             zoom_min_max: (1., 100.),
             zoom: DEFAULT_CAMERA_ZOOM,
         })
@@ -354,7 +380,6 @@ fn setup_things_startup(
             handle: handle.clone(),
         });
 
-    commands.insert_resource(GameSettings::from_file_ron("config/game_settings.ron")?);
     commands.insert_resource(StructureSprites::load(&asset_server));
 
     // background

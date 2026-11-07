@@ -3,9 +3,9 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         ActionableOpportunity, ActionableProjection, AllocationRegion, ChargerAssignment,
-        ChargerProgress, Health, MAINTENANCE_NEEDS_THRESHOLD, OpportunityCategory,
-        OpportunityTarget, OwnerSwarm, PlannedKind, PlannedStructure, ProductionFacility,
-        SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, SwarmId, SwarmMember,
+        ChargerProgress, Health, OpportunityCategory, OpportunityTarget, OwnerSwarm, PlannedKind,
+        PlannedStructure, ProductionFacility, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure,
+        StructureKind, SwarmId, SwarmMember,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole},
 };
@@ -66,7 +66,10 @@ fn stale_structure_projects_maintenance_without_defend_work() {
         grid.paint(IVec2::ZERO, IntentKind::Defend, SwarmId::PLAYER);
     }
     let mut structure = Structure::new(StructureKind::Basic);
-    structure.ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
+    structure.ticks_since_maintained =
+        top_down_2d_rts_prototype_nano_swarm::tuning::Tuning::default()
+            .maintenance
+            .needs_threshold;
     app.world_mut()
         .spawn((structure, Transform::from_xyz(32.0, 32.0, 0.0)));
 
@@ -89,7 +92,10 @@ fn invalid_facility_owner_does_not_project_maintenance() {
     let mut app = common::minimal_app_with_actionable_projection();
     let invalid_owner = app.world_mut().spawn(SwarmId::PLAYER).id();
     let mut structure = Structure::new(StructureKind::Basic);
-    structure.ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
+    structure.ticks_since_maintained =
+        top_down_2d_rts_prototype_nano_swarm::tuning::Tuning::default()
+            .maintenance
+            .needs_threshold;
     app.world_mut().spawn((
         ProductionFacility::new(),
         structure,
@@ -116,7 +122,9 @@ fn unattended_valid_charger_does_not_project_maintenance() {
         common::ProjectedChargerFixture {
             cell: IVec2::ZERO,
             amount: 10,
-            ticks_since_maintained: MAINTENANCE_NEEDS_THRESHOLD,
+            ticks_since_maintained: top_down_2d_rts_prototype_nano_swarm::tuning::Tuning::default()
+                .maintenance
+                .needs_threshold,
             owner: SwarmId::PLAYER,
             defend_paint_owner: SwarmId::PLAYER,
         },
@@ -161,7 +169,10 @@ fn friendly_defender_in_charger_or_adjacent_cell_projects_maintenance() {
             common::ProjectedChargerFixture {
                 cell: IVec2::ZERO,
                 amount: 10,
-                ticks_since_maintained: MAINTENANCE_NEEDS_THRESHOLD,
+                ticks_since_maintained:
+                    top_down_2d_rts_prototype_nano_swarm::tuning::Tuning::default()
+                        .maintenance
+                        .needs_threshold,
                 owner: SwarmId::PLAYER,
                 defend_paint_owner: SwarmId::PLAYER,
             },
@@ -196,7 +207,9 @@ fn despawned_nearby_defender_removes_cached_charger_maintenance() {
         common::ProjectedChargerFixture {
             cell: IVec2::ZERO,
             amount: 10,
-            ticks_since_maintained: MAINTENANCE_NEEDS_THRESHOLD,
+            ticks_since_maintained: top_down_2d_rts_prototype_nano_swarm::tuning::Tuning::default()
+                .maintenance
+                .needs_threshold,
             owner: SwarmId::PLAYER,
             defend_paint_owner: SwarmId::PLAYER,
         },
@@ -247,7 +260,10 @@ fn distant_foreign_or_dead_defender_does_not_project_charger_maintenance() {
             common::ProjectedChargerFixture {
                 cell: IVec2::ZERO,
                 amount: 10,
-                ticks_since_maintained: MAINTENANCE_NEEDS_THRESHOLD,
+                ticks_since_maintained:
+                    top_down_2d_rts_prototype_nano_swarm::tuning::Tuning::default()
+                        .maintenance
+                        .needs_threshold,
                 owner: SwarmId::PLAYER,
                 defend_paint_owner: SwarmId::PLAYER,
             },
@@ -288,7 +304,10 @@ fn assigned_en_route_or_charging_defender_projects_charger_maintenance() {
             common::ProjectedChargerFixture {
                 cell: IVec2::ZERO,
                 amount: 10,
-                ticks_since_maintained: MAINTENANCE_NEEDS_THRESHOLD,
+                ticks_since_maintained:
+                    top_down_2d_rts_prototype_nano_swarm::tuning::Tuning::default()
+                        .maintenance
+                        .needs_threshold,
                 owner: SwarmId::PLAYER,
                 defend_paint_owner: SwarmId::PLAYER,
             },

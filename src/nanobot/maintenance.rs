@@ -14,7 +14,7 @@
 //! Maintenance consumes only worker time. The maintenance work
 //! system never reads a stockpile, never pulls from the resource
 //! ledger, and never advances a build site. A worker assigned to
-//! maintenance spends `MAINTENANCE_WORK_DURATION_TICKS` ticks
+//! maintenance spends `tuning.maintenance.work_ticks` ticks
 //! holding the structure's `ticks_since_maintained` at 0 and
 //! restoring a small amount of health per tick, then is freed.
 //!
@@ -38,6 +38,7 @@
 //! player feedback shows crowding.
 
 use crate::battle_statistics::{BattleCounters, BattleEvent};
+use crate::tuning::Tuning;
 use bevy::prelude::*;
 
 use crate::nanobot::InteractionRegion;
@@ -56,39 +57,6 @@ use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::{Charger, ProductionFacility};
 use crate::resources::Stockpile;
 
-/// How many ticks a structure stays stable after a maintenance
-/// shift. The buffer gives the swarm room to come back later
-/// without the structure immediately starting to lose health.
-/// Tuned so a single worker can cycle through a handful of
-/// structures without any of them degrading.
-pub const MAINTENANCE_BUFFER_TICKS: u32 = crate::SIMULATION_HZ as u32 * 60;
-
-/// Number of ticks a worker spends on a single maintenance
-/// shift. The worker is "permanently" allocated to maintenance
-/// for this many ticks, then released back to the autonomy
-/// scorer. A short shift keeps the worker responsive to other
-/// work (gather, build) but long enough that the structure
-/// actually receives meaningful work.
-pub const MAINTENANCE_WORK_DURATION_TICKS: u32 = crate::SIMULATION_HZ as u32 / 2;
-
-/// Health restored per fixed tick of maintenance work.
-pub const MAINTENANCE_HEALTH_PER_TICK: u32 = 2;
-
-/// Health lost on each degradation step after the buffer expires.
-pub const DEGRADATION_PER_STEP: u32 = 1;
-
-/// Fixed ticks between degradation steps. Ten health per second gives workers
-/// time to react while making prolonged neglect physically consequential.
-pub const DEGRADATION_INTERVAL_TICKS: u32 = crate::SIMULATION_HZ as u32 / 10;
-
-/// A structure is considered "needing maintenance" once its
-/// buffer counter reaches this value. The threshold sits well
-/// below `MAINTENANCE_BUFFER_TICKS` so a worker can finish a
-/// shift and return before the structure actually starts
-/// losing health. A damaged structure (`health < max`) is also
-/// "needy" so combat damage pulls workers back.
-pub const MAINTENANCE_NEEDS_THRESHOLD: u32 = crate::SIMULATION_HZ as u32 * 60 / 2;
-
 /// Shared condition carried by every completed support structure.
 pub type SupportCondition = Structure;
 
@@ -99,11 +67,12 @@ fn attach_support_condition(
     entity: Entity,
     commands: &mut Commands,
     conditions: &Query<(), With<Structure>>,
+    tuning: &Tuning,
 ) {
     if conditions.get(entity).is_err() {
         commands
             .entity(entity)
-            .insert(Structure::new(StructureKind::Basic));
+            .insert(Structure::with_tuning(StructureKind::Basic, tuning));
     }
 }
 
@@ -111,24 +80,27 @@ fn initialize_stockpile_condition(
     added: On<Add, Stockpile>,
     mut commands: Commands,
     conditions: Query<(), With<Structure>>,
+    tuning: Res<Tuning>,
 ) {
-    attach_support_condition(added.entity, &mut commands, &conditions);
+    attach_support_condition(added.entity, &mut commands, &conditions, &tuning);
 }
 
 fn initialize_facility_condition(
     added: On<Add, ProductionFacility>,
     mut commands: Commands,
     conditions: Query<(), With<Structure>>,
+    tuning: Res<Tuning>,
 ) {
-    attach_support_condition(added.entity, &mut commands, &conditions);
+    attach_support_condition(added.entity, &mut commands, &conditions, &tuning);
 }
 
 fn initialize_charger_condition(
     added: On<Add, Charger>,
     mut commands: Commands,
     conditions: Query<(), With<Structure>>,
+    tuning: Res<Tuning>,
 ) {
-    attach_support_condition(added.entity, &mut commands, &conditions);
+    attach_support_condition(added.entity, &mut commands, &conditions, &tuning);
 }
 
 impl Structure {
@@ -137,9 +109,9 @@ impl Structure {
     /// has reached the threshold) or the structure has been
     /// damaged and is below max health. The maintenance
     /// assignment system uses this to filter the world query.
-    pub fn needs_maintenance(&self) -> bool {
-        self.ticks_since_maintained >= MAINTENANCE_NEEDS_THRESHOLD
-            || self.health < super::build::STRUCTURE_MAX_HEALTH
+    pub fn needs_maintenance(&self, tuning: &Tuning) -> bool {
+        self.ticks_since_maintained >= tuning.maintenance.needs_threshold
+            || self.health < tuning.construction.max_health
     }
 
     /// Whether this structure can currently perform its gameplay function.
@@ -162,7 +134,7 @@ pub struct MaintenanceAssignment {
 /// In-flight maintenance work. The worker is at the target and
 /// is doing the per-tick maintenance action (no resource, just
 /// time). `ticks_worked` tracks how many of
-/// `MAINTENANCE_WORK_DURATION_TICKS` the worker has spent; the
+/// `tuning.maintenance.work_ticks` the worker has spent; the
 /// work system releases the worker once the budget is reached.
 #[derive(Debug, Component, Clone, Copy)]
 pub struct MaintenanceProgress {
@@ -190,6 +162,7 @@ pub struct MaintenanceProgress {
 /// contract.
 #[allow(clippy::type_complexity)]
 pub fn structure_degradation_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     mut structures: Query<(Entity, &mut Structure, Option<&crate::nanobot::OwnerSwarm>)>,
     swarms: Query<&crate::nanobot::SwarmId>,
@@ -202,11 +175,15 @@ pub fn structure_degradation_system(
 
         let overdue_ticks = structure
             .ticks_since_maintained
-            .saturating_sub(MAINTENANCE_BUFFER_TICKS);
-        if overdue_ticks > 0 && overdue_ticks.is_multiple_of(DEGRADATION_INTERVAL_TICKS) {
+            .saturating_sub(tuning.maintenance.buffer_ticks);
+        if overdue_ticks > 0
+            && overdue_ticks.is_multiple_of(tuning.maintenance.degradation_interval_ticks)
+        {
             // Buffer expired; the structure is unstable and loses health at the
             // fixed degradation cadence.
-            let next_health = structure.health.saturating_sub(DEGRADATION_PER_STEP);
+            let next_health = structure
+                .health
+                .saturating_sub(tuning.maintenance.degradation_per_step);
             structure.health = next_health;
             if next_health == 0 {
                 // Collapse: remove the structure from the
@@ -239,6 +216,7 @@ pub fn structure_degradation_system(
 /// back up. The capacity is shared, not duplicated.
 #[allow(clippy::type_complexity)]
 pub fn worker_maintenance_assignment_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     grid: Res<IntentGrid>,
     mut slots: ResMut<SoftWorkSlots>,
@@ -287,7 +265,7 @@ pub fn worker_maintenance_assignment_system(
         // build assignment system will run next tick and may
         // pick a build site or a damaged structure.
         let Some((target_entity, _target_pos)) =
-            find_nearest_needy_structure(candidate.cell, worker_pos, &structures)
+            find_nearest_needy_structure(candidate.cell, worker_pos, &structures, &tuning)
         else {
             continue;
         };
@@ -310,13 +288,14 @@ fn find_nearest_needy_structure(
     cell: IVec2,
     worker_pos: Vec2,
     structures: &Query<(Entity, &Transform, &Structure)>,
+    tuning: &Tuning,
 ) -> Option<(Entity, Vec2)> {
     let mut best: Option<(f32, Entity, Vec2)> = None;
     for (entity, transform, structure) in structures.iter() {
         if world_to_cell(transform.translation.truncate()) != cell {
             continue;
         }
-        if !structure.needs_maintenance() {
+        if !structure.needs_maintenance(tuning) {
             continue;
         }
         let pos = transform.translation.truncate();
@@ -392,6 +371,7 @@ pub fn worker_maintenance_arrive_system(
 /// structure is not also "one tick closer to degrading".
 #[allow(clippy::type_complexity)]
 pub fn worker_maintenance_work_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     mut workers: Query<
         (
@@ -427,14 +407,16 @@ pub fn worker_maintenance_work_system(
         // degradation system runs. The worker's "I just
         // maintained this" stamp is the reset.
         structure.ticks_since_maintained = 0;
-        structure.health = (structure.health + MAINTENANCE_HEALTH_PER_TICK)
-            .min(super::build::STRUCTURE_MAX_HEALTH);
+        structure.health = structure
+            .health
+            .saturating_add(tuning.maintenance.health_per_tick)
+            .min(tuning.construction.max_health);
 
         progress.ticks_worked += 1;
         if let Some(mut lease) = lease {
             lease.record_work();
         }
-        if progress.ticks_worked >= MAINTENANCE_WORK_DURATION_TICKS {
+        if progress.ticks_worked >= tuning.maintenance.work_ticks {
             release_maintenance_worker(&mut commands, entity);
         }
     }
@@ -446,6 +428,69 @@ fn release_maintenance_worker(commands: &mut Commands, entity: Entity) {
         .entity(entity)
         .remove::<MaintenanceAssignment>()
         .remove::<MaintenanceProgress>();
+}
+
+pub(crate) fn reconcile_maintenance_tuning(world: &mut World, old: &Tuning, new: &Tuning) {
+    let mut structures = world.query::<&mut Structure>();
+    for mut structure in structures.iter_mut(world) {
+        if old.construction.max_health != new.construction.max_health {
+            structure.health = if structure.health == 0 {
+                0
+            } else {
+                crate::tuning::rescale_ticks(
+                    structure.health,
+                    old.construction.max_health,
+                    new.construction.max_health,
+                )
+                .clamp(1, new.construction.max_health)
+            };
+        }
+        if old.maintenance.buffer_ticks != new.maintenance.buffer_ticks
+            || old.maintenance.degradation_interval_ticks
+                != new.maintenance.degradation_interval_ticks
+        {
+            let age = structure.ticks_since_maintained;
+            structure.ticks_since_maintained = if age <= old.maintenance.buffer_ticks {
+                crate::tuning::rescale_ticks(
+                    age,
+                    old.maintenance.buffer_ticks,
+                    new.maintenance.buffer_ticks,
+                )
+            } else {
+                let overdue = age - old.maintenance.buffer_ticks;
+                let steps = overdue / old.maintenance.degradation_interval_ticks;
+                let partial = overdue % old.maintenance.degradation_interval_ticks;
+                new.maintenance
+                    .buffer_ticks
+                    .saturating_add(
+                        steps.saturating_mul(new.maintenance.degradation_interval_ticks),
+                    )
+                    .saturating_add(
+                        crate::tuning::rescale_ticks(
+                            partial,
+                            old.maintenance.degradation_interval_ticks,
+                            new.maintenance.degradation_interval_ticks,
+                        )
+                        .min(new.maintenance.degradation_interval_ticks - 1),
+                    )
+            };
+        }
+    }
+    if old.maintenance.work_ticks != new.maintenance.work_ticks {
+        let mut workers = world.query::<&mut MaintenanceProgress>();
+        for mut progress in workers.iter_mut(world) {
+            progress.ticks_worked = if progress.ticks_worked >= old.maintenance.work_ticks {
+                new.maintenance.work_ticks
+            } else {
+                crate::tuning::rescale_ticks(
+                    progress.ticks_worked,
+                    old.maintenance.work_ticks,
+                    new.maintenance.work_ticks,
+                )
+                .min(new.maintenance.work_ticks.saturating_sub(1))
+            };
+        }
+    }
 }
 
 /// Plugin that wires the maintenance systems into the Update
@@ -461,7 +506,8 @@ pub struct MaintenancePlugin;
 
 impl Plugin for MaintenancePlugin {
     fn build(&self, app: &mut App) {
-        app.add_observer(initialize_stockpile_condition)
+        app.init_resource::<Tuning>()
+            .add_observer(initialize_stockpile_condition)
             .add_observer(initialize_facility_condition)
             .add_observer(initialize_charger_condition)
             .add_systems(
@@ -495,7 +541,12 @@ mod tests {
         // starts losing health. The buffer needs to be larger
         // than the work duration for the "stable under enough
         // worker time" contract to make sense.
-        const { assert!(MAINTENANCE_BUFFER_TICKS > MAINTENANCE_WORK_DURATION_TICKS) };
+        {
+            assert!(
+                Tuning::default().maintenance.buffer_ticks
+                    > Tuning::default().maintenance.work_ticks
+            )
+        };
     }
 
     #[test]
@@ -505,9 +556,12 @@ mod tests {
         // must sit strictly between 0 and the buffer so a
         // freshly-maintained structure is not immediately
         // flagged as needing maintenance again.
-        const {
-            assert!(MAINTENANCE_NEEDS_THRESHOLD > 0);
-            assert!(MAINTENANCE_NEEDS_THRESHOLD < MAINTENANCE_BUFFER_TICKS);
+        {
+            assert!(Tuning::default().maintenance.needs_threshold > 0);
+            assert!(
+                Tuning::default().maintenance.needs_threshold
+                    < Tuning::default().maintenance.buffer_ticks
+            );
         };
     }
 
@@ -517,7 +571,12 @@ mod tests {
         // one tick's worth of degradation damage. Otherwise
         // a worker maintaining once cannot keep up with a
         // structure that is already losing health.
-        const { assert!(MAINTENANCE_HEALTH_PER_TICK >= DEGRADATION_PER_STEP) };
+        {
+            assert!(
+                Tuning::default().maintenance.health_per_tick
+                    >= Tuning::default().maintenance.degradation_per_step
+            )
+        };
     }
 
     #[test]
@@ -526,10 +585,10 @@ mod tests {
         // zeroed buffer counter. It must not be flagged as
         // needing maintenance until the threshold is reached.
         let s = Structure::new(StructureKind::Basic);
-        assert!(s.is_full_health());
+        assert!(s.is_full_health(&Tuning::default()));
         assert_eq!(s.ticks_since_maintained, 0);
         assert!(
-            !s.needs_maintenance(),
+            !s.needs_maintenance(&Tuning::default()),
             "fresh structure must not be a maintenance target"
         );
     }
@@ -540,14 +599,14 @@ mod tests {
         // `needs_maintenance`. The threshold is the line that
         // pulls a worker back early.
         let mut s = Structure::new(StructureKind::Basic);
-        s.ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD - 1;
+        s.ticks_since_maintained = Tuning::default().maintenance.needs_threshold - 1;
         assert!(
-            !s.needs_maintenance(),
+            !s.needs_maintenance(&Tuning::default()),
             "structure just below the threshold is still stable"
         );
-        s.ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
+        s.ticks_since_maintained = Tuning::default().maintenance.needs_threshold;
         assert!(
-            s.needs_maintenance(),
+            s.needs_maintenance(&Tuning::default()),
             "structure at the threshold needs maintenance"
         );
     }
@@ -560,9 +619,9 @@ mod tests {
         // workers back even if the buffer has not yet
         // expired.
         let mut s = Structure::new(StructureKind::Basic);
-        s.health = super::super::build::STRUCTURE_MAX_HEALTH - 1;
+        s.health = Tuning::default().construction.max_health - 1;
         s.ticks_since_maintained = 0;
-        assert!(s.needs_maintenance());
+        assert!(s.needs_maintenance(&Tuning::default()));
     }
 
     #[test]

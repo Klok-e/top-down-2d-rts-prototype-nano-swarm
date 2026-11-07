@@ -16,9 +16,8 @@ use super::{
     threat_danger_rank,
 };
 use crate::nanobot::{
-    ChargerAssignment, ChargerProgress, Commitment, DEFENDER_ATTACK_RANGE, DirectMovementComponent,
-    Health, Nanobot, NanobotType, OwnerSwarm, RegionalLease, Structure, Swarm, SwarmId,
-    SwarmMember, world_to_cell,
+    ChargerAssignment, ChargerProgress, Commitment, DirectMovementComponent, Health, Nanobot,
+    NanobotType, OwnerSwarm, RegionalLease, Structure, Swarm, SwarmId, SwarmMember, world_to_cell,
 };
 
 /// One explicit pursuit claim on one hostile entity.
@@ -354,6 +353,7 @@ pub fn choose_response_preemption(
 /// and strict higher-tier preemption once per fixed simulation step.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn reconcile_defender_responses_system(
+    tuning: Res<crate::tuning::Tuning>,
     mut commands: Commands,
     territory: Res<TerritorySnapshot>,
     defenders: Query<
@@ -453,7 +453,7 @@ pub fn reconcile_defender_responses_system(
         };
         if let Ok(mut movement) = response_movement.get_mut(state.entity) {
             movement.xy = target.position;
-            movement.stop_radius = DEFENDER_ATTACK_RANGE;
+            movement.stop_radius = tuning.combat.attack_range;
             movement.interaction = None;
             movement.speed = None;
         } else {
@@ -463,7 +463,7 @@ pub fn reconcile_defender_responses_system(
                     speed: None,
                     interaction: None,
                     xy: target.position,
-                    stop_radius: DEFENDER_ATTACK_RANGE,
+                    stop_radius: tuning.combat.attack_range,
                 });
         }
         active.push(ActiveResponse {
@@ -507,7 +507,7 @@ pub fn reconcile_defender_responses_system(
                     speed: None,
                     interaction: None,
                     xy: target.position,
-                    stop_radius: DEFENDER_ATTACK_RANGE,
+                    stop_radius: tuning.combat.attack_range,
                 },
             ));
         state.response = Some(response);
@@ -555,7 +555,7 @@ pub fn reconcile_defender_responses_system(
         commands.entity(response.defender).insert(response.response);
         if let Ok(mut movement) = response_movement.get_mut(response.defender) {
             movement.xy = target.position;
-            movement.stop_radius = DEFENDER_ATTACK_RANGE;
+            movement.stop_radius = tuning.combat.attack_range;
             movement.interaction = None;
             movement.speed = None;
         } else {
@@ -565,7 +565,7 @@ pub fn reconcile_defender_responses_system(
                     speed: None,
                     interaction: None,
                     xy: target.position,
-                    stop_radius: DEFENDER_ATTACK_RANGE,
+                    stop_radius: tuning.combat.attack_range,
                 });
         }
     }

@@ -2,12 +2,12 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::battle_statistics::BattleCounters;
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        DEFAULT_PLANNED_WORK_TICKS, OwnerSwarm, PRODUCTION_PRESSURE_TICKS, PlannedKind,
-        PlannedStructure, ProductionFacility, ProductionPressure, SwarmId, completed_visual_color,
-        planned_visual_color,
+        OwnerSwarm, PlannedKind, PlannedStructure, ProductionFacility, ProductionPressure, SwarmId,
+        completed_visual_color, planned_visual_color,
     },
 };
 
@@ -41,14 +41,14 @@ fn sustained_uncovered_demand_creates_one_owned_plan_after_pressure_window() {
     paint(&mut app, IVec2::ZERO, IntentKind::Build);
     paint(&mut app, IVec2::X, IntentKind::Build);
 
-    for _ in 0..PRODUCTION_PRESSURE_TICKS - 1 {
+    for _ in 0..Tuning::default().production.pressure_ticks - 1 {
         app.update();
     }
     assert_eq!(
         app.world()
             .resource::<ProductionPressure>()
             .ticks_for(SwarmId::PLAYER),
-        PRODUCTION_PRESSURE_TICKS - 1,
+        Tuning::default().production.pressure_ticks - 1,
     );
     assert!(production_plans(&mut app).is_empty());
 
@@ -84,7 +84,7 @@ fn demand_without_an_owned_build_zone_creates_no_facility_plan() {
         },
     );
 
-    for _ in 0..PRODUCTION_PRESSURE_TICKS + 100 {
+    for _ in 0..Tuning::default().production.pressure_ticks + 100 {
         app.update();
     }
     assert!(production_plans(&mut app).is_empty());
@@ -100,7 +100,7 @@ fn worker_promotes_an_owned_plan_to_an_idle_unfunded_facility() {
     let center = common::cell_world_center(cell);
     common::spawn_worker_at(&mut app, center + Vec2::X * 72.0);
 
-    for _ in 0..DEFAULT_PLANNED_WORK_TICKS + 250 {
+    for _ in 0..Tuning::default().construction.work_ticks + 250 {
         app.update();
         if app.world().get::<PlannedStructure>(plan).is_none() {
             break;

@@ -84,6 +84,7 @@ struct DefenderMaintenanceSnapshot {
 /// registered by production plugins during foundation phase.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn project_actionable_opportunities_system(
+    tuning: Res<crate::tuning::Tuning>,
     mut grid: ResMut<IntentGrid>,
     mut projection: ResMut<ActionableProjection>,
     deposits: Query<(
@@ -130,10 +131,10 @@ pub fn project_actionable_opportunities_system(
     mut previous_maintenance_defenders: Local<BTreeMap<Entity, (SwarmId, IVec2, Option<Entity>)>>,
     generation: Option<Res<crate::session_lifecycle::SessionGeneration>>,
     mut previous_generation: Local<Option<u64>>,
-    swarms: Query<&SwarmId>,
-    facility_swarms: Query<&SwarmId, With<Swarm>>,
+    swarm_queries: (Query<&SwarmId>, Query<&SwarmId, With<Swarm>>),
     entities: Query<Entity>,
 ) {
+    let (swarms, facility_swarms) = swarm_queries;
     if let Some(generation) = generation.as_deref().map(|generation| generation.0)
         && *previous_generation != Some(generation)
     {
@@ -398,6 +399,7 @@ pub fn project_actionable_opportunities_system(
         let mut opportunities = Vec::new();
         project_intent_work(region, &grid, &deposits, &swarms, &mut opportunities);
         project_maintenance_work(
+            &tuning,
             region,
             &grid,
             &structures,
@@ -481,6 +483,7 @@ fn project_intent_work(
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn project_maintenance_work(
+    tuning: &crate::tuning::Tuning,
     region: AllocationRegion,
     grid: &IntentGrid,
     structures: &Query<(Entity, Ref<Structure>, Ref<Transform>, Option<&OwnerSwarm>)>,
@@ -502,7 +505,7 @@ fn project_maintenance_work(
     out: &mut Vec<ActionableOpportunity>,
 ) {
     for (entity, structure, transform, owner) in structures.iter() {
-        if !structure.needs_maintenance() {
+        if !structure.needs_maintenance(tuning) {
             continue;
         }
         if let Ok((_, charger, charger_owner, condition)) = chargers.get(entity)

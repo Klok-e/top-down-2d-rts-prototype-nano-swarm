@@ -30,12 +30,13 @@
 
 use bevy::{math::Vec2, prelude::*};
 use std::f32::consts::TAU;
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        ExtractProgress, GatherAssignment, MATERIAL_WORK_TICKS_PER_UNIT, OwnerSwarm, PlannedKind,
-        PlannedStructure, SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PLACEMENT_COUNT,
-        SOURCE_STOCKPILE_PLACEMENT_RADIUS, SwarmId, WORKER_CARRY_CAPACITY, WorkerLoad,
+        ExtractProgress, GatherAssignment, OwnerSwarm, PlannedKind, PlannedStructure,
+        SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PLACEMENT_COUNT,
+        SOURCE_STOCKPILE_PLACEMENT_RADIUS, SwarmId, WorkerLoad,
     },
     resources::{ResourceKind, Stockpile},
 };
@@ -46,8 +47,9 @@ mod common;
 /// Bounded real-time wait for demand and navigation work at the shipped 60 Hz rate.
 const DEMAND_TICK_BUDGET: u32 = 600;
 /// Shipped construction work plus bounded demand allocation and travel time.
-const PLAN_COMPLETION_TICK_BUDGET: u32 =
-    top_down_2d_rts_prototype_nano_swarm::nanobot::DEFAULT_PLANNED_WORK_TICKS + 600;
+fn plan_completion_tick_budget() -> u32 {
+    Tuning::default().construction.work_ticks + 600
+}
 
 /// Bot speed from the default game settings. Pulled into a
 /// constant so the travel-time math in the test is obvious.
@@ -388,9 +390,10 @@ fn worker_resumes_extraction_after_full_stockpile_expansion() {
     // + 24 + 4 + 1 + 24 + 1 + buffer.
     let total_ticks = 1
         + travel_ticks(PLANNED_TRAVEL_DISTANCE)
-        + PLAN_COMPLETION_TICK_BUDGET
+        + plan_completion_tick_budget()
         + travel_ticks(PLANNED_TRAVEL_DISTANCE)
-        + WORKER_CARRY_CAPACITY * MATERIAL_WORK_TICKS_PER_UNIT
+        + Tuning::default().logistics.worker_carry_capacity
+            * Tuning::default().logistics.material_work_ticks
         + 1
         + travel_ticks(PLANNED_TRAVEL_DISTANCE)
         + 1
@@ -440,7 +443,7 @@ fn worker_carry_assign_skips_full_stockpile() {
     // system processes them.
     app.world_mut().entity_mut(worker).insert(WorkerLoad {
         kind: ResourceKind::Minerals,
-        amount: WORKER_CARRY_CAPACITY,
+        amount: Tuning::default().logistics.worker_carry_capacity,
     });
     // Only a full stockpile in range.
     let _full_stockpile =
@@ -480,7 +483,7 @@ fn worker_carry_assign_prefers_free_stockpile_over_full_one() {
     let worker = common::spawn_worker_at(&mut app, worker_pos);
     app.world_mut().entity_mut(worker).insert(WorkerLoad {
         kind: ResourceKind::Minerals,
-        amount: WORKER_CARRY_CAPACITY,
+        amount: Tuning::default().logistics.worker_carry_capacity,
     });
     // A full stockpile close to the worker.
     let _full_stockpile =
@@ -531,7 +534,7 @@ fn worker_delivery_rejects_full_stockpile() {
     app.world_mut().entity_mut(worker).insert((
         WorkerLoad {
             kind: ResourceKind::Minerals,
-            amount: WORKER_CARRY_CAPACITY,
+            amount: Tuning::default().logistics.worker_carry_capacity,
         },
         top_down_2d_rts_prototype_nano_swarm::nanobot::ReturningToStockpile {
             stockpile: full_stockpile,

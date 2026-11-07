@@ -93,12 +93,15 @@ pub fn initialize_nanobot_type_components(
     added: On<Add, NanobotType>,
     mut commands: Commands,
     types: Query<&NanobotType>,
+    tuning: Res<crate::tuning::Tuning>,
 ) {
     let Ok(kind) = types.get(added.entity) else {
         return;
     };
     if *kind == NanobotType::Defender {
-        commands.entity(added.entity).insert(Charge::default());
+        commands
+            .entity(added.entity)
+            .insert(Charge::with_tuning(&tuning));
     } else {
         commands.entity(added.entity).remove::<Charge>();
     }

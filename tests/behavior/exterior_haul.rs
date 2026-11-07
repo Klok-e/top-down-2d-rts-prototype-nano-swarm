@@ -1,15 +1,18 @@
 //! Physical logistics work at scaled exterior interaction positions.
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    nanobot::{
-        Cargo, HAULER_TRANSFER_PER_PULSE, HaulerAssignment, LogisticsReservation, OwnerSwarm,
-        SwarmId, SwarmMember,
-    },
+    nanobot::{Cargo, HaulerAssignment, LogisticsReservation, OwnerSwarm, SwarmId, SwarmMember},
     resources::{ResourceKind, ResourceLedger, Stockpile, StockpileRole},
 };
 
 #[path = "../common/mod.rs"]
 mod common;
+
+fn transfer_per_pulse() -> u32 {
+    top_down_2d_rts_prototype_nano_swarm::tuning::Tuning::default()
+        .logistics
+        .hauler_transfer_per_pulse
+}
 
 #[test]
 fn scaled_pickup_pauses_when_displaced_and_keeps_material_custody() {
@@ -49,7 +52,7 @@ fn scaled_pickup_pauses_when_displaced_and_keeps_material_custody() {
         }
         assert_eq!(
             app.world().get::<Cargo>(bot).map(|cargo| cargo.amount),
-            Some(HAULER_TRANSFER_PER_PULSE)
+            Some(transfer_per_pulse())
         );
         assert!(app.world().get::<Transform>(bot).unwrap().translation.x >= 98.0);
         app.world_mut()
@@ -60,15 +63,15 @@ fn scaled_pickup_pauses_when_displaced_and_keeps_material_custody() {
         app.update();
         assert_eq!(
             app.world().get::<Cargo>(bot).unwrap().amount,
-            HAULER_TRANSFER_PER_PULSE,
+            transfer_per_pulse(),
             "displacement suspends pickup"
         );
         assert_eq!(
             app.world().get::<Stockpile>(source).unwrap().amount,
-            20 - HAULER_TRANSFER_PER_PULSE
+            20 - transfer_per_pulse()
         );
         let reservation = app.world().get::<LogisticsReservation>(bot).unwrap();
-        assert_eq!(reservation.source_remaining, 20 - HAULER_TRANSFER_PER_PULSE);
+        assert_eq!(reservation.source_remaining, 20 - transfer_per_pulse());
         assert_eq!(reservation.destination_remaining, 20);
         let mut resumed = false;
         for _ in 0..2_000 {
@@ -76,7 +79,7 @@ fn scaled_pickup_pauses_when_displaced_and_keeps_material_custody() {
             if app
                 .world()
                 .get::<Cargo>(bot)
-                .is_some_and(|cargo| cargo.amount > HAULER_TRANSFER_PER_PULSE)
+                .is_some_and(|cargo| cargo.amount > transfer_per_pulse())
             {
                 let pos = app.world().get::<Transform>(bot).unwrap().translation;
                 assert!(
@@ -188,7 +191,7 @@ fn both_swarms_deliver_to_scaled_exteriors_and_resume_after_displacement() {
             }
             assert_eq!(
                 delivered(&app),
-                HAULER_TRANSFER_PER_PULSE,
+                transfer_per_pulse(),
                 "{swarm:?} {destination_kind:?} exterior unload"
             );
             app.world_mut()
@@ -199,14 +202,14 @@ fn both_swarms_deliver_to_scaled_exteriors_and_resume_after_displacement() {
             app.update();
             assert_eq!(
                 delivered(&app),
-                HAULER_TRANSFER_PER_PULSE,
+                transfer_per_pulse(),
                 "displaced delivery pauses"
             );
             assert_eq!(
                 app.world().get::<Cargo>(bot).unwrap().amount,
-                12 - HAULER_TRANSFER_PER_PULSE
+                12 - transfer_per_pulse()
             );
-            let mut previous = HAULER_TRANSFER_PER_PULSE;
+            let mut previous = transfer_per_pulse();
             for _ in 0..2_000 {
                 app.update();
                 let current = delivered(&app);

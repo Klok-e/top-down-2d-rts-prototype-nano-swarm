@@ -70,6 +70,7 @@ pub fn spawn_opponent_swarm(
     prepainted: &[PrepaintedIntent],
     seeds: &[SeedNanobots],
 ) -> Entity {
+    let tuning = world.resource::<crate::tuning::Tuning>().clone();
     let swarm_id = next_opponent_swarm_id(world);
     let swarm = world
         .spawn((
@@ -115,7 +116,7 @@ pub fn spawn_opponent_swarm(
                     nanobot_type: seed.kind,
                     velocity: VelocityComponent::default(),
                     ai_state: AiStateComponent::new(),
-                    health: Health::default(),
+                    health: Health::with_tuning(&tuning),
                     swarm_member: SwarmMember::new(swarm_id),
                 },
                 Commitment::Idle,
@@ -169,6 +170,7 @@ mod tests {
 
     fn build_app() -> App {
         let mut app = App::new();
+        app.init_resource::<crate::tuning::Tuning>();
         app.insert_resource(IntentGrid::new(8, 8));
         app
     }

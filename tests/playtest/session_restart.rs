@@ -12,7 +12,6 @@ use top_down_2d_rts_prototype_nano_swarm::{
     },
     building::ProcessingFacility,
     fly_camera::{CameraZoom2d, FlyCamera2d},
-    gameplay_pacing::GameplayPacing,
     intent::{IntentGrid, IntentKind},
     nanobot::{
         MatchOutcome, Nanobot, OpponentSwarmIdAlloc, StrategicController,
@@ -23,6 +22,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     scenario_selection::{Scenario, ScenarioSelection},
     session::SessionRules,
     session_lifecycle::{SessionEntity, SessionGeneration, SessionLifecyclePlugin, StartScenario},
+    tuning::Tuning,
     ui::{
         FontsResource,
         intent_layer_panel::{IntentLayerButton, setup_intent_layer_panel},
@@ -270,24 +270,28 @@ fn standard_opponent_recovers_owned_intent_after_startup_and_restart() {
 }
 
 #[test]
-fn session_restarts_keep_the_shared_gameplay_pacing() {
+fn session_restarts_keep_current_shared_tuning() {
     let output = TemporaryDirectory::new();
     let (mut app, _) = session_app(output.path());
-    let deliberate = GameplayPacing::default();
+    let mut deliberate = Tuning::default();
+    deliberate.construction.work_ticks = 73;
+    deliberate.combat.attack_interval_ticks = 11;
+    deliberate.charge.drain_per_tick = 0.0007;
+    app.insert_resource(deliberate.clone());
 
-    assert_eq!(*app.world().resource::<GameplayPacing>(), deliberate);
+    assert_eq!(*app.world().resource::<Tuning>(), deliberate);
 
     request_start(&mut app, Scenario::AiBattle);
-    assert_eq!(*app.world().resource::<GameplayPacing>(), deliberate);
+    assert_eq!(*app.world().resource::<Tuning>(), deliberate);
 
     request_start(&mut app, Scenario::Sandbox);
-    assert_eq!(*app.world().resource::<GameplayPacing>(), deliberate);
+    assert_eq!(*app.world().resource::<Tuning>(), deliberate);
 
     request_start(&mut app, Scenario::AiBattle);
-    assert_eq!(*app.world().resource::<GameplayPacing>(), deliberate);
+    assert_eq!(*app.world().resource::<Tuning>(), deliberate);
 
     request_start(&mut app, Scenario::Standard);
-    assert_eq!(*app.world().resource::<GameplayPacing>(), deliberate);
+    assert_eq!(*app.world().resource::<Tuning>(), deliberate);
 }
 
 #[test]

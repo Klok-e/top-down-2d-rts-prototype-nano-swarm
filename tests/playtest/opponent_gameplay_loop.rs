@@ -31,8 +31,8 @@ fn strategic_intent_finishes_a_remnant_away_from_its_former_home() {
 
     use bevy::time::TimeUpdateStrategy;
     use top_down_2d_rts_prototype_nano_swarm::{
-        gameplay_pacing::GameplayPacing,
         nanobot::{ChargePlugin, DefenderResponse},
+        tuning::Tuning,
     };
     let mut app = common::sim_app();
     let cadence = Duration::from_secs_f64(1.0 / 60.0);
@@ -46,7 +46,7 @@ fn strategic_intent_finishes_a_remnant_away_from_its_former_home() {
         ))
         .add_systems(FixedLast, nanobot_death_cleanup_system);
     app.update();
-    app.insert_resource(GameplayPacing::default());
+    app.insert_resource(Tuning::default());
     let home = common::cell_world_center(IVec2::ZERO);
     let remnant_cell = IVec2::new(0, 3);
     let remnant_position = common::cell_world_center(remnant_cell);
@@ -70,8 +70,8 @@ fn strategic_intent_finishes_a_remnant_away_from_its_former_home() {
     for tick in 1..=1200 {
         app.update();
         assert_eq!(
-            *app.world().resource::<GameplayPacing>(),
-            GameplayPacing::default(),
+            *app.world().resource::<Tuning>(),
+            Tuning::default(),
             "the playtest must exercise shipped pacing"
         );
         assert!(
@@ -130,9 +130,9 @@ fn strategic_intent_clears_a_structure_and_distant_hauler_concurrently() {
 
     use bevy::time::TimeUpdateStrategy;
     use top_down_2d_rts_prototype_nano_swarm::{
-        gameplay_pacing::GameplayPacing,
         nanobot::{ChargePlugin, DefenderResponse, PlannedKind, Structure, StructureKind},
         resources::{ResourceKind, ResourceLedger},
+        tuning::Tuning,
     };
 
     let mut app = common::sim_app();
@@ -148,7 +148,7 @@ fn strategic_intent_clears_a_structure_and_distant_hauler_concurrently() {
         ))
         .add_systems(FixedLast, nanobot_death_cleanup_system);
     app.update();
-    app.insert_resource(GameplayPacing::default());
+    app.insert_resource(Tuning::default());
 
     let home = common::cell_world_center(IVec2::ZERO);
     let own = common::spawn_swarm_with_nanobots(&mut app, home, &[(NanobotType::Defender, 8)]);
@@ -201,10 +201,7 @@ fn strategic_intent_clears_a_structure_and_distant_hauler_concurrently() {
     let mut concurrent_response_seconds = None;
     for _ in 0..1800 {
         app.update();
-        assert_eq!(
-            *app.world().resource::<GameplayPacing>(),
-            GameplayPacing::default()
-        );
+        assert_eq!(*app.world().resource::<Tuning>(), Tuning::default());
         let world = app.world_mut();
         let targets = world
             .query::<(&SwarmMember, &DefenderResponse)>()
@@ -255,9 +252,9 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
 
     use bevy::time::TimeUpdateStrategy;
     use top_down_2d_rts_prototype_nano_swarm::{
-        gameplay_pacing::GameplayPacing,
         nanobot::{ChargePlugin, Structure, StructureKind},
         resources::{ResourceKind, ResourceLedger},
+        tuning::Tuning,
     };
 
     let mut app = common::sim_app_with_production();
@@ -273,7 +270,7 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
         ))
         .add_systems(FixedLast, nanobot_death_cleanup_system);
     app.update();
-    app.insert_resource(GameplayPacing::default());
+    app.insert_resource(Tuning::default());
 
     let home = common::cell_world_center(IVec2::ZERO);
     let target_cell = IVec2::new(6, 0);

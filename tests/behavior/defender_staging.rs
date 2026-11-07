@@ -1,8 +1,8 @@
 //! Observable behavior coverage for issue #55's responsive Defender staging.
 
 use bevy::prelude::*;
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 use top_down_2d_rts_prototype_nano_swarm::{
-    game_settings::GameSettings,
     intent::{IntentGrid, IntentKind},
     nanobot::{
         ChargerAssignment, DefenderResponse, DirectMovementComponent, SwarmId, SwarmMember,
@@ -107,8 +107,7 @@ fn clumped_defenders_redistribute_to_balanced_painted_cells() {
 #[test]
 fn large_cohort_rebalances_once_and_keeps_the_observable_layout_stable() {
     let mut app = common::sim_app();
-    app.world_mut().resource_mut::<GameSettings>().width = 4096.0;
-    app.world_mut().resource_mut::<GameSettings>().height = 4096.0;
+
     let west = IVec2::ZERO;
     let east = IVec2::X;
     app.world_mut()
@@ -162,8 +161,7 @@ fn large_cohort_rebalances_once_and_keeps_the_observable_layout_stable() {
 #[test]
 fn large_cohort_avoids_crossed_travel_when_local_balanced_slots_exist() {
     let mut app = common::sim_app();
-    app.world_mut().resource_mut::<GameSettings>().width = 4096.0;
-    app.world_mut().resource_mut::<GameSettings>().height = 4096.0;
+
     let prior = IVec2::new(1, 3);
     let west = IVec2::new(0, 1);
     let east = IVec2::new(3, 1);
@@ -399,7 +397,7 @@ fn erasing_defend_paint_retargets_only_the_now_displaced_defender() {
 #[test]
 fn cross_cell_redistribution_uses_normal_travel_speed() {
     let mut app = common::sim_app();
-    app.world_mut().resource_mut::<GameSettings>().bot_speed = 5.25;
+    app.world_mut().resource_mut::<Tuning>().logistics.bot_speed = 5.25;
     let start_cell = IVec2::ZERO;
     let target_cell = IVec2::X;
     app.world_mut().resource_mut::<IntentGrid>().paint(
@@ -687,7 +685,7 @@ fn lone_defender_roams_continuously_and_replays_deterministically_without_territ
         }
         consecutive_waiting = 0;
         assert!(
-            delta.length() <= first_app.world().resource::<GameSettings>().bot_speed + 1e-4,
+            delta.length() <= first_app.world().resource::<Tuning>().logistics.bot_speed + 1e-4,
             "the lone roamer exceeded the configured speed cap at step {index}: {delta:?}",
         );
         if previous_delta

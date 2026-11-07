@@ -17,8 +17,11 @@ pub fn camera_2d_zoom_system(
     mut mouse_wheel_event_reader: MessageReader<MouseWheel>,
     mut query: Query<(&mut CameraZoom2d, &mut Projection)>,
     menu: Option<Res<crate::ui::scenario_menu::ScenarioMenu>>,
+    editor: Option<Res<crate::ui::tuning_panel::TuningEditor>>,
 ) {
-    if menu.is_some_and(|menu| menu.blocks_world_input) {
+    if menu.is_some_and(|menu| menu.blocks_world_input)
+        || editor.is_some_and(|editor| editor.keyboard_captured() || editor.pointer_captured())
+    {
         mouse_wheel_event_reader.clear();
         return;
     }

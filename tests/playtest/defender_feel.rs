@@ -8,24 +8,21 @@ use top_down_2d_rts_prototype_nano_swarm::{
     MAP_HEIGHT, MAP_WIDTH,
     ai::AiPlugin,
     ai_battle::AiBattleLayout,
-    game_settings::GameSettings,
-    gameplay_pacing::GameplayPacing,
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Charge, ChargePlugin, Charger, ChargerAssignment, ChargerProgress, CombatPlugin,
-        DEGRADATION_INTERVAL_TICKS, DefenderResponse, DirectMovementComponent, GatherPlugin,
-        HaulPlugin, Health, LOW_CHARGE_THRESHOLD, MAINTENANCE_BUFFER_TICKS,
-        MAINTENANCE_NEEDS_THRESHOLD, MaintenanceAssignment, MaintenancePlugin, MaintenanceProgress,
-        MatchOutcome, Nanobot, NanobotPlugin, NanobotType, OpponentSwarmIdAlloc, OwnerSwarm,
-        PlannedKind, PlannedStructure, PlannedStructureClaim, PlannedStructurePlugin,
-        PlannedStructureProgress, PopulationDemand, PopulationDemandPlugin, ProductionPlugin,
-        RegionalAllocationPlugin, STRUCTURE_MAX_HEALTH, StrategicControllerPlugin, Structure,
-        Swarm, SwarmEliminationPlugin, SwarmEliminationState, SwarmId, SwarmMember,
-        TerritorySnapshot, nanobot_death_cleanup_system, world_to_cell,
+        DefenderResponse, DirectMovementComponent, GatherPlugin, HaulPlugin, Health,
+        MaintenanceAssignment, MaintenancePlugin, MaintenanceProgress, MatchOutcome, Nanobot,
+        NanobotPlugin, NanobotType, OpponentSwarmIdAlloc, OwnerSwarm, PlannedKind,
+        PlannedStructure, PlannedStructureClaim, PlannedStructurePlugin, PlannedStructureProgress,
+        PopulationDemand, PopulationDemandPlugin, ProductionPlugin, RegionalAllocationPlugin,
+        StrategicControllerPlugin, Structure, Swarm, SwarmEliminationPlugin, SwarmEliminationState,
+        SwarmId, SwarmMember, TerritorySnapshot, nanobot_death_cleanup_system, world_to_cell,
     },
     resources::{ResourceKind, ResourceLedger},
     scenario::spawn_selected_scenario,
     scenario_selection::Scenario,
+    tuning::Tuning,
 };
 
 #[path = "../common/mod.rs"]
@@ -46,6 +43,7 @@ fn spawn_default_scenario_startup(
     asset_server: Res<AssetServer>,
     mut grid: ResMut<IntentGrid>,
     opponent_id_alloc: ResMut<OpponentSwarmIdAlloc>,
+    tuning: Res<Tuning>,
 ) {
     let reachability = spawn_selected_scenario(
         Scenario::Standard,
@@ -54,6 +52,7 @@ fn spawn_default_scenario_startup(
         &mut grid,
         opponent_id_alloc,
         AiBattleLayout::Standard,
+        &tuning,
     )
     .expect("the authored standard scenario must be reachable");
     commands.insert_resource(reachability);
@@ -61,7 +60,7 @@ fn spawn_default_scenario_startup(
 
 fn default_headless_app() -> App {
     let mut app = common::minimal_app();
-    app.world_mut().resource_mut::<GameSettings>().bot_speed = 5.25;
+    app.world_mut().resource_mut::<Tuning>().logistics.bot_speed = 5.25;
     app.insert_resource(IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32))
         .add_plugins(TaskPoolPlugin::default())
         .add_plugins(AssetPlugin::default())
@@ -471,7 +470,7 @@ fn authored_charge_rotation_replaces_active_coverage_for_each_swarm() {
             .entity_mut(responder)
             .get_mut::<Charge>()
             .expect("Defender has Charge")
-            .current = LOW_CHARGE_THRESHOLD;
+            .current = Tuning::default().charge.low_threshold;
 
         for _ in 0..60 {
             app.update();
@@ -517,7 +516,7 @@ fn authored_charger_planning_and_maintenance_follow_observed_service_need() {
         .entity_mut(defender)
         .get_mut::<Charge>()
         .expect("authored Defender has Charge")
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
     let builder = common::spawn_worker_at(&mut app, center + Vec2::X * 68.0);
 
     for _ in 0..120 {
@@ -566,7 +565,7 @@ fn authored_charger_planning_and_maintenance_follow_observed_service_need() {
         },
     ));
 
-    for _ in 0..(GameplayPacing::default().construction_work_ticks as usize + 300) {
+    for _ in 0..(Tuning::default().construction.work_ticks as usize + 300) {
         app.update();
         if app.world().get::<Charger>(planned_charger).is_some() {
             break;
@@ -590,12 +589,12 @@ fn authored_charger_planning_and_maintenance_follow_observed_service_need() {
         .entity_mut(planned_charger)
         .get_mut::<Structure>()
         .expect("completed Charger has shared condition")
-        .ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
+        .ticks_since_maintained = Tuning::default().maintenance.needs_threshold;
     app.world_mut()
         .entity_mut(defender)
         .get_mut::<Charge>()
         .expect("authored Defender has Charge")
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
     app.world_mut().despawn(builder);
     let charger_position = app
         .world()
@@ -656,9 +655,10 @@ fn authored_charger_planning_and_maintenance_follow_observed_service_need() {
         let mut condition = charger_entity
             .get_mut::<Structure>()
             .expect("unattended Charger remains a structure");
-        condition.health = STRUCTURE_MAX_HEALTH;
-        condition.ticks_since_maintained =
-            MAINTENANCE_BUFFER_TICKS + DEGRADATION_INTERVAL_TICKS - 1;
+        condition.health = Tuning::default().construction.max_health;
+        condition.ticks_since_maintained = Tuning::default().maintenance.buffer_ticks
+            + Tuning::default().maintenance.degradation_interval_ticks
+            - 1;
     }
     let idle_worker = common::spawn_worker_at(&mut app, center);
 
@@ -676,7 +676,7 @@ fn authored_charger_planning_and_maintenance_follow_observed_service_need() {
             .get::<Structure>()
             .expect("unattended Charger remains standing while degrading")
             .health,
-        STRUCTURE_MAX_HEALTH - 1,
+        Tuning::default().construction.max_health - 1,
         "unattended Charger should decay through shared condition rules",
     );
 }
@@ -816,7 +816,7 @@ fn assert_default_tick_state(
 
 fn spawn_runtime_front() -> (App, IVec2, Entity, Entity) {
     let mut app = common::sim_app_with_charge();
-    app.world_mut().resource_mut::<GameSettings>().bot_speed = 5.25;
+    app.world_mut().resource_mut::<Tuning>().logistics.bot_speed = 5.25;
     app.add_plugins(PopulationDemandPlugin);
     app.add_plugins(CombatPlugin);
     app.add_plugins(SwarmEliminationPlugin);
@@ -1070,7 +1070,7 @@ fn default_economy_loaded_bots_do_not_wait_for_clear_routes() {
         navigation::Navigation,
     };
     let mut app = default_headless_app();
-    app.world_mut().resource_mut::<GameSettings>().bot_speed = 5.0;
+    app.world_mut().resource_mut::<Tuning>().logistics.bot_speed = 5.0;
     let cadence = Duration::from_secs_f64(1.0 / 60.0);
     app.insert_resource(Time::<Fixed>::from_duration(cadence));
     app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(cadence));

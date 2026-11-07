@@ -1,13 +1,13 @@
 //! Demand-driven Production Facility behavior.
 
 use bevy::prelude::*;
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 use top_down_2d_rts_prototype_nano_swarm::{
     battle_statistics::BattleCounters,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        NanobotType, OwnerSwarm, PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT,
-        PopulationDemand, ProductionFacility, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure,
-        StructureKind, SwarmId, SwarmMember,
+        NanobotType, OwnerSwarm, PopulationDemand, ProductionFacility,
+        SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, SwarmId, SwarmMember,
     },
     resources::{ResourceKind, ResourceLedger},
 };
@@ -36,6 +36,10 @@ fn add_gather_work(app: &mut App, cell: IVec2) {
 fn facility_commits_to_real_workload_demand_and_consumes_its_hopper() {
     let mut app = common::sim_app_with_production();
     app.init_resource::<BattleCounters>();
+    app.world_mut()
+        .resource_mut::<Tuning>()
+        .production
+        .cost_per_bot = 27;
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     add_gather_work(&mut app, IVec2::ZERO);
     let facility = common::spawn_facility_at(&mut app, swarm, Vec2::ZERO);
@@ -53,19 +57,19 @@ fn facility_commits_to_real_workload_demand_and_consumes_its_hopper() {
 
     let state = app.world().get::<ProductionFacility>(facility).unwrap();
     assert_eq!(state.current_target, Some(NanobotType::Worker));
-    assert_eq!(input_before - state.input_amount, PRODUCTION_COST_PER_BOT);
+    assert_eq!(input_before - state.input_amount, 27);
     assert_eq!(
         app.world()
             .resource::<ResourceLedger>()
             .total_for(SwarmId::PLAYER, ResourceKind::Minerals),
-        ledger_before - PRODUCTION_COST_PER_BOT,
+        ledger_before - 27,
     );
     assert_eq!(
         app.world()
             .resource::<BattleCounters>()
             .totals_for(SwarmId::PLAYER)
             .minerals_consumed,
-        u64::from(PRODUCTION_COST_PER_BOT)
+        27u64
     );
 }
 
@@ -90,7 +94,7 @@ fn funded_cycle_retains_its_type_and_produces_an_owned_nanobot() {
         IntentKind::Gather,
         SwarmId::PLAYER,
     );
-    for _ in 0..PRODUCTION_TICKS_PER_BOT {
+    for _ in 0..Tuning::default().production.ticks_per_bot {
         app.update();
     }
 

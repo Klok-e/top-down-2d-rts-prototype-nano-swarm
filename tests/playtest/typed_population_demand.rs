@@ -1,12 +1,10 @@
 //! Runtime regression for typed workload production.
 
 use bevy::prelude::*;
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
-    nanobot::{
-        NanobotType, PRODUCTION_TICKS_PER_BOT, PopulationDemand, ProductionFacility, Swarm,
-        SwarmId, SwarmMember,
-    },
+    nanobot::{NanobotType, PopulationDemand, ProductionFacility, Swarm, SwarmId, SwarmMember},
 };
 
 #[path = "../common/mod.rs"]
@@ -50,7 +48,7 @@ fn swarm_tile_reserve_eventually_produces_defender_despite_excess_haulers() {
         Some(NanobotType::Defender),
     );
 
-    for _ in 0..PRODUCTION_TICKS_PER_BOT {
+    for _ in 0..Tuning::default().production.ticks_per_bot {
         app.update();
     }
 
@@ -111,7 +109,7 @@ fn physical_threats_drive_eventual_defender_production_above_reserve() {
         );
     }
 
-    for _ in 0..PRODUCTION_TICKS_PER_BOT {
+    for _ in 0..Tuning::default().production.ticks_per_bot {
         app.update();
     }
 

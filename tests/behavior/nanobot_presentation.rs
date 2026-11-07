@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 
 use approx::assert_abs_diff_eq;
 use bevy::{asset::AssetPlugin, prelude::*};
@@ -27,6 +28,7 @@ fn spawn_authored_scenarios(
     asset_server: Res<AssetServer>,
     mut grid: ResMut<IntentGrid>,
     opponent_id_alloc: ResMut<OpponentSwarmIdAlloc>,
+    tuning: Res<Tuning>,
 ) {
     let reachability = spawn_selected_scenario(
         Scenario::Standard,
@@ -35,6 +37,7 @@ fn spawn_authored_scenarios(
         &mut grid,
         opponent_id_alloc,
         AiBattleLayout::Standard,
+        &tuning,
     )
     .expect("the authored standard scenario must be reachable");
     commands.insert_resource(reachability);
@@ -43,6 +46,7 @@ fn spawn_authored_scenarios(
 #[test]
 fn authored_nanobots_render_through_one_neutral_presentation_child() {
     let mut app = App::new();
+    app.init_resource::<Tuning>();
     app.add_plugins(TaskPoolPlugin::default())
         .add_plugins(AssetPlugin::default())
         .init_asset::<Image>()
@@ -209,6 +213,7 @@ fn authored_nanobots_render_through_one_neutral_presentation_child() {
 fn produced_nanobots_use_the_same_type_and_faction_visual_children() {
     let mut app = App::new();
     app.insert_resource(top_down_2d_rts_prototype_nano_swarm::intent::IntentGrid::new(8, 8));
+    app.init_resource::<Tuning>();
     app.add_plugins(TaskPoolPlugin::default())
         .add_plugins(AssetPlugin::default())
         .init_asset::<Image>()
@@ -258,6 +263,7 @@ fn produced_nanobots_use_the_same_type_and_faction_visual_children() {
 #[test]
 fn production_remains_asset_free_without_the_presentation_plugin() {
     let mut app = App::new();
+    app.init_resource::<Tuning>();
     app.insert_resource(top_down_2d_rts_prototype_nano_swarm::intent::IntentGrid::new(8, 8));
     app.add_systems(Update, production_facility_work_system);
     let expected = common::spawn_completed_facilities_for_all_nanobot_types(&mut app, SwarmId(17));

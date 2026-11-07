@@ -1,8 +1,8 @@
 use super::{
     DirectMovementComponent, ProgressChecker, STOP_THRESHOLD, TrafficYield, VelocityComponent,
 };
-use crate::game_settings::GameSettings;
 use crate::spatial::FixedSpatialBuckets;
+use crate::tuning::Tuning;
 use bevy::prelude::*;
 
 /// A loaded bot waiting for a separate position; yielding does not reset queue age.
@@ -140,6 +140,7 @@ pub fn move_velocity_system(
     mut routes: Local<std::collections::HashMap<Entity, ActiveRoute>>,
     generation: Option<Res<crate::session_lifecycle::SessionGeneration>>,
     mut previous_generation: Local<Option<u64>>,
+    mut previous_corridor_multiplier: Local<Option<f32>>,
     mut bots: Query<(
         Entity,
         &DirectMovementComponent,
@@ -153,7 +154,7 @@ pub fn move_velocity_system(
     )>,
     bodies: Query<(Entity, &Transform, Has<super::CongestionRecovery>), With<super::Nanobot>>,
     loads: Query<&super::Cargo>,
-    game_settings: Res<GameSettings>,
+    tuning: Res<Tuning>,
     navigation: Res<crate::navigation::Navigation>,
     time: Res<Time<Fixed>>,
 ) {
@@ -164,6 +165,15 @@ pub fn move_velocity_system(
         approaches.entries.clear();
         routes.clear();
         *previous_generation = Some(generation);
+    }
+    if *previous_corridor_multiplier != Some(tuning.logistics.corridor_cost_multiplier) {
+        for route in routes.values() {
+            if let Some(id) = route.pending {
+                navigation.cancel(id);
+            }
+        }
+        routes.clear();
+        *previous_corridor_multiplier = Some(tuning.logistics.corridor_cost_multiplier);
     }
     routes.retain(|entity, route| {
         if bots.contains(*entity) {
@@ -574,7 +584,7 @@ pub fn move_velocity_system(
                 }
             }
         }
-        let speed = destination.speed.unwrap_or(game_settings.bot_speed);
+        let speed = destination.speed.unwrap_or(tuning.logistics.bot_speed);
         let step = route.follower.route_step(
             position,
             &route.waypoints,

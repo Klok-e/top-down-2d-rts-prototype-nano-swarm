@@ -39,6 +39,7 @@
 //! gradually loses charger material and the defenders degrade.
 
 use crate::navigation::Obstacle;
+use crate::tuning::{ChargeTuning, Tuning, rescale_ticks};
 use std::collections::HashMap;
 
 use crate::battle_statistics::{BattleCounters, BattleEvent};
@@ -59,80 +60,6 @@ use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
 use crate::nanobot::{PlannedKind, PlannedStructure, planned_visual_components};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
 use crate::structure_sprites::StructureSprites;
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/// Maximum value of a defender's `Charge::current`. The
-/// component is a `f32` so the score can drain smoothly
-/// without quantising to integers. A defender with `current ==
-/// MAX_CHARGE` is "fully charged"; a defender with `current ==
-/// 0.0` is "empty" and starts losing health if not at a
-/// working charger.
-pub const MAX_CHARGE: f32 = 1.0;
-
-/// Baseline passive Charge drain per fixed simulation tick.
-pub const CHARGE_DRAIN_PER_TICK: f32 = 0.000125;
-
-/// Number of fixed ticks between supplied recharge pulses.
-pub const CHARGE_PULSE_INTERVAL_TICKS: u16 = 150;
-
-/// Charge granted by one supplied recharge pulse.
-pub const CHARGE_PER_PULSE: f32 = 0.03;
-
-/// Minerals consumed by one supplied recharge pulse.
-pub const CHARGER_MATERIAL_PER_PULSE: u32 = 2;
-
-/// Charge level below which a defender's attack and defense
-/// are weakened. Above the threshold the modifier is 1.0;
-/// below it the modifier scales linearly with charge so an
-/// empty defender has 0.0 attack and 0.0 defense. The
-/// threshold sits well above zero so a defender that just
-/// lost the weaken threshold is still in "weak but alive"
-/// territory rather than "instantly dead".
-pub const WEAKENED_CHARGE_THRESHOLD: f32 = 0.3;
-
-/// Charge level at or below which a Defender is
-/// eligible to rotate to a working charger. The threshold sits
-/// a notch above [`WEAKENED_CHARGE_THRESHOLD`] so a defender
-/// starts looking for a charger *before* it is too weak to
-/// fight, keeping the sustain loop preventative rather than
-/// reactive. A defender whose charge is between
-/// `LOW_CHARGE_THRESHOLD` and `WEAKENED_CHARGE_THRESHOLD` is
-/// still weakened but not yet rotating; below the low
-/// threshold the rotation kicks in.
-pub const LOW_CHARGE_THRESHOLD: f32 = 0.5;
-
-/// Fixed ticks between health damage pulses at empty charge.
-pub const EMPTY_CHARGE_DAMAGE_INTERVAL_TICKS: u8 = 6;
-
-/// Health lost by one empty-charge damage pulse.
-pub const EMPTY_CHARGE_HEALTH_DAMAGE: u32 = 1;
-
-/// Material cost (in `ResourceKind::Minerals`) to fully stock
-/// a freshly auto-created charger. Sized to fit at least one
-/// full hauler load ([`crate::nanobot::haul::HAULER_CARRY_CAPACITY`])
-/// with headroom so the first hauler trip can complete in
-/// one go, and to give a defended cell a meaningful logistics
-/// target before the next visit is needed.
-pub const AUTO_CHARGER_CAPACITY: u32 = 120;
-
-/// World-units reach of a charger's charging radius. Matches
-/// the default stockpile radius so the hauler's "free
-/// space" reasoning and the defender's "am I in range?"
-/// reasoning share the same scale. A charger with the default
-/// radius covers its own cell with a comfortable margin.
-pub const AUTO_CHARGER_RADIUS: f32 = 64.0;
-
-/// Material buffer an auto-created charger starts with. New chargers begin
-/// empty so all minerals enter through physical logistics.
-pub const AUTO_CHARGER_INITIAL_AMOUNT: u32 = 0;
-
-/// Maximum Defenders that one completed or pending Charger reserves in the
-/// swarm-wide service pool. An unserved low-Charge Defender creates another
-/// plan only after all reserved slots are consumed.
-pub const MAX_DEFENDERS_PER_CHARGER: u32 = 3;
 
 // ---------------------------------------------------------------------------
 // Components
@@ -161,23 +88,20 @@ pub struct Charger {
     pub amount: u32,
     /// Maximum amount of `kind` the charger can hold.
     pub capacity: u32,
-    /// World-units radius at which a defender can charge from
-    /// this charger. The default
-    /// ([`AUTO_CHARGER_RADIUS`]) covers the cell with a
-    /// comfortable margin.
-    pub radius: f32,
 }
 
 impl Charger {
-    /// Build a new empty charger in `cell` with default kind, capacity,
-    /// and radius. Used by auto-creation and tests.
+    /// Build a new empty charger in `cell` with default capacity.
     pub fn new(cell: IVec2) -> Self {
+        Self::with_tuning(cell, &Tuning::default())
+    }
+
+    pub fn with_tuning(cell: IVec2, tuning: &Tuning) -> Self {
         Self {
             cell,
             kind: AUTO_CHARGER_KIND,
-            amount: AUTO_CHARGER_INITIAL_AMOUNT,
-            capacity: AUTO_CHARGER_CAPACITY,
-            radius: AUTO_CHARGER_RADIUS,
+            amount: 0,
+            capacity: tuning.charge.charger_capacity,
         }
     }
 
@@ -206,11 +130,7 @@ pub const AUTO_CHARGER_KIND: ResourceKind = ResourceKind::Minerals;
 /// Charge" acceptance criterion, the assignment and rotation
 /// systems both gate on `NanobotType::Defender`.
 ///
-/// `current` is in `[0, max]`. `max` is fixed at
-/// [`MAX_CHARGE`] in the first implementation; the field is
-/// on the component so a future "veteran defender with a
-/// bigger battery" issue can extend the contract without
-/// changing the type shape.
+/// `current` is in `[0, max]`. Live maximum edits preserve its filled fraction.
 #[derive(Debug, Component, Clone, Copy)]
 pub struct Charge {
     pub current: f32,
@@ -219,14 +139,18 @@ pub struct Charge {
 
 impl Default for Charge {
     fn default() -> Self {
-        Self {
-            current: MAX_CHARGE,
-            max: MAX_CHARGE,
-        }
+        Self::with_tuning(&Tuning::default())
     }
 }
 
 impl Charge {
+    pub fn with_tuning(tuning: &Tuning) -> Self {
+        Self {
+            current: tuning.charge.max_charge,
+            max: tuning.charge.max_charge,
+        }
+    }
+
     /// True when `current` has reached or exceeded `max`. The
     /// work system uses this to return a Defender through the
     /// current response and staging allocation.
@@ -242,8 +166,8 @@ impl Charge {
 
     /// True when the charge is low enough that the rotation
     /// system should route the Defender toward a working Charger.
-    pub fn needs_rotation(&self) -> bool {
-        self.current <= LOW_CHARGE_THRESHOLD
+    pub fn needs_rotation(&self, tuning: &ChargeTuning) -> bool {
+        self.current <= tuning.low_threshold
     }
 }
 
@@ -329,69 +253,55 @@ pub fn select_defenders_for_rotation(
 }
 
 /// Minerals consumed while refilling one defender from `current` to `max`.
-/// Each pulse spans [`CHARGE_PULSE_INTERVAL_TICKS`] drain ticks, then grants
-/// [`CHARGE_PER_PULSE`] charge when one mineral is available. The supplied
-/// drain rate must match the shared pacing used by the runtime drain system.
-pub fn minerals_to_fully_charge(current: f32, max: f32, charge_drain_per_tick: f32) -> u32 {
+/// Supplied pulses offset drain over their configured interval before adding charge.
+pub fn minerals_to_fully_charge(current: f32, max: f32, tuning: &ChargeTuning) -> u32 {
     if current >= max || max <= 0.0 {
         return 0;
     }
     let net_refill =
-        CHARGE_PER_PULSE - charge_drain_per_tick * f32::from(CHARGE_PULSE_INTERVAL_TICKS);
+        tuning.per_pulse - tuning.drain_per_tick * f32::from(tuning.pulse_interval_ticks);
     debug_assert!(net_refill > 0.0);
     let missing_ticks = (max - current.max(0.0)) / net_refill;
     // The pulse and drain values are f32 gameplay values. A value constructed
     // by subtracting one net refill can land just above one because of their
     // representation, so retain a small domain tolerance before rounding.
     let rounding_tolerance = 1e-5 * missing_ticks.abs().max(1.0);
-    (missing_ticks - rounding_tolerance).ceil() as u32 * CHARGER_MATERIAL_PER_PULSE
+    ((missing_ticks - rounding_tolerance).ceil() as u32).saturating_mul(tuning.material_per_pulse)
 }
 
 /// Linear multiplier in `[0, 1]` derived from `charge`. A
 /// defender at full charge has a `1.0` multiplier; a defender
-/// at or above [`WEAKENED_CHARGE_THRESHOLD`] is treated as
+/// at or above the configured weakened threshold is treated as
 /// "still strong" and also has a `1.0` multiplier. Below the
 /// threshold the multiplier scales linearly with charge so an
 /// empty defender has `0.0` attack and `0.0` defense. The
 /// function is pure and lives next to the charge data so unit
 /// tests can pin the contract without a Bevy `App`.
-pub fn charge_strength_multiplier(charge: f32) -> f32 {
-    if charge >= WEAKENED_CHARGE_THRESHOLD {
-        return 1.0;
-    }
+pub fn charge_strength_multiplier(charge: f32, tuning: &ChargeTuning) -> f32 {
     if charge <= 0.0 {
         return 0.0;
     }
-    charge / WEAKENED_CHARGE_THRESHOLD
+    if charge >= tuning.weakened_threshold {
+        return 1.0;
+    }
+    charge / tuning.weakened_threshold
 }
 
 /// Effective attack for a defender with `charge` current. The
-/// base attack is a project constant; the multiplier comes
+/// base attack comes from live tuning; the multiplier comes
 /// from [`charge_strength_multiplier`]. Combat uses this
 /// value for delivered Defender damage.
-pub fn effective_attack(charge: f32) -> f32 {
-    DEFENDER_BASE_ATTACK * charge_strength_multiplier(charge)
+pub fn effective_attack(charge: f32, tuning: &Tuning) -> f32 {
+    tuning.combat.base_attack * charge_strength_multiplier(charge, &tuning.charge)
 }
 
 /// Effective defense for a defender with `charge` current.
 /// Mirrors [`effective_attack`]: base defense scaled by the
 /// charge multiplier. Combat uses this value when resolving
 /// incoming Defender attacks.
-pub fn effective_defense(charge: f32) -> f32 {
-    DEFENDER_BASE_DEFENSE * charge_strength_multiplier(charge)
+pub fn effective_defense(charge: f32, tuning: &Tuning) -> f32 {
+    tuning.combat.base_defense * charge_strength_multiplier(charge, &tuning.charge)
 }
-
-/// Base attack a defender deals when fully charged. A
-/// "shared combat stats" constant for the first
-/// implementation; the project glossary does not pin a
-/// specific number so this is a sensible unit-scale value
-/// that makes the test math obvious.
-pub const DEFENDER_BASE_ATTACK: f32 = 10.0;
-
-/// Base defense a defender has when fully charged. Mirror of
-/// [`DEFENDER_BASE_ATTACK`] for the defense side of the
-/// combat stats.
-pub const DEFENDER_BASE_DEFENSE: f32 = 10.0;
 
 // ---------------------------------------------------------------------------
 // Systems
@@ -407,21 +317,22 @@ pub const DEFENDER_BASE_DEFENSE: f32 = 10.0;
 /// The system iterates all defenders with `Charge`; the work
 /// is a single `f32` decrement per Defender per fixed tick.
 pub fn defender_charge_drain_system(
-    pacing: Res<crate::gameplay_pacing::GameplayPacing>,
+    tuning: Res<Tuning>,
     mut defenders: Query<(&mut Charge, &NanobotType), With<Nanobot>>,
 ) {
     for (mut charge, nanobot_type) in &mut defenders {
         if *nanobot_type != NanobotType::Defender {
             continue;
         }
-        charge.current = (charge.current - pacing.charge_drain_per_tick).max(0.0);
+        charge.current = (charge.current - tuning.charge.drain_per_tick).max(0.0);
     }
 }
 
-/// Apply one health damage pulse every six fixed ticks to an empty defender
+/// Apply configured periodic health damage to an empty Defender
 /// that is neither en route to nor charging at a Charger.
 #[allow(clippy::type_complexity)]
 pub fn defender_health_loss_when_empty_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     mut defenders: Query<
         (
@@ -446,16 +357,23 @@ pub fn defender_health_loss_when_empty_system(
             }
             continue;
         }
-        if let Some(mut progress) = progress {
-            progress.ticks_elapsed = progress.ticks_elapsed.saturating_add(1);
-            if progress.ticks_elapsed >= EMPTY_CHARGE_DAMAGE_INTERVAL_TICKS {
-                progress.ticks_elapsed = 0;
-                health.current = health.current.saturating_sub(EMPTY_CHARGE_HEALTH_DAMAGE);
-            }
+        let elapsed = progress
+            .as_ref()
+            .map_or(1, |progress| progress.ticks_elapsed.saturating_add(1));
+        let elapsed = if elapsed >= tuning.charge.empty_damage_interval_ticks {
+            health.current = health
+                .current
+                .saturating_sub(tuning.charge.empty_health_damage);
+            0
         } else {
-            commands
-                .entity(entity)
-                .insert(EmptyChargeProgress { ticks_elapsed: 1 });
+            elapsed
+        };
+        if let Some(mut progress) = progress {
+            progress.ticks_elapsed = elapsed;
+        } else {
+            commands.entity(entity).insert(EmptyChargeProgress {
+                ticks_elapsed: elapsed,
+            });
         }
     }
 }
@@ -469,7 +387,7 @@ pub fn charger_auto_creation_system(
     access: super::construction_access::ConstructionAccess,
     grid: Res<IntentGrid>,
     structure_sprites: Res<StructureSprites>,
-    pacing: Res<crate::gameplay_pacing::GameplayPacing>,
+    tuning: Res<Tuning>,
     chargers: Query<(
         Entity,
         &Charger,
@@ -545,7 +463,9 @@ pub fn charger_auto_creation_system(
         };
         let valid = charger_can_serve_in_owned_zone(charger, swarm, condition, &grid);
         if valid {
-            let spare = MAX_DEFENDERS_PER_CHARGER
+            let spare = tuning
+                .charge
+                .max_defenders_per_charger
                 .saturating_sub(charger_loads.get(&entity).copied().unwrap_or_default());
             *available_capacity.entry(swarm).or_default() += spare;
         }
@@ -562,7 +482,8 @@ pub fn charger_auto_creation_system(
             .cell(planned.cell)
             .is_some_and(|cell| cell.has_owned(IntentKind::Defend, swarm))
         {
-            *available_capacity.entry(swarm).or_default() += MAX_DEFENDERS_PER_CHARGER;
+            *available_capacity.entry(swarm).or_default() +=
+                tuning.charge.max_defenders_per_charger;
         }
     }
 
@@ -571,7 +492,7 @@ pub fn charger_auto_creation_system(
         .filter(|(_, _, charge, kind, _, health, assignment, progress, _)| {
             **kind == NanobotType::Defender
                 && !health.is_some_and(|health| health.current == 0)
-                && charge.needs_rotation()
+                && charge.needs_rotation(&tuning.charge)
                 && assignment.is_none()
                 && progress.is_none()
         })
@@ -651,7 +572,7 @@ pub fn charger_auto_creation_system(
         };
         commands.spawn((
             PlannedStructure::new(PlannedKind::Charger, cell)
-                .with_work_budget(pacing.construction_work_ticks),
+                .with_work_budget(tuning.construction.work_ticks),
             OwnerSwarm(owner),
             planned_visual_components(PlannedKind::Charger, &structure_sprites, placement_pos),
         ));
@@ -662,7 +583,7 @@ pub fn charger_auto_creation_system(
             )),
         );
         obstacles.push(Obstacle::planned(placement_pos));
-        *capacity = MAX_DEFENDERS_PER_CHARGER - 1;
+        *capacity = tuning.charge.max_defenders_per_charger - 1;
     }
 }
 
@@ -711,11 +632,13 @@ pub fn find_swarm_capacity_aware_charger(
     swarms: &Query<&SwarmId, With<Swarm>>,
     charger_loads: &HashMap<Entity, u32>,
     navigation: &crate::navigation::Navigation,
+    tuning: &ChargeTuning,
 ) -> Option<(Entity, Vec2)> {
     let mut best: Option<(f32, Entity, Vec2)> = None;
     for (entity, charger, transform, owner, condition) in chargers.iter() {
         if !charger_is_eligible(charger, owner, condition, swarm, grid, swarms)
-            || charger_loads.get(&entity).copied().unwrap_or_default() >= MAX_DEFENDERS_PER_CHARGER
+            || charger_loads.get(&entity).copied().unwrap_or_default()
+                >= tuning.max_defenders_per_charger
         {
             continue;
         }
@@ -749,6 +672,7 @@ pub fn find_swarm_capacity_aware_charger(
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub fn defender_rotation_to_charger_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     mut allocation_wake: Option<ResMut<RegionalAllocationWake>>,
     grid: Res<IntentGrid>,
@@ -813,7 +737,7 @@ pub fn defender_rotation_to_charger_system(
             **nanobot_type == NanobotType::Defender
                 && !health.is_some_and(|health| health.current == 0)
         })
-        .filter(|(_, _, charge, _, _, _, _)| charge.needs_rotation())
+        .filter(|(_, _, charge, _, _, _, _)| charge.needs_rotation(&tuning.charge))
         .map(|(entity, transform, charge, _, member, _, response)| {
             (
                 member.0,
@@ -865,6 +789,7 @@ pub fn defender_rotation_to_charger_system(
                 &swarms,
                 &charger_loads,
                 &navigation,
+                &tuning.charge,
             ) else {
                 continue;
             };
@@ -968,8 +893,7 @@ pub fn defender_charger_arrive_system(
 }
 
 /// Defender charging work system. For every defender with a
-/// `ChargerProgress`, grant [`CHARGE_PER_PULSE`] every
-/// [`CHARGE_PULSE_INTERVAL_TICKS`] fixed ticks, and drain one mineral from the
+/// `ChargerProgress`, grant the configured charge per supplied pulse from the
 /// Charger. The Defender is released back to current allocation when the
 /// Charge is full or the Charger runs out of supply.
 ///
@@ -981,6 +905,7 @@ pub fn defender_charger_arrive_system(
 /// may pick the Defender during the same pass.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn defender_charger_work_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     mut allocation_wake: Option<ResMut<RegionalAllocationWake>>,
     mut defenders: Query<
@@ -1052,12 +977,12 @@ pub fn defender_charger_work_system(
             continue;
         };
         pulse.ticks_elapsed = pulse.ticks_elapsed.saturating_add(1);
-        if pulse.ticks_elapsed < CHARGE_PULSE_INTERVAL_TICKS {
+        if pulse.ticks_elapsed < tuning.charge.pulse_interval_ticks {
             continue;
         }
         pulse.ticks_elapsed = 0;
 
-        let consumed = CHARGER_MATERIAL_PER_PULSE.min(charger.amount);
+        let consumed = tuning.charge.material_per_pulse.min(charger.amount);
         if consumed == 0 {
             release_charger_state(&mut commands, entity, &mut allocation_wake);
             continue;
@@ -1067,7 +992,7 @@ pub fn defender_charger_work_system(
         if let Some(counters) = counters.as_deref_mut() {
             counters.record(member.0, BattleEvent::Consumed(consumed));
         }
-        charge.current = (charge.current + CHARGE_PER_PULSE).min(charge.max);
+        charge.current = (charge.current + tuning.charge.per_pulse).min(charge.max);
         if charge.is_full() || !charger.has_supply() {
             release_charger_state(&mut commands, entity, &mut allocation_wake);
         }
@@ -1107,6 +1032,44 @@ pub fn defender_charger_work_system(
 ///    arrived defenders into the charging state.
 /// 5. [`defender_charger_work_system`] -- refill charge and
 ///    drain charger material.
+pub fn reconcile_charge_tuning(world: &mut World, old: &Tuning, new: &Tuning) {
+    if old.charge.max_charge != new.charge.max_charge {
+        for mut charge in world.query::<&mut Charge>().iter_mut(world) {
+            let fraction = (charge.current / charge.max).clamp(0.0, 1.0);
+            charge.max = new.charge.max_charge;
+            charge.current = fraction * charge.max;
+        }
+    }
+    if old.charge.pulse_interval_ticks != new.charge.pulse_interval_ticks {
+        for mut pulse in world.query::<&mut ChargerPulseProgress>().iter_mut(world) {
+            pulse.ticks_elapsed = rescale_ticks(
+                u32::from(pulse.ticks_elapsed),
+                u32::from(old.charge.pulse_interval_ticks),
+                u32::from(new.charge.pulse_interval_ticks),
+            )
+            .min(u32::from(new.charge.pulse_interval_ticks.saturating_sub(1)))
+                as u16;
+        }
+    }
+    if old.charge.empty_damage_interval_ticks != new.charge.empty_damage_interval_ticks {
+        for mut pulse in world.query::<&mut EmptyChargeProgress>().iter_mut(world) {
+            pulse.ticks_elapsed = rescale_ticks(
+                u32::from(pulse.ticks_elapsed),
+                u32::from(old.charge.empty_damage_interval_ticks),
+                u32::from(new.charge.empty_damage_interval_ticks),
+            )
+            .min(u32::from(
+                new.charge.empty_damage_interval_ticks.saturating_sub(1),
+            )) as u8;
+        }
+    }
+    if old.charge.charger_capacity != new.charge.charger_capacity {
+        for mut charger in world.query::<&mut Charger>().iter_mut(world) {
+            charger.capacity = new.charge.charger_capacity;
+        }
+    }
+}
+
 pub struct ChargePlugin;
 
 impl Plugin for ChargePlugin {
@@ -1117,16 +1080,13 @@ impl Plugin for ChargePlugin {
         // on a later allocation pass; no legacy worker-claim
         // system is registered. Run before planned work so
         // the plan is present before that lifecycle reads it.
-        app.init_resource::<crate::gameplay_pacing::GameplayPacing>()
-            .add_systems(
-                FixedUpdate,
-                charger_auto_creation_system
-                    .after(crate::nanobot::planned::sink_stockpile_demand_system)
-                    .after(crate::nanobot::RegionalAllocationSet::Acquire)
-                    .before(
-                        crate::nanobot::structure_lifecycle::worker_planned_structure_work_system,
-                    ),
-            );
+        app.init_resource::<Tuning>().add_systems(
+            FixedUpdate,
+            charger_auto_creation_system
+                .after(crate::nanobot::planned::sink_stockpile_demand_system)
+                .after(crate::nanobot::RegionalAllocationSet::Acquire)
+                .before(crate::nanobot::structure_lifecycle::worker_planned_structure_work_system),
+        );
         // Consumer state settles before regional projection so Charge departure,
         // completion, and invalidation release old allocation before acquisition.
         app.add_systems(
@@ -1151,10 +1111,8 @@ impl Plugin for ChargePlugin {
 
 #[cfg(test)]
 mod tests {
-    //! Pure-helper unit tests for the charge data and
-    //! constants. The end-to-end contracts (creation,
-    //! logistics, weakening, health loss, rotation) live in
-    //! `tests/charger_behavior.rs`.
+    //! Pure Charge data and calculation contracts. Creation, logistics,
+    //! weakening, health loss, and rotation are covered in `tests/behavior/charger.rs`.
 
     use approx::assert_abs_diff_eq;
 
@@ -1162,12 +1120,13 @@ mod tests {
 
     #[test]
     fn charge_default_starts_full() {
+        let tuning = Tuning::default();
         let c = Charge::default();
-        assert_abs_diff_eq!(c.current, MAX_CHARGE, epsilon = 1e-5);
-        assert_abs_diff_eq!(c.max, MAX_CHARGE, epsilon = 1e-5);
+        assert_abs_diff_eq!(c.current, tuning.charge.max_charge, epsilon = 1e-5);
+        assert_abs_diff_eq!(c.max, tuning.charge.max_charge, epsilon = 1e-5);
         assert!(c.is_full());
         assert!(!c.is_empty());
-        assert!(!c.needs_rotation());
+        assert!(!c.needs_rotation(&tuning.charge));
     }
 
     #[test]
@@ -1192,71 +1151,90 @@ mod tests {
 
     #[test]
     fn charge_needs_rotation_at_or_below_low_threshold() {
+        let tuning = Tuning::default();
         let mut c = Charge::default();
-        assert!(!c.needs_rotation());
-        c.current = LOW_CHARGE_THRESHOLD;
-        assert!(c.needs_rotation(), "at threshold must trigger rotation");
-        c.current = LOW_CHARGE_THRESHOLD - 0.05;
-        assert!(c.needs_rotation());
-        c.current = LOW_CHARGE_THRESHOLD + 0.05;
+        assert!(!c.needs_rotation(&tuning.charge));
+        c.current = tuning.charge.low_threshold;
         assert!(
-            !c.needs_rotation(),
+            c.needs_rotation(&tuning.charge),
+            "at threshold must trigger rotation"
+        );
+        c.current = tuning.charge.low_threshold - 0.05;
+        assert!(c.needs_rotation(&tuning.charge));
+        c.current = tuning.charge.low_threshold + 0.05;
+        assert!(
+            !c.needs_rotation(&tuning.charge),
             "above threshold must not trigger rotation"
         );
     }
 
     #[test]
     fn charge_mineral_need_uses_net_pulse_boundaries() {
-        let net_refill =
-            CHARGE_PER_PULSE - CHARGE_DRAIN_PER_TICK * f32::from(CHARGE_PULSE_INTERVAL_TICKS);
+        let tuning = Tuning::default();
+        let net_refill = tuning.charge.per_pulse
+            - tuning.charge.drain_per_tick * f32::from(tuning.charge.pulse_interval_ticks);
         assert_eq!(
-            minerals_to_fully_charge(MAX_CHARGE, MAX_CHARGE, CHARGE_DRAIN_PER_TICK),
+            minerals_to_fully_charge(
+                tuning.charge.max_charge,
+                tuning.charge.max_charge,
+                &tuning.charge
+            ),
             0
         );
         assert_eq!(
-            minerals_to_fully_charge(MAX_CHARGE - net_refill, MAX_CHARGE, CHARGE_DRAIN_PER_TICK,),
-            CHARGER_MATERIAL_PER_PULSE
+            minerals_to_fully_charge(
+                tuning.charge.max_charge - net_refill,
+                tuning.charge.max_charge,
+                &tuning.charge,
+            ),
+            tuning.charge.material_per_pulse
         );
         assert_eq!(
             minerals_to_fully_charge(
-                MAX_CHARGE - net_refill * 1.01,
-                MAX_CHARGE,
-                CHARGE_DRAIN_PER_TICK,
+                tuning.charge.max_charge - net_refill * 1.01,
+                tuning.charge.max_charge,
+                &tuning.charge,
             ),
-            CHARGER_MATERIAL_PER_PULSE * 2
+            tuning.charge.material_per_pulse * 2
         );
     }
 
     #[test]
     fn charge_mineral_need_clamps_empty_and_out_of_range_charge() {
-        let net_refill =
-            CHARGE_PER_PULSE - CHARGE_DRAIN_PER_TICK * f32::from(CHARGE_PULSE_INTERVAL_TICKS);
-        let full_refill_pulses = (MAX_CHARGE / net_refill).ceil() as u32;
-        let full_refill_minerals = full_refill_pulses.saturating_mul(CHARGER_MATERIAL_PER_PULSE);
+        let tuning = Tuning::default();
+        let net_refill = tuning.charge.per_pulse
+            - tuning.charge.drain_per_tick * f32::from(tuning.charge.pulse_interval_ticks);
+        let full_refill_pulses = (tuning.charge.max_charge / net_refill).ceil() as u32;
+        let full_refill_minerals =
+            full_refill_pulses.saturating_mul(tuning.charge.material_per_pulse);
         assert_eq!(
-            minerals_to_fully_charge(0.0, MAX_CHARGE, CHARGE_DRAIN_PER_TICK),
+            minerals_to_fully_charge(0.0, tuning.charge.max_charge, &tuning.charge),
             full_refill_minerals
         );
         assert_eq!(
-            minerals_to_fully_charge(-1.0, MAX_CHARGE, CHARGE_DRAIN_PER_TICK),
+            minerals_to_fully_charge(-1.0, tuning.charge.max_charge, &tuning.charge),
             full_refill_minerals
         );
         assert_eq!(
-            minerals_to_fully_charge(MAX_CHARGE + 1.0, MAX_CHARGE, CHARGE_DRAIN_PER_TICK),
+            minerals_to_fully_charge(
+                tuning.charge.max_charge + 1.0,
+                tuning.charge.max_charge,
+                &tuning.charge
+            ),
             0
         );
     }
 
     #[test]
     fn charger_starts_empty_with_full_capacity() {
+        let tuning = Tuning::default();
         let charger = Charger::new(IVec2::new(1, -1));
         assert_eq!(charger.cell, IVec2::new(1, -1));
         assert_eq!(charger.kind, AUTO_CHARGER_KIND);
         assert_eq!(charger.amount, 0);
-        assert_eq!(charger.capacity, AUTO_CHARGER_CAPACITY);
-        assert_abs_diff_eq!(charger.radius, AUTO_CHARGER_RADIUS, epsilon = 1e-5);
+        assert_eq!(charger.capacity, tuning.charge.charger_capacity);
         assert!(!charger.has_supply());
-        assert_eq!(charger.free_space(), AUTO_CHARGER_CAPACITY);
+        assert_eq!(charger.free_space(), tuning.charge.charger_capacity);
     }
 
     #[test]
@@ -1280,40 +1258,53 @@ mod tests {
 
     #[test]
     fn supplied_pulse_outpaces_field_drain() {
-        let net_refill =
-            CHARGE_PER_PULSE - CHARGE_DRAIN_PER_TICK * f32::from(CHARGE_PULSE_INTERVAL_TICKS);
+        let tuning = Tuning::default();
+        let net_refill = tuning.charge.per_pulse
+            - tuning.charge.drain_per_tick * f32::from(tuning.charge.pulse_interval_ticks);
         assert!(net_refill > 0.0);
     }
 
     #[test]
     fn low_threshold_sits_above_weakened_threshold() {
+        let tuning = Tuning::default();
         // The rotation must trigger *before* the defender is
         // fully weakened so the sustain loop is preventative
         // rather than reactive. A test asserting
-        // LOW_CHARGE_THRESHOLD > WEAKENED_CHARGE_THRESHOLD
+        // tuning.charge.low_threshold > tuning.charge.weakened_threshold
         // pins the relative ordering.
-        const { assert!(LOW_CHARGE_THRESHOLD > WEAKENED_CHARGE_THRESHOLD) };
+        assert!(tuning.charge.low_threshold > tuning.charge.weakened_threshold);
     }
 
     #[test]
     fn charge_strength_multiplier_is_one_above_weakened_threshold() {
+        let tuning = Tuning::default();
         // Pin the "fully charged defenders are at full
         // strength" half of the contract. A defender at
         // exactly the threshold or above must be at full
         // multiplier.
-        assert!((charge_strength_multiplier(WEAKENED_CHARGE_THRESHOLD) - 1.0).abs() < 1e-6);
-        assert!((charge_strength_multiplier(MAX_CHARGE) - 1.0).abs() < 1e-6);
-        assert!((charge_strength_multiplier(0.5) - 1.0).abs() < 1e-6);
+        assert!(
+            (charge_strength_multiplier(tuning.charge.weakened_threshold, &tuning.charge) - 1.0)
+                .abs()
+                < 1e-6
+        );
+        assert!(
+            (charge_strength_multiplier(tuning.charge.max_charge, &tuning.charge) - 1.0).abs()
+                < 1e-6
+        );
+        assert!((charge_strength_multiplier(0.5, &tuning.charge) - 1.0).abs() < 1e-6);
     }
 
     #[test]
     fn charge_strength_multiplier_scales_linearly_below_weakened_threshold() {
+        let tuning = Tuning::default();
         // Pin the linear scaling: half the threshold gives
         // half the multiplier, quarter gives a quarter.
         // The implementation uses a direct `charge / threshold`
         // ratio so the linearity is exact (not approximate).
-        let half = charge_strength_multiplier(WEAKENED_CHARGE_THRESHOLD * 0.5);
-        let quarter = charge_strength_multiplier(WEAKENED_CHARGE_THRESHOLD * 0.25);
+        let half =
+            charge_strength_multiplier(tuning.charge.weakened_threshold * 0.5, &tuning.charge);
+        let quarter =
+            charge_strength_multiplier(tuning.charge.weakened_threshold * 0.25, &tuning.charge);
         assert!(
             (half - 0.5).abs() < 1e-6,
             "half charge -> half multiplier; got {half}"
@@ -1326,58 +1317,79 @@ mod tests {
 
     #[test]
     fn charge_strength_multiplier_is_zero_at_or_below_zero() {
-        // Empty charge means zero attack and zero defense.
-        assert_abs_diff_eq!(charge_strength_multiplier(0.0), 0.0, epsilon = 1e-5);
-        assert_abs_diff_eq!(charge_strength_multiplier(-0.5), 0.0, epsilon = 1e-5);
+        let mut tuning = Tuning::default();
+        tuning.charge.weakened_threshold = 0.0;
+        assert_abs_diff_eq!(charge_strength_multiplier(0.0, &tuning.charge), 0.0);
+        assert_abs_diff_eq!(
+            charge_strength_multiplier(0.0, &Tuning::default().charge),
+            0.0,
+            epsilon = 1e-5
+        );
+        assert_abs_diff_eq!(
+            charge_strength_multiplier(-0.5, &Tuning::default().charge),
+            0.0,
+            epsilon = 1e-5
+        );
     }
 
     #[test]
     fn charge_strength_multiplier_clamps_above_max() {
+        let tuning = Tuning::default();
         // Out-of-range inputs (e.g. an overfilling system)
         // must not produce a multiplier above 1.0.
-        let at_max = charge_strength_multiplier(MAX_CHARGE);
-        let above_max = charge_strength_multiplier(MAX_CHARGE * 2.0);
+        let at_max = charge_strength_multiplier(tuning.charge.max_charge, &tuning.charge);
+        let above_max = charge_strength_multiplier(tuning.charge.max_charge * 2.0, &tuning.charge);
         assert!((at_max - 1.0).abs() < 1e-6);
         assert!((above_max - 1.0).abs() < 1e-6, "above-max clamps to 1.0");
     }
 
     #[test]
     fn effective_attack_tracks_charge() {
+        let tuning = Tuning::default();
         // Acceptance: "Low Charge reduces Defender attack/defense."
         // A defender at full charge has full attack; a
         // defender at half the weakened threshold has half
         // attack; a defender at empty charge has zero attack.
-        assert!((effective_attack(MAX_CHARGE) - DEFENDER_BASE_ATTACK).abs() < 1e-5);
-        assert!((effective_attack(WEAKENED_CHARGE_THRESHOLD) - DEFENDER_BASE_ATTACK).abs() < 1e-5);
-        let half_attack = effective_attack(WEAKENED_CHARGE_THRESHOLD * 0.5);
         assert!(
-            (half_attack - DEFENDER_BASE_ATTACK * 0.5).abs() < 1e-5,
+            (effective_attack(tuning.charge.max_charge, &tuning) - tuning.combat.base_attack).abs()
+                < 1e-5
+        );
+        assert!(
+            (effective_attack(tuning.charge.weakened_threshold, &tuning)
+                - tuning.combat.base_attack)
+                .abs()
+                < 1e-5
+        );
+        let half_attack = effective_attack(tuning.charge.weakened_threshold * 0.5, &tuning);
+        assert!(
+            (half_attack - tuning.combat.base_attack * 0.5).abs() < 1e-5,
             "half charge -> half attack; got {half_attack}"
         );
-        assert_abs_diff_eq!(effective_attack(0.0), 0.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(effective_attack(0.0, &tuning), 0.0, epsilon = 1e-5);
     }
 
     #[test]
     fn effective_defense_tracks_charge() {
+        let tuning = Tuning::default();
         // Mirror of `effective_attack` for the defense
         // side. The same linearity test pins the contract.
-        assert!((effective_defense(MAX_CHARGE) - DEFENDER_BASE_DEFENSE).abs() < 1e-5);
         assert!(
-            (effective_defense(WEAKENED_CHARGE_THRESHOLD) - DEFENDER_BASE_DEFENSE).abs() < 1e-5
+            (effective_defense(tuning.charge.max_charge, &tuning) - tuning.combat.base_defense)
+                .abs()
+                < 1e-5
         );
-        let half_defense = effective_defense(WEAKENED_CHARGE_THRESHOLD * 0.5);
         assert!(
-            (half_defense - DEFENDER_BASE_DEFENSE * 0.5).abs() < 1e-5,
+            (effective_defense(tuning.charge.weakened_threshold, &tuning)
+                - tuning.combat.base_defense)
+                .abs()
+                < 1e-5
+        );
+        let half_defense = effective_defense(tuning.charge.weakened_threshold * 0.5, &tuning);
+        assert!(
+            (half_defense - tuning.combat.base_defense * 0.5).abs() < 1e-5,
             "half charge -> half defense; got {half_defense}"
         );
-        assert_abs_diff_eq!(effective_defense(0.0), 0.0, epsilon = 1e-5);
-    }
-
-    #[test]
-    fn auto_charger_constants_form_a_consistent_buffer() {
-        // New chargers rely on physical logistics for all material.
-        const { assert!(AUTO_CHARGER_INITIAL_AMOUNT == 0) };
-        const { assert!(AUTO_CHARGER_INITIAL_AMOUNT < AUTO_CHARGER_CAPACITY) };
+        assert_abs_diff_eq!(effective_defense(0.0, &tuning), 0.0, epsilon = 1e-5);
     }
 
     #[test]

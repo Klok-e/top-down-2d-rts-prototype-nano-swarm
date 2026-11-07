@@ -8,10 +8,9 @@
 //! contested deposit.
 
 use bevy::prelude::*;
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 use top_down_2d_rts_prototype_nano_swarm::{
-    nanobot::{
-        OwnerSwarm, ReturningToStockpile, Swarm, SwarmId, WORKER_CARRY_CAPACITY, WorkerLoad,
-    },
+    nanobot::{OwnerSwarm, ReturningToStockpile, Swarm, SwarmId, WorkerLoad},
     resources::{ResourceKind, Stockpile, StockpileRole},
 };
 
@@ -55,7 +54,7 @@ fn worker_carry_assign_skips_enemy_owned_stockpile() {
     // Stamp a load so the carry-assign system processes the worker.
     app.world_mut().entity_mut(worker).insert(WorkerLoad {
         kind: ResourceKind::Minerals,
-        amount: WORKER_CARRY_CAPACITY,
+        amount: Tuning::default().logistics.worker_carry_capacity,
     });
 
     // An enemy-owned Source Stockpile right next to the worker.
@@ -86,7 +85,7 @@ fn worker_carry_assign_prefers_own_stockpile_over_enemy() {
     let worker = common::spawn_worker_at(&mut app, worker_pos);
     app.world_mut().entity_mut(worker).insert(WorkerLoad {
         kind: ResourceKind::Minerals,
-        amount: WORKER_CARRY_CAPACITY,
+        amount: Tuning::default().logistics.worker_carry_capacity,
     });
 
     let enemy_swarm = spawn_swarm_with_id(&mut app, SwarmId(7));
@@ -127,7 +126,7 @@ fn unowned_stockpile_still_usable_by_any_worker() {
     let worker = common::spawn_worker_at(&mut app, worker_pos);
     app.world_mut().entity_mut(worker).insert(WorkerLoad {
         kind: ResourceKind::Minerals,
-        amount: WORKER_CARRY_CAPACITY,
+        amount: Tuning::default().logistics.worker_carry_capacity,
     });
 
     let _unowned = app

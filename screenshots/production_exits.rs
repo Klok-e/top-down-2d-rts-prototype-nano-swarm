@@ -4,14 +4,13 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z,
     fly_camera::CameraZoom2d,
-    game_settings::GameSettings,
     intent::IntentGrid,
     nanobot::{
-        Commitment, DirectMovementComponent, Health, Nanobot, NanobotType, OwnerSwarm,
-        PRODUCTION_TICKS_PER_BOT, PlannedKind, ProductionFacility, StrategicController, Swarm,
-        SwarmId, SwarmMember, VelocityComponent,
+        Commitment, DirectMovementComponent, Health, Nanobot, NanobotType, OwnerSwarm, PlannedKind,
+        ProductionFacility, StrategicController, Swarm, SwarmId, SwarmMember, VelocityComponent,
     },
     structure_sprites::{StructureSprites, StructureVisual, StructureVisualState},
+    tuning::Tuning,
 };
 
 #[derive(Resource)]
@@ -61,14 +60,17 @@ pub fn production_exit(ctx: &mut TestContext) -> TestFlow {
     if phase <= 1 {
         assert_eq!(bots.len(), 8, "blocked facility must retain its output");
         assert_eq!(production.current_target, Some(NanobotType::Hauler));
-        assert_eq!(production.progress, PRODUCTION_TICKS_PER_BOT);
+        assert_eq!(
+            production.progress,
+            Tuning::default().production.ticks_per_bot
+        );
         assert_eq!(production.input_amount, 0);
         if phase == 0 && ctx.frame >= 24 {
             ctx.world.resource_mut::<ExitScene>().phase = 1;
             return TestFlow::Screenshot("production_exit_waiting".into());
         }
         if phase == 1 {
-            ctx.world.resource_mut::<GameSettings>().bot_speed = 5.;
+            ctx.world.resource_mut::<Tuning>().logistics.bot_speed = 5.;
             // The screenshot pump advances simulation; recheck waiting above before moving.
             ctx.world
                 .entity_mut(blocker)
@@ -100,7 +102,7 @@ pub fn production_exit(ctx: &mut TestContext) -> TestFlow {
             blocker_position.y <= 112.01,
             "traffic must physically move before release"
         );
-        ctx.world.resource_mut::<GameSettings>().bot_speed = 0.;
+        ctx.world.resource_mut::<Tuning>().logistics.bot_speed = 0.;
         ctx.world.get_mut::<Text2d>(caption).unwrap().0 = "EXIT CLEAR / ONE HAULER RELEASED".into();
         let mut scene = ctx.world.resource_mut::<ExitScene>();
         scene.phase = 3;
@@ -148,7 +150,7 @@ fn prepare(world: &mut World) {
         world.entity_mut(entity).remove::<StrategicController>();
     }
     world.insert_resource(IntentGrid::new(8, 8));
-    world.resource_mut::<GameSettings>().bot_speed = 0.;
+    world.resource_mut::<Tuning>().logistics.bot_speed = 0.;
     for (mut transform, mut projection, mut zoom) in world
         .query::<(&mut Transform, &mut Projection, &mut CameraZoom2d)>()
         .iter_mut(world)
@@ -162,7 +164,7 @@ fn prepare(world: &mut World) {
     }
     let mut production = ProductionFacility::new();
     production.current_target = Some(NanobotType::Hauler);
-    production.progress = PRODUCTION_TICKS_PER_BOT;
+    production.progress = Tuning::default().production.ticks_per_bot;
     production.input_amount = 0;
     let kind = PlannedKind::ProductionFacility;
     let owner = world

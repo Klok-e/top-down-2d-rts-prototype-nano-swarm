@@ -11,15 +11,7 @@ use crate::nanobot::{
 };
 use crate::spatial::FixedSpatialBuckets;
 use crate::structure_sprites::StructureVisual;
-
-/// Defender attack reach in world units.
-pub const DEFENDER_ATTACK_RANGE: f32 = 96.0;
-
-/// Baseline fixed-tick interval between delivered Defender attacks.
-pub const DEFENDER_ATTACK_INTERVAL_TICKS: u16 = 15;
-
-/// Structure damage multiplier for a fully charged Defender attack.
-pub const DEFENDER_STRUCTURE_DAMAGE_FACTOR: f32 = 0.5;
+use crate::tuning::{Tuning, rescale_ticks};
 
 /// Stable support-structure identity retained after gameplay destruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,8 +147,8 @@ fn damage_after_defense(attack: f32, defense: f32) -> u32 {
     (attack / (1.0 + defense / 10.0)).round().max(1.0) as u32
 }
 
-fn structure_hit_damage(attack: f32) -> u32 {
-    damage_after_defense(attack * DEFENDER_STRUCTURE_DAMAGE_FACTOR, 0.0)
+fn structure_hit_damage(attack: f32, tuning: &Tuning) -> u32 {
+    damage_after_defense(attack * tuning.combat.structure_damage_factor, 0.0)
 }
 
 fn nominal_damage(contributions: &BTreeMap<SwarmId, u32>) -> u32 {
@@ -208,7 +200,7 @@ fn record_combat_damage(
 /// applied after target selection so entity iteration order cannot change the exchange.
 #[allow(clippy::type_complexity)]
 pub fn defender_combat_system(
-    pacing: Res<crate::gameplay_pacing::GameplayPacing>,
+    tuning: Res<Tuning>,
     mut combatants: ParamSet<(
         Query<
             (
@@ -270,11 +262,11 @@ pub fn defender_combat_system(
             })
         })
         .collect::<Vec<_>>();
-    let mut nanobot_buckets = FixedSpatialBuckets::new(DEFENDER_ATTACK_RANGE);
+    let mut nanobot_buckets = FixedSpatialBuckets::new(tuning.combat.attack_range);
     for target in snapshot.iter().copied() {
         nanobot_buckets.insert(target.position, target);
     }
-    let mut structure_buckets = FixedSpatialBuckets::new(DEFENDER_ATTACK_RANGE);
+    let mut structure_buckets = FixedSpatialBuckets::new(tuning.combat.attack_range);
     for target in structures.iter().copied() {
         structure_buckets.insert(target.position, target);
     }
@@ -286,7 +278,7 @@ pub fn defender_combat_system(
         .iter()
         .filter(|combatant| combatant.kind == NanobotType::Defender && combatant.responding)
     {
-        let attack = effective_attack(attacker.charge.unwrap_or_default());
+        let attack = effective_attack(attacker.charge.unwrap_or_default(), &tuning);
         let cooldown_ready = attacker.cooldown.is_none_or(|ticks| ticks == 0);
         let mut delivered_attack = false;
         let attacker_bucket = nanobot_buckets.bucket_for_position(attacker.position);
@@ -303,7 +295,7 @@ pub fn defender_combat_system(
             .filter(|target| target.swarm() != attacker.swarm)
             .filter_map(|target| {
                 let distance = attacker.position.distance(target.position());
-                (distance <= DEFENDER_ATTACK_RANGE).then_some((distance, target))
+                (distance <= tuning.combat.attack_range).then_some((distance, target))
             })
             .min_by(|(left_distance, left), (right_distance, right)| {
                 left_distance
@@ -316,7 +308,7 @@ pub fn defender_combat_system(
             match nearest_target {
                 Some(CombatTarget::Nanobot(target)) => {
                     let defense = if target.kind == NanobotType::Defender {
-                        effective_defense(target.charge.unwrap_or_default())
+                        effective_defense(target.charge.unwrap_or_default(), &tuning)
                     } else {
                         0.0
                     };
@@ -337,7 +329,7 @@ pub fn defender_combat_system(
                     }
                 }
                 Some(CombatTarget::Structure(target)) => {
-                    let damage = structure_hit_damage(attack);
+                    let damage = structure_hit_damage(attack, &tuning);
                     if damage > 0 {
                         *structure_damage
                             .entry(target.entity)
@@ -362,7 +354,7 @@ pub fn defender_combat_system(
                 .entity(attacker.entity)
                 .insert(DefenderAttackCooldown {
                     ticks_remaining: if delivered_attack {
-                        pacing.attack_interval_ticks.saturating_sub(1)
+                        tuning.combat.attack_interval_ticks.saturating_sub(1)
                     } else {
                         attacker.cooldown.unwrap_or_default().saturating_sub(1)
                     },
@@ -457,11 +449,41 @@ pub fn defender_combat_system(
     }
 }
 
+pub fn reconcile_combat_tuning(world: &mut World, old: &Tuning, new: &Tuning) {
+    if old.combat.attack_interval_ticks != new.combat.attack_interval_ticks {
+        for mut cooldown in world.query::<&mut DefenderAttackCooldown>().iter_mut(world) {
+            cooldown.ticks_remaining = rescale_ticks(
+                u32::from(cooldown.ticks_remaining),
+                u32::from(old.combat.attack_interval_ticks),
+                u32::from(new.combat.attack_interval_ticks),
+            )
+            .min(u32::from(
+                new.combat.attack_interval_ticks.saturating_sub(1),
+            )) as u16;
+        }
+    }
+    if old.combat.nanobot_max_health != new.combat.nanobot_max_health {
+        for mut health in world
+            .query_filtered::<&mut Health, With<Nanobot>>()
+            .iter_mut(world)
+        {
+            health.current = if health.current == 0 {
+                0
+            } else {
+                ((u64::from(health.current) * u64::from(new.combat.nanobot_max_health)
+                    / u64::from(health.max.max(1))) as u32)
+                    .clamp(1, new.combat.nanobot_max_health)
+            };
+            health.max = new.combat.nanobot_max_health;
+        }
+    }
+}
+
 pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<crate::gameplay_pacing::GameplayPacing>()
+        app.init_resource::<Tuning>()
             .add_message::<ResolvedCombatFact>()
             .add_systems(
                 FixedUpdate,

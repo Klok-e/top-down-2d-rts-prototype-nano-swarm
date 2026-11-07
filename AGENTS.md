@@ -1,5 +1,9 @@
 # Repository Guidelines
 
+## Constraints
+
+Constraints not explicitly confirmed by the user may be relaxed to simplify code or improve readability, code quality, or performance. When you identify such an opportunity, explain the benefit and ask whether the user cares about preserving the particular constraint before relaxing it.
+
 ## Change Verification
 
 - Review the diff for correctness and code quality.

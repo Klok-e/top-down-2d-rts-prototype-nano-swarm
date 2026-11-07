@@ -7,6 +7,7 @@
 //! assignments can still drain them defensively for tests.
 
 use crate::battle_statistics::{BattleCounters, BattleEvent};
+use crate::tuning::Tuning;
 use bevy::prelude::*;
 
 use crate::nanobot::{
@@ -18,15 +19,6 @@ use crate::nanobot::{
 };
 use crate::navigation::{ConnectivityStatus, Navigation, RouteGoal};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole};
-
-/// Maximum units a Hauler can carry in a single trip. The glossary is
-/// explicit that Haulers carry "much more" than Workers; this cap is
-/// deliberately five times the worker cap so the gap remains visible in
-/// the swarm output.
-pub const HAULER_CARRY_CAPACITY: u32 = 20;
-
-/// Minerals a Hauler moves after each completed material-work interval.
-pub const HAULER_TRANSFER_PER_PULSE: u32 = 1;
 
 /// Backwards-compatible name for the shared cargo carried by a Hauler.
 /// Cargo exists during gradual loading and remains after loading completes.
@@ -133,6 +125,7 @@ pub fn hauler_arrive_source_system(
 /// disappears), transition the hauler to Carrying.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn hauler_load_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     navigation: Res<Navigation>,
     mut haulers: Query<
@@ -165,7 +158,8 @@ pub fn hauler_load_system(
         let target_amount = reservation
             .as_ref()
             .map(|reservation| reservation.amount)
-            .unwrap_or(HAULER_CARRY_CAPACITY);
+            .unwrap_or(tuning.logistics.hauler_carry_capacity)
+            .min(tuning.logistics.hauler_carry_capacity);
         let finish_reservation = |reservation: Option<&mut LogisticsReservation>, carried| {
             if let Some(reservation) = reservation {
                 reservation.source_remaining = 0;
@@ -222,7 +216,7 @@ pub fn hauler_load_system(
         if can_load && let Some(mut lease) = lease {
             lease.record_work();
         }
-        if !work.completes_unit() {
+        if !work.completes_unit(tuning.logistics.material_work_ticks) {
             continue;
         }
 
@@ -233,7 +227,9 @@ pub fn hauler_load_system(
                 continue;
             }
             let can_still_carry = target_amount - cargo.amount;
-            let actual = HAULER_TRANSFER_PER_PULSE
+            let actual = tuning
+                .logistics
+                .hauler_transfer_per_pulse
                 .min(deposit.amount)
                 .min(can_still_carry);
             cargo.amount += actual;
@@ -260,7 +256,9 @@ pub fn hauler_load_system(
                 continue;
             }
             let can_still_carry = target_amount - cargo.amount;
-            let actual = HAULER_TRANSFER_PER_PULSE
+            let actual = tuning
+                .logistics
+                .hauler_transfer_per_pulse
                 .min(stockpile.amount)
                 .min(can_still_carry);
             cargo.amount += actual;
@@ -327,7 +325,9 @@ fn reservation_covers_destination(
     amount: u32,
 ) -> bool {
     reservation.is_none_or(|reservation| {
-        reservation.destination == destination && reservation.destination_remaining >= amount
+        reservation.destination == destination
+            && reservation.destination_remaining > 0
+            && amount > 0
     })
 }
 
@@ -354,7 +354,7 @@ fn valid_destination_region(
     if !endpoint_is_operational(destination, conditions) {
         return None;
     }
-    let (endpoint, transform) =
+    let (endpoint, transform, capacity) =
         if let Ok((_, stockpile, transform, role, owner)) = stockpiles.get(destination) {
             (
                 Destination {
@@ -364,6 +364,7 @@ fn valid_destination_region(
                     owner: logistics_owner(owner, swarms),
                 },
                 transform,
+                stockpile.capacity,
             )
         } else if let Ok((_, facility, transform, owner)) = facilities.get(destination) {
             (
@@ -374,6 +375,7 @@ fn valid_destination_region(
                     owner: logistics_owner(owner, swarms),
                 },
                 transform,
+                facility.input_capacity,
             )
         } else if let Ok((_, charger, transform, owner)) = chargers.get(destination) {
             (
@@ -384,12 +386,22 @@ fn valid_destination_region(
                     owner: logistics_owner(owner, swarms),
                 },
                 transform,
+                charger.capacity,
             )
         } else {
             return None;
         };
     endpoint
-        .can_receive_load(swarm, cargo, source_role, returning, incoming_claims)
+        .can_receive_load(
+            swarm,
+            Cargo {
+                amount: cargo.amount.min(capacity),
+                ..cargo
+            },
+            source_role,
+            returning,
+            incoming_claims,
+        )
         .then(|| InteractionRegion::structure(transform))
 }
 
@@ -432,7 +444,7 @@ pub fn hauler_reroute_system(
         }
         let role = assignment.pickup_role;
         let position = transform.translation.truncate();
-        let endpoint = |candidate, is_return| {
+        let endpoint = |candidate, is_return, amount| {
             let incoming = reserved_destination_capacity(&reservations, candidate, Some(entity))
                 .saturating_add(
                     same_tick_claims
@@ -444,7 +456,7 @@ pub fn hauler_reroute_system(
                 candidate,
                 role,
                 is_return,
-                *cargo,
+                Cargo { amount, ..*cargo },
                 swarm_member.0,
                 incoming,
                 &stockpiles,
@@ -455,7 +467,13 @@ pub fn hauler_reroute_system(
             )
         };
         if reservation_covers_destination(reservation, assignment.sink, cargo.amount)
-            && let Some(current) = endpoint(assignment.sink, returning.is_some())
+            && let Some(current) = endpoint(
+                assignment.sink,
+                returning.is_some(),
+                reservation.map_or(cargo.amount, |reservation| {
+                    reservation.destination_remaining.min(cargo.amount)
+                }),
+            )
         {
             match navigation.query_connectivity(position, RouteGoal::Interaction(current)) {
                 ConnectivityStatus::Connected { .. } | ConnectivityStatus::Pending => continue,
@@ -472,11 +490,11 @@ pub fn hauler_reroute_system(
         {
             let is_stockpile = stockpiles.contains(candidate);
             let ordinary = (role != StockpileRole::Sink || !is_stockpile)
-                .then(|| endpoint(candidate, false))
+                .then(|| endpoint(candidate, false, cargo.amount))
                 .flatten();
             let (is_return, target) = if let Some(target) = ordinary {
                 (false, target)
-            } else if is_stockpile && let Some(target) = endpoint(candidate, true) {
+            } else if is_stockpile && let Some(target) = endpoint(candidate, true, cargo.amount) {
                 (true, target)
             } else {
                 continue;
@@ -508,11 +526,37 @@ pub fn hauler_reroute_system(
             release_destination_claim(&mut commands, entity, reservation);
             continue;
         };
-        *same_tick_claims.entry(destination).or_default() += cargo.amount;
+        let free_space = stockpiles
+            .get(destination)
+            .map(|(_, stockpile, ..)| stockpile.free_space())
+            .or_else(|_| {
+                facilities
+                    .get(destination)
+                    .map(|(_, facility, ..)| facility.input_free_space())
+            })
+            .or_else(|_| {
+                chargers
+                    .get(destination)
+                    .map(|(_, charger, ..)| charger.free_space())
+            })
+            .unwrap_or_default();
+        let claim = cargo.amount.min(
+            free_space.saturating_sub(
+                reserved_destination_capacity(&reservations, destination, Some(entity))
+                    .saturating_add(
+                        same_tick_claims
+                            .get(&destination)
+                            .copied()
+                            .unwrap_or_default(),
+                    ),
+            ),
+        );
+        *same_tick_claims.entry(destination).or_default() += claim;
         assignment.sink = destination;
         let mut redirected =
             LogisticsReservation::new(assignment.source, destination, cargo.kind, cargo.amount);
         redirected.source_remaining = 0;
+        redirected.destination_remaining = claim;
         commands
             .entity(entity)
             .insert((redirected, target.movement_from(position)));
@@ -586,7 +630,15 @@ pub fn hauler_carry_assign_system(
             assignment.sink,
             assignment.pickup_role,
             returning.is_some(),
-            *cargo,
+            Cargo {
+                amount: reservations
+                    .get(entity)
+                    .ok()
+                    .map_or(cargo.amount, |(_, reservation)| {
+                        reservation.destination_remaining.min(cargo.amount)
+                    }),
+                ..*cargo
+            },
             swarm_member.0,
             incoming,
             &stockpiles,
@@ -609,6 +661,7 @@ pub fn hauler_carry_assign_system(
 /// Unload only into a destination that remains valid for cargo's source tier.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn hauler_delivery_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     mut haulers: Query<
         (
@@ -675,7 +728,12 @@ pub fn hauler_delivery_system(
             assignment.sink,
             assignment.pickup_role,
             returning.is_some(),
-            *load,
+            Cargo {
+                amount: reservation.map_or(load.amount, |reservation| {
+                    reservation.destination_remaining.min(load.amount)
+                }),
+                ..*load
+            },
             swarm_member.0,
             incoming,
             &stockpiles.as_readonly(),
@@ -698,10 +756,13 @@ pub fn hauler_delivery_system(
                 .insert(super::MaterialWorkProgress::default());
             continue;
         };
-        if !work.completes_unit() {
+        if !work.completes_unit(tuning.logistics.material_work_ticks) {
             continue;
         }
-        let transfer_limit = load.amount.min(HAULER_TRANSFER_PER_PULSE);
+        let transfer_limit = load
+            .amount
+            .min(tuning.logistics.hauler_transfer_per_pulse)
+            .min(reservation.map_or(u32::MAX, |reservation| reservation.destination_remaining));
         let actual = if let Ok((_, mut stockpile, _, _, _)) = stockpiles.get_mut(assignment.sink) {
             let actual = transfer_limit.min(stockpile.free_space());
             stockpile.amount += actual;

@@ -288,7 +288,7 @@ fn collect_structures(world: &mut World) -> serde_json::Value {
                 "kind": kind,
                 "health": structure.map(|structure| serde_json::json!({
                     "current": structure.health,
-                    "max": crate::nanobot::STRUCTURE_MAX_HEALTH,
+                    "max": world.resource::<crate::tuning::Tuning>().construction.max_health,
                 })),
                 "maintenance_age_ticks": structure.map(|structure| structure.ticks_since_maintained),
                 "charger": charger.map(|charger| serde_json::json!({
@@ -296,7 +296,6 @@ fn collect_structures(world: &mut World) -> serde_json::Value {
                     "kind": resource_kind(charger.kind),
                     "amount": charger.amount,
                     "capacity": charger.capacity,
-                    "radius": charger.radius,
                 })),
                 "stockpile": stockpile.map(|stockpile| serde_json::json!({
                     "kind": resource_kind(stockpile.kind),

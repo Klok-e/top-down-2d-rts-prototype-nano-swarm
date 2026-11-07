@@ -41,12 +41,14 @@ pub struct StrategicControllerPlugin;
 
 impl Plugin for StrategicControllerPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ControllerTelemetry>().add_systems(
-            FixedUpdate,
-            strategic_intent_system
-                .before(RegionalAllocationSet::Project)
-                .run_if(resource_exists::<SwarmReachabilityMap>),
-        );
+        app.init_resource::<crate::tuning::Tuning>()
+            .init_resource::<ControllerTelemetry>()
+            .add_systems(
+                FixedUpdate,
+                strategic_intent_system
+                    .before(RegionalAllocationSet::Project)
+                    .run_if(resource_exists::<SwarmReachabilityMap>),
+            );
     }
 }
 
@@ -85,6 +87,7 @@ impl ControllerTelemetry {
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn strategic_intent_system(
+    tuning: Res<crate::tuning::Tuning>,
     mut controllers: Query<(Entity, &SwarmId, &mut StrategicController)>,
     swarms: Query<(Entity, &SwarmId, Option<&Transform>), With<Swarm>>,
     bots: Query<
@@ -154,7 +157,9 @@ fn strategic_intent_system(
                 kind: *kind,
                 position: transform.translation.truncate(),
                 health: health.current,
+                max_health: health.max,
                 charge: charge.map_or(1.0, |c| c.current),
+                max_charge: charge.map_or(1.0, |c| c.max),
                 cargo: cargo.map_or(0, |c| c.amount),
             },
         )
@@ -185,7 +190,8 @@ fn strategic_intent_system(
                     owner,
                     position: transform.translation.truncate(),
                     kind,
-                    health: condition.map_or(100, |c| c.health),
+                    health: condition.map_or(tuning.construction.max_health, |c| c.health),
+                    max_health: tuning.construction.max_health,
                     minerals: facility.map_or(0, |f| f.input_amount)
                         + stockpile.map_or(0, |s| s.amount)
                         + charger.map_or(0, |c| c.amount),
@@ -233,7 +239,7 @@ fn strategic_intent_system(
             continue;
         }
         telemetry.profiles.entry(owner.0).or_default();
-        let decision = controller.planner.decide(&state);
+        let decision = controller.planner.decide(&tuning.autonomy, &state);
         if decision.reviewed {
             telemetry.record_review(
                 owner.0,
@@ -263,5 +269,23 @@ fn strategic_intent_system(
                 log::error!("Strategic Controller emitted rejected intent edit: {error}");
             }
         }
+    }
+}
+
+/// Ask existing controllers to review changed scores under their retained allowance.
+pub fn reconcile_controller_tuning(
+    world: &mut World,
+    old: &crate::tuning::Tuning,
+    new: &crate::tuning::Tuning,
+) {
+    if old.autonomy == new.autonomy
+        && old.combat == new.combat
+        && old.charge == new.charge
+        && old.construction == new.construction
+    {
+        return;
+    }
+    for mut controller in world.query::<&mut StrategicController>().iter_mut(world) {
+        controller.planner.request_tuning_review();
     }
 }

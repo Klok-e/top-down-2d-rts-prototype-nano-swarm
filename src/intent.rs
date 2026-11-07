@@ -414,8 +414,11 @@ pub fn brush_selection_keyboard_system(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut brush_selection: ResMut<BrushSelection>,
     menu: Option<Res<crate::ui::scenario_menu::ScenarioMenu>>,
+    editor: Option<Res<crate::ui::tuning_panel::TuningEditor>>,
 ) {
-    if menu.is_some_and(|menu| menu.blocks_world_input) {
+    if menu.is_some_and(|menu| menu.blocks_world_input)
+        || editor.is_some_and(|editor| editor.keyboard_captured())
+    {
         return;
     }
     for &(main, numpad, kind) in BRUSH_KEY_BINDINGS {

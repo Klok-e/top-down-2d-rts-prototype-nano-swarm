@@ -46,3 +46,6 @@ mod session_restart;
 mod battle_runtime;
 #[path = "playtest/headless_pacing.rs"]
 mod headless_pacing;
+
+#[path = "playtest/tuning_panel.rs"]
+mod tuning_panel;

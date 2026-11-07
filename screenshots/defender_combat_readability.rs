@@ -200,7 +200,11 @@ fn assert_front_state(world: &mut World, require_rotation: bool) {
         if health.current > 0 {
             *living_by_swarm.entry(member.0).or_default() += 1;
         }
-        if charge.needs_rotation() {
+        if charge.needs_rotation(
+            &world
+                .resource::<top_down_2d_rts_prototype_nano_swarm::tuning::Tuning>()
+                .charge,
+        ) {
             low_charge += 1;
         }
         if response.is_some() {

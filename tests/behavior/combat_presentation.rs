@@ -1,6 +1,8 @@
 use std::time::Duration;
 
 use approx::assert_abs_diff_eq;
+use top_down_2d_rts_prototype_nano_swarm::tuning::{PresentationTuning, Tuning};
+
 use bevy::{asset::AssetPlugin, prelude::*, time::TimeUpdateStrategy};
 
 #[path = "../common/mod.rs"]
@@ -11,11 +13,10 @@ use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
     nanobot::{
         ActiveCombatDecorations, ActiveCombatPulses, ActiveNanobotDeathGhosts,
-        ActiveStructureDeathGhosts, CombatAppearance, CombatPresentationSettings,
-        CombatVisualSnapshot, Nanobot, NanobotPresentationPlugin, NanobotSprites, NanobotType,
-        PlannedKind, ResolvedCombatDeath, ResolvedCombatFact, ResolvedCombatHit,
-        StructureCombatAppearance, StructureKind, Swarm, SwarmId, SwarmMember,
-        completed_visual_color,
+        ActiveStructureDeathGhosts, CombatAppearance, CombatVisualSnapshot, Nanobot,
+        NanobotPresentationPlugin, NanobotSprites, NanobotType, PlannedKind, ResolvedCombatDeath,
+        ResolvedCombatFact, ResolvedCombatHit, StructureCombatAppearance, StructureKind, Swarm,
+        SwarmId, SwarmMember, completed_visual_color,
     },
     structure_sprites::{StructureSprites, StructureVisual},
 };
@@ -108,12 +109,17 @@ fn resolved_hit_drives_impact_and_returns_both_visuals_to_neutral() {
 
     let attacker_visual = common::nanobot_visual_child(app.world(), attacker);
     let target_visual = common::nanobot_visual_child(app.world(), target);
-    let settings = *app.world().resource::<CombatPresentationSettings>();
-    assert!(settings.pulse_duration < Duration::from_millis(80));
-    assert!(settings.recovery_duration < Duration::from_millis(250));
-    assert!(settings.jab_distance < 16.0);
-    assert!(settings.recoil_distance < 16.0);
-    assert_abs_diff_eq!(settings.zoom_cutoff, 8.0, epsilon = 1e-5);
+    let settings = app.world().resource::<Tuning>().presentation.clone();
+    assert!(
+        Duration::from_secs_f32(settings.combat_pulse_duration_secs) < Duration::from_millis(80)
+    );
+    assert!(
+        Duration::from_secs_f32(settings.combat_recovery_duration_secs)
+            < Duration::from_millis(250)
+    );
+    assert!(settings.combat_jab_distance < 16.0);
+    assert!(settings.combat_recoil_distance < 16.0);
+    assert_abs_diff_eq!(settings.combat_zoom_cutoff, 8.0, epsilon = 1e-5);
 
     app.world_mut()
         .write_message(ResolvedCombatFact::Hit(ResolvedCombatHit {
@@ -137,14 +143,14 @@ fn resolved_hit_drives_impact_and_returns_both_visuals_to_neutral() {
     let attacker_pose = *app.world().get::<Transform>(attacker_visual).unwrap();
     let target_pose = *app.world().get::<Transform>(target_visual).unwrap();
     assert!(attacker_pose.translation.length() > 0.0);
-    assert!(attacker_pose.translation.length() <= settings.jab_distance + 0.001);
+    assert!(attacker_pose.translation.length() <= settings.combat_jab_distance + 0.001);
     assert!(attacker_pose.rotation != Quat::IDENTITY);
     assert_color(
         app.world().get::<Sprite>(attacker_visual).unwrap().color,
         Color::WHITE,
     );
     assert!(target_pose.translation.length() > 0.0);
-    assert!(target_pose.translation.length() <= settings.recoil_distance + 0.001);
+    assert!(target_pose.translation.length() <= settings.combat_recoil_distance + 0.001);
     assert_ne!(
         app.world().get::<Sprite>(target_visual).unwrap().color,
         Color::WHITE,
@@ -166,7 +172,7 @@ fn resolved_hit_drives_impact_and_returns_both_visuals_to_neutral() {
 
     let impact_facing_angle = attacker_pose.rotation.angle_between(Quat::IDENTITY);
     app.insert_resource(TimeUpdateStrategy::ManualDuration(
-        settings.recovery_duration.mul_f32(0.5),
+        Duration::from_secs_f32(settings.combat_recovery_duration_secs).mul_f32(0.5),
     ));
     app.update();
 
@@ -180,7 +186,7 @@ fn resolved_hit_drives_impact_and_returns_both_visuals_to_neutral() {
     assert!(recovering_facing_angle < impact_facing_angle);
 
     app.insert_resource(TimeUpdateStrategy::ManualDuration(
-        settings.recovery_duration + Duration::from_millis(1),
+        Duration::from_secs_f32(settings.combat_recovery_duration_secs) + Duration::from_millis(1),
     ));
     app.update();
 
@@ -257,9 +263,13 @@ fn lethal_fact_sequence_keeps_the_final_pulse_with_a_collapsing_ghost_then_expir
         }));
     app.update();
 
-    let settings = *app.world().resource::<CombatPresentationSettings>();
-    assert!(settings.death_duration >= Duration::from_millis(250));
-    assert!(settings.death_duration <= Duration::from_millis(400));
+    let settings = app.world().resource::<Tuning>().presentation.clone();
+    assert!(
+        Duration::from_secs_f32(settings.combat_death_duration_secs) >= Duration::from_millis(250)
+    );
+    assert!(
+        Duration::from_secs_f32(settings.combat_death_duration_secs) <= Duration::from_millis(400)
+    );
     assert_eq!(app.world().resource::<ActiveCombatPulses>().len(), 1);
     let expected_image = app
         .world()
@@ -287,7 +297,7 @@ fn lethal_fact_sequence_keeps_the_final_pulse_with_a_collapsing_ghost_then_expir
     let _ = ghosts;
 
     app.insert_resource(TimeUpdateStrategy::ManualDuration(
-        settings.death_duration.mul_f32(0.5),
+        Duration::from_secs_f32(settings.combat_death_duration_secs).mul_f32(0.5),
     ));
     app.update();
 
@@ -297,7 +307,9 @@ fn lethal_fact_sequence_keeps_the_final_pulse_with_a_collapsing_ghost_then_expir
     assert!(mid.transform.scale.x <= initial_transform.scale.x);
     assert!(mid.color.to_srgba().alpha < initial_alpha);
 
-    app.insert_resource(TimeUpdateStrategy::ManualDuration(settings.death_duration));
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
+        settings.combat_death_duration_secs,
+    )));
     app.update();
 
     assert!(
@@ -372,9 +384,9 @@ fn structure_hit_flashes_in_place_with_attacker_jab_and_pulse_then_recovers() {
         "structure impact must not recoil, rotate, or squash the gameplay root",
     );
 
-    let settings = *app.world().resource::<CombatPresentationSettings>();
+    let settings = app.world().resource::<Tuning>().presentation.clone();
     app.insert_resource(TimeUpdateStrategy::ManualDuration(
-        settings.recovery_duration + Duration::from_millis(1),
+        Duration::from_secs_f32(settings.combat_recovery_duration_secs) + Duration::from_millis(1),
     ));
     app.update();
 
@@ -394,16 +406,14 @@ fn simultaneous_structure_hits_keep_every_pulse_with_one_ghost_and_ring_then_exp
     let mut app = presentation_app();
     app.world_mut()
         .spawn((Swarm {}, SwarmId::PLAYER, Transform::default()));
-    app.world_mut()
-        .resource_mut::<CombatPresentationSettings>()
-        .max_decorative_effects = 0;
 
     let victim_position = Vec2::new(32.0, 0.0);
     let victim = app.world_mut().spawn_empty().id();
     assert!(app.world_mut().despawn(victim));
     let visual = StructureVisual::completed(PlannedKind::ProductionFacility);
     let victim_snapshot = structure_snapshot(victim, victim_position, SwarmId(11), visual);
-    for attacker_position in [Vec2::new(-32.0, -8.0), Vec2::new(-32.0, 8.0)] {
+    for index in 0..30 {
+        let attacker_position = Vec2::new(-32.0, index as f32 - 15.0);
         let attacker = app.world_mut().spawn_empty().id();
         app.world_mut()
             .write_message(ResolvedCombatFact::Hit(ResolvedCombatHit {
@@ -426,12 +436,13 @@ fn simultaneous_structure_hits_keep_every_pulse_with_one_ghost_and_ring_then_exp
 
     assert_eq!(
         app.world().resource::<ActiveCombatPulses>().len(),
-        2,
+        30,
         "every contributing hit keeps its primary pulse",
     );
-    assert!(
-        app.world().resource::<ActiveCombatDecorations>().is_empty(),
-        "the decorative cap must not affect destruction signals",
+    assert_eq!(
+        app.world().resource::<ActiveCombatDecorations>().len(),
+        24,
+        "the decorative cap must not affect destruction signals"
     );
     assert!(
         app.world()
@@ -464,9 +475,9 @@ fn simultaneous_structure_hits_keep_every_pulse_with_one_ghost_and_ring_then_exp
     let _ = ghosts;
     let _ = structure_ghosts;
 
-    let settings = *app.world().resource::<CombatPresentationSettings>();
+    let settings = app.world().resource::<Tuning>().presentation.clone();
     app.insert_resource(TimeUpdateStrategy::ManualDuration(
-        settings.death_duration.mul_f32(0.5),
+        Duration::from_secs_f32(settings.combat_death_duration_secs).mul_f32(0.5),
     ));
     app.update();
 
@@ -481,7 +492,9 @@ fn simultaneous_structure_hits_keep_every_pulse_with_one_ghost_and_ring_then_exp
         "the ghost fades"
     );
 
-    app.insert_resource(TimeUpdateStrategy::ManualDuration(settings.death_duration));
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
+        settings.combat_death_duration_secs,
+    )));
     app.update();
 
     assert!(
@@ -567,13 +580,14 @@ fn structure_effects_hide_at_tactical_zoom_and_expire_while_hidden() {
         1
     );
 
-    let settings = *app.world().resource::<CombatPresentationSettings>();
+    let settings = app.world().resource::<Tuning>().presentation.clone();
     app.insert_resource(TimeUpdateStrategy::ManualDuration(
-        settings.death_duration.mul_f32(0.5),
+        Duration::from_secs_f32(settings.combat_death_duration_secs).mul_f32(0.5),
     ));
     app.update();
     app.insert_resource(TimeUpdateStrategy::ManualDuration(
-        settings.death_duration.mul_f32(0.5) + Duration::from_millis(1),
+        Duration::from_secs_f32(settings.combat_death_duration_secs).mul_f32(0.5)
+            + Duration::from_millis(1),
     ));
     app.update();
 
@@ -631,12 +645,9 @@ fn death_ghosts_reuse_every_nanobot_image_for_both_swarms() {
 #[test]
 fn primary_pulses_ignore_the_decorative_effect_budget() {
     let mut app = presentation_app();
-    app.world_mut()
-        .resource_mut::<CombatPresentationSettings>()
-        .max_decorative_effects = 1;
 
     let target = app.world_mut().spawn_empty().id();
-    for index in 0..3 {
+    for index in 0..30 {
         let attacker = app.world_mut().spawn_empty().id();
         app.world_mut()
             .write_message(ResolvedCombatFact::Hit(ResolvedCombatHit {
@@ -661,13 +672,13 @@ fn primary_pulses_ignore_the_decorative_effect_budget() {
 
     assert_eq!(
         app.world().resource::<ActiveCombatPulses>().len(),
-        3,
+        30,
         "decorative limits must never remove primary combat signals",
     );
     assert_eq!(
         app.world().resource::<ActiveCombatDecorations>().len(),
-        1,
-        "secondary impact work must obey its configured bound",
+        24,
+        "secondary impact work must obey its fixed bound",
     );
 }
 
@@ -682,9 +693,6 @@ fn injected_reaction(
     let opponent = SwarmId(11);
     app.world_mut()
         .spawn((Swarm {}, opponent, Transform::default()));
-    app.world_mut()
-        .resource_mut::<CombatPresentationSettings>()
-        .max_decorative_effects = 1;
 
     let target_position = Vec2::ZERO;
     let target_root = Transform::from_translation(target_position.extend(GAMEPLAY_SPRITE_Z));
@@ -735,7 +743,7 @@ fn injected_reaction(
     }
     app.update();
 
-    let settings = *app.world().resource::<CombatPresentationSettings>();
+    let settings = app.world().resource::<Tuning>().presentation.clone();
     assert_eq!(
         app.world().resource::<ActiveCombatPulses>().len(),
         attacker_positions.len(),
@@ -749,7 +757,7 @@ fn injected_reaction(
         let visual = common::nanobot_visual_child(app.world(), attacker);
         let jab = app.world().get::<Transform>(visual).unwrap().translation;
         assert!(jab.length() > 0.0);
-        assert!(jab.length() <= settings.jab_distance + 0.001);
+        assert!(jab.length() <= settings.combat_jab_distance + 0.001);
     }
 
     let target_visual = common::nanobot_visual_child(app.world(), target);
@@ -760,7 +768,7 @@ fn injected_reaction(
         .translation
         .truncate();
     assert!(reaction.length() > 0.0);
-    assert!(reaction.length() <= settings.recoil_distance + 0.001);
+    assert!(reaction.length() <= settings.combat_recoil_distance + 0.001);
     let flash = app
         .world()
         .get::<Sprite>(target_visual)
@@ -800,7 +808,7 @@ fn simultaneous_hits_combine_into_one_deterministic_bounded_reaction() {
     );
     assert!(
         crowded_flash_brightness
-            <= 1.0 + CombatPresentationSettings::default().reaction_flash_cap + 0.001,
+            <= 1.0 + PresentationTuning::default().combat_reaction_flash_cap + 0.001,
         "the combined flash must stay capped below full overexposure",
     );
 }
@@ -855,7 +863,7 @@ fn combat_presentation_hides_at_tactical_zoom_and_expires_while_hidden() {
     app.update();
     let attacker_visual = common::nanobot_visual_child(app.world(), attacker);
     let target_visual = common::nanobot_visual_child(app.world(), target);
-    let settings = *app.world().resource::<CombatPresentationSettings>();
+    let settings = app.world().resource::<Tuning>().presentation.clone();
     let target_snapshot = CombatVisualSnapshot {
         entity: target,
         position: target_position,
@@ -881,7 +889,7 @@ fn combat_presentation_hides_at_tactical_zoom_and_expires_while_hidden() {
     app.update();
 
     assert_eq!(app.world().resource::<ActiveCombatPulses>().len(), 1);
-    assert!(settings.pulse_thickness >= 1.0);
+    assert!(settings.combat_pulse_thickness >= 1.0);
     assert!(
         app.world()
             .get::<Transform>(attacker_visual)
@@ -889,7 +897,7 @@ fn combat_presentation_hides_at_tactical_zoom_and_expires_while_hidden() {
             .translation
             .length()
             / 7.99
-            >= settings.minimum_impact_screen_distance - 0.001,
+            >= settings.combat_minimum_impact_screen_distance - 0.001,
     );
     assert!(
         app.world()
@@ -898,7 +906,7 @@ fn combat_presentation_hides_at_tactical_zoom_and_expires_while_hidden() {
             .translation
             .length()
             / 7.99
-            >= settings.minimum_impact_screen_distance - 0.001,
+            >= settings.combat_minimum_impact_screen_distance - 0.001,
     );
     assert_eq!(app.world().resource::<ActiveNanobotDeathGhosts>().len(), 1);
     assert_eq!(app.world().resource::<ActiveCombatDecorations>().len(), 1);
@@ -936,7 +944,7 @@ fn combat_presentation_hides_at_tactical_zoom_and_expires_while_hidden() {
     assert_eq!(app.world().get::<Transform>(target), Some(&target_root));
 
     app.insert_resource(TimeUpdateStrategy::ManualDuration(
-        settings.death_duration + Duration::from_millis(1),
+        Duration::from_secs_f32(settings.combat_death_duration_secs) + Duration::from_millis(1),
     ));
     app.update();
     app.world_mut()
@@ -959,5 +967,63 @@ fn combat_presentation_hides_at_tactical_zoom_and_expires_while_hidden() {
     assert_eq!(
         app.world().get::<Transform>(target_visual),
         Some(&Transform::IDENTITY),
+    );
+}
+
+#[test]
+fn retuning_active_death_duration_preserves_progress_and_changes_expiry() {
+    let mut app = presentation_app();
+    app.update();
+    let old = app.world().resource::<Tuning>().clone();
+    let victim = app.world_mut().spawn_empty().id();
+    app.world_mut()
+        .write_message(ResolvedCombatFact::Death(ResolvedCombatDeath {
+            victim: CombatVisualSnapshot {
+                entity: victim,
+                position: Vec2::ZERO,
+                swarm: SwarmId(11),
+                appearance: CombatAppearance::Nanobot(NanobotType::Worker),
+            },
+        }));
+    app.update();
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+        80,
+    )));
+    app.update();
+    let before = app
+        .world()
+        .resource::<ActiveNanobotDeathGhosts>()
+        .iter()
+        .next()
+        .unwrap()
+        .clone();
+    let mut next = old.clone();
+    next.presentation.combat_death_duration_secs = 0.64;
+    top_down_2d_rts_prototype_nano_swarm::nanobot::reconcile_combat_presentation_tuning(
+        app.world_mut(),
+        &old,
+        &next,
+    );
+    app.insert_resource(next);
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO));
+    app.update();
+    let after = app
+        .world()
+        .resource::<ActiveNanobotDeathGhosts>()
+        .iter()
+        .next()
+        .unwrap();
+    assert_translation(after.transform.scale, before.transform.scale);
+    assert_color(after.color, before.color);
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+        250,
+    )));
+    app.update();
+    assert_eq!(app.world().resource::<ActiveNanobotDeathGhosts>().len(), 1);
+    app.update();
+    assert!(
+        app.world()
+            .resource::<ActiveNanobotDeathGhosts>()
+            .is_empty()
     );
 }

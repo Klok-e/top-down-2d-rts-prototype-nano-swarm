@@ -16,7 +16,7 @@ use crate::{
     Presentation,
     ai_battle::{AiBattleConfig, AiBattleLayout},
     battle_statistics::BattleStatisticsConfig,
-    build_app, build_app_with_presentation,
+    build_app_with_tuning,
     scenario_selection::{Scenario, ScenarioSelection},
 };
 
@@ -98,6 +98,7 @@ Options:\n\
     --height <PIXELS>  Set headless height (default: 720, max: 8192)\n\
     --scenario <NAME>  Select standard, sandbox, or ai-battle for this run\n\
     --output-root <PATH>  Battle results directory (default: target/battle-runs)\n\
+    --tuning-file <PATH>  Override the tracked balance file\n\
     --seed <INTEGER>   Battle starting seed (default: 0)\n\
     --layout <NAME>   Select standard or flanks for AI Battle\n\
     --unbounded       Run headless simulation without frame pacing\n\
@@ -114,6 +115,7 @@ pub struct RuntimeOptions {
     pub height: u32,
     pub scenario: Option<Scenario>,
     pub output_root: PathBuf,
+    pub tuning_file: PathBuf,
     pub seed: u64,
     pub ai_battle: AiBattleConfig,
 }
@@ -128,6 +130,7 @@ impl Default for RuntimeOptions {
             height: DEFAULT_HEADLESS_HEIGHT,
             scenario: None,
             output_root: PathBuf::from("target/battle-runs"),
+            tuning_file: crate::tuning::default_path(),
             seed: 0,
             ai_battle: AiBattleConfig::default(),
         }
@@ -172,6 +175,8 @@ pub enum RuntimeOptionsError {
 pub enum RuntimeBuildError {
     #[error(transparent)]
     InvalidOptions(#[from] RuntimeOptionsError),
+    #[error("cannot load tuning: {0}")]
+    Tuning(String),
     #[cfg(unix)]
     #[error(transparent)]
     AgentControl(#[from] AgentControlServerError),
@@ -220,7 +225,8 @@ impl RuntimeOptions {
                 "--headless" => options.headless = true,
                 "--unbounded" => options.unbounded = true,
                 "--agent-socket" => options.agent_socket = true,
-                flag @ ("--scenario" | "--output-root" | "--seed" | "--layout") => {
+                flag @ ("--scenario" | "--output-root" | "--seed" | "--layout"
+                | "--tuning-file") => {
                     let value = args
                         .next()
                         .ok_or_else(|| RuntimeOptionsError::MissingValue(flag.to_string()))?;
@@ -239,6 +245,7 @@ impl RuntimeOptions {
                             })
                         }
                         "--output-root" => options.output_root = PathBuf::from(value),
+                        "--tuning-file" => options.tuning_file = PathBuf::from(value),
                         "--seed" => {
                             options.seed = value
                                 .parse()
@@ -322,10 +329,14 @@ pub fn build_runtime_app(options: RuntimeOptions) -> Result<App, RuntimeBuildErr
         selection.current = scenario;
     }
     let mut app = if options.headless {
-        let mut app = build_app_with_presentation(Presentation::Offscreen {
-            width: options.width,
-            height: options.height,
-        });
+        let mut app = build_app_with_tuning(
+            Presentation::Offscreen {
+                width: options.width,
+                height: options.height,
+            },
+            &options.tuning_file,
+        )
+        .map_err(RuntimeBuildError::Tuning)?;
         app.add_plugins((
             LogPlugin::default(),
             HeadlessRunnerPlugin,
@@ -333,7 +344,8 @@ pub fn build_runtime_app(options: RuntimeOptions) -> Result<App, RuntimeBuildErr
         ));
         app
     } else {
-        build_app()
+        build_app_with_tuning(Presentation::Windowed, &options.tuning_file)
+            .map_err(RuntimeBuildError::Tuning)?
     };
     app.insert_resource(selection);
     app.insert_resource(HeadlessPacing {

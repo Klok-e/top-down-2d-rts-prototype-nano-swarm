@@ -35,7 +35,6 @@ use crate::nanobot::SupportCondition;
 use crate::nanobot::autonomy::{Commitment, NanobotType, SoftWorkSlots, best_candidate};
 use crate::nanobot::cargo::{Cargo, LogisticsReservation};
 use crate::nanobot::components::{DirectMovementComponent, Nanobot, Swarm, SwarmId, SwarmMember};
-use crate::nanobot::haul::HAULER_TRANSFER_PER_PULSE;
 use crate::nanobot::placement::{
     SOURCE_STOCKPILE_FOOTPRINT_RADIUS, SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PADDING,
     SOURCE_STOCKPILE_PLACEMENT_COUNT, SOURCE_STOCKPILE_PLACEMENT_RADIUS,
@@ -47,27 +46,7 @@ use crate::nanobot::{
 };
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole};
 use crate::structure_sprites::StructureSprites;
-
-/// Maximum units a Worker can carry in a single trip. The glossary
-/// is explicit: Workers carry "small" amounts; Haulers carry more.
-/// Four units keeps the trip visible and makes an uninterrupted load
-/// take five seconds at the shared material-work rate.
-pub const WORKER_CARRY_CAPACITY: u32 = 4;
-
-/// Minerals extracted by a Worker after each completed material-work interval.
-pub const WORKER_EXTRACT_PER_PULSE: u32 = 1;
-
-/// Maximum distance (world units) from a Resource Deposit at
-/// which a Source Stockpile is considered "near" the deposit.
-///
-/// Picked at three quarters of `ZONE_BLOCK_SIZE` (384 < 512)
-/// so a Source Stockpile placed at the canonical offset from
-/// a deposit inside one cell stays inside that same cell. The
-/// "near" check is the same for both the demand system (which
-/// decides whether to plan another Source Stockpile) and the
-/// gather arrive system (which decides whether the worker has
-/// a usable built Source Stockpile to deliver into).
-pub const SOURCE_STOCKPILE_PROXIMITY_RADIUS: f32 = 384.0;
+use crate::tuning::Tuning;
 
 /// World-space offset from a Resource Deposit's center where
 /// the Source Stockpile demand system places a new
@@ -99,7 +78,7 @@ impl GatherAssignment {
 
 /// In-flight extraction progress. Lives only while the worker is
 /// standing at the assigned deposit and pulling resources. The
-/// `collected` count caps at [`WORKER_CARRY_CAPACITY`]; reaching
+/// `collected` count caps at the configured Worker carry capacity; reaching
 /// the cap transitions the worker to Carrying.
 #[derive(Debug, Component, Default, Clone, Copy)]
 pub struct ExtractProgress {
@@ -235,7 +214,7 @@ fn find_nearest_stockpile(
         let reserved = reserved_destination_capacity(reservations, entity, excluding_worker)
             .saturating_add(same_tick_reserved.get(&entity).copied().unwrap_or(0));
         let available = stockpile.free_space().saturating_sub(reserved);
-        if available < minimum_capacity || available == 0 {
+        if available < minimum_capacity.min(stockpile.capacity) || available == 0 {
             continue;
         }
         if !reachable(transform) {
@@ -272,14 +251,9 @@ fn stockpile_owned_by(
     }
 }
 
-/// True when a built [`Stockpile`] of `kind` with free space
-/// is within [`SOURCE_STOCKPILE_PROXIMITY_RADIUS`] of
-/// `deposit_pos`. This is the "worker can extract and deliver
-/// to a usable Source Stockpile right now" half of the gather
-/// contract; a planned (not yet built) Source Stockpile does
-/// not count as usable here because the worker has nowhere to
-/// drop the carried load until the planned structure promotes
-/// to a completed `Stockpile`.
+/// Whether nearby built Source Stockpile capacity satisfies planning demand.
+/// The configured proximity radius governs planning; extraction may reserve
+/// a reachable Source Stockpile beyond this radius.
 ///
 /// ## Issue #26: Source vs Sink filter
 ///
@@ -291,6 +265,7 @@ fn stockpile_owned_by(
 /// `Sink`-stamped ones are excluded, so pre-existing tests
 /// that spawn `Stockpile` entities directly keep passing.
 pub(crate) fn has_usable_built_source_stockpile(
+    proximity_radius: f32,
     deposit_pos: Vec2,
     demand_swarm: SwarmId,
     stockpiles: &Query<(
@@ -306,21 +281,16 @@ pub(crate) fn has_usable_built_source_stockpile(
             && s.free_space() > 0
             && !matches!(role, Some(StockpileRole::Sink))
             && stockpile_owned_by(owner, demand_swarm, swarms)
-            && t.translation.truncate().distance(deposit_pos) <= SOURCE_STOCKPILE_PROXIMITY_RADIUS
+            && t.translation.truncate().distance(deposit_pos) <= proximity_radius
     })
 }
 
 /// True when a built Source Stockpile (per
 /// [`has_usable_built_source_stockpile`]) OR a planned Source
-/// Stockpile is within [`SOURCE_STOCKPILE_PROXIMITY_RADIUS`]
+/// Stockpile is within the configured source proximity radius
 /// of `deposit_pos`. This is the "demand is already
-/// satisfied, do not plan another" half of the contract. The
-/// gather arrive system uses the stricter built-only check so
-/// the worker only extracts when delivery is actually
-/// possible; the demand system uses this looser check so a
-/// pending planned structure counts as demand satisfied and
-/// the swarm does not pile multiple Source Stockpile plans
-/// around the same deposit.
+/// satisfied, do not plan another" half of the contract. A pending plan
+/// satisfies planning demand but cannot receive physical cargo.
 ///
 /// ## Issue #25: full-stockpile expansion
 ///
@@ -355,6 +325,7 @@ pub(crate) fn has_usable_built_source_stockpile(
 /// positions keeps the "near" check correct within a single
 /// tick.
 pub(crate) fn has_any_near_source_stockpile(
+    proximity_radius: f32,
     deposit_pos: Vec2,
     demand_swarm: SwarmId,
     stockpiles: &Query<(
@@ -367,19 +338,25 @@ pub(crate) fn has_any_near_source_stockpile(
     newly_planned: &[Vec2],
     swarms: &Query<&SwarmId, With<Swarm>>,
 ) -> bool {
-    if has_usable_built_source_stockpile(deposit_pos, demand_swarm, stockpiles, swarms) {
+    if has_usable_built_source_stockpile(
+        proximity_radius,
+        deposit_pos,
+        demand_swarm,
+        stockpiles,
+        swarms,
+    ) {
         return true;
     }
     if planned.iter().any(|(p, t, owner)| {
         p.kind == PlannedKind::SourceStockpile
             && stockpile_owned_by(owner, demand_swarm, swarms)
-            && t.translation.truncate().distance(deposit_pos) <= SOURCE_STOCKPILE_PROXIMITY_RADIUS
+            && t.translation.truncate().distance(deposit_pos) <= proximity_radius
     }) {
         return true;
     }
     newly_planned
         .iter()
-        .any(|pos| pos.distance(deposit_pos) <= SOURCE_STOCKPILE_PROXIMITY_RADIUS)
+        .any(|pos| pos.distance(deposit_pos) <= proximity_radius)
 }
 
 fn find_source_stockpile_placement_for_demand_accepting(
@@ -429,7 +406,7 @@ fn find_source_stockpile_placement_for_demand_accepting(
 
 /// For each unique deposit that has at least one Worker with a
 /// [`GatherAssignment`], ensure a Planned Source Stockpile
-/// exists within [`SOURCE_STOCKPILE_PROXIMITY_RADIUS`] of the
+/// exists within the configured source proximity radius of the
 /// deposit.
 ///
 /// The demand system is the "Gather intent asks for a Source
@@ -486,10 +463,10 @@ fn find_source_stockpile_placement_for_demand_accepting(
 /// promotion path preserves that owner on the completed Stockpile.
 #[allow(clippy::too_many_arguments)]
 pub fn source_stockpile_demand_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     access: super::construction_access::ConstructionAccess,
     structure_sprites: Res<StructureSprites>,
-    pacing: Res<crate::gameplay_pacing::GameplayPacing>,
     gather_assignments: Query<(&GatherAssignment, &SwarmMember)>,
     deposits: Query<(&ResourceDeposit, &Transform)>,
     stockpiles: Query<(
@@ -530,6 +507,7 @@ pub fn source_stockpile_demand_system(
         };
         let deposit_pos = deposit_transform.translation.truncate();
         if has_any_near_source_stockpile(
+            tuning.logistics.source_proximity_radius,
             deposit_pos,
             demand_swarm,
             &stockpiles,
@@ -590,7 +568,7 @@ pub fn source_stockpile_demand_system(
         newly_planned_positions.push(placement_pos);
         let mut entity_commands = commands.spawn((
             PlannedStructure::new(PlannedKind::SourceStockpile, placement_cell)
-                .with_work_budget(pacing.construction_work_ticks),
+                .with_work_budget(tuning.construction.work_ticks),
             planned_visual_components(
                 PlannedKind::SourceStockpile,
                 &structure_sprites,
@@ -725,10 +703,9 @@ pub fn worker_gather_assignment_system(
 /// start the extraction phase. The `Without<ExtractProgress>` filter
 /// makes arrival idempotent -- the same tick cannot fire twice.
 ///
-/// Issue #23 contract: a Worker does not start extracting until a
-/// usable built Source Stockpile exists within
-/// [`SOURCE_STOCKPILE_PROXIMITY_RADIUS`] of the deposit. If no
-/// built stockpile exists, the worker stays put; the
+/// A Worker does not start extracting until it reserves capacity in a
+/// usable reachable built Source Stockpile. If no such stockpile exists,
+/// the worker stays put; the
 /// [`source_stockpile_demand_system`] has already (or will on a
 /// subsequent tick) planned a Source Stockpile, and the planned
 /// structure's claim system will route a worker -- often this
@@ -749,6 +726,7 @@ pub fn worker_gather_assignment_system(
 /// contract.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn worker_gather_arrive_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     navigation: Res<Navigation>,
     workers: Query<
@@ -844,7 +822,9 @@ pub fn worker_gather_arrive_system(
             }
             continue;
         };
-        let amount = WORKER_CARRY_CAPACITY
+        let amount = tuning
+            .logistics
+            .worker_carry_capacity
             .min(source_available)
             .min(destination_available);
         *same_tick_sources.entry(assignment.deposit).or_default() += amount;
@@ -864,6 +844,7 @@ pub fn worker_gather_arrive_system(
 /// disappears), transition the worker to Carrying.
 #[allow(clippy::type_complexity)]
 pub fn worker_gather_extract_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     navigation: Res<Navigation>,
     mut workers: Query<
@@ -899,7 +880,12 @@ pub fn worker_gather_extract_system(
         if reservation.is_added() {
             continue;
         }
-        if cargo.amount >= reservation.amount || reservation.source_remaining == 0 {
+        if cargo.amount >= reservation.amount
+            || cargo.amount >= tuning.logistics.worker_carry_capacity
+            || reservation.source_remaining == 0
+        {
+            reservation.source_remaining = 0;
+            reservation.destination_remaining = cargo.amount;
             transition_worker_to_carrying(&mut commands, entity, cargo.amount);
             continue;
         }
@@ -928,16 +914,23 @@ pub fn worker_gather_extract_system(
                 .insert(region.movement_from(position));
             continue;
         }
-        let actual = WORKER_EXTRACT_PER_PULSE
+        let actual = tuning
+            .logistics
+            .worker_extract_per_pulse
             .min(deposit.amount)
             .min(reservation.source_remaining)
-            .min(WORKER_CARRY_CAPACITY.saturating_sub(cargo.amount));
+            .min(
+                tuning
+                    .logistics
+                    .worker_carry_capacity
+                    .saturating_sub(cargo.amount),
+            );
         if actual > 0
             && let Some(mut lease) = lease
         {
             lease.record_work();
         }
-        if !work.completes_unit() {
+        if !work.completes_unit(tuning.logistics.material_work_ticks) {
             continue;
         }
         if actual == 0 {
@@ -1010,7 +1003,7 @@ pub fn worker_gather_reroute_system(
         }
         let current_valid = stockpiles.get(reservation.destination).is_ok_and(
             |(_, stockpile, _, role, owner, condition)| {
-                reservation.destination_remaining >= cargo.amount
+                reservation.destination_remaining > 0
                     && stockpile.kind == cargo.kind
                     && !matches!(role, Some(StockpileRole::Sink))
                     && stockpile_owned_by(owner, swarm_member.0, &swarms)
@@ -1022,7 +1015,7 @@ pub fn worker_gather_reroute_system(
                             reservation.destination,
                             Some(entity),
                         ))
-                        >= cargo.amount
+                        >= reservation.destination_remaining.min(cargo.amount)
             },
         );
         if current_valid {
@@ -1057,7 +1050,7 @@ pub fn worker_gather_reroute_system(
                 )
             },
         );
-        let Some((destination, _)) = replacement else {
+        let Some((destination, available)) = replacement else {
             let mut released = *reservation;
             released.destination_remaining = 0;
             commands
@@ -1067,13 +1060,14 @@ pub fn worker_gather_reroute_system(
                 .remove::<DirectMovementComponent>();
             continue;
         };
-        *same_tick_claims.entry(destination).or_default() += cargo.amount;
+        let claim = cargo.amount.min(available);
+        *same_tick_claims.entry(destination).or_default() += claim;
         let Ok((_, _stockpile, stockpile_transform, _, _, _)) = stockpiles.get(destination) else {
             continue;
         };
         let mut redirected = *reservation;
         redirected.destination = destination;
-        redirected.destination_remaining = cargo.amount;
+        redirected.destination_remaining = claim;
         commands.entity(entity).insert((
             redirected,
             ReturningToStockpile {
@@ -1126,7 +1120,7 @@ pub fn worker_gather_carry_assign_system(
                 .get(reservation.destination)
                 .ok()
                 .filter(|(_, stockpile, _, role, owner, condition)| {
-                    reservation.destination_remaining >= load.amount
+                    reservation.destination_remaining > 0
                         && stockpile.kind == load.kind
                         && !matches!(role, Some(StockpileRole::Sink))
                         && stockpile_owned_by(*owner, swarm_member.0, &swarms)
@@ -1144,7 +1138,7 @@ pub fn worker_gather_carry_assign_system(
                                     .copied()
                                     .unwrap_or_default(),
                             )
-                            >= load.amount
+                            >= reservation.destination_remaining.min(load.amount)
                 })
                 .map(|(destination, stockpile, transform, _, _, _)| {
                     (destination, stockpile, transform)
@@ -1183,7 +1177,10 @@ pub fn worker_gather_carry_assign_system(
         let Some((stockpile_entity, _stockpile, stockpile_transform)) = selected else {
             continue;
         };
-        *same_tick_claims.entry(stockpile_entity).or_default() += load.amount;
+        let claim = load.amount.min(_stockpile.free_space().saturating_sub(
+            reserved_destination_capacity(&reservations, stockpile_entity, Some(entity)),
+        ));
+        *same_tick_claims.entry(stockpile_entity).or_default() += claim;
         commands.entity(entity).insert((
             ReturningToStockpile {
                 stockpile: stockpile_entity,
@@ -1199,6 +1196,7 @@ pub fn worker_gather_carry_assign_system(
 /// when the bot stops, which is the trigger this system waits for.
 #[allow(clippy::type_complexity)]
 pub fn worker_gather_delivery_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     mut workers: Query<
         (
@@ -1262,13 +1260,25 @@ pub fn worker_gather_delivery_system(
 
         let delivered = load
             .amount
-            .min(HAULER_TRANSFER_PER_PULSE)
+            .min(tuning.logistics.hauler_transfer_per_pulse)
+            .min(
+                reservation
+                    .as_ref()
+                    .map_or(u32::MAX, |reservation| reservation.destination_remaining),
+            )
             .min(stockpile.free_space());
         stockpile.amount += delivered;
         load.amount -= delivered;
         if let Some(reservation) = reservation.as_deref_mut() {
             reservation.destination_remaining =
                 reservation.destination_remaining.saturating_sub(delivered);
+        }
+        if load.amount > 0
+            && reservation
+                .as_ref()
+                .is_some_and(|reservation| reservation.destination_remaining == 0)
+        {
+            commands.entity(entity).remove::<ReturningToStockpile>();
         }
         if load.amount == 0 {
             commands
@@ -1297,23 +1307,21 @@ pub struct GatherPlugin;
 
 impl Plugin for GatherPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<crate::gameplay_pacing::GameplayPacing>()
-            .add_systems(
-                FixedUpdate,
-                (
-                    source_stockpile_demand_system.before(
-                        crate::nanobot::production::production_facility_auto_creation_system,
-                    ),
-                    worker_gather_arrive_system,
-                    worker_gather_extract_system,
-                    worker_gather_reroute_system,
-                    worker_gather_carry_assign_system,
-                    worker_gather_delivery_system,
-                )
-                    .chain()
-                    .after(crate::nanobot::RegionalAllocationSet::Acquire)
-                    .after(crate::nanobot::NanobotSimulationSet::Movement),
-            );
+        app.init_resource::<Tuning>().add_systems(
+            FixedUpdate,
+            (
+                source_stockpile_demand_system
+                    .before(crate::nanobot::production::production_facility_auto_creation_system),
+                worker_gather_arrive_system,
+                worker_gather_extract_system,
+                worker_gather_reroute_system,
+                worker_gather_carry_assign_system,
+                worker_gather_delivery_system,
+            )
+                .chain()
+                .after(crate::nanobot::RegionalAllocationSet::Acquire)
+                .after(crate::nanobot::NanobotSimulationSet::Movement),
+        );
     }
 }
 

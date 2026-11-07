@@ -12,6 +12,7 @@
 //! Charger data) live in `src/nanobot/charge.rs`.
 
 use std::time::Duration;
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 
 use bevy::{math::Vec2, prelude::*, time::TimeUpdateStrategy};
 use top_down_2d_rts_prototype_nano_swarm::{
@@ -19,16 +20,12 @@ use top_down_2d_rts_prototype_nano_swarm::{
     battle_statistics::BattleCounters,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        CHARGE_DRAIN_PER_TICK, CHARGE_PER_PULSE, CHARGE_PULSE_INTERVAL_TICKS,
-        CHARGER_MATERIAL_PER_PULSE, Cargo, Charge, Charger, ChargerAssignment, ChargerProgress,
-        ChargerPulseProgress, DefenderResponse, DirectMovementComponent,
-        EMPTY_CHARGE_DAMAGE_INTERVAL_TICKS, EMPTY_CHARGE_HEALTH_DAMAGE, Health,
-        LOW_CHARGE_THRESHOLD, LogisticsReservation, MAX_CHARGE, NANOBOT_DEFAULT_MAX_HEALTH,
-        Nanobot, NanobotBundle, NanobotPlugin, NanobotType, OwnerSwarm, PlannedKind,
-        PlannedStructure, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, Swarm,
-        SwarmBundle, SwarmId, SwarmMember, defender_charger_arrive_system,
-        defender_charger_work_system, defender_rotation_to_charger_system,
-        nanobot_death_cleanup_system,
+        Cargo, Charge, Charger, ChargerAssignment, ChargerProgress, ChargerPulseProgress,
+        DefenderResponse, DirectMovementComponent, Health, LogisticsReservation, Nanobot,
+        NanobotBundle, NanobotPlugin, NanobotType, OwnerSwarm, PlannedKind, PlannedStructure,
+        SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, Swarm, SwarmBundle,
+        SwarmId, SwarmMember, defender_charger_arrive_system, defender_charger_work_system,
+        defender_rotation_to_charger_system, nanobot_death_cleanup_system,
     },
     resources::{ResourceKind, ResourceLedger},
 };
@@ -93,7 +90,7 @@ fn full_defender_remains_on_duty_until_field_endurance_threshold() {
             .get::<Charge>()
             .unwrap()
             .current
-            > LOW_CHARGE_THRESHOLD,
+            > Tuning::default().charge.low_threshold,
         "full Defender must stay above rotation threshold through tick 3,999",
     );
 
@@ -104,7 +101,7 @@ fn full_defender_remains_on_duty_until_field_endurance_threshold() {
             .get::<Charge>()
             .unwrap()
             .current
-            > LOW_CHARGE_THRESHOLD,
+            > Tuning::default().charge.low_threshold,
         "f32 drain boundary remains above threshold at tick 4,000",
     );
     app.update();
@@ -114,7 +111,7 @@ fn full_defender_remains_on_duty_until_field_endurance_threshold() {
             .get::<Charge>()
             .unwrap()
             .current
-            <= LOW_CHARGE_THRESHOLD,
+            <= Tuning::default().charge.low_threshold,
         "rotation threshold must be reached on tick 4,001",
     );
 }
@@ -142,9 +139,9 @@ fn low_defender_recharges_in_readable_bounded_time() {
         .entity_mut(defender)
         .get_mut::<Charge>()
         .unwrap()
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
 
-    for _ in 0..(CHARGE_PULSE_INTERVAL_TICKS as usize - 1) {
+    for _ in 0..(Tuning::default().charge.pulse_interval_ticks as usize - 1) {
         app.update();
     }
     assert!(
@@ -153,7 +150,7 @@ fn low_defender_recharges_in_readable_bounded_time() {
             .get::<Charge>()
             .unwrap()
             .current
-            < MAX_CHARGE,
+            < Tuning::default().charge.max_charge,
         "recharge must not finish before the first supplied pulse",
     );
 
@@ -166,7 +163,7 @@ fn low_defender_recharges_in_readable_bounded_time() {
             .get::<Charge>()
             .unwrap()
             .current
-            - MAX_CHARGE)
+            - Tuning::default().charge.max_charge)
             .abs()
             < 1e-6
         {
@@ -209,7 +206,7 @@ fn normal_rotation_consumes_exact_minerals() {
         .entity_mut(defender)
         .get_mut::<Charge>()
         .unwrap()
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
 
     for _ in 0..7_000 {
         app.update();
@@ -235,7 +232,7 @@ fn normal_rotation_consumes_exact_minerals() {
             .get::<Charge>()
             .unwrap()
             .current
-            - MAX_CHARGE)
+            - Tuning::default().charge.max_charge)
             .abs()
             < 1e-6
     );
@@ -268,13 +265,13 @@ fn empty_unsupported_defender_dies_after_grace_period() {
     }
     assert_eq!(
         read_health(&app, defender),
-        Some(NANOBOT_DEFAULT_MAX_HEALTH)
+        Some(Tuning::default().combat.nanobot_max_health)
     );
 
     app.update();
     assert_eq!(
         read_health(&app, defender),
-        Some(NANOBOT_DEFAULT_MAX_HEALTH - 1)
+        Some(Tuning::default().combat.nanobot_max_health - 1)
     );
     for _ in 0..594 {
         app.update();
@@ -303,7 +300,7 @@ fn swarm_rotation_cap_counts_defenders_across_staging_cells() {
             .entity_mut(defender)
             .get_mut::<Charge>()
             .unwrap()
-            .current = LOW_CHARGE_THRESHOLD;
+            .current = Tuning::default().charge.low_threshold;
     }
 
     wait_for_rotations(&mut app, 3);
@@ -504,7 +501,7 @@ fn destroyed_charger_ends_rotation_without_grandfathering_replacement_admission(
     app.world_mut()
         .entity_mut(accepted[1])
         .insert(ChargerPulseProgress {
-            ticks_elapsed: CHARGE_PULSE_INTERVAL_TICKS - 1,
+            ticks_elapsed: Tuning::default().charge.pulse_interval_ticks - 1,
         });
     for _ in 0..2 {
         app.update();
@@ -545,7 +542,7 @@ fn swarm_rotation_keeps_half_of_defenders_on_duty() {
             .entity_mut(defender)
             .get_mut::<Charge>()
             .unwrap()
-            .current = LOW_CHARGE_THRESHOLD;
+            .current = Tuning::default().charge.low_threshold;
     }
 
     wait_for_rotations(&mut app, 1);
@@ -564,6 +561,7 @@ fn swarm_rotation_keeps_half_of_defenders_on_duty() {
 #[test]
 fn material_is_not_overdrawn_under_charger_contention() {
     let mut app = App::new();
+    app.init_resource::<Tuning>();
     app.insert_resource(IntentGrid::new(4, 4))
         .init_resource::<ResourceLedger>()
         .add_systems(Update, defender_charger_work_system);
@@ -573,7 +571,7 @@ fn material_is_not_overdrawn_under_charger_contention() {
         .paint(cell, IntentKind::Defend, SwarmId::PLAYER);
     let swarm = app.world_mut().spawn(SwarmBundle::default()).id();
     let mut charger_state = Charger::new(cell);
-    charger_state.amount = CHARGER_MATERIAL_PER_PULSE;
+    charger_state.amount = Tuning::default().charge.material_per_pulse;
     let charger = app
         .world_mut()
         .spawn((
@@ -586,7 +584,7 @@ fn material_is_not_overdrawn_under_charger_contention() {
     app.world_mut().resource_mut::<ResourceLedger>().add_for(
         SwarmId::PLAYER,
         ResourceKind::Minerals,
-        CHARGER_MATERIAL_PER_PULSE,
+        Tuning::default().charge.material_per_pulse,
     );
     for _ in 0..2 {
         app.world_mut().spawn((
@@ -596,12 +594,12 @@ fn material_is_not_overdrawn_under_charger_contention() {
             SwarmMember::new(SwarmId::PLAYER),
             Charge {
                 current: 0.5,
-                max: MAX_CHARGE,
+                max: Tuning::default().charge.max_charge,
             },
             ChargerAssignment { charger },
             ChargerProgress { charger },
             ChargerPulseProgress {
-                ticks_elapsed: CHARGE_PULSE_INTERVAL_TICKS - 1,
+                ticks_elapsed: Tuning::default().charge.pulse_interval_ticks - 1,
             },
         ));
     }
@@ -635,6 +633,7 @@ fn material_is_not_overdrawn_under_charger_contention() {
 fn charger_pulse_recipient_is_stable_across_spawn_order() {
     fn charged_entity_rank(reverse_spawn_order: bool) -> usize {
         let mut app = App::new();
+        app.init_resource::<Tuning>();
         app.insert_resource(IntentGrid::new(4, 4))
             .init_resource::<ResourceLedger>()
             .add_systems(Update, defender_charger_work_system);
@@ -646,7 +645,7 @@ fn charger_pulse_recipient_is_stable_across_spawn_order() {
         );
         let swarm = app.world_mut().spawn(SwarmBundle::default()).id();
         let mut charger_state = Charger::new(cell);
-        charger_state.amount = CHARGER_MATERIAL_PER_PULSE;
+        charger_state.amount = Tuning::default().charge.material_per_pulse;
         let charger = app
             .world_mut()
             .spawn((
@@ -659,7 +658,7 @@ fn charger_pulse_recipient_is_stable_across_spawn_order() {
         app.world_mut().resource_mut::<ResourceLedger>().add_for(
             SwarmId::PLAYER,
             ResourceKind::Minerals,
-            CHARGER_MATERIAL_PER_PULSE,
+            Tuning::default().charge.material_per_pulse,
         );
 
         let spawn_order = if reverse_spawn_order { [1, 0] } else { [0, 1] };
@@ -674,12 +673,12 @@ fn charger_pulse_recipient_is_stable_across_spawn_order() {
                     SwarmMember::new(SwarmId::PLAYER),
                     Charge {
                         current: 0.5,
-                        max: MAX_CHARGE,
+                        max: Tuning::default().charge.max_charge,
                     },
                     ChargerAssignment { charger },
                     ChargerProgress { charger },
                     ChargerPulseProgress {
-                        ticks_elapsed: CHARGE_PULSE_INTERVAL_TICKS - 1,
+                        ticks_elapsed: Tuning::default().charge.pulse_interval_ticks - 1,
                     },
                 ))
                 .id();
@@ -726,7 +725,7 @@ fn released_charger_slot_is_claimed_deterministically() {
             .entity_mut(defender)
             .get_mut::<Charge>()
             .unwrap()
-            .current = LOW_CHARGE_THRESHOLD;
+            .current = Tuning::default().charge.low_threshold;
     }
 
     wait_for_rotations(&mut app, 2);
@@ -785,7 +784,7 @@ fn low_charge_defender_plans_charger_in_owned_defend_paint() {
         .entity_mut(defender)
         .get_mut::<Charge>()
         .expect("Defender has Charge")
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
 
     // Pre-condition: zero chargers and zero planned
     // chargers.
@@ -870,7 +869,7 @@ fn enemy_defender_does_not_create_player_charger_demand() {
         .entity_mut(defender)
         .get_mut::<Charge>()
         .expect("Defender has Charge")
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
 
     app.update();
 
@@ -915,8 +914,8 @@ fn only_defenders_have_charge_component() {
     // whether the rotation/auto-creation systems also fired
     // (they didn't because there is no Defend paint and no
     // Charger), so the post-condition is "strictly less than
-    // MAX_CHARGE and non-negative".
-    assert!(defender_charge < MAX_CHARGE);
+    // Tuning::default().charge.max_charge and non-negative".
+    assert!(defender_charge < Tuning::default().charge.max_charge);
     assert!(defender_charge > 0.0);
 }
 
@@ -950,11 +949,11 @@ fn empty_charge_causes_defender_health_loss_when_no_charger() {
     }
 
     let start_health = read_health(&app, defender).expect("defender has Health");
-    assert_eq!(start_health, NANOBOT_DEFAULT_MAX_HEALTH);
+    assert_eq!(start_health, Tuning::default().combat.nanobot_max_health);
 
     // First five empty ticks are grace; sixth tick delivers one
     // damage pulse.
-    for _ in 0..usize::from(EMPTY_CHARGE_DAMAGE_INTERVAL_TICKS) {
+    for _ in 0..usize::from(Tuning::default().charge.empty_damage_interval_ticks) {
         app.update();
     }
 
@@ -965,7 +964,8 @@ fn empty_charge_causes_defender_health_loss_when_no_charger() {
         "defender must lose health with empty charge; lost {lost}"
     );
     assert_eq!(
-        lost, EMPTY_CHARGE_HEALTH_DAMAGE,
+        lost,
+        Tuning::default().charge.empty_health_damage,
         "empty charge must damage once per six-tick pulse"
     );
 }
@@ -997,7 +997,7 @@ fn defender_does_not_lose_health_while_charging_at_a_working_charger() {
     }
 
     let start_health = read_health(&app, defender).expect("defender has Health");
-    assert_eq!(start_health, NANOBOT_DEFAULT_MAX_HEALTH);
+    assert_eq!(start_health, Tuning::default().combat.nanobot_max_health);
 
     for _ in 0..5 {
         app.update();
@@ -1009,7 +1009,8 @@ fn defender_does_not_lose_health_while_charging_at_a_working_charger() {
     // health.
     let end_health = read_health(&app, defender).expect("defender has Health");
     assert_eq!(
-        end_health, NANOBOT_DEFAULT_MAX_HEALTH,
+        end_health,
+        Tuning::default().combat.nanobot_max_health,
         "defender at a working charger must not lose health"
     );
 }
@@ -1018,7 +1019,7 @@ fn defender_does_not_lose_health_while_charging_at_a_working_charger() {
 fn defender_uses_eligible_charger_in_owned_defend_paint() {
     // Acceptance: "Defenders automatically rotate to working
     // chargers when low on Charge." A Defender with
-    // charge at or below LOW_CHARGE_THRESHOLD must receive a
+    // charge at or below Tuning::default().charge.low_threshold must receive a
     // ChargerAssignment aimed at a working charger; the
     // current response is released.
     let mut app = build_app();
@@ -1036,7 +1037,8 @@ fn defender_uses_eligible_charger_in_owned_defend_paint() {
     {
         let w = app.world_mut();
         // Charge at exactly the low threshold: must trigger rotation.
-        w.entity_mut(defender).get_mut::<Charge>().unwrap().current = LOW_CHARGE_THRESHOLD;
+        w.entity_mut(defender).get_mut::<Charge>().unwrap().current =
+            Tuning::default().charge.low_threshold;
         w.entity_mut(defender).insert(DefenderResponse {
             target: Entity::PLACEHOLDER,
         });
@@ -1101,7 +1103,7 @@ fn defender_ignores_closer_enemy_charger() {
         .entity_mut(defender)
         .get_mut::<Charge>()
         .unwrap()
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
 
     wait_for_rotations(&mut app, 1);
 
@@ -1141,7 +1143,7 @@ fn defender_uses_nearest_owned_charger_even_under_overlapping_enemy_paint() {
         .entity_mut(defender)
         .get_mut::<Charge>()
         .unwrap()
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
 
     wait_for_rotations(&mut app, 1);
 
@@ -1170,7 +1172,7 @@ fn charger_without_valid_owner_is_not_eligible() {
         .entity_mut(defender)
         .get_mut::<Charge>()
         .unwrap()
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
 
     app.update();
 
@@ -1214,7 +1216,7 @@ fn charger_in_only_enemy_defend_paint_is_inactive() {
         .entity_mut(defender)
         .get_mut::<Charge>()
         .unwrap()
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
 
     app.update();
 
@@ -1245,7 +1247,7 @@ fn charger_without_support_condition_is_not_eligible() {
         .entity_mut(defender)
         .get_mut::<Charge>()
         .unwrap()
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
 
     app.update();
 
@@ -1292,7 +1294,7 @@ fn en_route_and_charging_defenders_share_charger_capacity() {
             .entity_mut(defender)
             .get_mut::<Charge>()
             .unwrap()
-            .current = LOW_CHARGE_THRESHOLD;
+            .current = Tuning::default().charge.low_threshold;
     }
 
     wait_for_rotations(&mut app, 3);
@@ -1347,7 +1349,7 @@ fn charge_departure_releases_response_for_same_step_replacement() {
         .entity_mut(defender)
         .get_mut::<Charge>()
         .unwrap()
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
 
     wait_for_rotations(&mut app, 1);
 
@@ -1433,6 +1435,7 @@ fn equal_charge_prefers_staged_defender_over_current_tactical_duty() {
 #[test]
 fn invalidated_assignment_releases_capacity_and_charge_state() {
     let mut app = App::new();
+    app.init_resource::<Tuning>();
     app.insert_resource(IntentGrid::new(8, 8));
     app.init_resource::<ResourceLedger>();
     app.add_systems(Update, defender_charger_work_system);
@@ -1463,6 +1466,7 @@ fn invalidated_assignment_releases_capacity_and_charge_state() {
 #[test]
 fn emptied_charger_cancels_en_route_assignment_before_arrival() {
     let mut app = App::new();
+    app.init_resource::<Tuning>();
     let cell = IVec2::ZERO;
     app.insert_resource(IntentGrid::new(8, 8));
     app.world_mut()
@@ -1528,7 +1532,8 @@ fn defender_does_not_rotate_to_empty_charger() {
     let defender = common::spawn_defender_at(&mut app, cell_center);
     {
         let w = app.world_mut();
-        w.entity_mut(defender).get_mut::<Charge>().unwrap().current = LOW_CHARGE_THRESHOLD;
+        w.entity_mut(defender).get_mut::<Charge>().unwrap().current =
+            Tuning::default().charge.low_threshold;
     }
 
     app.update();
@@ -1559,7 +1564,7 @@ fn defender_does_not_rotate_to_degraded_charger() {
         .entity_mut(defender)
         .get_mut::<Charge>()
         .unwrap()
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
 
     app.update();
 
@@ -1632,11 +1637,11 @@ fn completed_rotation_reenters_current_allocation() {
     );
     let charge = read_charge(&app, defender).expect("defender has Charge");
     assert!(
-        charge >= LOW_CHARGE_THRESHOLD,
+        charge >= Tuning::default().charge.low_threshold,
         "reassigned Defender stays above the next rotation threshold; got {charge}"
     );
     assert!(
-        charge <= MAX_CHARGE,
+        charge <= Tuning::default().charge.max_charge,
         "charge cannot exceed the cap; got {charge}"
     );
     assert!(
@@ -1784,14 +1789,14 @@ fn completed_recharge_wakes_allocation_between_regular_ten_hertz_ticks() {
         ChargerAssignment { charger },
         ChargerProgress { charger },
         ChargerPulseProgress {
-            ticks_elapsed: CHARGE_PULSE_INTERVAL_TICKS - 1,
+            ticks_elapsed: Tuning::default().charge.pulse_interval_ticks - 1,
         },
     ));
     app.world_mut()
         .entity_mut(defender)
         .get_mut::<Charge>()
         .unwrap()
-        .current = MAX_CHARGE - CHARGE_PER_PULSE / 2.0;
+        .current = Tuning::default().charge.max_charge - Tuning::default().charge.per_pulse / 2.0;
 
     app.update();
 
@@ -1844,7 +1849,7 @@ fn charger_requires_logistics_support_via_physical_resources() {
             let w = app_empty.world_mut();
             w.entity_mut(defender).get_mut::<Charge>().unwrap().current = 0.0;
         }
-        for _ in 0..usize::from(EMPTY_CHARGE_DAMAGE_INTERVAL_TICKS) {
+        for _ in 0..usize::from(Tuning::default().charge.empty_damage_interval_ticks) {
             app_empty.update();
         }
         let health_empty = read_health(&app_empty, defender);
@@ -1855,7 +1860,7 @@ fn charger_requires_logistics_support_via_physical_resources() {
         // exists with reduced health or it was despawned.
         if let Some(h) = health_empty {
             assert!(
-                h < NANOBOT_DEFAULT_MAX_HEALTH,
+                h < Tuning::default().combat.nanobot_max_health,
                 "empty charger must lead to health loss; got {h}"
             );
         }
@@ -1879,7 +1884,8 @@ fn charger_requires_logistics_support_via_physical_resources() {
         let defender = common::spawn_defender_at(&mut app_filled, cell_center);
         {
             let w = app_filled.world_mut();
-            w.entity_mut(defender).get_mut::<Charge>().unwrap().current = LOW_CHARGE_THRESHOLD;
+            w.entity_mut(defender).get_mut::<Charge>().unwrap().current =
+                Tuning::default().charge.low_threshold;
         }
         // Drive a few ticks: rotation + arrival + at least
         // one charging tick. 30 is a safe margin.
@@ -1889,7 +1895,8 @@ fn charger_requires_logistics_support_via_physical_resources() {
         let health_filled = read_health(&app_filled, defender)
             .expect("defender with a stocked charger must still be alive");
         assert_eq!(
-            health_filled, NANOBOT_DEFAULT_MAX_HEALTH,
+            health_filled,
+            Tuning::default().combat.nanobot_max_health,
             "stocked charger must keep defender at full health; got {health_filled}"
         );
     }
@@ -1942,7 +1949,7 @@ fn hauler_delivers_minerals_to_a_charger_with_free_space() {
 #[test]
 fn defender_without_low_charge_does_not_rotate_to_charger() {
     // Companion: a defender with charge above
-    // LOW_CHARGE_THRESHOLD must not be picked up by the
+    // Tuning::default().charge.low_threshold must not be picked up by the
     // rotation system even if a working charger exists.
     // The Defender stays on current duty.
     let mut app = build_app();
@@ -1959,8 +1966,9 @@ fn defender_without_low_charge_does_not_rotate_to_charger() {
     let defender = common::spawn_defender_at(&mut app, cell_center);
     {
         let w = app.world_mut();
-        // Above LOW_CHARGE_THRESHOLD: still strong, no rotation.
-        w.entity_mut(defender).get_mut::<Charge>().unwrap().current = LOW_CHARGE_THRESHOLD + 0.1;
+        // Above Tuning::default().charge.low_threshold: still strong, no rotation.
+        w.entity_mut(defender).get_mut::<Charge>().unwrap().current =
+            Tuning::default().charge.low_threshold + 0.1;
     }
 
     app.update();
@@ -1977,12 +1985,12 @@ fn defender_charge_drains_passively_when_idle() {
     // Acceptance: "Defenders use Charge." A defender with
     // a Charge component must see the charge decrease over
     // time even when no charger is reachable. The drain
-    // rate is CHARGE_DRAIN_PER_TICK per tick.
+    // rate is Tuning::default().charge.drain_per_tick per tick.
     let mut app = build_app();
     let _swarm = common::spawn_swarm_at(&mut app, Vec2::new(0.0, 0.0));
     let defender = common::spawn_defender_at(&mut app, Vec2::new(0.0, 0.0));
     let start = read_charge(&app, defender).expect("defender has Charge");
-    assert_eq!(start, MAX_CHARGE);
+    assert_eq!(start, Tuning::default().charge.max_charge);
 
     // Run 10 ticks without any Defend paint and without any
     // charger. The drain system must fire each tick.
@@ -1991,11 +1999,12 @@ fn defender_charge_drains_passively_when_idle() {
     }
     let end = read_charge(&app, defender).expect("defender has Charge");
     // Pin the per-tick rate exactly: 10 ticks at
-    // CHARGE_DRAIN_PER_TICK.
-    let expected = MAX_CHARGE - CHARGE_DRAIN_PER_TICK * 10.0;
+    // Tuning::default().charge.drain_per_tick.
+    let expected =
+        Tuning::default().charge.max_charge - Tuning::default().charge.drain_per_tick * 10.0;
     assert!(
         (end - expected).abs() < 1e-5,
-        "charge must drain by CHARGE_DRAIN_PER_TICK per tick; expected {expected}, got {end}"
+        "charge must drain by Tuning::default().charge.drain_per_tick per tick; expected {expected}, got {end}"
     );
     // The drain must be strictly positive (the constant
     // matters, not just the sign).
@@ -2029,7 +2038,7 @@ fn defender_charge_refills_in_supplied_pulses() {
         w.entity_mut(defender).insert((
             ChargerProgress { charger },
             ChargerPulseProgress {
-                ticks_elapsed: CHARGE_PULSE_INTERVAL_TICKS - 1,
+                ticks_elapsed: Tuning::default().charge.pulse_interval_ticks - 1,
             },
         ));
     }
@@ -2038,7 +2047,9 @@ fn defender_charge_refills_in_supplied_pulses() {
 
     app.update();
     let end = read_charge(&app, defender).expect("defender has Charge");
-    let expected_saturated = (0.5 - CHARGE_DRAIN_PER_TICK + CHARGE_PER_PULSE).min(MAX_CHARGE);
+    let expected_saturated = (0.5 - Tuning::default().charge.drain_per_tick
+        + Tuning::default().charge.per_pulse)
+        .min(Tuning::default().charge.max_charge);
     assert!(
         (end - expected_saturated).abs() < 1e-5,
         "charge must refill at supplied pulse; expected {expected_saturated}, got {end}"
@@ -2091,6 +2102,7 @@ fn charge_duty_excludes_defender_from_response_acquisition() {
 #[test]
 fn charger_work_consumes_owning_swarm_resources() {
     let mut app = App::new();
+    app.init_resource::<Tuning>();
     app.insert_resource(IntentGrid::new(4, 4))
         .init_resource::<ResourceLedger>()
         .add_systems(Update, defender_charger_work_system);
@@ -2126,13 +2138,13 @@ fn charger_work_consumes_owning_swarm_resources() {
             Transform::from_xyz(68.0, 0.0, 0.0),
             Charge {
                 current: 0.5,
-                max: MAX_CHARGE,
+                max: Tuning::default().charge.max_charge,
             },
             ChargerAssignment { charger },
             (
                 ChargerProgress { charger },
                 ChargerPulseProgress {
-                    ticks_elapsed: CHARGE_PULSE_INTERVAL_TICKS - 1,
+                    ticks_elapsed: Tuning::default().charge.pulse_interval_ticks - 1,
                 },
             ),
         ))
@@ -2148,7 +2160,7 @@ fn charger_work_consumes_owning_swarm_resources() {
         app.world()
             .resource::<ResourceLedger>()
             .total_for(SwarmId::PLAYER, ResourceKind::Minerals,),
-        10 - CHARGER_MATERIAL_PER_PULSE,
+        10 - Tuning::default().charge.material_per_pulse,
         "charger work removes consumed material from owning swarm",
     );
     assert!(app.world().get_entity(defender).is_ok());
@@ -2157,6 +2169,7 @@ fn charger_work_consumes_owning_swarm_resources() {
 #[test]
 fn loaded_nanobot_death_loses_exact_cargo_and_releases_reservation() {
     let mut app = App::new();
+    app.init_resource::<Tuning>();
     app.init_resource::<BattleCounters>();
     app.init_resource::<ResourceLedger>()
         .add_systems(Update, nanobot_death_cleanup_system);

@@ -1,23 +1,23 @@
 //! Integration tests for zoom-aware fill bars above structures and loaded haulers.
 
 use approx::assert_abs_diff_eq;
+use top_down_2d_rts_prototype_nano_swarm::tuning::{PresentationTuning, Tuning};
+
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z, MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
     fly_camera::CameraZoom2d,
     nanobot::{
-        Cargo, Charger, ExtractProgress, HAULER_CARRY_CAPACITY, HaulerLoad, LogisticsReservation,
-        MAINTENANCE_NEEDS_THRESHOLD, MAINTENANCE_WORK_DURATION_TICKS, MaintenanceAssignment,
+        Cargo, Charger, ExtractProgress, HaulerLoad, LogisticsReservation, MaintenanceAssignment,
         MaintenanceProgress, PlannedKind, PlannedStructure, ProductionFacility,
-        SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, WORKER_CARRY_CAPACITY,
+        SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole},
     structure_overlay::{
-        CONDITION_BAR_GAP, CONDITION_BAR_SIZE, ConditionOverlay, ConditionOverlayKind,
-        STRUCTURE_BAR_SIZE, STRUCTURE_FOOTPRINT_LABEL_GAP, STRUCTURE_OVERLAY_Z, StructureOverlay,
+        ConditionOverlay, ConditionOverlayKind, STRUCTURE_OVERLAY_Z, StructureOverlay,
         StructureOverlayFill, StructureOverlayKind, StructureOverlaySegment,
-        StructureOverlaySegmentKind, StructureOverlaySettings, fill_fraction, overlay_bar_size,
-        overlay_fill_color, overlay_label_offset_y, reservation_segment_color,
+        StructureOverlaySegmentKind, fill_fraction, overlay_bar_size, overlay_fill_color,
+        overlay_label_offset_y, reservation_segment_color,
     },
 };
 
@@ -168,16 +168,16 @@ fn completed_support_structure_gets_stacked_condition_bars() {
         .translation
         .y;
 
-    assert_abs_diff_eq!(CONDITION_BAR_SIZE.x, 48.0, epsilon = 1e-5);
-    assert_abs_diff_eq!(CONDITION_BAR_SIZE.y, 3.0, epsilon = 1e-5);
+    assert_abs_diff_eq!(Vec2::new(48.0, 3.0).x, 48.0, epsilon = 1e-5);
+    assert_abs_diff_eq!(Vec2::new(48.0, 3.0).y, 3.0, epsilon = 1e-5);
     assert!(
         (maintenance_y
             - resource_y
-            - (STRUCTURE_BAR_SIZE.y / 2.0 + CONDITION_BAR_GAP + CONDITION_BAR_SIZE.y / 2.0))
+            - (Vec2::new(48.0, 6.0).y / 2.0 + 2.0 + Vec2::new(48.0, 3.0).y / 2.0))
             .abs()
             < 0.01
     );
-    assert!((health_y - maintenance_y - (CONDITION_BAR_SIZE.y + CONDITION_BAR_GAP)).abs() < 0.01);
+    assert!((health_y - maintenance_y - (Vec2::new(48.0, 3.0).y + 2.0)).abs() < 0.01);
 }
 
 #[test]
@@ -185,7 +185,7 @@ fn maintenance_and_health_bars_track_live_condition() {
     let mut app = build_app();
     let facility = common::spawn_idle_facility_at(&mut app, Vec2::ZERO);
     let mut condition = Structure::new(StructureKind::Basic);
-    condition.ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
+    condition.ticks_since_maintained = Tuning::default().maintenance.needs_threshold;
     condition.health = SUPPORT_OPERATIONAL_HEALTH_THRESHOLD;
     app.world_mut().entity_mut(facility).insert(condition);
 
@@ -238,7 +238,7 @@ fn maintenance_progress_bar_tracks_worker_shift_and_despawns() {
         .insert(MaintenanceProgress {
             cell: IVec2::ZERO,
             target,
-            ticks_worked: MAINTENANCE_WORK_DURATION_TICKS / 2,
+            ticks_worked: Tuning::default().maintenance.work_ticks / 2,
         });
 
     app.update();
@@ -298,7 +298,7 @@ fn worker_transfer_overlay_exists_while_empty_then_tracks_live_cargo() {
         .entity_mut(worker)
         .get_mut::<Cargo>()
         .unwrap()
-        .amount = WORKER_CARRY_CAPACITY / 2;
+        .amount = Tuning::default().logistics.worker_carry_capacity / 2;
     app.update();
 
     assert_segment(
@@ -437,7 +437,7 @@ fn hauler_overlay_spawns_only_when_loaded_and_uses_load_capacity() {
 
     app.world_mut().entity_mut(hauler).insert(HaulerLoad {
         kind: ResourceKind::Minerals,
-        amount: HAULER_CARRY_CAPACITY / 2,
+        amount: Tuning::default().logistics.hauler_carry_capacity / 2,
     });
     app.update();
 
@@ -452,7 +452,7 @@ fn hauler_overlay_despawns_when_load_is_removed() {
     let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
     app.world_mut().entity_mut(hauler).insert(HaulerLoad {
         kind: ResourceKind::Minerals,
-        amount: HAULER_CARRY_CAPACITY,
+        amount: Tuning::default().logistics.hauler_carry_capacity,
     });
 
     app.update();
@@ -548,8 +548,11 @@ fn overlay_position_tracks_target_world_transform() {
         .get::<ResourceDeposit>()
         .unwrap()
         .radius;
-    let expected_offset =
-        overlay_label_offset_y(StructureOverlayKind::Deposit, Some(deposit_radius));
+    let expected_offset = overlay_label_offset_y(
+        StructureOverlayKind::Deposit,
+        Some(deposit_radius),
+        &PresentationTuning::default(),
+    );
 
     app.update();
 
@@ -583,7 +586,7 @@ fn deposit_overlay_sits_above_deposit_circle() {
 
     let overlay = find_overlay_for(&mut app, deposit);
     let translation = app.world().entity(overlay).get::<Transform>().unwrap();
-    let expected_y = pos.y + 96.0 + STRUCTURE_FOOTPRINT_LABEL_GAP;
+    let expected_y = pos.y + 96.0 + 12.0;
     assert!((translation.translation.y - expected_y).abs() < 1.0);
     assert!(translation.translation.y > pos.y);
 }
@@ -661,8 +664,9 @@ fn configured_threshold_gates_visibility() {
         },
     );
     app.world_mut()
-        .resource_mut::<StructureOverlaySettings>()
-        .hide_zoom_threshold = 0.5;
+        .resource_mut::<Tuning>()
+        .presentation
+        .overlay_zoom_threshold = 0.5;
     app.world_mut().spawn(CameraZoom2d {
         zoom: 1.0,
         ..default()
@@ -956,7 +960,7 @@ fn assert_fill_fraction(app: &App, overlay: Entity, kind: StructureOverlayKind, 
         .get::<StructureOverlay>()
         .unwrap();
     let fill = overlay_component.fill;
-    let expected_width = overlay_bar_size(kind).x * expected;
+    let expected_width = overlay_bar_size(kind, &PresentationTuning::default()).x * expected;
     let (actual_size, actual_x, marker_present) = {
         let fill_ref = app.world().entity(fill);
         let sprite = fill_ref.get::<Sprite>().unwrap();
@@ -974,8 +978,13 @@ fn assert_fill_fraction(app: &App, overlay: Entity, kind: StructureOverlayKind, 
         actual_size.x,
         expected_width
     );
-    assert_abs_diff_eq!(actual_size.y, overlay_bar_size(kind).y, epsilon = 0.01);
-    let expected_x = -(overlay_bar_size(kind).x - expected_width) / 2.0;
+    assert_abs_diff_eq!(
+        actual_size.y,
+        overlay_bar_size(kind, &PresentationTuning::default()).y,
+        epsilon = 0.01
+    );
+    let expected_x =
+        -(overlay_bar_size(kind, &PresentationTuning::default()).x - expected_width) / 2.0;
     assert!((actual_x - expected_x).abs() < 0.01);
 }
 
@@ -1005,7 +1014,7 @@ fn assert_segment(
         segment_kind
     );
     let sprite = app.world().entity(segment).get::<Sprite>().unwrap();
-    let expected_size = overlay_bar_size(overlay.kind);
+    let expected_size = overlay_bar_size(overlay.kind, &PresentationTuning::default());
     let actual_color = sprite.color.to_srgba();
     let expected_color = expected_color.to_srgba();
     assert_abs_diff_eq!(actual_color.red, expected_color.red, epsilon = 1e-5);

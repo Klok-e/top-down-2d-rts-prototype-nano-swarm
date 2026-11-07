@@ -28,11 +28,12 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        DEFAULT_PLANNED_WORK_TICKS, GatherAssignment, PlannedKind, PlannedStructure,
-        SOURCE_STOCKPILE_JITTER_AMPLITUDE, SOURCE_STOCKPILE_PADDING,
-        SOURCE_STOCKPILE_PLACEMENT_RADIUS, SwarmId, completed_visual_color,
+        GatherAssignment, PlannedKind, PlannedStructure, SOURCE_STOCKPILE_JITTER_AMPLITUDE,
+        SOURCE_STOCKPILE_PADDING, SOURCE_STOCKPILE_PLACEMENT_RADIUS, SwarmId,
+        completed_visual_color,
     },
     resources::Stockpile,
+    tuning::Tuning,
 };
 
 #[path = "../common/mod.rs"]
@@ -41,7 +42,9 @@ mod common;
 /// Bounded real-time wait for the demand pipeline to settle at 60 Hz.
 const DEMAND_TICK_BUDGET: u32 = 600;
 /// Shipped construction work plus bounded allocation and travel time.
-const PLAN_COMPLETION_TICK_BUDGET: u32 = DEFAULT_PLANNED_WORK_TICKS + 600;
+fn plan_completion_tick_budget() -> u32 {
+    Tuning::default().construction.work_ticks + 600
+}
 
 fn build_app() -> App {
     common::sim_app_with_gather_planned()
@@ -383,7 +386,7 @@ fn placement_replaces_planned_structure_with_completed_stockpile() {
     // the worker to start gathering. We do not pin a
     // specific number of ticks; we just check the
     // post-build state.
-    for _ in 0..PLAN_COMPLETION_TICK_BUDGET {
+    for _ in 0..plan_completion_tick_budget() {
         app.update();
     }
 
@@ -423,7 +426,7 @@ fn no_floating_planned_source_stockpile_after_demand_satisfied() {
     );
 
     // Drive long enough for the build to finish.
-    for _ in 0..PLAN_COMPLETION_TICK_BUDGET {
+    for _ in 0..plan_completion_tick_budget() {
         app.update();
     }
 

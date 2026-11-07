@@ -1,21 +1,20 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-    Nanobot, NanobotType, OwnerSwarm, PRODUCTION_TICKS_PER_BOT, ProductionFacility,
-    production_facility_work_system,
+    Nanobot, NanobotType, OwnerSwarm, ProductionFacility, production_facility_work_system,
 };
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 #[path = "../common/mod.rs"]
 mod common;
 
 #[test]
 fn retained_output_satisfies_typed_demand_without_funding_a_duplicate() {
     use top_down_2d_rts_prototype_nano_swarm::{
-        game_settings::GameSettings,
         intent::{IntentGrid, IntentKind},
         nanobot::{Commitment, SwarmId},
         resources::{ResourceKind, ResourceLedger},
     };
     let mut app = common::sim_app_with_production();
-    app.world_mut().resource_mut::<GameSettings>().bot_speed = 0.;
+    app.world_mut().resource_mut::<Tuning>().logistics.bot_speed = 0.;
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::new(2, 2),
@@ -58,7 +57,7 @@ fn retained_output_satisfies_typed_demand_without_funding_a_duplicate() {
     }
     let waiting = app.world().get::<ProductionFacility>(retained).unwrap();
     assert_eq!(waiting.current_target, Some(NanobotType::Defender));
-    assert_eq!(waiting.progress, PRODUCTION_TICKS_PER_BOT);
+    assert_eq!(waiting.progress, Tuning::default().production.ticks_per_bot);
     let idle = app
         .world_mut()
         .spawn((
@@ -111,7 +110,7 @@ fn completed_output_waits_for_an_exterior_cell_and_releases_once() {
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let mut facility = ProductionFacility::new();
     facility.current_target = Some(NanobotType::Worker);
-    facility.progress = PRODUCTION_TICKS_PER_BOT - 1;
+    facility.progress = Tuning::default().production.ticks_per_bot - 1;
     let facility = app
         .world_mut()
         .spawn((
@@ -223,7 +222,7 @@ fn retained_output_keeps_one_funded_cycle_and_is_lost_with_its_facility() {
             "only one forty-mineral cycle is charged while exits are blocked"
         );
         assert!(
-            !retained.is_busy(),
+            !retained.is_busy(Tuning::default().production.ticks_per_bot),
             "exit waiting cannot justify production expansion"
         );
         assert_eq!(
@@ -260,7 +259,7 @@ fn oldest_finished_output_wins_a_shared_exit_even_when_created_later() {
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let mut young = ProductionFacility::new();
     young.current_target = Some(NanobotType::Hauler);
-    young.progress = PRODUCTION_TICKS_PER_BOT - 2;
+    young.progress = Tuning::default().production.ticks_per_bot - 2;
     let young = app
         .world_mut()
         .spawn((
@@ -271,7 +270,7 @@ fn oldest_finished_output_wins_a_shared_exit_even_when_created_later() {
         .id();
     let mut old = ProductionFacility::new();
     old.current_target = Some(NanobotType::Defender);
-    old.progress = PRODUCTION_TICKS_PER_BOT - 1;
+    old.progress = Tuning::default().production.ticks_per_bot - 1;
     let old = app
         .world_mut()
         .spawn((
@@ -338,7 +337,7 @@ fn clearing_footprint_blocks_the_only_free_production_exit() {
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let mut facility = ProductionFacility::new();
     facility.current_target = Some(NanobotType::Worker);
-    facility.progress = PRODUCTION_TICKS_PER_BOT;
+    facility.progress = Tuning::default().production.ticks_per_bot;
     let facility = app
         .world_mut()
         .spawn((

@@ -1,5 +1,6 @@
 //! Owns construction reservations, validation, evacuation, activation, and cancellation.
 use crate::battle_statistics::{BattleCounters, BattleEvent};
+use crate::tuning::Tuning;
 use bevy::prelude::*;
 
 use super::{
@@ -14,8 +15,7 @@ use crate::{
 };
 
 use super::planned::{
-    DEFAULT_PLANNED_WORK_TICKS, DEFAULT_STOCKPILE_CAPACITY, PLANNED_STRUCTURE_FOOTPRINT,
-    PlannedKind, completed_visual_color, sink_stockpile_demand_system,
+    PLANNED_STRUCTURE_FOOTPRINT, PlannedKind, completed_visual_color, sink_stockpile_demand_system,
 };
 use crate::resources::{ResourceKind, Stockpile, StockpileRole};
 use crate::structure_sprites::StructureVisual;
@@ -101,6 +101,7 @@ pub struct ClearingEvacuation {
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn clear_finished_structures_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     mut access: ParamSet<(ConstructionAccess, ResMut<CancelledSites>)>,
     grid: Res<IntentGrid>,
@@ -285,6 +286,7 @@ pub fn clear_finished_structures_system(
                 *transform,
                 plan.cell,
                 &sprites,
+                &tuning,
             );
         }
     }
@@ -308,8 +310,8 @@ impl PlannedStructure {
         Self {
             kind,
             cell,
-            work_budget: DEFAULT_PLANNED_WORK_TICKS,
-            work_remaining: DEFAULT_PLANNED_WORK_TICKS,
+            work_budget: Tuning::default().construction.work_ticks,
+            work_remaining: Tuning::default().construction.work_ticks,
             active_worker: None,
         }
     }
@@ -636,6 +638,7 @@ fn promote_planned_to_completion(
     transform: Transform,
     cell: IVec2,
     structure_sprites: &StructureSprites,
+    tuning: &Tuning,
 ) {
     commands
         .entity(planned_entity)
@@ -644,14 +647,14 @@ fn promote_planned_to_completion(
     match kind {
         PlannedKind::SourceStockpile => {
             commands.entity(planned_entity).insert((
-                empty_mineral_stockpile(),
+                empty_mineral_stockpile(tuning),
                 StockpileRole::Source,
                 visual,
             ));
         }
         PlannedKind::SinkStockpile => {
             commands.entity(planned_entity).insert((
-                empty_mineral_stockpile(),
+                empty_mineral_stockpile(tuning),
                 StockpileRole::Sink,
                 visual,
             ));
@@ -659,7 +662,7 @@ fn promote_planned_to_completion(
         PlannedKind::ProductionFacility => {
             // Completion creates an empty terminal. The normal production picker
             // chooses a type only after the hopper can pay the full cycle cost.
-            let facility = ProductionFacility::new();
+            let facility = ProductionFacility::with_tuning(tuning);
             // A completed facility is a terminal consumer:
             // it owns its own input hopper (on
             // `ProductionFacility`) and is NOT a `Stockpile`.
@@ -676,7 +679,7 @@ fn promote_planned_to_completion(
         PlannedKind::Charger => {
             // Completed chargers begin empty. OwnerSwarm remains on the
             // entity through Bevy component-merge semantics.
-            let charger = crate::nanobot::Charger::new(cell);
+            let charger = crate::nanobot::Charger::with_tuning(cell, tuning);
             commands.entity(planned_entity).insert((charger, visual));
         }
     }
@@ -701,13 +704,36 @@ fn completed_visual_bundle(
 /// that needs a local `Stockpile`. Source and Sink Stockpiles
 /// share capacity; their role marks logistics position, not
 /// size.
-fn empty_mineral_stockpile() -> Stockpile {
+fn empty_mineral_stockpile(tuning: &Tuning) -> Stockpile {
     Stockpile {
         kind: ResourceKind::Minerals,
         amount: 0,
-        capacity: DEFAULT_STOCKPILE_CAPACITY,
+        capacity: tuning.logistics.stockpile_capacity,
         radius: 32.0,
     }
+}
+
+/// Apply economy edits to existing commitments without restarting paid or completed work.
+pub fn reconcile_economy_tuning(world: &mut World, old: &Tuning, new: &Tuning) {
+    if old.construction.work_ticks != new.construction.work_ticks {
+        let mut plans = world.query::<&mut PlannedStructure>();
+        for mut plan in plans.iter_mut(world) {
+            let remaining = if plan.work_remaining == 0 {
+                0
+            } else {
+                crate::tuning::rescale_ticks(
+                    plan.work_remaining,
+                    plan.work_budget,
+                    new.construction.work_ticks,
+                )
+                .clamp(1, new.construction.work_ticks)
+            };
+            plan.work_budget = new.construction.work_ticks;
+            plan.work_remaining = remaining;
+        }
+    }
+    super::production::reconcile_production_tuning(world, old, new);
+    super::maintenance::reconcile_maintenance_tuning(world, old, new);
 }
 
 /// Commits lifecycle transitions after movement and allocation, then refreshes routing.
@@ -715,7 +741,7 @@ pub struct PlannedStructurePlugin;
 
 impl Plugin for PlannedStructurePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<crate::gameplay_pacing::GameplayPacing>()
+        app.init_resource::<Tuning>()
             .init_resource::<crate::nanobot::construction_access::CancelledSites>()
             .add_systems(
                 FixedUpdate,

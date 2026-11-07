@@ -1,10 +1,7 @@
 use bevy::{ecs::system::SystemParam, prelude::*};
 
 use super::{DirectMovementComponent, Nanobot, SwarmId, SwarmMember, VelocityComponent};
-use crate::{
-    game_settings::GameSettings, nanobot::consts::BOT_SEPARATION_FORCE,
-    spatial::FixedSpatialBuckets,
-};
+use crate::{nanobot::consts::BOT_SEPARATION_FORCE, spatial::FixedSpatialBuckets, tuning::Tuning};
 
 /// A stalled traveller may temporarily pass through friendly bodies, never world geometry.
 #[derive(Component, Debug)]
@@ -274,7 +271,7 @@ pub fn velocity_system(
     mut yielding: Local<std::collections::HashMap<Entity, Yielding>>,
     mut progress: Local<std::collections::HashMap<Entity, TravelProgress>>,
     traffic: TrafficContext,
-    game_settings: Res<GameSettings>,
+    tuning: Res<Tuning>,
     navigation: Res<crate::navigation::Navigation>,
 ) {
     let TrafficContext {
@@ -312,12 +309,12 @@ pub fn velocity_system(
                     start: transform.translation.truncate(),
                     delta: Vec2::ZERO,
                 },
-                clamp_velocity(velocity.value, game_settings.bot_speed),
+                clamp_velocity(velocity.value, tuning.logistics.bot_speed),
             )
         })
         .collect();
     bodies.sort_by_key(|(body, _)| body.entity.to_bits());
-    let mut lookup = FixedSpatialBuckets::new(diameter * 2.0 + game_settings.bot_speed * 2.0);
+    let mut lookup = FixedSpatialBuckets::new(diameter * 2.0 + tuning.logistics.bot_speed * 2.0);
     let indices: std::collections::HashMap<_, _> = bodies
         .iter()
         .enumerate()
@@ -395,7 +392,7 @@ pub fn velocity_system(
                 bodies[i].1 = [preferred, -preferred]
                     .into_iter()
                     .find_map(|direction| {
-                        let delta = direction * game_settings.bot_speed;
+                        let delta = direction * tuning.logistics.bot_speed;
                         physical
                             .movement_clear(body.start, body.start + direction * diameter)
                             .then_some(delta)
@@ -442,7 +439,7 @@ pub fn velocity_system(
                 if body.start.distance(target) <= 0.01 {
                     motion.entry(body.entity).or_default().departure = None;
                 } else {
-                    bodies[i].1 = clamp_velocity(target - body.start, game_settings.bot_speed);
+                    bodies[i].1 = clamp_velocity(target - body.start, tuning.logistics.bot_speed);
                 }
             }
         } else {
@@ -546,7 +543,7 @@ pub fn velocity_system(
                 .filter(|state| state.returning)
                 .and_then(|state| state.trail.last())
                 .map_or(desired, |point| {
-                    clamp_velocity(*point - body.start, game_settings.bot_speed)
+                    clamp_velocity(*point - body.start, tuning.logistics.bot_speed)
                 });
             let obstructed_by_friend = remaining_travel
                 .get(body.entity)
@@ -622,7 +619,7 @@ pub fn velocity_system(
                 other_precedes
                     && query.get(other.entity).unwrap().5.is_some()
                     && toward.length() >= diameter - 0.01
-                    && toward.length() < diameter + game_settings.bot_speed * 4.0
+                    && toward.length() < diameter + tuning.logistics.bot_speed * 4.0
                     && desired.dot(wanted) < 0.0
                     && toward.dot(desired) > 0.0
                     && swept_separation(
@@ -658,7 +655,7 @@ pub fn velocity_system(
                 (!state.returning
                     && body.entity != state.to
                     && desired.dot(bodies[indices[&state.to]].1) <= 0.0
-                    && offset.length() < diameter + game_settings.bot_speed * 4.0
+                    && offset.length() < diameter + tuning.logistics.bot_speed * 4.0
                     && offset.dot(state.retreat) > 0.0)
                     .then_some((state.to, state.retreat))
             });
@@ -708,7 +705,7 @@ pub fn velocity_system(
                     swept_separation(body.start, delta, other) + 0.001 >= required
                 })
         };
-        let speed = game_settings.bot_speed;
+        let speed = tuning.logistics.bot_speed;
         let requested = if let Some(state) = yielding.get_mut(&body.entity) {
             while state.returning
                 && state
@@ -805,7 +802,7 @@ pub fn velocity_system(
         let applied_velocity = if bot.is_some() {
             bodies[indices[&entity]].0.delta
         } else {
-            let proposed = clamp_velocity(velocity.value, game_settings.bot_speed);
+            let proposed = clamp_velocity(velocity.value, tuning.logistics.bot_speed);
             if physical.movement_clear(start, start + proposed) {
                 proposed
             } else {
