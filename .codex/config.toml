@@ -1,0 +1,18 @@
+default_permissions = "nano-swarm"
+
+[permissions.nano-swarm]
+extends = ":workspace"
+
+[permissions.nano-swarm.filesystem]
+"/home/dima/.cargo" = "write"
+":slash_tmp" = "read"
+":tmpdir" = "read"
+"/home/dima/Desktop/top-down-2d-rts-prototype-nano-swarm/.tmp" = "write"
+
+[permissions.nano-swarm.network]
+enabled = true
+
+[shell_environment_policy.set]
+TMPDIR = "/home/dima/Desktop/top-down-2d-rts-prototype-nano-swarm/.tmp"
+TMP = "/home/dima/Desktop/top-down-2d-rts-prototype-nano-swarm/.tmp"
+TEMP = "/home/dima/Desktop/top-down-2d-rts-prototype-nano-swarm/.tmp"
