@@ -4,38 +4,14 @@ How the engineering skills should consume this repo's domain documentation when 
 
 ## Before exploring, read these
 
-- **`CONTEXT.md`** at the repo root, or
-- **`CONTEXT-MAP.md`** at the repo root if it exists: it points at one `CONTEXT.md` per context. Read each one relevant to the topic.
-- **`docs/adr/`**: read ADRs that touch the area you're about to work in. In multi-context repos, also check `src/<context>/docs/adr/` for context-scoped decisions.
+- Read `GLOSSARY.md` at the repo root. If the root has a `GLOSSARY-MAP.md`, use it to find and read the relevant glossaries.
+- Read the relevant ADRs in `docs/adr/`. In multi-context repos, also check `src/<context>/docs/adr/` for context-scoped decisions.
 
-If any of these files don't exist, proceed silently. The `/domain-modeling` skill creates them lazily when terms or decisions are resolved.
-
-## File structure
-
-Single-context repo:
-
-```text
-/
-├── CONTEXT.md
-├── docs/adr/
-└── src/
-```
-
-Multi-context repo:
-
-```text
-/
-├── CONTEXT-MAP.md
-├── docs/adr/
-└── src/
-    └── <context>/
-        ├── CONTEXT.md
-        └── docs/adr/
-```
+If any of these files don't exist, proceed silently.
 
 ## Use the glossary's vocabulary
 
-When output names a domain concept, use the term defined in `CONTEXT.md`. Avoid synonyms the glossary explicitly excludes.
+When output names a domain concept, use the glossary's preferred term.
 
 If the needed concept isn't present, reconsider whether it belongs to the project or note the gap for `/domain-modeling`.
 
