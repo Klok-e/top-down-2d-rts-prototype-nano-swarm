@@ -3,9 +3,7 @@
 ## Change Verification
 
 - Review the diff for correctness and code quality.
-- Run `cargo fmt`.
-- Run `cargo clippy`.
-- Run `cargo test`.
+- Run the handoff checks in `docs/agents/testing.md`.
 
 ## Testing
 
@@ -17,12 +15,12 @@ For agent control and real-process verification, read `docs/agents/agent-control
 
 ### Issue tracker
 
-Issues and specs live as GitHub issues. See `docs/agents/issue-tracker.md`.
+For issue and spec workflows, follow `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
-Five canonical roles mapped 1:1 (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+When triaging, use the role mappings in `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
-Single-context layout — `CONTEXT.md` at the root and `docs/adr/` (created lazily by the producer skill). See `docs/agents/domain.md`.
+When exploring domain behavior or recording a domain decision, follow `docs/agents/domain.md` for glossary and ADR guidance.
