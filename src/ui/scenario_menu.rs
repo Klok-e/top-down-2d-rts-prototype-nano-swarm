@@ -70,9 +70,15 @@ impl Plugin for ScenarioMenuPlugin {
     }
 }
 
-fn menu_keyboard(keys: Res<ButtonInput<KeyCode>>, mut menu: ResMut<ScenarioMenu>) {
+fn menu_keyboard(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut menu: ResMut<ScenarioMenu>,
+    editor: Option<Res<super::tuning_panel::TuningEditor>>,
+) {
     menu.blocks_world_input = menu.open;
-    if keys.just_pressed(KeyCode::Escape) {
+    if keys.just_pressed(KeyCode::Escape)
+        && !editor.is_some_and(|editor| editor.keyboard_captured())
+    {
         menu.toggle();
     }
     menu.blocks_world_input |= menu.open;

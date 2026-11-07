@@ -2,12 +2,12 @@
 //! and planned/completed support structures obey shared footprint rules.
 
 use bevy::prelude::*;
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        BUILDING_FOOTPRINT_PADDING, BUILDING_FOOTPRINT_RADIUS, Charge, Commitment,
-        LOW_CHARGE_THRESHOLD, OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructureClaim,
-        SwarmId,
+        BUILDING_FOOTPRINT_PADDING, BUILDING_FOOTPRINT_RADIUS, Charge, Commitment, OwnerSwarm,
+        PlannedKind, PlannedStructure, PlannedStructureClaim, SwarmId,
     },
     resources::ResourceDeposit,
 };
@@ -377,7 +377,7 @@ fn charger_placement_rejects_planned_sink_stockpile_overlap() {
         .entity_mut(defender)
         .get_mut::<Charge>()
         .expect("Defender has Charge")
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
     // A Planned Sink Stockpile at the cell center. The
     // Charger's natural placement (cell center) must
     // collide with this plan, so the demand system must

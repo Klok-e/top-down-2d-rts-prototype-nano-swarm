@@ -16,12 +16,12 @@
 //!      -> on failure: remain Idle
 //!   Working
 //!      -> advance progress each tick
-//!      -> on progress >= PRODUCTION_TICKS_PER_BOT:
+//!      -> on reaching the configured cycle budget:
 //!         spawn a new nanobot of current_target
 //!         reset to Idle
 //! ```
 //!
-//! Material flow: the facility pulls the full [`PRODUCTION_COST_PER_BOT`] from
+//! Material flow: the facility pulls the full the configured cost from
 //! its input hopper at the start of a production cycle. Haulers physically fill
 //! that hopper through the final logistics leg, and production consumes the
 //! committed material up front.
@@ -32,6 +32,7 @@
 //! follow-up issue per the PRD.
 
 use crate::navigation::Obstacle;
+use crate::tuning::Tuning;
 use std::collections::HashMap;
 
 use bevy::prelude::*;
@@ -47,28 +48,6 @@ use crate::nanobot::maintenance::SupportCondition;
 use crate::nanobot::planned::{PlannedKind, planned_visual_components};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
 use crate::structure_sprites::StructureSprites;
-
-/// Material (in `ResourceKind::Minerals`) consumed to produce one
-/// nanobot. Shared across all three early types per the project's
-/// "shared cost/time" decision. The facility takes the full cost
-/// up-front at the start of a production cycle.
-pub const PRODUCTION_COST_PER_BOT: u32 = 40;
-
-/// Number of ticks a facility needs to finish a production cycle
-/// after consuming material. Shared across all three early types.
-/// At the runtime fixed-update frequency, 600 ticks is ten seconds.
-pub const PRODUCTION_TICKS_PER_BOT: u32 = 600;
-
-/// Capacity of a [`ProductionFacility`]'s own input hopper. Haulers
-/// (logistics leg 3) deliver minerals into this buffer; production
-/// consumes exclusively from it. Sized to hold two production cycles
-/// so a facility can buffer short delivery gaps without hoarding at
-/// stockpile scale.
-pub const PRODUCTION_INPUT_CAPACITY: u32 = 80;
-
-/// Consecutive fixed ticks of Production Pressure required before committing
-/// another Production Facility.
-pub const PRODUCTION_PRESSURE_TICKS: u32 = 60;
 
 /// Owner-scoped Production Pressure accumulated by each swarm.
 #[derive(Debug, Default, Resource)]
@@ -90,9 +69,9 @@ impl ProductionPressure {
     }
 }
 
-fn next_production_pressure_ticks(current: u32, pressure_continues: bool) -> u32 {
+fn next_production_pressure_ticks(current: u32, pressure_continues: bool, threshold: u32) -> u32 {
     if pressure_continues {
-        current.saturating_add(1).min(PRODUCTION_PRESSURE_TICKS)
+        current.saturating_add(1).min(threshold)
     } else {
         0
     }
@@ -121,7 +100,7 @@ pub struct OwnerSwarm(pub Entity);
 pub struct ProductionFacility {
     /// Tick counter within the current production cycle. Reset
     /// to 0 when a new cycle starts; reaches
-    /// [`PRODUCTION_TICKS_PER_BOT`] to finish the cycle.
+    /// the configured cycle budget to finish the cycle.
     pub progress: u32,
     /// Simulation tick when output finished; retained until a free exterior exit exists.
     pub finished_at: Option<u64>,
@@ -136,7 +115,7 @@ pub struct ProductionFacility {
     pub input_kind: ResourceKind,
     /// Material currently sitting in the facility's input hopper.
     /// Haulers (logistics leg 3) deliver into this buffer;
-    /// production pulls [`PRODUCTION_COST_PER_BOT`] from it at
+    /// production pulls the configured cost from it at
     /// the start of each cycle. This is the ONLY buffer
     /// production consumes from -- a sink stockpile no longer
     /// feeds production directly, so the three-leg chain is
@@ -154,21 +133,25 @@ impl ProductionFacility {
     /// starts idle and stays idle until a hauler delivers enough
     /// material for at least one production cycle.
     pub fn new() -> Self {
+        Self::with_tuning(&Tuning::default())
+    }
+
+    pub fn with_tuning(tuning: &Tuning) -> Self {
         Self {
             progress: 0,
             finished_at: None,
             current_target: None,
             input_kind: ResourceKind::Minerals,
             input_amount: 0,
-            input_capacity: PRODUCTION_INPUT_CAPACITY,
+            input_capacity: tuning.production.input_capacity,
         }
     }
 
     /// True when the facility is currently producing a nanobot.
     /// Used by the auto-creation system to detect "all existing
     /// facilities are too busy".
-    pub fn is_busy(&self) -> bool {
-        self.current_target.is_some() && self.progress < PRODUCTION_TICKS_PER_BOT
+    pub fn is_busy(&self, ticks_per_bot: u32) -> bool {
+        self.current_target.is_some() && self.progress < ticks_per_bot
     }
 
     /// Free capacity in the input hopper for hauler delivery.
@@ -191,21 +174,21 @@ impl Default for ProductionFacility {
 /// integer percent in `[0, 100]`. An idle facility
 /// (`current_target = None`) reports 0% so the label
 /// formatter does not have to special-case it. A working
-/// facility's percent is `progress / PRODUCTION_TICKS_PER_BOT`
+/// facility's percent is elapsed ticks / cycle ticks
 /// floored to an integer; the label uses this directly.
 ///
 /// The function is pure and lives next to the
 /// production data so unit tests can pin the contract
 /// without a Bevy `App`. The structure-overlay module
 /// uses it through the `crate::nanobot` re-export.
-pub fn production_progress_percent(facility: &ProductionFacility) -> u32 {
+pub fn production_progress_percent(facility: &ProductionFacility, ticks_per_bot: u32) -> u32 {
     if facility.current_target.is_none() {
         return 0;
     }
-    if PRODUCTION_TICKS_PER_BOT == 0 {
+    if ticks_per_bot == 0 {
         return 100;
     }
-    let pct = (facility.progress as u64 * 100 / PRODUCTION_TICKS_PER_BOT as u64) as u32;
+    let pct = (facility.progress as u64 * 100 / ticks_per_bot as u64) as u32;
     pct.min(100)
 }
 
@@ -242,7 +225,7 @@ pub fn count_swarm_nanobots_by_type(
 ///
 /// 1. the swarm has a typed population shortage, AND
 /// 2. every operational facility that belongs to this swarm stays busy for
-///    [`PRODUCTION_PRESSURE_TICKS`] consecutive ticks, AND
+///    the configured pressure window consecutive ticks, AND
 /// 3. the swarm owns at least one `Build`-painted cell that
 ///    does not already host a planned or completed
 ///    structure. The Build Zone is the placement constraint
@@ -265,7 +248,7 @@ pub fn production_facility_auto_creation_system(
     access: super::construction_access::ConstructionAccess,
     grid: Res<IntentGrid>,
     structure_sprites: Res<StructureSprites>,
-    pacing: Res<crate::gameplay_pacing::GameplayPacing>,
+    tuning: Res<Tuning>,
     population_demand: Res<crate::nanobot::PopulationDemand>,
     mut pressure: ResMut<ProductionPressure>,
     nanobots: Query<(&NanobotType, &crate::nanobot::components::SwarmMember), With<Nanobot>>,
@@ -333,12 +316,17 @@ pub fn production_facility_auto_creation_system(
             })
             .map(|(_, facility, _, _)| facility)
             .collect();
-        let pressure_continues =
-            target.is_some() && relevant.iter().all(|facility| facility.is_busy());
-        let pressure_ticks =
-            next_production_pressure_ticks(pressure.ticks_for(*swarm_id), pressure_continues);
+        let pressure_continues = target.is_some()
+            && relevant
+                .iter()
+                .all(|facility| facility.is_busy(tuning.production.ticks_per_bot));
+        let pressure_ticks = next_production_pressure_ticks(
+            pressure.ticks_for(*swarm_id),
+            pressure_continues,
+            tuning.production.pressure_ticks,
+        );
         pressure.set_ticks(*swarm_id, pressure_ticks);
-        if pressure_ticks < PRODUCTION_PRESSURE_TICKS {
+        if pressure_ticks < tuning.production.pressure_ticks {
             continue;
         }
         if target.is_none() {
@@ -376,7 +364,7 @@ pub fn production_facility_auto_creation_system(
         );
         commands.spawn((
             PlannedStructure::new(PlannedKind::ProductionFacility, build_cell)
-                .with_work_budget(pacing.construction_work_ticks),
+                .with_work_budget(tuning.construction.work_ticks),
             OwnerSwarm(swarm_entity),
             planned_visual_components(
                 PlannedKind::ProductionFacility,
@@ -401,6 +389,7 @@ pub fn production_facility_auto_creation_system(
 /// because nanobots are top-level entities.
 #[allow(clippy::type_complexity)]
 pub fn production_facility_pick_target_system(
+    tuning: Res<Tuning>,
     population_demand: Res<crate::nanobot::PopulationDemand>,
     nanobots: Query<(&NanobotType, &crate::nanobot::components::SwarmMember), With<Nanobot>>,
     swarms: Query<&SwarmId, With<Swarm>>,
@@ -457,13 +446,20 @@ pub fn production_facility_pick_target_system(
         let Some(kind) = population_demand.most_underfilled_type(owner_id, counts) else {
             continue;
         };
-        if facility.input_amount < PRODUCTION_COST_PER_BOT {
+        if facility.input_amount < tuning.production.cost_per_bot {
             continue;
         }
-        facility.input_amount -= PRODUCTION_COST_PER_BOT;
-        ledger.remove_for(owner_id, facility.input_kind, PRODUCTION_COST_PER_BOT);
+        facility.input_amount -= tuning.production.cost_per_bot;
+        ledger.remove_for(
+            owner_id,
+            facility.input_kind,
+            tuning.production.cost_per_bot,
+        );
         if let Some(counters) = counters.as_deref_mut() {
-            counters.record(owner_id, BattleEvent::Consumed(PRODUCTION_COST_PER_BOT));
+            counters.record(
+                owner_id,
+                BattleEvent::Consumed(tuning.production.cost_per_bot),
+            );
         }
         facility.current_target = Some(kind);
         facility.progress = 0;
@@ -475,6 +471,7 @@ pub fn production_facility_pick_target_system(
 /// is free. Output retains its funded type and cycle until release or destruction.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn production_facility_work_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     mut tick: Local<u64>,
     generation: Option<Res<crate::session_lifecycle::SessionGeneration>>,
@@ -509,8 +506,8 @@ pub fn production_facility_work_system(
         facility.progress = facility
             .progress
             .saturating_add(1)
-            .min(PRODUCTION_TICKS_PER_BOT);
-        if facility.progress == PRODUCTION_TICKS_PER_BOT {
+            .min(tuning.production.ticks_per_bot);
+        if facility.progress == tuning.production.ticks_per_bot {
             let finished = *facility.finished_at.get_or_insert(*tick);
             ready.push((finished, entity));
         }
@@ -559,7 +556,7 @@ pub fn production_facility_work_system(
                 nanobot_type: target,
                 velocity: VelocityComponent::default(),
                 ai_state: AiStateComponent::new(),
-                health: Health::default(),
+                health: Health::with_tuning(&tuning),
                 swarm_member: SwarmMember::new(swarm_id),
             },
             Commitment::Idle,
@@ -571,6 +568,45 @@ pub fn production_facility_work_system(
         occupied.push(position);
         facility.progress = 0;
         facility.finished_at = None;
+    }
+}
+
+pub(crate) fn reconcile_production_tuning(world: &mut World, old: &Tuning, new: &Tuning) {
+    let mut facilities = world.query::<&mut ProductionFacility>();
+    for mut facility in facilities.iter_mut(world) {
+        if old.production.input_capacity != new.production.input_capacity {
+            facility.input_capacity = new.production.input_capacity;
+        }
+        if old.production.ticks_per_bot != new.production.ticks_per_bot {
+            facility.progress = if facility.finished_at.is_some()
+                || facility.progress >= old.production.ticks_per_bot
+            {
+                new.production.ticks_per_bot
+            } else {
+                crate::tuning::rescale_ticks(
+                    facility.progress,
+                    old.production.ticks_per_bot,
+                    new.production.ticks_per_bot,
+                )
+                .min(new.production.ticks_per_bot.saturating_sub(1))
+            };
+        }
+    }
+    if old.production.pressure_ticks != new.production.pressure_ticks
+        && let Some(mut pressure) = world.get_resource_mut::<ProductionPressure>()
+    {
+        for ticks in pressure.ticks_by_swarm.values_mut() {
+            *ticks = if *ticks >= old.production.pressure_ticks {
+                new.production.pressure_ticks
+            } else {
+                crate::tuning::rescale_ticks(
+                    *ticks,
+                    old.production.pressure_ticks,
+                    new.production.pressure_ticks,
+                )
+                .min(new.production.pressure_ticks.saturating_sub(1))
+            };
+        }
     }
 }
 
@@ -598,7 +634,7 @@ pub struct ProductionPlugin;
 
 impl Plugin for ProductionPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<crate::gameplay_pacing::GameplayPacing>()
+        app.init_resource::<Tuning>()
             .init_resource::<ProductionPressure>()
             .add_systems(
                 FixedUpdate,
@@ -624,21 +660,36 @@ mod tests {
     #[test]
     fn production_pressure_requires_consecutive_ticks() {
         let mut ticks = 0;
-        for _ in 0..PRODUCTION_PRESSURE_TICKS - 1 {
-            ticks = next_production_pressure_ticks(ticks, true);
+        for _ in 0..Tuning::default().production.pressure_ticks - 1 {
+            ticks = next_production_pressure_ticks(
+                ticks,
+                true,
+                Tuning::default().production.pressure_ticks,
+            );
         }
-        assert_eq!(ticks, PRODUCTION_PRESSURE_TICKS - 1);
-        assert_eq!(next_production_pressure_ticks(ticks, false), 0);
+        assert_eq!(ticks, Tuning::default().production.pressure_ticks - 1);
         assert_eq!(
-            next_production_pressure_ticks(PRODUCTION_PRESSURE_TICKS, true),
-            PRODUCTION_PRESSURE_TICKS,
+            next_production_pressure_ticks(
+                ticks,
+                false,
+                Tuning::default().production.pressure_ticks
+            ),
+            0
+        );
+        assert_eq!(
+            next_production_pressure_ticks(
+                Tuning::default().production.pressure_ticks,
+                true,
+                Tuning::default().production.pressure_ticks
+            ),
+            Tuning::default().production.pressure_ticks,
         );
     }
 
     #[test]
     fn production_facility_starts_idle() {
         let f = ProductionFacility::new();
-        assert!(!f.is_busy());
+        assert!(!f.is_busy(Tuning::default().production.ticks_per_bot));
         assert_eq!(f.progress, 0);
         assert_eq!(f.current_target, None);
     }
@@ -647,13 +698,16 @@ mod tests {
     fn production_facility_is_busy_with_target() {
         let mut f = ProductionFacility::new();
         f.current_target = Some(NanobotType::Worker);
-        assert!(f.is_busy());
+        assert!(f.is_busy(Tuning::default().production.ticks_per_bot));
     }
 
     #[test]
     fn production_progress_percent_reports_zero_when_idle() {
         let f = ProductionFacility::new();
-        assert_eq!(production_progress_percent(&f), 0);
+        assert_eq!(
+            production_progress_percent(&f, Tuning::default().production.ticks_per_bot),
+            0
+        );
     }
 
     #[test]
@@ -661,14 +715,26 @@ mod tests {
         let mut f = ProductionFacility::new();
         f.current_target = Some(NanobotType::Worker);
         f.progress = 0;
-        assert_eq!(production_progress_percent(&f), 0);
-        f.progress = PRODUCTION_TICKS_PER_BOT * 2 / 5;
-        assert_eq!(production_progress_percent(&f), 40);
-        f.progress = PRODUCTION_TICKS_PER_BOT;
-        assert_eq!(production_progress_percent(&f), 100);
+        assert_eq!(
+            production_progress_percent(&f, Tuning::default().production.ticks_per_bot),
+            0
+        );
+        f.progress = Tuning::default().production.ticks_per_bot * 2 / 5;
+        assert_eq!(
+            production_progress_percent(&f, Tuning::default().production.ticks_per_bot),
+            40
+        );
+        f.progress = Tuning::default().production.ticks_per_bot;
+        assert_eq!(
+            production_progress_percent(&f, Tuning::default().production.ticks_per_bot),
+            100
+        );
         // Defensive: progress over the budget must not
         // report >100%.
-        f.progress = PRODUCTION_TICKS_PER_BOT + 5;
-        assert_eq!(production_progress_percent(&f), 100);
+        f.progress = Tuning::default().production.ticks_per_bot + 5;
+        assert_eq!(
+            production_progress_percent(&f, Tuning::default().production.ticks_per_bot),
+            100
+        );
     }
 }

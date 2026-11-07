@@ -11,18 +11,22 @@ The owning code is [`Cargo`, `LogisticsReservation`, `MaterialWorkProgress`,
 `nanobot_death_cleanup_system`](../../src/nanobot/cargo.rs).
 
 - **Unreserved → reserved** begins when acquisition claims a source quantity and destination
-  capacity. `amount` is the original transfer budget, `source_remaining` is the
-  uncollected portion, and `destination_remaining` is the outstanding capacity.
+  capacity. `amount` records the transfer budget, `source_remaining` is the
+  uncollected portion, and `destination_remaining` is the capacity claimed at the
+  current destination. That claim can cover only the next delivery segment when
+  a retained physical load exceeds the destination's available capacity.
   Reservation creation changes neither physical minerals nor the resource ledger.
 - **Reserved → partially loaded → carrying** tracks how each pickup changes source and cargo
   quantities. Deposit extraction adds minerals to the receiving swarm's ledger. Stockpile pickup only changes custody. Pickup completion releases unused source
-  claims and shrinks destination claims to the actual load.
+  claims and bounds destination claims by the actual load.
 - **Carrying → partially delivered → empty** tracks delivery, which changes cargo and endpoint
-  quantities and reduces the destination claim. It does not change swarm totals.
+  quantities and reduces the destination claim. Exhausting a segment claim with
+  cargo remaining returns the load to reroute/return/wait for another segment.
+  Delivery does not change swarm totals.
 - **Invalid endpoint → unclaimed load → redirected/returning load** releases
   claims independently of cargo. Cargo remains physically on the Nanobot.
 - Material pulses use `MaterialWorkProgress.ticks_elapsed`. Active gathering and
-  Hauler transfers move one mineral after `MATERIAL_WORK_TICKS_PER_UNIT` fixed
+  Hauler transfers move the configured per-pulse quantity after `logistics.material_work_ticks` fixed
   ticks. A pulse resets the counter. Changing phase removes it, and leaving the
   interaction region resets it. Blocked work does not advance it.
 - Empty `Cargo` represents the start of loading. Finishing
@@ -32,6 +36,18 @@ Reservations coordinate custody changes while transfer systems perform them.
 Retained coverage includes [physical Worker gathering](../../tests/behavior/physical_worker_gather.rs),
 [gradual Hauler pickup](../../tests/behavior/gradual_hauler_pickup.rs),
 [physical logistics playtest](../../tests/playtest/physical_logistics_flow.rs).
+
+## Live economy reconciliation
+
+After a tuning value is saved and published, reconciliation updates retained state for every swarm before the edit returns. [Publication lifecycle](runtime-and-presentation.md#live-tuning-publication-and-editor).
+
+- Construction, production, Production Pressure, Maintenance shifts, material work, Charge pulses, and empty-Charge damage pulses preserve their completed fraction when their duration changes, with integer rounding. Incomplete work stays below completion; completed work remains complete and follows its normal completion/exit-space transition.
+- Nanobot and structure maximum-health changes preserve living health fraction with at least one health; dead entities remain dead. Charge maximum changes preserve Charge fraction. Maintenance age preserves its buffer fraction, or completed overdue degradation steps plus its partial interval.
+- Stockpile, production input, Charger, and carry limits change without deleting deposits, stored minerals, or physical cargo. Overfull endpoints refuse additional receipts until space becomes available. Existing funded production retains its target and paid cost.
+- Reservation reconciliation admits loaded deliveries before future pickups, then uses stable entity order. Future pickup claims shrink to carry and destination capacity; empty jobs with no claim lose loading state and movement. Loaded jobs retain all cargo and can claim a partial delivery segment when the load exceeds newly available destination capacity. Delivery is bounded by that claim and free space; exhausting it leaves the remaining cargo physical and triggers another reroute/return/wait transition. No destination space leaves the load waiting. A limit change neither creates a transfer nor changes the swarm mineral ledger.
+- Session replacement removes jobs and physical entities through their normal teardown, while the process retains tuning for the replacement scenario.
+
+Owners are [economy hooks](../../src/nanobot.rs), [cargo reconciliation](../../src/nanobot/cargo.rs), [production](../../src/nanobot/production.rs), [Maintenance](../../src/nanobot/maintenance.rs), and [Charge](../../src/nanobot/charge.rs). Verification covers [economy tuning](../../tests/behavior/economy_tuning.rs), [combat tuning](../../tests/behavior/combat_tuning.rs), and [live logistics tuning](../../tests/behavior/live_logistics_tuning.rs), including `live_smaller_stockpiles_accept_existing_worker_and_hauler_loads_in_segments` for delivery across reduced-capacity buffers.
 
 ## Worker gather and delivery
 
@@ -45,9 +61,9 @@ The owning code is [`GatherAssignment`, `ExtractProgress`, `ReturningToStockpile
 | Available | Regional acquisition can assign eligible Worker to an actionable owned Gather opportunity. |
 | Approach deposit | `GatherAssignment` plus movement toward the deposit's exterior interaction region. |
 | Wait for delivery support | At deposit without extraction state. No usable reachable source-stockpile capacity yet. Pending navigation preserves this state. An existing source plan can release the assignment so the Worker can build. |
-| Extract | Arrival reserves up to four minerals, bounded by unclaimed deposit quantity and destination capacity, then adds `ExtractProgress`, empty Cargo, and material progress. |
+| Extract | Arrival reserves up to `logistics.worker_carry_capacity` minerals, bounded by unclaimed deposit quantity and destination capacity, then adds `ExtractProgress`, empty Cargo, and material progress. |
 | Carry | Pickup budget fulfilled, source exhausted/missing, or approach confirmed unreachable causes the system to remove extraction, material progress, and gather assignment. Retain a positive load and reservation. |
-| Deliver | `ReturningToStockpile` and movement to a compatible stockpile. After arrival, each eligible fixed tick moves up to one mineral. |
+| Deliver | `ReturningToStockpile` and movement to a compatible stockpile. After arrival, each eligible fixed tick moves up to `logistics.hauler_transfer_per_pulse` minerals, bounded by the segment claim and free space. |
 | Available again | Last delivery removes Cargo, reservation, and return marker. A zero-load extraction exit also removes Cargo and reservation. |
 
 Reroute and carry-assignment systems keep the load when the destination disappears,
@@ -75,7 +91,7 @@ and [leg compatibility](../../src/nanobot/logistics_leg.rs).
 
 | Derived phase | Encoding and transition |
 | --- | --- |
-| Available → approach pickup | Acquisition writes assignment, exact reservation, and source approach movement. Capacity is up to twenty minerals. |
+| Available → approach pickup | Acquisition writes assignment, exact reservation, and source approach movement. Capacity is up to `logistics.hauler_carry_capacity` minerals. |
 | Loading | Source arrival adds `HaulerLoading`, empty Cargo, and material progress. Each completed pulse physically collects one mineral. |
 | Carrying | Budget fulfilled or source exhausted/invalid/unreachable causes the system to remove loading and material progress. Retain positive Cargo and assignment, release remaining source quantity, and match destination claim to cargo. |
 | Delivering | Valid destination approach finishes. Delivery creates material progress and transfers one mineral per completed pulse into stockpile, facility hopper, or Charger buffer. |
@@ -171,7 +187,7 @@ and [maintenance systems](../../src/nanobot/maintenance.rs).
 Completed stockpiles, facilities, and Chargers acquire condition through observers.
 **Healthy / needs Maintenance / overdue / collapsed** are overlapping predicates
 and counters. Any positive health is fully operational. Damage or
-`MAINTENANCE_NEEDS_THRESHOLD` elapsed ticks makes a maintenance target.
+`maintenance.needs_threshold` elapsed ticks makes a maintenance target.
 Each degradation tick increments age. After the buffer, interval boundaries remove
 health, and reaching zero despawns the structure. Combat destruction is another
 exit. There is no damaged-throughput phase or recoverable collapsed state.
@@ -190,7 +206,7 @@ It consumes Worker time without mineral consumption. Retained coverage includes
 
 The owning code is [`ProductionFacility`, `ProductionPressure`, production systems](../../src/nanobot/production.rs).
 **Idle** is `current_target == None`. **producing** has a target and progress below
-`PRODUCTION_TICKS_PER_BOT`. **waiting for exit** has completed progress and
+`production.ticks_per_bot`. **waiting for exit** has completed progress and
 `finished_at`. These are field predicates. `is_busy` excludes waiting for exit.
 A funded operational facility with a valid owner selects current typed shortage,
 consumes its full local hopper cost and ledger minerals once, then retains that
@@ -224,12 +240,12 @@ Defend paint. Acceptance removes Threat response and lease. No available service
 leaves current duty intact. Defender response itself belongs to movement/allocation.
 
 Arrival starts a zeroed pulse counter. In-region unblocked work advances it. Displacement reapproaches and blocked work waits without resetting partial charge
-pulse progress. Every `CHARGE_PULSE_INTERVAL_TICKS`, consume up to two available
-minerals and grant `CHARGE_PER_PULSE`, bounded by max. Full Charge, exhausted supply,
+pulse progress. Every `charge.pulse_interval_ticks`, consume up to `charge.material_per_pulse` available
+minerals and grant `charge.per_pulse`, bounded by max. Full Charge, exhausted supply,
 missing/invalid Charger, ownership loss, or erased Defend paint releases assignment,
 progress, pulse, movement, and lease and wakes allocation. Previous duty is not restored.
-Empty Charge outside rotation advances `EmptyChargeProgress`. Every six eligible
-fixed ticks subtracts one health. Positive Charge removes that counter. Rotation
+Empty Charge outside rotation advances `EmptyChargeProgress`. Every `charge.empty_damage_interval_ticks` eligible
+fixed ticks subtracts `charge.empty_health_damage` health. Positive Charge removes that counter. Rotation
 excludes its advancement, preserving a preexisting partial empty-health pulse.
 Weakening derives from the Charge multiplier.
 Retained coverage includes [Chargers](../../tests/behavior/charger.rs),

@@ -1,12 +1,12 @@
 //! Physical worker gather behavior.
 
 use bevy::{math::Vec2, prelude::*};
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 use top_down_2d_rts_prototype_nano_swarm::{
     battle_statistics::BattleCounters,
     nanobot::{
-        Cargo, DirectMovementComponent, GatherAssignment, HAULER_TRANSFER_PER_PULSE,
-        LogisticsReservation, MATERIAL_WORK_TICKS_PER_UNIT, OwnerSwarm, ReturningToStockpile,
-        SwarmId,
+        Cargo, DirectMovementComponent, GatherAssignment, LogisticsReservation, OwnerSwarm,
+        ReturningToStockpile, SwarmId,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile, StockpileRole},
 };
@@ -115,7 +115,7 @@ fn extraction_moves_only_new_minerals_into_cargo_and_ledger() {
             break;
         }
     }
-    for _ in 0..MATERIAL_WORK_TICKS_PER_UNIT {
+    for _ in 0..Tuning::default().logistics.material_work_ticks {
         app.update();
     }
 
@@ -275,11 +275,11 @@ fn worker_unloads_gradually_at_shared_rate_without_changing_ledger() {
             .get::<Stockpile>()
             .unwrap()
             .amount,
-        3 + HAULER_TRANSFER_PER_PULSE,
+        3 + Tuning::default().logistics.hauler_transfer_per_pulse,
     );
     assert_eq!(
         app.world().entity(worker).get::<Cargo>().unwrap().amount,
-        10 - HAULER_TRANSFER_PER_PULSE,
+        10 - Tuning::default().logistics.hauler_transfer_per_pulse,
     );
     assert_eq!(
         app.world()
@@ -287,7 +287,7 @@ fn worker_unloads_gradually_at_shared_rate_without_changing_ledger() {
             .get::<LogisticsReservation>()
             .unwrap()
             .destination_remaining,
-        10 - HAULER_TRANSFER_PER_PULSE,
+        10 - Tuning::default().logistics.hauler_transfer_per_pulse,
     );
     assert_eq!(
         app.world()

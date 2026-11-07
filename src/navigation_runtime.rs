@@ -1,11 +1,14 @@
 //! Static-world snapshot shared by route consumers and final movement clearance.
-use crate::{intent::IntentGrid, navigation::Navigation, physical_world::PhysicalWorld};
+use crate::{
+    intent::IntentGrid, navigation::Navigation, physical_world::PhysicalWorld, tuning::Tuning,
+};
 use bevy::prelude::*;
 
 pub struct NavigationPlugin;
 impl Plugin for NavigationPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Navigation>()
+        app.init_resource::<Tuning>()
+            .init_resource::<Navigation>()
             .init_resource::<NavigationBudget>()
             .add_systems(FixedFirst, (refresh_navigation, advance_navigation).chain());
     }
@@ -20,12 +23,14 @@ pub(crate) fn reset_session(world: &mut World) {
 
 pub fn refresh_navigation(
     mut navigation: ResMut<Navigation>,
+    tuning: Res<Tuning>,
     grid: Res<IntentGrid>,
     physical: PhysicalWorld,
 ) {
     physical
         .snapshot()
         .refresh_navigation(&mut navigation, &grid);
+    navigation.set_corridor_cost_multiplier(tuning.logistics.corridor_cost_multiplier);
 }
 
 /// Shared deterministic allowance for hierarchy maintenance and route searches.

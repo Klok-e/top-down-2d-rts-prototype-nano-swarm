@@ -11,16 +11,12 @@ use bevy::{ecs::query::QueryFilter, prelude::*};
 use crate::GAMEPLAY_SPRITE_Z;
 use crate::fly_camera::CameraZoom2d;
 use crate::nanobot::{
-    BOT_RADIUS, Cargo, Charger, ExtractProgress, HAULER_CARRY_CAPACITY, HaulerLoading,
-    LogisticsReservation, MAINTENANCE_BUFFER_TICKS, MAINTENANCE_NEEDS_THRESHOLD,
-    MAINTENANCE_WORK_DURATION_TICKS, MaintenanceProgress, Nanobot, NanobotType,
-    PLANNED_STRUCTURE_FOOTPRINT, PlannedStructure, ProductionFacility, STRUCTURE_MAX_HEALTH,
-    SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, WORKER_CARRY_CAPACITY,
+    BOT_RADIUS, Cargo, Charger, ExtractProgress, HaulerLoading, LogisticsReservation,
+    MaintenanceProgress, Nanobot, NanobotType, PLANNED_STRUCTURE_FOOTPRINT, PlannedStructure,
+    ProductionFacility, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure,
 };
 use crate::resources::{ResourceDeposit, Stockpile};
-
-/// Camera zoom value at or above which overlays hide.
-pub const DEFAULT_OVERLAY_HIDE_ZOOM_THRESHOLD: f32 = 8.0;
+use crate::tuning::{PresentationTuning, Tuning};
 
 /// Z-translation for overlay backgrounds. Fill children sit slightly above it.
 pub const STRUCTURE_OVERLAY_Z: f32 = GAMEPLAY_SPRITE_Z + 1.0;
@@ -28,29 +24,7 @@ pub const STRUCTURE_OVERLAY_Z: f32 = GAMEPLAY_SPRITE_Z + 1.0;
 /// Default deposit radius used by pure offset tests when no component is known.
 pub const DEFAULT_DEPOSIT_OVERLAY_RADIUS: f32 = 32.0;
 
-/// Vertical gap between target footprint top and bar centre.
-pub const STRUCTURE_FOOTPRINT_LABEL_GAP: f32 = 12.0;
-
-pub const STRUCTURE_BAR_SIZE: Vec2 = Vec2::new(48.0, 6.0);
-const CARGO_BAR_SIZE: Vec2 = Vec2::new(32.0, 4.0);
-pub const CONDITION_BAR_SIZE: Vec2 = Vec2::new(48.0, 3.0);
-pub const CONDITION_BAR_GAP: f32 = 2.0;
-const HAULER_OVERLAY_GAP: f32 = 8.0;
 const FILL_CHILD_Z: f32 = 0.01;
-
-/// Runtime configuration for the overlay system.
-#[derive(Debug, Resource, Clone, Copy, PartialEq)]
-pub struct StructureOverlaySettings {
-    pub hide_zoom_threshold: f32,
-}
-
-impl Default for StructureOverlaySettings {
-    fn default() -> Self {
-        Self {
-            hide_zoom_threshold: DEFAULT_OVERLAY_HIDE_ZOOM_THRESHOLD,
-        }
-    }
-}
 
 /// Every fill bar kind the overlay layer knows how to render.
 #[derive(Debug, Component, Clone, Copy, PartialEq, Eq, Hash)]
@@ -146,7 +120,11 @@ pub type FillOverlayBackground = StructureOverlayBackground;
 pub type FillOverlayFill = StructureOverlayFill;
 
 /// World-space Y offset (positive = above target centre) for a bar of `kind`.
-pub fn overlay_label_offset_y(kind: StructureOverlayKind, deposit_radius: Option<f32>) -> f32 {
+pub fn overlay_label_offset_y(
+    kind: StructureOverlayKind,
+    deposit_radius: Option<f32>,
+    settings: &PresentationTuning,
+) -> f32 {
     let extent = match kind {
         StructureOverlayKind::Deposit => deposit_radius.unwrap_or(DEFAULT_DEPOSIT_OVERLAY_RADIUS),
         StructureOverlayKind::Stockpile
@@ -156,8 +134,8 @@ pub fn overlay_label_offset_y(kind: StructureOverlayKind, deposit_radius: Option
         StructureOverlayKind::Worker | StructureOverlayKind::Hauler => BOT_RADIUS,
     };
     let gap = match kind {
-        StructureOverlayKind::Worker | StructureOverlayKind::Hauler => HAULER_OVERLAY_GAP,
-        _ => STRUCTURE_FOOTPRINT_LABEL_GAP,
+        StructureOverlayKind::Worker | StructureOverlayKind::Hauler => settings.cargo_label_gap,
+        _ => settings.structure_label_gap,
     };
     extent + gap
 }
@@ -176,27 +154,27 @@ pub fn planned_fill_fraction(planned: &PlannedStructure) -> f32 {
     fill_fraction(completed, total)
 }
 
-pub fn maintenance_fill_fraction(ticks_since_maintained: u32) -> f32 {
-    1.0 - fill_fraction(ticks_since_maintained, MAINTENANCE_BUFFER_TICKS)
+pub fn maintenance_fill_fraction(ticks_since_maintained: u32, tuning: &Tuning) -> f32 {
+    1.0 - fill_fraction(ticks_since_maintained, tuning.maintenance.buffer_ticks)
 }
 
-pub fn health_fill_fraction(health: u32) -> f32 {
-    fill_fraction(health, STRUCTURE_MAX_HEALTH)
+pub fn health_fill_fraction(health: u32, tuning: &Tuning) -> f32 {
+    fill_fraction(health, tuning.construction.max_health)
 }
 
-pub fn condition_fill_color(kind: ConditionOverlayKind, value: u32) -> Color {
+pub fn condition_fill_color(kind: ConditionOverlayKind, value: u32, tuning: &Tuning) -> Color {
     match kind {
-        ConditionOverlayKind::Maintenance if value >= MAINTENANCE_BUFFER_TICKS => {
+        ConditionOverlayKind::Maintenance if value >= tuning.maintenance.buffer_ticks => {
             Color::srgb(1.0, 0.22, 0.18)
         }
-        ConditionOverlayKind::Maintenance if value >= MAINTENANCE_NEEDS_THRESHOLD => {
+        ConditionOverlayKind::Maintenance if value >= tuning.maintenance.needs_threshold => {
             Color::srgb(1.0, 0.68, 0.20)
         }
         ConditionOverlayKind::Maintenance => Color::srgb(0.25, 0.85, 0.35),
         ConditionOverlayKind::Health if value < SUPPORT_OPERATIONAL_HEALTH_THRESHOLD => {
             Color::srgb(1.0, 0.22, 0.18)
         }
-        ConditionOverlayKind::Health if value < STRUCTURE_MAX_HEALTH => {
+        ConditionOverlayKind::Health if value < tuning.construction.max_health => {
             Color::srgb(1.0, 0.68, 0.20)
         }
         ConditionOverlayKind::Health => Color::srgb(0.25, 0.85, 0.35),
@@ -205,10 +183,12 @@ pub fn condition_fill_color(kind: ConditionOverlayKind, value: u32) -> Color {
 }
 
 /// World-space bar size for each overlay kind.
-pub fn overlay_bar_size(kind: StructureOverlayKind) -> Vec2 {
+pub fn overlay_bar_size(kind: StructureOverlayKind, settings: &PresentationTuning) -> Vec2 {
     match kind {
-        StructureOverlayKind::Worker | StructureOverlayKind::Hauler => CARGO_BAR_SIZE,
-        _ => STRUCTURE_BAR_SIZE,
+        StructureOverlayKind::Worker | StructureOverlayKind::Hauler => {
+            Vec2::new(settings.cargo_bar_width, settings.cargo_bar_height)
+        }
+        _ => Vec2::new(settings.structure_bar_width, settings.structure_bar_height),
     }
 }
 
@@ -271,9 +251,7 @@ pub struct StructureOverlayPlugin;
 
 impl Plugin for StructureOverlayPlugin {
     fn build(&self, app: &mut App) {
-        if !app.world().contains_resource::<StructureOverlaySettings>() {
-            app.init_resource::<StructureOverlaySettings>();
-        }
+        app.init_resource::<Tuning>();
         app.add_systems(
             Update,
             (
@@ -292,6 +270,7 @@ impl Plugin for StructureOverlayPlugin {
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn structure_overlay_spawn_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     deposits: Query<Entity, With<ResourceDeposit>>,
     stockpiles: Query<Entity, With<Stockpile>>,
@@ -310,6 +289,7 @@ pub fn structure_overlay_spawn_system(
     >,
     existing: Query<(Entity, &StructureOverlay)>,
 ) {
+    let settings = &tuning.presentation;
     let mut covered = std::collections::HashSet::new();
     for (overlay_entity, overlay) in &existing {
         let actual = actual_overlay_kind(
@@ -332,30 +312,35 @@ pub fn structure_overlay_spawn_system(
         &covered,
         &deposits,
         StructureOverlayKind::Deposit,
+        settings,
     );
     spawn_missing(
         &mut commands,
         &covered,
         &stockpiles,
         StructureOverlayKind::Stockpile,
+        settings,
     );
     spawn_missing(
         &mut commands,
         &covered,
         &facilities,
         StructureOverlayKind::Facility,
+        settings,
     );
     spawn_missing(
         &mut commands,
         &covered,
         &planned,
         StructureOverlayKind::Planned,
+        settings,
     );
     spawn_missing(
         &mut commands,
         &covered,
         &chargers,
         StructureOverlayKind::Charger,
+        settings,
     );
     for (entity, cargo, bot_type, extracting, loading) in &cargo_bots {
         if covered.contains(&entity)
@@ -368,7 +353,7 @@ pub fn structure_overlay_spawn_system(
             NanobotType::Hauler => StructureOverlayKind::Hauler,
             _ => continue,
         };
-        spawn_overlay_for(&mut commands, entity, kind);
+        spawn_overlay_for(&mut commands, entity, kind, settings);
     }
 }
 
@@ -425,16 +410,22 @@ fn spawn_missing(
     covered: &std::collections::HashSet<Entity>,
     targets: &Query<Entity, impl QueryFilter>,
     kind: StructureOverlayKind,
+    settings: &PresentationTuning,
 ) {
     for entity in targets {
         if !covered.contains(&entity) {
-            spawn_overlay_for(commands, entity, kind);
+            spawn_overlay_for(commands, entity, kind, settings);
         }
     }
 }
 
-fn spawn_overlay_for(commands: &mut Commands, target: Entity, kind: StructureOverlayKind) {
-    let size = overlay_bar_size(kind);
+fn spawn_overlay_for(
+    commands: &mut Commands,
+    target: Entity,
+    kind: StructureOverlayKind,
+    settings: &PresentationTuning,
+) {
+    let size = overlay_bar_size(kind, settings);
     let spawn_segment = |commands: &mut Commands, segment_kind| {
         commands
             .spawn((
@@ -484,6 +475,7 @@ fn spawn_overlay_for(commands: &mut Commands, target: Entity, kind: StructureOve
 
 #[allow(clippy::type_complexity)]
 pub fn condition_overlay_spawn_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     support_targets: Query<
         Entity,
@@ -512,25 +504,31 @@ pub fn condition_overlay_spawn_system(
             ConditionOverlayKind::Health,
         ] {
             if !covered.contains(&(target, kind)) {
-                spawn_condition_overlay(&mut commands, target, kind);
+                spawn_condition_overlay(&mut commands, target, kind, &tuning);
             }
         }
     }
     for target in &maintenance_workers {
         let kind = ConditionOverlayKind::WorkerProgress;
         if !covered.contains(&(target, kind)) {
-            spawn_condition_overlay(&mut commands, target, kind);
+            spawn_condition_overlay(&mut commands, target, kind, &tuning);
         }
     }
 }
 
-fn spawn_condition_overlay(commands: &mut Commands, target: Entity, kind: ConditionOverlayKind) {
-    let size = condition_bar_size(kind);
+fn spawn_condition_overlay(
+    commands: &mut Commands,
+    target: Entity,
+    kind: ConditionOverlayKind,
+    tuning: &Tuning,
+) {
+    let settings = &tuning.presentation;
+    let size = condition_bar_size(kind, settings);
     let fill = commands
         .spawn((
             ConditionOverlayFill,
             Sprite {
-                color: condition_fill_color(kind, 0),
+                color: condition_fill_color(kind, 0, tuning),
                 custom_size: Some(Vec2::new(0.0, size.y)),
                 ..default()
             },
@@ -554,27 +552,39 @@ fn spawn_condition_overlay(commands: &mut Commands, target: Entity, kind: Condit
     commands.entity(background).add_children(&[fill]);
 }
 
-fn condition_bar_size(kind: ConditionOverlayKind) -> Vec2 {
+fn condition_bar_size(kind: ConditionOverlayKind, settings: &PresentationTuning) -> Vec2 {
     match kind {
-        ConditionOverlayKind::Maintenance | ConditionOverlayKind::Health => CONDITION_BAR_SIZE,
-        ConditionOverlayKind::WorkerProgress => CARGO_BAR_SIZE,
+        ConditionOverlayKind::Maintenance | ConditionOverlayKind::Health => {
+            Vec2::new(settings.condition_bar_width, settings.condition_bar_height)
+        }
+        ConditionOverlayKind::WorkerProgress => {
+            Vec2::new(settings.cargo_bar_width, settings.cargo_bar_height)
+        }
     }
 }
 
-fn condition_overlay_offset_y(kind: ConditionOverlayKind) -> f32 {
-    let resource_y = PLANNED_STRUCTURE_FOOTPRINT / 2.0 + STRUCTURE_FOOTPRINT_LABEL_GAP;
-    let maintenance_y =
-        resource_y + STRUCTURE_BAR_SIZE.y / 2.0 + CONDITION_BAR_GAP + CONDITION_BAR_SIZE.y / 2.0;
+fn condition_overlay_offset_y(kind: ConditionOverlayKind, settings: &PresentationTuning) -> f32 {
+    let resource_y = PLANNED_STRUCTURE_FOOTPRINT / 2.0 + settings.structure_label_gap;
+    let maintenance_y = resource_y
+        + settings.structure_bar_height / 2.0
+        + settings.condition_bar_gap
+        + settings.condition_bar_height / 2.0;
     match kind {
         ConditionOverlayKind::Maintenance => maintenance_y,
-        ConditionOverlayKind::Health => maintenance_y + CONDITION_BAR_SIZE.y + CONDITION_BAR_GAP,
-        ConditionOverlayKind::WorkerProgress => BOT_RADIUS + HAULER_OVERLAY_GAP,
+        ConditionOverlayKind::Health => {
+            maintenance_y + settings.condition_bar_height + settings.condition_bar_gap
+        }
+        ConditionOverlayKind::WorkerProgress => BOT_RADIUS + settings.cargo_label_gap,
     }
 }
 
 #[allow(clippy::type_complexity)]
 pub fn condition_overlay_update_system(
-    mut overlays: Query<(&ConditionOverlay, &mut Transform), Without<ConditionOverlayFill>>,
+    tuning: Res<Tuning>,
+    mut overlays: Query<
+        (&ConditionOverlay, &mut Transform, &mut Sprite),
+        Without<ConditionOverlayFill>,
+    >,
     mut fills: Query<
         (&mut Sprite, &mut Transform),
         (With<ConditionOverlayFill>, Without<ConditionOverlay>),
@@ -586,32 +596,39 @@ pub fn condition_overlay_update_system(
         (Without<ConditionOverlay>, Without<ConditionOverlayFill>),
     >,
 ) {
-    for (overlay, mut transform) in &mut overlays {
+    let settings = &tuning.presentation;
+    for (overlay, mut transform, mut background) in &mut overlays {
+        background.custom_size = Some(condition_bar_size(overlay.kind, settings));
         let Ok(target_transform) = target_transforms.get(overlay.target) else {
             continue;
         };
         transform.translation = (target_transform.translation.truncate()
-            + Vec2::Y * condition_overlay_offset_y(overlay.kind))
+            + Vec2::Y * condition_overlay_offset_y(overlay.kind, settings))
         .extend(STRUCTURE_OVERLAY_Z);
         let (fraction, value) = match overlay.kind {
             ConditionOverlayKind::Maintenance => conditions
                 .get(overlay.target)
                 .map(|condition| {
                     (
-                        maintenance_fill_fraction(condition.ticks_since_maintained),
+                        maintenance_fill_fraction(condition.ticks_since_maintained, &tuning),
                         condition.ticks_since_maintained,
                     )
                 })
                 .unwrap_or_default(),
             ConditionOverlayKind::Health => conditions
                 .get(overlay.target)
-                .map(|condition| (health_fill_fraction(condition.health), condition.health))
+                .map(|condition| {
+                    (
+                        health_fill_fraction(condition.health, &tuning),
+                        condition.health,
+                    )
+                })
                 .unwrap_or_default(),
             ConditionOverlayKind::WorkerProgress => maintenance_workers
                 .get(overlay.target)
                 .map(|progress| {
                     (
-                        fill_fraction(progress.ticks_worked, MAINTENANCE_WORK_DURATION_TICKS),
+                        fill_fraction(progress.ticks_worked, tuning.maintenance.work_ticks),
                         progress.ticks_worked,
                     )
                 })
@@ -620,10 +637,10 @@ pub fn condition_overlay_update_system(
         let Ok((mut sprite, mut fill_transform)) = fills.get_mut(overlay.fill) else {
             continue;
         };
-        let size = condition_bar_size(overlay.kind);
+        let size = condition_bar_size(overlay.kind, settings);
         let width = size.x * fraction;
         sprite.custom_size = Some(Vec2::new(width, size.y));
-        sprite.color = condition_fill_color(overlay.kind, value);
+        sprite.color = condition_fill_color(overlay.kind, value, &tuning);
         fill_transform.translation = Vec3::new(-size.x / 2.0 + width / 2.0, 0.0, FILL_CHILD_Z);
     }
 }
@@ -638,7 +655,11 @@ struct OverlayAmounts {
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn structure_overlay_update_system(
-    mut overlays: Query<(&StructureOverlay, &mut Transform), Without<StructureOverlayFill>>,
+    tuning: Res<Tuning>,
+    mut overlays: Query<
+        (&StructureOverlay, &mut Transform, &mut Sprite),
+        Without<StructureOverlayFill>,
+    >,
     mut fills: Query<
         (&StructureOverlaySegment, &mut Sprite, &mut Transform),
         (With<StructureOverlayFill>, Without<StructureOverlay>),
@@ -655,12 +676,14 @@ pub fn structure_overlay_update_system(
         (Without<StructureOverlay>, Without<StructureOverlayFill>),
     >,
 ) {
-    for (overlay, mut transform) in &mut overlays {
+    let settings = &tuning.presentation;
+    for (overlay, mut transform, mut background) in &mut overlays {
+        background.custom_size = Some(overlay_bar_size(overlay.kind, settings));
         let Ok(target_transform) = target_transforms.get(overlay.target) else {
             continue;
         };
         let deposit_radius = deposits.get(overlay.target).ok().map(|d| d.radius);
-        let mut offset_y = overlay_label_offset_y(overlay.kind, deposit_radius);
+        let mut offset_y = overlay_label_offset_y(overlay.kind, deposit_radius, settings);
         if matches!(
             overlay.kind,
             StructureOverlayKind::Stockpile
@@ -683,11 +706,24 @@ pub fn structure_overlay_update_system(
             &chargers,
             &cargo,
             &reservations,
+            &tuning,
             overlay.target,
         );
-        update_segment_sprite(overlay.kind, amounts, overlay.fill, &mut fills);
-        update_segment_sprite(overlay.kind, amounts, overlay.outgoing_reserved, &mut fills);
-        update_segment_sprite(overlay.kind, amounts, overlay.incoming_reserved, &mut fills);
+        update_segment_sprite(overlay.kind, amounts, settings, overlay.fill, &mut fills);
+        update_segment_sprite(
+            overlay.kind,
+            amounts,
+            settings,
+            overlay.outgoing_reserved,
+            &mut fills,
+        );
+        update_segment_sprite(
+            overlay.kind,
+            amounts,
+            settings,
+            overlay.incoming_reserved,
+            &mut fills,
+        );
     }
 }
 
@@ -701,6 +737,7 @@ fn compute_overlay_amounts(
     chargers: &Query<&Charger, Without<StructureOverlay>>,
     cargo: &Query<&Cargo, Without<StructureOverlay>>,
     reservations: &Query<&LogisticsReservation>,
+    tuning: &Tuning,
     target: Entity,
 ) -> OverlayAmounts {
     let (physical, capacity) = match kind {
@@ -726,11 +763,11 @@ fn compute_overlay_amounts(
             .unwrap_or_default(),
         StructureOverlayKind::Worker => cargo
             .get(target)
-            .map(|value| (value.amount, WORKER_CARRY_CAPACITY))
+            .map(|value| (value.amount, tuning.logistics.worker_carry_capacity))
             .unwrap_or_default(),
         StructureOverlayKind::Hauler => cargo
             .get(target)
-            .map(|value| (value.amount, HAULER_CARRY_CAPACITY))
+            .map(|value| (value.amount, tuning.logistics.hauler_carry_capacity))
             .unwrap_or_default(),
     };
     let outgoing_reserved = if matches!(
@@ -771,6 +808,7 @@ fn compute_overlay_amounts(
 fn update_segment_sprite(
     kind: StructureOverlayKind,
     amounts: OverlayAmounts,
+    settings: &PresentationTuning,
     entity: Entity,
     fills: &mut Query<
         (&StructureOverlaySegment, &mut Sprite, &mut Transform),
@@ -780,7 +818,7 @@ fn update_segment_sprite(
     let Ok((segment, mut sprite, mut transform)) = fills.get_mut(entity) else {
         return;
     };
-    let size = overlay_bar_size(kind);
+    let size = overlay_bar_size(kind, settings);
     let physical_fraction = fill_fraction(amounts.physical, amounts.capacity);
     let (fraction, start_fraction, color) = match segment.kind {
         StructureOverlaySegmentKind::Physical => (physical_fraction, 0.0, overlay_fill_color(kind)),
@@ -815,7 +853,7 @@ fn update_segment_sprite(
 }
 
 pub fn structure_overlay_visibility_system(
-    settings: Res<StructureOverlaySettings>,
+    tuning: Res<Tuning>,
     zoom_query: Query<&CameraZoom2d>,
     mut overlays: Query<&mut Visibility, (With<StructureOverlay>, Without<ConditionOverlay>)>,
     mut condition_overlays: Query<
@@ -824,7 +862,7 @@ pub fn structure_overlay_visibility_system(
     >,
 ) {
     let zoom = effective_zoom(zoom_query.iter(), 1.0);
-    let target = overlay_visibility_for_zoom(zoom, settings.hide_zoom_threshold);
+    let target = overlay_visibility_for_zoom(zoom, tuning.presentation.overlay_zoom_threshold);
     for mut visibility in &mut overlays {
         if *visibility != target {
             *visibility = target;
@@ -942,7 +980,7 @@ mod tests {
     use approx::assert_abs_diff_eq;
 
     use super::*;
-    use crate::nanobot::{DEFAULT_PLANNED_WORK_TICKS, PlannedKind};
+    use crate::nanobot::PlannedKind;
 
     #[test]
     fn fill_fraction_clamps_and_handles_zero_capacity() {
@@ -955,9 +993,9 @@ mod tests {
     #[test]
     fn planned_fill_fraction_reports_spent_work_budget() {
         let mut planned = PlannedStructure::new(PlannedKind::SinkStockpile, IVec2::ZERO);
-        planned = planned.with_work_remaining(DEFAULT_PLANNED_WORK_TICKS);
+        planned = planned.with_work_remaining(Tuning::default().construction.work_ticks);
         assert_abs_diff_eq!(planned_fill_fraction(&planned), 0.0, epsilon = 1e-5);
-        planned = planned.with_work_remaining(DEFAULT_PLANNED_WORK_TICKS / 2);
+        planned = planned.with_work_remaining(Tuning::default().construction.work_ticks / 2);
         assert_abs_diff_eq!(planned_fill_fraction(&planned), 0.5, epsilon = 1e-5);
         planned = planned.with_work_remaining(0);
         assert_abs_diff_eq!(planned_fill_fraction(&planned), 1.0, epsilon = 1e-5);
@@ -965,17 +1003,18 @@ mod tests {
 
     #[test]
     fn overlay_bar_size_is_smaller_for_haulers() {
+        let settings = PresentationTuning::default();
         assert_eq!(
-            overlay_bar_size(StructureOverlayKind::Stockpile),
-            STRUCTURE_BAR_SIZE
+            overlay_bar_size(StructureOverlayKind::Stockpile, &settings),
+            Vec2::new(settings.structure_bar_width, settings.structure_bar_height)
         );
         assert_eq!(
-            overlay_bar_size(StructureOverlayKind::Hauler),
-            CARGO_BAR_SIZE
+            overlay_bar_size(StructureOverlayKind::Hauler, &settings),
+            Vec2::new(settings.cargo_bar_width, settings.cargo_bar_height)
         );
         assert_eq!(
-            overlay_bar_size(StructureOverlayKind::Worker),
-            CARGO_BAR_SIZE
+            overlay_bar_size(StructureOverlayKind::Worker, &settings),
+            Vec2::new(settings.cargo_bar_width, settings.cargo_bar_height)
         );
     }
 
@@ -1033,19 +1072,20 @@ mod tests {
 
     #[test]
     fn overlay_offsets_are_above_targets() {
+        let settings = PresentationTuning::default();
         assert_abs_diff_eq!(
-            overlay_label_offset_y(StructureOverlayKind::Deposit, Some(64.0)),
-            64.0 + STRUCTURE_FOOTPRINT_LABEL_GAP,
+            overlay_label_offset_y(StructureOverlayKind::Deposit, Some(64.0), &settings),
+            64.0 + settings.structure_label_gap,
             epsilon = 1e-5
         );
         assert_abs_diff_eq!(
-            overlay_label_offset_y(StructureOverlayKind::Deposit, None),
-            DEFAULT_DEPOSIT_OVERLAY_RADIUS + STRUCTURE_FOOTPRINT_LABEL_GAP,
+            overlay_label_offset_y(StructureOverlayKind::Deposit, None, &settings),
+            DEFAULT_DEPOSIT_OVERLAY_RADIUS + settings.structure_label_gap,
             epsilon = 1e-5
         );
-        let structure_offset = PLANNED_STRUCTURE_FOOTPRINT / 2.0 + STRUCTURE_FOOTPRINT_LABEL_GAP;
+        let structure_offset = PLANNED_STRUCTURE_FOOTPRINT / 2.0 + settings.structure_label_gap;
         for kind in StructureOverlayKind::STRUCTURES {
-            let offset = overlay_label_offset_y(kind, Some(9999.0));
+            let offset = overlay_label_offset_y(kind, Some(9999.0), &settings);
             assert!(offset > 0.0);
             if kind != StructureOverlayKind::Deposit {
                 assert_abs_diff_eq!(offset, structure_offset, epsilon = 1e-5);
@@ -1053,8 +1093,8 @@ mod tests {
         }
         for kind in [StructureOverlayKind::Worker, StructureOverlayKind::Hauler] {
             assert_abs_diff_eq!(
-                overlay_label_offset_y(kind, None),
-                BOT_RADIUS + HAULER_OVERLAY_GAP,
+                overlay_label_offset_y(kind, None, &settings),
+                BOT_RADIUS + settings.cargo_label_gap,
                 epsilon = 1e-5
             );
         }

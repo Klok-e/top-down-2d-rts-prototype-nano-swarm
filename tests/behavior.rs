@@ -142,3 +142,18 @@ mod swarm_elimination;
 
 #[path = "behavior/agent_match_snapshot.rs"]
 mod agent_match_snapshot;
+
+#[path = "behavior/agent_tuning.rs"]
+mod agent_tuning;
+#[path = "behavior/autonomy_tuning.rs"]
+mod autonomy_tuning;
+#[path = "behavior/combat_tuning.rs"]
+mod combat_tuning;
+#[path = "behavior/economy_tuning.rs"]
+mod economy_tuning;
+#[path = "behavior/live_logistics_tuning.rs"]
+mod live_logistics_tuning;
+#[path = "behavior/presentation_tuning.rs"]
+mod presentation_tuning;
+#[path = "behavior/tuning_transaction.rs"]
+mod tuning_transaction;

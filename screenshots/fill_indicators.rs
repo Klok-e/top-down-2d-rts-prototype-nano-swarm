@@ -5,15 +5,15 @@ use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z,
     fly_camera::CameraZoom2d,
     nanobot::{
-        Charger, HaulerLoad, MAINTENANCE_NEEDS_THRESHOLD, MAINTENANCE_WORK_DURATION_TICKS,
-        MaintenanceProgress, Nanobot, NanobotType, PlannedKind, PlannedStructure,
-        ProductionFacility, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind,
-        SwarmId, SwarmMember,
+        Charger, HaulerLoad, MaintenanceProgress, Nanobot, NanobotType, PlannedKind,
+        PlannedStructure, ProductionFacility, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure,
+        StructureKind, SwarmId, SwarmMember,
     },
     resources::{ResourceDeposit, ResourceKind, Stockpile},
     structure_overlay::{
         ConditionOverlay, ConditionOverlayKind, StructureOverlay, StructureOverlayKind,
     },
+    tuning::Tuning,
     ui::match_banner::MatchBannerRoot,
 };
 
@@ -120,7 +120,7 @@ fn keep_worker_progress_visible(world: &mut World) {
         return;
     };
     if let Some(mut progress) = world.entity_mut(worker).get_mut::<MaintenanceProgress>() {
-        progress.ticks_worked = MAINTENANCE_WORK_DURATION_TICKS / 2;
+        progress.ticks_worked = Tuning::default().maintenance.work_ticks / 2;
     }
 }
 
@@ -168,7 +168,7 @@ fn spawn_facility(world: &mut World, pos: Vec2) -> Entity {
     facility.input_amount = 120;
     facility.input_capacity = 200;
     let mut condition = Structure::new(StructureKind::Basic);
-    condition.ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
+    condition.ticks_since_maintained = Tuning::default().maintenance.needs_threshold;
     world
         .spawn((
             facility,
@@ -249,7 +249,7 @@ fn spawn_maintenance_worker(world: &mut World, pos: Vec2, target: Entity) -> Ent
             MaintenanceProgress {
                 cell: IVec2::ZERO,
                 target,
-                ticks_worked: MAINTENANCE_WORK_DURATION_TICKS / 2,
+                ticks_worked: Tuning::default().maintenance.work_ticks / 2,
             },
             SwarmMember::new(SwarmId::PLAYER),
             Transform::from_translation(pos.extend(GAMEPLAY_SPRITE_Z)),

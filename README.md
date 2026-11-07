@@ -36,6 +36,10 @@ cargo run
 
 Press **ESC** to pause and open the scenario menu. Choose **Standard** for the opponent match, **Sandbox** for open-ended play without an opponent, or **AI Battle** to watch two automatically controlled swarms and record battle statistics. The choice saves immediately for future launches. **Start selected scenario** begins a fresh match in the current window and resets the camera, even when restarting the same scenario. ESC closes the menu and returns to the current session. **Quit to desktop** exits the game.
 
+Press **F2** to open the live tuning panel. Expand a group and edit its numeric fields, or use Up/Down to step a focused value. Each valid change saves immediately and applies to both swarms. Invalid input or a save failure leaves the active value unchanged and shows an error beside the field. Escape releases field focus; with no field focused, Escape opens the scenario menu. The panel leaves simulation running.
+
+The game loads the complete [balance configuration](config/balance.ron) before creating a scenario. Missing, malformed, or invalid configuration prevents startup. The default path is anchored to the project root; `--tuning-file PATH` selects another file for both loading and saving. Tuning survives scenario restarts and future launches.
+
 Run an accelerated headless AI Battle with saved statistics:
 
 ```bash

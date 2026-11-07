@@ -10,7 +10,9 @@ fn is_reachable(owner: SwarmId, state: &GameState<'_>, cell: IVec2) -> bool {
         .is_none_or(|reachability| reachability.contains(owner, cell, state.grid))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn coordinate_attack_targets(
+    tuning: &AutonomyTuning,
     selected: &mut PlanCandidate,
     candidates: &[PlanCandidate],
     current: Option<&IntentPlan>,
@@ -37,7 +39,7 @@ pub(super) fn coordinate_attack_targets(
     }
 
     if reviewed_supportable_fronts
-        .unwrap_or_else(|| supportable_attack_fronts(owner, state, budget))
+        .unwrap_or_else(|| supportable_attack_fronts(tuning, owner, state, budget))
         < 2
     {
         if let Some(incumbent) = progressing.first().copied()
@@ -114,6 +116,7 @@ pub(super) fn coordinate_attack_targets(
 }
 
 pub(super) fn supportable_attack_fronts(
+    tuning: &AutonomyTuning,
     owner: SwarmId,
     state: &GameState<'_>,
     budget: &mut WorkBudget,
@@ -125,14 +128,14 @@ pub(super) fn supportable_attack_fronts(
         }
         if bot.owner == owner
             && bot.kind == NanobotType::Defender
-            && bot.health >= MIN_FRONT_HEALTH
+            && bot.health as f32 >= bot.max_health as f32 * tuning.min_front_health_fraction
             && bot.charge.is_finite()
-            && bot.charge >= MIN_FRONT_CHARGE
+            && bot.charge >= bot.max_charge * tuning.min_front_charge
         {
             ready_defenders += 1;
         }
     }
-    if ready_defenders < MIN_SECOND_FRONT_DEFENDERS {
+    if ready_defenders < tuning.min_second_front_defenders as usize {
         return 1;
     }
     let supplied_charger = state
@@ -150,6 +153,7 @@ pub(super) fn supportable_attack_fronts(
 }
 
 pub(super) fn adapt_pressure_anchor(
+    tuning: &AutonomyTuning,
     candidate: &mut PlanCandidate,
     current: Option<&IntentPlan>,
     owner: SwarmId,
@@ -203,7 +207,7 @@ pub(super) fn adapt_pressure_anchor(
             / crate::ZONE_BLOCK_SIZE;
         let exposure = route_exposure(cohort, anchor_position, state.terrain, budget)
             + route_exposure(anchor_position, target_position, state.terrain, budget);
-        let cost = travel + exposure * 12.0;
+        let cost = travel + exposure * tuning.strategy_pressure_anchor_exposure_cost;
         if best.is_none_or(|(_, best_cost)| cost < best_cost) {
             best = Some((anchor, cost));
         }
@@ -463,6 +467,7 @@ pub(super) fn deposit_is_available(
 }
 
 pub(super) fn generate_candidates(
+    tuning: &AutonomyTuning,
     owner: SwarmId,
     state: &GameState<'_>,
     current: Option<&IntentPlan>,
@@ -484,7 +489,7 @@ pub(super) fn generate_candidates(
         })
         .unwrap_or(Vec2::ZERO);
     let home_cell = world_to_intent_cell(home);
-    let forces = estimate_forces(owner, state, budget);
+    let forces = estimate_forces(tuning, owner, state, budget);
     let defend_target = (forces.friendly_defenders * 2 + 4).clamp(6, 20);
     let mut available = Vec::new();
     for deposit in state.deposits.iter().take(MAX_DEPOSITS) {
@@ -493,7 +498,7 @@ pub(super) fn generate_candidates(
         }
         if deposit.amount > 0 && is_reachable(owner, state, world_to_intent_cell(deposit.position))
         {
-            let value = deposit_value(deposit, home, state, budget);
+            let value = deposit_value(tuning, deposit, home, state, budget);
             available.push((deposit, value));
         }
     }
@@ -515,20 +520,21 @@ pub(super) fn generate_candidates(
         primary: primary.map(|(deposit, _)| deposit),
         value: primary.map_or(0.0, |(_, value)| value),
     };
-    let supply = owner_state.map_or(0.0, |swarm| swarm.minerals as f32 * 0.1)
-        + state
-            .structures
-            .iter()
-            .take(MAX_STRUCTURES)
-            .filter(|structure| {
-                structure.owner == owner
-                    && matches!(
-                        structure.kind,
-                        StructureKind::Source | StructureKind::Sink | StructureKind::Charger
-                    )
-            })
-            .map(|structure| structure.minerals as f32 * 0.05)
-            .sum::<f32>();
+    let supply = owner_state.map_or(0.0, |swarm| {
+        swarm.minerals as f32 * tuning.strategy_ledger_supply_weight
+    }) + state
+        .structures
+        .iter()
+        .take(MAX_STRUCTURES)
+        .filter(|structure| {
+            structure.owner == owner
+                && matches!(
+                    structure.kind,
+                    StructureKind::Source | StructureKind::Sink | StructureKind::Charger
+                )
+        })
+        .map(|structure| structure.minerals as f32 * tuning.strategy_buffer_supply_weight)
+        .sum::<f32>();
     let key_charger = state
         .structures
         .iter()
@@ -541,7 +547,8 @@ pub(super) fn generate_candidates(
                 && is_reachable(owner, state, world_to_intent_cell(structure.position))
         })
         .copied();
-    let pressure_readiness_penalty = (80.0 - supply).max(0.0) * 2.0;
+    let pressure_readiness_penalty = (tuning.strategy_readiness_supply_target - supply).max(0.0)
+        * tuning.strategy_readiness_penalty_weight;
 
     let mut candidates = Vec::new();
     candidates.push(PlanCandidate {
@@ -552,7 +559,10 @@ pub(super) fn generate_candidates(
         attack_target: None,
         key_charger,
         defend_target,
-        score: economy.value + 25.0 + supply.min(100.0) * 0.1 + forces.friendly_strength * 0.02,
+        score: economy.value
+            + tuning.strategy_hold_base
+            + supply.min(tuning.strategy_hold_supply_cap) * tuning.strategy_hold_supply_weight
+            + forces.friendly_strength * tuning.strategy_hold_force_weight,
     });
 
     for &(deposit, value) in &available {
@@ -560,9 +570,13 @@ pub(super) fn generate_candidates(
             break;
         }
         let target = world_to_intent_cell(deposit.position);
-        let scarcity = (60.0 - supply).max(0.0) * 0.4;
-        let score = 75.0 + value + scarcity + forces.friendly_strength * 0.025
-            - forces.enemy_strength * 0.01;
+        let scarcity = (tuning.strategy_scarcity_supply_target - supply).max(0.0)
+            * tuning.strategy_scarcity_weight;
+        let score = tuning.strategy_secure_base
+            + value
+            + scarcity
+            + forces.friendly_strength * tuning.strategy_secure_force_weight
+            - forces.enemy_strength * tuning.strategy_secure_enemy_weight;
         candidates.push(PlanCandidate {
             objective: Objective::SecureDeposit(deposit.id),
             economy: EconomySelection {
@@ -592,13 +606,17 @@ pub(super) fn generate_candidates(
         let anchor = midpoint_cell(home_cell, target);
         if is_reachable(owner, state, target) && is_reachable(owner, state, anchor) {
             let distance = home.distance(enemy_home) / crate::ZONE_BLOCK_SIZE;
-            let score =
-                economy.value + 160.0 + supply.min(120.0) * 0.7 + forces.friendly_strength * 0.04
-                    - forces.enemy_strength * 0.035
-                    - forces.low_charge_defenders as f32 * 18.0
-                    - pressure_readiness_penalty
-                    - distance * 2.0
-                    - route_exposure(home, enemy_home, state.terrain, budget) * 12.0;
+            let score = economy.value
+                + tuning.strategy_pressure_base
+                + supply.min(tuning.strategy_pressure_supply_cap)
+                    * tuning.strategy_pressure_supply_weight
+                + forces.friendly_strength * tuning.strategy_pressure_force_weight
+                - forces.enemy_strength * tuning.strategy_pressure_enemy_weight
+                - forces.low_charge_defenders as f32 * tuning.strategy_pressure_low_charge_penalty
+                - pressure_readiness_penalty
+                - distance * tuning.strategy_pressure_distance_cost
+                - route_exposure(home, enemy_home, state.terrain, budget)
+                    * tuning.strategy_pressure_exposure_cost;
             candidates.push(PlanCandidate {
                 objective: Objective::ForwardPressure(anchor),
                 economy,
@@ -637,24 +655,26 @@ pub(super) fn generate_candidates(
             continue;
         }
         let strategic_value = match structure.kind {
-            StructureKind::Charger => 95.0,
-            StructureKind::Source | StructureKind::Sink => 80.0,
-            StructureKind::Facility => 60.0,
+            StructureKind::Charger => tuning.strategy_raid_charger_value,
+            StructureKind::Source | StructureKind::Sink => tuning.strategy_raid_stockpile_value,
+            StructureKind::Facility => tuning.strategy_raid_facility_value,
             StructureKind::Planned | StructureKind::Other => 0.0,
         };
         let distance = home.distance(structure.position) / crate::ZONE_BLOCK_SIZE;
-        let vulnerability = 100_u32.saturating_sub(structure.health.min(100)) as f32 * 0.8;
+        let vulnerability = health_deficit(structure.health, structure.max_health)
+            * tuning.strategy_raid_vulnerability_weight;
         let score = economy.value
-            + 220.0
+            + tuning.strategy_raid_base
             + strategic_value
             + vulnerability
-            + supply.min(120.0) * 0.7
-            + structure.minerals as f32 * 0.15
-            + forces.friendly_strength * 0.045
-            - forces.enemy_strength * 0.04
+            + supply.min(tuning.strategy_raid_supply_cap) * tuning.strategy_raid_supply_weight
+            + structure.minerals as f32 * tuning.strategy_raid_cargo_weight
+            + forces.friendly_strength * tuning.strategy_raid_force_weight
+            - forces.enemy_strength * tuning.strategy_raid_enemy_weight
             - pressure_readiness_penalty
-            - distance * 3.0
-            - route_exposure(home, structure.position, state.terrain, budget) * 14.0;
+            - distance * tuning.strategy_raid_distance_cost
+            - route_exposure(home, structure.position, state.terrain, budget)
+                * tuning.strategy_raid_exposure_cost;
         candidates.push(PlanCandidate {
             objective: Objective::RaidLogistics(structure.id),
             economy,
@@ -705,26 +725,31 @@ pub(super) fn generate_candidates(
             continue;
         }
         let danger = match bot.kind {
-            NanobotType::Defender => 60.0,
-            NanobotType::Hauler => 25.0,
-            NanobotType::Worker => 15.0,
+            NanobotType::Defender => tuning.strategy_hunt_defender_value,
+            NanobotType::Hauler => tuning.strategy_hunt_hauler_value,
+            NanobotType::Worker => tuning.strategy_hunt_worker_value,
         };
         let distance = home.distance(bot.position) / crate::ZONE_BLOCK_SIZE;
-        let vulnerability = 100_u32.saturating_sub(bot.health.min(100)) as f32 * 0.5;
+        let vulnerability =
+            health_deficit(bot.health, bot.max_health) * tuning.strategy_hunt_vulnerability_weight;
         let (cleanup_priority, cleanup_readiness_penalty) =
             if completed_structure_owners.contains(&bot.owner) {
-                (140.0, pressure_readiness_penalty)
+                (
+                    tuning.strategy_hunt_supported_base,
+                    pressure_readiness_penalty,
+                )
             } else {
-                (500.0, 0.0)
+                (tuning.strategy_hunt_remnant_base, 0.0)
             };
         let score = economy.value
             + cleanup_priority
             + danger
             + vulnerability
-            + forces.friendly_strength * 0.04
+            + forces.friendly_strength * tuning.strategy_hunt_force_weight
             - cleanup_readiness_penalty
-            - distance * 2.0
-            - route_exposure(home, bot.position, state.terrain, budget) * 14.0;
+            - distance * tuning.strategy_hunt_distance_cost
+            - route_exposure(home, bot.position, state.terrain, budget)
+                * tuning.strategy_hunt_exposure_cost;
         candidates.push(PlanCandidate {
             objective: Objective::HuntRemnant(bot.id),
             economy,
@@ -745,6 +770,7 @@ pub(super) fn generate_candidates(
 }
 
 pub(super) fn estimate_forces(
+    tuning: &AutonomyTuning,
     owner: SwarmId,
     state: &GameState<'_>,
     budget: &mut WorkBudget,
@@ -758,15 +784,16 @@ pub(super) fn estimate_forces(
             continue;
         }
         let charge = if bot.charge.is_finite() {
-            bot.charge.clamp(0.0, 1.0)
+            (bot.charge / bot.max_charge.max(f32::MIN_POSITIVE)).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let strength = bot.health as f32 * (0.35 + charge * 0.65);
+        let strength = bot.health as f32
+            * (tuning.strategy_force_base_weight + charge * tuning.strategy_force_charge_weight);
         if bot.owner == owner {
             estimate.friendly_defenders += 1;
             estimate.friendly_strength += strength;
-            estimate.low_charge_defenders += usize::from(charge < 0.45);
+            estimate.low_charge_defenders += usize::from(charge < tuning.min_front_charge);
         } else {
             estimate.enemy_strength += strength;
         }
@@ -775,6 +802,7 @@ pub(super) fn estimate_forces(
 }
 
 pub(super) fn deposit_value(
+    tuning: &AutonomyTuning,
     deposit: &DepositState,
     home: Vec2,
     state: &GameState<'_>,
@@ -782,5 +810,11 @@ pub(super) fn deposit_value(
 ) -> f32 {
     let travel = home.distance(deposit.position) / crate::ZONE_BLOCK_SIZE;
     let exposure = route_exposure(home, deposit.position, state.terrain, budget);
-    (deposit.amount as f32 + 1.0).ln() * 10.0 - travel * 6.0 - exposure * 10.0
+    (deposit.amount as f32 + 1.0).ln() * tuning.strategy_deposit_amount_weight
+        - travel * tuning.strategy_deposit_distance_cost
+        - exposure * tuning.strategy_deposit_exposure_cost
+}
+
+fn health_deficit(health: u32, max_health: u32) -> f32 {
+    100.0 * max_health.saturating_sub(health) as f32 / max_health.max(1) as f32
 }

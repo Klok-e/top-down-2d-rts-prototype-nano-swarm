@@ -6,17 +6,16 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z, fixed_simulation_time,
     fly_camera::CameraZoom2d,
-    gameplay_pacing::GameplayPacing,
     intent::{IntentGrid, IntentKind},
     nanobot::{
         ActiveCombatDecorations, ActiveCombatPulses, ActiveNanobotDeathGhosts,
-        ActiveStructureDeathGhosts, Charge, CombatPresentationSettings, Commitment,
-        DefenderAttackCooldown, DefenderResponse, Health, Nanobot, NanobotDeathGhost, NanobotType,
-        NanobotVisual, OpponentSwarm, OwnerSwarm, PLANNED_STRUCTURE_FOOTPRINT, PlannedKind,
-        ResolvedCombatFact, Structure, StructureKind, Swarm, SwarmId, SwarmMember,
-        completed_visual_color,
+        ActiveStructureDeathGhosts, Charge, Commitment, DefenderAttackCooldown, DefenderResponse,
+        Health, Nanobot, NanobotDeathGhost, NanobotType, NanobotVisual, OpponentSwarm, OwnerSwarm,
+        PLANNED_STRUCTURE_FOOTPRINT, PlannedKind, ResolvedCombatFact, Structure, StructureKind,
+        Swarm, SwarmId, SwarmMember, completed_visual_color,
     },
     structure_sprites::{StructureSprites, StructureVisual, StructureVisualState},
+    tuning::Tuning,
 };
 
 use crate::harness::{TestContext, TestFlow, clear_nanobots_and_sprite_entities};
@@ -467,10 +466,11 @@ pub fn nanobot_combat_death(ctx: &mut TestContext) -> TestFlow {
             }
             let duration = ctx
                 .world
-                .resource::<CombatPresentationSettings>()
-                .death_duration;
+                .resource::<Tuning>()
+                .presentation
+                .combat_death_duration_secs;
             assert!(
-                ctx.frame < 12 + duration.as_millis() as u32 / 10,
+                ctx.frame < 12 + (duration * 1000.0) as u32 / 10,
                 "nanobot death ghost did not enter its dissolve phase",
             );
             TestFlow::Continue
@@ -549,11 +549,12 @@ fn spawn_dense_nanobot(
 
 fn setup_dense_scene(world: &mut World) {
     let center = prepare_combat_scene(world);
-    world.insert_resource(GameplayPacing {
-        construction_work_ticks: 5,
-        attack_interval_ticks: 15,
-        charge_drain_per_tick: 0.00025,
-    });
+    {
+        let mut tuning = world.resource_mut::<Tuning>();
+        tuning.construction.work_ticks = 5;
+        tuning.combat.attack_interval_ticks = 15;
+        tuning.charge.drain_per_tick = 0.00025;
+    }
     focus_camera_at_zoom(world, center, 1.0);
     let opponent = *world
         .query_filtered::<&SwarmId, (With<Swarm>, With<OpponentSwarm>)>()
@@ -672,7 +673,7 @@ pub fn combat_presentation_density_and_zoom(ctx: &mut TestContext) -> TestFlow {
             ctx.world.resource_mut::<Time<Virtual>>().pause();
             let evidence = ctx.world.resource::<DenseCombatEvidence>();
             assert_dense_roots_unchanged(ctx.world, evidence);
-            let settings = *ctx.world.resource::<CombatPresentationSettings>();
+            let settings = &ctx.world.resource::<Tuning>().presentation;
             for (target, _) in &evidence.targets {
                 assert_eq!(
                     ctx.world.get::<Health>(*target).unwrap().current,
@@ -682,7 +683,7 @@ pub fn combat_presentation_density_and_zoom(ctx: &mut TestContext) -> TestFlow {
                 let visual = visual_child(ctx.world, *target);
                 let reaction = ctx.world.get::<Transform>(visual).unwrap().translation;
                 assert!(reaction.length() > 0.0);
-                assert!(reaction.length() <= settings.recoil_distance + 0.001);
+                assert!(reaction.length() <= settings.combat_recoil_distance + 0.001);
                 assert_ne!(ctx.world.get::<Sprite>(visual).unwrap().color, Color::WHITE);
             }
             for (attacker, _) in &evidence.attackers {
@@ -707,11 +708,8 @@ pub fn combat_presentation_density_and_zoom(ctx: &mut TestContext) -> TestFlow {
                 }
             }
             assert_eq!((player_pulses, opponent_pulses), (3, 3));
-            assert!(settings.pulse_thickness >= 1.0);
-            assert!(
-                ctx.world.resource::<ActiveCombatDecorations>().len()
-                    <= settings.max_decorative_effects,
-            );
+            assert!(settings.combat_pulse_thickness >= 1.0);
+            assert!(ctx.world.resource::<ActiveCombatDecorations>().len() <= 24,);
             ctx.world.resource_mut::<DenseCombatEvidence>().phase =
                 DenseCombatPhase::ImpactCaptured;
             TestFlow::Screenshot(screenshot_name(
@@ -764,8 +762,9 @@ pub fn combat_presentation_density_and_zoom(ctx: &mut TestContext) -> TestFlow {
             assert_dense_roots_unchanged(ctx.world, evidence);
             let minimum = ctx
                 .world
-                .resource::<CombatPresentationSettings>()
-                .minimum_impact_screen_distance;
+                .resource::<Tuning>()
+                .presentation
+                .combat_minimum_impact_screen_distance;
             for (entity, _) in evidence.attackers.iter().chain(&evidence.targets) {
                 let visual = visual_child(ctx.world, *entity);
                 assert!(

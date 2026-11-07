@@ -16,16 +16,20 @@ struct Output(PathBuf);
 impl Output {
     fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        Self(std::env::temp_dir().join(format!(
-            "nano-battle-test-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        )))
+        Self(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join(".tmp")
+                .join(format!(
+                    "nano-battle-test-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                )),
+        )
     }
     fn summary(&self) -> serde_json::Value {
         let directory = std::fs::read_dir(&self.0)
             .expect("battle must create a run directory")
-            .next()
+            .find(|entry| entry.as_ref().is_ok_and(|entry| entry.path().is_dir()))
             .unwrap()
             .unwrap()
             .path();
@@ -35,7 +39,7 @@ impl Output {
     fn samples_csv(&self) -> String {
         let directory = std::fs::read_dir(&self.0)
             .expect("battle must create a run directory")
-            .next()
+            .find(|entry| entry.as_ref().is_ok_and(|entry| entry.path().is_dir()))
             .unwrap()
             .unwrap()
             .path();
@@ -235,7 +239,7 @@ fn samples_preserve_gross_events_and_stop_counters_after_draw() {
     }
     assert_eq!(summary["latest"]["swarms"]["0"]["minerals_gathered"], 30);
     assert_eq!(summary["latest"]["swarms"]["0"]["minerals_consumed"], 30);
-    assert_eq!(summary["schema_version"], 5);
+    assert_eq!(summary["schema_version"], 6);
     assert_eq!(
         summary["latest"]["swarms"]["0"]["effective_damage_total"],
         0
@@ -317,7 +321,7 @@ fn effective_damage_is_cumulative_in_json_and_csv_and_freezes_at_match_end() {
     app.update();
 
     let terminal = output.summary();
-    assert_eq!(terminal["schema_version"], 5);
+    assert_eq!(terminal["schema_version"], 6);
     let swarm = &terminal["latest"]["swarms"]["0"];
     assert_eq!(swarm["effective_damage_total"], 22);
     assert_eq!(swarm["effective_damage_nanobots"], 17);
@@ -476,4 +480,38 @@ fn recorded_outcomes_use_actual_swarm_ids_and_session_perspective() {
         );
         assert!(saved["latest"]["swarms"]["42"]["elimination_seconds"].is_null());
     }
+}
+
+#[test]
+fn battle_records_initial_tuning_and_only_its_own_tick_stamped_edits() {
+    use top_down_2d_rts_prototype_nano_swarm::tuning::{
+        Tuning, TuningJournal, TuningRevision, TuningStore, set_value,
+    };
+    let output = Output::new();
+    let mut app = battle(&output);
+    app.init_resource::<Tuning>()
+        .init_resource::<TuningJournal>()
+        .init_resource::<TuningRevision>()
+        .insert_resource(TuningStore::new(output.0.join("balance.ron")));
+    std::fs::create_dir_all(&output.0).unwrap();
+    set_value(app.world_mut(), "combat.base_attack", 14.).unwrap();
+    app.update();
+    for _ in 1..7 {
+        app.update();
+    }
+    set_value(app.world_mut(), "combat.base_attack", 23.).unwrap();
+    app.world_mut().write_message(AppExit::from_code(130));
+    app.update();
+    let summary = output.summary();
+    assert_eq!(summary["tuning"]["combat"]["base_attack"], 14.);
+    let edits = summary["tuning_edits"].as_array().unwrap();
+    assert_eq!(
+        edits.len(),
+        1,
+        "edits before the run are already in its initial tuning"
+    );
+    assert_eq!(edits[0]["key"], "combat.base_attack");
+    assert_eq!(edits[0]["value"], 23.);
+    assert_eq!(edits[0]["revision"], 2);
+    assert_eq!(edits[0]["fixed_tick"], 7);
 }

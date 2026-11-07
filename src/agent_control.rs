@@ -60,11 +60,14 @@ const CONTROL_RESPONSE_POLL_DURATION: Duration = Duration::from_millis(10);
 #[cfg(unix)]
 const MAX_CONTROL_LINE_DURATION: Duration = Duration::from_secs(30);
 pub const AGENT_PROTOCOL_VERSION: u32 = 4;
-pub const SUPPORTED_METHODS: [&str; 11] = [
+pub const SUPPORTED_METHODS: [&str; 14] = [
     "session.hello",
     "state.get",
     "button.press",
     "menu.toggle",
+    "tuning.get",
+    "tuning.set",
+    "tuning.toggle",
     "intent.select",
     "map.apply",
     "camera.set",
@@ -132,6 +135,14 @@ pub enum AgentCommand {
         button: ProtocolButton,
     },
     MenuToggle,
+    TuningGet,
+    TuningSet {
+        key: String,
+        value: f64,
+    },
+    TuningToggle {
+        group: Option<String>,
+    },
     CameraSet {
         x: f32,
         y: f32,
@@ -957,6 +968,7 @@ impl Plugin for AgentControlCorePlugin {
             .insert_resource(SharedAgentControlClockResource(self.shared_clock.clone()))
             .init_resource::<AgentControlClock>()
             .init_resource::<SessionRules>()
+            .init_resource::<crate::tuning::Tuning>()
             .init_resource::<PendingButtonReleases>()
             .init_resource::<PendingWaits>()
             .init_resource::<PendingScreenshots>()
@@ -1094,6 +1106,30 @@ fn queue_deferred_screenshots(world: &mut World) {
     }
 }
 
+fn collect_tuning(world: &World) -> serde_json::Value {
+    let tuning = world.resource::<crate::tuning::Tuning>();
+    let fields = crate::tuning::Tuning::fields()
+        .iter()
+        .map(|field| {
+            let mut metadata =
+                serde_json::to_value(field).expect("tuning metadata is serializable");
+            metadata["value"] = serde_json::json!(tuning.get(field.key));
+            metadata
+        })
+        .collect::<Vec<_>>();
+    let editor = world.get_resource::<crate::ui::tuning_panel::TuningEditor>();
+    serde_json::json!({
+        "revision": world.get_resource::<crate::tuning::TuningRevision>().map_or(0, |revision| revision.revision),
+        "fields": fields,
+        "editor": editor.map(|editor| serde_json::json!({
+            "open": editor.open,
+            "focused": editor.focused,
+            "expanded": editor.expanded,
+            "errors": editor.errors,
+        })),
+    })
+}
+
 fn execute_agent_command(
     world: &mut World,
     request: AgentRequest,
@@ -1206,6 +1242,33 @@ fn execute_agent_command(
             world.entity_mut(entity).insert(Interaction::Pressed);
             world.resource_mut::<PendingButtonReleases>().0.push(entity);
             serde_json::json!({ "button": button })
+        }
+        AgentCommand::TuningGet => collect_tuning(world),
+        AgentCommand::TuningSet { key, value } => {
+            match crate::ui::tuning_panel::edit_value(world, &key, &value.to_string()) {
+                Ok(revision) => {
+                    serde_json::json!({"key": key, "value": world.resource::<crate::tuning::Tuning>().get(&key), "revision": revision})
+                }
+                Err(error) => {
+                    return AgentResponse::failure(request.id, clock, "invalid_tuning", error);
+                }
+            }
+        }
+        AgentCommand::TuningToggle { group } => {
+            if !world.contains_resource::<crate::ui::tuning_panel::TuningEditor>() {
+                return AgentResponse::failure(
+                    request.id,
+                    clock,
+                    "tuning_unavailable",
+                    "the tuning editor is unavailable",
+                );
+            }
+            match crate::ui::tuning_panel::toggle_editor(world, group.as_deref()) {
+                Ok(open) => serde_json::json!({"open": open}),
+                Err(error) => {
+                    return AgentResponse::failure(request.id, clock, "invalid_tuning", error);
+                }
+            }
         }
         AgentCommand::MenuToggle => {
             let Some(mut menu) = world.get_resource_mut::<ScenarioMenu>() else {
@@ -1552,11 +1615,15 @@ fn collect_agent_state(
             })
             .collect::<Vec<_>>()
     };
+    let production_ticks = world
+        .resource::<crate::tuning::Tuning>()
+        .production
+        .ticks_per_bot;
     let facilities = {
         let mut query = world.query::<(&ProductionFacility, &OwnerSwarm)>();
         query
             .iter(world)
-            .map(|(facility, owner)| (owner.0, facility.is_busy()))
+            .map(|(facility, owner)| (owner.0, facility.is_busy(production_ticks)))
             .collect::<Vec<_>>()
     };
     let ledger = world.get_resource::<ResourceLedger>().cloned();
@@ -2062,6 +2129,20 @@ struct ButtonPressParams {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct TuningSetParams {
+    key: String,
+    value: f64,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TuningToggleParams {
+    #[serde(default)]
+    group: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CameraSetParams {
     x: f32,
     y: f32,
@@ -2175,6 +2256,34 @@ pub fn parse_request_line(line: &[u8]) -> Result<AgentRequest, ProtocolError> {
             require_empty_params(request.params)?;
             AgentCommand::MenuToggle
         }
+        "tuning.get" => {
+            require_empty_params(request.params)?;
+            AgentCommand::TuningGet
+        }
+        "tuning.set" => {
+            let params = serde_json::from_value::<TuningSetParams>(request.params)
+                .map_err(ProtocolError::InvalidJson)?;
+            if !params.value.is_finite() {
+                return Err(ProtocolError::InvalidParameters(
+                    "tuning.set value must be finite".into(),
+                ));
+            }
+            AgentCommand::TuningSet {
+                key: params.key,
+                value: params.value,
+            }
+        }
+        "tuning.toggle" => {
+            let params = if request.params.is_null() {
+                TuningToggleParams::default()
+            } else {
+                serde_json::from_value::<TuningToggleParams>(request.params)
+                    .map_err(ProtocolError::InvalidJson)?
+            };
+            AgentCommand::TuningToggle {
+                group: params.group,
+            }
+        }
         "camera.set" => {
             let params = serde_json::from_value::<CameraSetParams>(request.params)
                 .map_err(ProtocolError::InvalidJson)?;
@@ -2258,6 +2367,21 @@ mod tests {
     fn remove_control_socket_test_directory(directory: &Path) {
         std::fs::remove_file(directory.join("control.sock.lock")).unwrap();
         std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn tuning_protocol_rejects_non_json_numbers_before_submission() {
+        assert!(matches!(parse_request_line(br#"{"id":1,"method":"tuning.set","params":{"key":"combat.base_attack","value":27.0}}"#).unwrap().command,
+            AgentCommand::TuningSet { value: 27.0, .. }));
+        for value in ["NaN", "Infinity", "-Infinity", "1e999", "\"NaN\"", "null"] {
+            let request = format!(
+                r#"{{"id":1,"method":"tuning.set","params":{{"key":"combat.base_attack","value":{value}}}}}"#
+            );
+            assert!(
+                parse_request_line(request.as_bytes()).is_err(),
+                "accepted {value}"
+            );
+        }
     }
 
     #[test]
@@ -3251,7 +3375,7 @@ mod tests {
 
         static NEXT_PARENT_TEST: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
-            "nano-swarm-agent-parent-{}-{}",
+            "ctl-p-{}-{}",
             std::process::id(),
             NEXT_PARENT_TEST.fetch_add(1, Ordering::Relaxed)
         ));
@@ -3285,7 +3409,7 @@ mod tests {
 
         static NEXT_SOCKET_TEST: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
-            "nano-swarm-agent-control-{}-{}",
+            "ctl-c-{}-{}",
             std::process::id(),
             NEXT_SOCKET_TEST.fetch_add(1, Ordering::Relaxed)
         ));
@@ -3318,7 +3442,7 @@ mod tests {
 
         static NEXT_LOCK_TEST: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
-            "nano-swarm-agent-lock-{}-{}",
+            "ctl-l-{}-{}",
             std::process::id(),
             NEXT_LOCK_TEST.fetch_add(1, Ordering::Relaxed)
         ));
@@ -3354,7 +3478,7 @@ mod tests {
 
         static NEXT_REPLACEMENT_TEST: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
-            "nano-swarm-agent-replacement-{}-{}",
+            "ctl-r-{}-{}",
             std::process::id(),
             NEXT_REPLACEMENT_TEST.fetch_add(1, Ordering::Relaxed)
         ));
@@ -3389,7 +3513,7 @@ mod tests {
 
         static NEXT_ROUND_TRIP: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
-            "nano-swarm-agent-round-trip-{}-{}",
+            "ctl-rt-{}-{}",
             std::process::id(),
             NEXT_ROUND_TRIP.fetch_add(1, Ordering::Relaxed)
         ));
@@ -3443,7 +3567,7 @@ mod tests {
 
         static NEXT_CANCEL_TEST: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
-            "nano-swarm-agent-cancel-{}-{}",
+            "ctl-x-{}-{}",
             std::process::id(),
             NEXT_CANCEL_TEST.fetch_add(1, Ordering::Relaxed)
         ));
@@ -3575,7 +3699,7 @@ mod tests {
 
         static NEXT_HALF_CLOSE_TEST: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
-            "nano-swarm-agent-half-close-{}-{}",
+            "ctl-hc-{}-{}",
             std::process::id(),
             NEXT_HALF_CLOSE_TEST.fetch_add(1, Ordering::Relaxed)
         ));

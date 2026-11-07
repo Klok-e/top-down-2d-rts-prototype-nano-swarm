@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import socket
@@ -30,7 +31,7 @@ def request(socket_path: Path, timeout: float, method: str, params: dict | None)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         connection.settimeout(timeout)
         connection.connect(str(socket_path))
-        connection.sendall(json.dumps(payload, separators=(",", ":")).encode() + b"\n")
+        connection.sendall(json.dumps(payload, separators=(",", ":"), allow_nan=False).encode() + b"\n")
 
         response = bytearray()
         while b"\n" not in response:
@@ -71,6 +72,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     commands.add_parser("menu")
+    commands.add_parser("tuning-get")
+    tuning_set = commands.add_parser("tuning-set")
+    tuning_set.add_argument("key")
+    tuning_set.add_argument("value", type=float)
+    tuning_toggle = commands.add_parser("tuning-toggle")
+    tuning_toggle.add_argument("--group", help="toggle a group and open the editor")
 
     select = commands.add_parser("select")
     select.add_argument("intent", choices=INTENTS)
@@ -128,6 +135,14 @@ def command_request(args: argparse.Namespace) -> tuple[str, dict | None]:
         return "button.press", {"button": args.button}
     if args.command == "menu":
         return "menu.toggle", None
+    if args.command == "tuning-get":
+        return "tuning.get", None
+    if args.command == "tuning-set":
+        if not math.isfinite(args.value):
+            raise ValueError("tuning value must be finite")
+        return "tuning.set", {"key": args.key, "value": args.value}
+    if args.command == "tuning-toggle":
+        return "tuning.toggle", {"group": args.group} if args.group else None
     if args.command == "select":
         return "intent.select", {"intent": args.intent}
     if args.command in ("paint", "erase"):

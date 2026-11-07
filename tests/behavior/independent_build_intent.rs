@@ -2,13 +2,12 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    gameplay_pacing::GameplayPacing,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        OwnerSwarm, PRODUCTION_PRESSURE_TICKS, PlannedKind, PlannedStructure,
-        PlannedStructureClaim, PlannedStructureProgress, ProductionFacility, Swarm, SwarmId,
-        SwarmMember,
+        OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructureClaim, PlannedStructureProgress,
+        ProductionFacility, Swarm, SwarmId, SwarmMember,
     },
+    tuning::Tuning,
 };
 
 #[path = "../common/mod.rs"]
@@ -35,7 +34,7 @@ fn overlapping_build_orders_construct_separate_owned_facilities() {
         }
     }
 
-    for _ in 0..PRODUCTION_PRESSURE_TICKS + 100 {
+    for _ in 0..Tuning::default().production.pressure_ticks + 100 {
         app.update();
     }
     let plans = app
@@ -76,7 +75,7 @@ fn overlapping_build_orders_construct_separate_owned_facilities() {
             },
         ));
     }
-    for _ in 0..(GameplayPacing::default().construction_work_ticks as usize + 500) {
+    for _ in 0..(Tuning::default().construction.work_ticks as usize + 500) {
         app.update();
         if plans
             .iter()
@@ -108,7 +107,7 @@ fn enemy_only_build_does_not_supply_player_construction() {
         .resource_mut::<IntentGrid>()
         .paint(cell, IntentKind::Build, SwarmId(7));
 
-    for _ in 0..PRODUCTION_PRESSURE_TICKS + 100 {
+    for _ in 0..Tuning::default().production.pressure_ticks + 100 {
         app.update();
     }
     assert_eq!(
@@ -170,7 +169,7 @@ fn enemy_facility_blocks_its_footprint_but_not_the_rest_of_shared_build_cell() {
         .translation
         .truncate();
 
-    for _ in 0..PRODUCTION_PRESSURE_TICKS + 100 {
+    for _ in 0..Tuning::default().production.pressure_ticks + 100 {
         app.update();
     }
 

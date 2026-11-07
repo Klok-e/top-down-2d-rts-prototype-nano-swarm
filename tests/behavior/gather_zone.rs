@@ -17,13 +17,13 @@
 //!   7. `haulers_do_not_extract_directly` -- type-fit gating
 
 use bevy::{math::Vec2, prelude::*};
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 use top_down_2d_rts_prototype_nano_swarm::{
     ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Commitment, DirectMovementComponent, ExtractProgress, GatherAssignment,
-        MATERIAL_WORK_TICKS_PER_UNIT, NanobotType, ReturningToStockpile, SoftWorkSlots, SwarmId,
-        WORKER_CARRY_CAPACITY, WORKER_EXTRACT_PER_PULSE, WorkerLoad, best_candidate,
+        Commitment, DirectMovementComponent, ExtractProgress, GatherAssignment, NanobotType,
+        ReturningToStockpile, SoftWorkSlots, SwarmId, WorkerLoad, best_candidate,
     },
     resources::{ResourceDeposit, Stockpile},
 };
@@ -79,7 +79,7 @@ fn worker_extracts_one_unit_after_one_material_work_interval() {
             break;
         }
     }
-    for _ in 0..MATERIAL_WORK_TICKS_PER_UNIT - 1 {
+    for _ in 0..Tuning::default().logistics.material_work_ticks - 1 {
         app.update();
     }
     assert_eq!(
@@ -101,11 +101,12 @@ fn worker_extracts_one_unit_after_one_material_work_interval() {
         .expect("worker should start ExtractProgress when at deposit");
     assert_eq!(
         deposit.amount,
-        10 - WORKER_EXTRACT_PER_PULSE,
+        10 - Tuning::default().logistics.worker_extract_per_pulse,
         "deposit loses one unit after a full material-work interval"
     );
     assert_eq!(
-        progress.collected, WORKER_EXTRACT_PER_PULSE,
+        progress.collected,
+        Tuning::default().logistics.worker_extract_per_pulse,
         "ExtractProgress records the completed material-work pulse"
     );
 }
@@ -148,8 +149,9 @@ fn worker_fills_small_load_then_head_to_stockpile() {
         .get::<WorkerLoad>()
         .expect("worker should have a WorkerLoad after the load is full");
     assert_eq!(
-        load.amount, WORKER_CARRY_CAPACITY,
-        "small load caps at WORKER_CARRY_CAPACITY"
+        load.amount,
+        Tuning::default().logistics.worker_carry_capacity,
+        "small load caps at Tuning::default().logistics.worker_carry_capacity"
     );
 
     // The worker must be heading to the stockpile.
@@ -173,8 +175,8 @@ fn worker_fills_small_load_then_head_to_stockpile() {
     let deposit = world.entity(deposit).get::<ResourceDeposit>().unwrap();
     assert_eq!(
         deposit.amount,
-        100 - WORKER_CARRY_CAPACITY,
-        "deposit loses exactly WORKER_CARRY_CAPACITY units, no more"
+        100 - Tuning::default().logistics.worker_carry_capacity,
+        "deposit loses exactly Tuning::default().logistics.worker_carry_capacity units, no more"
     );
 }
 
@@ -226,7 +228,7 @@ fn worker_delivers_carry_to_nearest_stockpile() {
             .get::<Stockpile>()
             .unwrap()
             .amount
-            >= WORKER_CARRY_CAPACITY
+            >= Tuning::default().logistics.worker_carry_capacity
         {
             break;
         }
@@ -235,7 +237,7 @@ fn worker_delivers_carry_to_nearest_stockpile() {
     let world = app.world();
     let stockpile_state = world.entity(stockpile).get::<Stockpile>().unwrap();
     assert!(
-        stockpile_state.amount >= WORKER_CARRY_CAPACITY,
+        stockpile_state.amount >= Tuning::default().logistics.worker_carry_capacity,
         "stockpile should receive the worker's load; got {}",
         stockpile_state.amount
     );
@@ -269,7 +271,7 @@ fn worker_delivery_reissues_movement_when_timeout_strips_dmc_before_arrival() {
     app.world_mut().entity_mut(worker).insert((
         WorkerLoad {
             kind: top_down_2d_rts_prototype_nano_swarm::resources::ResourceKind::Minerals,
-            amount: WORKER_CARRY_CAPACITY,
+            amount: Tuning::default().logistics.worker_carry_capacity,
         },
         ReturningToStockpile { stockpile },
     ));

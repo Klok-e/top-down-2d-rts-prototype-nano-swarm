@@ -27,13 +27,12 @@
 //!      gather worker's source need.
 
 use bevy::{math::Vec2, prelude::*};
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        DEFAULT_PLANNED_WORK_TICKS, HAULER_CARRY_CAPACITY, HaulerAssignment,
-        MATERIAL_WORK_TICKS_PER_UNIT, OwnerSwarm, PlannedKind, PlannedStructure,
-        PlannedStructureClaim, PlannedStructureProgress, ProductionFacility, SwarmId,
-        completed_visual_color,
+        HaulerAssignment, OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructureClaim,
+        PlannedStructureProgress, ProductionFacility, SwarmId, completed_visual_color,
     },
     resources::{ResourceKind, Stockpile, StockpileRole},
 };
@@ -42,11 +41,17 @@ use top_down_2d_rts_prototype_nano_swarm::{
 mod common;
 
 /// Shipped construction work plus bounded claim and exterior-approach time.
-const PLAN_COMPLETION_TICK_BUDGET: u32 = DEFAULT_PLANNED_WORK_TICKS + 120;
+fn plan_completion_tick_budget() -> u32 {
+    Tuning::default().construction.work_ticks + 120
+}
 /// Bounded real-time wait for demand and claim allocation at 60 Hz.
 const DEMAND_TICK_BUDGET: u32 = 600;
 const CLAIM_PROGRESS_TICK_BUDGET: u32 = 120;
-const HAUL_DELIVERY_TICK_BUDGET: u32 = HAULER_CARRY_CAPACITY * MATERIAL_WORK_TICKS_PER_UNIT + 300;
+fn haul_delivery_tick_budget() -> u32 {
+    Tuning::default().logistics.hauler_carry_capacity
+        * Tuning::default().logistics.material_work_ticks
+        + 300
+}
 
 fn build_app() -> App {
     common::sim_app_with_planned()
@@ -145,7 +150,7 @@ fn worker_builds_planned_sink_stockpile_into_completed() {
         common::spawn_planned_structure_of_kind_at_cell(&mut app, cell, PlannedKind::SinkStockpile);
     let _worker = common::spawn_worker_at(&mut app, center + Vec2::new(68.0, 0.0));
 
-    let total_ticks = PLAN_COMPLETION_TICK_BUDGET as usize;
+    let total_ticks = plan_completion_tick_budget() as usize;
     for _ in 0..total_ticks {
         app.update();
     }
@@ -231,7 +236,7 @@ fn completed_sink_stockpile_receives_hauled_resources() {
 
     // Fill the shipped 20-mineral load at the real material-work cadence,
     // then travel and complete at least one unload pulse.
-    for _ in 0..HAUL_DELIVERY_TICK_BUDGET {
+    for _ in 0..haul_delivery_tick_budget() {
         app.update();
     }
 
@@ -310,7 +315,7 @@ fn planned_sink_stockpile_is_owned_by_swarm_that_painted_cell() {
     );
 
     // Drive the build to completion and re-check ownership.
-    let total_ticks = 1 + DEFAULT_PLANNED_WORK_TICKS as usize + 5;
+    let total_ticks = 1 + Tuning::default().construction.work_ticks as usize + 5;
     for _ in 0..total_ticks {
         app.update();
     }

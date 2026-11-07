@@ -50,6 +50,7 @@ mod route_recovery;
 mod scenario_menu;
 mod shared_navigation;
 mod smoke;
+mod tuning_panel;
 mod world_space_nanobots;
 mod zone_binary_overlay;
 
@@ -95,6 +96,7 @@ fn main() -> std::process::ExitCode {
             .with_ignored_flag(true),
         Trial::test("match_draw_banner", || run(match_banner::draw_banner)).with_ignored_flag(true),
         Trial::test("scenario_menu", || run(scenario_menu::scenario_menu)).with_ignored_flag(true),
+        Trial::test("tuning_panel", || run(tuning_panel::tuning_panel)).with_ignored_flag(true),
         Trial::test("approach_delivery", || {
             run(approach_delivery::approach_delivery)
         })

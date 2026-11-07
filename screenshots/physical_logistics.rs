@@ -6,14 +6,15 @@ use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
     nanobot::{
         Cargo, Charger, HaulerAssignment, Health, InteractionRegion, LogisticsReservation,
-        MATERIAL_WORK_TICKS_PER_UNIT, MaterialWorkProgress, Nanobot, NanobotType, OwnerSwarm,
-        ProductionFacility, Swarm, SwarmId, SwarmMember,
+        MaterialWorkProgress, Nanobot, NanobotType, OwnerSwarm, ProductionFacility, Swarm, SwarmId,
+        SwarmMember,
     },
     resources::{ResourceKind, Stockpile, StockpileRole},
     structure_overlay::{
         StructureOverlay, StructureOverlayKind, StructureOverlaySegment,
         StructureOverlaySegmentKind,
     },
+    tuning::Tuning,
     ui::match_banner::MatchBannerRoot,
 };
 
@@ -113,7 +114,7 @@ fn begin_delivery_after_pickup_loss(world: &mut World, delivery: Delivery) {
         },
         reservation,
         MaterialWorkProgress {
-            ticks_elapsed: MATERIAL_WORK_TICKS_PER_UNIT - 1,
+            ticks_elapsed: Tuning::default().logistics.material_work_ticks - 1,
         },
     ));
     assert!(world.despawn(delivery.pickup));

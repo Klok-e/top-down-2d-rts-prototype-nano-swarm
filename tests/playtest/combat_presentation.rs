@@ -1,13 +1,14 @@
 use std::time::Duration;
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 
 use bevy::{asset::AssetPlugin, prelude::*, time::TimeUpdateStrategy};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         ActiveCombatPulses, ActiveNanobotDeathGhosts, ActiveStructureDeathGhosts, CombatPlugin,
-        CombatPresentationSettings, DefenderResponse, Health, NanobotPresentationPlugin,
-        OpponentSwarm, PlannedKind, Structure, Swarm, SwarmId, SwarmMember, completed_visual_color,
-        nanobot_death_cleanup_system, world_to_cell,
+        DefenderResponse, Health, NanobotPresentationPlugin, OpponentSwarm, PlannedKind, Structure,
+        Swarm, SwarmId, SwarmMember, completed_visual_color, nanobot_death_cleanup_system,
+        world_to_cell,
     },
 };
 
@@ -73,9 +74,9 @@ fn real_combat_fact_reaches_runtime_presentation_and_recovers() {
     assert_eq!(app.world().get::<Transform>(attacker), Some(&attacker_root));
     assert_eq!(app.world().get::<Transform>(target), Some(&target_root));
 
-    let settings = *app.world().resource::<CombatPresentationSettings>();
+    let settings = app.world().resource::<Tuning>().presentation.clone();
     app.insert_resource(TimeUpdateStrategy::ManualDuration(
-        settings.recovery_duration + Duration::from_millis(1),
+        Duration::from_secs_f32(settings.combat_recovery_duration_secs) + Duration::from_millis(1),
     ));
     app.update();
 
@@ -139,15 +140,16 @@ fn lethal_real_combat_removes_the_target_while_its_pulse_and_ghost_finish() {
     let ghost = ghosts.iter().next().unwrap();
     assert_eq!(ghost.victim.entity, target);
 
-    let settings = *app.world().resource::<CombatPresentationSettings>();
+    let settings = app.world().resource::<Tuning>().presentation.clone();
     app.insert_resource(TimeUpdateStrategy::ManualDuration(
-        settings.death_duration.mul_f32(0.5),
+        Duration::from_secs_f32(settings.combat_death_duration_secs).mul_f32(0.5),
     ));
     app.update();
 
     assert_eq!(app.world().resource::<ActiveNanobotDeathGhosts>().len(), 1);
     app.insert_resource(TimeUpdateStrategy::ManualDuration(
-        settings.death_duration.mul_f32(0.5) + Duration::from_millis(1),
+        Duration::from_secs_f32(settings.combat_death_duration_secs).mul_f32(0.5)
+            + Duration::from_millis(1),
     ));
     app.update();
 
@@ -215,7 +217,7 @@ fn surplus_defenders_leave_one_response_pulse_and_one_bounded_target_reaction() 
         "presentation must not change one-claim combat damage",
     );
     assert_eq!(app.world().resource::<ActiveCombatPulses>().len(), 1);
-    let settings = *app.world().resource::<CombatPresentationSettings>();
+    let settings = app.world().resource::<Tuning>().presentation.clone();
     let target_visual = common::nanobot_visual_child(app.world(), target);
     let reaction = app
         .world()
@@ -224,7 +226,7 @@ fn surplus_defenders_leave_one_response_pulse_and_one_bounded_target_reaction() 
         .translation
         .truncate();
     assert!(reaction.length() > 0.0);
-    assert!(reaction.length() <= settings.recoil_distance + 0.001);
+    assert!(reaction.length() <= settings.combat_recoil_distance + 0.001);
     assert_ne!(
         app.world().get::<Sprite>(target_visual).unwrap().color,
         Color::WHITE,
@@ -300,9 +302,9 @@ fn real_support_structure_combat_flashes_in_place_and_recovers() {
         "real support-structure combat must not move its gameplay root",
     );
 
-    let settings = *app.world().resource::<CombatPresentationSettings>();
+    let settings = app.world().resource::<Tuning>().presentation.clone();
     app.insert_resource(TimeUpdateStrategy::ManualDuration(
-        settings.recovery_duration + Duration::from_millis(1),
+        Duration::from_secs_f32(settings.combat_recovery_duration_secs) + Duration::from_millis(1),
     ));
     app.update();
 
@@ -359,13 +361,14 @@ fn lethal_real_support_structure_combat_removes_gameplay_entity_while_effects_fi
     assert_eq!(ghost.victim.entity, structure);
     assert!(ghost.ring_radius > 0.0);
 
-    let settings = *app.world().resource::<CombatPresentationSettings>();
+    let settings = app.world().resource::<Tuning>().presentation.clone();
     app.insert_resource(TimeUpdateStrategy::ManualDuration(
-        settings.death_duration.mul_f32(0.5),
+        Duration::from_secs_f32(settings.combat_death_duration_secs).mul_f32(0.5),
     ));
     app.update();
     app.insert_resource(TimeUpdateStrategy::ManualDuration(
-        settings.death_duration.mul_f32(0.5) + Duration::from_millis(1),
+        Duration::from_secs_f32(settings.combat_death_duration_secs).mul_f32(0.5)
+            + Duration::from_millis(1),
     ));
     app.update();
 

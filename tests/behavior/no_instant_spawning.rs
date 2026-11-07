@@ -18,12 +18,10 @@
 //! `ProductionFacility`.
 
 use bevy::{math::Vec2, prelude::*};
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
-    nanobot::{
-        Charge, Charger, LOW_CHARGE_THRESHOLD, PRODUCTION_PRESSURE_TICKS, PlannedStructure,
-        ProductionFacility, SwarmId,
-    },
+    nanobot::{Charge, Charger, PlannedStructure, ProductionFacility, SwarmId},
     resources::Stockpile,
 };
 
@@ -278,7 +276,7 @@ fn production_demand_does_not_instant_spawn_completed_facility() {
     let cell = IVec2::new(0, 0);
     paint_owned(&mut app, cell, IntentKind::Build);
 
-    for _ in 0..PRODUCTION_PRESSURE_TICKS + 100 {
+    for _ in 0..Tuning::default().production.pressure_ticks + 100 {
         app.update();
         if planned_count(app.world_mut()) > 0 {
             break;
@@ -332,7 +330,7 @@ fn low_charge_need_does_not_instant_spawn_completed_charger() {
             .entity_mut(d)
             .get_mut::<Charge>()
             .expect("Defender has Charge")
-            .current = LOW_CHARGE_THRESHOLD;
+            .current = Tuning::default().charge.low_threshold;
         d
     };
 
@@ -431,7 +429,7 @@ fn all_demand_sources_share_zero_completed_structures() {
             .entity_mut(d)
             .get_mut::<Charge>()
             .expect("Defender has Charge")
-            .current = LOW_CHARGE_THRESHOLD;
+            .current = Tuning::default().charge.low_threshold;
         d
     };
 
@@ -482,14 +480,18 @@ fn scenario_seed_facility_remains_a_completed_production_facility() {
     // (the auto-creation system must not turn it into a
     // plan) and the seed's `current_target` must be set
     // because the production pick system saw the seed.
-    use top_down_2d_rts_prototype_nano_swarm::nanobot::PRODUCTION_COST_PER_BOT;
+
     let mut app = common::sim_app_with_production();
     let swarm_center = Vec2::new(0.0, 0.0);
     let _swarm = common::spawn_swarm_at(&mut app, swarm_center);
     paint_owned(&mut app, IVec2::ZERO, IntentKind::Build);
     let seed = common::spawn_facility_at(&mut app, _swarm, swarm_center);
-    let _stockpile =
-        common::spawn_stockpile(&mut app, swarm_center, PRODUCTION_COST_PER_BOT * 5, 1000);
+    let _stockpile = common::spawn_stockpile(
+        &mut app,
+        swarm_center,
+        Tuning::default().production.cost_per_bot * 5,
+        1000,
+    );
 
     app.update();
 
@@ -499,7 +501,8 @@ fn scenario_seed_facility_remains_a_completed_production_facility() {
         .get::<ProductionFacility>()
         .expect("scenario seed ProductionFacility must still be a completed facility, not a plan");
     assert!(
-        still_completed.is_busy() || still_completed.current_target.is_some(),
+        still_completed.is_busy(Tuning::default().production.ticks_per_bot)
+            || still_completed.current_target.is_some(),
         "scenario seed ProductionFacility must start producing on the first tick"
     );
     // No PlannedStructure of any kind was created for the

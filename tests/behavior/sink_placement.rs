@@ -2,8 +2,8 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        OwnerSwarm, PRODUCTION_COST_PER_BOT, PlannedKind, PlannedStructure, PlannedStructurePlugin,
-        PopulationDemandPlugin, ProductionFacility, ProductionPlugin, SwarmId,
+        OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructurePlugin, PopulationDemandPlugin,
+        ProductionFacility, ProductionPlugin, SwarmId,
     },
 };
 #[path = "../common/mod.rs"]
@@ -33,7 +33,9 @@ fn occupied_facility_build_cell_can_plan_its_local_sink() {
     let source = common::spawn_stockpile(
         &mut app,
         common::cell_world_center(IVec2::new(-2, 0)),
-        PRODUCTION_COST_PER_BOT,
+        top_down_2d_rts_prototype_nano_swarm::tuning::Tuning::default()
+            .production
+            .cost_per_bot,
         100,
     );
     app.world_mut()

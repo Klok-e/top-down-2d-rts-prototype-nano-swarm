@@ -19,10 +19,6 @@ use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
 use crate::resources::{ResourceDeposit, Stockpile, StockpileRole};
 use crate::structure_sprites::{StructureSprites, StructureVisual, StructureVisualState};
 
-/// Baseline worker-time ticks required to finish a planned structure.
-/// Automatic plans take the same shipped budget through [`GameplayPacing`].
-pub const DEFAULT_PLANNED_WORK_TICKS: u32 = 1_500;
-
 /// Local sprite size shared by planned and completed visuals. The aligned
 /// transform determines the physical whole-cell rectangle.
 pub const PLANNED_STRUCTURE_FOOTPRINT: f32 = crate::navigation::STRUCTURE_SPRITE_SIZE;
@@ -167,7 +163,7 @@ pub fn sink_stockpile_demand_system(
     access: super::construction_access::ConstructionAccess,
     grid: Res<IntentGrid>,
     structure_sprites: Res<StructureSprites>,
-    pacing: Res<crate::gameplay_pacing::GameplayPacing>,
+    tuning: Res<crate::tuning::Tuning>,
     planned: Query<(&PlannedStructure, &Transform, Option<&OwnerSwarm>)>,
     stockpiles: Query<(
         &Stockpile,
@@ -288,7 +284,7 @@ pub fn sink_stockpile_demand_system(
         newly_planned.push(placement_pos);
         let mut entity_commands = commands.spawn((
             PlannedStructure::new(PlannedKind::SinkStockpile, placement_cell)
-                .with_work_budget(pacing.construction_work_ticks),
+                .with_work_budget(tuning.construction.work_ticks),
             planned_visual_components(
                 PlannedKind::SinkStockpile,
                 &structure_sprites,
@@ -321,9 +317,6 @@ pub(crate) fn planned_visual_components(
         StructureVisual::planned(kind),
     )
 }
-
-/// Default capacity for completed Source and Sink Stockpiles.
-pub const DEFAULT_STOCKPILE_CAPACITY: u32 = 150;
 
 #[cfg(test)]
 mod tests {
@@ -362,7 +355,10 @@ mod tests {
         let p = PlannedStructure::new(PlannedKind::SourceStockpile, cell);
         assert_eq!(p.kind, PlannedKind::SourceStockpile);
         assert_eq!(p.cell, cell);
-        assert_eq!(p.available_work(), DEFAULT_PLANNED_WORK_TICKS);
+        assert_eq!(
+            p.available_work(),
+            crate::tuning::Tuning::default().construction.work_ticks
+        );
         assert!(p.can_accept_worker());
         assert!(!p.is_complete());
     }
@@ -415,8 +411,12 @@ mod tests {
     #[test]
     fn default_work_budget_matches_shipped_construction_duration() {
         // The default is the shipped automatic-construction duration.
-        const { assert!(DEFAULT_PLANNED_WORK_TICKS > 0) };
-        const { assert!(DEFAULT_PLANNED_WORK_TICKS <= 1_500) };
+        {
+            assert!(crate::tuning::Tuning::default().construction.work_ticks > 0)
+        };
+        {
+            assert!(crate::tuning::Tuning::default().construction.work_ticks <= 1_500)
+        };
     }
 
     #[test]

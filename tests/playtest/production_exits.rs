@@ -1,10 +1,10 @@
 //! Finished production competes for exterior space through real movement.
 use bevy::prelude::*;
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
-        Commitment, DirectMovementComponent, Nanobot, NanobotType, OwnerSwarm,
-        PRODUCTION_COST_PER_BOT, PRODUCTION_TICKS_PER_BOT, ProductionFacility, SwarmId,
-        SwarmMember, production_facility_work_system,
+        Commitment, DirectMovementComponent, Nanobot, NanobotType, OwnerSwarm, ProductionFacility,
+        SwarmId, SwarmMember, production_facility_work_system,
     },
     resources::{ResourceKind, ResourceLedger},
 };
@@ -24,7 +24,7 @@ fn both_swarms_release_paid_output_once_when_movement_opens_the_shared_exit() {
     ] {
         let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
         app.world_mut().entity_mut(swarm).insert(owner);
-        let remainder = minerals - PRODUCTION_COST_PER_BOT;
+        let remainder = minerals - Tuning::default().production.cost_per_bot;
         let mut facility = ProductionFacility::new();
         facility.input_amount = remainder;
         facility.current_target = Some(kind);
@@ -56,7 +56,7 @@ fn both_swarms_release_paid_output_once_when_movement_opens_the_shared_exit() {
             }
         }
     }
-    for _ in 0..PRODUCTION_TICKS_PER_BOT {
+    for _ in 0..Tuning::default().production.ticks_per_bot {
         app.update();
         assert_clear_bodies(app.world_mut());
     }
@@ -73,9 +73,9 @@ fn both_swarms_release_paid_output_once_when_movement_opens_the_shared_exit() {
     ] {
         let state = app.world().get::<ProductionFacility>(facility).unwrap();
         assert_eq!(state.current_target, Some(kind));
-        assert_eq!(state.progress, PRODUCTION_TICKS_PER_BOT);
+        assert_eq!(state.progress, Tuning::default().production.ticks_per_bot);
         assert_eq!(state.input_amount, remainder);
-        assert!(!state.is_busy());
+        assert!(!state.is_busy(Tuning::default().production.ticks_per_bot));
     }
     app.world_mut()
         .entity_mut(opening.unwrap())

@@ -14,10 +14,11 @@ use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::{CameraZoom2d, FlyCamera2d, set_camera_view},
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Charge, Commitment, DEFENDER_ATTACK_RANGE, DefenderResponse, DirectMovementComponent,
-        Health, Nanobot, NanobotType, OpponentSwarm, StrategicController, Swarm, SwarmId,
-        SwarmMember, TerritorySnapshot, VelocityComponent, world_to_cell,
+        Charge, Commitment, DefenderResponse, DirectMovementComponent, Health, Nanobot,
+        NanobotType, OpponentSwarm, StrategicController, Swarm, SwarmId, SwarmMember,
+        TerritorySnapshot, VelocityComponent, world_to_cell,
     },
+    tuning::Tuning,
 };
 
 use crate::harness::{TestContext, TestFlow, clear_nanobots_and_sprite_entities};
@@ -426,7 +427,7 @@ fn assert_response_tracks(
         .get::<DirectMovementComponent>(responder)
         .expect("the responding Defender should track its target");
     assert!(movement.xy.distance(target_position) <= 1e-4);
-    assert!((movement.stop_radius - DEFENDER_ATTACK_RANGE).abs() <= 1e-4);
+    assert!((movement.stop_radius - Tuning::default().combat.attack_range).abs() <= 1e-4);
 
     let territory = world.resource::<TerritorySnapshot>();
     assert_eq!(

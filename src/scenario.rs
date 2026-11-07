@@ -175,6 +175,7 @@ fn spawn_player_scenario(
     grid: &mut IntentGrid,
     reachability: &SwarmReachabilityMap,
     setup: LayoutSetup,
+    tuning: &crate::tuning::Tuning,
 ) -> Result<(), ReachabilitySetupError> {
     paint_economy(
         grid,
@@ -219,13 +220,14 @@ fn spawn_player_scenario(
             (NanobotType::Hauler, PLAYER_START_HAULERS),
             (NanobotType::Defender, PLAYER_START_DEFENDERS),
         ],
+        tuning,
     );
 
     spawn_deposit(commands, Some(swarm), deposit_pos);
     for cell in setup.neutral_deposits {
         spawn_deposit(commands, None, cell_origin(cell));
     }
-    spawn_production_facility(commands, swarm, facility_pos, &facility_texture);
+    spawn_production_facility(commands, swarm, facility_pos, &facility_texture, tuning);
     Ok(())
 }
 
@@ -241,6 +243,7 @@ fn spawn_opponent_scenario(
     reachability: &SwarmReachabilityMap,
     opponent_swarm_id: SwarmId,
     setup: LayoutSetup,
+    tuning: &crate::tuning::Tuning,
 ) -> Result<(), ReachabilitySetupError> {
     let home = LayoutSetup::opposite(setup.home);
     let deposit = LayoutSetup::opposite(setup.home_deposit);
@@ -278,10 +281,11 @@ fn spawn_opponent_scenario(
             (NanobotType::Hauler, OPPONENT_START_HAULERS),
             (NanobotType::Defender, OPPONENT_START_DEFENDERS),
         ],
+        tuning,
     );
 
     spawn_deposit(commands, Some(opponent), deposit_pos);
-    spawn_production_facility(commands, opponent, facility_pos, &facility_texture);
+    spawn_production_facility(commands, opponent, facility_pos, &facility_texture, tuning);
     Ok(())
 }
 
@@ -298,6 +302,7 @@ fn spawn_seed_nanobots(
     outward: f32,
     swarm_id: SwarmId,
     seeds: &[(NanobotType, u32)],
+    tuning: &crate::tuning::Tuning,
 ) {
     let mut index = 0;
     for (kind, count) in seeds {
@@ -314,7 +319,7 @@ fn spawn_seed_nanobots(
                     nanobot_type: *kind,
                     velocity: VelocityComponent::default(),
                     ai_state: AiStateComponent::new(),
-                    health: Health::default(),
+                    health: Health::with_tuning(tuning),
                     swarm_member: SwarmMember::new(swarm_id),
                 },
                 Commitment::Idle,
@@ -348,9 +353,10 @@ fn spawn_production_facility(
     owner: Entity,
     world_pos: Vec2,
     texture: &Handle<Image>,
+    tuning: &crate::tuning::Tuning,
 ) {
     commands.spawn((
-        ProductionFacility::new(),
+        ProductionFacility::with_tuning(tuning),
         ProcessingFacility {},
         crate::structure_sprites::StructureVisual::completed(
             crate::nanobot::PlannedKind::ProductionFacility,
@@ -416,7 +422,7 @@ impl Plugin for ScenarioPlugin {
             .init_resource::<crate::session::SessionRules>()
             .init_resource::<crate::session::SimulationSeed>()
             .init_resource::<AiBattleConfig>()
-            .init_resource::<crate::gameplay_pacing::GameplayPacing>()
+            .init_resource::<crate::tuning::Tuning>()
             .add_systems(PreStartup, configure_session)
             .add_systems(
                 PostStartup,
@@ -430,14 +436,8 @@ impl Plugin for ScenarioPlugin {
 fn configure_session(
     selection: Res<crate::scenario_selection::ScenarioSelection>,
     mut rules: ResMut<crate::session::SessionRules>,
-    mut pacing: ResMut<crate::gameplay_pacing::GameplayPacing>,
 ) {
     *rules = session_rules(selection.current);
-    *pacing = gameplay_pacing();
-}
-
-pub(crate) fn gameplay_pacing() -> crate::gameplay_pacing::GameplayPacing {
-    crate::gameplay_pacing::GameplayPacing::default()
 }
 
 pub(crate) fn session_rules(
@@ -453,6 +453,7 @@ pub fn spawn_selected_scenario(
     grid: &mut IntentGrid,
     mut ids: ResMut<crate::nanobot::OpponentSwarmIdAlloc>,
     layout: AiBattleLayout,
+    tuning: &crate::tuning::Tuning,
 ) -> Result<SwarmReachabilityMap, ReachabilitySetupError> {
     let layout = if scenario == crate::scenario_selection::Scenario::AiBattle {
         layout
@@ -491,7 +492,7 @@ pub fn spawn_selected_scenario(
         );
     }
     map::spawn_terrain_geometry(commands, terrain);
-    spawn_player_scenario(commands, assets, grid, &reachability, setup)?;
+    spawn_player_scenario(commands, assets, grid, &reachability, setup, tuning)?;
     if scenario.definition().opponent {
         spawn_opponent_scenario(
             commands,
@@ -500,6 +501,7 @@ pub fn spawn_selected_scenario(
             &reachability,
             opponent.expect("opponent scenario allocated an opponent swarm"),
             setup,
+            tuning,
         )?;
     } else {
         spawn_sandbox_resources(commands);

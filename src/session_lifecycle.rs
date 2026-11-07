@@ -147,15 +147,15 @@ fn populate_session(
     }
     let ai_battle = world.resource::<crate::ai_battle::AiBattleConfig>().clone();
     world.insert_resource::<SessionRules>(crate::scenario::session_rules(scenario));
-    world.insert_resource(crate::scenario::gameplay_pacing());
     world.insert_resource(crate::strategic_runtime::ControllerTelemetry::default());
     let mut state = SystemState::<(
         Commands,
         Res<AssetServer>,
         ResMut<IntentGrid>,
         ResMut<OpponentSwarmIdAlloc>,
+        Res<crate::tuning::Tuning>,
     )>::new(world);
-    let (mut commands, assets, mut grid, ids) = state.get_mut(world);
+    let (mut commands, assets, mut grid, ids, tuning) = state.get_mut(world);
     let reachability = crate::scenario::spawn_selected_scenario(
         scenario,
         &mut commands,
@@ -163,6 +163,7 @@ fn populate_session(
         &mut grid,
         ids,
         ai_battle.layout,
+        &tuning,
     )?;
     state.apply(world);
     world.insert_resource(reachability);

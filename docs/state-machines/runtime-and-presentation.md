@@ -17,6 +17,18 @@
 
 Owners are `ScenarioMenuPlugin`, `menu_keyboard`, `menu_actions`, and `synchronize_pause`. [Menu implementation](../../src/ui/scenario_menu.rs), [camera input](../../src/fly_camera/camera_move.rs), [menu playtests](../../tests/playtest/scenario_menu.rs)
 
+## Live tuning publication and editor
+
+`TuningStore` owns the selected file path; `Tuning`, `TuningRevision`, and `TuningJournal` retain the published configuration, process revision, and accepted edit history. Startup strictly loads and validates the complete RON file before scenario construction. The default path is project-root `config/balance.ron`; `--tuning-file` overrides it.
+
+- An edit validates a candidate against field bounds, native-unit representation, and cross-field relationships. An unchanged candidate returns the current revision.
+- A changed candidate writes and syncs a separate temporary file, then atomically renames it into place. Failure removes the temporary file and leaves published values, revision, and journal intact.
+- Successful persistence publishes the candidate, increments the revision, appends the current simulation tick and displayed old/new values, and synchronously runs reconciliation hooks. Hooks update all swarms. Scenario replacement retains the store, configuration, revision, journal, and editor.
+- `TuningEditor` retains visibility, expanded groups, focused field, raw text, caret/selection, errors, and input-capture flags. F2 toggles visibility. Group activation toggles expansion; collapsing a focused group releases focus. Each numeric text change or Up/Down step attempts publication immediately. Rejected raw text remains visible with a field error; a successful edit clears that error.
+- Focus captures keyboard input, including the frame that releases it. Escape releases focus first; without focus it reaches the scenario menu. Pointer input over the open panel is captured and scrolls its contents. The panel itself leaves virtual time running; the scenario menu hides it and supplies the pause boundary. Closing the panel releases focus and pointer capture while retaining expansion and field text/error state.
+
+Owners are [tuning publication and storage](../../src/tuning.rs), [field metadata](../../src/tuning/values.rs), and [panel](../../src/ui/tuning_panel.rs). Verification covers [storage tests](../../src/tuning.rs), [agent tuning](../../tests/behavior/agent_tuning.rs), [panel playtests](../../tests/playtest/tuning_panel.rs), and [panel screenshots](../../screenshots/tuning_panel.rs).
+
 ## Scenario selection and replacement
 
 `ScenarioSelection.current` identifies the running Scenario. `next_launch` records the saved choice, and `error` retains a failed selection or start result. Loading uses the saved value when available. A CLI Scenario can override the current launch.
@@ -45,7 +57,7 @@ Owners are `ScenarioSelection` and `SessionLifecyclePlugin`. [Selection persiste
 `Controller` owns `PlannerState`. Its optional current plan, review tick, work-window start, and accumulated budget encode initial selection, retained execution, scheduled review, urgent review, and budget deferral. `Objective` explicitly names the plan's objective.
 
 - Each decision opens or resumes a bounded review work window. Validation checks the incumbent's deposit, support, attack obligations, and reachability. Exhaustion retains the incumbent and defers additional work.
-- Regular reviews occur at the configured review period. Invalidated obligations can trigger earlier review. Between reviews a viable plan remains active.
+- Regular reviews use the current `autonomy.controller_review_period_ticks` against the retained last-review tick; changing it does not reset the incumbent or accumulated bounded work window. Invalidated obligations can trigger earlier review. Between reviews a viable plan remains active.
 - Candidate scoring retains a viable incumbent unless an alternative clears the switching margin. Materialization must finish a coordinated plan within the allowance before replacing it and emitting owned-intent edits.
 - `retained_covered_movement` and `covered_stall_grace_used` form an attack submachine. Moving or progressing attacks inside existing owned Defend coverage can retain the plan. Progress resets grace. One stalled review can consume grace, and later stalled review permits reassessment. Losing coverage can invalidate the retained attack.
 - Terminal Match Outcome stops the runtime adapter from calling the planner. A fresh Scenario installs fresh controllers and telemetry.
@@ -67,6 +79,7 @@ Owner is `intent_edits` with cursors held by `PlannerState`. [Cleanup](../../src
 `RunStatus` explicitly stores in-progress, completed, or interrupted. `BattleRun` presence, its optional error, frozen `BattleCounters`, next sample time, and timing buffers add collection and persistence phases.
 
 - `start_session` creates recording only when the Scenario requests it. Successful creation installs fresh counters. Creation failure requests error exit.
+- Schema 6 snapshots native-unit tuning at battle start and remembers the journal offset and simulation start tick. Collection appends subsequent accepted edits with ticks relative to that battle, excluding previous-session edits. A replacement battle takes a fresh snapshot.
 - Fixed ticks collect timing and first observed elimination ticks. Sampling writes factual state at simulation-time boundaries. Frame timing has a separate first-frame baseline and follows recording configuration.
 - A terminal Match Outcome sets completed status, records the outcome, freezes counters, and writes the terminal sample. Successful headless completion requests normal exit.
 - `finish_session` marks an active run interrupted and freezes counters before replacement. A failed write retains the run and error for another start attempt. A successful retry clears the error and permits replacement.
@@ -143,6 +156,8 @@ Resolved fixed-step combat facts create frame-driven effects. First-frame flags 
 | Pulses and decorations | Facts append entries with first-frame and elapsed state. Duration expiry removes entries. Decorations also evict older entries at the configured bound. |
 | Nanobot and structure death ghosts | Resolved death creates a detached visual snapshot. Time shrinks/fades the Nanobot or expands/fades the structure ring, then removes the entry. The gameplay victim can already be gone. |
 | Cancelled-plan visual | A presentation-only entity retains elapsed ticks and initial scale. It holds briefly, then shrinks/fades and despawns. It has no reservation or collision identity. |
+
+Accepted presentation edits retime active poses, structure flashes, pulses, decorations, and death ghosts by preserving elapsed lifetime fraction. Camera sensitivity updates acceleration, maximum speed, friction, and zoom speed; velocity is clamped to the new maximum while position and zoom remain unchanged. [Effect reconciliation](../../src/nanobot/combat_presentation.rs), [camera reconciliation](../../src/fly_camera.rs), [presentation tuning tests](../../tests/behavior/presentation_tuning.rs).
 
 Combat zoom suppression hides effects while their lifetimes continue advancing. Session reset clears active resource effects and queued facts, and session entity teardown removes visual components and cancellation residue. [Combat effects](../../src/nanobot/combat_presentation.rs), [cancelled-plan effect](../../src/structure_overlay.rs), [combat presentation ADR](../adr/0014-combat-presentation-follows-resolved-combat.md), [presentation tests](../../tests/behavior/combat_presentation.rs)
 

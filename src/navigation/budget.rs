@@ -384,7 +384,11 @@ impl Navigation {
         let mut open = BinaryHeap::new();
         let mut costs = HashMap::new();
         let mut previous = HashMap::new();
-        let scale = if hauler { 0.35 } else { 1.0 };
+        let scale = if hauler {
+            grid.corridor_cost_multiplier
+        } else {
+            1.0
+        };
         for &c in &starts {
             WorkUnit::new().await;
             if let Some(region) = self.async_region(c).await {
@@ -651,11 +655,13 @@ pub(super) struct Scheduler {
     work: NavigationWork,
     paint: Arc<PaintCosts>,
     paint_revision: Option<u64>,
+    corridor_cost_multiplier: Option<f32>,
     access_cached: HashMap<(u64, u64), (RouteRequestId, u64)>,
     connectivity_cached: HashMap<String, (RouteRequestId, u64)>,
 }
 #[derive(Default)]
 struct PaintCosts {
+    corridor_cost_multiplier: f32,
     corridor_swarms: HashSet<SwarmId>,
     cells: HashMap<IVec2, crate::intent::IntentCell>,
 }
@@ -666,6 +672,19 @@ impl PaintCosts {
 }
 
 impl Navigation {
+    pub fn set_corridor_cost_multiplier(&mut self, multiplier: f32) {
+        let mut scheduler = self
+            .scheduler
+            .lock()
+            .expect("navigation scheduler poisoned");
+        if scheduler.corridor_cost_multiplier == Some(multiplier) {
+            return;
+        }
+        scheduler.corridor_cost_multiplier = Some(multiplier);
+        scheduler.paint_revision = None;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
     pub fn request(
         &self,
         start: Vec2,
@@ -771,6 +790,11 @@ impl Navigation {
         let tick = scheduler.tick;
         if scheduler.paint_revision != Some(grid.revision()) {
             scheduler.paint = Arc::new(PaintCosts {
+                corridor_cost_multiplier: scheduler.corridor_cost_multiplier.unwrap_or_else(|| {
+                    crate::tuning::Tuning::default()
+                        .logistics
+                        .corridor_cost_multiplier
+                }),
                 corridor_swarms: grid
                     .iter_active_cells()
                     .flat_map(|(_, cell)| cell.owners(IntentKind::Corridor))
@@ -1017,7 +1041,7 @@ impl Navigation {
                 .cell(world_to_cell(Self::center(cell)))
                 .is_some_and(|c| c.has_owned(IntentKind::Corridor, swarm))
         {
-            0.35
+            grid.corridor_cost_multiplier
         } else {
             1.0
         }
@@ -1068,6 +1092,16 @@ impl Navigation {
         hauler: bool,
     ) -> RouteOutcome {
         let paint = PaintCosts {
+            corridor_cost_multiplier: self
+                .scheduler
+                .lock()
+                .unwrap()
+                .corridor_cost_multiplier
+                .unwrap_or_else(|| {
+                    crate::tuning::Tuning::default()
+                        .logistics
+                        .corridor_cost_multiplier
+                }),
             corridor_swarms: grid
                 .iter_active_cells()
                 .flat_map(|(_, cell)| cell.owners(IntentKind::Corridor))

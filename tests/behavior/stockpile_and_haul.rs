@@ -5,12 +5,12 @@
 //! selection, bulk load, physical delivery, and ledger conservation.
 
 use bevy::{math::Vec2, prelude::*};
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        DirectMovementComponent, HAULER_CARRY_CAPACITY, HaulerAssignment, HaulerLoad,
-        LogisticsReservation, OwnerSwarm, ProductionFacility, Swarm, SwarmId,
-        WORKER_CARRY_CAPACITY,
+        DirectMovementComponent, HaulerAssignment, HaulerLoad, LogisticsReservation, OwnerSwarm,
+        ProductionFacility, Swarm, SwarmId,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile, StockpileRole},
 };
@@ -239,8 +239,18 @@ fn hauler_load_is_much_larger_than_worker_load() {
     // tuning pass cannot accidentally bring them closer together.
     // Const blocks turn the checks into compile-time invariants
     // and dodge clippy's "assertion on a constant" lint.
-    const { assert!(HAULER_CARRY_CAPACITY > WORKER_CARRY_CAPACITY) };
-    const { assert!(HAULER_CARRY_CAPACITY >= 5 * WORKER_CARRY_CAPACITY) };
+    {
+        assert!(
+            Tuning::default().logistics.hauler_carry_capacity
+                > Tuning::default().logistics.worker_carry_capacity
+        )
+    };
+    {
+        assert!(
+            Tuning::default().logistics.hauler_carry_capacity
+                >= 5 * Tuning::default().logistics.worker_carry_capacity
+        )
+    };
 }
 
 #[test]
@@ -266,7 +276,7 @@ fn hauler_delivers_full_load_to_sink() {
         },
         HaulerLoad {
             kind: ResourceKind::Minerals,
-            amount: HAULER_CARRY_CAPACITY,
+            amount: Tuning::default().logistics.hauler_carry_capacity,
         },
     ));
 
@@ -280,7 +290,8 @@ fn hauler_delivers_full_load_to_sink() {
 
     let sink = app.world().entity(sink_entity).get::<Stockpile>().unwrap();
     assert_eq!(
-        sink.amount, HAULER_CARRY_CAPACITY,
+        sink.amount,
+        Tuning::default().logistics.hauler_carry_capacity,
         "sink receives the full load through gradual unloading",
     );
     assert!(app.world().get::<HaulerLoad>(hauler).is_none());

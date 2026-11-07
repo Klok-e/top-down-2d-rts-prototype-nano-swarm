@@ -1,6 +1,6 @@
 use crate::resources::{ResourceKind, StockpileRole};
 
-use super::{Cargo, HAULER_CARRY_CAPACITY, PRODUCTION_COST_PER_BOT, SwarmId};
+use super::{Cargo, SwarmId};
 
 #[derive(Clone, Copy)]
 pub(super) enum DestinationRole {
@@ -54,6 +54,7 @@ impl Destination {
             }
         };
         valid_tier
+            && cargo.amount > 0
             && self.accepts(owner, cargo.kind)
             && unclaimed_space(self.free_space, incoming) >= cargo.amount
     }
@@ -82,10 +83,12 @@ impl PickupBuffer {
         source_claims: u32,
         incoming: u32,
         charger_demand: Option<(u8, u32)>,
+        hauler_capacity: u32,
+        production_cost: u32,
     ) -> PickupQuote {
         let unclaimed_space =
             unclaimed_space(self.capacity.saturating_sub(self.buffered), incoming);
-        let mut amount = HAULER_CARRY_CAPACITY
+        let mut amount = hauler_capacity
             .min(source_amount.saturating_sub(source_claims))
             .min(unclaimed_space);
         let base_urgency = match self.role {
@@ -94,7 +97,7 @@ impl PickupBuffer {
                     .buffered
                     .saturating_add(incoming)
                     .saturating_add(amount)
-                    >= PRODUCTION_COST_PER_BOT =>
+                    >= production_cost =>
             {
                 3
             }

@@ -3,8 +3,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::IntentGrid,
     nanobot::{
         AllocationClock, Charge, ChargerAssignment, DirectMovementComponent, HaulerAssignment,
-        InteractionRegion, LogisticsReservation, OwnerSwarm, PRODUCTION_COST_PER_BOT,
-        ProductionFacility, RegionalAllocationWake, RegionalLease, TerminalDemandAges,
+        InteractionRegion, LogisticsReservation, OwnerSwarm, ProductionFacility,
+        RegionalAllocationWake, RegionalLease, TerminalDemandAges,
     },
     navigation::{ConnectivityStatus, Navigation, RouteGoal},
     navigation_runtime::NavigationBudget,
@@ -64,7 +64,12 @@ fn terminal_priority_stays_promoted_across_the_waiting_age_boundary() {
 
         let owner = *app.world().get::<OwnerSwarm>(source).unwrap();
         let mut facility = ProductionFacility::new();
-        facility.input_amount = PRODUCTION_COST_PER_BOT - 10;
+        facility.input_amount = app
+            .world()
+            .resource::<top_down_2d_rts_prototype_nano_swarm::tuning::Tuning>()
+            .production
+            .cost_per_bot
+            - 10;
         let newest = app
             .world_mut()
             .spawn((facility, owner, Transform::from_xyz(200.0, 120.0, 0.0)))

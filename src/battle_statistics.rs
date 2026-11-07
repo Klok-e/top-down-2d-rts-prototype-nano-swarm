@@ -2,13 +2,13 @@
 
 use crate::{
     ai_battle::AiBattleConfig,
-    gameplay_pacing::GameplayPacing,
     nanobot::{
         MatchOutcome, Nanobot, NanobotType, Swarm, SwarmEliminationSet, SwarmEliminationState,
         SwarmId, SwarmMember,
     },
     session::SessionRules,
     strategic_runtime::{ControllerProfile, ControllerTelemetry},
+    tuning::{Tuning, TuningEdit, TuningJournal},
 };
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -103,6 +103,8 @@ impl Plugin for BattleStatisticsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BattleStatisticsConfig>()
             .init_resource::<SessionRules>()
+            .init_resource::<Tuning>()
+            .init_resource::<TuningJournal>()
             .add_message::<AppExit>()
             .add_systems(
                 PostStartup,
@@ -197,7 +199,8 @@ pub struct BattleSummary {
     pub code_revision: String,
     pub dirty_worktree: bool,
     pub ai_battle: AiBattleConfig,
-    pub gameplay_pacing: GameplayPacing,
+    pub tuning: Tuning,
+    pub tuning_edits: Vec<TuningEdit>,
     pub status: RunStatus,
     pub outcome: Option<String>,
     pub samples: u64,
@@ -218,6 +221,8 @@ pub struct BattleRun {
     csv: BufWriter<File>,
     tick_start: Instant,
     ticks: u64,
+    tuning_journal_offset: usize,
+    tuning_start_tick: u64,
     elimination_ticks: BTreeMap<SwarmId, u64>,
     next_sample_seconds: f64,
     tick_samples: Vec<f64>,
@@ -240,16 +245,17 @@ pub(crate) fn start_session(world: &mut World) {
         .get_resource::<AiBattleConfig>()
         .cloned()
         .unwrap_or_default();
-    let gameplay_pacing = world
-        .get_resource::<GameplayPacing>()
-        .cloned()
-        .unwrap_or_default();
+    let tuning = world.resource::<Tuning>().clone();
     let result = create_run(
         &config,
         ai_battle,
-        gameplay_pacing,
+        tuning,
         world.resource::<Time<Fixed>>().timestep().as_secs_f64(),
         world.resource::<SessionRules>().scenario_name,
+        world
+            .get_resource::<TuningJournal>()
+            .map_or(0, |journal| journal.entries.len()),
+        crate::tuning::fixed_tick(world),
     );
     match result {
         Ok(run) => {
@@ -307,9 +313,11 @@ pub(crate) fn finish_session(world: &mut World) -> bool {
 fn create_run(
     config: &BattleStatisticsConfig,
     ai_battle: AiBattleConfig,
-    gameplay_pacing: GameplayPacing,
+    tuning: Tuning,
     timestep_seconds: f64,
     scenario_name: &str,
+    tuning_journal_offset: usize,
+    tuning_start_tick: u64,
 ) -> io::Result<BattleRun> {
     fs::create_dir_all(&config.output_root)?;
     let stamp = SystemTime::now()
@@ -330,7 +338,7 @@ fn create_run(
         "simulation_seconds,fixed_tick,swarm,population,workers,haulers,defenders,births,deaths,minerals_gathered,minerals_consumed,structures_built,structures_lost,effective_damage_total,effective_damage_nanobots,effective_damage_structures,elimination_seconds,tick_count,tick_mean_ms,tick_p50_ms,tick_p95_ms,tick_p99_ms,tick_max_ms,frame_count,frame_mean_ms,frame_p95_ms,frame_max_ms,controller_reviews,controller_intent_edits,controller_work_units,controller_last_explanation"
     )?;
     let summary = BattleSummary {
-        schema_version: 5,
+        schema_version: 6,
         scenario: scenario_name.into(),
         seed: config.seed,
         timestep_seconds,
@@ -339,7 +347,8 @@ fn create_run(
         code_revision: env!("NANO_SWARM_CODE_REVISION").into(),
         dirty_worktree: env!("NANO_SWARM_DIRTY_WORKTREE") == "true",
         ai_battle,
-        gameplay_pacing,
+        tuning,
+        tuning_edits: Vec::new(),
         status: RunStatus::InProgress,
         outcome: None,
         samples: 0,
@@ -352,6 +361,8 @@ fn create_run(
         csv,
         tick_start: Instant::now(),
         ticks: 0,
+        tuning_journal_offset,
+        tuning_start_tick,
         elimination_ticks: BTreeMap::new(),
         next_sample_seconds: 1.,
         tick_samples: Vec::with_capacity(64),
@@ -453,6 +464,18 @@ fn start_tick(mut run: ResMut<BattleRun>) {
 }
 
 fn snapshot(world: &mut World, run: &mut BattleRun) -> BattleSample {
+    if let Some(journal) = world.get_resource::<TuningJournal>() {
+        run.summary.tuning_edits.extend(
+            journal.entries[run.tuning_journal_offset..]
+                .iter()
+                .cloned()
+                .map(|mut edit| {
+                    edit.fixed_tick = edit.fixed_tick.saturating_sub(run.tuning_start_tick);
+                    edit
+                }),
+        );
+        run.tuning_journal_offset = journal.entries.len();
+    }
     let mut swarms = BTreeMap::new();
     for id in world.query_filtered::<&SwarmId, With<Swarm>>().iter(world) {
         swarms.insert(

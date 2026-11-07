@@ -56,6 +56,15 @@ impl RegionalLease {
         }
     }
 
+    pub(crate) fn rescale_deadline(&mut self, now_tick: u64, old_ttl: u64, new_ttl: u64) {
+        let remaining = self.expires_at_tick.saturating_sub(now_tick);
+        let scaled = u128::from(remaining)
+            .saturating_mul(u128::from(new_ttl.max(1)))
+            .div_ceil(u128::from(old_ttl.max(1)))
+            .min(u128::from(u64::MAX)) as u64;
+        self.expires_at_tick = now_tick.saturating_add(scaled);
+    }
+
     pub fn progress_checkpoint(self) -> u64 {
         self.progress_checkpoint
     }
@@ -93,20 +102,6 @@ impl RegionalLease {
         if distance + 0.001 < travel.best_distance && distance < start.distance(travel.waypoint) {
             travel.best_distance = distance;
             self.progress = self.progress.saturating_add(1);
-        }
-    }
-}
-
-/// No-progress lifetime measured in allocation ticks.
-#[derive(Debug, Clone, Copy, Resource, PartialEq, Eq)]
-pub struct RegionalLeaseConfig {
-    pub no_progress_ttl_ticks: u64,
-}
-
-impl Default for RegionalLeaseConfig {
-    fn default() -> Self {
-        Self {
-            no_progress_ttl_ticks: 30,
         }
     }
 }
@@ -160,7 +155,7 @@ pub fn projection_supports_lease(projection: &ActionableProjection, lease: &Regi
 pub fn maintain_regional_leases_system(
     mut commands: Commands,
     clock: Res<AllocationClock>,
-    config: Res<RegionalLeaseConfig>,
+    tuning: Res<crate::tuning::Tuning>,
     projection: Res<ActionableProjection>,
     access: WorkAccess,
     bodies: Query<&Transform, (With<SwarmMember>, With<NanobotType>)>,
@@ -210,7 +205,7 @@ pub fn maintain_regional_leases_system(
             clock.tick(),
             observed_progress,
             supported,
-            config.no_progress_ttl_ticks,
+            tuning.autonomy.lease_no_progress_ttl_ticks,
         );
         if decision != LeaseDecision::Keep {
             let category = lease.category;

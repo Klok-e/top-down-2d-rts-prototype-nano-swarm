@@ -1,11 +1,12 @@
 //! Focused behavior coverage for gradual, ledger-neutral hauler pickup.
 
 use bevy::{math::Vec2, prelude::*};
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
-        Cargo, Charger, DirectMovementComponent, HAULER_TRANSFER_PER_PULSE, HaulerAssignment,
-        LogisticsReservation, MATERIAL_WORK_TICKS_PER_UNIT, OwnerSwarm, ProductionFacility,
-        SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, SwarmId,
+        Cargo, Charger, DirectMovementComponent, HaulerAssignment, LogisticsReservation,
+        OwnerSwarm, ProductionFacility, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure,
+        StructureKind, SwarmId,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile, StockpileRole},
 };
@@ -14,7 +15,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
 mod common;
 
 fn complete_material_work_interval(app: &mut App) {
-    for _ in 0..MATERIAL_WORK_TICKS_PER_UNIT {
+    for _ in 0..Tuning::default().logistics.material_work_ticks {
         app.update();
     }
 }
@@ -95,8 +96,14 @@ fn hauler_reserves_partial_terminal_load_then_picks_it_up_gradually() {
         .get::<Cargo>()
         .expect("loading creates explicit hauler cargo");
     assert_eq!(cargo.kind, ResourceKind::Minerals);
-    assert_eq!(cargo.amount, HAULER_TRANSFER_PER_PULSE);
-    assert_eq!(stockpile_amount, source_amount - HAULER_TRANSFER_PER_PULSE);
+    assert_eq!(
+        cargo.amount,
+        Tuning::default().logistics.hauler_transfer_per_pulse
+    );
+    assert_eq!(
+        stockpile_amount,
+        source_amount - Tuning::default().logistics.hauler_transfer_per_pulse
+    );
     let remaining_claim = app
         .world()
         .entity(hauler)
@@ -104,7 +111,7 @@ fn hauler_reserves_partial_terminal_load_then_picks_it_up_gradually() {
         .expect("reservation remains throughout gradual loading");
     assert_eq!(
         remaining_claim.source_remaining,
-        source_amount - HAULER_TRANSFER_PER_PULSE,
+        source_amount - Tuning::default().logistics.hauler_transfer_per_pulse,
         "physical pickup releases only the transferred source claim",
     );
     assert_eq!(
@@ -258,7 +265,7 @@ fn simultaneous_hauler_unloads_into_stockpile_conserve_all_cargo() {
         }
     }
 
-    let delivered = HAULER_TRANSFER_PER_PULSE * haulers.len() as u32;
+    let delivered = Tuning::default().logistics.hauler_transfer_per_pulse * haulers.len() as u32;
     assert_eq!(
         app.world().entity(sink).get::<Stockpile>().unwrap().amount,
         3 + delivered,
@@ -314,13 +321,13 @@ fn simultaneous_haulers_unload_against_exact_independent_reservations() {
 
     assert_eq!(
         app.world().entity(sink).get::<Stockpile>().unwrap().amount,
-        HAULER_TRANSFER_PER_PULSE * haulers.len() as u32,
+        Tuning::default().logistics.hauler_transfer_per_pulse * haulers.len() as u32,
         "completed same-tick deliveries release capacity for later reserved Haulers",
     );
     for hauler in haulers {
         assert_eq!(
             app.world().entity(hauler).get::<Cargo>().unwrap().amount,
-            10 - HAULER_TRANSFER_PER_PULSE,
+            10 - Tuning::default().logistics.hauler_transfer_per_pulse,
         );
     }
 }
@@ -375,7 +382,7 @@ fn hauler_unloads_into_facility_gradually() {
             .get::<ProductionFacility>()
             .unwrap()
             .input_amount,
-        HAULER_TRANSFER_PER_PULSE,
+        Tuning::default().logistics.hauler_transfer_per_pulse,
     );
     assert_eq!(app.world().entity(hauler).get::<Cargo>().unwrap().amount, 9);
 }
@@ -417,7 +424,7 @@ fn hauler_unloads_into_charger_gradually() {
 
     assert_eq!(
         app.world().entity(sink).get::<Charger>().unwrap().amount,
-        HAULER_TRANSFER_PER_PULSE,
+        Tuning::default().logistics.hauler_transfer_per_pulse,
     );
     assert_eq!(app.world().entity(hauler).get::<Cargo>().unwrap().amount, 9);
 }

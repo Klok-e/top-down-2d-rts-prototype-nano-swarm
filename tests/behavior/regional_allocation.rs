@@ -9,11 +9,11 @@ use top_down_2d_rts_prototype_nano_swarm::{
         ExtractProgress, GatherAssignment, InteractionRegion, LeaseDecision, LogisticsReservation,
         MaterialWorkProgress, Nanobot, NanobotSimulationSet, OpportunityCategory,
         OpportunityTarget, PlannedKind, PlannedStructure, PlannedStructureProgress,
-        REGIONAL_FAIRNESS_PROMOTION_TICKS, RUNTIME_MAX_CANDIDATES, ReassignmentPolicy,
-        RegionalLease, RegionalLeaseConfig, RegionalPressure, SwarmId, WorkBlocked,
-        allocate_category_budget, allocate_regional_candidates, choose_bounded_candidate,
-        choose_bounded_candidate_with_claims, evaluate_lease, maintain_regional_leases_system,
-        outward_pull_budget, project_actionable_opportunities_system, region_fairness_sort_key,
+        RUNTIME_MAX_CANDIDATES, ReassignmentPolicy, RegionalLease, RegionalPressure, SwarmId,
+        WorkBlocked, allocate_category_budget, allocate_regional_candidates,
+        choose_bounded_candidate, choose_bounded_candidate_with_claims, evaluate_lease,
+        maintain_regional_leases_system, outward_pull_budget,
+        project_actionable_opportunities_system, region_fairness_sort_key,
         worker_planned_structure_work_system,
     },
     resources::ResourceKind,
@@ -277,7 +277,7 @@ fn unsupported_opportunity_revokes_lease_in_the_same_app_update() {
         .init_resource::<top_down_2d_rts_prototype_nano_swarm::navigation::Navigation>()
         .init_resource::<ActionableProjection>()
         .init_resource::<AllocationClock>()
-        .init_resource::<RegionalLeaseConfig>()
+        .init_resource::<top_down_2d_rts_prototype_nano_swarm::tuning::Tuning>()
         .add_systems(
             Update,
             (
@@ -357,8 +357,10 @@ fn movement_toward_the_work_site_renews_the_lease() {
     let mut app = common::sim_app_with_movement();
     app.init_resource::<ActionableProjection>()
         .init_resource::<AllocationClock>()
-        .insert_resource(RegionalLeaseConfig {
-            no_progress_ttl_ticks: 2,
+        .insert_resource({
+            let mut tuning = top_down_2d_rts_prototype_nano_swarm::tuning::Tuning::default();
+            tuning.autonomy.lease_no_progress_ttl_ticks = 2;
+            tuning
         })
         .add_systems(
             FixedUpdate,
@@ -412,7 +414,7 @@ fn losing_a_deposit_clears_an_empty_gather_job_and_preserves_collected_minerals(
     let mut app = common::minimal_app();
     app.init_resource::<ActionableProjection>()
         .init_resource::<AllocationClock>()
-        .init_resource::<RegionalLeaseConfig>()
+        .init_resource::<top_down_2d_rts_prototype_nano_swarm::tuning::Tuning>()
         .add_systems(Update, maintain_regional_leases_system);
     let deposit = common::spawn_deposit(
         &mut app,
@@ -471,8 +473,10 @@ fn run_construction_lease(working: bool, blocked: bool) -> (App, Entity, Entity)
         .init_resource::<top_down_2d_rts_prototype_nano_swarm::navigation::Navigation>()
         .init_resource::<ActionableProjection>()
         .init_resource::<AllocationClock>()
-        .insert_resource(RegionalLeaseConfig {
-            no_progress_ttl_ticks: 2,
+        .insert_resource({
+            let mut tuning = top_down_2d_rts_prototype_nano_swarm::tuning::Tuning::default();
+            tuning.autonomy.lease_no_progress_ttl_ticks = 2;
+            tuning
         })
         .add_systems(
             Update,
@@ -545,12 +549,8 @@ fn starved_region_moves_ahead_of_near_regions_after_bounded_wait() {
     let mut regions = (0..17).map(|x| region(x, 0)).collect::<Vec<_>>();
     regions.push(far);
     regions.sort_by_key(|candidate| {
-        let age = if *candidate == far {
-            REGIONAL_FAIRNESS_PROMOTION_TICKS
-        } else {
-            0
-        };
-        region_fairness_sort_key(source, *candidate, age)
+        let age = if *candidate == far { 8 } else { 0 };
+        region_fairness_sort_key(source, *candidate, age, 8)
     });
 
     assert_eq!(regions[0], far);

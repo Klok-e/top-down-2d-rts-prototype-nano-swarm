@@ -9,13 +9,12 @@
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::battle_statistics::BattleCounters;
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Cargo, Charge, ChargerAssignment, DEGRADATION_INTERVAL_TICKS, DirectMovementComponent,
-        LOW_CHARGE_THRESHOLD, MAINTENANCE_BUFFER_TICKS, MAINTENANCE_NEEDS_THRESHOLD,
-        MAINTENANCE_WORK_DURATION_TICKS, MaintenanceAssignment, MaintenancePlugin,
-        MaintenanceProgress, NanobotBundle, OwnerSwarm, ReturningToStockpile, STRUCTURE_MAX_HEALTH,
+        Cargo, Charge, ChargerAssignment, DirectMovementComponent, MaintenanceAssignment,
+        MaintenancePlugin, MaintenanceProgress, NanobotBundle, OwnerSwarm, ReturningToStockpile,
         SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, SwarmId,
         worker_gather_delivery_system,
     },
@@ -70,7 +69,8 @@ fn structure_tracks_maintenance_state_via_buffer_counter() {
         "buffer counter must increment each tick"
     );
     assert_eq!(
-        s.health, STRUCTURE_MAX_HEALTH,
+        s.health,
+        Tuning::default().construction.max_health,
         "no degradation within the buffer; got {}",
         s.health
     );
@@ -88,7 +88,7 @@ fn real_stockpile_enters_shared_maintenance_lifecycle() {
         .entity(stockpile)
         .get::<Structure>()
         .expect("real Stockpile must receive shared structure condition");
-    assert_eq!(condition.health, STRUCTURE_MAX_HEALTH);
+    assert_eq!(condition.health, Tuning::default().construction.max_health);
     assert_eq!(condition.ticks_since_maintained, 1);
 }
 
@@ -104,7 +104,9 @@ fn structure_degrades_when_no_workers_maintain_it() {
 
     // Run past the buffer plus a few extra ticks so the
     // degradation actually kicks in.
-    let ticks = (MAINTENANCE_BUFFER_TICKS + DEGRADATION_INTERVAL_TICKS + 1) as usize;
+    let ticks = (Tuning::default().maintenance.buffer_ticks
+        + Tuning::default().maintenance.degradation_interval_ticks
+        + 1) as usize;
     for _ in 0..ticks {
         app.update();
     }
@@ -112,17 +114,17 @@ fn structure_degrades_when_no_workers_maintain_it() {
     let health =
         structure_health(&app, structure).expect("structure must still exist mid-degradation");
     assert!(
-        health < STRUCTURE_MAX_HEALTH,
+        health < Tuning::default().construction.max_health,
         "structure must have lost health after the buffer expired; got {}",
         health
     );
     // Sanity: the loss is bounded by the number of ticks past
     // the buffer.
-    let expected_max_loss = (ticks as u32) - MAINTENANCE_BUFFER_TICKS;
+    let expected_max_loss = (ticks as u32) - Tuning::default().maintenance.buffer_ticks;
     assert!(
-        STRUCTURE_MAX_HEALTH - health <= expected_max_loss,
+        Tuning::default().construction.max_health - health <= expected_max_loss,
         "degradation must not exceed the elapsed-ticks budget; lost {} expected at most {}",
-        STRUCTURE_MAX_HEALTH - health,
+        Tuning::default().construction.max_health - health,
         expected_max_loss
     );
 }
@@ -146,8 +148,10 @@ fn structure_collapses_at_zero_health() {
     // Run past the buffer plus the full health bar plus a few
     // extra ticks so the structure is guaranteed to have
     // collapsed.
-    let ticks =
-        (MAINTENANCE_BUFFER_TICKS + STRUCTURE_MAX_HEALTH * DEGRADATION_INTERVAL_TICKS + 1) as usize;
+    let ticks = (Tuning::default().maintenance.buffer_ticks
+        + Tuning::default().construction.max_health
+            * Tuning::default().maintenance.degradation_interval_ticks
+        + 1) as usize;
     for _ in 0..ticks {
         app.update();
     }
@@ -186,13 +190,13 @@ fn worker_travels_to_and_maintains_stale_structure() {
         .entity_mut(structure)
         .get_mut::<Structure>()
         .unwrap()
-        .ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
+        .ticks_since_maintained = Tuning::default().maintenance.needs_threshold;
     let _worker = common::spawn_worker_at(&mut app, center + Vec2::new(-100.0, 0.0));
 
     // Run long enough for one full maintenance cycle plus a
     // buffer to elapse, so we can be sure the worker is not
     // simply lucky on a single shift.
-    let ticks = (MAINTENANCE_WORK_DURATION_TICKS as usize) + 30;
+    let ticks = (Tuning::default().maintenance.work_ticks as usize) + 30;
     for _ in 0..ticks {
         app.update();
     }
@@ -201,12 +205,13 @@ fn worker_travels_to_and_maintains_stale_structure() {
     let health = structure_health(&app, structure)
         .expect("structure must still exist with a worker present");
     assert!(
-        buffer < MAINTENANCE_NEEDS_THRESHOLD,
+        buffer < Tuning::default().maintenance.needs_threshold,
         "buffer must be reset by maintenance; got {}",
         buffer
     );
     assert_eq!(
-        health, STRUCTURE_MAX_HEALTH,
+        health,
+        Tuning::default().construction.max_health,
         "structure must be at full health under worker maintenance; got {}",
         health
     );
@@ -230,7 +235,7 @@ fn maintenance_does_not_consume_stockpile_resources() {
         .entity_mut(structure)
         .get_mut::<Structure>()
         .unwrap()
-        .ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
+        .ticks_since_maintained = Tuning::default().maintenance.needs_threshold;
     // Stockpile in the same cell with material that must NOT
     // be drained by the maintenance work.
     let stockpile = common::spawn_stockpile(&mut app, center, 100, 1000);
@@ -285,7 +290,7 @@ fn sufficient_worker_time_keeps_structure_stable() {
     common::spawn_worker_at(&mut app, center + Vec2::new(-100.0, 0.0));
 
     // Run long enough for several maintenance cycles. The cycle
-    // is `MAINTENANCE_WORK_DURATION_TICKS` work + a few idle
+    // is `Tuning::default().maintenance.work_ticks` work + a few idle
     // ticks before the next shift, so 200 ticks covers many
     // cycles.
     for _ in 0..200 {
@@ -298,12 +303,13 @@ fn sufficient_worker_time_keeps_structure_stable() {
         .get::<Structure>()
         .expect("structure must still exist with a worker present");
     assert_eq!(
-        s.health, STRUCTURE_MAX_HEALTH,
+        s.health,
+        Tuning::default().construction.max_health,
         "structure must stay at full health under continuous maintenance; got {}",
         s.health
     );
     assert!(
-        s.ticks_since_maintained < MAINTENANCE_BUFFER_TICKS,
+        s.ticks_since_maintained < Tuning::default().maintenance.buffer_ticks,
         "buffer must never reach the unstable regime; got {}",
         s.ticks_since_maintained
     );
@@ -327,7 +333,7 @@ fn idle_worker_picks_maintenance_over_idling_when_structure_is_stale() {
         .entity_mut(structure)
         .get_mut::<Structure>()
         .unwrap()
-        .ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
+        .ticks_since_maintained = Tuning::default().maintenance.needs_threshold;
     let worker = common::spawn_worker_at(&mut app, center + Vec2::new(-100.0, 0.0));
 
     // One tick is enough for the assignment system to fire
@@ -364,7 +370,7 @@ fn real_structure_requests_maintenance_without_build_paint() {
         .entity_mut(stockpile)
         .get_mut::<Structure>()
         .expect("stockpile has shared condition")
-        .ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
+        .ticks_since_maintained = Tuning::default().maintenance.needs_threshold;
     let worker = common::spawn_worker_at(&mut app, center + Vec2::new(-100.0, 0.0));
 
     app.update();
@@ -403,7 +409,9 @@ fn unattended_valid_charger_rejects_worker_upkeep_and_degrades() {
         .entity_mut(charger)
         .get_mut::<Structure>()
         .expect("Charger has shared condition")
-        .ticks_since_maintained = MAINTENANCE_BUFFER_TICKS + DEGRADATION_INTERVAL_TICKS - 1;
+        .ticks_since_maintained = Tuning::default().maintenance.buffer_ticks
+        + Tuning::default().maintenance.degradation_interval_ticks
+        - 1;
     let worker = common::spawn_worker_at(&mut app, center + Vec2::new(-100.0, 0.0));
 
     app.update();
@@ -423,7 +431,7 @@ fn unattended_valid_charger_rejects_worker_upkeep_and_degrades() {
             .get::<Structure>()
             .expect("unattended Charger remains a structure")
             .health,
-        STRUCTURE_MAX_HEALTH - 1,
+        Tuning::default().construction.max_health - 1,
         "unattended valid Charger must degrade through shared condition rules",
     );
 }
@@ -456,14 +464,15 @@ fn erased_defend_paint_leaves_charger_inactive_and_degrading() {
         let mut condition = charger_entity
             .get_mut::<Structure>()
             .expect("Charger has shared condition");
-        condition.ticks_since_maintained =
-            MAINTENANCE_BUFFER_TICKS + DEGRADATION_INTERVAL_TICKS - 1;
+        condition.ticks_since_maintained = Tuning::default().maintenance.buffer_ticks
+            + Tuning::default().maintenance.degradation_interval_ticks
+            - 1;
     }
     app.world_mut()
         .entity_mut(defender)
         .get_mut::<Charge>()
         .expect("Defender has Charge")
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
     let worker = common::spawn_worker_at(&mut app, center + Vec2::new(-100.0, 0.0));
 
     app.update();
@@ -491,7 +500,7 @@ fn erased_defend_paint_leaves_charger_inactive_and_degrading() {
             .get::<Structure>()
             .expect("Charger remains a structure")
             .health,
-        STRUCTURE_MAX_HEALTH - 1,
+        Tuning::default().construction.max_health - 1,
         "unmaintained Charger must degrade through the existing condition rules",
     );
 }
@@ -516,7 +525,7 @@ fn en_route_service_assigns_worker_to_stale_charger() {
         .entity_mut(charger)
         .get_mut::<Structure>()
         .expect("Charger has shared condition")
-        .ticks_since_maintained = MAINTENANCE_NEEDS_THRESHOLD;
+        .ticks_since_maintained = Tuning::default().maintenance.needs_threshold;
     let defender = common::spawn_defender_at(&mut app, common::cell_world_center(IVec2::new(3, 0)));
     app.world_mut().entity_mut(defender).insert((
         ChargerAssignment { charger },
@@ -558,6 +567,7 @@ fn en_route_service_assigns_worker_to_stale_charger() {
 #[test]
 fn degraded_stockpile_rejects_worker_delivery_without_losing_cargo() {
     let mut app = App::new();
+    app.init_resource::<Tuning>();
     app.add_systems(Update, worker_gather_delivery_system);
     let mut condition = Structure::new(StructureKind::Basic);
     condition.health = SUPPORT_OPERATIONAL_HEALTH_THRESHOLD - 1;

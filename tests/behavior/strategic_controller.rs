@@ -132,7 +132,7 @@ fn controller_telemetry_counts_invalidation_checks_between_reviews() {
 #[test]
 fn controller_eventually_erases_stale_owned_intent_after_large_foreign_prefix() {
     use top_down_2d_rts_prototype_nano_swarm::strategic_controller::{
-        Controller, GameState, REVIEW_PERIOD_TICKS, SwarmState,
+        Controller, GameState, SwarmState,
     };
 
     let owner = SwarmId(4);
@@ -154,17 +154,20 @@ fn controller_eventually_erases_stale_owned_intent_after_large_foreign_prefix() 
     }];
     let mut controller = Controller::new(owner);
     for review in 0..3 {
-        let decision = controller.decide(&GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &[],
-            structures: &[],
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: review * REVIEW_PERIOD_TICKS,
-            finished: false,
-        });
+        let decision = controller.decide(
+            &top_down_2d_rts_prototype_nano_swarm::tuning::AutonomyTuning::default(),
+            &GameState {
+                grid: &grid,
+                swarms: &swarms,
+                bots: &[],
+                structures: &[],
+                deposits: &[],
+                terrain: &[],
+                reachability: None,
+                tick: review * 30,
+                finished: false,
+            },
+        );
         apply_decision(&mut grid, owner, &decision);
     }
 
@@ -214,17 +217,20 @@ fn controller_retargets_when_its_primary_resource_is_exhausted() {
         },
     ];
     let mut controller = Controller::new(owner);
-    let initial = controller.decide(&GameState {
-        grid: &grid,
-        swarms: &swarms,
-        bots: &[],
-        structures: &[],
-        deposits: &deposits,
-        terrain: &[],
-        reachability: None,
-        tick: 0,
-        finished: false,
-    });
+    let initial = controller.decide(
+        &top_down_2d_rts_prototype_nano_swarm::tuning::AutonomyTuning::default(),
+        &GameState {
+            grid: &grid,
+            swarms: &swarms,
+            bots: &[],
+            structures: &[],
+            deposits: &deposits,
+            terrain: &[],
+            reachability: None,
+            tick: 0,
+            finished: false,
+        },
+    );
     apply_decision(&mut grid, owner, &initial);
 
     let depleted = [
@@ -234,17 +240,20 @@ fn controller_retargets_when_its_primary_resource_is_exhausted() {
         },
         deposits[1],
     ];
-    let urgent = controller.decide(&GameState {
-        grid: &grid,
-        swarms: &swarms,
-        bots: &[],
-        structures: &[],
-        deposits: &depleted,
-        terrain: &[],
-        reachability: None,
-        tick: 1,
-        finished: false,
-    });
+    let urgent = controller.decide(
+        &top_down_2d_rts_prototype_nano_swarm::tuning::AutonomyTuning::default(),
+        &GameState {
+            grid: &grid,
+            swarms: &swarms,
+            bots: &[],
+            structures: &[],
+            deposits: &depleted,
+            terrain: &[],
+            reachability: None,
+            tick: 1,
+            finished: false,
+        },
+    );
 
     assert!(urgent.reviewed, "depletion must bypass the regular cadence");
     assert!(urgent.explanation.contains("exhausted"));
@@ -288,33 +297,40 @@ fn controller_urgently_replans_when_key_support_is_lost() {
         position: world(IVec2::new(1, 0)),
         kind: StructureKind::Charger,
         health: 100,
+        max_health: 100,
         minerals: 25,
     }];
     let mut controller = Controller::new(owner);
-    let initial = controller.decide(&GameState {
-        grid: &grid,
-        swarms: &swarms,
-        bots: &[],
-        structures: &charger,
-        deposits: &deposits,
-        terrain: &[],
-        reachability: None,
-        tick: 0,
-        finished: false,
-    });
+    let initial = controller.decide(
+        &top_down_2d_rts_prototype_nano_swarm::tuning::AutonomyTuning::default(),
+        &GameState {
+            grid: &grid,
+            swarms: &swarms,
+            bots: &[],
+            structures: &charger,
+            deposits: &deposits,
+            terrain: &[],
+            reachability: None,
+            tick: 0,
+            finished: false,
+        },
+    );
     apply_decision(&mut grid, owner, &initial);
 
-    let urgent = controller.decide(&GameState {
-        grid: &grid,
-        swarms: &swarms,
-        bots: &[],
-        structures: &[],
-        deposits: &deposits,
-        terrain: &[],
-        reachability: None,
-        tick: 1,
-        finished: false,
-    });
+    let urgent = controller.decide(
+        &top_down_2d_rts_prototype_nano_swarm::tuning::AutonomyTuning::default(),
+        &GameState {
+            grid: &grid,
+            swarms: &swarms,
+            bots: &[],
+            structures: &[],
+            deposits: &deposits,
+            terrain: &[],
+            reachability: None,
+            tick: 1,
+            finished: false,
+        },
+    );
 
     assert!(urgent.reviewed);
     assert!(urgent.explanation.contains("key Charger 42 was lost"));
@@ -361,7 +377,9 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
         kind: NanobotType::Worker,
         position: world(IVec2::new(12, 3)),
         health: 20,
+        max_health: 100,
         charge: 1.0,
+        max_charge: 1.0,
         cargo: 0,
     };
     let charger = StructureState {
@@ -370,20 +388,24 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
         position: world(IVec2::new(1, 0)),
         kind: StructureKind::Charger,
         health: 100,
+        max_health: 100,
         minerals: 25,
     };
     let mut controller = Controller::new(owner);
-    let initial = controller.decide(&GameState {
-        grid: &grid,
-        swarms: &swarms,
-        bots: &[remnant],
-        structures: &[charger],
-        deposits: &deposit,
-        terrain: &[],
-        reachability: None,
-        tick: 0,
-        finished: false,
-    });
+    let initial = controller.decide(
+        &top_down_2d_rts_prototype_nano_swarm::tuning::AutonomyTuning::default(),
+        &GameState {
+            grid: &grid,
+            swarms: &swarms,
+            bots: &[remnant],
+            structures: &[charger],
+            deposits: &deposit,
+            terrain: &[],
+            reachability: None,
+            tick: 0,
+            finished: false,
+        },
+    );
     apply_decision(&mut grid, owner, &initial);
 
     let crowded_structures = (0..60_000)
@@ -393,20 +415,24 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
             position: swarms[0].home,
             kind: StructureKind::Planned,
             health: 100,
+            max_health: 100,
             minerals: 0,
         })
         .collect::<Vec<_>>();
-    let support_loss = controller.decide(&GameState {
-        grid: &grid,
-        swarms: &swarms,
-        bots: &[remnant],
-        structures: &crowded_structures,
-        deposits: &deposit,
-        terrain: &[],
-        reachability: None,
-        tick: 1,
-        finished: false,
-    });
+    let support_loss = controller.decide(
+        &top_down_2d_rts_prototype_nano_swarm::tuning::AutonomyTuning::default(),
+        &GameState {
+            grid: &grid,
+            swarms: &swarms,
+            bots: &[remnant],
+            structures: &crowded_structures,
+            deposits: &deposit,
+            terrain: &[],
+            reachability: None,
+            tick: 1,
+            finished: false,
+        },
+    );
     apply_decision(&mut grid, owner, &support_loss);
 
     let moved = BotState {
@@ -420,22 +446,27 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
             kind: NanobotType::Worker,
             position: swarms[0].home,
             health: 100,
+            max_health: 100,
             charge: 1.0,
+            max_charge: 1.0,
             cargo: 0,
         })
         .collect::<Vec<_>>();
     crowded_bots.push(moved);
-    let target_move = controller.decide(&GameState {
-        grid: &grid,
-        swarms: &swarms,
-        bots: &crowded_bots,
-        structures: &[],
-        deposits: &deposit,
-        terrain: &[],
-        reachability: None,
-        tick: 2,
-        finished: false,
-    });
+    let target_move = controller.decide(
+        &top_down_2d_rts_prototype_nano_swarm::tuning::AutonomyTuning::default(),
+        &GameState {
+            grid: &grid,
+            swarms: &swarms,
+            bots: &crowded_bots,
+            structures: &[],
+            deposits: &deposit,
+            terrain: &[],
+            reachability: None,
+            tick: 2,
+            finished: false,
+        },
+    );
 
     assert!(support_loss.reviewed);
     assert!(
@@ -475,7 +506,9 @@ fn mature_economy_keeps_one_active_resource_site() {
             kind: NanobotType::Worker,
             position: home,
             health: 100,
+            max_health: 100,
             charge: 1.0,
+            max_charge: 1.0,
             cargo: 0,
         })
         .chain((4..8).map(|id| BotState {
@@ -484,7 +517,9 @@ fn mature_economy_keeps_one_active_resource_site() {
             kind: NanobotType::Hauler,
             position: home,
             health: 100,
+            max_health: 100,
             charge: 1.0,
+            max_charge: 1.0,
             cargo: 0,
         }))
         .collect::<Vec<_>>();
@@ -515,6 +550,7 @@ fn mature_economy_keeps_one_active_resource_site() {
             position: deposits[0].position + Vec2::new(96.0, 0.0),
             kind: StructureKind::Source,
             health: 100,
+            max_health: 100,
             minerals: 40,
         },
         StructureState {
@@ -523,21 +559,25 @@ fn mature_economy_keeps_one_active_resource_site() {
             position: home,
             kind: StructureKind::Facility,
             health: 100,
+            max_health: 100,
             minerals: 20,
         },
     ];
 
-    let decision = Controller::new(owner).decide(&GameState {
-        grid: &grid,
-        swarms: &swarms,
-        bots: &bots,
-        structures: &structures,
-        deposits: &deposits,
-        terrain: &[],
-        reachability: None,
-        tick: 0,
-        finished: false,
-    });
+    let decision = Controller::new(owner).decide(
+        &top_down_2d_rts_prototype_nano_swarm::tuning::AutonomyTuning::default(),
+        &GameState {
+            grid: &grid,
+            swarms: &swarms,
+            bots: &bots,
+            structures: &structures,
+            deposits: &deposits,
+            terrain: &[],
+            reachability: None,
+            tick: 0,
+            finished: false,
+        },
+    );
     let mut painted_gather = decision
         .edits
         .iter()
@@ -557,9 +597,9 @@ fn mature_economy_keeps_one_active_resource_site() {
 #[test]
 fn controller_primary_site_extracts_and_hauls_under_normal_pacing() {
     use top_down_2d_rts_prototype_nano_swarm::{
-        gameplay_pacing::GameplayPacing,
         nanobot::{Cargo, HaulerAssignment, NanobotType, OwnerSwarm, world_to_cell},
         resources::ResourceDeposit,
+        tuning::Tuning,
     };
 
     let mut app = common::sim_app_with_gather_haul();
@@ -597,8 +637,8 @@ fn controller_primary_site_extracts_and_hauls_under_normal_pacing() {
     for _ in 0..1800 {
         app.update();
         assert_eq!(
-            *app.world().resource::<GameplayPacing>(),
-            GameplayPacing::default(),
+            *app.world().resource::<Tuning>(),
+            Tuning::default(),
             "the flow must run with normal gameplay pacing"
         );
         let grid = app.world().resource::<IntentGrid>();

@@ -4,8 +4,6 @@ The agent control interface drives a real nano-swarm process without OS input au
 
 Agents may extend the agent-control interface as they see fit.
 
-Automated tests and agent verification must never create an OS/compositor window. Use minimal ECS apps or offscreen rendering; run real agent playtests with `--headless --agent-socket`.
-
 ## Launch
 
 ```bash
@@ -91,6 +89,9 @@ Screenshot capture is asynchronous. A request received before any render submiss
 | `state.get` | optional `cell_offset`, optional `cell_limit`, optional `map_revision`, optional boolean `details` | Sparse game-state snapshot page |
 | `button.press` | `button` | Activates a stable real UI button |
 | `menu.toggle` | none | Opens or closes the scenario menu, like Escape |
+| `tuning.get` | none | Revision, field metadata and values, editor state |
+| `tuning.set` | `key`, numeric `value` | Applied key, value, and revision |
+| `tuning.toggle` | optional `group` | Editor `open` state |
 | `intent.select` | `intent` | Selects an intent directly |
 | `map.apply` | `action`, `intent`, `x`, `y` | Whether intent state changed |
 | `camera.set` | `x`, `y`, optional `zoom` | Applied camera view |
@@ -102,6 +103,23 @@ Screenshot capture is asynchronous. A request received before any render submiss
 Valid intents are `gather`, `build`, `defend`, and `corridor`. Stable button IDs are `intent.gather`, `intent.build`, `intent.defend`, and `intent.corridor`.
 
 Player-action commands are rejected after Victory, Defeat, or Draw. State, camera, screenshot, wait, hello, and shutdown remain available for terminal-state inspection.
+
+## Live tuning
+
+Use `tuning.get` to discover exact field keys, groups, display units, steps, and bounds. Each field includes `key`, `group`, `label`, `unit`, `step`, `scale`, `min`, `max`, and `value`; `scale` is display units per native unit. The response also includes the process revision and editor `open`, `focused`, `expanded`, and per-field `errors` state.
+
+```bash
+python scripts/nano_swarm_control.py tuning-get
+python scripts/nano_swarm_control.py tuning-set combat.attack_interval_ticks 0.75
+python scripts/nano_swarm_control.py tuning-toggle --group combat
+python scripts/nano_swarm_control.py tuning-toggle
+```
+
+`tuning.set` accepts display units, so the example sets a 0.75-second attack interval despite the key's `_ticks` suffix. Validation checks finiteness, representable native values, bounds, and relationships between fields. A changed value is synchronously saved by atomic replacement before publication and reconciliation. Success reports the applied value and revision; an unchanged value retains the revision. A validation or save failure returns `invalid_tuning` and preserves the file, live values, and revision.
+
+`tuning.toggle` without a group toggles panel visibility; with a group it toggles that group's expansion and opens the panel. Unknown groups return `invalid_tuning`. Tuning commands remain available with the scenario menu open and after a match finishes. Tuning applies to both swarms and survives scenario replacement.
+
+For an isolated tuning experiment, copy the tracked `config/balance.ron` into a run-specific directory under `.tmp/` and launch with `--tuning-file` pointing to the copy. The runtime strictly loads this complete file before scenario creation, and all accepted edits write back to the selected path. The default is the project-root `config/balance.ron`, independent of the working directory.
 
 ## State Snapshot
 

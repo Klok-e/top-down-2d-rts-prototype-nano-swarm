@@ -176,7 +176,6 @@ fn detailed_state_get_reports_distinct_owners_and_overlapping_component_facts() 
                 kind: ResourceKind::Minerals,
                 amount: 17,
                 capacity: 60,
-                radius: 84.0,
             },
             Structure {
                 kind: StructureKind::Basic,

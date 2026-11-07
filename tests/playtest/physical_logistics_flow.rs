@@ -1,10 +1,11 @@
 //! Scripted near-runtime physical logistics custody flow.
 
 use bevy::prelude::*;
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
-        Cargo, DirectMovementComponent, HAULER_TRANSFER_PER_PULSE, HaulerAssignment, HaulerLoading,
-        LogisticsReservation, MaterialWorkProgress, OwnerSwarm, ProductionFacility, SwarmId,
+        Cargo, DirectMovementComponent, HaulerAssignment, HaulerLoading, LogisticsReservation,
+        MaterialWorkProgress, OwnerSwarm, ProductionFacility, SwarmId,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile, StockpileRole},
 };
@@ -73,10 +74,13 @@ fn assignment_load_transit_and_terminal_unload_preserve_physical_custody() {
     }
 
     assert!(app.world().entity(hauler).contains::<HaulerLoading>());
-    assert_eq!(cargo_amount(&app, hauler), HAULER_TRANSFER_PER_PULSE);
+    assert_eq!(
+        cargo_amount(&app, hauler),
+        Tuning::default().logistics.hauler_transfer_per_pulse
+    );
     assert_eq!(
         stockpile_amount(&app, source),
-        INITIAL_MINERALS - HAULER_TRANSFER_PER_PULSE
+        INITIAL_MINERALS - Tuning::default().logistics.hauler_transfer_per_pulse
     );
     let reservation = app
         .world()
@@ -85,7 +89,7 @@ fn assignment_load_transit_and_terminal_unload_preserve_physical_custody() {
         .unwrap();
     assert_eq!(
         reservation.source_remaining,
-        INITIAL_MINERALS - HAULER_TRANSFER_PER_PULSE
+        INITIAL_MINERALS - Tuning::default().logistics.hauler_transfer_per_pulse
     );
     assert_eq!(reservation.destination_remaining, INITIAL_MINERALS);
     assert_custody_and_ledger(&app, source, hauler, terminal);
@@ -115,7 +119,7 @@ fn assignment_load_transit_and_terminal_unload_preserve_physical_custody() {
         .get::<DirectMovementComponent>()
         .expect("runtime carry assignment starts terminal transit");
     assert!(movement.xy.distance(Vec2::new(232.0, 0.0)) < 0.001);
-    for _ in 0..top_down_2d_rts_prototype_nano_swarm::nanobot::MATERIAL_WORK_TICKS_PER_UNIT {
+    for _ in 0..Tuning::default().logistics.material_work_ticks {
         app.update();
     }
     let transit_pos = app
@@ -136,14 +140,17 @@ fn assignment_load_transit_and_terminal_unload_preserve_physical_custody() {
         .entity_mut(hauler)
         .insert(Transform::from_xyz(232.0, 0.0, 0.0))
         .remove::<DirectMovementComponent>();
-    for _ in 0..top_down_2d_rts_prototype_nano_swarm::nanobot::MATERIAL_WORK_TICKS_PER_UNIT {
+    for _ in 0..Tuning::default().logistics.material_work_ticks {
         app.update();
     }
 
-    assert_eq!(facility_amount(&app, terminal), HAULER_TRANSFER_PER_PULSE);
+    assert_eq!(
+        facility_amount(&app, terminal),
+        Tuning::default().logistics.hauler_transfer_per_pulse
+    );
     assert_eq!(
         cargo_amount(&app, hauler),
-        INITIAL_MINERALS - HAULER_TRANSFER_PER_PULSE
+        INITIAL_MINERALS - Tuning::default().logistics.hauler_transfer_per_pulse
     );
     let reservation = app
         .world()
@@ -153,7 +160,7 @@ fn assignment_load_transit_and_terminal_unload_preserve_physical_custody() {
     assert_eq!(reservation.source_remaining, 0);
     assert_eq!(
         reservation.destination_remaining,
-        INITIAL_MINERALS - HAULER_TRANSFER_PER_PULSE
+        INITIAL_MINERALS - Tuning::default().logistics.hauler_transfer_per_pulse
     );
     assert_custody_and_ledger(&app, source, hauler, terminal);
 
@@ -268,7 +275,7 @@ fn losing_pickup_stockpile_during_delivery_preserves_terminal_cargo() {
     for lose_during_unload in [false, true] {
         let (mut app, _, source, terminal, hauler) = terminal_trip();
         let delivered_before_loss = if lose_during_unload {
-            HAULER_TRANSFER_PER_PULSE
+            Tuning::default().logistics.hauler_transfer_per_pulse
         } else {
             0
         };

@@ -166,10 +166,10 @@ Owners include [`RegionalLease`, `LeaseTravel`, `evaluate_lease`, lease maintena
   by cadence. It cannot survive short-circuit evaluation and spuriously wake later.
 - Region/type/swarm service debt tracks actionable work for swarms with eligible
   acquisition candidates. Its `u32` ages saturate, reset on assignment, and are
-  pruned when their keys leave that candidate set. At eight ticks it enters the
+  pruned when their keys leave that candidate set. At `autonomy.regional_fairness_promotion_ticks` acquisition passes it enters the
   promoted bounded-search window, then age, distance, and stable coordinates order it.
 - Terminal debt similarly ages actionable terminal legs and resets on assignment.
-  Urgency promotion subtracts `age / 8` in `u32` with saturation before conversion
+  Urgency promotion subtracts `age / autonomy.terminal_fairness_promotion_ticks` in `u32` with saturation before conversion
   to `u8`. Older service debt cannot wrap back to a worse urgency tier.
 - Empty projection clears both age maps. These ages measure acquisition passes,
   including wake passes, rather than elapsed wall-clock seconds.
@@ -180,6 +180,14 @@ Owners include [`RegionalLease`, `LeaseTravel`, `evaluate_lease`, lease maintena
 
 Coverage includes [regional allocation](../../tests/behavior/regional_allocation.rs),
 [terminal logistics priority](../../tests/behavior/terminal_logistics_priority.rs).
+
+## Live autonomy reconciliation
+
+Category weights, fairness promotion thresholds, lease duration, controller review period, and strategic scoring parameters come from live tuning. Category weights change candidate scores without changing acquisition or navigation work budgets. Fairness ages remain acquisition-pass counts and use the current promotion thresholds.
+
+Accepted relevant edits dirty existing projection regions and active intent cells and request an allocation wake. A lease-duration change scales its remaining no-progress deadline against the allocation clock; it retains progress history and cargo protection. The next normal projection/acquisition pass rebuilds opportunities under the new values. [Autonomy reconciliation](../../src/nanobot/allocation/runtime.rs), [lease deadline](../../src/nanobot/allocation/lease.rs).
+
+Corridor-cost changes update future navigation searches; existing routes retain their normal validation and interruption rules. Session reset clears leases, service ages, and navigation requests while retaining process tuning. [Logistics reconciliation](../../src/nanobot/cargo.rs), [navigation costs](../../src/navigation/budget.rs), [live logistics coverage](../../tests/behavior/live_logistics_tuning.rs).
 
 ## Navigation requests, lazy hierarchy, and query caches
 

@@ -11,21 +11,17 @@ use bevy::prelude::*;
 use super::{
     ActionableOpportunity, ActionableProjection, AllocationCandidate, AllocationClock,
     AllocationRegion, CandidateBounds, CategoryEligibility, CategoryWeights, OpportunityCategory,
-    OpportunityTarget, RegionalLease, RegionalLeaseConfig,
-    choose_bounded_candidate_from_ordered_regions_with_claims, outward_pull_budgets, pressure_map,
+    OpportunityTarget, RegionalLease, choose_bounded_candidate_from_ordered_regions_with_claims,
+    outward_pull_budgets, pressure_map,
 };
 use crate::{
     nanobot::{
-        Commitment, DirectMovementComponent, ExtractProgress, GatherAssignment,
-        HAULER_CARRY_CAPACITY, HaulerAssignment, HaulerLoad, HaulerLoading, Health,
-        InteractionRegion, LogisticsReservation, MaintenanceAssignment, MaintenanceProgress,
-        Nanobot, NanobotType, PlannedStructure, PlannedStructureClaim, PlannedStructureProgress,
-        ProductionFacility, ReturningToStockpile, SwarmId, SwarmMember, WORKER_CARRY_CAPACITY,
-        WorkerLoad,
-        charge::{
-            Charge, Charger, ChargerAssignment, ChargerProgress, LOW_CHARGE_THRESHOLD,
-            WEAKENED_CHARGE_THRESHOLD, minerals_to_fully_charge,
-        },
+        Commitment, DirectMovementComponent, ExtractProgress, GatherAssignment, HaulerAssignment,
+        HaulerLoad, HaulerLoading, Health, InteractionRegion, LogisticsReservation,
+        MaintenanceAssignment, MaintenanceProgress, Nanobot, NanobotType, PlannedStructure,
+        PlannedStructureClaim, PlannedStructureProgress, ProductionFacility, ReturningToStockpile,
+        SwarmId, SwarmMember, WorkerLoad,
+        charge::{Charge, Charger, ChargerAssignment, ChargerProgress, minerals_to_fully_charge},
         logistics_leg::{DestinationRole, PickupBuffer},
     },
     navigation::{ConnectivityStatus, Navigation, RouteGoal},
@@ -37,20 +33,15 @@ pub const RUNTIME_MAX_CANDIDATE_REGIONS: usize = 16;
 /// Maximum exact opportunities examined for one nanobot acquisition.
 pub const RUNTIME_MAX_CANDIDATES: usize = 128;
 
-/// Allocation ticks waited before fairness promotes terminal urgency one tier.
-pub const TERMINAL_FAIRNESS_PROMOTION_TICKS: u32 = 8;
-
-/// Allocation ticks before an unserved region enters the bounded fairness window.
-pub const REGIONAL_FAIRNESS_PROMOTION_TICKS: u32 = 8;
-
 /// Deterministic ordering: promoted starvation debt first, then nearest-region order.
 pub fn region_fairness_sort_key(
     source: AllocationRegion,
     region: AllocationRegion,
     age: u32,
+    promotion_ticks: u32,
 ) -> (bool, Reverse<u32>, u32, i32, i32) {
     (
-        age < REGIONAL_FAIRNESS_PROMOTION_TICKS,
+        age < promotion_ticks,
         Reverse(age),
         region_distance_key(source, region),
         region.y,
@@ -121,12 +112,11 @@ pub struct RegionalAllocationPlugin;
 
 impl Plugin for RegionalAllocationPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<crate::gameplay_pacing::GameplayPacing>()
+        app.init_resource::<crate::tuning::Tuning>()
             .init_resource::<ActionableProjection>()
             .init_resource::<super::TerritorySnapshot>()
             .init_resource::<super::defender_staging::DefenderStagingLayouts>()
             .init_resource::<AllocationClock>()
-            .init_resource::<RegionalLeaseConfig>()
             .init_resource::<AllocationTickDue>()
             .init_resource::<RegionalAllocationWake>()
             .init_resource::<TerminalDemandAges>()
@@ -223,7 +213,7 @@ pub struct TerminalLogisticsParams<'w, 's> {
 pub fn regional_allocation_acquisition_system(
     mut commands: Commands,
     clock: Res<AllocationClock>,
-    pacing: Res<crate::gameplay_pacing::GameplayPacing>,
+    tuning: Res<crate::tuning::Tuning>,
     navigation: Res<Navigation>,
     projection: Res<ActionableProjection>,
     mut region_ages: ResMut<RegionalServiceAges>,
@@ -303,9 +293,9 @@ pub fn regional_allocation_acquisition_system(
         let urgency =
             if charge.is_empty() || health.is_some_and(|health| health.current < health.max) {
                 0
-            } else if charge.current < WEAKENED_CHARGE_THRESHOLD {
+            } else if charge.current < tuning.charge.weakened_threshold {
                 1
-            } else if charge.current <= LOW_CHARGE_THRESHOLD {
+            } else if charge.current <= tuning.charge.low_threshold {
                 2
             } else {
                 4
@@ -315,7 +305,7 @@ pub fn regional_allocation_acquisition_system(
         entry.1 = entry.1.saturating_add(minerals_to_fully_charge(
             charge.current,
             charge.max,
-            pacing.charge_drain_per_tick,
+            &tuning.charge,
         ));
     }
 
@@ -441,9 +431,17 @@ pub fn regional_allocation_acquisition_system(
             .iter()
             .map(|(region, work)| (*region, work.as_slice()))
             .collect::<Vec<_>>();
-        let pressures = pressure_map(region_slices.iter().copied(), CategoryWeights::default())
-            .into_values()
-            .collect::<Vec<_>>();
+        let pressures = pressure_map(
+            region_slices.iter().copied(),
+            CategoryWeights::new([
+                tuning.autonomy.gather_weight,
+                tuning.autonomy.planned_build_weight,
+                tuning.autonomy.maintenance_weight,
+                tuning.autonomy.haul_weight,
+            ]),
+        )
+        .into_values()
+        .collect::<Vec<_>>();
         let kind_capacities = capacities
             .iter()
             .filter_map(|((candidate_swarm, region, candidate_kind), capacity)| {
@@ -468,6 +466,7 @@ pub fn regional_allocation_acquisition_system(
                         .get(&(*swarm, *region, *kind))
                         .copied()
                         .unwrap_or_default(),
+                    tuning.autonomy.regional_fairness_promotion_ticks,
                 )
             });
             ordered_regions.insert((*swarm, source, *kind), ordered);
@@ -492,6 +491,7 @@ pub fn regional_allocation_acquisition_system(
             .and_then(|(_, _, _, _, _, _, rejected)| rejected);
         let work = if bot.kind == NanobotType::Hauler {
             let Some(selection) = choose_terminal_logistics_work(
+                &tuning,
                 bot,
                 pull,
                 ordered,
@@ -535,6 +535,7 @@ pub fn regional_allocation_acquisition_system(
                         .copied()
                         .unwrap_or(0);
                     if !target_available(
+                        &tuning,
                         bot,
                         work,
                         claims,
@@ -598,7 +599,7 @@ pub fn regional_allocation_acquisition_system(
             lease_owner,
             clock.tick(),
             0,
-            30,
+            tuning.autonomy.lease_no_progress_ttl_ticks,
         );
         commands.entity(bot.entity).insert(lease);
         *claim_counts
@@ -642,6 +643,7 @@ struct SelectedHaul {
 
 #[allow(clippy::too_many_arguments)]
 fn choose_terminal_logistics_work(
+    tuning: &crate::tuning::Tuning,
     bot: BotSnapshot,
     pull: super::RegionalPullBudget,
     ordered: &[(AllocationRegion, &[ActionableOpportunity])],
@@ -715,13 +717,15 @@ fn choose_terminal_logistics_work(
                 reserved_source.get(&source).copied().unwrap_or_default(),
                 reserved_destination.get(&sink).copied().unwrap_or_default(),
                 charger_demand.get(&sink).copied(),
+                tuning.logistics.hauler_carry_capacity,
+                tuning.production.cost_per_bot,
             );
             if quote.amount == 0 {
                 continue;
             }
             let age = ages.waiting_ticks(sink);
             let urgency = u32::from(quote.base_urgency)
-                .saturating_sub(age / TERMINAL_FAIRNESS_PROMOTION_TICKS)
+                .saturating_sub(age / tuning.autonomy.terminal_fairness_promotion_ticks.max(1))
                 as u8;
             let deficit_ratio = u64::from(quote.unclaimed_space).saturating_mul(1_000_000)
                 / u64::from(buffer.capacity.max(1));
@@ -802,6 +806,7 @@ fn allocation_candidate(bot: BotSnapshot) -> AllocationCandidate {
 
 #[allow(clippy::too_many_arguments)]
 fn target_available(
+    tuning: &crate::tuning::Tuning,
     bot: BotSnapshot,
     work: ActionableOpportunity,
     claims: usize,
@@ -810,7 +815,7 @@ fn target_available(
     structures: &Query<&Transform>,
     stockpiles: &Query<(&Stockpile, &Transform, Option<&StockpileRole>)>,
 ) -> bool {
-    if claims >= opportunity_capacity(work) {
+    if claims >= opportunity_capacity(work, tuning) {
         return false;
     }
     match work.target {
@@ -825,11 +830,15 @@ fn target_available(
     }
 }
 
-fn opportunity_capacity(work: ActionableOpportunity) -> usize {
+fn opportunity_capacity(work: ActionableOpportunity, tuning: &crate::tuning::Tuning) -> usize {
     let units = match work.category {
-        OpportunityCategory::Gather => work.available_work.div_ceil(WORKER_CARRY_CAPACITY),
+        OpportunityCategory::Gather => work
+            .available_work
+            .div_ceil(tuning.logistics.worker_carry_capacity.max(1)),
         OpportunityCategory::PlannedBuild | OpportunityCategory::Maintenance => 1,
-        OpportunityCategory::Haul => work.available_work.div_ceil(HAULER_CARRY_CAPACITY),
+        OpportunityCategory::Haul => work
+            .available_work
+            .div_ceil(tuning.logistics.hauler_carry_capacity.max(1)),
     };
     units.max(1) as usize
 }
@@ -899,6 +908,54 @@ fn claim_key(
         OpportunityTarget::Haul { source, sink, .. } => {
             (3, source.to_bits(), sink.to_bits(), 0, owner)
         }
+    }
+}
+
+/// Reconcile allocation policy without discarding acquired work or fairness debt.
+pub fn reconcile_autonomy_tuning(
+    world: &mut World,
+    old: &crate::tuning::Tuning,
+    new: &crate::tuning::Tuning,
+) {
+    if old.autonomy == new.autonomy
+        && old.construction == new.construction
+        && old.logistics == new.logistics
+        && old.charge == new.charge
+        && old.production == new.production
+        && old.maintenance == new.maintenance
+    {
+        return;
+    }
+    if old.autonomy.lease_no_progress_ttl_ticks != new.autonomy.lease_no_progress_ttl_ticks {
+        let now = world
+            .get_resource::<AllocationClock>()
+            .map_or(0, AllocationClock::tick);
+        for mut lease in world.query::<&mut RegionalLease>().iter_mut(world) {
+            lease.rescale_deadline(
+                now,
+                old.autonomy.lease_no_progress_ttl_ticks,
+                new.autonomy.lease_no_progress_ttl_ticks,
+            );
+        }
+    }
+    let active_cells: Vec<_> = world
+        .get_resource::<crate::intent::IntentGrid>()
+        .map(|grid| grid.iter_active_cells().map(|(cell, _)| cell).collect())
+        .unwrap_or_default();
+    if let Some(mut projection) = world.get_resource_mut::<ActionableProjection>() {
+        let regions: Vec<_> = projection
+            .iter_regions()
+            .map(|(region, _)| region)
+            .collect();
+        for region in regions {
+            projection.invalidate_region(region);
+        }
+        for cell in active_cells {
+            projection.invalidate_cell(cell);
+        }
+    }
+    if let Some(mut wake) = world.get_resource_mut::<RegionalAllocationWake>() {
+        wake.request_current_pass();
     }
 }
 

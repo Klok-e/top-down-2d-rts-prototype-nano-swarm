@@ -5,14 +5,14 @@
 //! Bevy `App` assembled from the same handful of resources and systems. Before
 //! this module landed that setup was duplicated across eleven files, and the
 //! per-file `build_app` functions drifted apart in subtle ways (different grid
-//! sizes, missing `ResourceLedger`, different `GameSettings`).
+//! sizes, missing `ResourceLedger`, different `Tuning`).
 //!
 //! The helpers here are the canonical seams for future behaviour
 //! tests:
 //!
 //! - [`sim_app`] and the `sim_app_with_*` builders start the same
 //!   minimal Bevy `App`: `bevy::time::TimePlugin`, a default
-//!   `GameSettings`, an `IntentGrid`, a `SoftWorkSlots` resource, a
+//!   `Tuning`, an `IntentGrid`, a `SoftWorkSlots` resource, a
 //!   `ResourceLedger`, the four shared movement systems chained in
 //!   the order the rest of the plugin graph expects, plus any
 //!   simulation plugin the test needs.
@@ -38,21 +38,21 @@
 #![allow(dead_code)]
 
 use std::time::Duration;
+use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 
 use bevy::{math::Vec2, prelude::*, time::TimeUpdateStrategy};
 use top_down_2d_rts_prototype_nano_swarm::{
-    game_settings::GameSettings,
     intent::{IntentGrid, IntentKind},
     nanobot::{
         ActionableProjection, Charge, ChargePlugin, Charger, CombatPlugin, Commitment,
-        GatherPlugin, HaulPlugin, Health, LOW_CHARGE_THRESHOLD, MaintenancePlugin, Nanobot,
-        NanobotBundle, NanobotSimulationSet, NanobotType, NanobotVisual, OpponentSwarm, OwnerSwarm,
-        PRODUCTION_TICKS_PER_BOT, PlannedStructure, PlannedStructurePlugin, PopulationDemandPlugin,
-        ProductionFacility, ProductionPlugin, RegionalAllocationPlugin, SoftWorkSlots, Structure,
-        StructureKind, Swarm, SwarmEliminationPlugin, SwarmId, SwarmMember, VelocityComponent,
-        bot_debug_circle_system, idle_spread_system, initialize_nanobot_type_components,
-        move_velocity_system, project_actionable_opportunities_system, separation_system,
-        velocity_system, work_standing_system,
+        GatherPlugin, HaulPlugin, Health, MaintenancePlugin, Nanobot, NanobotBundle,
+        NanobotSimulationSet, NanobotType, NanobotVisual, OpponentSwarm, OwnerSwarm,
+        PlannedStructure, PlannedStructurePlugin, PopulationDemandPlugin, ProductionFacility,
+        ProductionPlugin, RegionalAllocationPlugin, SoftWorkSlots, Structure, StructureKind, Swarm,
+        SwarmEliminationPlugin, SwarmId, SwarmMember, VelocityComponent, bot_debug_circle_system,
+        idle_spread_system, initialize_nanobot_type_components, move_velocity_system,
+        project_actionable_opportunities_system, separation_system, velocity_system,
+        work_standing_system,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole},
     structure_overlay::StructureOverlayPlugin,
@@ -98,7 +98,7 @@ fn register_movement_systems(app: &mut App) {
 }
 
 /// Build the smallest Bevy `App` that can host the simulation
-/// plugins: a time resource, the shipped `GameSettings`, an
+/// plugins: a time resource, the shipped `Tuning`, an
 /// `IntentGrid`, and the two swarm-wide resources the autonomy
 /// scoring and resource economy code read. No movement systems,
 /// no plugins -- use this for tests that drive the pure scoring
@@ -111,10 +111,7 @@ pub fn minimal_app() -> App {
         top_down_2d_rts_prototype_nano_swarm::navigation_runtime::NavigationPlugin,
     ));
     app.insert_resource(IntentGrid::new(DEFAULT_GRID_WIDTH, DEFAULT_GRID_HEIGHT));
-    app.insert_resource(
-        GameSettings::from_file_ron("config/game_settings.ron")
-            .expect("production game settings must load for application tests"),
-    );
+    app.init_resource::<Tuning>();
     app.init_resource::<SoftWorkSlots>();
     app.init_resource::<ResourceLedger>();
     app.insert_resource(StructureSprites::from_single_handle(Handle::default()));
@@ -314,10 +311,7 @@ pub fn sim_app_with_elimination() -> App {
 /// `sim_app` + structure overlay plugin. The overlay plugin is
 /// independent of the per-role simulation plugins; this builder
 /// is the canonical seam for any test that exercises
-/// `StructureOverlay`, `StructureOverlaySettings`, or the
-/// spawn/update/visibility/cleanup systems. The plugin inserts
-/// its own settings resource on startup, so the test does not
-/// need to add it.
+/// `StructureOverlay` and its spawn/update/visibility/cleanup systems.
 pub fn sim_app_with_overlay() -> App {
     let mut app = sim_app();
     app.add_plugins(StructureOverlayPlugin);
@@ -327,10 +321,8 @@ pub fn sim_app_with_overlay() -> App {
 /// `sim_app` + the tactical overlay plugin. The tactical
 /// overlay plugin is independent of the per-role simulation
 /// plugins; this builder is the canonical seam for any test
-/// that exercises `TacticalOverlaySettings`,
-/// `TacticalMarker`, or the gather / cluster / spawn / update
-/// / visibility systems. The plugin inserts its own settings
-/// resource on startup, so the test does not need to add it.
+/// that exercises `TacticalMarker` and the gather / cluster / spawn / update
+/// / visibility systems.
 pub fn sim_app_with_tactical() -> App {
     let mut app = sim_app();
     app.add_plugins(TacticalOverlayPlugin);
@@ -412,7 +404,7 @@ pub fn spawn_completed_facilities_for_all_nanobot_types(
         for (index, kind) in NanobotType::ALL.into_iter().enumerate() {
             let mut facility = ProductionFacility::new();
             facility.current_target = Some(kind);
-            facility.progress = PRODUCTION_TICKS_PER_BOT - 1;
+            facility.progress = Tuning::default().production.ticks_per_bot - 1;
             app.world_mut().spawn((
                 facility,
                 OwnerSwarm(owner),
@@ -518,7 +510,7 @@ pub fn spawn_low_charge_defender_in_cell(app: &mut App, cell: IVec2) -> Entity {
         .entity_mut(defender)
         .get_mut::<Charge>()
         .expect("Defender has Charge")
-        .current = LOW_CHARGE_THRESHOLD;
+        .current = Tuning::default().charge.low_threshold;
     defender
 }
 

@@ -39,12 +39,11 @@ pub struct FlyCamera2d {
 
 impl Default for FlyCamera2d {
     fn default() -> Self {
-        const MUL_2D: f32 = 10.0;
-        const REFERENCE_UPDATES_PER_SECOND: f32 = 60.0;
+        let tuning = crate::tuning::PresentationTuning::default();
         Self {
-            accel: 3.0 * MUL_2D * REFERENCE_UPDATES_PER_SECOND,
-            max_speed: 1.0 * MUL_2D * REFERENCE_UPDATES_PER_SECOND,
-            friction: 1.75 * MUL_2D * REFERENCE_UPDATES_PER_SECOND,
+            accel: tuning.camera_accel,
+            max_speed: tuning.camera_max_speed,
+            friction: tuning.camera_friction,
             velocity: Vec2::ZERO,
             key_left: KeyCode::KeyA,
             key_right: KeyCode::KeyD,
@@ -93,8 +92,11 @@ pub fn camera_2d_movement_system(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut query: Query<(&mut FlyCamera2d, &mut Transform, Option<&Projection>)>,
     menu: Option<Res<crate::ui::scenario_menu::ScenarioMenu>>,
+    editor: Option<Res<crate::ui::tuning_panel::TuningEditor>>,
 ) {
-    if menu.is_some_and(|menu| menu.blocks_world_input) {
+    if menu.is_some_and(|menu| menu.blocks_world_input)
+        || editor.is_some_and(|editor| editor.keyboard_captured())
+    {
         for (mut options, _, _) in &mut query {
             options.velocity = Vec2::ZERO;
         }

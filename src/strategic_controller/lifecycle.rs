@@ -9,6 +9,7 @@ use super::{
 
 #[derive(Debug, Default)]
 pub(super) struct PlannerState {
+    tuning_review_requested: bool,
     last_review_tick: Option<u64>,
     work_window_start_tick: Option<u64>,
     work_used: usize,
@@ -65,20 +66,29 @@ impl Controller {
         }
     }
 
+    pub fn request_tuning_review(&mut self) {
+        self.state.tuning_review_requested = true;
+    }
+
     pub fn owner(&self) -> SwarmId {
         self.owner
     }
 
-    pub fn decide(&mut self, state: &GameState<'_>) -> Decision {
+    pub fn decide(&mut self, tuning: &AutonomyTuning, state: &GameState<'_>) -> Decision {
         if state.finished {
             return Decision::idle("match finished");
         }
-        self.state.decide(self.owner, state)
+        self.state.decide(self.owner, tuning, state)
     }
 }
 
 impl PlannerState {
-    fn decide(&mut self, owner: SwarmId, state: &GameState<'_>) -> Decision {
+    fn decide(
+        &mut self,
+        owner: SwarmId,
+        tuning: &AutonomyTuning,
+        state: &GameState<'_>,
+    ) -> Decision {
         if self
             .last_grid_revision
             .is_some_and(|revision| state.grid.revision() < revision)
@@ -87,7 +97,7 @@ impl PlannerState {
             self.unreachable_cleanup_cursor = None;
         }
         self.last_grid_revision = Some(state.grid.revision());
-        let window_start = state.tick - state.tick % REVIEW_PERIOD_TICKS;
+        let window_start = state.tick - state.tick % WORK_WINDOW_TICKS;
         if self.work_window_start_tick != Some(window_start) {
             self.work_window_start_tick = Some(window_start);
             self.work_used = 0;
@@ -119,19 +129,24 @@ impl PlannerState {
             covered_attack_movement,
             all_attack_targets_covered,
         } = validation;
-        let regular_review = self.last_review_tick.is_none_or(|last| {
-            state.tick < last || state.tick.saturating_sub(last) >= REVIEW_PERIOD_TICKS
-        });
+        let tuning_review = std::mem::take(&mut self.tuning_review_requested);
+        let regular_review = tuning_review
+            || self.last_review_tick.is_none_or(|last| {
+                state.tick < last
+                    || state.tick.saturating_sub(last)
+                        >= tuning.controller_review_period_ticks.max(1)
+            });
         if invalidation.is_none() && self.retained_covered_movement && !all_attack_targets_covered {
             invalidation =
                 Some("a retained attack target left existing owned Defend coverage".to_string());
         }
-        let reviewed_supportable_fronts = if invalidation.is_none()
+        let reviewed_supportable_fronts = if !tuning_review
+            && invalidation.is_none()
             && regular_review
             && (self.retained_covered_movement || covered_attack_movement)
             && !observed_attack_targets.is_empty()
         {
-            Some(supportable_attack_fronts(owner, state, &mut budget))
+            Some(supportable_attack_fronts(tuning, owner, state, &mut budget))
         } else {
             None
         };
@@ -142,7 +157,8 @@ impl PlannerState {
         let retains_covered_progress =
             covered_attack_progress && (covered_attack_movement || self.retained_covered_movement);
         let retains_covered_movement_between_reviews = covered_attack_movement && !regular_review;
-        if invalidation.is_none()
+        if !tuning_review
+            && invalidation.is_none()
             && (retains_covered_progress || retains_covered_movement_between_reviews)
             && all_attack_targets_covered
             && retained_fronts_are_supportable
@@ -181,7 +197,8 @@ impl PlannerState {
                 work_units: budget.call_work(),
             };
         }
-        if invalidation.is_none()
+        if !tuning_review
+            && invalidation.is_none()
             && regular_review
             && (self.retained_covered_movement || covered_attack_movement)
             && !covered_attack_progress
@@ -213,8 +230,10 @@ impl PlannerState {
             };
         }
 
-        let candidates = generate_candidates(owner, state, self.current.as_ref(), &mut budget);
+        let candidates =
+            generate_candidates(tuning, owner, state, self.current.as_ref(), &mut budget);
         if budget.exhausted {
+            self.tuning_review_requested |= tuning_review;
             self.work_used = budget.used;
             return Decision {
                 edits: Vec::new(),
@@ -225,7 +244,8 @@ impl PlannerState {
                 work_units: budget.call_work(),
             };
         }
-        let reassessing_spare_front = invalidation.is_none()
+        let reassessing_spare_front = !tuning_review
+            && invalidation.is_none()
             && regular_review
             && retains_covered_progress
             && all_attack_targets_covered
@@ -281,8 +301,9 @@ impl PlannerState {
             if let Some(refreshed) = refreshed
                 && best.score
                     <= refreshed.score
-                        + (refreshed.score - refreshed.economy.value).abs() * (SWITCH_MARGIN - 1.0)
-                        + 10.0
+                        + (refreshed.score - refreshed.economy.value).abs()
+                            * (tuning.controller_switch_margin - 1.0)
+                        + tuning.controller_switch_bias
             {
                 (
                     refreshed.clone(),
@@ -307,6 +328,7 @@ impl PlannerState {
         };
         let provisional_objective = selected.objective;
         let attack_explanation = coordinate_attack_targets(
+            tuning,
             &mut selected,
             &candidates,
             self.current.as_ref(),
@@ -322,13 +344,19 @@ impl PlannerState {
             );
         }
         adapt_pressure_anchor(
+            tuning,
             &mut selected,
-            self.current.as_ref(),
+            if tuning_review {
+                None
+            } else {
+                self.current.as_ref()
+            },
             owner,
             state,
             &mut budget,
         );
         if budget.exhausted {
+            self.tuning_review_requested |= tuning_review;
             self.work_used = budget.used;
             return Decision {
                 edits: Vec::new(),
@@ -350,6 +378,7 @@ impl PlannerState {
 
         let selected = materialize_plan(selected, owner, state, &mut budget);
         if budget.exhausted || !selected.is_coordinated() {
+            self.tuning_review_requested |= tuning_review && budget.exhausted;
             self.work_used = budget.used;
             return Decision {
                 edits: Vec::new(),
