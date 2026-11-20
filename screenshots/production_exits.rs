@@ -62,7 +62,7 @@ pub fn production_exit(ctx: &mut TestContext) -> TestFlow {
         assert_eq!(production.current_target, Some(NanobotType::Hauler));
         assert_eq!(
             production.progress,
-            Tuning::default().production.ticks_per_bot
+            ctx.world.resource::<Tuning>().production.ticks_per_bot
         );
         assert_eq!(production.input_amount, 0);
         if phase == 0 && ctx.frame >= 24 {
@@ -164,7 +164,7 @@ fn prepare(world: &mut World) {
     }
     let mut production = ProductionFacility::new();
     production.current_target = Some(NanobotType::Hauler);
-    production.progress = Tuning::default().production.ticks_per_bot;
+    production.progress = world.resource::<Tuning>().production.ticks_per_bot;
     production.input_amount = 0;
     let kind = PlannedKind::ProductionFacility;
     let owner = world

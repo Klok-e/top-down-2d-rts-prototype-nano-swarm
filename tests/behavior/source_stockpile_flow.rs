@@ -781,22 +781,22 @@ fn worker_waits_for_planned_source_stockpile_before_extracting() {
 }
 
 #[test]
-fn second_worker_can_claim_and_build_planned_source_stockpile() {
-    // The "one Worker" claim contract is the foundation
-    // slice's reservation tests; this test pins the
-    // cross-component hand-off: the first Worker triggers
-    // the demand, the second Worker (the only idle Worker
-    // once the first is assigned) claims the planned
-    // structure and builds it. The first Worker waits at
-    // the deposit and resumes extraction once the build
-    // finishes.
+fn gatherer_waits_in_place_while_another_worker_builds_its_source_stockpile() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{
+        DirectMovementComponent, InteractionRegion,
+    };
+
     let mut app = build_app();
-    let cell = IVec2::new(0, 0);
+    let construction_ticks = 300;
+    app.world_mut()
+        .resource_mut::<Tuning>()
+        .construction
+        .work_ticks = construction_ticks;
+    let cell = IVec2::ZERO;
     paint_gather(&mut app, cell);
     let deposit_pos = common::cell_world_center(cell);
-    let (_swarm, _worker_assigned) =
-        spawn_swarm_and_worker(&mut app, deposit_pos + Vec2::new(0.0, -100.0));
-    let _deposit = common::spawn_deposit(
+    let (_, gatherer) = spawn_swarm_and_worker(&mut app, deposit_pos - Vec2::Y * 200.0);
+    let deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
             world_pos: deposit_pos,
@@ -805,40 +805,84 @@ fn second_worker_can_claim_and_build_planned_source_stockpile() {
             radius: 32.0,
         },
     );
-    // A second worker far from the deposit so the planned
-    // claim system picks it (the first worker is busy with
-    // a GatherAssignment, so it is filtered out of the
-    // claim query).
-    let far_pos = deposit_pos + Vec2::new(400.0, 0.0);
-    let second_worker = common::spawn_worker_at(&mut app, far_pos);
 
-    // Build phase + buffer.
-    let total_ticks = plan_completion_tick_budget() + travel_ticks(PLANNED_TRAVEL_DISTANCE);
-    for _ in 0..total_ticks {
+    let (plan, plan_transform) = (0..DEMAND_TICK_BUDGET)
+        .find_map(|_| {
+            app.update();
+            let world = app.world_mut();
+            world
+                .query::<(Entity, &PlannedStructure, &Transform)>()
+                .iter(world)
+                .find(|(_, plan, _)| plan.kind == PlannedKind::SourceStockpile)
+                .map(|(entity, _, transform)| (entity, *transform))
+        })
+        .expect("Gather work creates a Source Stockpile plan");
+    let plan_pos = plan_transform.translation.truncate();
+    let builder_pos =
+        InteractionRegion::structure(&plan_transform).approach(plan_pos * 2.0 - deposit_pos);
+    let builder = common::spawn_worker_at(&mut app, builder_pos);
+
+    let deposit_transform = app.world().get::<Transform>(deposit).unwrap();
+    let deposit_region = InteractionRegion::deposit(deposit_transform, 32.0);
+    let mut waiting_position: Option<Vec2> = None;
+    let mut waiting_ticks = 0;
+    for _ in 0..construction_ticks + DEMAND_TICK_BUDGET {
         app.update();
+        let world = app.world();
+        if world.get::<Stockpile>(plan).is_some() {
+            break;
+        }
+        if world
+            .get::<PlannedStructure>(plan)
+            .is_some_and(|plan| plan.available_work() == 0)
+        {
+            continue;
+        }
+        let pos = world
+            .get::<Transform>(gatherer)
+            .unwrap()
+            .translation
+            .truncate();
+        if waiting_position.is_none()
+            && deposit_region.contains(pos)
+            && world.get::<DirectMovementComponent>(gatherer).is_none()
+            && world.get::<PlannedStructureProgress>(builder).is_some()
+        {
+            waiting_position = Some(pos);
+        }
+        if let Some(waiting_position) = waiting_position {
+            waiting_ticks += 1;
+            assert!(
+                pos.distance(waiting_position) < 1.0
+                    && world.get::<GatherAssignment>(gatherer).is_some()
+                    && world.get::<ExtractProgress>(gatherer).is_none(),
+                "gatherer must remain assigned and wait at the deposit while the other Worker builds (waiting tick {waiting_ticks}, position {pos}, waiting position {waiting_position})"
+            );
+        }
     }
-
-    let world = app.world_mut();
-    // The planned structure is promoted.
-    let still_planned = world
-        .query::<&PlannedStructure>()
-        .iter(world)
-        .filter(|p| p.kind == PlannedKind::SourceStockpile)
-        .count();
-    assert_eq!(
-        still_planned, 0,
-        "Planned Source Stockpile must be promoted to a Stockpile after the second worker builds it"
-    );
-    // The second worker is no longer building.
-    let _ = second_worker;
-    let progress = world
-        .entity(second_worker)
-        .get::<PlannedStructureProgress>();
-    let claim = world.entity(second_worker).get::<PlannedStructureClaim>();
     assert!(
-        progress.is_none() && claim.is_none(),
-        "second worker must be released after the build"
+        waiting_ticks > 180,
+        "gatherer must wait through construction"
     );
+    assert!(app.world().get::<Stockpile>(plan).is_some());
+    assert!(app.world().get::<PlannedStructureClaim>(builder).is_none());
+    assert!(
+        app.world()
+            .get::<PlannedStructureProgress>(builder)
+            .is_none()
+    );
+
+    for _ in 0..DEMAND_TICK_BUDGET {
+        app.update();
+        if app
+            .world()
+            .get::<Cargo>(gatherer)
+            .is_some_and(|cargo| cargo.amount > 0)
+        {
+            return;
+        }
+    }
+    panic!("gatherer did not resume extraction after the Source Stockpile opened");
 }
 
 #[test]

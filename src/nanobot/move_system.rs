@@ -545,13 +545,34 @@ pub fn velocity_system(
                 .map_or(desired, |point| {
                     clamp_velocity(*point - body.start, tuning.logistics.bot_speed)
                 });
+            let yielding_to = yielding
+                .get(&body.entity)
+                .filter(|state| !state.returning)
+                .map(|state| state.to);
             let obstructed_by_friend = remaining_travel
                 .get(body.entity)
                 .is_ok_and(|remaining| remaining.0 > 0.01)
                 && nearby.iter().any(|j| {
-                    let other = bodies[*j].0;
-                    friendly(body.entity, other.entity)
-                        && swept_separation(body.start, recovery_intent, other) < diameter
+                    let (other, wanted) = bodies[*j];
+                    if !friendly(body.entity, other.entity) {
+                        return false;
+                    }
+                    if swept_separation(body.start, recovery_intent, other) < diameter {
+                        return true;
+                    }
+                    // Mutual yields can stop outside either body's individual sweep.
+                    yielding_to == Some(other.entity)
+                        && yielding
+                            .get(&other.entity)
+                            .is_some_and(|state| !state.returning && state.to == body.entity)
+                        && swept_separation(
+                            body.start,
+                            desired,
+                            TrafficBody {
+                                delta: wanted,
+                                ..other
+                            },
+                        ) < diameter
                 });
             if !state.recovering && now - state.last_progress >= 1.0 && obstructed_by_friend {
                 state.recovering = true;
@@ -790,7 +811,14 @@ pub fn velocity_system(
                     travel.last_progress = now;
                 }
             }
-            if state.returning && state.trail.is_empty() {
+            // A sidestep can hide the next waypoint behind a wall. If traffic also
+            // prevents retreat, release the yield so navigation can replan from here.
+            let stranded = desired == Vec2::ZERO
+                && applied == Vec2::ZERO
+                && progress
+                    .get(&body.entity)
+                    .is_some_and(|travel| now - travel.last_progress >= 1.0);
+            if stranded || (state.returning && state.trail.is_empty()) {
                 yielding.remove(&body.entity);
                 commands.entity(body.entity).remove::<TrafficYield>();
             }

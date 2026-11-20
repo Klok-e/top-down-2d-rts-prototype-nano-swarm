@@ -561,10 +561,10 @@ pub fn move_velocity_system(
                 RouteStatus::Pending => {}
                 RouteStatus::Found(found) => {
                     route.waypoints = found.waypoints;
-                    route.current = super::route_following::rejoin_index(
+                    route.current = super::route_following::rejoin_route(
                         position,
                         route.requested_start,
-                        &route.waypoints,
+                        &mut route.waypoints,
                         &navigation,
                     );
                     route.follower = Default::default();

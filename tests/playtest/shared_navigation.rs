@@ -155,6 +155,7 @@ fn both_swarms_and_all_types_detour_around_completed_structure() {
                 ));
                 let mut previous = Vec2::new(-300.0, 0.0);
                 let mut detoured = false;
+                let mut last_step = Vec2::ZERO;
                 for _ in 0..300 {
                     app.update();
                     let position = app
@@ -175,6 +176,14 @@ fn both_swarms_and_all_types_detour_around_completed_structure() {
                             clearance >= 33.999,
                             "{swarm:?}/{kind:?} crossed solid: {point:?}"
                         );
+                    }
+                    let step = position - previous;
+                    if step.length() > 0.05 {
+                        assert!(
+                            last_step.normalize_or_zero().dot(step.normalize()) >= -0.5,
+                            "{swarm:?}/{kind:?}/{blocker_kind} reversed on an uncontested detour at {position:?}: {last_step:?} then {step:?}"
+                        );
+                        last_step = step;
                     }
                     detoured |= position.y.abs() > 249.0;
                     previous = position;

@@ -2,15 +2,21 @@ use bevy::prelude::*;
 
 use crate::navigation::Navigation;
 
-/// A selected shortcut remains a target until actual movement reaches it.
+/// Tracks the waypoint selected for the current movement leg.
 #[derive(Clone, Copy, Default)]
 pub(super) struct RouteFollower {
-    target: Option<usize>,
+    target: Option<WaypointTarget>,
+}
+
+#[derive(Clone, Copy)]
+struct WaypointTarget {
+    index: usize,
+    approach_start: Vec2,
 }
 
 impl RouteFollower {
     pub(super) fn target_index(&self, current: usize) -> usize {
-        self.target.unwrap_or(current)
+        self.target.map_or(current, |target| target.index)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -23,16 +29,31 @@ impl RouteFollower {
         hauler: bool,
         navigation: &Navigation,
     ) -> Vec2 {
-        if let Some(target) = self.target {
-            if waypoints
-                .get(target)
-                .is_some_and(|point| position.distance(*point) < 0.01)
-            {
-                *current = target + 1;
+        if let Some(WaypointTarget {
+            index,
+            approach_start,
+        }) = self.target
+        {
+            let reached = waypoints.get(index).is_some_and(|point| {
+                let offset = position - *point;
+                let distance = offset.length();
+                distance < 0.01
+                    || (distance <= crate::navigation::BODY_RADIUS
+                        && waypoints.get(index + 1).is_some_and(|next| {
+                            // A local sidestep can pass the turn without touching the waypoint.
+                            // Require progress on both legs so a reversal still visits its turn.
+                            let passed = offset.dot(*point - approach_start) > 0.0
+                                && offset.dot(*next - *point) > 0.0;
+                            (distance <= speed || passed)
+                                && navigation.movement_clear(position, *next)
+                        }))
+            });
+            if reached {
+                *current = index + 1;
                 self.target = None;
-            } else if target < *current
+            } else if index < *current
                 || waypoints
-                    .get(target)
+                    .get(index)
                     .is_none_or(|point| !navigation.movement_clear(position, *point))
             {
                 self.target = None;
@@ -70,23 +91,26 @@ impl RouteFollower {
                     }
                 }
                 if navigation.movement_clear(position, waypoints[candidate]) {
-                    self.target = Some(candidate);
+                    self.target = Some(WaypointTarget {
+                        index: candidate,
+                        approach_start: position,
+                    });
                 }
             }
         }
-        let Some(target) = self.target else {
+        let Some(WaypointTarget { index, .. }) = self.target else {
             return Vec2::ZERO;
         };
-        let delta = waypoints[target] - position;
+        let delta = waypoints[index] - position;
         delta.normalize_or_zero() * speed.max(0.0).min(delta.length())
     }
 }
 
 /// Join the closest reachable segment of a result computed from an earlier position.
-pub(super) fn rejoin_index(
+pub(super) fn rejoin_route(
     position: Vec2,
     start: Vec2,
-    waypoints: &[Vec2],
+    waypoints: &mut [Vec2],
     navigation: &Navigation,
 ) -> usize {
     let mut previous = start;
@@ -104,7 +128,27 @@ pub(super) fn rejoin_index(
         }
         previous = end;
     }
-    best.1
+    let index = best.1;
+    if let Some(pair) = waypoints.get_mut(index..index + 2)
+        && !navigation.movement_clear(position, pair[1])
+    {
+        let edge = pair[1] - pair[0];
+        let direction = edge.normalize_or_zero();
+        let progress = (position - pair[0]).dot(direction);
+        if progress > 0.0 && progress < edge.length() && progress <= crate::navigation::BODY_RADIUS
+        {
+            // A bot nudged to the side of a narrow aisle can return to the route at
+            // its current progress instead of walking back to the same grid center.
+            let join = pair[0] + direction * progress;
+            if position.distance(join) <= crate::navigation::BODY_RADIUS
+                && navigation.movement_clear(position, join)
+                && navigation.movement_clear(join, pair[1])
+            {
+                pair[0] = join;
+            }
+        }
+    }
+    index
 }
 
 #[cfg(test)]
@@ -115,12 +159,12 @@ mod tests {
     #[test]
     fn replacement_route_joins_ahead_of_actual_progress() {
         let navigation = Navigation::new(&IntentGrid::new(4, 4), vec![]);
-        let points = [
+        let mut points = [
             Vec2::new(10.0, 0.0),
             Vec2::new(20.0, 0.0),
             Vec2::new(30.0, 0.0),
         ];
-        let mut current = rejoin_index(Vec2::new(25.0, 1.0), Vec2::ZERO, &points, &navigation);
+        let mut current = rejoin_route(Vec2::new(25.0, 1.0), Vec2::ZERO, &mut points, &navigation);
         let step = RouteFollower::default().route_step(
             Vec2::new(25.0, 1.0),
             &points,
@@ -133,6 +177,37 @@ mod tests {
             step.x > 0.0,
             "published replacement must not send a traveller back to its old start"
         );
+    }
+
+    #[test]
+    fn replacement_route_rejoins_a_narrow_aisle_without_backtracking() {
+        let navigation = Navigation::new(
+            &IntentGrid::new(4, 4),
+            vec![Obstacle::Rectangle {
+                center: Vec2::new(-36.0, 36.0),
+                half: Vec2::splat(36.0),
+            }],
+        );
+        let position = Vec2::new(16.0, -31.5);
+        let mut points = [
+            Vec2::new(36.0, -36.0),
+            Vec2::new(-36.0, -36.0),
+            Vec2::new(-108.0, -36.0),
+        ];
+        let mut current = rejoin_route(position, position, &mut points, &navigation);
+        let step = RouteFollower::default().route_step(
+            position,
+            &points,
+            &mut current,
+            5.0,
+            false,
+            &navigation,
+        );
+        assert!(
+            step.y < 0.0 && step.x <= 0.0,
+            "turn back into the aisle without retracing the previous leg: {step:?}"
+        );
+        assert!(navigation.movement_clear(position, position + step));
     }
 
     #[test]
