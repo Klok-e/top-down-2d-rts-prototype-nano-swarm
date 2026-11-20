@@ -18,10 +18,6 @@ For coding-agent implementation work, follow `docs/agents/testing.md`. Don't edi
 
 For agent control and real-process verification, read `docs/agents/agent-control.md`.
 
-## State machines
-
-When adding, changing, or removing behavior retained across ticks, frames, requests, or sessions, read the relevant entries in [the state-machine inventory](docs/state-machines.md). Update its index and affected entries in the same change, covering state encoding, transition guards, timing, interruption and cleanup, reset boundaries, and verification links. This applies to implicit component/flag/counter state and to conversions between implicit and explicit state machines.
-
 ## Agent skills
 
 ### Issue tracker
