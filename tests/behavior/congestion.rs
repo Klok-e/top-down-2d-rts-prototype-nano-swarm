@@ -269,3 +269,168 @@ fn queued_recovery_separates_from_a_working_body_without_losing_cargo() {
     );
     assert_eq!(app.world().get::<Cargo>(loaded).unwrap().amount, 20);
 }
+
+#[test]
+fn loaded_worker_can_pass_an_occupied_intermediate_waypoint() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{Cargo, Commitment},
+        navigation::BODY_RADIUS,
+        resources::ResourceKind,
+    };
+
+    let mut app = common::sim_app_with_movement();
+    common::spawn_structure_at(&mut app, Vec2::new(-36., 36.));
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(96., 96.),
+            amount: 50,
+            capacity: 50,
+            radius: 64.,
+        },
+    );
+    let loading_position = Vec2::new(-51.5, -36.7);
+    let blocker = common::spawn_hauler_at(&mut app, loading_position);
+    app.world_mut()
+        .entity_mut(blocker)
+        .insert(Commitment::Working);
+    let traveller = common::spawn_worker_at(&mut app, Vec2::new(-22., -110.));
+    let destination = Vec2::new(-2., 108.);
+    app.world_mut().entity_mut(traveller).insert((
+        DirectMovementComponent {
+            xy: destination,
+            stop_radius: 0.,
+            speed: None,
+            interaction: None,
+        },
+        Cargo {
+            kind: ResourceKind::Minerals,
+            amount: 4,
+        },
+    ));
+    let mut closest_spacing = f32::INFINITY;
+    for _ in 0..125 {
+        app.update();
+        let world = app.world();
+        let position = |bot| world.get::<Transform>(bot).unwrap().translation.truncate();
+        closest_spacing = closest_spacing.min(position(traveller).distance(position(blocker)));
+    }
+    let end = app
+        .world()
+        .get::<Transform>(traveller)
+        .unwrap()
+        .translation
+        .truncate();
+    assert!(
+        end.distance(destination) <= 2.0
+            && app
+                .world()
+                .get::<DirectMovementComponent>(traveller)
+                .is_none(),
+        "worker could not proceed around the occupied turn: {end:?}"
+    );
+    assert!(closest_spacing >= 2.0 * BODY_RADIUS - 0.001);
+    assert_eq!(app.world().get::<Cargo>(traveller).unwrap().amount, 4);
+}
+
+#[test]
+fn loaded_head_on_yield_resumes_when_both_detours_are_blocked() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{Cargo, RemainingTravel, VelocityComponent, velocity_system},
+        navigation::{BODY_RADIUS, Navigation},
+        resources::ResourceKind,
+    };
+
+    let mut app = common::minimal_app();
+    app.add_systems(FixedUpdate, velocity_system);
+    for center in [
+        Vec2::new(-36., -108.),
+        Vec2::new(-36., 36.),
+        Vec2::new(108., -36.),
+    ] {
+        let structure = common::spawn_structure_at(&mut app, center);
+        app.world_mut()
+            .get_mut::<Transform>(structure)
+            .unwrap()
+            .scale = Vec3::new(1.125, 1.125, 1.);
+    }
+    let worker_start = Vec2::new(34.05, -102.78);
+    let hauler_start = Vec2::new(32.88, -28.60);
+    let worker = common::spawn_worker_at(&mut app, worker_start);
+    let hauler = common::spawn_hauler_at(&mut app, hauler_start);
+    let routes = [
+        (
+            worker,
+            worker_start,
+            Vec2::new(38., 140.),
+            Vec2::new(37.5, -37.),
+        ),
+        (
+            hauler,
+            hauler_start,
+            Vec2::new(39., -140.),
+            Vec2::new(36., -36.),
+        ),
+    ];
+    for (bot, _, xy, _) in routes {
+        app.world_mut().entity_mut(bot).insert((
+            Cargo {
+                kind: ResourceKind::Minerals,
+                amount: 4,
+            },
+            DirectMovementComponent {
+                xy,
+                stop_radius: 0.,
+                speed: None,
+                interaction: None,
+            },
+        ));
+    }
+    let position = |world: &World, bot| world.get::<Transform>(bot).unwrap().translation.truncate();
+    for tick in 0..100 {
+        for (bot, start, goal, bend) in routes {
+            let p = position(app.world(), bot);
+            let waypoint = if bot == worker && tick == 0 {
+                // Initial alignment toward the aisle changes who yields when the route turns.
+                start + Vec2::new(3.5, 4.)
+            } else if (bend.y - p.y) * (goal.y - start.y).signum() > 2. {
+                bend
+            } else {
+                goal
+            };
+            let step = waypoint - p;
+            app.world_mut().entity_mut(bot).insert((
+                VelocityComponent {
+                    value: step.normalize_or_zero() * step.length().min(5.),
+                },
+                RemainingTravel(p.distance(goal)),
+            ));
+        }
+        app.update();
+        let world = app.world();
+        let navigation = world.resource::<Navigation>();
+        for bot in [worker, hauler] {
+            assert!(
+                navigation.point_clear(position(world, bot)),
+                "bot crossed the aisle wall"
+            );
+        }
+        if tick < 60 {
+            assert!(
+                position(world, worker).distance(position(world, hauler))
+                    >= 2. * BODY_RADIUS - 0.001,
+                "bots overlapped before the one-second recovery threshold"
+            );
+        }
+    }
+    let world = app.world();
+    assert!(
+        position(world, worker).y > hauler_start.y && position(world, hauler).y < worker_start.y,
+        "loaded bots failed to pass: {:?}, {:?}",
+        position(world, worker),
+        position(world, hauler)
+    );
+    for bot in [worker, hauler] {
+        assert_eq!(world.get::<Cargo>(bot).unwrap().amount, 4);
+    }
+}

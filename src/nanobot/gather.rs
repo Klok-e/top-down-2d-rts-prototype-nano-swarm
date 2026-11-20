@@ -412,10 +412,9 @@ fn find_source_stockpile_placement_for_demand_accepting(
 /// The demand system is the "Gather intent asks for a Source
 /// Stockpile" half of the issue #23 contract. A Worker that
 /// arrives at a deposit with no usable built Source Stockpile
-/// pauses extraction; the planned structure's claim system
-/// then picks up the planned structure (the same gather Worker
-/// is the natural claimer when it is the only idle worker)
-/// and the build proceeds. Once the planned structure
+/// pauses extraction. An open reachable plan lets the Worker
+/// yield its Gather assignment and become available for
+/// construction. Once the planned structure
 /// promotes to a completed [`Stockpile`], the gather arrive
 /// system sees the usable Source Stockpile and the Worker
 /// resumes extraction.
@@ -729,8 +728,15 @@ pub fn worker_gather_arrive_system(
     tuning: Res<Tuning>,
     mut commands: Commands,
     navigation: Res<Navigation>,
-    workers: Query<
-        (Entity, &Transform, &GatherAssignment, &SwarmMember),
+    clock: Option<Res<super::AllocationClock>>,
+    mut workers: Query<
+        (
+            Entity,
+            &Transform,
+            &GatherAssignment,
+            &SwarmMember,
+            Option<&mut super::RegionalLease>,
+        ),
         (
             Without<super::WorkBlocked>,
             With<Nanobot>,
@@ -751,12 +757,12 @@ pub fn worker_gather_arrive_system(
         Option<&SupportCondition>,
     )>,
     swarms: Query<&SwarmId, With<Swarm>>,
-    planned_structures: Query<&PlannedStructure>,
+    planned_structures: Query<(&PlannedStructure, &Transform, Option<&OwnerSwarm>)>,
     reservations: Query<(Entity, &LogisticsReservation)>,
 ) {
     let mut same_tick_sources = std::collections::HashMap::<Entity, u32>::new();
     let mut same_tick_destinations = std::collections::HashMap::<Entity, u32>::new();
-    for (entity, transform, assignment, swarm_member) in &workers {
+    for (entity, transform, assignment, swarm_member, lease) in &mut workers {
         let Ok((deposit, deposit_transform)) = deposits.get(assignment.deposit) else {
             commands.entity(entity).remove::<GatherAssignment>();
             continue;
@@ -811,14 +817,43 @@ pub fn worker_gather_arrive_system(
             if pending_navigation {
                 continue;
             }
-            let support_plan_exists = planned_structures.iter().any(|planned| {
-                planned.cell == assignment.cell && planned.kind == PlannedKind::SourceStockpile
-            });
-            if support_plan_exists {
+            let deposit_pos = deposit_transform.translation.truncate();
+            let mut waiting_for_plan = false;
+            let mut can_build_source = false;
+            for (plan, transform, owner) in &planned_structures {
+                let serves_deposit = plan.cell == assignment.cell
+                    || transform.translation.truncate().distance(deposit_pos)
+                        <= tuning.logistics.source_proximity_radius;
+                if plan.kind != PlannedKind::SourceStockpile
+                    || !serves_deposit
+                    || !stockpile_owned_by(owner, swarm_member.0, &swarms)
+                {
+                    continue;
+                }
+                match navigation.query_connectivity(
+                    worker_pos,
+                    RouteGoal::Interaction(InteractionRegion::structure(transform)),
+                ) {
+                    ConnectivityStatus::Connected { .. } if plan.can_accept_worker() => {
+                        can_build_source = true;
+                        break;
+                    }
+                    ConnectivityStatus::Connected { .. } | ConnectivityStatus::Pending => {
+                        waiting_for_plan = true;
+                    }
+                    ConnectivityStatus::Unreachable => {}
+                }
+            }
+            if can_build_source {
                 commands
                     .entity(entity)
                     .remove::<GatherAssignment>()
                     .remove::<crate::nanobot::RegionalLease>();
+            } else if waiting_for_plan && let (Some(mut lease), Some(clock)) = (lease, &clock) {
+                lease.defer_no_progress_expiry(
+                    clock.tick(),
+                    tuning.autonomy.lease_no_progress_ttl_ticks,
+                );
             }
             continue;
         };

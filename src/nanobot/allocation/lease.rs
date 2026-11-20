@@ -73,6 +73,10 @@ impl RegionalLease {
         self.expires_at_tick
     }
 
+    pub(crate) fn defer_no_progress_expiry(&mut self, now_tick: u64, ttl: u64) {
+        self.expires_at_tick = now_tick.saturating_add(ttl.max(1));
+    }
+
     pub(crate) fn record_work(&mut self) {
         self.progress = self.progress.saturating_add(1);
     }
@@ -127,7 +131,7 @@ pub fn evaluate_lease(
     }
     if observed_progress > lease.progress_checkpoint {
         lease.progress_checkpoint = observed_progress;
-        lease.expires_at_tick = now_tick.saturating_add(no_progress_ttl_ticks.max(1));
+        lease.defer_no_progress_expiry(now_tick, no_progress_ttl_ticks);
         return LeaseDecision::Keep;
     }
     if now_tick >= lease.expires_at_tick {
