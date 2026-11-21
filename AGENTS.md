@@ -14,7 +14,7 @@ Use the repository-root `.tmp/` directory for agent scratch files and temporary 
 
 ## Testing
 
-For coding-agent implementation work, follow `docs/agents/testing.md`. Don't edit this doc autonomously: human approval always required.
+For coding-agent implementation work, follow `docs/agents/testing.md`.
 
 For agent control and real-process verification, read `docs/agents/agent-control.md`.
 
