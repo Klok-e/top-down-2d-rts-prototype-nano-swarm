@@ -5,7 +5,7 @@ description: Diagnosis loop for hard bugs and performance regressions. Use when 
 
 # Diagnosing Bugs
 
-A discipline for hard bugs. Skip phases only when explicitly justified.
+For diagnosis-only requests, use existing tests, logs, debugger inspection, or other read-only probes. Choose feedback and instrumentation methods that preserve the checkout and live data. Report the evidence, likely cause, and proposed fix. For implementation requests, continue through the fix and verification phases.
 
 When exploring the codebase, read `GLOSSARY.md` (if it exists) to get a clear mental model of the relevant modules, and check ADRs in the area you're touching.
 
@@ -113,6 +113,8 @@ Tool preference:
 
 ## Phase 5: Fix + regression test
 
+Enter this phase when the user requested implementation.
+
 Write the regression test **before the fix**, but only if there is a **correct seam** for it.
 
 A correct seam is one where the test exercises the **real bug pattern** as it occurs at the call site. If the only available seam is too shallow (single-caller test when the bug needs multiple callers, unit test that can't replicate the chain that triggered the bug), a regression test there gives false confidence.
@@ -129,7 +131,7 @@ If a correct seam exists:
 
 ## Phase 6: Cleanup
 
-Required before declaring done:
+For diagnosis-only work, clean up artifacts created for the run and return the findings. After implementing a fix, verify the following:
 
 - [ ] Original repro no longer reproduces (re-run the Phase 1 loop)
 - [ ] Regression test passes (or absence of seam is documented)
