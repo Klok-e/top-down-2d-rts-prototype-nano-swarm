@@ -6,7 +6,6 @@ use super::{
     *,
 };
 use crate::navigation::Route;
-use std::collections::HashSet;
 
 pub(super) fn materialize_plan(
     candidate: PlanCandidate,
@@ -156,8 +155,6 @@ pub(super) fn materialize_plan(
             budget,
         );
     }
-    desired.sort_by_key(|intent| (intent.cell.y, intent.cell.x, intent.kind.index()));
-
     IntentPlan {
         objective,
         owned_deposits,
@@ -165,6 +162,8 @@ pub(super) fn materialize_plan(
         staging,
         key_charger,
         desired,
+        reachability: state.reachability.cloned(),
+        grid_size: IVec2::new(state.grid.width(), state.grid.height()),
     }
 }
 
@@ -173,7 +172,7 @@ fn fit_defend_block(
     minimum: DefendBlock,
     minimum_cells: usize,
     affordable_tiles: usize,
-    desired: &[DesiredIntent],
+    desired: &HashSet<DesiredIntent>,
     paint_capacity: usize,
     budget: &mut WorkBudget,
 ) -> DefendBlock {
@@ -181,11 +180,6 @@ fn fit_defend_block(
         return minimum;
     }
     let occupied_tiles: HashSet<_> = desired.iter().map(|intent| intent.cell).collect();
-    let defended_tiles: HashSet<_> = desired
-        .iter()
-        .filter(|intent| intent.kind == IntentKind::Defend)
-        .map(|intent| intent.cell)
-        .collect();
     let extra_tiles = affordable_tiles.saturating_sub(occupied_tiles.len());
     let layer_room = paint_capacity.saturating_sub(desired.len());
     for count in (minimum_cells + 1..=affordable_tiles).rev() {
@@ -202,7 +196,10 @@ fn fit_defend_block(
             if !occupied_tiles.contains(&cell) {
                 new_tiles += 1;
             }
-            if !defended_tiles.contains(&cell) {
+            if !desired.contains(&DesiredIntent {
+                cell,
+                kind: IntentKind::Defend,
+            }) {
                 new_layers += 1;
             }
             if new_tiles > extra_tiles || new_layers > layer_room {
@@ -217,20 +214,20 @@ fn fit_defend_block(
 }
 
 pub(super) fn push_desired(
-    desired: &mut Vec<DesiredIntent>,
+    desired: &mut HashSet<DesiredIntent>,
     owner: SwarmId,
     intent: DesiredIntent,
     state: &GameState<'_>,
     avoid_terrain: bool,
     budget: &mut WorkBudget,
 ) -> bool {
-    if desired.len() >= MAX_PLAN_CELLS
+    if !budget.spend(1)
+        || desired.len() >= MAX_PLAN_CELLS
         || !state.grid.in_bounds(intent.cell)
         || state
             .reachability
             .is_some_and(|reachability| !reachability.contains(owner, intent.cell, state.grid))
         || desired.contains(&intent)
-        || !budget.spend(1)
     {
         return false;
     }
@@ -245,24 +242,22 @@ pub(super) fn push_desired(
             }
         }
     }
-    desired.push(intent);
-    true
+    desired.insert(intent)
 }
 
 pub(super) fn intent_edits(
     owner: SwarmId,
     state: &GameState<'_>,
-    previous: &[DesiredIntent],
-    desired: &[DesiredIntent],
+    previous: Option<&HashSet<DesiredIntent>>,
+    desired: &HashSet<DesiredIntent>,
     cleanup_cursor: &mut Option<IVec2>,
     unreachable_cleanup_cursor: &mut Option<IVec2>,
     budget: &mut WorkBudget,
 ) -> Vec<IntentEdit> {
     let grid = state.grid;
-    let desired_set = desired.iter().copied().collect::<HashSet<_>>();
     let mut edits = Vec::new();
-    for intent in previous {
-        if !desired_set.contains(intent)
+    for intent in previous.into_iter().flatten() {
+        if !desired.contains(intent)
             && grid
                 .cell(intent.cell)
                 .is_some_and(|cell| cell.has_owned(intent.kind, owner))
@@ -335,9 +330,7 @@ pub(super) fn intent_edits(
                 *cleanup_cursor = last_completed.or(previous_cursor);
                 break 'cleanup;
             }
-            if existing.has_owned(kind, owner)
-                && !desired_set.contains(&DesiredIntent { cell, kind })
-            {
+            if existing.has_owned(kind, owner) && !desired.contains(&DesiredIntent { cell, kind }) {
                 edits.push(IntentEdit {
                     cell,
                     kind,
@@ -417,7 +410,7 @@ pub(super) fn query_route(
 }
 
 fn paint_corridor(
-    desired: &mut Vec<DesiredIntent>,
+    desired: &mut HashSet<DesiredIntent>,
     owner: SwarmId,
     state: &GameState<'_>,
     budget: &mut WorkBudget,
@@ -429,22 +422,27 @@ fn paint_corridor(
     let Ok(Some((cells, _))) = corridor_route(state, budget, start, target, goal) else {
         return;
     };
-    if cells.iter().any(|&cell| Some(cell) == protected_home) {
+    if !budget.spend(cells.len()) || protected_home.is_some_and(|home| cells.contains(&home)) {
         return;
     }
-    let previous_len = desired.len();
+    let mut added = Vec::new();
     for cell in cells {
         let intent = DesiredIntent {
             cell,
             kind: IntentKind::Corridor,
         };
-        if !desired.contains(&intent)
-            && (desired.len() >= EXPANSION_PLAN_CELLS
-                || !push_desired(desired, owner, intent, state, false, budget))
+        if desired.contains(&intent) {
+            continue;
+        }
+        if desired.len() >= EXPANSION_PLAN_CELLS
+            || !push_desired(desired, owner, intent, state, false, budget)
         {
-            desired.truncate(previous_len);
+            for intent in added {
+                desired.remove(&intent);
+            }
             return;
         }
+        added.push(intent);
     }
 }
 
