@@ -20,8 +20,8 @@ use crate::{
         ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole, buffered_minerals,
     },
     strategic_controller::{
-        BotState, Controller, DepositState, GameState, IntentEditAction, StructureKind,
-        StructureState, SwarmState,
+        BotState, Controller, DepositState, GameState, IntentEditAction, SourceNeed, SourceSupport,
+        StructureKind, StructureState, SwarmState,
     },
     terrain::RockFormation,
 };
@@ -259,7 +259,7 @@ fn strategic_intent_system(
         .collect();
     bot_states.sort_by_key(|bot| bot.id);
     let mut economies = BTreeMap::<SwarmId, EconomyObservation>::new();
-    let mut usable_sources = Vec::new();
+    let mut operational_sources = Vec::new();
     let mut structure_states: Vec<_> = structures
         .iter()
         .filter_map(
@@ -287,14 +287,17 @@ fn strategic_intent_system(
                     economy.has_idle_facility |= facility
                         .is_some_and(|facility| !facility.is_busy(tuning.production.ticks_per_bot));
                     if kind == StructureKind::Source
-                        && stockpile.is_some_and(|stockpile| {
-                            stockpile.kind == ResourceKind::Minerals && stockpile.free_space() > 0
-                        })
+                        && let Some(stockpile) =
+                            stockpile.filter(|stockpile| stockpile.kind == ResourceKind::Minerals)
                     {
-                        usable_sources.push((
+                        operational_sources.push((
                             entity.to_bits(),
                             owner,
                             transform.translation.truncate(),
+                            SourceSupport {
+                                has_space: stockpile.free_space() > 0,
+                                stocked: stockpile.amount > 0,
+                            },
                         ));
                     }
                 }
@@ -311,7 +314,7 @@ fn strategic_intent_system(
         )
         .collect();
     structure_states.sort_by_key(|structure| structure.id);
-    usable_sources.sort_by_key(|&(id, _, _)| id);
+    operational_sources.sort_by_key(|&(id, _, _, _)| id);
     let mut swarm_states: Vec<_> = swarms
         .iter()
         .map(|(entity, id, position)| {
@@ -360,22 +363,37 @@ fn strategic_intent_system(
             .borrow_mut()
             .query(&navigation, start, goal, allow_work)
     };
-    let source_query = |owner: SwarmId, position: Vec2, allow_work: &mut dyn FnMut() -> bool| {
-        for &(_, source_owner, source_position) in &usable_sources {
+    let source_radius_squared = tuning.logistics.source_proximity_radius.powi(2);
+    let source_query = |owner: SwarmId,
+                        position: Vec2,
+                        need: SourceNeed,
+                        allow_work: &mut dyn FnMut() -> bool| {
+        let mut support = SourceSupport::default();
+        for &(_, source_owner, source_position, observed) in &operational_sources {
             if !allow_work() {
                 return None;
             }
+            let adds_evidence = match need {
+                SourceNeed::Space => observed.has_space,
+                SourceNeed::Opening => {
+                    observed.stocked || (!support.has_space && observed.has_space)
+                }
+            };
             if owner == source_owner
-                && position.distance_squared(source_position)
-                    <= tuning.logistics.source_proximity_radius.powi(2)
+                && adds_evidence
+                && position.distance_squared(source_position) <= source_radius_squared
                 && reachability
                     .position_is_reachable_with_budget(owner, source_position, &grid, allow_work)
                     .ok()?
             {
-                return Some(true);
+                support.has_space |= observed.has_space;
+                support.stocked = observed.stocked;
+                if matches!(need, SourceNeed::Space) || support.stocked {
+                    break;
+                }
             }
         }
-        Some(false)
+        Some(support)
     };
     let state = GameState {
         grid: &grid,

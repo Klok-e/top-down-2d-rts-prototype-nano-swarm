@@ -381,7 +381,9 @@ pub(super) fn plan_economy(
         economy.free_deposit_exists = true;
         let score = value - distance / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_haul_cost;
         if score > best.as_ref().map_or(0.0, |(_, _, score)| *score)
-            && (spare_workers > 1 || usable_source(owner, mine.position, state, budget)?)
+            && (spare_workers > 1
+                || source_support(owner, mine.position, SourceNeed::Space, state, budget)?
+                    .has_space)
             && economy.can_fit(&mine, ECONOMY_EXPANSION_PAINT_LIMIT, budget)
         {
             best = Some((mine, deposit, score));
@@ -402,22 +404,14 @@ fn opening_can_staff_both_mines(
     state: &GameState<'_>,
     budget: &mut WorkBudget,
 ) -> bool {
-    let mut required_workers = PARALLEL_STARTUP_WORKERS;
-    for source in state.structures {
-        if !budget.spend(1) {
-            return false;
-        }
-        if source.owner == owner
-            && source.kind == StructureKind::Source
-            && source.health > 0
-            && world_to_intent_cell(source.position) == mine.gather_cell
-        {
-            if source.minerals > 0 {
-                return true;
-            }
-            required_workers = PARALLEL_STARTUP_WORKERS - 1;
-        }
+    let Some(support) = source_support(owner, mine.position, SourceNeed::Opening, state, budget)
+    else {
+        return false;
+    };
+    if support.stocked {
+        return true;
     }
+    let required_workers = PARALLEL_STARTUP_WORKERS - usize::from(support.has_space);
 
     let mut workers = Vec::new();
     for bot in state.bots {
@@ -510,7 +504,9 @@ fn expansion_capacity(
         if !budget.spend(1) {
             return None;
         }
-        assigned_workers += 1 + usize::from(!usable_source(owner, mine.position, state, budget)?);
+        assigned_workers += 1 + usize::from(
+            !source_support(owner, mine.position, SourceNeed::Space, state, budget)?.has_space,
+        );
         haul_distance += mine.haul_distance;
     }
     Some((
@@ -519,15 +515,18 @@ fn expansion_capacity(
     ))
 }
 
-fn usable_source(
+fn source_support(
     owner: SwarmId,
     position: Vec2,
+    need: SourceNeed,
     state: &GameState<'_>,
     budget: &mut WorkBudget,
-) -> Option<bool> {
-    state.source_query.map_or(Some(false), |query| {
-        query(owner, position, &mut || budget.spend(1))
-    })
+) -> Option<SourceSupport> {
+    state
+        .source_query
+        .map_or(Some(SourceSupport::default()), |query| {
+            query(owner, position, need, &mut || budget.spend(1))
+        })
 }
 
 fn approaches(bot: &BotState, deposit: &DepositState) -> bool {
