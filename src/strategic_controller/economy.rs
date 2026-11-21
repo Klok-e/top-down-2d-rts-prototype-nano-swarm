@@ -14,11 +14,19 @@ use std::collections::HashSet;
 pub(super) const SUPPORT_PAINT_RESERVE: usize = 8;
 const ECONOMY_EXPANSION_PAINT_LIMIT: usize = EXPANSION_PLAN_CELLS - SUPPORT_PAINT_RESERVE;
 const ECONOMY_RETENTION_PAINT_LIMIT: usize = MAX_PLAN_CELLS - SUPPORT_PAINT_RESERVE;
+const MINE_STARTUP_TICKS: u64 = 30 * crate::SIMULATION_HZ as u64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MineStartup {
+    initial_amount: u32,
+    deadline: u64,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct OwnedDeposit {
     pub(super) id: u64,
     position: Vec2,
+    startup: Option<MineStartup>,
     pub(super) gather_cell: IVec2,
     pub(super) build_cell: IVec2,
     pub(super) desired: Vec<DesiredIntent>,
@@ -45,6 +53,32 @@ impl EconomyPlan {
                 .filter(|intent| !self.paint_set.contains(intent))
                 .count()
             <= limit
+    }
+
+    fn claim(
+        &mut self,
+        mut mine: OwnedDeposit,
+        deposit: &DepositState,
+        owner: SwarmId,
+        state: &GameState<'_>,
+        budget: &mut WorkBudget,
+    ) {
+        if self.owned_deposits.is_empty()
+            && !state.structures.iter().take(MAX_STRUCTURES).any(|source| {
+                budget.spend(1)
+                    && source.owner == owner
+                    && source.kind == StructureKind::Source
+                    && source.health > 0
+                    && source.minerals > 0
+                    && world_to_intent_cell(source.position) == mine.gather_cell
+            })
+        {
+            mine.startup = Some(MineStartup {
+                initial_amount: deposit.amount,
+                deadline: state.tick.saturating_add(MINE_STARTUP_TICKS),
+            });
+        }
+        self.add(mine);
     }
 
     fn add(&mut self, mine: OwnedDeposit) {
@@ -129,7 +163,10 @@ pub(super) fn plan_economy(
             continue;
         };
         match mine_support(owner, deposit, state, home, budget).ok()? {
-            Some((supported, _)) => {
+            Some((mut supported, _)) => {
+                supported.startup = mine.startup.filter(|startup| {
+                    deposit.amount >= startup.initial_amount && state.tick < startup.deadline
+                });
                 if !economy.can_fit(&supported, ECONOMY_RETENTION_PAINT_LIMIT) {
                     return None;
                 }
@@ -163,7 +200,7 @@ pub(super) fn plan_economy(
             if let Ok(Some((mine, _))) = mine_support(owner, deposit, state, home, budget)
                 && economy.can_fit(&mine, ECONOMY_EXPANSION_PAINT_LIMIT)
             {
-                economy.add(mine);
+                economy.claim(mine, deposit, owner, state, budget);
             }
             continue;
         }
@@ -224,7 +261,19 @@ pub(super) fn plan_economy(
         return Some(economy);
     }
 
-    let mut best: Option<(OwnedDeposit, f32)> = None;
+    if economy
+        .owned_deposits
+        .first()
+        .is_some_and(|mine| mine.startup.is_some())
+    {
+        economy.free_deposit_exists |= unchecked.into_iter().any(|deposit| {
+            !budget.exhausted
+                && !matches!(mine_support(owner, deposit, state, home, budget), Ok(None))
+        });
+        return (!budget.exhausted).then_some(economy);
+    }
+
+    let mut best: Option<(OwnedDeposit, &DepositState, f32)> = None;
     // Start with the cheapest plausible routes so distant candidates usually
     // need only an optimistic value bound, even when the map has many deposits.
     unchecked.sort_by(|a, b| {
@@ -257,7 +306,7 @@ pub(super) fn plan_economy(
             .max(0.0);
         let optimistic =
             value - min_route / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_haul_cost;
-        let could_claim = optimistic > best.as_ref().map_or(0.0, |(_, score)| *score);
+        let could_claim = optimistic > best.as_ref().map_or(0.0, |(_, _, score)| *score);
         if !could_claim && economy.free_deposit_exists {
             continue;
         }
@@ -273,14 +322,14 @@ pub(super) fn plan_economy(
         economy.free_deposit_exists = true;
         let score = value - distance / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_haul_cost;
         if economy.can_fit(&mine, ECONOMY_EXPANSION_PAINT_LIMIT)
-            && score > best.as_ref().map_or(0.0, |(_, score)| *score)
+            && score > best.as_ref().map_or(0.0, |(_, _, score)| *score)
         {
-            best = Some((mine, score));
+            best = Some((mine, deposit, score));
         }
     }
-    if let Some((mine, _)) = best {
+    if let Some((mine, deposit, _)) = best {
         economy.expansion = Some(mine.id);
-        economy.add(mine);
+        economy.claim(mine, deposit, owner, state, budget);
     }
     (!budget.exhausted).then_some(economy)
 }
@@ -476,6 +525,7 @@ fn mine_support(
             OwnedDeposit {
                 id: deposit.id,
                 position: deposit.position,
+                startup: None,
                 gather_cell,
                 build_cell,
                 desired,
