@@ -167,7 +167,6 @@ pub(super) fn generate_candidates(
     });
     let home = owner_state.map_or(Vec2::ZERO, |swarm| swarm.home);
     let home_cell = world_to_intent_cell(home);
-    let forces = estimate_forces(tuning, owner, state, budget);
     let base = PlanCandidate {
         objective: economy
             .expansion
@@ -202,6 +201,7 @@ pub(super) fn generate_candidates(
         return candidates;
     }
 
+    let forces = estimate_forces(tuning, owner, state, budget);
     let own_income = owner_state.map_or(0.0, |swarm| swarm.mineral_income_per_second);
     let mut hostile_bots = BTreeSet::new();
     let mut recoverable = BTreeSet::new();

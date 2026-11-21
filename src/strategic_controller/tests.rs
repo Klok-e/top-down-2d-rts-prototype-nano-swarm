@@ -3496,9 +3496,13 @@ fn military_priorities_protect_expansion_before_attacking_home() {
         displacement: Vec2::X,
         ..approaching
     };
+    let tuning = AutonomyTuning {
+        strategy_raid_distance_cost: 1_000.0,
+        ..direct_attack_tuning()
+    };
     let decide = |deposits: &[DepositState], structures: &[StructureState], bots: &[BotState]| {
         Controller::new(owner).decide(
-            &direct_attack_tuning(),
+            &tuning,
             &GameState {
                 swarms: &swarms,
                 deposits,
@@ -3543,7 +3547,7 @@ fn military_priorities_protect_expansion_before_attacking_home() {
         })
     };
     let contest = Controller::new(owner).decide(
-        &direct_attack_tuning(),
+        &tuning,
         &GameState {
             swarms: &swarms,
             deposits: &deposits,
@@ -3610,7 +3614,7 @@ fn military_priorities_protect_expansion_before_attacking_home() {
         })
     };
     let reachable_home = Controller::new(owner).decide(
-        &direct_attack_tuning(),
+        &tuning,
         &GameState {
             swarms: &swarms,
             deposits: &deposits[..2],
@@ -3630,7 +3634,6 @@ fn military_priorities_protect_expansion_before_attacking_home() {
             .any(|edit| { edit.kind == IntentKind::Defend && edit.cell == enemy_home })
     );
 
-    let tuning = direct_attack_tuning();
     let mut controller = Controller::new(owner);
     let raid = controller.decide(
         &tuning,
