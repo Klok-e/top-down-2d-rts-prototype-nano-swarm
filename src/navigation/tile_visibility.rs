@@ -59,6 +59,23 @@ impl Navigation {
         )
     }
 
+    pub(crate) fn visible_tile_point(
+        &self,
+        origin: Vec2,
+        min: Vec2,
+        max: Vec2,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<Vec2>, ()> {
+        let center = min.midpoint(max);
+        if self.segment_clear_with_budget(origin, center, allow_work)? {
+            return Ok(Some(center));
+        }
+        if !allow_work() {
+            return Err(());
+        }
+        Ok(self.visible_region_point(origin, min, max, None, |_| true))
+    }
+
     /// Yield one visibility sweep per origin so runtime navigation can budget each probe.
     pub(crate) fn visible_interaction_probes(
         &self,

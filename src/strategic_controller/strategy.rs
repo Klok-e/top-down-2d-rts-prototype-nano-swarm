@@ -11,16 +11,7 @@ fn is_target_reachable(
     let Some(map) = state.reachability else {
         return Ok(true);
     };
-    let mut allow_work = || budget.spend(1);
-    Ok(map
-        .reachable_point_with_budget(
-            owner,
-            world_to_intent_cell(position),
-            state.grid,
-            &mut allow_work,
-        )?
-        .is_some()
-        && map.position_is_reachable_with_budget(owner, position, state.grid, &mut allow_work)?)
+    map.position_is_reachable_with_budget(owner, position, state.grid, &mut || budget.spend(1))
 }
 
 pub(super) fn validate_plan(
@@ -41,12 +32,7 @@ pub(super) fn validate_plan(
             return Err(());
         }
         for &intent in &plan.desired {
-            if map
-                .reachable_point_with_budget(owner, intent.cell, state.grid, &mut || {
-                    budget.spend(1)
-                })?
-                .is_none()
-            {
+            if !map.contains_with_budget(owner, intent.cell, state.grid, &mut || budget.spend(1))? {
                 unreachable.insert(intent);
             }
         }
@@ -486,11 +472,17 @@ pub(super) fn generate_candidates(
                 else {
                     return candidates;
                 };
-                if ground.is_none()
-                    || state.route_query.is_none()
-                        && !map.interaction_is_reachable(owner, interaction)
-                {
+                if ground.is_none() {
                     continue;
+                }
+                if state.route_query.is_none() {
+                    match map.interaction_is_reachable_with_budget(owner, interaction, &mut || {
+                        budget.spend(1)
+                    }) {
+                        Ok(true) => {}
+                        Ok(false) => continue,
+                        Err(()) => return candidates,
+                    }
                 }
             }
             if secured_mine == Some(deposit.id) {

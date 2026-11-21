@@ -104,11 +104,17 @@ pub(super) fn keep_charger_support(
             continue;
         }
         let cell = world_to_intent_cell(structure.position);
-        if state
-            .reachability
-            .is_some_and(|map| !map.position_is_reachable(owner, structure.position, state.grid))
-        {
-            continue;
+        if let Some(map) = state.reachability {
+            match map.position_is_reachable_with_budget(
+                owner,
+                structure.position,
+                state.grid,
+                &mut || budget.spend(1),
+            ) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(()) => return (None, 0.0),
+            }
         }
         let supplied = structure.minerals.min(charger_reserve);
         let already_painted = state

@@ -1,8 +1,8 @@
 use super::{
     lifecycle::WorkBudget,
     materialize::{
-        CorridorPaintLimit, corridor_route, intent_cell_center, query_route, route_exposure,
-        world_to_intent_cell,
+        CorridorPaintLimit, cell_is_reachable, corridor_route, intent_cell_center, query_route,
+        route_exposure, world_to_intent_cell,
     },
     *,
 };
@@ -591,7 +591,7 @@ fn deposit_access(
     state: &GameState<'_>,
     budget: &mut WorkBudget,
 ) -> Option<(bool, BTreeSet<SwarmId>)> {
-    let mut reachable = false;
+    let mut reachable = state.route_query.is_some();
     let mut gather_owners = BTreeSet::new();
     for cell in deposit_candidate_cells(state.grid, deposit.position, deposit.radius) {
         if !budget.spend(1) {
@@ -601,15 +601,7 @@ fn deposit_access(
             && cell_overlaps_circle(cell, deposit.position, deposit.radius)
         {
             if !reachable {
-                reachable = match state.reachability {
-                    Some(map) => map
-                        .reachable_point_with_budget(owner, cell, state.grid, &mut || {
-                            budget.spend(1)
-                        })
-                        .ok()?
-                        .is_some(),
-                    None => true,
-                };
+                reachable = cell_is_reachable(owner, state, cell, budget)?;
             }
             if intent.has(IntentKind::Gather) {
                 for other in intent.owners(IntentKind::Gather) {
@@ -651,16 +643,24 @@ fn mine_support(
         }
         if !state.grid.in_bounds(gather_cell)
             || !cell_overlaps_circle(gather_cell, deposit.position, deposit.radius)
-            || state.reachability.is_some_and(|map| {
-                !map.contains(owner, gather_cell, state.grid)
-                    || (state.route_query.is_none()
-                        && !map.interaction_is_reachable(owner, region.within_cell(gather_cell)))
-            })
         {
             continue;
         }
-        let goal = RouteGoal::Interaction(region.within_cell(gather_cell));
-        let (route, distance) = match corridor_route(state, budget, home, gather_cell, goal) {
+        let interaction = region.within_cell(gather_cell);
+        if state.route_query.is_none()
+            && let Some(map) = state.reachability
+        {
+            match map
+                .interaction_is_reachable_with_budget(owner, interaction, &mut || budget.spend(1))
+            {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(()) => return Ok(None),
+            }
+        }
+        let goal = RouteGoal::Interaction(interaction);
+        let (route, distance) = match corridor_route(owner, state, budget, home, gather_cell, goal)
+        {
             Ok(Some(route)) => route,
             Ok(None) if budget.exhausted => return Ok(None),
             Ok(None) => continue,
@@ -669,34 +669,36 @@ fn mine_support(
                 continue;
             }
         };
-        let viable = |cell| {
-            state.grid.in_bounds(cell)
-                && state
-                    .reachability
-                    .is_none_or(|map| map.contains(owner, cell, state.grid))
-        };
         if !budget.spend(route.len() + 4) {
             return Ok(None);
         }
-        if !route.iter().copied().all(viable) {
+        let viable = std::iter::once(gather_cell)
+            .chain(route.iter().copied())
+            .all(|cell| cell_is_reachable(owner, state, cell, budget) == Some(true));
+        if budget.exhausted {
+            return Ok(None);
+        }
+        if !viable {
             continue;
         }
 
-        let support = [IVec2::X, -IVec2::X, IVec2::Y, -IVec2::Y, IVec2::ZERO];
+        let support = [IVec2::X, -IVec2::X, IVec2::Y, -IVec2::Y];
         let mut support = support.map(|offset| gather_cell + offset);
         support.sort_by(|a, b| {
             home.distance_squared(intent_cell_center(*a))
                 .total_cmp(&home.distance_squared(intent_cell_center(*b)))
         });
-        let Some(build_cell) = support.into_iter().find(|&cell| {
-            if cell == gather_cell || !viable(cell) {
-                return false;
-            }
+        let build_cell = support.into_iter().find(|&cell| {
             state
                 .terrain
                 .iter()
                 .all(|rock| budget.spend(1) && rock.admits_body(intent_cell_center(cell)))
-        }) else {
+                && cell_is_reachable(owner, state, cell, budget) == Some(true)
+        });
+        if budget.exhausted {
+            return Ok(None);
+        }
+        let Some(build_cell) = build_cell else {
             continue;
         };
         let mut desired = vec![

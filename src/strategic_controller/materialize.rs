@@ -6,6 +6,7 @@ use super::{
     *,
 };
 use crate::navigation::Route;
+use std::collections::VecDeque;
 
 pub(super) fn materialize_plan(
     candidate: PlanCandidate,
@@ -93,19 +94,13 @@ pub(super) fn materialize_plan(
     .min(paint_capacity.saturating_sub(desired.len()).max(1));
     let block_at_anchor = |count| DefendBlock::new(anchor, count).avoiding(anchor, protected_home);
     let minimum = block_at_anchor(minimum_cells);
-    for cell in minimum.cells() {
-        push_desired(
-            &mut desired,
-            owner,
-            DesiredIntent {
-                cell,
-                kind: IntentKind::Defend,
-            },
-            state,
-            true,
-            budget,
-        );
-    }
+    let anchor_ground = state.reachability.and_then(|map| {
+        map.reachable_point_with_budget(owner, anchor, state.grid, &mut || budget.spend(1))
+            .ok()
+            .flatten()
+            .map(|point| (anchor, point))
+    });
+    paint_defend_block(minimum, anchor_ground, owner, state, &mut desired, budget);
 
     if anchor != home_cell && owned_deposits.iter().all(|mine| mine.gather_cell != anchor) {
         paint_corridor(
@@ -142,18 +137,8 @@ pub(super) fn materialize_plan(
     if let Some(front) = staging.as_mut() {
         front.block = block;
     }
-    for cell in block.cells() {
-        push_desired(
-            &mut desired,
-            owner,
-            DesiredIntent {
-                cell,
-                kind: IntentKind::Defend,
-            },
-            state,
-            true,
-            budget,
-        );
+    if block != minimum {
+        paint_defend_block(block, anchor_ground, owner, state, &mut desired, budget);
     }
     IntentPlan {
         objective,
@@ -164,6 +149,55 @@ pub(super) fn materialize_plan(
         desired,
         reachability: state.reachability.cloned(),
         grid_size: IVec2::new(state.grid.width(), state.grid.height()),
+    }
+}
+
+fn paint_defend_block(
+    block: DefendBlock,
+    anchor_ground: Option<(IVec2, Vec2)>,
+    owner: SwarmId,
+    state: &GameState<'_>,
+    desired: &mut HashSet<DesiredIntent>,
+    budget: &mut WorkBudget,
+) {
+    let mut paint = |cell, budget: &mut WorkBudget| {
+        push_desired(
+            desired,
+            owner,
+            DesiredIntent {
+                cell,
+                kind: IntentKind::Defend,
+            },
+            state,
+            true,
+            budget,
+        );
+    };
+    let (Some(map), Some((anchor, ground))) = (state.reachability, anchor_ground) else {
+        for cell in block.cells() {
+            paint(cell, budget);
+        }
+        return;
+    };
+    let mut reached = HashSet::from([anchor]);
+    let mut frontier = VecDeque::from([(anchor, ground)]);
+    while let Some((cell, ground)) = frontier.pop_front() {
+        paint(cell, budget);
+        for offset in [IVec2::X, -IVec2::X, IVec2::Y, -IVec2::Y] {
+            let next = cell + offset;
+            if !block.contains(next) || reached.contains(&next) {
+                continue;
+            }
+            match map.visible_ground_from(owner, ground, next, state.grid, &mut || budget.spend(1))
+            {
+                Ok(Some(point)) => {
+                    reached.insert(next);
+                    frontier.push_back((next, point));
+                }
+                Ok(None) => {}
+                Err(()) => return,
+            }
+        }
     }
 }
 
@@ -213,6 +247,21 @@ fn fit_defend_block(
     minimum
 }
 
+pub(super) fn cell_is_reachable(
+    owner: SwarmId,
+    state: &GameState<'_>,
+    cell: IVec2,
+    budget: &mut WorkBudget,
+) -> Option<bool> {
+    if !state.grid.in_bounds(cell) {
+        return Some(false);
+    }
+    state.reachability.map_or(Some(true), |map| {
+        map.contains_with_budget(owner, cell, state.grid, &mut || budget.spend(1))
+            .ok()
+    })
+}
+
 pub(super) fn push_desired(
     desired: &mut HashSet<DesiredIntent>,
     owner: SwarmId,
@@ -223,11 +272,8 @@ pub(super) fn push_desired(
 ) -> bool {
     if !budget.spend(1)
         || desired.len() >= MAX_PLAN_CELLS
-        || !state.grid.in_bounds(intent.cell)
-        || state
-            .reachability
-            .is_some_and(|reachability| !reachability.contains(owner, intent.cell, state.grid))
         || desired.contains(&intent)
+        || cell_is_reachable(owner, state, intent.cell, budget) != Some(true)
     {
         return false;
     }
@@ -281,41 +327,6 @@ pub(super) fn intent_edits(
             });
         }
     }
-    if let Some(reachability) = state.reachability {
-        let previous_cursor = *unreachable_cleanup_cursor;
-        let mut last_completed = None;
-        let mut active_cells = grid.iter_active_cells_after(previous_cursor).peekable();
-        let mut scanned = 0;
-        while scanned < MAX_ACTIVE_CELLS {
-            let Some((cell, existing)) = active_cells.next() else {
-                *unreachable_cleanup_cursor = None;
-                break;
-            };
-            if !budget.spend(1) {
-                *unreachable_cleanup_cursor = last_completed.or(previous_cursor);
-                break;
-            }
-            if reachability.contains(owner, cell, grid) {
-                last_completed = Some(cell);
-                scanned += 1;
-                continue;
-            }
-            for kind in IntentKind::ALL {
-                if existing.has_owned(kind, owner) {
-                    edits.push(IntentEdit {
-                        cell,
-                        kind,
-                        action: IntentEditAction::Erase,
-                    });
-                }
-            }
-            last_completed = Some(cell);
-            scanned += 1;
-        }
-        if scanned == MAX_ACTIVE_CELLS {
-            *unreachable_cleanup_cursor = last_completed;
-        }
-    }
     let previous_cursor = *cleanup_cursor;
     let mut last_completed = None;
     let mut active_cells = grid.iter_active_cells_after(previous_cursor).peekable();
@@ -345,6 +356,49 @@ pub(super) fn intent_edits(
             break;
         }
         *cleanup_cursor = last_completed;
+    }
+    if let Some(reachability) = state.reachability {
+        let previous_cursor = *unreachable_cleanup_cursor;
+        let mut last_completed = None;
+        let mut active_cells = grid.iter_active_cells_after(previous_cursor).peekable();
+        let mut scanned = 0;
+        while scanned < MAX_ACTIVE_CELLS {
+            let Some((cell, existing)) = active_cells.next() else {
+                *unreachable_cleanup_cursor = None;
+                break;
+            };
+            if !budget.spend(1) {
+                *unreachable_cleanup_cursor = last_completed.or(previous_cursor);
+                break;
+            }
+            if IntentKind::ALL
+                .into_iter()
+                .any(|kind| existing.has_owned(kind, owner))
+            {
+                let Ok(reachable) =
+                    reachability.contains_with_budget(owner, cell, grid, &mut || budget.spend(1))
+                else {
+                    *unreachable_cleanup_cursor = last_completed.or(previous_cursor);
+                    break;
+                };
+                if !reachable {
+                    for kind in IntentKind::ALL {
+                        if existing.has_owned(kind, owner) {
+                            edits.push(IntentEdit {
+                                cell,
+                                kind,
+                                action: IntentEditAction::Erase,
+                            });
+                        }
+                    }
+                }
+            }
+            last_completed = Some(cell);
+            scanned += 1;
+        }
+        if scanned == MAX_ACTIVE_CELLS {
+            *unreachable_cleanup_cursor = last_completed;
+        }
     }
     edits.sort_by_key(|edit| {
         (
@@ -419,7 +473,7 @@ fn paint_corridor(
     protected_home: Option<IVec2>,
 ) {
     let goal = RouteGoal::Point(intent_cell_center(target));
-    let Ok(Some((cells, _))) = corridor_route(state, budget, start, target, goal) else {
+    let Ok(Some((cells, _))) = corridor_route(owner, state, budget, start, target, goal) else {
         return;
     };
     if !budget.spend(cells.len()) || protected_home.is_some_and(|home| cells.contains(&home)) {
@@ -450,6 +504,7 @@ fn paint_corridor(
 pub(super) struct CorridorPaintLimit;
 
 pub(super) fn corridor_route(
+    owner: SwarmId,
     state: &GameState<'_>,
     budget: &mut WorkBudget,
     mut start: Vec2,
@@ -474,9 +529,11 @@ pub(super) fn corridor_route(
             cost: start.distance(end),
         }
     };
+    let origin = start;
+    let mut samples = state.reachability.map(|_| vec![start]);
     let mut cells = vec![world_to_intent_cell(start)];
     let mut visited = HashSet::from([cells[0]]);
-    for end in waypoints {
+    for &end in &waypoints {
         let span = (end - start).abs().max_element() / crate::ZONE_BLOCK_SIZE;
         let steps = (span.ceil() as usize).max(1);
         for step in 1..=steps {
@@ -492,8 +549,19 @@ pub(super) fn corridor_route(
                 return Err(CorridorPaintLimit);
             }
             cells.push(cell);
+            if let Some(samples) = &mut samples {
+                samples.push(point);
+            }
         }
         start = end;
+    }
+    if let Some(map) = state.reachability
+        && let Some(samples) = samples
+        && map
+            .remember_route_ground(owner, origin, &waypoints, &samples, &mut || budget.spend(1))
+            .is_err()
+    {
+        return Ok(None);
     }
     Ok(Some((cells, cost)))
 }
