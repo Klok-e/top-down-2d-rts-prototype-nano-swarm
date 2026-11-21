@@ -468,20 +468,30 @@ pub(super) fn generate_candidates(
             if !budget.spend(1) {
                 return candidates;
             }
-            let interaction = region.within_cell(cell);
             if Some(cell) == protected_home
-                || !is_reachable(owner, state, cell)
                 || !cell_overlaps_circle(cell, deposit.position, deposit.radius)
                 || !state
                     .grid
                     .cell(cell)
                     .is_some_and(|intent| intent.has_owned(IntentKind::Gather, *enemy))
-                || state.route_query.is_none()
-                    && state
-                        .reachability
-                        .is_some_and(|map| !map.interaction_is_reachable(owner, interaction))
             {
                 continue;
+            }
+            let interaction = region.within_cell(cell);
+            if let Some(map) = state.reachability {
+                let Ok(ground) =
+                    map.reachable_point_with_budget(owner, cell, state.grid, &mut || {
+                        budget.spend(1)
+                    })
+                else {
+                    return candidates;
+                };
+                if ground.is_none()
+                    || state.route_query.is_none()
+                        && !map.interaction_is_reachable(owner, interaction)
+                {
+                    continue;
+                }
             }
             if secured_mine == Some(deposit.id) {
                 denied_deposits.insert(claim);
