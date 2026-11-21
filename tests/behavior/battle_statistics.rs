@@ -6,7 +6,8 @@ use std::{
 use top_down_2d_rts_prototype_nano_swarm::{
     ai_battle::{AiBattleConfig, AiBattleLayout},
     battle_statistics::{BattleStatisticsConfig, BattleStatisticsPlugin},
-    nanobot::NanobotType,
+    intent::{IntentGrid, IntentKind},
+    nanobot::{NanobotType, SwarmId},
     scenario_selection::{Scenario, ScenarioSelection},
 };
 #[path = "../common/mod.rs"]
@@ -55,6 +56,17 @@ impl Drop for Output {
 
 fn battle(output: &Output) -> App {
     let mut app = common::sim_app_with_elimination();
+    record_battle(&mut app, output);
+    common::spawn_swarm_with_nanobots(&mut app, Vec2::ZERO, &[(NanobotType::Worker, 1)]);
+    common::spawn_opponent_swarm_with_nanobots(
+        &mut app,
+        Vec2::X * 500.,
+        &[(NanobotType::Defender, 1)],
+    );
+    app
+}
+
+fn record_battle(app: &mut App, output: &Output) {
     let mut selection = ScenarioSelection::default();
     selection.current = Scenario::AiBattle;
     app.insert_resource(selection);
@@ -66,13 +78,6 @@ fn battle(output: &Output) -> App {
     });
     app.insert_resource(AiBattleConfig::default());
     app.add_plugins(BattleStatisticsPlugin);
-    common::spawn_swarm_with_nanobots(&mut app, Vec2::ZERO, &[(NanobotType::Worker, 1)]);
-    common::spawn_opponent_swarm_with_nanobots(
-        &mut app,
-        Vec2::X * 500.,
-        &[(NanobotType::Defender, 1)],
-    );
-    app
 }
 
 #[test]
@@ -219,7 +224,10 @@ fn samples_preserve_gross_events_and_stop_counters_after_draw() {
         for event in [
             BattleEvent::Birth,
             BattleEvent::Death,
-            BattleEvent::Gathered(30),
+            BattleEvent::Gathered {
+                amount: 30,
+                painted_deposit: None,
+            },
             BattleEvent::Consumed(30),
             BattleEvent::StructureBuilt,
             BattleEvent::StructureLost,
@@ -239,7 +247,7 @@ fn samples_preserve_gross_events_and_stop_counters_after_draw() {
     }
     assert_eq!(summary["latest"]["swarms"]["0"]["minerals_gathered"], 30);
     assert_eq!(summary["latest"]["swarms"]["0"]["minerals_consumed"], 30);
-    assert_eq!(summary["schema_version"], 6);
+    assert_eq!(summary["schema_version"], 7);
     assert_eq!(
         summary["latest"]["swarms"]["0"]["effective_damage_total"],
         0
@@ -321,7 +329,7 @@ fn effective_damage_is_cumulative_in_json_and_csv_and_freezes_at_match_end() {
     app.update();
 
     let terminal = output.summary();
-    assert_eq!(terminal["schema_version"], 6);
+    assert_eq!(terminal["schema_version"], 7);
     let swarm = &terminal["latest"]["swarms"]["0"];
     assert_eq!(swarm["effective_damage_total"], 22);
     assert_eq!(swarm["effective_damage_nanobots"], 17);
@@ -514,4 +522,187 @@ fn battle_records_initial_tuning_and_only_its_own_tick_stamped_edits() {
     assert_eq!(edits[0]["value"], 23.);
     assert_eq!(edits[0]["revision"], 2);
     assert_eq!(edits[0]["fixed_tick"], 7);
+}
+
+fn latest_csv_columns(output: &Output, swarm: &str, fields: &[&str]) -> Vec<f64> {
+    let csv = output.samples_csv();
+    let mut lines = csv.lines();
+    let headers: Vec<_> = lines.next().unwrap().split(',').collect();
+    let row = lines
+        .rev()
+        .map(|line| line.split(',').collect::<Vec<_>>())
+        .find(|columns| columns[2] == swarm)
+        .unwrap();
+    fields
+        .iter()
+        .map(|field| {
+            let column = headers
+                .iter()
+                .position(|header| header == field)
+                .unwrap_or_else(|| panic!("missing CSV column {field}"));
+            row[column].parse().unwrap()
+        })
+        .collect()
+}
+
+#[test]
+fn battle_samples_distinguish_painted_deposits_that_yield_minerals() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{
+            Cargo, ExtractProgress, GatherAssignment, LogisticsReservation, MaterialWorkProgress,
+            worker_gather_extract_system,
+        },
+        resources::{ResourceDeposit, ResourceKind},
+        tuning::Tuning,
+    };
+
+    let output = Output::new();
+    let mut app = common::minimal_app();
+    app.add_systems(FixedUpdate, worker_gather_extract_system);
+    app.world_mut()
+        .resource_mut::<Tuning>()
+        .logistics
+        .material_work_ticks = 24;
+    record_battle(&mut app, &output);
+    let position = Vec2::splat(128.0);
+    common::spawn_swarm_at(&mut app, position);
+    let worker = common::spawn_worker_at(&mut app, position + Vec2::X * 68.0);
+    let source = common::spawn_stockpile(&mut app, position + Vec2::Y * 172.0, 0, 100);
+    let mined = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: position,
+            amount: 100,
+            capacity: 100,
+            radius: 32.0,
+        },
+    );
+    app.world_mut().entity_mut(worker).insert((
+        GatherAssignment::new(IVec2::ZERO, mined),
+        ExtractProgress::default(),
+        Cargo::empty(ResourceKind::Minerals),
+        LogisticsReservation::new(mined, source, ResourceKind::Minerals, 4),
+        MaterialWorkProgress::default(),
+    ));
+    let distant_cell = IVec2::new(3, 0);
+    let distant = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: common::cell_world_center(distant_cell),
+            amount: 100,
+            capacity: 100,
+            radius: 32.0,
+        },
+    );
+    for cell in [IVec2::ZERO, distant_cell] {
+        app.world_mut().resource_mut::<IntentGrid>().paint(
+            cell,
+            IntentKind::Gather,
+            SwarmId::PLAYER,
+        );
+    }
+
+    for _ in 0..60 {
+        app.update();
+    }
+    let income = 100 - app.world().get::<ResourceDeposit>(mined).unwrap().amount;
+    assert!(
+        income > 1,
+        "multiple extraction pulses should share one deposit"
+    );
+    assert_eq!(
+        app.world().get::<ResourceDeposit>(distant).unwrap().amount,
+        100
+    );
+    let fields = ["owned_deposits", "mineral_income", "unspent_minerals"];
+    assert_eq!(
+        latest_csv_columns(&output, "0", &fields),
+        [1.0, f64::from(income), f64::from(income)],
+    );
+
+    app.world_mut().resource_mut::<IntentGrid>().erase(
+        IVec2::ZERO,
+        IntentKind::Gather,
+        SwarmId::PLAYER,
+    );
+    app.world_mut()
+        .entity_mut(worker)
+        .remove::<GatherAssignment>();
+    for _ in 0..20 {
+        app.update();
+    }
+    app.world_mut().write_message(AppExit::Success);
+    app.update();
+    assert_eq!(
+        latest_csv_columns(&output, "0", &fields),
+        [0.0, 0.0, f64::from(income)],
+    );
+    assert_eq!(
+        output.summary()["latest"]["swarms"]["0"]["minerals_gathered"],
+        income
+    );
+}
+
+#[test]
+fn battle_samples_measure_unfunded_demand_and_empty_charge_per_swarm() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{
+        Charge, OwnerSwarm, PopulationDemand, ProductionFacility, SwarmMember,
+        production_facility_pick_target_system,
+    };
+
+    let output = Output::new();
+    let mut app = common::sim_app_with_population_demand();
+    app.insert_resource(IntentGrid::new(32, 32));
+    record_battle(&mut app, &output);
+    app.add_systems(FixedUpdate, production_facility_pick_target_system);
+    let player = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let opponent = common::spawn_opponent_swarm_with_nanobots(
+        &mut app,
+        Vec2::X * 2500.0,
+        &[(NanobotType::Defender, 1)],
+    );
+    common::spawn_defender_at(&mut app, Vec2::splat(128.0));
+    for (member, mut charge) in app
+        .world_mut()
+        .query::<(&SwarmMember, &mut Charge)>()
+        .iter_mut(app.world_mut())
+    {
+        if !member.0.is_player() {
+            charge.current = 0.0;
+        }
+    }
+    for x in 0..8 {
+        app.world_mut().resource_mut::<IntentGrid>().paint(
+            IVec2::new(x, 0),
+            IntentKind::Defend,
+            SwarmId::PLAYER,
+        );
+    }
+    let funded = common::spawn_facility_at(&mut app, player, Vec2::splat(256.0));
+    for owner in [player, opponent] {
+        app.world_mut()
+            .spawn((ProductionFacility::new(), OwnerSwarm(owner)));
+    }
+
+    for _ in 0..60 {
+        app.update();
+    }
+    assert_eq!(
+        app.world()
+            .resource::<PopulationDemand>()
+            .desired_for(SwarmId::PLAYER, NanobotType::Defender,),
+        4
+    );
+    assert_eq!(
+        app.world()
+            .get::<ProductionFacility>(funded)
+            .unwrap()
+            .current_target,
+        Some(NanobotType::Defender),
+    );
+    let fields = ["mineral_starved_facility_seconds", "empty_charge_defenders"];
+    let player_sample = latest_csv_columns(&output, "0", &fields);
+    assert!((player_sample[0] - 1.0).abs() < 1e-6, "{player_sample:?}");
+    assert_eq!(player_sample[1], 0.0);
+    assert_eq!(latest_csv_columns(&output, "1", &fields), [0.0, 1.0]);
 }

@@ -446,6 +446,9 @@ pub fn production_facility_pick_target_system(
             continue;
         };
         if facility.input_amount < tuning.production.cost_per_bot {
+            if let Some(counters) = counters.as_deref_mut() {
+                counters.record(owner_id, BattleEvent::MineralStarvedFacilityTick);
+            }
             continue;
         }
         facility.input_amount -= tuning.production.cost_per_bot;
