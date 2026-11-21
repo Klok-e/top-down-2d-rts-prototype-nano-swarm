@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
 };
 
 use crate::{
@@ -157,6 +157,12 @@ impl MineralIncomeHistory {
     }
 }
 
+#[derive(Default)]
+struct StrategicObservations {
+    routes: StrategicRouteCache,
+    previous_positions: HashMap<Entity, Vec2>,
+}
+
 #[derive(Default, Clone, Copy)]
 struct EconomyObservation {
     banked_minerals: u32,
@@ -209,7 +215,7 @@ fn strategic_intent_system(
     time: Res<Time<Fixed>>,
     outcome: Option<Res<MatchOutcome>>,
     mut telemetry: ResMut<ControllerTelemetry>,
-    mut routes: Local<StrategicRouteCache>,
+    mut observations: Local<StrategicObservations>,
     mut income_history: Local<BTreeMap<Entity, MineralIncomeHistory>>,
 ) {
     if controllers.is_empty()
@@ -219,24 +225,34 @@ fn strategic_intent_system(
     {
         return;
     }
+    let StrategicObservations {
+        routes,
+        previous_positions,
+    } = &mut *observations;
     let owners: BTreeMap<_, _> = swarms.iter().map(|(entity, id, _)| (entity, *id)).collect();
     let tick = (time.elapsed_secs_f64() * crate::SIMULATION_HZ).round() as u64;
     income_history.retain(|entity, _| owners.contains_key(entity));
+    previous_positions.retain(|entity, _| bots.get(*entity).is_ok());
     let mut bot_states: Vec<_> = bots
         .iter()
-        .map(
-            |(entity, owner, kind, transform, health, charge, cargo)| BotState {
+        .map(|(entity, owner, kind, transform, health, charge, cargo)| {
+            let position = transform.translation.truncate();
+            let previous = previous_positions
+                .insert(entity, position)
+                .unwrap_or(position);
+            BotState {
                 id: entity.to_bits(),
                 owner: owner.0,
                 kind: *kind,
-                position: transform.translation.truncate(),
+                position,
                 health: health.current,
                 max_health: health.max,
                 charge: charge.map_or(1.0, |c| c.current),
                 max_charge: charge.map_or(1.0, |c| c.max),
                 cargo: cargo.map_or(0, |c| c.amount),
-            },
-        )
+                displacement: position - previous,
+            }
+        })
         .collect();
     bot_states.sort_by_key(|bot| bot.id);
     let mut economies = BTreeMap::<SwarmId, EconomyObservation>::new();
@@ -322,7 +338,7 @@ fn strategic_intent_system(
         routes.revision = navigation.revision();
         routes.results.clear();
     }
-    let routes = RefCell::new(&mut *routes);
+    let routes = RefCell::new(routes);
     let route_query = |start, goal, allow_work: &mut dyn FnMut() -> bool| {
         routes
             .borrow_mut()

@@ -315,6 +315,7 @@ fn changed_plan_erases_superseded_paint_beyond_the_cleanup_cursor() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
+        displacement: Vec2::ZERO,
     };
     let deposit = DepositState {
         id: 20,
@@ -455,6 +456,7 @@ fn controller_stops_hunting_a_target_on_the_isolated_side_of_a_painted_tile() {
         charge: 0.0,
         max_charge: 1.0,
         cargo: 0,
+        displacement: Vec2::ZERO,
     };
     let tuning = direct_attack_tuning();
     let mut controller = Controller::new(owner);
@@ -511,6 +513,7 @@ fn mature_economy_bots(owner: SwarmId, home: Vec2) -> Vec<BotState> {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
+            displacement: Vec2::ZERO,
         })
         .chain((4..8).map(|id| BotState {
             id,
@@ -522,6 +525,7 @@ fn mature_economy_bots(owner: SwarmId, home: Vec2) -> Vec<BotState> {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
+            displacement: Vec2::ZERO,
         }))
         .collect()
 }
@@ -581,6 +585,7 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
+            displacement: Vec2::ZERO,
         },
         BotState {
             id: 2,
@@ -592,6 +597,7 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
+            displacement: Vec2::ZERO,
         },
         BotState {
             id: 3,
@@ -603,6 +609,7 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
             charge: 0.3,
             max_charge: 1.0,
             cargo: 0,
+            displacement: Vec2::ZERO,
         },
     ];
     let structures = [
@@ -709,6 +716,13 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
             amount: 72_000,
             radius: 64.0,
         },
+        DepositState {
+            id: 22,
+            owner: Some(enemy),
+            position: world(IVec2::new(8, 1)),
+            amount: 72_000,
+            radius: 64.0,
+        },
     ];
     let primary_chain = funded_primary_chain(owner, home, deposits[0]);
     let mut controller = Controller::new(owner);
@@ -764,6 +778,7 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
+        displacement: Vec2::ZERO,
     });
     let bots = economy_bots
         .into_iter()
@@ -772,7 +787,7 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
     let enemy_sink = StructureState {
         id: 40,
         owner: enemy,
-        position: supplied_swarms[1].home,
+        position: world(IVec2::new(8, 1)),
         kind: StructureKind::Sink,
         health: 20,
         max_health: 100,
@@ -817,7 +832,7 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
     assert!(!expansion.edits.iter().any(|edit| {
         edit.action == IntentEditAction::Paint
             && edit.kind == IntentKind::Defend
-            && edit.cell == IVec2::new(8, 0)
+            && edit.cell == IVec2::new(8, 1)
     }));
     assert!(!expansion.edits.iter().any(|edit| {
         edit.action == IntentEditAction::Erase
@@ -858,15 +873,25 @@ fn advantaged_raid_paints_enemy_logistics_and_keeps_home_economy() {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
+            displacement: Vec2::ZERO,
         })
         .collect::<Vec<_>>();
-    let deposits = [DepositState {
-        id: 20,
-        owner: Some(owner),
-        position: world(IVec2::new(-1, 0)),
-        amount: 500,
-        radius: 100.0,
-    }];
+    let deposits = [
+        DepositState {
+            id: 20,
+            owner: Some(owner),
+            position: world(IVec2::new(-1, 0)),
+            amount: 500,
+            radius: 100.0,
+        },
+        DepositState {
+            id: 21,
+            owner: Some(enemy),
+            position: world(IVec2::new(7, 1)),
+            amount: 500,
+            radius: 100.0,
+        },
+    ];
     let structures = [StructureState {
         id: 30,
         owner: enemy,
@@ -894,7 +919,11 @@ fn advantaged_raid_paints_enemy_logistics_and_keeps_home_economy() {
         },
     );
 
-    assert!(decision.explanation.contains("attack enemy logistics"));
+    assert!(
+        decision
+            .explanation
+            .contains("raid enemy Resource Deposit 21")
+    );
     assert!(decision.edits.iter().any(|edit| {
         edit.action == IntentEditAction::Paint
             && edit.kind == IntentKind::Gather
@@ -944,6 +973,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
+            displacement: Vec2::ZERO,
         })
         .collect::<Vec<_>>();
     let rich_charger = StructureState {
@@ -965,6 +995,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
+        displacement: Vec2::ZERO,
     };
     let mut bots = friendly_defenders.clone();
     bots.push(damage_target);
@@ -1075,6 +1106,7 @@ fn losing_a_mine_keeps_a_progressing_attack_front() {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
+            displacement: Vec2::ZERO,
         })
         .collect::<Vec<_>>();
     let friendly_charger = StructureState {
@@ -1162,7 +1194,7 @@ fn losing_a_mine_keeps_a_progressing_attack_front() {
     assert!(
         revised
             .explanation
-            .contains("retained attack enemy logistics structure 30"),
+            .contains("retained finish remaining structure 30"),
         "{}",
         revised.explanation
     );
@@ -1579,7 +1611,7 @@ fn an_owned_mine_can_take_a_longer_corridor_when_another_depletes() {
 }
 
 #[test]
-fn accumulated_supply_and_a_logistics_target_replace_the_economy_plan() {
+fn income_lead_adds_a_home_push_without_abandoning_the_mine() {
     let mut grid = IntentGrid::new(64, 64);
     let owner = SwarmId(4);
     let enemy = SwarmId(9);
@@ -1616,6 +1648,7 @@ fn accumulated_supply_and_a_logistics_target_replace_the_economy_plan() {
                 charge: 1.0,
                 max_charge: 1.0,
                 cargo: 0,
+                displacement: Vec2::ZERO,
             })
         })
         .collect::<Vec<_>>();
@@ -1657,26 +1690,18 @@ fn accumulated_supply_and_a_logistics_target_replace_the_economy_plan() {
 
     let supplied_swarms = [
         SwarmState {
-            minerals: 2_000,
-            mineral_income_per_second: 0.0,
-            production_saturated: false,
+            mineral_income_per_second: 6.0,
             ..initial_swarms[0]
         },
         initial_swarms[1],
     ];
-    let sink = StructureState {
-        id: 31,
-        kind: StructureKind::Sink,
-        minerals: 100,
-        ..facility
-    };
     let pressure = controller.decide(
         &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &supplied_swarms,
             bots: &bots,
-            structures: &[facility, sink],
+            structures: &[facility],
             deposits: &deposit,
             terrain: &[],
             charge: &DEFAULT_CHARGE,
@@ -1687,7 +1712,7 @@ fn accumulated_supply_and_a_logistics_target_replace_the_economy_plan() {
         },
     );
 
-    assert!(pressure.explanation.contains("attack enemy logistics"));
+    assert!(pressure.explanation.contains("push enemy home"));
     assert!(pressure.edits.iter().any(|edit| {
         edit.action == IntentEditAction::Paint
             && edit.kind == IntentKind::Defend
@@ -1823,6 +1848,7 @@ fn authored_terrain_leaves_budget_for_a_coordinated_plan() {
                 charge: 1.0,
                 max_charge: 1.0,
                 cargo: 0,
+                displacement: Vec2::ZERO,
             })
         })
         .collect::<Vec<_>>();
@@ -1913,6 +1939,7 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
+            displacement: Vec2::ZERO,
         })
         .collect::<Vec<_>>();
     let deposit_cells = [
@@ -1944,8 +1971,8 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
     let structures = [StructureState {
         id: 30,
         owner: enemy,
-        position: swarms[1].home,
-        kind: StructureKind::Sink,
+        position: crate::scenario::cell_origin(crate::scenario::OPPONENT_DEPOSIT_CELL),
+        kind: StructureKind::Source,
         health: 20,
         max_health: 100,
         minerals: 100,
@@ -1972,7 +1999,11 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
         },
     );
 
-    assert!(decision.explanation.contains("attack enemy logistics"));
+    assert!(
+        decision
+            .explanation
+            .contains("raid enemy Resource Deposit 21")
+    );
     assert!(decision.edits.iter().any(|edit| {
         edit.action == IntentEditAction::Paint
             && edit.kind == IntentKind::Gather
@@ -1981,7 +2012,10 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
     assert!(decision.edits.iter().any(|edit| {
         edit.action == IntentEditAction::Paint
             && edit.kind == IntentKind::Defend
-            && edit.cell == crate::scenario::OPPONENT_CELL
+            && edit.cell == crate::scenario::OPPONENT_DEPOSIT_CELL
+    }));
+    assert!(!decision.edits.iter().any(|edit| {
+        edit.action == IntentEditAction::Paint && edit.cell == crate::scenario::OPPONENT_CELL
     }));
     assert!(decision.work_units < PLANNING_WORK_BUDGET);
 }
@@ -2019,6 +2053,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
+        displacement: Vec2::ZERO,
     });
     let target = BotState {
         id: 50,
@@ -2030,6 +2065,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
+        displacement: Vec2::ZERO,
     };
     let bots = friendly_defenders.chain([target]).collect::<Vec<_>>();
     let mut controller = Controller::new(owner);
@@ -2144,6 +2180,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
+        displacement: Vec2::ZERO,
     });
     let target = BotState {
         id: 50,
@@ -2155,6 +2192,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
+        displacement: Vec2::ZERO,
     };
     let mut bots = friendly_defenders.chain([target]).collect::<Vec<_>>();
     let alternative = StructureState {
@@ -2286,6 +2324,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
+        displacement: Vec2::ZERO,
     });
     let target = BotState {
         id: 50,
@@ -2297,6 +2336,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
+        displacement: Vec2::ZERO,
     };
     let mut bots = friendly_defenders.chain([target]).collect::<Vec<_>>();
     let mut controller = Controller::new(owner);
@@ -2431,6 +2471,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
+        displacement: Vec2::ZERO,
     });
     let target = BotState {
         id: 50,
@@ -2442,6 +2483,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
+        displacement: Vec2::ZERO,
     };
     let mut bots = friendly_defenders.chain([target]).collect::<Vec<_>>();
     let alternative = StructureState {
@@ -2451,7 +2493,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
         kind: StructureKind::Charger,
         health: 1,
         max_health: 100,
-        minerals: 1_000,
+        minerals: 3_000,
     };
     let mut controller = Controller::new(owner);
     let initial = controller.decide(
@@ -2632,6 +2674,7 @@ fn hunt_paint_holds_until_the_target_leaves_its_block() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
+        displacement: Vec2::ZERO,
     };
     let mut controller = Controller::new(owner);
     let first = controller.decide(
@@ -2813,8 +2856,7 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
     let supplied_swarms = [
         SwarmState {
             minerals: 2_000,
-            mineral_income_per_second: 0.0,
-            production_saturated: false,
+            mineral_income_per_second: 10.0,
             ..swarms[0]
         },
         swarms[1],
@@ -2831,6 +2873,7 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
+            displacement: Vec2::ZERO,
         }))
         .collect::<Vec<_>>();
     let expansion = controller.decide(
@@ -2904,14 +2947,24 @@ fn live_scoring_review_changes_intent_without_refilling_the_planning_allowance()
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
+        displacement: Vec2::ZERO,
     };
-    let swarms = [SwarmState {
-        id: owner,
-        home: world(IVec2::ZERO),
-        minerals: 0,
-        mineral_income_per_second: 0.0,
-        production_saturated: false,
-    }];
+    let swarms = [
+        SwarmState {
+            id: owner,
+            home: world(IVec2::ZERO),
+            minerals: 0,
+            mineral_income_per_second: 10.0,
+            production_saturated: false,
+        },
+        SwarmState {
+            id: enemy.owner,
+            home: world(target),
+            minerals: 0,
+            mineral_income_per_second: 2.0,
+            production_saturated: false,
+        },
+    ];
     let bots = [enemy];
     let mut grid = IntentGrid::new(32, 32);
     let mut tuning = direct_attack_tuning();
@@ -2924,7 +2977,7 @@ fn live_scoring_review_changes_intent_without_refilling_the_planning_allowance()
             ..empty_state(&grid, 0)
         },
     );
-    assert!(initial.explanation.contains("hunt remaining Nanobot"));
+    assert!(initial.explanation.contains("push enemy home"));
     apply(&mut grid, owner, &initial);
     assert!(
         grid.cell(target)
@@ -2932,7 +2985,7 @@ fn live_scoring_review_changes_intent_without_refilling_the_planning_allowance()
             .has_owned(IntentKind::Defend, owner)
     );
 
-    tuning.strategy_hold_base = 10_000.0;
+    tuning.strategy_home_income_lead = 10.0;
     controller.request_tuning_review();
     let revised = controller.decide(
         &tuning,
@@ -2998,16 +3051,18 @@ fn wounded_target_priority_uses_the_edited_health_maximum() {
         max_health: 100,
         minerals: 0,
     };
-    let mut tuning = AutonomyTuning {
-        strategy_hold_base: 135.0,
-        ..AutonomyTuning::default()
+    let tuning = AutonomyTuning::default();
+    let nearer_structure = StructureState {
+        id: 10,
+        position: world(IVec2::new(5, 0)),
+        ..structure
     };
     let decide_structure = |target| {
         Controller::new(owner).decide(
             &tuning,
             &GameState {
                 swarms: &swarms,
-                structures: &[target],
+                structures: &[target, nearer_structure],
                 ..empty_state(&grid, 0)
             },
         )
@@ -3015,13 +3070,13 @@ fn wounded_target_priority_uses_the_edited_health_maximum() {
     assert!(
         decide_structure(structure)
             .explanation
-            .contains("hold the home economy")
+            .contains("finish remaining structure 10")
     );
     structure.max_health = 200;
     assert!(
         decide_structure(structure)
             .explanation
-            .contains("attack enemy logistics structure 9"),
+            .contains("finish remaining structure 9"),
         "half-health logistics must receive its wound priority with a larger maximum"
     );
 
@@ -3035,14 +3090,19 @@ fn wounded_target_priority_uses_the_edited_health_maximum() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
+        displacement: Vec2::ZERO,
     };
-    tuning.strategy_hold_base = 520.0;
+    let nearer_bot = BotState {
+        id: 13,
+        position: world(IVec2::new(5, 0)),
+        ..bot
+    };
     let decide_bot = |target| {
         Controller::new(owner).decide(
             &tuning,
             &GameState {
                 swarms: &swarms,
-                bots: &[target],
+                bots: &[target, nearer_bot],
                 ..empty_state(&grid, 0)
             },
         )
@@ -3050,7 +3110,7 @@ fn wounded_target_priority_uses_the_edited_health_maximum() {
     assert!(
         decide_bot(bot)
             .explanation
-            .contains("hold the home economy")
+            .contains("hunt remaining Nanobot 13")
     );
     bot.max_health = 200;
     assert!(
@@ -3098,6 +3158,7 @@ fn a_compact_front_leads_the_army_and_waits_for_most_defenders() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
+        displacement: Vec2::ZERO,
     });
     let mut defenders = defenders.collect::<Vec<_>>();
     let mut controller = Controller::new(owner);
@@ -3263,6 +3324,7 @@ fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
+        displacement: Vec2::ZERO,
     };
     let mut controller = Controller::new(owner);
     let mut tuning = AutonomyTuning::default();
@@ -3354,6 +3416,356 @@ fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
 }
 
 #[test]
+fn military_priorities_protect_expansion_before_attacking_home() {
+    let owner = SwarmId(4);
+    let enemy = SwarmId(9);
+    let mine = IVec2::new(-5, 0);
+    let neutral = IVec2::new(2, 6);
+    let enemy_mine = IVec2::new(8, 4);
+    let enemy_home = IVec2::new(10, -5);
+    let mut grid = IntentGrid::new(32, 32);
+    let swarms = [
+        SwarmState {
+            id: owner,
+            home: world(IVec2::ZERO),
+            minerals: 100,
+            mineral_income_per_second: 100.0,
+            production_saturated: false,
+        },
+        SwarmState {
+            id: enemy,
+            home: world(enemy_home),
+            minerals: 100,
+            mineral_income_per_second: 1.0,
+            production_saturated: false,
+        },
+    ];
+    let main_deposit = DepositState {
+        id: 10,
+        owner: Some(owner),
+        position: world(mine),
+        amount: 70_000,
+        radius: 100.0,
+    };
+    let enemy_deposit = DepositState {
+        id: 20,
+        owner: None,
+        position: world(enemy_mine),
+        ..main_deposit
+    };
+    let contested_deposit = DepositState {
+        id: 30,
+        owner: None,
+        position: world(neutral),
+        ..main_deposit
+    };
+    grid.paint(enemy_mine, IntentKind::Gather, enemy);
+    let raid_target = StructureState {
+        id: 21,
+        owner: enemy,
+        position: world(enemy_mine + IVec2::Y),
+        kind: StructureKind::Source,
+        health: 80,
+        max_health: 100,
+        minerals: 40,
+    };
+    let home_facility = StructureState {
+        id: 25,
+        position: world(enemy_home),
+        kind: StructureKind::Facility,
+        ..raid_target
+    };
+    let intruder = BotState {
+        id: 50,
+        owner: enemy,
+        kind: NanobotType::Defender,
+        position: world(mine + IVec2::X),
+        health: 100,
+        max_health: 100,
+        charge: 1.0,
+        max_charge: 1.0,
+        cargo: 0,
+        displacement: Vec2::ZERO,
+    };
+    let approaching = BotState {
+        id: 51,
+        kind: NanobotType::Worker,
+        position: world(neutral + IVec2::X),
+        displacement: -Vec2::X,
+        ..intruder
+    };
+    let leaving = BotState {
+        displacement: Vec2::X,
+        ..approaching
+    };
+    let decide = |deposits: &[DepositState], structures: &[StructureState], bots: &[BotState]| {
+        Controller::new(owner).decide(
+            &direct_attack_tuning(),
+            &GameState {
+                swarms: &swarms,
+                deposits,
+                structures,
+                bots,
+                ..empty_state(&grid, 0)
+            },
+        )
+    };
+    let deposits = [main_deposit, enemy_deposit, contested_deposit];
+    let structures = [home_facility, raid_target];
+
+    let defense = decide(&deposits, &structures, &[intruder, approaching]);
+    assert!(
+        defense
+            .explanation
+            .contains("defend owned Resource Deposit 10"),
+        "{defense:?}"
+    );
+    assert!(defense.explanation.contains("owned Resource Deposits [10]"));
+    assert!(defense.explanation.contains("staging point"));
+    assert!(
+        defense
+            .edits
+            .iter()
+            .any(|edit| { edit.kind == IntentKind::Defend && edit.cell == mine + IVec2::X })
+    );
+    assert!(
+        !defense
+            .edits
+            .iter()
+            .any(|edit| { edit.kind == IntentKind::Gather && edit.cell == neutral })
+    );
+
+    let mine_approaches = |_, goal, _: &mut dyn FnMut() -> bool| {
+        Some(match goal {
+            RouteGoal::Range { .. } => RouteOutcome::Unreachable,
+            _ => RouteOutcome::Found(crate::navigation::Route {
+                waypoints: vec![world(neutral)],
+                cost: world(neutral).distance(swarms[0].home),
+            }),
+        })
+    };
+    let contest = Controller::new(owner).decide(
+        &direct_attack_tuning(),
+        &GameState {
+            swarms: &swarms,
+            deposits: &deposits,
+            structures: &structures,
+            bots: &[approaching],
+            route_query: Some(&mine_approaches),
+            ..empty_state(&grid, 0)
+        },
+    );
+    assert!(
+        contest
+            .explanation
+            .contains("contest neutral Resource Deposit 30"),
+        "{contest:?}"
+    );
+    assert!(
+        contest
+            .edits
+            .iter()
+            .any(|edit| { edit.kind == IntentKind::Defend && edit.cell == neutral })
+    );
+
+    assert!(
+        !contest
+            .edits
+            .iter()
+            .any(|edit| { edit.kind == IntentKind::Gather && edit.cell == neutral })
+    );
+
+    let expansion = decide(&deposits, &structures, &[leaving]);
+    assert!(
+        expansion.explanation.contains("secure Resource Deposit 30"),
+        "{expansion:?}"
+    );
+
+    let raid = decide(&deposits[..2], &structures, &[]);
+    assert!(
+        raid.explanation.contains("raid enemy Resource Deposit 20"),
+        "{raid:?}"
+    );
+    assert!(
+        raid.edits
+            .iter()
+            .any(|edit| { edit.kind == IntentKind::Defend && edit.cell == enemy_mine + IVec2::Y })
+    );
+
+    let home = decide(&deposits[..2], &[home_facility], &[]);
+    assert!(home.explanation.contains("push enemy home"), "{home:?}");
+    assert!(
+        home.edits
+            .iter()
+            .any(|edit| { edit.kind == IntentKind::Defend && edit.cell == enemy_home })
+    );
+
+    let blocked_approach = |_, goal, _: &mut dyn FnMut() -> bool| {
+        Some(match goal {
+            RouteGoal::Range { center, .. } if center == raid_target.position => {
+                RouteOutcome::Unreachable
+            }
+            _ => RouteOutcome::Found(crate::navigation::Route {
+                waypoints: vec![],
+                cost: 0.0,
+            }),
+        })
+    };
+    let reachable_home = Controller::new(owner).decide(
+        &direct_attack_tuning(),
+        &GameState {
+            swarms: &swarms,
+            deposits: &deposits[..2],
+            structures: &structures,
+            route_query: Some(&blocked_approach),
+            ..empty_state(&grid, 0)
+        },
+    );
+    assert!(
+        reachable_home.explanation.contains("push enemy home"),
+        "{reachable_home:?}"
+    );
+    assert!(
+        reachable_home
+            .edits
+            .iter()
+            .any(|edit| { edit.kind == IntentKind::Defend && edit.cell == enemy_home })
+    );
+
+    let tuning = direct_attack_tuning();
+    let mut controller = Controller::new(owner);
+    let raid = controller.decide(
+        &tuning,
+        &GameState {
+            swarms: &swarms,
+            deposits: &deposits[..2],
+            structures: &structures,
+            ..empty_state(&grid, 0)
+        },
+    );
+    apply(&mut grid, owner, &raid);
+    let damaged_mine = StructureState {
+        health: 20,
+        ..raid_target
+    };
+    let defend = controller.decide(
+        &tuning,
+        &GameState {
+            swarms: &swarms,
+            deposits: &deposits[..2],
+            structures: &[home_facility, damaged_mine],
+            bots: &[intruder],
+            ..empty_state(&grid, WORK_WINDOW_TICKS)
+        },
+    );
+    assert!(
+        defend
+            .explanation
+            .contains("defend owned Resource Deposit 10")
+    );
+    assert!(defend.edits.iter().any(|edit| {
+        edit.action == IntentEditAction::Erase
+            && edit.kind == IntentKind::Defend
+            && edit.cell == enemy_mine + IVec2::Y
+    }));
+}
+
+#[test]
+fn healthy_enemy_home_requires_a_live_tuned_income_lead() {
+    let owner = SwarmId(4);
+    let enemy = SwarmId(9);
+    let enemy_home = IVec2::new(8, 0);
+    let grid = IntentGrid::new(32, 32);
+    let mut tuning = direct_attack_tuning();
+    let mut controller = Controller::new(owner);
+    let swarms = [
+        SwarmState {
+            id: owner,
+            home: world(IVec2::ZERO),
+            minerals: 10_000,
+            mineral_income_per_second: 15.0,
+            production_saturated: false,
+        },
+        SwarmState {
+            id: enemy,
+            home: world(enemy_home),
+            minerals: 0,
+            mineral_income_per_second: 10.0,
+            production_saturated: false,
+        },
+    ];
+    let structures = [StructureState {
+        id: 1,
+        owner: enemy,
+        position: world(enemy_home),
+        kind: StructureKind::Facility,
+        health: 100,
+        max_health: 100,
+        minerals: 0,
+    }];
+    tuning.strategy_home_income_lead = 5.0;
+    let state = GameState {
+        swarms: &swarms,
+        structures: &structures,
+        ..empty_state(&grid, 0)
+    };
+
+    let hold = controller.decide(&tuning, &state);
+    assert!(
+        hold.explanation.contains("hold the home economy"),
+        "{hold:?}"
+    );
+    assert!(!hold.edits.iter().any(|edit| edit.cell == enemy_home));
+
+    tuning.strategy_home_income_lead = 4.9;
+    controller.request_tuning_review();
+    let push = controller.decide(
+        &tuning,
+        &GameState {
+            grid: &grid,
+            ..state
+        },
+    );
+    assert!(push.explanation.contains("push enemy home"), "{push:?}");
+    assert!(push.edits.iter().any(|edit| {
+        edit.action == IntentEditAction::Paint
+            && edit.kind == IntentKind::Defend
+            && edit.cell == enemy_home
+    }));
+
+    let survivor = BotState {
+        id: 2,
+        owner: enemy,
+        kind: NanobotType::Worker,
+        position: world(enemy_home + IVec2::Y * 6),
+        health: 100,
+        max_health: 100,
+        charge: 1.0,
+        max_charge: 1.0,
+        cargo: 0,
+        displacement: Vec2::ZERO,
+    };
+    let cleanup = Controller::new(owner).decide(
+        &tuning,
+        &GameState {
+            swarms: &[
+                swarms[0],
+                SwarmState {
+                    mineral_income_per_second: 0.0,
+                    ..swarms[1]
+                },
+            ],
+            bots: &[survivor],
+            ..empty_state(&grid, 0)
+        },
+    );
+    assert!(
+        cleanup.explanation.contains("hunt remaining Nanobot 2"),
+        "{cleanup:?}"
+    );
+}
+
+#[test]
 fn defend_paint_follows_income_and_preserves_chargers_when_reserves_fall() {
     let owner = SwarmId::PLAYER;
     let home = IVec2::ZERO;
@@ -3434,6 +3846,7 @@ fn production_room_requires_saturation_and_mineral_surplus() {
             home: world(home),
             minerals,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
             production_saturated,
         }];
         let decision = Controller::new(owner).decide(

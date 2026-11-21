@@ -160,6 +160,64 @@ fn strategic_adapter_connects_the_deposit_to_home_around_rock() {
 }
 
 #[test]
+fn strategic_adapter_contests_a_deposit_when_a_hostile_worker_moves_toward_it() {
+    use top_down_2d_rts_prototype_nano_swarm::{nanobot::SwarmMember, tuning::Tuning};
+
+    let mut app = common::minimal_app();
+    app.insert_resource(IntentGrid::new(16, 16));
+    app.add_plugins(StrategicControllerPlugin);
+    let owner = SwarmId(7);
+    let enemy = SwarmId(9);
+    let deposit = IVec2::new(5, 0);
+    let deposit_position = common::cell_world_center(deposit);
+    app.world_mut().spawn((
+        Swarm {},
+        owner,
+        Transform::default(),
+        StrategicController::new(owner),
+    ));
+    install_empty_reachability(&mut app, [owner]);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_position,
+            amount: 72_000,
+            capacity: 72_000,
+            radius: 80.0,
+        },
+    );
+    let worker = common::spawn_worker_at(&mut app, deposit_position + Vec2::X * 400.0);
+    app.world_mut()
+        .entity_mut(worker)
+        .insert(SwarmMember::new(enemy));
+    let mut tuning = app.world_mut().resource_mut::<Tuning>();
+    tuning.autonomy.controller_review_period_ticks = 1;
+    tuning.autonomy.strategy_expansion_income_weight = 0.0;
+    tuning.autonomy.strategy_staging_spacing_cells = 64;
+
+    let owns_deposit_block = |app: &App| {
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(deposit)
+            .is_some_and(|cell| cell.has_owned(IntentKind::Defend, owner))
+    };
+    app.update();
+    assert!(!owns_deposit_block(&app));
+
+    app.world_mut()
+        .get_mut::<Transform>(worker)
+        .unwrap()
+        .translation
+        .x -= 4.0;
+    app.update();
+    let review = &app
+        .world()
+        .resource::<top_down_2d_rts_prototype_nano_swarm::strategic_runtime::ControllerTelemetry>()
+        .profiles()[&owner.0];
+    assert!(owns_deposit_block(&app), "{review:?}");
+}
+
+#[test]
 fn controller_telemetry_counts_invalidation_checks_between_reviews() {
     use top_down_2d_rts_prototype_nano_swarm::strategic_runtime::ControllerTelemetry;
 
@@ -471,6 +529,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
+        displacement: Vec2::ZERO,
     };
     let charger = StructureState {
         id: 42,
@@ -544,6 +603,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
+            displacement: Vec2::ZERO,
         })
         .collect::<Vec<_>>();
     crowded_bots.push(moved);

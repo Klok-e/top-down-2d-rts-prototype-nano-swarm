@@ -22,7 +22,9 @@ pub(super) fn materialize_plan(
         attack,
         anchor,
         attack_target: _,
+        approach: _,
         score: _,
+        protected_home,
     } = candidate;
     let anchor = staging.as_ref().map_or(anchor, StagingFront::point);
     let swarm = state.swarms.iter().find(|swarm| swarm.id == owner);
@@ -59,6 +61,9 @@ pub(super) fn materialize_plan(
     );
     if anchor != home_cell {
         for cell in [anchor, anchor + IVec2::Y, anchor + IVec2::X] {
+            if Some(cell) == protected_home {
+                continue;
+            }
             let build = DesiredIntent {
                 cell,
                 kind: IntentKind::Build,
@@ -87,7 +92,8 @@ pub(super) fn materialize_plan(
         1
     }
     .min(paint_capacity.saturating_sub(desired.len()).max(1));
-    let minimum = DefendBlock::new(anchor, minimum_cells);
+    let block_at_anchor = |count| DefendBlock::new(anchor, count).avoiding(anchor, protected_home);
+    let minimum = block_at_anchor(minimum_cells);
     for cell in minimum.cells() {
         push_desired(
             &mut desired,
@@ -110,7 +116,7 @@ pub(super) fn materialize_plan(
             budget,
             home,
             anchor,
-            RouteGoal::Point(intent_cell_center(anchor)),
+            protected_home,
         );
     }
     if let Some(swarm) = swarm {
@@ -126,7 +132,7 @@ pub(super) fn materialize_plan(
     }
 
     let block = fit_defend_block(
-        anchor,
+        block_at_anchor,
         minimum,
         minimum_cells,
         defense.tiles_with_supply(supplied_slots),
@@ -163,7 +169,7 @@ pub(super) fn materialize_plan(
 }
 
 fn fit_defend_block(
-    anchor: IVec2,
+    block_at_anchor: impl Fn(usize) -> DefendBlock,
     minimum: DefendBlock,
     minimum_cells: usize,
     affordable_tiles: usize,
@@ -183,7 +189,7 @@ fn fit_defend_block(
     let extra_tiles = affordable_tiles.saturating_sub(occupied_tiles.len());
     let layer_room = paint_capacity.saturating_sub(desired.len());
     for count in (minimum_cells + 1..=affordable_tiles).rev() {
-        let block = DefendBlock::new(anchor, count);
+        let block = block_at_anchor(count);
         if !minimum.cells().all(|cell| block.contains(cell)) {
             continue;
         }
@@ -417,11 +423,15 @@ fn paint_corridor(
     budget: &mut WorkBudget,
     start: Vec2,
     target: IVec2,
-    goal: RouteGoal,
+    protected_home: Option<IVec2>,
 ) {
+    let goal = RouteGoal::Point(intent_cell_center(target));
     let Ok(Some((cells, _))) = corridor_route(state, budget, start, target, goal) else {
         return;
     };
+    if cells.iter().any(|&cell| Some(cell) == protected_home) {
+        return;
+    }
     let previous_len = desired.len();
     for cell in cells {
         let intent = DesiredIntent {

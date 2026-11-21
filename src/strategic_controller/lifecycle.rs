@@ -87,6 +87,18 @@ impl Controller {
 }
 
 impl PlannerState {
+    fn describe_active_plan(&self, reason: &str) -> String {
+        let Some(plan) = &self.current else {
+            return reason.to_string();
+        };
+        let mut explanation = format!(
+            "{reason}, the active objective is to {}",
+            plan.objective.label()
+        );
+        plan.append_context(&mut explanation);
+        explanation
+    }
+
     fn decide(
         &mut self,
         owner: SwarmId,
@@ -168,43 +180,38 @@ impl PlannerState {
             self.work_used = budget.used;
             return Decision {
                 edits: Vec::new(),
-                explanation: if budget.exhausted {
+                explanation: self.describe_active_plan(if budget.exhausted {
                     "planning allowance exhausted while reviewing owned Resource Deposits"
                 } else {
                     "owned Resource Deposit support would exceed available paint"
-                }
-                .to_string(),
+                }),
                 reviewed: true,
                 work_units: budget.call_work(),
             };
         };
-        let candidates = generate_candidates(tuning, owner, state, economy.expansion, &mut budget);
+        let mut candidates = generate_candidates(tuning, owner, state, &economy, &mut budget);
         if budget.exhausted {
             self.tuning_review_requested |= tuning_review;
             self.work_used = budget.used;
             return Decision {
                 edits: Vec::new(),
-                explanation:
-                    "planning allowance exhausted during review; retained the current Intent Plan until the next review window"
-                        .to_string(),
+                explanation: self.describe_active_plan(
+                    "planning allowance exhausted during review, retained the current Intent Plan until the next review window",
+                ),
                 reviewed: true,
                 work_units: budget.call_work(),
             };
         }
-        let Some(best) = candidates
-            .iter()
-            .max_by(|left, right| left.score.total_cmp(&right.score))
-            .cloned()
-        else {
-            self.work_used = budget.used;
-            self.last_review_tick = Some(state.tick);
-            return Decision {
-                edits: Vec::new(),
-                explanation: "review found no legal Intent Plan".to_string(),
-                reviewed: true,
-                work_units: budget.call_work(),
-            };
-        };
+        candidates.sort_by(|left, right| {
+            left.objective
+                .priority()
+                .cmp(&right.objective.priority())
+                .then_with(|| left.score.total_cmp(&right.score))
+        });
+        let best = candidates
+            .last()
+            .expect("the home economy is a candidate")
+            .clone();
 
         let progressing_attack = attack_progressed && best.attack.is_some() && !tuning_review;
         let refreshed = self.current.as_ref().and_then(|current| {
@@ -213,6 +220,7 @@ impl PlannerState {
                 .find(|candidate| candidate.objective == current.objective)
         });
         let (mut selected, mut explanation) = if let Some(refreshed) = refreshed
+            && refreshed.objective.priority() == best.objective.priority()
             && (progressing_attack
                 || invalidation.is_none()
                     && (stall_grace
@@ -241,7 +249,7 @@ impl PlannerState {
             };
             (best, explanation)
         };
-        let staging = plan_staging(
+        let mut staging = plan_staging(
             tuning,
             &selected,
             self.current.as_ref(),
@@ -249,52 +257,51 @@ impl PlannerState {
             state,
             &mut budget,
         );
-        if selected.attack_target.is_some()
-            && staging.is_none()
-            && !budget.exhausted
-            && let Some(fallback) = candidates
-                .iter()
-                .filter(|candidate| candidate.attack_target.is_none())
-                .max_by(|left, right| left.score.total_cmp(&right.score))
-        {
-            selected = fallback.clone();
-            explanation = format!(
-                "selected {}; the military objective has no reachable approach",
-                selected.objective.label()
-            );
+        if selected.attack_target.is_some() && staging.is_none() && !budget.exhausted {
+            for alternative in candidates.iter().rev() {
+                if alternative.objective == selected.objective {
+                    continue;
+                }
+                let approach = plan_staging(
+                    tuning,
+                    alternative,
+                    self.current.as_ref(),
+                    owner,
+                    state,
+                    &mut budget,
+                );
+                if budget.exhausted {
+                    break;
+                }
+                if alternative.attack_target.is_none() || approach.is_some() {
+                    explanation = format!(
+                        "selected {} because {} lacked a reachable approach",
+                        alternative.objective.label(),
+                        selected.objective.label(),
+                    );
+                    selected = alternative.clone();
+                    staging = approach;
+                    break;
+                }
+            }
         }
         if budget.exhausted {
             self.tuning_review_requested |= tuning_review;
             self.work_used = budget.used;
             return Decision {
                 edits: Vec::new(),
-                explanation:
-                    "planning allowance exhausted while choosing staging points; retained the current Intent Plan until the next review window"
-                        .to_string(),
+                explanation: self.describe_active_plan(
+                    "planning allowance exhausted while choosing staging points, retained the current Intent Plan until the next review window",
+                ),
                 reviewed: true,
                 work_units: budget.call_work(),
             };
         }
-        if let Some(front) = staging.as_ref() {
-            explanation.push_str(&format!(
-                "; staging point {} toward {}",
-                front.point(),
-                selected.attack_target.unwrap()
-            ));
-        }
         if let Some(id) = lost_deposit {
             explanation.push_str(&format!(
-                "; owned Resource Deposit {id} was exhausted, lost, or unreachable"
+                ", owned Resource Deposit {id} was exhausted, lost, or unreachable"
             ));
         }
-        explanation.push_str(&format!(
-            "; owned Resource Deposits {:?}",
-            economy
-                .owned_deposits
-                .iter()
-                .map(|mine| mine.id)
-                .collect::<Vec<_>>()
-        ));
         let keeps_objective = self
             .current
             .as_ref()
@@ -313,8 +320,8 @@ impl PlannerState {
             self.work_used = budget.used;
             return Decision {
                 edits: Vec::new(),
-                explanation: format!(
-                    "{explanation}; planning allowance exhausted during paint fulfillment, so the current Intent Plan was retained"
+                explanation: self.describe_active_plan(
+                    "planning allowance exhausted during paint fulfillment, so the current Intent Plan was retained",
                 ),
                 reviewed: true,
                 work_units: budget.call_work(),
@@ -340,6 +347,7 @@ impl PlannerState {
         self.covered_stall_grace_used = self.retained_covered_movement
             && !attack_progressed
             && (stall_grace || self.covered_stall_grace_used);
+        selected.append_context(&mut explanation);
         self.current = Some(selected);
         Decision {
             edits,

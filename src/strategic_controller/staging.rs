@@ -116,6 +116,27 @@ impl DefendBlock {
         offset.cmpge(IVec2::ZERO).all() && offset.cmplt(self.size).all()
     }
 
+    pub(super) fn avoiding(mut self, anchor: IVec2, protected: Option<IVec2>) -> Self {
+        let Some(cell) = protected.filter(|&cell| self.contains(cell)) else {
+            return self;
+        };
+        let offsets = (0..2)
+            .filter(|&axis| anchor[axis] != cell[axis])
+            .map(|axis| {
+                let mut offset = IVec2::ZERO;
+                offset[axis] = if anchor[axis] > cell[axis] {
+                    cell[axis] - self.min[axis] + 1
+                } else {
+                    cell[axis] - self.min[axis] - self.size[axis]
+                };
+                offset
+            });
+        if let Some(offset) = offsets.min_by_key(|offset| offset.abs().element_sum()) {
+            self.min += offset;
+        }
+        self
+    }
+
     pub(super) fn cells(self) -> impl Iterator<Item = IVec2> {
         (0..self.size.y)
             .flat_map(move |y| (0..self.size.x).map(move |x| self.min + IVec2::new(x, y)))
@@ -140,7 +161,7 @@ pub(super) fn plan_staging(
         && previous.destination_contains(target, owner, state)
         && previous.points[previous.active..]
             .iter()
-            .all(|point| ground(owner, state, point.cell).is_some())
+            .all(|point| stageable(owner, state, candidate.protected_home, point.cell))
     {
         let mut retained = previous.clone();
         if previous.spacing_cells != spacing && previous.active + 1 < previous.points.len() {
@@ -153,7 +174,7 @@ pub(super) fn plan_staging(
             )?;
             retained
                 .points
-                .retain(|point| ground(owner, state, point.cell).is_some());
+                .retain(|point| stageable(owner, state, candidate.protected_home, point.cell));
             retained.active = 0;
         }
         retained.spacing_cells = spacing;
@@ -161,32 +182,30 @@ pub(super) fn plan_staging(
         return Some(retained);
     }
 
-    let start = previous.map_or_else(
-        || {
-            state
-                .swarms
-                .iter()
-                .find(|swarm| budget.spend(1) && swarm.id == owner)
-                .map_or(Vec2::ZERO, |swarm| swarm.home)
-        },
-        |previous| {
-            let cell = previous.point();
-            ground(owner, state, cell).unwrap_or_else(|| intent_cell_center(cell))
-        },
-    );
+    let home = state
+        .swarms
+        .iter()
+        .find(|swarm| budget.spend(1) && swarm.id == owner)
+        .map_or(Vec2::ZERO, |swarm| swarm.home);
+    let mut start = previous.map_or(home, |previous| {
+        let cell = previous.point();
+        ground(owner, state, cell).unwrap_or_else(|| intent_cell_center(cell))
+    });
     let destination = ground(owner, state, target)?;
     let waypoints = if state.route_query.is_some() {
-        query_route(
-            state,
-            start,
-            RouteGoal::Range {
-                center: destination,
-                // Leave room to route beside a structure at the tile center.
-                radius: crate::ZONE_BLOCK_SIZE / 2.0,
-            },
-            budget,
-        )?
-        .waypoints
+        let goal = candidate.approach.unwrap_or(RouteGoal::Range {
+            center: destination,
+            // Leave room to route beside a structure at the tile center.
+            radius: crate::ZONE_BLOCK_SIZE / 2.0,
+        });
+        let route = query_route(state, start, goal, budget).or_else(|| {
+            if start == home || budget.exhausted {
+                return None;
+            }
+            start = home;
+            query_route(state, start, goal, budget)
+        })?;
+        route.waypoints
     } else {
         vec![destination]
     };
@@ -201,7 +220,7 @@ pub(super) fn plan_staging(
         distance: 0.0,
     });
     let mut points = staging_points(&route, first, target, spacing, budget)?;
-    points.retain(|point| ground(owner, state, point.cell).is_some());
+    points.retain(|point| stageable(owner, state, candidate.protected_home, point.cell));
     let mut staging = StagingFront {
         route,
         points,
@@ -213,6 +232,10 @@ pub(super) fn plan_staging(
         staging.advance_if_arrived(owner, state, arrival_fraction, budget);
     }
     Some(staging)
+}
+
+fn stageable(owner: SwarmId, state: &GameState<'_>, protected: Option<IVec2>, cell: IVec2) -> bool {
+    protected != Some(cell) && ground(owner, state, cell).is_some()
 }
 
 fn ground(owner: SwarmId, state: &GameState<'_>, cell: IVec2) -> Option<Vec2> {
