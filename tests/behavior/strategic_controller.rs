@@ -161,6 +161,7 @@ fn strategic_adapter_contests_a_deposit_when_a_hostile_worker_moves_toward_it() 
     use top_down_2d_rts_prototype_nano_swarm::{nanobot::SwarmMember, tuning::Tuning};
 
     let mut app = common::minimal_app();
+    app.insert_resource(IntentGrid::new(16, 16));
     app.add_plugins(StrategicControllerPlugin);
     let owner = SwarmId(7);
     let enemy = SwarmId(9);
@@ -206,7 +207,11 @@ fn strategic_adapter_contests_a_deposit_when_a_hostile_worker_moves_toward_it() 
         .translation
         .x -= 4.0;
     app.update();
-    assert!(owns_deposit_block(&app));
+    let review = &app
+        .world()
+        .resource::<top_down_2d_rts_prototype_nano_swarm::strategic_runtime::ControllerTelemetry>()
+        .profiles()[&owner.0];
+    assert!(owns_deposit_block(&app), "{review:?}");
 }
 
 #[test]
