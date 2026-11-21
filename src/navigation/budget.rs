@@ -1124,10 +1124,28 @@ impl Navigation {
         start: Vec2,
         points: impl IntoIterator<Item = Vec2>,
     ) -> Option<Vec2> {
+        self.connected_point_with_budget(start, points.into_iter().map(Some), &mut || true)
+            .expect("unlimited connectivity query")
+    }
+
+    pub(crate) fn connected_point_with_budget(
+        &self,
+        start: Vec2,
+        points: impl IntoIterator<Item = Option<Vec2>>,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<Vec2>, ()> {
         let future = async {
             let mut checked_regions = HashSet::new();
-            for point in points {
-                if !self.point_clear(point) {
+            let mut points = points.into_iter();
+            loop {
+                WorkUnit::new().await;
+                let Some(point) = points.next() else {
+                    break;
+                };
+                let Some(point) = point else {
+                    continue;
+                };
+                if !self.async_point_clear(point).await {
                     continue;
                 }
                 if self.async_segment_clear(start, point).await {
@@ -1153,11 +1171,12 @@ impl Navigation {
         };
         let mut future = std::pin::pin!(future);
         let mut context = Context::from_waker(Waker::noop());
-        loop {
+        while allow_work() {
             if let Poll::Ready(result) = future.as_mut().poll(&mut context) {
-                return result;
+                return Ok(result);
             }
         }
+        Err(())
     }
 
     /// Reuse movement routing without making existing Corridor paint favor its own path.
