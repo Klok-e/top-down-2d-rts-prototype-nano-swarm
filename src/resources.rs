@@ -126,6 +126,26 @@ pub enum StockpileRole {
     Sink,
 }
 
+pub(crate) fn buffered_minerals(
+    facility: Option<&crate::nanobot::ProductionFacility>,
+    stockpile: Option<&Stockpile>,
+    charger: Option<&crate::nanobot::Charger>,
+) -> u32 {
+    facility
+        .filter(|facility| facility.input_kind == ResourceKind::Minerals)
+        .map_or(0, |facility| facility.input_amount)
+        .saturating_add(
+            stockpile
+                .filter(|stockpile| stockpile.kind == ResourceKind::Minerals)
+                .map_or(0, |stockpile| stockpile.amount),
+        )
+        .saturating_add(
+            charger
+                .filter(|charger| charger.kind == ResourceKind::Minerals)
+                .map_or(0, |charger| charger.amount),
+        )
+}
+
 /// Resource totals partitioned by owning swarm.
 ///
 /// `total` and legacy `add`/`remove` expose aggregate/player-compatible
@@ -134,6 +154,7 @@ pub enum StockpileRole {
 pub struct ResourceLedger {
     pub totals: HashMap<ResourceKind, u32>,
     swarm_totals: HashMap<crate::nanobot::SwarmId, HashMap<ResourceKind, u32>>,
+    extracted_minerals: HashMap<crate::nanobot::SwarmId, u64>,
 }
 
 impl ResourceLedger {
@@ -172,6 +193,22 @@ impl ResourceLedger {
             .entry(kind)
             .or_insert(0);
         *owned = owned.saturating_add(amount);
+    }
+
+    pub(crate) fn extract_for(
+        &mut self,
+        swarm: crate::nanobot::SwarmId,
+        kind: ResourceKind,
+        amount: u32,
+    ) {
+        self.add_for(swarm, kind, amount);
+        if kind == ResourceKind::Minerals {
+            *self.extracted_minerals.entry(swarm).or_default() += u64::from(amount);
+        }
+    }
+
+    pub(crate) fn extracted_minerals_for(&self, swarm: crate::nanobot::SwarmId) -> u64 {
+        self.extracted_minerals.get(&swarm).copied().unwrap_or(0)
     }
 
     /// Legacy player-owned subtraction.

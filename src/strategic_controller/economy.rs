@@ -28,7 +28,7 @@ pub(super) struct OwnedDeposit {
     position: Vec2,
     startup: Option<MineStartup>,
     pub(super) gather_cell: IVec2,
-    build_cell: IVec2,
+    pub(super) build_cell: IVec2,
     pub(super) desired: Vec<DesiredIntent>,
 }
 

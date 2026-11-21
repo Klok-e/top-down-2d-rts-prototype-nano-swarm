@@ -1062,7 +1062,7 @@ pub fn worker_gather_extract_system(
         progress.collected = cargo.amount;
         deposit.amount -= actual;
         reservation.source_remaining -= actual;
-        ledger.add_for(swarm.0, deposit.kind, actual);
+        ledger.extract_for(swarm.0, deposit.kind, actual);
         if let Some(counters) = counters.as_deref_mut() {
             let painted_deposit = (assignment.painted
                 || painted_gather_regions(&grid, swarm.0, *deposit_transform, deposit.radius)

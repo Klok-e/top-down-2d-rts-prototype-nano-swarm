@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::tuning::AutonomyTuning;
+use crate::tuning::{AutonomyTuning, ChargeTuning};
 
 use bevy::prelude::{IVec2, Vec2};
 
@@ -33,7 +33,11 @@ const MAX_PLAN_CELLS: usize = EDIT_WORK_RESERVE / 2;
 pub struct SwarmState {
     pub id: SwarmId,
     pub home: Vec2,
+    /// Minerals currently held in this swarm’s operational structure buffers.
     pub minerals: u32,
+    pub mineral_income_per_second: f32,
+    /// Every operational facility is producing, including zero operational facilities.
+    pub production_saturated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -91,6 +95,7 @@ pub struct GameState<'a> {
     pub structures: &'a [StructureState],
     pub deposits: &'a [DepositState],
     pub terrain: &'a [Obstacle],
+    pub charge: &'a ChargeTuning,
     /// Present for gameplay controllers; omitted by terrain-agnostic unit fixtures.
     pub reachability: Option<&'a SwarmReachabilityMap>,
     pub route_query: Option<&'a RouteQuery<'a>>,
@@ -161,8 +166,6 @@ struct PlanCandidate {
     attack: Option<AttackObligation>,
     anchor: IVec2,
     attack_target: Option<IVec2>,
-    key_charger: Option<StructureState>,
-    defend_target: usize,
     score: f32,
 }
 
@@ -231,6 +234,7 @@ struct ForceEstimate {
 mod economy;
 mod lifecycle;
 mod materialize;
+mod spending;
 mod staging;
 mod strategy;
 
