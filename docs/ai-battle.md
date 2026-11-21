@@ -28,6 +28,16 @@ cargo run --release -- --headless --scenario ai-battle --layout flanks --seed 11
 
 Each AI Battle writes `samples.csv` and `summary.json` below the output root. Samples use simulated time and include population, births, deaths, resources, structures, damage, controller telemetry, and timing. A completed elimination, an interruption, and an in-progress recording remain distinct states.
 
-`summary.json` uses schema version 6. `tuning` contains the full native-unit configuration at battle start. `tuning_edits` records accepted changes with `revision`, `key`, `old_value`, `value`, and `fixed_tick`. Edit values use the editor's display units; ticks are relative to the current battle's start. Earlier-session edits are excluded, and a fresh battle snapshots the current configuration. Unchanged assignments and rejected edits add no revision.
+The economy columns are recorded separately for each swarm. Window totals cover the simulated ticks since the previous sample, including a partial window at the end of a run.
+
+| Column | Measurement |
+| --- | --- |
+| `owned_deposits` | Distinct Resource Deposits that yielded minerals to the swarm while covered by its Gather paint during the window. |
+| `mineral_income` | Minerals the swarm extracted during the window. |
+| `mineral_starved_facility_seconds` | Simulated seconds summed across operational Production Facilities that had unmet Population Demand and too few minerals in their input buffer to start production. Two such facilities idle for one second contribute two facility-seconds. |
+| `unspent_minerals` | Minerals the swarm holds at sample time across all buffers and Nanobot cargo. |
+| `empty_charge_defenders` | Defenders at zero Charge at sample time. |
+
+`summary.json` uses schema version 7. `tuning` contains the full native-unit configuration at battle start. `tuning_edits` records accepted changes with `revision`, `key`, `old_value`, `value`, and `fixed_tick`. Edit values use the editor's display units; ticks are relative to the current battle's start. Earlier-session edits are excluded, and a fresh battle snapshots the current configuration. Unchanged assignments and rejected edits add no revision.
 
 Compare the initial configuration and edit history as well as the seed when comparing runs. The seed improves repeatability but does not guarantee identical outcomes. Inspect economy, sustained attacks, recovery, and finishing behavior when evaluating a run.

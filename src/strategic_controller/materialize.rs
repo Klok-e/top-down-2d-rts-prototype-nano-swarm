@@ -220,15 +220,41 @@ pub(super) fn push_desired(
 
 pub(super) fn intent_edits(
     owner: SwarmId,
-    grid: &IntentGrid,
-    reachability: Option<&crate::reachability::SwarmReachabilityMap>,
+    state: &GameState<'_>,
+    previous: &[DesiredIntent],
     desired: &[DesiredIntent],
     cleanup_cursor: &mut Option<IVec2>,
     unreachable_cleanup_cursor: &mut Option<IVec2>,
     budget: &mut WorkBudget,
 ) -> Vec<IntentEdit> {
+    let grid = state.grid;
     let mut edits = Vec::new();
-    if let Some(reachability) = reachability {
+    for intent in previous {
+        if !desired.contains(intent)
+            && grid
+                .cell(intent.cell)
+                .is_some_and(|cell| cell.has_owned(intent.kind, owner))
+        {
+            edits.push(IntentEdit {
+                cell: intent.cell,
+                kind: intent.kind,
+                action: IntentEditAction::Erase,
+            });
+        }
+    }
+    for intent in desired {
+        if !grid
+            .cell(intent.cell)
+            .is_some_and(|cell| cell.has_owned(intent.kind, owner))
+        {
+            edits.push(IntentEdit {
+                cell: intent.cell,
+                kind: intent.kind,
+                action: IntentEditAction::Paint,
+            });
+        }
+    }
+    if let Some(reachability) = state.reachability {
         let previous_cursor = *unreachable_cleanup_cursor;
         let mut last_completed = None;
         let mut active_cells = grid.iter_active_cells_after(previous_cursor).peekable();
@@ -263,21 +289,6 @@ pub(super) fn intent_edits(
             *unreachable_cleanup_cursor = last_completed;
         }
     }
-    for intent in desired {
-        if !budget.spend(1) {
-            break;
-        }
-        if !grid
-            .cell(intent.cell)
-            .is_some_and(|cell| cell.has_owned(intent.kind, owner))
-        {
-            edits.push(IntentEdit {
-                cell: intent.cell,
-                kind: intent.kind,
-                action: IntentEditAction::Paint,
-            });
-        }
-    }
     let previous_cursor = *cleanup_cursor;
     let mut last_completed = None;
     let mut active_cells = grid.iter_active_cells_after(previous_cursor).peekable();
@@ -293,11 +304,6 @@ pub(super) fn intent_edits(
                 break 'cleanup;
             }
             if existing.has_owned(kind, owner) && !desired.contains(&DesiredIntent { cell, kind }) {
-                if edits.iter().any(|edit| {
-                    edit.cell == cell && edit.kind == kind && edit.action == IntentEditAction::Erase
-                }) {
-                    continue;
-                }
                 edits.push(IntentEdit {
                     cell,
                     kind,
@@ -321,6 +327,7 @@ pub(super) fn intent_edits(
             edit.kind.index(),
         )
     });
+    edits.dedup();
     edits
 }
 

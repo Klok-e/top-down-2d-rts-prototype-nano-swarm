@@ -39,8 +39,13 @@ impl WorkBudget {
         }
     }
 
-    fn release_edit_reserve(&mut self) {
+    fn release_edit_reserve(&mut self, plan_work: usize) {
+        const { assert!(2 * MAX_PLAN_CELLS <= EDIT_WORK_RESERVE) };
         self.limit = PLANNING_WORK_BUDGET;
+        assert!(
+            self.spend(plan_work),
+            "plan edits must fit in the edit reserve"
+        );
     }
 
     pub(super) fn spend(&mut self, amount: usize) -> bool {
@@ -389,11 +394,15 @@ impl PlannerState {
                 work_units: budget.call_work(),
             };
         }
-        budget.release_edit_reserve();
+        let previous = self
+            .current
+            .as_ref()
+            .map_or(&[][..], |plan| plan.desired.as_slice());
+        budget.release_edit_reserve(previous.len() + selected.desired.len());
         let edits = intent_edits(
             owner,
-            state.grid,
-            state.reachability,
+            state,
+            previous,
             &selected.desired,
             &mut self.cleanup_cursor,
             &mut self.unreachable_cleanup_cursor,
