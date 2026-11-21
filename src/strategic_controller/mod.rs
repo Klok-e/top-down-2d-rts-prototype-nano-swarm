@@ -22,8 +22,6 @@ pub const PLANNING_WORK_BUDGET: usize = 100_000;
 const WORK_WINDOW_TICKS: u64 = crate::SIMULATION_HZ as u64 / 2;
 
 const EDIT_WORK_RESERVE: usize = 4_096;
-const MAX_BOTS: usize = 256;
-const MAX_STRUCTURES: usize = 128;
 const MAX_ACTIVE_CELLS: usize = 256;
 const EXPANSION_PLAN_CELLS: usize = 96;
 const MAX_PLAN_CELLS: usize = EDIT_WORK_RESERVE / 2;
@@ -194,6 +192,7 @@ enum Objective {
     DefendDeposit(u64),
     ContestDeposit(u64),
     RaidDeposit { deposit: u64, target: u64 },
+    DenyDeposit(u64),
     PushHome(SwarmId),
     FinishStructure(u64),
     HuntRemnant(u64),
@@ -205,7 +204,7 @@ impl Objective {
             Self::DefendDeposit(_) => 6,
             Self::ContestDeposit(_) => 5,
             Self::SecureDeposit(_) => 4,
-            Self::RaidDeposit { .. } => 3,
+            Self::RaidDeposit { .. } | Self::DenyDeposit(_) => 3,
             Self::PushHome(_) => 2,
             Self::FinishStructure(_) | Self::HuntRemnant(_) => 1,
             Self::HoldHome => 0,
@@ -221,6 +220,7 @@ impl Objective {
             Self::RaidDeposit { deposit, target } => {
                 format!("raid enemy Resource Deposit {deposit} at target {target}")
             }
+            Self::DenyDeposit(id) => format!("raid enemy Resource Deposit {id}"),
             Self::PushHome(swarm) => format!("push enemy home of Swarm {}", swarm.0),
             Self::FinishStructure(id) => format!("finish remaining structure {id}"),
             Self::HuntRemnant(id) => format!("hunt remaining Nanobot {id}"),
