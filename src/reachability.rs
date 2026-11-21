@@ -274,7 +274,7 @@ mod tests {
             assert_eq!(world_to_cell(point), tile);
             assert!(map.position_is_reachable(owner, accessible, &grid));
             assert!(!map.position_is_reachable(owner, isolated, &grid));
-            let mut remaining = [true, true].into_iter();
+            let mut remaining = [true, true, true].into_iter();
             assert_eq!(
                 map.position_is_reachable_with_budget(owner, isolated, &grid, &mut || {
                     remaining.next().unwrap_or(false)
