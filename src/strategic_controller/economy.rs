@@ -14,6 +14,7 @@ pub(super) struct OwnedDeposit {
     pub(super) id: u64,
     position: Vec2,
     pub(super) gather_cell: IVec2,
+    build_cell: IVec2,
     desired: Vec<DesiredIntent>,
 }
 
@@ -25,19 +26,25 @@ pub(super) struct EconomyPlan {
 }
 
 impl EconomyPlan {
-    fn add(&mut self, mine: OwnedDeposit) -> bool {
-        let extra = mine
-            .desired
+    fn added_paint<'a>(
+        &'a self,
+        mine: &'a OwnedDeposit,
+    ) -> impl Iterator<Item = DesiredIntent> + 'a {
+        let desired = &self.desired;
+        mine.desired
             .iter()
-            .filter(|intent| !self.desired.contains(intent))
             .copied()
-            .collect::<Vec<_>>();
-        if self.desired.len() + extra.len() > ECONOMY_PAINT_LIMIT {
-            return false;
-        }
+            .filter(move |intent| !desired.contains(intent))
+    }
+
+    fn can_fit(&self, mine: &OwnedDeposit) -> bool {
+        self.desired.len() + self.added_paint(mine).count() <= ECONOMY_PAINT_LIMIT
+    }
+
+    fn add(&mut self, mine: OwnedDeposit) {
+        let extra = self.added_paint(&mine).collect::<Vec<_>>();
         self.desired.extend(extra);
         self.owned_deposits.push(mine);
-        true
     }
 }
 
@@ -52,18 +59,26 @@ pub(super) fn validate_owned_deposits(
     budget: &mut WorkBudget,
 ) -> Result<Option<u64>, ()> {
     for mine in owned {
-        let mut present = false;
-        for deposit in state.deposits {
-            if !budget.spend(1) {
-                return Err(());
-            }
-            if deposit.id == mine.id {
-                present = available(deposit, owner) && deposit.position == mine.position;
-                break;
-            }
-        }
-        if !present {
+        let valid = find_deposit(mine.id, state, budget)?
+            .is_some_and(|deposit| available(deposit, owner) && deposit.position == mine.position);
+        if !valid {
             return Ok(Some(mine.id));
+        }
+    }
+    Ok(None)
+}
+
+fn find_deposit<'a>(
+    id: u64,
+    state: &'a GameState<'_>,
+    budget: &mut WorkBudget,
+) -> Result<Option<&'a DepositState>, ()> {
+    for deposit in state.deposits {
+        if !budget.spend(1) {
+            return Err(());
+        }
+        if deposit.id == id {
+            return Ok(Some(deposit));
         }
     }
     Ok(None)
@@ -91,22 +106,38 @@ pub(super) fn plan_economy(
         })
         .map(|swarm| swarm.home);
     let mut economy = EconomyPlan::default();
+    for mine in previous {
+        let Some(deposit) = find_deposit(mine.id, state, budget)
+            .ok()?
+            .filter(|d| available(d, owner))
+        else {
+            continue;
+        };
+        if let Some((supported, _)) = mine_support(owner, deposit, state, home, budget) {
+            if !economy.can_fit(&supported) {
+                return None;
+            }
+            economy.add(supported);
+        } else if budget.exhausted {
+            return None;
+        }
+    }
+
     let mut opportunities = Vec::new();
 
     for deposit in state.deposits.iter().take(MAX_DEPOSITS) {
         if !budget.spend(1) {
             return None;
         }
-        if !available(deposit, owner) {
+        if !available(deposit, owner) || previous.iter().any(|mine| mine.id == deposit.id) {
             continue;
         }
-        let retained = previous.iter().any(|mine| mine.id == deposit.id);
         let (own_gather, foreign_gather) = gather_paint(owner, deposit, state, budget)?;
-        if retained || own_gather || deposit.owner == Some(owner) {
+        if own_gather || deposit.owner == Some(owner) {
             if let Some((mine, _)) = mine_support(owner, deposit, state, home, budget)
-                && !economy.add(mine)
+                && economy.can_fit(&mine)
             {
-                return None;
+                economy.add(mine);
             }
             continue;
         }
@@ -127,8 +158,12 @@ pub(super) fn plan_economy(
         return None;
     }
 
-    if owned_deposit_threatened(&economy.owned_deposits, owner, state, budget) {
-        return (!budget.exhausted).then_some(economy);
+    let threatened = threatened_deposit(&economy.owned_deposits, owner, state, budget);
+    if budget.exhausted {
+        return None;
+    }
+    if threatened.is_some() {
+        return Some(economy);
     }
 
     let mut best: Option<(OwnedDeposit, f32)> = None;
@@ -159,36 +194,27 @@ pub(super) fn plan_economy(
             continue;
         };
         let score = value - distance / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_haul_cost;
-        let fits = economy.desired.len()
-            + mine
-                .desired
-                .iter()
-                .filter(|intent| !economy.desired.contains(intent))
-                .count()
-            <= ECONOMY_PAINT_LIMIT;
-        if fits && score > best.as_ref().map_or(0.0, |(_, score)| *score) {
+        if economy.can_fit(&mine) && score > best.as_ref().map_or(0.0, |(_, score)| *score) {
             best = Some((mine, score));
         }
     }
     if let Some((mine, _)) = best {
-        let id = mine.id;
-        if economy.add(mine) {
-            economy.expansion = Some(id);
-        }
+        economy.expansion = Some(mine.id);
+        economy.add(mine);
     }
     (!budget.exhausted).then_some(economy)
 }
 
-fn owned_deposit_threatened(
+pub(super) fn threatened_deposit(
     owned: &[OwnedDeposit],
     owner: SwarmId,
     state: &GameState<'_>,
     budget: &mut WorkBudget,
-) -> bool {
+) -> Option<u64> {
     if owned.is_empty() {
-        return false;
+        return None;
     }
-    let mut enemies = state
+    let entities = state
         .bots
         .iter()
         .take(MAX_BOTS)
@@ -198,19 +224,27 @@ fn owned_deposit_threatened(
                 .structures
                 .iter()
                 .take(MAX_STRUCTURES)
+                .filter(|structure| structure.kind != StructureKind::Planned)
                 .map(|structure| (structure.owner, structure.position, structure.health)),
         );
-    enemies.any(|(other, position, health)| {
-        !budget.spend(1)
-            || (other != owner
-                && health > 0
-                && owned.iter().any(|mine| {
-                    let cell = world_to_intent_cell(position);
-                    mine.desired
-                        .iter()
-                        .any(|intent| intent.kind != IntentKind::Corridor && intent.cell == cell)
-                }))
-    })
+    for (other, position, health) in entities {
+        if !budget.spend(1) {
+            return None;
+        }
+        if other == owner || health == 0 {
+            continue;
+        }
+        let cell = world_to_intent_cell(position);
+        for mine in owned {
+            if !budget.spend(1) {
+                return None;
+            }
+            if cell == mine.gather_cell || cell == mine.build_cell {
+                return Some(mine.id);
+            }
+        }
+    }
+    None
 }
 
 fn gather_paint(
@@ -340,6 +374,7 @@ fn mine_support(
                 id: deposit.id,
                 position: deposit.position,
                 gather_cell,
+                build_cell,
                 desired,
             },
             distance,

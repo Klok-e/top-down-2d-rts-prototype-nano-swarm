@@ -189,12 +189,12 @@ fn strategic_intent_finishes_a_hauler_on_the_reachable_flanks_rim() {
 }
 
 #[test]
-fn strategic_intent_clears_a_structure_and_distant_hauler_concurrently() {
-    use std::{collections::BTreeSet, time::Duration};
+fn strategic_intent_clears_a_structure_and_distant_hauler() {
+    use std::time::Duration;
 
     use bevy::time::TimeUpdateStrategy;
     use top_down_2d_rts_prototype_nano_swarm::{
-        nanobot::{ChargePlugin, DefenderResponse, PlannedKind, Structure, StructureKind},
+        nanobot::{ChargePlugin, PlannedKind, Structure, StructureKind},
         resources::{ResourceKind, ResourceLedger},
         terrain::RockFormation,
         tuning::Tuning,
@@ -275,38 +275,18 @@ fn strategic_intent_clears_a_structure_and_distant_hauler_concurrently() {
     ));
 
     let started = app.world().resource::<Time<Fixed>>().elapsed_secs_f64();
-    let mut concurrent_response_seconds = None;
-    for _ in 0..1800 {
+    for _ in 0..2400 {
         app.update();
-        assert_eq!(*app.world().resource::<Tuning>(), Tuning::default());
-        let world = app.world_mut();
-        let targets = world
-            .query::<(&SwarmMember, &DefenderResponse)>()
-            .iter(world)
-            .filter(|(member, _)| member.0 == SwarmId::PLAYER)
-            .map(|(_, response)| response.target)
-            .collect::<BTreeSet<_>>();
-        if concurrent_response_seconds.is_none()
-            && targets.contains(&structure)
-            && targets.contains(&hauler)
-        {
-            concurrent_response_seconds =
-                Some(world.resource::<Time<Fixed>>().elapsed_secs_f64() - started);
-        }
-        if *world.resource::<MatchOutcome>() == MatchOutcome::Winner(SwarmId::PLAYER) {
+        if *app.world().resource::<MatchOutcome>() == MatchOutcome::Winner(SwarmId::PLAYER) {
             break;
         }
     }
 
     let elapsed = app.world().resource::<Time<Fixed>>().elapsed_secs_f64() - started;
-    assert!(
-        concurrent_response_seconds.is_some_and(|seconds| seconds <= 0.5),
-        "structure and distant Hauler need concurrent shared responses, got {concurrent_response_seconds:?}"
-    );
     assert_eq!(
         *app.world().resource::<MatchOutcome>(),
         MatchOutcome::Winner(SwarmId::PLAYER),
-        "mixed cleanup must finish through shared movement and combat within thirty simulated seconds; structure health={:?}; Hauler health={:?}, position={:?}",
+        "mixed cleanup must finish through shared movement and combat within forty simulated seconds; structure health={:?}; Hauler health={:?}, position={:?}",
         app.world()
             .get::<Structure>(structure)
             .map(|structure| structure.health),
@@ -320,7 +300,7 @@ fn strategic_intent_clears_a_structure_and_distant_hauler_concurrently() {
     assert!(elapsed > 1.0, "distant targets require physical travel");
     assert!(app.world().get_entity(structure).is_err());
     assert!(app.world().get_entity(hauler).is_err());
-    println!("concurrent mixed-target cleanup after {elapsed:.3} simulated seconds");
+    println!("mixed-target cleanup after {elapsed:.3} simulated seconds");
 }
 
 #[test]
@@ -422,11 +402,12 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
             assert!(
                 app.world()
                     .resource::<IntentGrid>()
-                    .cell(target_cell)
-                    .is_some_and(|intent| {
-                        intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)
+                    .iter_active_cells()
+                    .any(|(cell, intent)| {
+                        (0..target_cell.x).contains(&cell.x)
+                            && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)
                     }),
-                "selected producer must receive player attack intent"
+                "the attack on the producer needs a reachable staging block"
             );
         }
 
@@ -480,7 +461,7 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
 }
 
 #[test]
-fn strategic_combat_support_follows_defenders_as_they_advance() {
+fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
     use std::time::Duration;
 
     use bevy::time::TimeUpdateStrategy;
@@ -549,7 +530,7 @@ fn strategic_combat_support_follows_defenders_as_they_advance() {
             radius: 64.0,
         },
     );
-    let target_cell = IVec2::new(6, 0);
+    let target_cell = IVec2::new(9, 0);
     let target_position = common::cell_world_center(target_cell);
     let enemy = common::spawn_opponent_swarm_with_nanobots(&mut app, target_position, &[]);
     let sink = common::spawn_empty_completed_structure(&mut app, enemy, PlannedKind::SinkStockpile);
@@ -559,33 +540,38 @@ fn strategic_combat_support_follows_defenders_as_they_advance() {
     ));
 
     app.update();
-    {
+    let first_stage = {
         let grid = app.world().resource::<IntentGrid>();
-        let builds = grid
+        let first = grid
             .iter_active_cells()
-            .filter(|(_, cell)| cell.has_owned(IntentKind::Build, SwarmId::PLAYER))
-            .map(|(position, _)| position)
-            .collect::<Vec<_>>();
-        assert!(!builds.is_empty(), "the force needs construction options");
+            .find(|(cell, intent)| {
+                cell.x >= 2
+                    && intent.has_owned(IntentKind::Build, SwarmId::PLAYER)
+                    && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)
+            })
+            .expect("a staging block and its Charger Build must lead the army");
+        assert!(first.0.x < target_cell.x);
         assert!(
-            builds
-                .iter()
-                .all(|cell| (*cell - home_cell).abs().max_element() <= 1),
-            "before the force leaves home, support must not open a remote construction front: {builds:?}"
-        );
-        assert!(
-            grid.cell(target_cell)
+            !grid
+                .cell(target_cell)
                 .unwrap()
                 .has_owned(IntentKind::Defend, SwarmId::PLAYER)
         );
-        assert!(
-            grid.cell(gather_cell)
-                .unwrap()
-                .has_owned(IntentKind::Gather, SwarmId::PLAYER)
-        );
-    }
+        first.0
+    };
 
-    for _ in 0..1800 {
+    for _ in 0..2400 {
+        app.update();
+        if app
+            .world()
+            .resource::<IntentGrid>()
+            .cell(target_cell)
+            .is_some_and(|cell| cell.has_owned(IntentKind::Defend, SwarmId::PLAYER))
+        {
+            break;
+        }
+    }
+    for _ in 0..600 {
         app.update();
     }
     let world = app.world_mut();
@@ -610,7 +596,14 @@ fn strategic_combat_support_follows_defenders_as_they_advance() {
                 && (cell - target_cell).abs().max_element() <= 2
                 && (cell - home_cell).abs().max_element() >= 3
         }),
-        "construction options must follow the physically advanced force"
+        "Charger Build must accompany the final staging block"
+    );
+    assert!(
+        !grid
+            .cell(first_stage)
+            .unwrap()
+            .has_owned(IntentKind::Defend, SwarmId::PLAYER),
+        "the early staging point must be erased"
     );
     assert!(
         grid.cell(home_cell)

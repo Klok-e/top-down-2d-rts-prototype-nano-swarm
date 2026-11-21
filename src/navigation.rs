@@ -402,4 +402,34 @@ mod route_tests {
         };
         assert!(route.waypoints.iter().any(|p| p.y <= -34.0 || p.y >= 610.0));
     }
+
+    #[test]
+    fn planning_route_recovers_when_the_closest_clear_origin_is_across_a_wall() {
+        let grid = IntentGrid::new(4, 4);
+        let home = Vec2::new(256.0, 256.0);
+        let goal = Vec2::new(-256.0, 256.0);
+        let navigation = Navigation::new(
+            &grid,
+            vec![
+                Obstacle::Rectangle {
+                    center: Vec2::new(297.0, 0.0),
+                    half: Vec2::new(5.0, 1_024.0),
+                },
+                Obstacle::Rectangle {
+                    center: Vec2::new(180.0, 252.0),
+                    half: Vec2::new(108.0, 180.0),
+                },
+            ],
+        );
+        let mut allowance: usize = crate::strategic_controller::PLANNING_WORK_BUDGET;
+        let outcome = navigation.route_without_paint(home, RouteGoal::Point(goal), || {
+            let granted = allowance > 0;
+            allowance = allowance.saturating_sub(1);
+            granted
+        });
+        let Some(RouteOutcome::Found(route)) = outcome else {
+            panic!("an exterior point in the home tile can route to the goal: {outcome:?}");
+        };
+        assert_eq!(route.waypoints.last(), Some(&goal));
+    }
 }

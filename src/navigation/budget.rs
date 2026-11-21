@@ -1170,18 +1170,22 @@ impl Navigation {
     ) -> Option<RouteOutcome> {
         let paint = PaintCosts::default();
         let future = async {
-            let Some(start) = self.clear_origin_in_tile(origin).await else {
-                return RouteOutcome::Unreachable;
-            };
-            let mut outcome = self
-                .async_solve(start, goal, &paint, SwarmId::PLAYER, false)
-                .await;
-            if start != origin
-                && let RouteOutcome::Found(route) = &mut outcome
-            {
-                route.waypoints.insert(0, start);
+            if self.async_point_clear(origin).await {
+                return self
+                    .async_solve(origin, goal, &paint, SwarmId::PLAYER, false)
+                    .await;
             }
-            outcome
+            for start in self.clear_origins_in_tile(origin).await {
+                WorkUnit::new().await;
+                if let RouteOutcome::Found(mut route) = self
+                    .async_solve(start, goal, &paint, SwarmId::PLAYER, false)
+                    .await
+                {
+                    route.waypoints.insert(0, start);
+                    return RouteOutcome::Found(route);
+                }
+            }
+            RouteOutcome::Unreachable
         };
         let mut future = std::pin::pin!(future);
         let mut context = Context::from_waker(Waker::noop());
@@ -1193,33 +1197,28 @@ impl Navigation {
         None
     }
 
-    async fn clear_origin_in_tile(&self, origin: Vec2) -> Option<Vec2> {
-        if self.async_point_clear(origin).await {
-            return Some(origin);
-        }
+    async fn clear_origins_in_tile(&self, origin: Vec2) -> Vec<Vec2> {
         if !origin.is_finite() || !origin.cmpge(self.min).all() || !origin.cmplt(self.max).all() {
-            return None;
+            return Vec::new();
         }
         let tile = world_to_cell(origin);
         let min = Self::cell(tile.as_vec2() * ZONE_BLOCK_SIZE);
         let max = Self::cell((tile + IVec2::ONE).as_vec2() * ZONE_BLOCK_SIZE);
-        let mut nearest = None;
-        let mut best_distance = f32::INFINITY;
+        let mut origins = Vec::new();
         for y in min.y..=max.y {
             for x in min.x..=max.x {
                 WorkUnit::new().await;
                 let point = Self::center(IVec2::new(x, y));
-                let distance = point.distance_squared(origin);
-                if world_to_cell(point) == tile
-                    && distance < best_distance
-                    && self.async_point_clear(point).await
-                {
-                    nearest = Some(point);
-                    best_distance = distance;
+                if world_to_cell(point) == tile && self.async_point_clear(point).await {
+                    origins.push(point);
                 }
             }
         }
-        nearest
+        origins.sort_by(|a, b| {
+            a.distance_squared(origin)
+                .total_cmp(&b.distance_squared(origin))
+        });
+        origins
     }
 
     pub(super) fn solve(
