@@ -1204,7 +1204,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
 }
 
 #[test]
-fn new_neutral_deposit_keeps_the_existing_mine_supported() {
+fn expansion_waits_for_extraction_and_keeps_existing_mine_supported() {
     let owner = SwarmId::PLAYER;
     let mut grid = IntentGrid::new(32, 32);
     let swarms = [SwarmState {
@@ -1212,7 +1212,7 @@ fn new_neutral_deposit_keeps_the_existing_mine_supported() {
         home: world(IVec2::ZERO),
         minerals: 0,
     }];
-    let deposits = [
+    let mut deposits = [
         DepositState {
             id: 20,
             owner: None,
@@ -1224,6 +1224,13 @@ fn new_neutral_deposit_keeps_the_existing_mine_supported() {
             id: 21,
             owner: None,
             position: world(IVec2::new(0, 6)),
+            amount: 72_000,
+            radius: 80.0,
+        },
+        DepositState {
+            id: 22,
+            owner: None,
+            position: world(IVec2::new(-8, 0)),
             amount: 72_000,
             radius: 80.0,
         },
@@ -1239,12 +1246,30 @@ fn new_neutral_deposit_keeps_the_existing_mine_supported() {
         },
     );
     apply(&mut grid, owner, &initial);
-    let expanded = controller.decide(
+    let pending = controller.decide(
         &tuning,
         &GameState {
             swarms: &swarms,
             deposits: &deposits,
             ..empty_state(&grid, WORK_WINDOW_TICKS)
+        },
+    );
+    apply(&mut grid, owner, &pending);
+    assert!(
+        !grid
+            .cell(IVec2::new(0, 6))
+            .unwrap()
+            .has_owned(IntentKind::Gather, owner),
+        "expansion should wait while the first mine is getting started"
+    );
+
+    deposits[0].amount -= 4;
+    let expanded = controller.decide(
+        &tuning,
+        &GameState {
+            swarms: &swarms,
+            deposits: &deposits,
+            ..empty_state(&grid, 2 * WORK_WINDOW_TICKS)
         },
     );
     apply(&mut grid, owner, &expanded);
@@ -1266,6 +1291,68 @@ fn new_neutral_deposit_keeps_the_existing_mine_supported() {
                 "mine at {gather} lacks {kind:?} at {cell}"
             );
         }
+    }
+
+    let mature = controller.decide(
+        &tuning,
+        &GameState {
+            swarms: &swarms,
+            deposits: &deposits,
+            ..empty_state(&grid, 3 * WORK_WINDOW_TICKS)
+        },
+    );
+    apply(&mut grid, owner, &mature);
+    assert!(
+        grid.cell(IVec2::new(-8, 0))
+            .unwrap()
+            .has_owned(IntentKind::Gather, owner),
+        "a mature economy can expand while a newer mine is still getting started"
+    );
+    assert!(
+        grid.cell(IVec2::new(0, 6))
+            .unwrap()
+            .has_owned(IntentKind::Gather, owner),
+        "expanding further should retain the existing mine"
+    );
+}
+
+#[test]
+fn stalled_opening_mine_does_not_prevent_expansion() {
+    let owner = SwarmId::PLAYER;
+    let mut grid = IntentGrid::new(16, 16);
+    let swarms = [SwarmState {
+        id: owner,
+        home: world(IVec2::ZERO),
+        minerals: 0,
+    }];
+    let opening = IVec2::new(2, 0);
+    let expansion = IVec2::new(4, 0);
+    let deposits = [opening, expansion].map(|cell| DepositState {
+        id: cell.x as u64,
+        owner: None,
+        position: world(cell),
+        amount: 72_000,
+        radius: 80.0,
+    });
+    let tuning = AutonomyTuning::default();
+    let mut controller = Controller::new(owner);
+    for tick in [0, 30 * crate::SIMULATION_HZ as u64] {
+        let decision = controller.decide(
+            &tuning,
+            &GameState {
+                swarms: &swarms,
+                deposits: &deposits,
+                ..empty_state(&grid, tick)
+            },
+        );
+        apply(&mut grid, owner, &decision);
+    }
+    for cell in [opening, expansion] {
+        assert!(
+            grid.cell(cell)
+                .unwrap()
+                .has_owned(IntentKind::Gather, owner)
+        );
     }
 }
 
