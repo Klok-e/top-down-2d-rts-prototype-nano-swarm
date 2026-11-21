@@ -847,3 +847,86 @@ fn f3_shows_and_hides_the_fps_counter() {
             .reset(KeyCode::F3);
     }
 }
+
+#[test]
+fn strategic_retarget_erases_superseded_corridor_in_the_same_tick() {
+    use top_down_2d_rts_prototype_nano_swarm::resources::ResourceDeposit;
+
+    let mut app = common::minimal_app();
+    let mut grid = IntentGrid::new(64, 64);
+    let owner = SwarmId::PLAYER;
+    let foreign = SwarmId(9);
+    let first_cell = IVec2::new(8, 0);
+    let next_cell = IVec2::new(0, 6);
+    let old_corridor = IVec2::new(6, 0);
+    for y in -32..-16 {
+        for x in -32..32 {
+            grid.paint(IVec2::new(x, y), IntentKind::Corridor, foreign);
+        }
+    }
+    grid.paint(old_corridor, IntentKind::Corridor, foreign);
+    app.insert_resource(grid)
+        .add_plugins(StrategicControllerPlugin);
+    install_empty_reachability(&mut app);
+    let swarm =
+        common::spawn_swarm_with_nanobots(&mut app, common::cell_world_center(IVec2::ZERO), &[]);
+    app.world_mut()
+        .entity_mut(swarm)
+        .insert(StrategicController::new(owner));
+    let first = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: common::cell_world_center(first_cell),
+            amount: 72_000,
+            capacity: 72_000,
+            radius: 80.0,
+        },
+    );
+    app.update();
+    assert!(
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(old_corridor)
+            .unwrap()
+            .has_owned(IntentKind::Corridor, owner)
+    );
+
+    app.world_mut()
+        .get_mut::<ResourceDeposit>(first)
+        .unwrap()
+        .amount = 0;
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: common::cell_world_center(next_cell),
+            amount: 72_000,
+            capacity: 72_000,
+            radius: 80.0,
+        },
+    );
+
+    for _ in 0..30 {
+        app.update();
+        let grid = app.world().resource::<IntentGrid>();
+        if grid
+            .cell(next_cell)
+            .unwrap()
+            .has_owned(IntentKind::Gather, owner)
+        {
+            assert!(
+                !grid
+                    .cell(old_corridor)
+                    .unwrap()
+                    .has_owned(IntentKind::Corridor, owner),
+                "the old corridor must disappear in the tick that shows the new Gather intent"
+            );
+            assert!(
+                grid.cell(old_corridor)
+                    .unwrap()
+                    .has_owned(IntentKind::Corridor, foreign)
+            );
+            return;
+        }
+    }
+    panic!("the controller did not select the replacement deposit within one review interval");
+}

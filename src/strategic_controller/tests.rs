@@ -29,6 +29,95 @@ fn empty_state<'a>(grid: &'a IntentGrid, tick: u64) -> GameState<'a> {
 }
 
 #[test]
+fn changed_plan_erases_superseded_paint_beyond_the_cleanup_cursor() {
+    let mut grid = IntentGrid::new(64, 64);
+    let owner = SwarmId::PLAYER;
+    let foreign = SwarmId(9);
+    for y in -32..-16 {
+        for x in -32..32 {
+            grid.paint(IVec2::new(x, y), IntentKind::Corridor, foreign);
+        }
+    }
+    let swarms = [SwarmState {
+        id: owner,
+        home: world(IVec2::ZERO),
+        minerals: 100,
+    }];
+    let target = BotState {
+        id: 42,
+        owner: foreign,
+        kind: NanobotType::Hauler,
+        position: world(IVec2::new(12, 5)),
+        health: 40,
+        max_health: 100,
+        charge: 1.0,
+        max_charge: 1.0,
+        cargo: 0,
+    };
+    let deposit = DepositState {
+        id: 20,
+        position: world(IVec2::new(0, 8)),
+        amount: 72_000,
+        radius: 80.0,
+    };
+    let tuning = AutonomyTuning::default();
+    let mut controller = Controller::new(owner);
+    let initial = controller.decide(
+        &tuning,
+        &GameState {
+            swarms: &swarms,
+            bots: &[target],
+            deposits: &[deposit],
+            ..empty_state(&grid, 0)
+        },
+    );
+    apply(&mut grid, owner, &initial);
+
+    let empty_grid = IntentGrid::new(64, 64);
+    let home_plan = Controller::new(owner).decide(
+        &tuning,
+        &GameState {
+            swarms: &swarms,
+            ..empty_state(&empty_grid, 0)
+        },
+    );
+    let superseded = initial
+        .edits
+        .iter()
+        .filter(|intent| !home_plan.edits.contains(intent))
+        .collect::<Vec<_>>();
+    assert!(
+        superseded
+            .iter()
+            .any(|intent| intent.kind == IntentKind::Defend)
+    );
+    assert!(
+        superseded
+            .iter()
+            .any(|intent| intent.kind == IntentKind::Corridor)
+    );
+
+    let changed = controller.decide(
+        &tuning,
+        &GameState {
+            swarms: &swarms,
+            ..empty_state(&grid, WORK_WINDOW_TICKS)
+        },
+    );
+    assert!(changed.reviewed);
+    assert!(changed.work_units <= PLANNING_WORK_BUDGET);
+    for intent in superseded {
+        assert!(
+            changed.edits.contains(&IntentEdit {
+                action: IntentEditAction::Erase,
+                ..*intent
+            }),
+            "plan replacement left stale paint: {intent:?}"
+        );
+    }
+}
+
+#[test]
 fn controller_erases_legacy_intent_and_never_paints_across_permanent_terrain() {
     use crate::{navigation::Obstacle, reachability::SwarmReachabilityMap};
 
