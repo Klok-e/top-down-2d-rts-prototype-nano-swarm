@@ -27,10 +27,11 @@ use top_down_2d_rts_prototype_nano_swarm::{
         StrategicControllerPlugin, Swarm, SwarmEliminationPlugin, SwarmId,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger},
-    scenario::{PLAYER_CELL, PLAYER_DEPOSIT_CELL, cell_origin},
+    scenario::{OPPONENT_DEPOSIT_CELL, PLAYER_CELL, PLAYER_DEPOSIT_CELL, cell_origin},
     scenario_selection::{Scenario, ScenarioSelection},
     session::SessionRules,
     session_lifecycle::{SessionEntity, SessionGeneration, SessionLifecyclePlugin, StartScenario},
+    strategic_runtime::ControllerTelemetry,
     tuning::Tuning,
     ui::{
         FontsResource,
@@ -169,17 +170,6 @@ fn request_start(app: &mut App, scenario: Scenario) {
     app.update();
 }
 
-fn has_owned_intent(app: &App, owner: SwarmId) -> bool {
-    app.world()
-        .resource::<IntentGrid>()
-        .iter_active_cells()
-        .any(|(_, intent)| {
-            IntentKind::ALL
-                .into_iter()
-                .any(|kind| intent.has_owned(kind, owner))
-        })
-}
-
 fn assert_standard_opponent_recovers_owned_intent_within_one_second(app: &mut App) {
     let opponent = app
         .world_mut()
@@ -199,12 +189,22 @@ fn assert_standard_opponent_recovers_owned_intent_within_one_second(app: &mut Ap
     let deadline = app.world().resource::<Time<Fixed>>().elapsed() + Duration::from_secs(1);
     while app.world().resource::<Time<Fixed>>().elapsed() < deadline {
         app.update();
-        if has_owned_intent(app, opponent) {
+        if app
+            .world()
+            .resource::<IntentGrid>()
+            .cell(OPPONENT_DEPOSIT_CELL)
+            .is_some_and(|cell| cell.has_owned(IntentKind::Gather, opponent))
+        {
             return;
         }
     }
 
-    panic!("the normal Standard opponent did not recover owned intent within one simulated second");
+    let generation = app.world().resource::<SessionGeneration>().0;
+    let profiles = app.world().resource::<ControllerTelemetry>().profiles();
+    panic!(
+        "the normal Standard opponent did not recover its home Gather intent within one simulated second in session {generation}: {:?}",
+        profiles.get(&opponent.0)
+    );
 }
 
 fn has_label(world: &mut World, label: &str) -> bool {

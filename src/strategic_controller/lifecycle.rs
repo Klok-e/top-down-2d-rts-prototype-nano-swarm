@@ -1,9 +1,8 @@
 use super::{
+    economy::plan_economy,
     materialize::{intent_edits, materialize_plan},
-    strategy::{
-        adapt_pressure_anchor, coordinate_attack_targets, generate_candidates,
-        supportable_attack_fronts, validate_plan,
-    },
+    staging::plan_staging,
+    strategy::{generate_candidates, validate_plan},
     *,
 };
 
@@ -19,6 +18,7 @@ pub(super) struct PlannerState {
     retained_covered_movement: bool,
     covered_stall_grace_used: bool,
     current: Option<IntentPlan>,
+    denied_deposits: BTreeSet<(u64, SwarmId)>,
 }
 
 #[derive(Debug)]
@@ -39,8 +39,13 @@ impl WorkBudget {
         }
     }
 
-    fn release_edit_reserve(&mut self) {
+    fn release_edit_reserve(&mut self, plan_work: usize) {
+        const { assert!(2 * MAX_PLAN_CELLS <= EDIT_WORK_RESERVE) };
         self.limit = PLANNING_WORK_BUDGET;
+        assert!(
+            self.spend(plan_work),
+            "plan edits must fit in the edit reserve"
+        );
     }
 
     pub(super) fn spend(&mut self, amount: usize) -> bool {
@@ -83,6 +88,18 @@ impl Controller {
 }
 
 impl PlannerState {
+    fn describe_active_plan(&self, reason: &str) -> String {
+        let Some(plan) = &self.current else {
+            return reason.to_string();
+        };
+        let mut explanation = format!(
+            "{reason}, the active objective is to {}",
+            plan.objective.label()
+        );
+        plan.append_context(&mut explanation);
+        explanation
+    }
+
     fn decide(
         &mut self,
         owner: SwarmId,
@@ -123,11 +140,11 @@ impl PlannerState {
             }
         };
         let PlanValidation {
-            mut invalidation,
-            observed_attack_targets,
-            covered_attack_progress,
+            lost_deposit,
+            invalidation,
+            attack_progressed,
+            covered_attack,
             covered_attack_movement,
-            all_attack_targets_covered,
         } = validation;
         let tuning_review = std::mem::take(&mut self.tuning_review_requested);
         let regular_review = tuning_review
@@ -136,91 +153,15 @@ impl PlannerState {
                     || state.tick.saturating_sub(last)
                         >= tuning.controller_review_period_ticks.max(1)
             });
-        if invalidation.is_none() && self.retained_covered_movement && !all_attack_targets_covered {
-            invalidation =
-                Some("a retained attack target left existing owned Defend coverage".to_string());
-        }
-        let reviewed_supportable_fronts = if !tuning_review
+        let tracked_movement = self.retained_covered_movement || covered_attack_movement;
+        let stall_grace = !tuning_review
             && invalidation.is_none()
-            && regular_review
-            && (self.retained_covered_movement || covered_attack_movement)
-            && !observed_attack_targets.is_empty()
-        {
-            Some(supportable_attack_fronts(tuning, owner, state, &mut budget))
-        } else {
-            None
-        };
-        let retained_fronts_are_supportable = reviewed_supportable_fronts
-            .is_none_or(|fronts| observed_attack_targets.len() <= fronts);
-        let retained_fronts_fill_capacity = reviewed_supportable_fronts
-            .is_none_or(|fronts| observed_attack_targets.len() >= fronts);
-        let retains_covered_progress =
-            covered_attack_progress && (covered_attack_movement || self.retained_covered_movement);
-        let retains_covered_movement_between_reviews = covered_attack_movement && !regular_review;
-        if !tuning_review
-            && invalidation.is_none()
-            && (retains_covered_progress || retains_covered_movement_between_reviews)
-            && all_attack_targets_covered
-            && retained_fronts_are_supportable
-            && retained_fronts_fill_capacity
-        {
-            if let Some(current) = self.current.as_mut() {
-                if regular_review {
-                    current.attack_targets = observed_attack_targets;
-                } else {
-                    for (target, observed) in current
-                        .attack_targets
-                        .iter_mut()
-                        .zip(observed_attack_targets)
-                    {
-                        target.cell = observed.cell;
-                    }
-                }
-            }
-            self.retained_covered_movement = true;
-            if covered_attack_progress {
-                self.covered_stall_grace_used = false;
-            }
-            if regular_review {
-                self.last_review_tick = Some(state.tick);
-            }
-            self.work_used = budget.used;
-            return Decision {
-                edits: Vec::new(),
-                explanation: if covered_attack_progress {
-                    "progressing attack remains within existing owned Defend coverage"
-                } else {
-                    "moving attack remains within existing owned Defend coverage"
-                }
-                .to_string(),
-                reviewed: regular_review,
-                work_units: budget.call_work(),
-            };
-        }
-        if !tuning_review
-            && invalidation.is_none()
-            && regular_review
-            && (self.retained_covered_movement || covered_attack_movement)
-            && !covered_attack_progress
-            && all_attack_targets_covered
-            && retained_fronts_are_supportable
-            && !self.covered_stall_grace_used
-        {
-            if let Some(current) = self.current.as_mut() {
-                current.attack_targets = observed_attack_targets;
-            }
-            self.covered_stall_grace_used = true;
-            self.last_review_tick = Some(state.tick);
-            self.work_used = budget.used;
-            return Decision {
-                edits: Vec::new(),
-                explanation: "covered attack received one stalled review before plan reassessment"
-                    .to_string(),
-                reviewed: true,
-                work_units: budget.call_work(),
-            };
-        }
-        if !regular_review && invalidation.is_none() {
+            && covered_attack
+            && tracked_movement
+            && !attack_progressed
+            && !self.covered_stall_grace_used;
+        if !regular_review && invalidation.is_none() && lost_deposit.is_none() {
+            self.retained_covered_movement = tracked_movement;
             self.work_used = budget.used;
             return Decision {
                 edits: Vec::new(),
@@ -230,170 +171,191 @@ impl PlannerState {
             };
         }
 
-        let candidates =
-            generate_candidates(tuning, owner, state, self.current.as_ref(), &mut budget);
-        if budget.exhausted {
-            self.tuning_review_requested |= tuning_review;
-            self.work_used = budget.used;
-            return Decision {
-                edits: Vec::new(),
-                explanation:
-                    "planning allowance exhausted during review; retained the current Intent Plan until the next review window"
-                        .to_string(),
-                reviewed: true,
-                work_units: budget.call_work(),
-            };
-        }
-        let reassessing_spare_front = !tuning_review
-            && invalidation.is_none()
-            && regular_review
-            && retains_covered_progress
-            && all_attack_targets_covered
-            && retained_fronts_are_supportable
-            && !retained_fronts_fill_capacity;
-        let has_fresh_attack_target = candidates.iter().any(|candidate| {
-            candidate.attack_targets.iter().any(|candidate_target| {
-                !observed_attack_targets.iter().any(|retained| {
-                    retained.kind == candidate_target.kind && retained.id == candidate_target.id
-                })
-            })
-        });
-        if reassessing_spare_front && !has_fresh_attack_target {
-            if let Some(current) = self.current.as_mut() {
-                current.attack_targets = observed_attack_targets;
-            }
-            self.covered_stall_grace_used = false;
-            self.last_review_tick = Some(state.tick);
-            self.work_used = budget.used;
-            return Decision {
-                edits: Vec::new(),
-                explanation: "progressing covered attack found no useful additional front"
-                    .to_string(),
-                reviewed: true,
-                work_units: budget.call_work(),
-            };
-        }
-        let Some(best) = candidates
-            .iter()
-            .max_by(|left, right| left.score.total_cmp(&right.score))
-            .cloned()
+        let previous_deposits = self
+            .current
+            .as_ref()
+            .map_or(&[][..], |plan| plan.owned_deposits.as_slice());
+        let Some(economy) = plan_economy(tuning, owner, state, previous_deposits, &mut budget)
         else {
-            self.work_used = budget.used;
-            self.last_review_tick = Some(state.tick);
-            return Decision {
-                edits: Vec::new(),
-                explanation: "review found no legal Intent Plan".to_string(),
-                reviewed: true,
-                work_units: budget.call_work(),
-            };
-        };
-
-        let (mut selected, mut explanation) = if let Some(reason) = invalidation {
-            let label = best.objective.label();
-            (
-                best,
-                format!("{reason}; selected {label} after urgent review"),
-            )
-        } else if let Some(current) = self.current.as_ref() {
-            let refreshed = candidates
-                .iter()
-                .find(|candidate| candidate.objective == current.objective);
-            if let Some(refreshed) = refreshed
-                && best.score
-                    <= refreshed.score
-                        + (refreshed.score - refreshed.economy.value).abs()
-                            * (tuning.controller_switch_margin - 1.0)
-                        + tuning.controller_switch_bias
-            {
-                (
-                    refreshed.clone(),
-                    format!(
-                        "retained viable {}; no alternative was clearly better",
-                        refreshed.objective.label()
-                    ),
-                )
-            } else {
-                let label = best.objective.label();
-                (
-                    best,
-                    format!("selected {label} because it is clearly better than the current plan"),
-                )
-            }
-        } else {
-            let label = best.objective.label();
-            (
-                best,
-                format!("selected {label} from economic, support, and combat alternatives"),
-            )
-        };
-        let provisional_objective = selected.objective;
-        let attack_explanation = coordinate_attack_targets(
-            tuning,
-            &mut selected,
-            &candidates,
-            self.current.as_ref(),
-            owner,
-            state,
-            reviewed_supportable_fronts,
-            &mut budget,
-        );
-        if selected.objective != provisional_objective {
-            explanation = format!(
-                "retained {} after attack-front coordination",
-                selected.objective.label()
-            );
-        }
-        adapt_pressure_anchor(
-            tuning,
-            &mut selected,
-            if tuning_review {
-                None
-            } else {
-                self.current.as_ref()
-            },
-            owner,
-            state,
-            &mut budget,
-        );
-        if budget.exhausted {
             self.tuning_review_requested |= tuning_review;
             self.work_used = budget.used;
             return Decision {
                 edits: Vec::new(),
-                explanation:
-                    "planning allowance exhausted while comparing pressure approaches; retained the current Intent Plan until the next review window"
-                        .to_string(),
+                explanation: self.describe_active_plan(if budget.exhausted {
+                    "planning allowance exhausted while reviewing owned Resource Deposits"
+                } else {
+                    "owned Resource Deposit support would exceed available paint"
+                }),
                 reviewed: true,
                 work_units: budget.call_work(),
             };
-        }
-        let explanation = format!(
-            "{explanation}; anchor {}; target {}{}",
-            selected.anchor,
-            selected.attack_target.unwrap_or(selected.anchor),
-            attack_explanation
-                .as_deref()
-                .map_or(String::new(), |detail| format!("; {detail}"))
+        };
+        let mut denied_deposits = self
+            .denied_deposits
+            .iter()
+            .take_while(|_| budget.spend(1))
+            .filter(|claim| economy.enemy_gather_claims.contains(claim))
+            .copied()
+            .collect();
+        let mut candidates = generate_candidates(
+            tuning,
+            owner,
+            state,
+            &economy,
+            self.current.as_ref(),
+            &mut denied_deposits,
+            &mut budget,
         );
-
-        let selected = materialize_plan(selected, owner, state, &mut budget);
-        if budget.exhausted || !selected.is_coordinated() {
-            self.tuning_review_requested |= tuning_review && budget.exhausted;
+        let candidate_count = candidates.len();
+        if budget.exhausted
+            || !budget.spend(candidate_count.saturating_mul(candidate_count.ilog2() as usize + 1))
+        {
+            self.tuning_review_requested |= tuning_review;
             self.work_used = budget.used;
             return Decision {
                 edits: Vec::new(),
-                explanation: format!(
-                    "{explanation}; planning allowance exhausted during paint fulfillment, so the current Intent Plan was retained"
+                explanation: self.describe_active_plan(
+                    "planning allowance exhausted during review, retained the current Intent Plan until the next review window",
                 ),
                 reviewed: true,
                 work_units: budget.call_work(),
             };
         }
-        budget.release_edit_reserve();
+        candidates.sort_by(|left, right| {
+            left.objective
+                .priority()
+                .cmp(&right.objective.priority())
+                .then_with(|| left.score.total_cmp(&right.score))
+        });
+        let best = candidates
+            .last()
+            .expect("the home economy is a candidate")
+            .clone();
+
+        let progressing_attack = attack_progressed && !tuning_review;
+        let refreshed = self.current.as_ref().and_then(|current| {
+            candidates
+                .iter()
+                .rev()
+                .find(|candidate| candidate.objective == current.objective)
+        });
+        let (mut selected, mut explanation) = if let Some(refreshed) = refreshed
+            && refreshed.objective.priority() == best.objective.priority()
+            && (progressing_attack
+                || invalidation.is_none()
+                    && (stall_grace
+                        || best.score
+                            <= refreshed.score
+                                + refreshed.score.abs() * (tuning.controller_switch_margin - 1.0)
+                                + tuning.controller_switch_bias))
+        {
+            let label = refreshed.objective.label();
+            let explanation = if progressing_attack {
+                format!("retained {label}; attack is progressing")
+            } else if stall_grace {
+                format!("retained {label}; covered attack is in its stall grace review")
+            } else {
+                format!("retained viable {label}; no alternative was clearly better")
+            };
+            (refreshed.clone(), explanation)
+        } else {
+            let label = best.objective.label();
+            let explanation = if let Some(reason) = invalidation {
+                format!("{reason}; selected {label} after urgent review")
+            } else if self.current.is_some() {
+                format!("selected {label} because it is clearly better than the current plan")
+            } else {
+                format!("selected {label} from economic, support, and combat alternatives")
+            };
+            (best, explanation)
+        };
+        let mut staging = plan_staging(
+            tuning,
+            &selected,
+            self.current.as_ref(),
+            owner,
+            state,
+            &mut budget,
+        );
+        if selected.attack_target.is_some() && staging.is_none() && !budget.exhausted {
+            for alternative in candidates.iter().rev() {
+                if alternative.objective == selected.objective
+                    && alternative.attack_target == selected.attack_target
+                    && alternative.protected_home == selected.protected_home
+                {
+                    continue;
+                }
+                let approach = plan_staging(
+                    tuning,
+                    alternative,
+                    self.current.as_ref(),
+                    owner,
+                    state,
+                    &mut budget,
+                );
+                if budget.exhausted {
+                    break;
+                }
+                if alternative.attack_target.is_none() || approach.is_some() {
+                    explanation = format!(
+                        "selected {} because {} lacked a reachable approach",
+                        alternative.objective.label(),
+                        selected.objective.label(),
+                    );
+                    selected = alternative.clone();
+                    staging = approach;
+                    break;
+                }
+            }
+        }
+        if budget.exhausted {
+            self.tuning_review_requested |= tuning_review;
+            self.work_used = budget.used;
+            return Decision {
+                edits: Vec::new(),
+                explanation: self.describe_active_plan(
+                    "planning allowance exhausted while choosing staging points, retained the current Intent Plan until the next review window",
+                ),
+                reviewed: true,
+                work_units: budget.call_work(),
+            };
+        }
+        if let Some(id) = lost_deposit {
+            explanation.push_str(&format!(
+                ", owned Resource Deposit {id} was exhausted, lost, or unreachable"
+            ));
+        }
+        let keeps_objective = self
+            .current
+            .as_ref()
+            .is_some_and(|current| current.objective == selected.objective);
+        let selected = materialize_plan(
+            selected,
+            economy,
+            staging,
+            owner,
+            state,
+            tuning,
+            &mut budget,
+        );
+        if budget.exhausted || !budget.spend(selected.desired.len()) || !selected.is_coordinated() {
+            self.tuning_review_requested |= tuning_review && budget.exhausted;
+            self.work_used = budget.used;
+            return Decision {
+                edits: Vec::new(),
+                explanation: self.describe_active_plan(
+                    "planning allowance exhausted during paint fulfillment, so the current Intent Plan was retained",
+                ),
+                reviewed: true,
+                work_units: budget.call_work(),
+            };
+        }
+        let previous = self.current.as_ref().map(|plan| &plan.desired);
+        budget.release_edit_reserve(previous.map_or(0, HashSet::len) + selected.desired.len());
         let edits = intent_edits(
             owner,
-            state.grid,
-            state.reachability,
+            state,
+            previous,
             &selected.desired,
             &mut self.cleanup_cursor,
             &mut self.unreachable_cleanup_cursor,
@@ -401,8 +363,12 @@ impl PlannerState {
         );
         self.work_used = budget.used;
         self.last_review_tick = Some(state.tick);
-        self.retained_covered_movement = false;
-        self.covered_stall_grace_used = false;
+        self.retained_covered_movement = keeps_objective && covered_attack && tracked_movement;
+        self.covered_stall_grace_used = self.retained_covered_movement
+            && !attack_progressed
+            && (stall_grace || self.covered_stall_grace_used);
+        self.denied_deposits = denied_deposits;
+        selected.append_context(&mut explanation);
         self.current = Some(selected);
         Decision {
             edits,

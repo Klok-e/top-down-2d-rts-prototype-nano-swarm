@@ -1,12 +1,81 @@
 use bevy::{math::DVec2, prelude::*};
+use std::future::ready;
 
-use super::{BODY_RADIUS, CELL_WIDTH, Navigation, Obstacle, ObstacleIndex, expanded_rectangle};
+use super::{
+    BODY_RADIUS, CELL_WIDTH, Navigation, Obstacle, ObstacleIndex,
+    budget::{WorkUnit, poll_with_budget},
+    expanded_rectangle,
+};
 use crate::nanobot::InteractionRegion;
 
 #[derive(Clone, Copy)]
 struct ContactBand {
     center: Vec2,
     radii: [f32; 2],
+    region: InteractionRegion,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ProbeBounds {
+    min: Vec2,
+    max: Vec2,
+    band: Option<ContactBand>,
+    connector: Option<IVec2>,
+}
+
+impl ProbeBounds {
+    fn tile(min: Vec2, max: Vec2) -> Self {
+        Self {
+            min,
+            max,
+            band: None,
+            connector: None,
+        }
+    }
+
+    fn admits(self, point: Vec2) -> bool {
+        point.cmpge(self.min).all()
+            && point.cmple(self.max).all()
+            && self.band.is_none_or(|band| band.region.contains(point))
+            && self.connector.is_none_or(|cell| {
+                (Navigation::cell(point) - cell)
+                    .abs()
+                    .cmple(IVec2::ONE)
+                    .all()
+            })
+    }
+}
+
+struct Visibility<'a> {
+    navigation: &'a Navigation,
+    origin: Vec2,
+    bounds: ProbeBounds,
+    obstacles: Vec<usize>,
+}
+
+impl Visibility<'_> {
+    async fn reachable(&self, point: Vec2) -> bool {
+        WorkUnit::new().await;
+        if !self.bounds.admits(point) || !point.cmplt(self.navigation.max).all() {
+            return false;
+        }
+        for ids in self.obstacles.chunks(8) {
+            WorkUnit::new().await;
+            if !ids.iter().all(|&id| {
+                let obstacle = self.navigation.obstacles[id];
+                obstacle.admits_body(point) && obstacle.segment_clear(self.origin, point)
+            }) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+pub(super) enum InteractionProbe {
+    Sample(Vec2),
+    Direct(ProbeBounds),
+    Connector(IVec2, ProbeBounds),
 }
 
 impl Navigation {
@@ -16,19 +85,30 @@ impl Navigation {
         min: Vec2,
         max: Vec2,
         tile_center: Vec2,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<Vec2>, ()> {
+        poll_with_budget(
+            self.find_tile_ground(home, min, max, tile_center),
+            allow_work,
+        )
+    }
+
+    async fn find_tile_ground(
+        &self,
+        home: Vec2,
+        min: Vec2,
+        max: Vec2,
+        tile_center: Vec2,
     ) -> Option<Vec2> {
         let corners = [min, max, Vec2::new(min.x, max.y), Vec2::new(max.x, min.y)];
-        if self
-            .obstacle_index
-            .candidates(min, max)
-            .into_iter()
-            .any(|id| {
-                corners
-                    .iter()
-                    .all(|&point| !self.obstacles[id].admits_body(point))
-            })
-        {
-            return None;
+        for id in self.obstacle_index.swept_candidates(min, max).await {
+            WorkUnit::new().await;
+            if corners
+                .iter()
+                .all(|&point| !self.obstacles[id].admits_body(point))
+            {
+                return None;
+            }
         }
 
         let first = Self::cell(min);
@@ -41,100 +121,152 @@ impl Navigation {
             a.distance_squared(tile_center)
                 .total_cmp(&b.distance_squared(tile_center))
         });
-        if let Some(point) = self.connected_point(home, centers) {
+        if let Some(point) = self
+            .connected_point(home, centers.into_iter().map(|point| ready(Some(point))))
+            .await
+        {
             return Some(point);
         }
-        if let Some(point) = self.visible_region_point(home, min, max, None, |_| true) {
+        let bounds = ProbeBounds::tile(min, max);
+        if let Some(point) = self.visible_region_point(home, bounds).await {
             return Some(point);
         }
-        self.connected_point(
-            home,
-            self.connector_probes(min, max, None, |_| true).flatten(),
+        let probes = connector_cells(min, max).map(|cell| self.connector_probe(cell, bounds));
+        self.connected_point(home, probes).await
+    }
+
+    pub(crate) fn visible_tile_point(
+        &self,
+        origin: Vec2,
+        min: Vec2,
+        max: Vec2,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<Vec2>, ()> {
+        let center = min.midpoint(max);
+        if self.segment_clear_with_budget(origin, center, allow_work)? {
+            return Ok(Some(center));
+        }
+        poll_with_budget(
+            self.visible_region_point(origin, ProbeBounds::tile(min, max)),
+            allow_work,
         )
     }
 
-    /// Yield one visibility sweep per origin so runtime navigation can budget each probe.
-    pub(crate) fn visible_interaction_probes(
+    pub(crate) fn connected_interaction_with_budget(
         &self,
         start: Vec2,
         region: InteractionRegion,
-    ) -> impl Iterator<Item = Option<Vec2>> + '_ {
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<Vec2>, ()> {
+        poll_with_budget(
+            async {
+                let probes = self
+                    .interaction_probes(start, region, true, true)
+                    .await
+                    .map(|probe| self.resolve_interaction_probe(start, probe));
+                self.connected_point(start, probes).await
+            },
+            allow_work,
+        )
+    }
+
+    pub(super) async fn interaction_probes(
+        &self,
+        start: Vec2,
+        region: InteractionRegion,
+        start_clear: bool,
+        meter_probes: bool,
+    ) -> impl Iterator<Item = InteractionProbe> + use<> {
+        if meter_probes {
+            let (min, max) = region.candidate_cell_bounds();
+            let width = (i64::from(max.x) - i64::from(min.x) + 1).max(0) as usize;
+            let height = (i64::from(max.y) - i64::from(min.y) + 1).max(0) as usize;
+            let cells = width.saturating_mul(height);
+            // Each sampled cell can compare against all earlier cells and the analytic probes.
+            let candidates = cells.saturating_add(30);
+            charge_visibility_work(cells.saturating_mul(candidates)).await;
+            charge_visibility_sort(candidates).await;
+        }
         let bounds = region
             .deposit_tile_band()
             .and_then(|(min, max, center, radii)| {
                 let outer = Vec2::splat(radii[1]);
                 let min = min.max(center - outer).max(self.min);
                 let max = max.min(center + outer).min(self.max);
-                (min.cmple(max).all() && self.point_clear(start)).then_some((
+                (start_clear && min.cmple(max).all()).then_some(ProbeBounds {
                     min,
                     max,
-                    Some(ContactBand { center, radii }),
-                ))
+                    band: Some(ContactBand {
+                        center,
+                        radii,
+                        region,
+                    }),
+                    connector: None,
+                })
             });
-        bounds.into_iter().flat_map(move |(min, max, band)| {
-            std::iter::once_with(move || {
-                self.visible_region_point(start, min, max, band, |point| region.contains(point))
-            })
-            .chain(self.connector_probes(min, max, band, move |point| region.contains(point)))
-        })
-    }
-
-    fn connector_probes(
-        &self,
-        min: Vec2,
-        max: Vec2,
-        band: Option<ContactBand>,
-        eligible: impl Fn(Vec2) -> bool,
-    ) -> impl Iterator<Item = Option<Vec2>> {
-        // Point routes can finish from a fine-cell center at most one cell from the goal.
-        cells_between(Self::cell(min) - IVec2::ONE, Self::cell(max) + IVec2::ONE).map(move |cell| {
-            let center = Self::center(cell);
-            if (band.is_none() && center.cmpge(min).all() && center.cmple(max).all())
-                || !self.point_clear(center)
-            {
-                return None;
-            }
-            let connector_min = (cell - IVec2::ONE).as_vec2() * CELL_WIDTH;
-            let connector_max = (cell + IVec2::splat(2)).as_vec2() * CELL_WIDTH;
-            self.visible_region_point(
-                center,
-                min.max(connector_min),
-                max.min(connector_max),
-                band,
-                |point| (Self::cell(point) - cell).abs().cmple(IVec2::ONE).all() && eligible(point),
+        let exact_probes = bounds.into_iter().flat_map(|bounds| {
+            std::iter::once(InteractionProbe::Direct(bounds)).chain(
+                connector_cells(bounds.min, bounds.max)
+                    .map(move |cell| InteractionProbe::Connector(cell, bounds)),
             )
-        })
+        });
+        region
+            .candidates(start)
+            .into_iter()
+            .map(InteractionProbe::Sample)
+            .chain(exact_probes)
     }
 
-    fn visible_region_point(
+    pub(super) async fn resolve_interaction_probe(
         &self,
-        origin: Vec2,
-        min: Vec2,
-        max: Vec2,
-        band: Option<ContactBand>,
-        eligible: impl Fn(Vec2) -> bool,
+        start: Vec2,
+        probe: InteractionProbe,
     ) -> Option<Vec2> {
+        match probe {
+            InteractionProbe::Sample(point) => Some(point),
+            InteractionProbe::Direct(bounds) => self.visible_region_point(start, bounds).await,
+            InteractionProbe::Connector(cell, bounds) => self.connector_probe(cell, bounds).await,
+        }
+    }
+
+    async fn connector_probe(&self, cell: IVec2, bounds: ProbeBounds) -> Option<Vec2> {
+        let center = Self::center(cell);
+        if (bounds.band.is_none() && bounds.admits(center)) || !self.async_point_clear(center).await
+        {
+            return None;
+        }
+        let connector_min = (cell - IVec2::ONE).as_vec2() * CELL_WIDTH;
+        let connector_max = (cell + IVec2::splat(2)).as_vec2() * CELL_WIDTH;
+        self.visible_region_point(
+            center,
+            ProbeBounds {
+                min: bounds.min.max(connector_min),
+                max: bounds.max.min(connector_max),
+                connector: Some(cell),
+                ..bounds
+            },
+        )
+        .await
+    }
+
+    async fn visible_region_point(&self, origin: Vec2, bounds: ProbeBounds) -> Option<Vec2> {
+        let ProbeBounds { min, max, band, .. } = bounds;
         if min.cmpgt(max).any() {
             return None;
         }
-        if origin.cmpge(min).all() && origin.cmple(max).all() && eligible(origin) {
+        if bounds.admits(origin) {
             return Some(origin);
         }
 
-        let obstacles: Vec<_> = self
+        let obstacles = self
             .obstacle_index
             .swept_candidates(origin.min(min), origin.max(max))
-            .into_iter()
-            .map(|id| self.obstacles[id])
-            .collect();
-        let reachable = |point: Vec2| {
-            point.cmpge(min).all()
-                && point.cmple(max).all()
-                && point.cmplt(self.max).all()
-                && eligible(point)
-                && obstacles.iter().all(|&obstacle| {
-                    obstacle.admits_body(point) && obstacle.segment_clear(origin, point)
-                })
+            .await;
+        let sweep = Visibility {
+            navigation: self,
+            origin,
+            bounds,
+            obstacles,
         };
 
         // A clear segment first enters at a tile edge or on a work band's circular boundary.
@@ -147,28 +279,41 @@ impl Navigation {
             }
             let along = 1 - fixed;
             let mut edge = EdgeSweep::new(origin, fixed, coordinate, min[along], max[along]);
-            for &obstacle in &obstacles {
-                edge.add_obstacle(obstacle);
+            for &id in &sweep.obstacles {
+                WorkUnit::new().await;
+                edge.add_obstacle(self.obstacles[id]);
             }
             if let Some(band) = band {
                 for radius in band.radii {
                     edge.split_at_disc_slice(band.center.as_dvec2(), f64::from(radius));
                 }
             }
-            if let Some(point) = edge.find_point(reachable) {
+            if let Some(point) = edge.find_point(&sweep).await {
                 return Some(point);
             }
         }
         let band = band?;
-        band.radii.into_iter().rev().find_map(|radius| {
+        for radius in band.radii.into_iter().rev() {
             let mut arc = ArcSweep::new(origin, band.center, radius);
             arc.split_at_box(min, max);
-            for &obstacle in &obstacles {
-                arc.add_obstacle(obstacle);
+            for &id in &sweep.obstacles {
+                WorkUnit::new().await;
+                arc.add_obstacle(self.obstacles[id]);
             }
-            arc.find_point(reachable)
-        })
+            if let Some(point) = arc.find_point(&sweep).await {
+                return Some(point);
+            }
+        }
+        None
     }
+}
+
+// Point routes can finish from a fine-cell center at most one cell from the goal.
+fn connector_cells(min: Vec2, max: Vec2) -> impl Iterator<Item = IVec2> {
+    cells_between(
+        Navigation::cell(min) - IVec2::ONE,
+        Navigation::cell(max) + IVec2::ONE,
+    )
 }
 
 fn cells_between(min: IVec2, max: IVec2) -> impl Iterator<Item = IVec2> {
@@ -176,22 +321,69 @@ fn cells_between(min: IVec2, max: IVec2) -> impl Iterator<Item = IVec2> {
 }
 
 impl ObstacleIndex {
-    fn swept_candidates(&self, a: Vec2, b: Vec2) -> Vec<usize> {
+    pub(super) async fn clearance_candidates(
+        &self,
+        a: Vec2,
+        b: Vec2,
+    ) -> impl Iterator<Item = usize> + '_ {
         let (min, max) = Self::bounds(a, b);
-        if Self::small_span(min, max) {
-            return self.candidates(a, b);
+        let (bucket, candidates, all) = if min == max && self.global.is_empty() {
+            let bucket = self.buckets.get(&min).map_or(&[][..], Vec::as_slice);
+            (bucket, Vec::new(), 0..0)
+        } else if Self::small_span(min, max) {
+            (&[][..], self.collect_sweep_candidates(min, max).await, 0..0)
+        } else {
+            // A wide segment checks all obstacles in their original order.
+            (&[][..], Vec::new(), 0..self.count)
+        };
+        bucket.iter().copied().chain(candidates).chain(all)
+    }
+
+    async fn swept_candidates(&self, a: Vec2, b: Vec2) -> Vec<usize> {
+        let (min, max) = Self::bounds(a, b);
+        self.collect_sweep_candidates(min, max).await
+    }
+
+    async fn collect_sweep_candidates(&self, min: IVec2, max: IVec2) -> Vec<usize> {
+        let mut buckets = Vec::new();
+        if !self.global.is_empty() {
+            buckets.push(self.global.as_slice());
         }
-        // Wide queries visit occupied buckets inside the sweep bounds without walking empty space.
-        let mut candidates = self.global.clone();
-        for (&bucket, ids) in &self.buckets {
-            if bucket.cmpge(min).all() && bucket.cmple(max).all() {
-                candidates.extend_from_slice(ids);
+        if Self::small_span(min, max) {
+            for y in min.y..=max.y {
+                for x in min.x..=max.x {
+                    if let Some(ids) = self.buckets.get(&IVec2::new(x, y)) {
+                        buckets.push(ids);
+                    }
+                }
+            }
+        } else {
+            // Wide queries scan the occupied-bucket index instead of walking empty space.
+            charge_visibility_work(self.buckets.capacity()).await;
+            for (&bucket, ids) in &self.buckets {
+                if bucket.cmpge(min).all() && bucket.cmple(max).all() {
+                    buckets.push(ids);
+                }
             }
         }
+        charge_visibility_sort(buckets.iter().map(|ids| ids.len()).sum()).await;
+        let mut candidates: Vec<_> = buckets.into_iter().flatten().copied().collect();
         candidates.sort_unstable();
         candidates.dedup();
         candidates
     }
+}
+
+async fn charge_visibility_work(items: usize) {
+    // Bound repeated bookkeeping in batches so sparse sweeps retain their low overhead.
+    for _ in 0..items / 64 {
+        WorkUnit::new().await;
+    }
+}
+
+async fn charge_visibility_sort(items: usize) {
+    let passes = items.checked_ilog2().unwrap_or(0) as usize + 1;
+    charge_visibility_work(items.saturating_mul(passes)).await;
 }
 
 struct EdgeSweep {
@@ -277,7 +469,8 @@ impl EdgeSweep {
         }
     }
 
-    fn find_point(mut self, reachable: impl Fn(Vec2) -> bool) -> Option<Vec2> {
+    async fn find_point(mut self, sweep: &Visibility<'_>) -> Option<Vec2> {
+        charge_visibility_sort(self.cuts.len()).await;
         self.cuts.sort_unstable_by(f64::total_cmp);
         self.cuts.dedup();
 
@@ -300,13 +493,14 @@ impl EdgeSweep {
                 last = last.next_down();
             }
             if first > last {
+                WorkUnit::new().await;
                 continue;
             }
             for along in [first.midpoint(last), first, last] {
                 let mut candidate = Vec2::ZERO;
                 candidate[self.fixed] = self.coordinate;
                 candidate[1 - self.fixed] = along;
-                if reachable(candidate) {
+                if sweep.reachable(candidate).await {
                     return Some(candidate);
                 }
             }
@@ -418,13 +612,14 @@ impl ArcSweep {
         }
     }
 
-    fn find_point(mut self, reachable: impl Fn(Vec2) -> bool) -> Option<Vec2> {
+    async fn find_point(mut self, sweep: &Visibility<'_>) -> Option<Vec2> {
+        charge_visibility_sort(self.cuts.len()).await;
         self.cuts.sort_unstable_by(f64::total_cmp);
         self.cuts.dedup();
         for angles in self.cuts.windows(2) {
             for angle in [angles[0].midpoint(angles[1]), angles[0]] {
                 let point = (self.center + DVec2::from_angle(angle) * self.radius).as_vec2();
-                if reachable(point) {
+                if sweep.reachable(point).await {
                     return Some(point);
                 }
             }
@@ -448,4 +643,40 @@ fn disc_tangent_rays(offset: DVec2, radius: f64) -> Option<([DVec2; 2], f64)> {
         ],
         contact,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::intent::IntentGrid;
+
+    #[test]
+    fn blocked_tile_in_dense_geometry_requires_more_sweep_allowance() {
+        let mut obstacles = vec![Obstacle::Rectangle {
+            center: Vec2::new(768.0, 300.0),
+            half: Vec2::new(64.0, 512.0),
+        }];
+        obstacles.extend((0..512).map(|id| Obstacle::Circle {
+            center: Vec2::new(3270.0 + id as f32 / 8.0, 1850.0),
+            radius: 25.0,
+        }));
+        let navigation = Navigation::new(&IntentGrid::new(32, 32), obstacles);
+        let home = Vec2::splat(36.0);
+        let min = Vec2::new(4096.0, 1400.0);
+        let max = Vec2::new(4607.0, 1911.0);
+        assert_eq!(
+            navigation.visible_tile_point(home, min, max, &mut || true),
+            Ok(None),
+        );
+
+        let mut allowance = 16;
+        assert_eq!(
+            navigation.visible_tile_point(home, min, max, &mut || {
+                let allowed = allowance > 0;
+                allowance -= usize::from(allowed);
+                allowed
+            }),
+            Err(()),
+        );
+    }
 }

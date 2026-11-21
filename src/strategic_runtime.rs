@@ -2,7 +2,10 @@
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, HashMap, VecDeque},
+};
 
 use crate::{
     intent::IntentGrid,
@@ -11,11 +14,14 @@ use crate::{
         PlannedStructure, ProductionFacility, RegionalAllocationSet, Structure, Swarm, SwarmId,
         SwarmMember,
     },
+    navigation::{Navigation, RouteGoal, RouteOutcome},
     reachability::{IntentWriteAction, SwarmReachabilityMap, apply_reachable_intent},
-    resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole},
+    resources::{
+        ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole, buffered_minerals,
+    },
     strategic_controller::{
-        BotState, Controller, DepositState, GameState, IntentEditAction, StructureKind,
-        StructureState, SwarmState,
+        BotState, Controller, DepositState, GameState, IntentEditAction, SourceNeed, SourceSupport,
+        StructureKind, StructureState, SwarmState,
     },
     terrain::RockFormation,
 };
@@ -46,6 +52,7 @@ impl Plugin for StrategicControllerPlugin {
             .add_systems(
                 FixedUpdate,
                 strategic_intent_system
+                    .after(crate::nanobot::NanobotSimulationSet::Movement)
                     .before(RegionalAllocationSet::Project)
                     .run_if(resource_exists::<SwarmReachabilityMap>),
             );
@@ -85,6 +92,86 @@ impl ControllerTelemetry {
     }
 }
 
+#[derive(Default)]
+struct StrategicRouteCache {
+    revision: u64,
+    results: VecDeque<(Vec2, RouteGoal, RouteOutcome)>,
+}
+
+impl StrategicRouteCache {
+    fn query(
+        &mut self,
+        navigation: &Navigation,
+        start: Vec2,
+        goal: RouteGoal,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Option<RouteOutcome> {
+        const CACHE_LIMIT: usize = 64;
+        for (cached_start, cached_goal, outcome) in &self.results {
+            if !allow_work() {
+                return None;
+            }
+            if *cached_start == start && *cached_goal == goal {
+                return Some(outcome.clone());
+            }
+        }
+        let outcome = navigation.route_without_paint(start, goal, allow_work)?;
+        if self.results.len() == CACHE_LIMIT {
+            self.results.pop_front();
+        }
+        self.results.push_back((start, goal, outcome.clone()));
+        Some(outcome)
+    }
+}
+
+#[derive(Default)]
+struct MineralIncomeHistory {
+    samples: VecDeque<(u64, u64)>,
+}
+
+impl MineralIncomeHistory {
+    fn per_second(&mut self, tick: u64, extracted: u64) -> f32 {
+        const TICKS_PER_SECOND: u64 = crate::SIMULATION_HZ as u64;
+        const INCOME_WINDOW_SECONDS: u64 = 8;
+
+        if self
+            .samples
+            .back()
+            .is_some_and(|&(previous_tick, previous_total)| {
+                tick < previous_tick || extracted < previous_total
+            })
+        {
+            self.samples.clear();
+        }
+        if self.samples.back().is_none_or(|&(previous_tick, _)| {
+            tick.saturating_sub(previous_tick) >= TICKS_PER_SECOND
+        }) {
+            self.samples.push_back((tick, extracted));
+        }
+        while self.samples.len() > 1
+            && tick.saturating_sub(self.samples[1].0) >= INCOME_WINDOW_SECONDS * TICKS_PER_SECOND
+        {
+            self.samples.pop_front();
+        }
+
+        let (start, total) = self.samples[0];
+        let elapsed_seconds = (tick - start) as f32 / TICKS_PER_SECOND as f32;
+        (extracted - total) as f32 / elapsed_seconds.max(1.0)
+    }
+}
+
+#[derive(Default)]
+struct StrategicObservations {
+    routes: StrategicRouteCache,
+    previous_positions: HashMap<Entity, Vec2>,
+}
+
+#[derive(Default, Clone, Copy)]
+struct EconomyObservation {
+    banked_minerals: u32,
+    has_idle_facility: bool,
+}
+
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn strategic_intent_system(
     tuning: Res<crate::tuning::Tuning>,
@@ -122,14 +209,17 @@ fn strategic_intent_system(
             With<PlannedStructure>,
         )>,
     >,
-    deposits: Query<(Entity, &Transform, &ResourceDeposit)>,
+    deposits: Query<(Entity, &Transform, &ResourceDeposit, Option<&OwnerSwarm>)>,
     rocks: Query<(&RockFormation, &Transform)>,
     ledger: Res<ResourceLedger>,
     mut grid: ResMut<IntentGrid>,
     reachability: Res<SwarmReachabilityMap>,
+    navigation: Res<Navigation>,
     time: Res<Time<Fixed>>,
     outcome: Option<Res<MatchOutcome>>,
     mut telemetry: ResMut<ControllerTelemetry>,
+    mut observations: Local<StrategicObservations>,
+    mut income_history: Local<BTreeMap<Entity, MineralIncomeHistory>>,
 ) {
     if controllers.is_empty()
         || outcome
@@ -138,33 +228,38 @@ fn strategic_intent_system(
     {
         return;
     }
+    let StrategicObservations {
+        routes,
+        previous_positions,
+    } = &mut *observations;
     let owners: BTreeMap<_, _> = swarms.iter().map(|(entity, id, _)| (entity, *id)).collect();
-    let mut swarm_states: Vec<_> = swarms
-        .iter()
-        .map(|(_, id, position)| SwarmState {
-            id: *id,
-            home: position.map_or(Vec2::ZERO, |t| t.translation.truncate()),
-            minerals: ledger.total_for(*id, ResourceKind::Minerals),
-        })
-        .collect();
-    swarm_states.sort_by_key(|swarm| swarm.id);
+    let tick = (time.elapsed_secs_f64() * crate::SIMULATION_HZ).round() as u64;
+    income_history.retain(|entity, _| owners.contains_key(entity));
+    previous_positions.retain(|entity, _| bots.get(*entity).is_ok());
     let mut bot_states: Vec<_> = bots
         .iter()
-        .map(
-            |(entity, owner, kind, transform, health, charge, cargo)| BotState {
+        .map(|(entity, owner, kind, transform, health, charge, cargo)| {
+            let position = transform.translation.truncate();
+            let previous = previous_positions
+                .insert(entity, position)
+                .unwrap_or(position);
+            BotState {
                 id: entity.to_bits(),
                 owner: owner.0,
                 kind: *kind,
-                position: transform.translation.truncate(),
+                position,
                 health: health.current,
                 max_health: health.max,
                 charge: charge.map_or(1.0, |c| c.current),
                 max_charge: charge.map_or(1.0, |c| c.max),
                 cargo: cargo.map_or(0, |c| c.amount),
-            },
-        )
+                displacement: position - previous,
+            }
+        })
         .collect();
     bot_states.sort_by_key(|bot| bot.id);
+    let mut economies = BTreeMap::<SwarmId, EconomyObservation>::new();
+    let mut operational_sources = Vec::new();
     let mut structure_states: Vec<_> = structures
         .iter()
         .filter_map(
@@ -185,6 +280,27 @@ fn strategic_intent_system(
                 } else {
                     StructureKind::Other
                 };
+                let minerals = buffered_minerals(facility, stockpile, charger);
+                if plan.is_none() && condition.is_none_or(Structure::is_operational) {
+                    let economy = economies.entry(owner).or_default();
+                    economy.banked_minerals = economy.banked_minerals.saturating_add(minerals);
+                    economy.has_idle_facility |= facility
+                        .is_some_and(|facility| !facility.is_busy(tuning.production.ticks_per_bot));
+                    if kind == StructureKind::Source
+                        && let Some(stockpile) =
+                            stockpile.filter(|stockpile| stockpile.kind == ResourceKind::Minerals)
+                    {
+                        operational_sources.push((
+                            entity.to_bits(),
+                            owner,
+                            transform.translation.truncate(),
+                            SourceSupport {
+                                has_space: stockpile.free_space() > 0,
+                                stocked: stockpile.amount > 0,
+                            },
+                        ));
+                    }
+                }
                 Some(StructureState {
                     id: entity.to_bits(),
                     owner,
@@ -192,21 +308,44 @@ fn strategic_intent_system(
                     kind,
                     health: condition.map_or(tuning.construction.max_health, |c| c.health),
                     max_health: tuning.construction.max_health,
-                    minerals: facility.map_or(0, |f| f.input_amount)
-                        + stockpile.map_or(0, |s| s.amount)
-                        + charger.map_or(0, |c| c.amount),
+                    minerals,
                 })
             },
         )
         .collect();
     structure_states.sort_by_key(|structure| structure.id);
+    operational_sources.sort_by_key(|&(id, _, _, _)| id);
+    let mut swarm_states: Vec<_> = swarms
+        .iter()
+        .map(|(entity, id, position)| {
+            let economy = economies.get(id).copied().unwrap_or_default();
+            SwarmState {
+                id: *id,
+                home: position.map_or(Vec2::ZERO, |t| t.translation.truncate()),
+                minerals: economy.banked_minerals,
+                mineral_income_per_second: income_history
+                    .entry(entity)
+                    .or_default()
+                    .per_second(tick, ledger.extracted_minerals_for(*id)),
+                production_saturated: !economy.has_idle_facility,
+            }
+        })
+        .collect();
+    swarm_states.sort_by_key(|swarm| swarm.id);
     let mut deposit_states: Vec<_> = deposits
         .iter()
-        .map(|(entity, transform, deposit)| DepositState {
-            id: entity.to_bits(),
-            position: transform.translation.truncate(),
-            amount: deposit.amount,
-            radius: deposit.radius,
+        .filter_map(|(entity, transform, deposit, owner)| {
+            let owner = match owner {
+                Some(owner) => Some(*owners.get(&owner.0)?),
+                None => None,
+            };
+            Some(DepositState {
+                id: entity.to_bits(),
+                owner,
+                position: transform.translation.truncate(),
+                amount: deposit.amount,
+                radius: deposit.radius,
+            })
         })
         .collect();
     deposit_states.sort_by_key(|deposit| deposit.id);
@@ -214,6 +353,48 @@ fn strategic_intent_system(
         .iter()
         .map(|(rock, transform)| rock.obstacle(transform))
         .collect();
+    if routes.revision != navigation.revision() || reachability.is_changed() {
+        routes.revision = navigation.revision();
+        routes.results.clear();
+    }
+    let routes = RefCell::new(routes);
+    let route_query = |start, goal, allow_work: &mut dyn FnMut() -> bool| {
+        routes
+            .borrow_mut()
+            .query(&navigation, start, goal, allow_work)
+    };
+    let source_radius_squared = tuning.logistics.source_proximity_radius.powi(2);
+    let source_query = |owner: SwarmId,
+                        position: Vec2,
+                        need: SourceNeed,
+                        allow_work: &mut dyn FnMut() -> bool| {
+        let mut support = SourceSupport::default();
+        for &(_, source_owner, source_position, observed) in &operational_sources {
+            if !allow_work() {
+                return None;
+            }
+            let adds_evidence = match need {
+                SourceNeed::Space => observed.has_space,
+                SourceNeed::Opening => {
+                    observed.stocked || (!support.has_space && observed.has_space)
+                }
+            };
+            if owner == source_owner
+                && adds_evidence
+                && position.distance_squared(source_position) <= source_radius_squared
+                && reachability
+                    .position_is_reachable_with_budget(owner, source_position, &grid, allow_work)
+                    .ok()?
+            {
+                support.has_space |= observed.has_space;
+                support.stocked = observed.stocked;
+                if matches!(need, SourceNeed::Space) || support.stocked {
+                    break;
+                }
+            }
+        }
+        Some(support)
+    };
     let state = GameState {
         grid: &grid,
         swarms: &swarm_states,
@@ -221,8 +402,11 @@ fn strategic_intent_system(
         structures: &structure_states,
         deposits: &deposit_states,
         terrain: &terrain,
+        charge: &tuning.charge,
         reachability: Some(&reachability),
-        tick: (time.elapsed_secs_f64() * crate::SIMULATION_HZ).round() as u64,
+        route_query: Some(&route_query),
+        source_query: Some(&source_query),
+        tick,
         finished: false,
     };
     let mut ordered: Vec<_> = controllers

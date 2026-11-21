@@ -30,9 +30,9 @@ use std::{
 
 pub(super) type ChunkBuild = Pin<Box<dyn Future<Output = Chunk> + Send>>;
 
-struct WorkUnit(bool);
+pub(super) struct WorkUnit(bool);
 impl WorkUnit {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self(false)
     }
 }
@@ -46,6 +46,20 @@ impl Future for WorkUnit {
             Poll::Pending
         }
     }
+}
+
+pub(super) fn poll_with_budget<F: Future>(
+    future: F,
+    allow_work: &mut dyn FnMut() -> bool,
+) -> Result<F::Output, ()> {
+    let mut future = std::pin::pin!(future);
+    let mut context = Context::from_waker(Waker::noop());
+    while allow_work() {
+        if let Poll::Ready(result) = future.as_mut().poll(&mut context) {
+            return Ok(result);
+        }
+    }
+    Err(())
 }
 
 impl Navigation {
@@ -255,20 +269,30 @@ impl Navigation {
         grid: &PaintCosts,
         swarm: SwarmId,
         hauler: bool,
+        meter_probes: bool,
     ) -> RouteOutcome {
-        if self.async_point_clear(start).await && region.contains(start) {
+        let start_clear = self.async_point_clear(start).await;
+        if start_clear && region.contains(start) {
             return RouteOutcome::Found(Route {
                 waypoints: vec![start],
                 cost: 0.0,
             });
         }
-        let mut probes = self.interaction_probes(start, region);
+        let mut probes = self
+            .interaction_probes(start, region, start_clear, meter_probes)
+            .await;
         loop {
             WorkUnit::new().await;
             let Some(probe) = probes.next() else {
                 break;
             };
-            let Some(endpoint) = probe else {
+            let task = self.resolve_interaction_probe(start, probe);
+            let endpoint = if meter_probes {
+                task.await
+            } else {
+                poll_with_budget(task, &mut || true).expect("unlimited interaction probe")
+            };
+            let Some(endpoint) = endpoint else {
                 continue;
             };
             if let RouteOutcome::Found(route) =
@@ -292,8 +316,14 @@ impl Navigation {
                         cost: 0.0,
                     });
                 }
-                self.first_connected_endpoint(start, self.interaction_probes(start, region))
+                let probes = self
+                    .interaction_probes(start, region, true, false)
                     .await
+                    .map(|probe| {
+                        let task = self.resolve_interaction_probe(start, probe);
+                        poll_with_budget(task, &mut || true).expect("unlimited interaction probe")
+                    });
+                self.first_connected_endpoint(start, probes).await
             }
             RouteGoal::Range { center, radius } => {
                 if !radius.is_finite() || radius < 0.0 || !center.is_finite() {
@@ -353,17 +383,6 @@ impl Navigation {
         RouteOutcome::Unreachable
     }
 
-    pub(crate) fn interaction_probes(
-        &self,
-        start: Vec2,
-        region: crate::nanobot::InteractionRegion,
-    ) -> impl Iterator<Item = Option<Vec2>> + '_ {
-        region
-            .candidates(start)
-            .into_iter()
-            .map(Some)
-            .chain(self.visible_interaction_probes(start, region))
-    }
     async fn async_route(
         &self,
         start: Vec2,
@@ -1017,25 +1036,9 @@ impl Navigation {
                     if connectivity {
                         return snapshot.async_connectivity(start, goal).await;
                     }
-                    match goal {
-                        RouteGoal::Point(end) => {
-                            snapshot
-                                .async_route(start, end, &paint, swarm, hauler)
-                                .await
-                        }
-                        RouteGoal::Range { center, radius } => {
-                            snapshot
-                                .async_route_within_range(
-                                    start, center, radius, &paint, swarm, hauler,
-                                )
-                                .await
-                        }
-                        RouteGoal::Interaction(region) => {
-                            snapshot
-                                .async_route_to_interaction(start, region, &paint, swarm, hauler)
-                                .await
-                        }
-                    }
+                    snapshot
+                        .async_solve(start, goal, &paint, swarm, hauler, false)
+                        .await
                 }));
             }
             request.last_served = scheduler.tick;
@@ -1118,46 +1121,138 @@ impl Navigation {
 }
 
 impl Navigation {
-    /// Find a candidate connected through permanent navigation geometry without routing paint.
-    pub(crate) fn connected_point(
+    pub(crate) fn connected_point_with_budget(
         &self,
         start: Vec2,
-        points: impl IntoIterator<Item = Vec2>,
+        points: impl IntoIterator<Item = Option<Vec2>>,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<Vec2>, ()> {
+        poll_with_budget(
+            self.connected_point(start, points.into_iter().map(std::future::ready)),
+            allow_work,
+        )
+    }
+
+    pub(super) async fn connected_point(
+        &self,
+        start: Vec2,
+        points: impl IntoIterator<Item = impl Future<Output = Option<Vec2>>>,
     ) -> Option<Vec2> {
-        let future = async {
-            let mut checked_regions = HashSet::new();
-            for point in points {
-                if !self.point_clear(point) {
-                    continue;
-                }
-                if self.async_segment_clear(start, point).await {
-                    return Some(point);
-                }
-                let mut unchecked = false;
-                for connector in self.async_connectors(point).await {
-                    if let Some(region) = self.async_region(connector).await {
-                        unchecked |= checked_regions.insert(region);
-                    }
-                }
-                if unchecked
-                    && matches!(
-                        self.async_connectivity(start, RouteGoal::Point(point))
-                            .await,
-                        RouteOutcome::Found(_)
-                    )
-                {
-                    return Some(point);
+        let mut checked_regions = HashSet::new();
+        let mut points = points.into_iter();
+        loop {
+            WorkUnit::new().await;
+            let point = points.next()?;
+            let Some(point) = point.await else {
+                continue;
+            };
+            if !self.async_point_clear(point).await {
+                continue;
+            }
+            if self.async_segment_clear(start, point).await {
+                return Some(point);
+            }
+            let mut unchecked = false;
+            for connector in self.async_connectors(point).await {
+                if let Some(region) = self.async_region(connector).await {
+                    unchecked |= checked_regions.insert(region);
                 }
             }
-            None
+            if unchecked
+                && matches!(
+                    self.async_connectivity(start, RouteGoal::Point(point))
+                        .await,
+                    RouteOutcome::Found(_)
+                )
+            {
+                return Some(point);
+            }
+        }
+    }
+
+    pub(crate) fn point_clear_with_budget(
+        &self,
+        point: Vec2,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, ()> {
+        poll_with_budget(self.async_point_clear(point), allow_work)
+    }
+
+    pub(crate) fn segment_clear_with_budget(
+        &self,
+        from: Vec2,
+        to: Vec2,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, ()> {
+        poll_with_budget(
+            async {
+                self.async_point_clear(from).await
+                    && self.async_point_clear(to).await
+                    && self.async_segment_clear(from, to).await
+            },
+            allow_work,
+        )
+    }
+
+    /// Reuse movement routing without making existing Corridor paint favor its own path.
+    /// Return no outcome when the caller's planning allowance is exhausted.
+    pub(crate) fn route_without_paint(
+        &self,
+        origin: Vec2,
+        goal: RouteGoal,
+        mut allow_work: impl FnMut() -> bool,
+    ) -> Option<RouteOutcome> {
+        let paint = PaintCosts::default();
+        let future = async {
+            if self.async_point_clear(origin).await {
+                return self
+                    .async_solve(origin, goal, &paint, SwarmId::PLAYER, false, true)
+                    .await;
+            }
+            for start in self.clear_origins_in_tile(origin).await {
+                WorkUnit::new().await;
+                if let RouteOutcome::Found(mut route) = self
+                    .async_solve(start, goal, &paint, SwarmId::PLAYER, false, true)
+                    .await
+                {
+                    route.waypoints.insert(0, start);
+                    return RouteOutcome::Found(route);
+                }
+            }
+            RouteOutcome::Unreachable
         };
         let mut future = std::pin::pin!(future);
         let mut context = Context::from_waker(Waker::noop());
-        loop {
+        while allow_work() {
             if let Poll::Ready(result) = future.as_mut().poll(&mut context) {
-                return result;
+                return Some(result);
             }
         }
+        None
+    }
+
+    async fn clear_origins_in_tile(&self, origin: Vec2) -> Vec<Vec2> {
+        if !origin.is_finite() || !origin.cmpge(self.min).all() || !origin.cmplt(self.max).all() {
+            return Vec::new();
+        }
+        let tile = world_to_cell(origin);
+        let min = Self::cell(tile.as_vec2() * ZONE_BLOCK_SIZE);
+        let max = Self::cell((tile + IVec2::ONE).as_vec2() * ZONE_BLOCK_SIZE);
+        let mut origins = Vec::new();
+        for y in min.y..=max.y {
+            for x in min.x..=max.x {
+                WorkUnit::new().await;
+                let point = Self::center(IVec2::new(x, y));
+                if world_to_cell(point) == tile && self.async_point_clear(point).await {
+                    origins.push(point);
+                }
+            }
+        }
+        origins.sort_by(|a, b| {
+            a.distance_squared(origin)
+                .total_cmp(&b.distance_squared(origin))
+        });
+        origins
     }
 
     pub(super) fn solve(
@@ -1188,24 +1283,33 @@ impl Navigation {
                 .map(|(p, c)| (p, c.clone()))
                 .collect(),
         };
-        let future = async {
-            match goal {
-                RouteGoal::Point(end) => self.async_route(start, end, &paint, swarm, hauler).await,
-                RouteGoal::Range { center, radius } => {
-                    self.async_route_within_range(start, center, radius, &paint, swarm, hauler)
-                        .await
-                }
-                RouteGoal::Interaction(region) => {
-                    self.async_route_to_interaction(start, region, &paint, swarm, hauler)
-                        .await
-                }
-            }
-        };
+        let future = self.async_solve(start, goal, &paint, swarm, hauler, false);
         let mut future = std::pin::pin!(future);
         let mut context = Context::from_waker(Waker::noop());
         loop {
             if let Poll::Ready(result) = future.as_mut().poll(&mut context) {
                 return result;
+            }
+        }
+    }
+    async fn async_solve(
+        &self,
+        start: Vec2,
+        goal: RouteGoal,
+        paint: &PaintCosts,
+        swarm: SwarmId,
+        hauler: bool,
+        meter_probes: bool,
+    ) -> RouteOutcome {
+        match goal {
+            RouteGoal::Point(end) => self.async_route(start, end, paint, swarm, hauler).await,
+            RouteGoal::Range { center, radius } => {
+                self.async_route_within_range(start, center, radius, paint, swarm, hauler)
+                    .await
+            }
+            RouteGoal::Interaction(region) => {
+                self.async_route_to_interaction(start, region, paint, swarm, hauler, meter_probes)
+                    .await
             }
         }
     }
@@ -1294,11 +1398,11 @@ impl Navigation {
 }
 
 impl Navigation {
-    async fn async_point_clear(&self, p: Vec2) -> bool {
+    pub(super) async fn async_point_clear(&self, p: Vec2) -> bool {
         if !p.is_finite() || !p.cmpge(self.min).all() || !p.cmplt(self.max).all() {
             return false;
         }
-        for id in self.obstacle_index.candidates(p, p) {
+        for id in self.obstacle_index.clearance_candidates(p, p).await {
             WorkUnit::new().await;
             if !self.obstacles[id].admits_body(p) {
                 return false;
@@ -1316,7 +1420,7 @@ impl Navigation {
         {
             return false;
         }
-        for id in self.obstacle_index.candidates(a, b) {
+        for id in self.obstacle_index.clearance_candidates(a, b).await {
             WorkUnit::new().await;
             if !self.obstacles[id].segment_clear(a, b) {
                 return false;

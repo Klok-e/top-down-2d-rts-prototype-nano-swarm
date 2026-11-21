@@ -3,7 +3,7 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use bevy::{asset::AssetPlugin, math::Vec2, prelude::*};
+use bevy::{asset::AssetPlugin, math::Vec2, prelude::*, time::TimeUpdateStrategy};
 use top_down_2d_rts_prototype_nano_swarm::{
     MAP_HEIGHT, MAP_WIDTH,
     ai::AiPlugin,
@@ -19,10 +19,10 @@ use top_down_2d_rts_prototype_nano_swarm::{
         StrategicControllerPlugin, Structure, Swarm, SwarmEliminationPlugin, SwarmEliminationState,
         SwarmId, SwarmMember, TerritorySnapshot, nanobot_death_cleanup_system, world_to_cell,
     },
-    resources::{ResourceKind, ResourceLedger},
+    resources::{ResourceDeposit, ResourceKind, ResourceLedger},
     scenario::spawn_selected_scenario,
     scenario_selection::Scenario,
-    tuning::Tuning,
+    tuning::{Tuning, TuningStore},
 };
 
 #[path = "../common/mod.rs"]
@@ -86,9 +86,41 @@ fn default_headless_app() -> App {
 #[test]
 fn authored_default_scenario_keeps_separated_economies_operational() {
     use top_down_2d_rts_prototype_nano_swarm::scenario::{
-        OPPONENT_DEFEND_CELL, PLAYER_BUILD_FLANK_CELL, PLAYER_DEFEND_CELL,
+        OPPONENT_DEFEND_CELL, OPPONENT_DEPOSIT_CELL, PLAYER_BUILD_FLANK_CELL, PLAYER_DEFEND_CELL,
+        PLAYER_DEPOSIT_CELL, STARTING_DEPOSIT_AMOUNT,
     };
     let mut app = default_headless_app();
+    let (_, tuning) = TuningStore::load(TuningStore::default_path())
+        .expect("the authored economy uses the shipped balance");
+    app.insert_resource(tuning);
+    let fixed_step = app.world().resource::<Time<Fixed>>().timestep();
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO));
+    app.update();
+
+    {
+        let grid = app.world().resource::<IntentGrid>();
+        assert!(
+            grid.cell(PLAYER_DEFEND_CELL)
+                .is_some_and(|cell| cell.has(IntentKind::Defend))
+        );
+        assert!(
+            grid.cell(OPPONENT_DEFEND_CELL)
+                .is_some_and(|cell| cell.has(IntentKind::Defend))
+        );
+        assert!(
+            !grid
+                .cell(PLAYER_BUILD_FLANK_CELL)
+                .is_some_and(|cell| cell.has(IntentKind::Defend))
+        );
+        assert!(
+            !grid
+                .cell(PLAYER_DEFEND_CELL)
+                .unwrap()
+                .has_owned(IntentKind::Defend, SwarmId(1))
+        );
+    }
+
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(fixed_step));
     app.update();
 
     let initial_defenders = |world: &mut World, swarm: SwarmId| {
@@ -116,29 +148,6 @@ fn authored_default_scenario_keeps_separated_economies_operational() {
         demand.desired_for(SwarmId(1), NanobotType::Defender) >= 2,
         "the strategic opponent must retain a peaceful Defender reserve",
     );
-
-    {
-        let grid = app.world().resource::<IntentGrid>();
-        assert!(
-            grid.cell(PLAYER_DEFEND_CELL)
-                .is_some_and(|cell| cell.has(IntentKind::Defend))
-        );
-        assert!(
-            grid.cell(OPPONENT_DEFEND_CELL)
-                .is_some_and(|cell| cell.has(IntentKind::Defend))
-        );
-        assert!(
-            !grid
-                .cell(PLAYER_BUILD_FLANK_CELL)
-                .is_some_and(|cell| cell.has(IntentKind::Defend))
-        );
-        assert!(
-            !grid
-                .cell(PLAYER_DEFEND_CELL)
-                .unwrap()
-                .has_owned(IntentKind::Defend, SwarmId(1))
-        );
-    }
 
     for _ in 0..299 {
         app.update();
@@ -171,6 +180,15 @@ fn authored_default_scenario_keeps_separated_economies_operational() {
         *app.world().resource::<MatchOutcome>(),
         MatchOutcome::InProgress
     );
+    let home_deposits = [PLAYER_DEPOSIT_CELL, OPPONENT_DEPOSIT_CELL].map(|cell| {
+        app.world_mut()
+            .query_filtered::<(Entity, &Transform), With<ResourceDeposit>>()
+            .iter(app.world())
+            .find_map(|(entity, transform)| {
+                (world_to_cell(transform.translation.truncate()) == cell).then_some(entity)
+            })
+            .expect("the authored home deposit must exist")
+    });
     // Allow startup work allocation and crowd movement to settle within thirty
     // simulated seconds while continuing to enforce movement safety each tick.
     for _ in 0..1_200 {
@@ -178,17 +196,22 @@ fn authored_default_scenario_keeps_separated_economies_operational() {
         app.update();
         rotations.assert_admissions(app.world_mut());
         previous = assert_default_tick_state(app.world_mut(), &previous);
-        let deposits = app
-            .world_mut()
-            .query::<&top_down_2d_rts_prototype_nano_swarm::resources::ResourceDeposit>()
-            .iter(app.world())
-            .filter(|deposit| deposit.amount < 72_000)
-            .count();
-        if deposits == 2 {
+        if home_deposits.iter().all(|&entity| {
+            app.world()
+                .get::<ResourceDeposit>(entity)
+                .is_some_and(|deposit| deposit.amount < STARTING_DEPOSIT_AMOUNT)
+        }) {
             return;
         }
     }
-    panic!("both sheltered economies must extract their home minerals within thirty seconds");
+    let remaining = home_deposits.map(|entity| {
+        app.world()
+            .get::<ResourceDeposit>(entity)
+            .map(|deposit| deposit.amount)
+    });
+    panic!(
+        "both sheltered economies must extract their home minerals within thirty seconds, remaining {remaining:?}"
+    );
 }
 
 #[test]

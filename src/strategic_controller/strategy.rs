@@ -1,321 +1,21 @@
+use super::economy::{EconomyPlan, deposit_region, validate_owned_deposits};
 use super::{
     lifecycle::WorkBudget,
-    materialize::{intent_cell_center, midpoint_cell, route_exposure, world_to_intent_cell},
+    materialize::{cell_is_reachable, world_to_intent_cell},
     *,
 };
-use crate::nanobot::{InteractionRegion, cell_overlaps_circle};
-use bevy::prelude::Transform;
+use crate::nanobot::{cell_overlaps_circle, deposit_candidate_cells};
 
-fn is_reachable(owner: SwarmId, state: &GameState<'_>, cell: IVec2) -> bool {
-    state
-        .reachability
-        .is_none_or(|reachability| reachability.contains(owner, cell, state.grid))
-}
-
-fn is_target_reachable(owner: SwarmId, state: &GameState<'_>, position: Vec2) -> bool {
-    state.reachability.is_none_or(|map| {
-        map.contains(owner, world_to_intent_cell(position), state.grid)
-            && map.position_is_reachable(owner, position, state.grid)
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn coordinate_attack_targets(
-    tuning: &AutonomyTuning,
-    selected: &mut PlanCandidate,
-    candidates: &[PlanCandidate],
-    current: Option<&IntentPlan>,
+fn is_target_reachable(
     owner: SwarmId,
     state: &GameState<'_>,
-    reviewed_supportable_fronts: Option<usize>,
+    position: Vec2,
     budget: &mut WorkBudget,
-) -> Option<String> {
-    if selected.attack_targets.is_empty() {
-        return None;
-    }
-
-    let mut progressing = Vec::new();
-    if let Some(current) = current {
-        for previous in &current.attack_targets {
-            let observed = match observe_attack_target(*previous, owner, state, budget) {
-                Ok(Some(observed)) => observed,
-                Ok(None) | Err(()) => continue,
-            };
-            if observed.health < previous.health {
-                progressing.push(observed);
-            }
-        }
-    }
-
-    if reviewed_supportable_fronts
-        .unwrap_or_else(|| supportable_attack_fronts(tuning, owner, state, budget))
-        < 2
-    {
-        if let Some(incumbent) = progressing.first().copied()
-            && !selected
-                .attack_targets
-                .iter()
-                .any(|target| target.kind == incumbent.kind && target.id == incumbent.id)
-            && let Some(refreshed) = candidates.iter().find(|candidate| {
-                candidate
-                    .attack_targets
-                    .iter()
-                    .any(|target| target.kind == incumbent.kind && target.id == incumbent.id)
-            })
-        {
-            *selected = refreshed.clone();
-            selected.attack_targets = vec![incumbent];
-            return Some(format!(
-                "retained progressing attack at {}; one front is supportable",
-                incumbent.cell
-            ));
-        } else {
-            selected.attack_targets.truncate(1);
-        }
-        return Some("limited attack to one supportable front".to_string());
-    }
-
-    let selected_primary = selected.attack_targets[0];
-    let mut coordinated = Vec::with_capacity(2);
-    let retained_incumbent = progressing
-        .into_iter()
-        .find(|target| target.kind != selected_primary.kind || target.id != selected_primary.id);
-    if let Some(incumbent) = retained_incumbent {
-        coordinated.push(incumbent);
-    }
-    coordinated.push(selected_primary);
-
-    if coordinated.len() < 2 {
-        let secondary = candidates
-            .iter()
-            .filter_map(|candidate| {
-                if !budget.spend(1) {
-                    return None;
-                }
-                candidate
-                    .attack_targets
-                    .first()
-                    .copied()
-                    .map(|target| (candidate.score, target))
-            })
-            .filter(|(_, target)| {
-                !coordinated
-                    .iter()
-                    .any(|existing| existing.kind == target.kind && existing.id == target.id)
-            })
-            .max_by(|left, right| left.0.total_cmp(&right.0))
-            .map(|(_, target)| target);
-        if let Some(secondary) = secondary {
-            coordinated.push(secondary);
-        }
-    }
-    selected.attack_targets = coordinated;
-    if let Some(incumbent) = retained_incumbent
-        && selected.attack_targets.len() == 2
-    {
-        Some(format!(
-            "retained progressing attack at {} while opening a supported second front",
-            incumbent.cell
-        ))
-    } else if selected.attack_targets.len() == 2 {
-        Some("opened two supportable attack fronts".to_string())
-    } else {
-        Some("selected one live attack target".to_string())
-    }
-}
-
-pub(super) fn supportable_attack_fronts(
-    tuning: &AutonomyTuning,
-    owner: SwarmId,
-    state: &GameState<'_>,
-    budget: &mut WorkBudget,
-) -> usize {
-    let mut ready_defenders = 0;
-    for bot in state.bots.iter().take(MAX_BOTS) {
-        if !budget.spend(1) {
-            break;
-        }
-        if bot.owner == owner
-            && bot.kind == NanobotType::Defender
-            && bot.health as f32 >= bot.max_health as f32 * tuning.min_front_health_fraction
-            && bot.charge.is_finite()
-            && bot.charge >= bot.max_charge * tuning.min_front_charge
-        {
-            ready_defenders += 1;
-        }
-    }
-    if ready_defenders < tuning.min_second_front_defenders as usize {
-        return 1;
-    }
-    let supplied_charger = state
-        .structures
-        .iter()
-        .take(MAX_STRUCTURES)
-        .any(|structure| {
-            budget.spend(1)
-                && structure.owner == owner
-                && structure.kind == StructureKind::Charger
-                && structure.health > 0
-                && structure.minerals > 0
-        });
-    if supplied_charger { 2 } else { 1 }
-}
-
-pub(super) fn adapt_pressure_anchor(
-    tuning: &AutonomyTuning,
-    candidate: &mut PlanCandidate,
-    current: Option<&IntentPlan>,
-    owner: SwarmId,
-    state: &GameState<'_>,
-    budget: &mut WorkBudget,
-) {
-    let Some(target) = candidate.attack_target else {
-        return;
+) -> Result<bool, ()> {
+    let Some(map) = state.reachability else {
+        return Ok(true);
     };
-    let home = state
-        .swarms
-        .iter()
-        .find(|swarm| budget.spend(1) && swarm.id == owner)
-        .map_or(Vec2::ZERO, |swarm| swarm.home);
-    let home_cell = world_to_intent_cell(home);
-    let cohort = living_defender_cohort_position(owner, home, state, budget);
-    let nominal = world_to_intent_cell(cohort);
-    candidate.anchor = nominal;
-    if let Some(current) = current {
-        for intent in current.desired.iter().take(MAX_PLAN_CELLS) {
-            if !budget.spend(1) {
-                return;
-            }
-            if intent.kind == IntentKind::Build
-                && intent.cell != home_cell
-                && (intent.cell - nominal).abs().max_element() <= 1
-                && state
-                    .grid
-                    .cell(intent.cell)
-                    .is_some_and(|cell| cell.has_owned(IntentKind::Build, owner))
-                && pressure_anchor_position(owner, intent.cell, state, budget).is_some()
-            {
-                candidate.anchor = intent.cell;
-                return;
-            }
-        }
-    }
-    let direction = (target - nominal).signum();
-    if direction == IVec2::ZERO {
-        return;
-    }
-    let lateral = IVec2::new(-direction.y, direction.x);
-    let target_position = state
-        .reachability
-        .and_then(|map| map.reachable_point(owner, target, state.grid))
-        .unwrap_or_else(|| intent_cell_center(target));
-    let mut best = None;
-    for anchor in [nominal, nominal + lateral, nominal - lateral] {
-        let Some(anchor_position) = pressure_anchor_position(owner, anchor, state, budget) else {
-            continue;
-        };
-        let travel = (cohort.distance(anchor_position) + anchor_position.distance(target_position))
-            / crate::ZONE_BLOCK_SIZE;
-        let exposure = route_exposure(cohort, anchor_position, state.terrain, budget)
-            + route_exposure(anchor_position, target_position, state.terrain, budget);
-        let cost = travel + exposure * tuning.strategy_pressure_anchor_exposure_cost;
-        if best.is_none_or(|(_, best_cost)| cost < best_cost) {
-            best = Some((anchor, cost));
-        }
-    }
-    if let Some((anchor, _)) = best {
-        candidate.anchor = anchor;
-    }
-}
-
-fn pressure_anchor_position(
-    owner: SwarmId,
-    anchor: IVec2,
-    state: &GameState<'_>,
-    budget: &mut WorkBudget,
-) -> Option<Vec2> {
-    if let Some(map) = state.reachability {
-        return map.reachable_point(owner, anchor, state.grid);
-    }
-    if !state.grid.in_bounds(anchor) {
-        return None;
-    }
-    let anchor_position = intent_cell_center(anchor);
-    for obstacle in state.terrain {
-        if !budget.spend(1) {
-            return None;
-        }
-        if !obstacle.admits_body(anchor_position) {
-            return None;
-        }
-    }
-    Some(anchor_position)
-}
-
-pub(super) fn living_defender_cohort_position(
-    owner: SwarmId,
-    home: Vec2,
-    state: &GameState<'_>,
-    budget: &mut WorkBudget,
-) -> Vec2 {
-    let mut defenders = Vec::with_capacity(state.bots.len().min(MAX_BOTS));
-    let mut xs = Vec::with_capacity(state.bots.len().min(MAX_BOTS));
-    let mut ys = Vec::with_capacity(state.bots.len().min(MAX_BOTS));
-    for bot in state.bots.iter().take(MAX_BOTS) {
-        if !budget.spend(1) {
-            return home;
-        }
-        if bot.owner == owner
-            && bot.kind == NanobotType::Defender
-            && bot.health > 0
-            && bot.position.is_finite()
-        {
-            defenders.push((bot.id, bot.position));
-            xs.push(bot.position.x);
-            ys.push(bot.position.y);
-        }
-    }
-    if xs.is_empty() {
-        return home;
-    }
-
-    let sort_passes = usize::BITS.saturating_sub(xs.len().leading_zeros()) as usize;
-    if !budget.spend(xs.len().saturating_mul(sort_passes).saturating_mul(2)) {
-        return home;
-    }
-    xs.sort_unstable_by(f32::total_cmp);
-    ys.sort_unstable_by(f32::total_cmp);
-    let median = |values: &[f32]| {
-        let middle = values.len() / 2;
-        if values.len().is_multiple_of(2) {
-            values[middle - 1] * 0.5 + values[middle] * 0.5
-        } else {
-            values[middle]
-        }
-    };
-    let median = Vec2::new(median(&xs), median(&ys));
-    let mut representative = None;
-    for (id, position) in defenders {
-        if !budget.spend(1) {
-            return home;
-        }
-        let order = (
-            position.distance_squared(median),
-            position.distance_squared(home),
-            id,
-        );
-        if representative.is_none_or(|(_, best_order): (Vec2, (f32, f32, u64))| {
-            order
-                .0
-                .total_cmp(&best_order.0)
-                .then_with(|| order.1.total_cmp(&best_order.1))
-                .then_with(|| order.2.cmp(&best_order.2))
-                .is_lt()
-        }) {
-            representative = Some((position, order));
-        }
-    }
-    representative.map_or(home, |(position, _)| position)
+    map.position_is_reachable_with_budget(owner, position, state.grid, &mut || budget.spend(1))
 }
 
 pub(super) fn validate_plan(
@@ -324,24 +24,37 @@ pub(super) fn validate_plan(
     state: &GameState<'_>,
     budget: &mut WorkBudget,
 ) -> Result<PlanValidation, ()> {
-    if plan
-        .desired
-        .iter()
-        .any(|intent| !is_reachable(owner, state, intent.cell))
+    let mut unreachable = HashSet::new();
+    if let Some(map) = state.reachability
+        && (plan.grid_size != IVec2::new(state.grid.width(), state.grid.height())
+            || plan
+                .reachability
+                .as_ref()
+                .is_none_or(|previous| !map.same_boundary(previous)))
     {
+        if !budget.spend(plan.desired.len()) {
+            return Err(());
+        }
+        for &intent in &plan.desired {
+            if !map.contains_with_budget(owner, intent.cell, state.grid, &mut || budget.spend(1))? {
+                unreachable.insert(intent);
+            }
+        }
+    }
+    let validation = PlanValidation {
+        lost_deposit: validate_owned_deposits(
+            &plan.owned_deposits,
+            owner,
+            state,
+            &mut unreachable,
+            budget,
+        )?,
+        ..PlanValidation::default()
+    };
+    if !unreachable.is_empty() {
         return Ok(PlanValidation {
             invalidation: Some("existing Intent Plan left the swarm-reachable map".to_string()),
-            ..PlanValidation::default()
-        });
-    }
-    if let Some(id) = plan.primary_deposit
-        && !deposit_is_available(id, state, budget)?
-    {
-        return Ok(PlanValidation {
-            invalidation: Some(format!(
-                "primary Resource Deposit {id} was exhausted or lost"
-            )),
-            ..PlanValidation::default()
+            ..validation
         });
     }
     if let Some(id) = plan.key_charger {
@@ -362,53 +75,46 @@ pub(super) fn validate_plan(
         if !operational {
             return Ok(PlanValidation {
                 invalidation: Some(format!("key Charger {id} was lost")),
-                ..PlanValidation::default()
+                ..validation
             });
         }
     }
-    let mut observed_attack_targets = Vec::with_capacity(plan.attack_targets.len());
-    let mut covered_attack_progress = false;
-    let mut covered_attack_movement = false;
-    let mut all_attack_targets_covered = !plan.attack_targets.is_empty();
-    for target in &plan.attack_targets {
-        let Some(observed) = observe_attack_target(*target, owner, state, budget)? else {
-            return Ok(PlanValidation {
-                invalidation: Some(format!(
-                    "target {} {} disappeared or became unreachable",
-                    target.label(),
-                    target.id
-                )),
-                ..PlanValidation::default()
-            });
-        };
-        let progressed = observed.health < target.health;
-        let covered = state
-            .grid
-            .cell(observed.cell)
-            .is_some_and(|intent| intent.has_owned(IntentKind::Defend, owner));
-        if observed.cell != target.cell && !covered {
-            return Ok(PlanValidation {
-                invalidation: Some(format!(
-                    "target {} {} moved from {} to {}",
-                    target.label(),
-                    target.id,
-                    target.cell,
-                    observed.cell
-                )),
-                ..PlanValidation::default()
-            });
-        }
-        covered_attack_progress |= progressed && covered;
-        covered_attack_movement |= observed.cell != target.cell && covered;
-        all_attack_targets_covered &= covered;
-        observed_attack_targets.push(observed);
-    }
+    let Some(target) = plan.attack else {
+        return Ok(validation);
+    };
+    let Some(observed) = observe_attack_target(target, owner, state, budget)? else {
+        return Ok(PlanValidation {
+            invalidation: Some(format!(
+                "target {} {} disappeared or became unreachable",
+                target.label(),
+                target.id
+            )),
+            ..validation
+        });
+    };
+    let moved = observed.cell != target.cell;
+    let covered = plan
+        .staging
+        .as_ref()
+        .is_some_and(|front| front.covers(observed.cell, owner, state));
+    let left_destination = moved
+        && plan
+            .staging
+            .as_ref()
+            .is_some_and(|front| !front.destination_contains(observed.cell, owner, state));
     Ok(PlanValidation {
-        invalidation: None,
-        observed_attack_targets,
-        covered_attack_progress,
-        covered_attack_movement,
-        all_attack_targets_covered,
+        invalidation: left_destination.then(|| {
+            format!(
+                "target {} {} moved outside its Defend block to {}",
+                target.label(),
+                target.id,
+                observed.cell
+            )
+        }),
+        attack_progressed: observed.health < target.health,
+        covered_attack: covered,
+        covered_attack_movement: moved && covered,
+        ..validation
     })
 }
 
@@ -437,7 +143,7 @@ pub(super) fn observe_attack_target(
                     && structure.owner != owner
                     && structure.health > 0
                     && structure.kind != StructureKind::Planned
-                    && is_target_reachable(owner, state, structure.position)
+                    && is_target_reachable(owner, state, structure.position, budget)?
                 {
                     return Ok(Some(AttackObligation {
                         cell: world_to_intent_cell(structure.position),
@@ -455,7 +161,7 @@ pub(super) fn observe_attack_target(
                 if bot.id == target.id
                     && bot.owner != owner
                     && bot.health > 0
-                    && is_target_reachable(owner, state, bot.position)
+                    && is_target_reachable(owner, state, bot.position, budget)?
                 {
                     return Ok(Some(AttackObligation {
                         cell: world_to_intent_cell(bot.position),
@@ -469,244 +175,172 @@ pub(super) fn observe_attack_target(
     Ok(None)
 }
 
-pub(super) fn deposit_is_available(
-    id: u64,
-    state: &GameState<'_>,
-    budget: &mut WorkBudget,
-) -> Result<bool, ()> {
-    for deposit in state.deposits {
-        if !budget.spend(1) {
-            return Err(());
-        }
-        if deposit.id == id {
-            return Ok(deposit.amount > 0);
-        }
-    }
-    Ok(false)
-}
-
-fn gather_cell(
-    owner: SwarmId,
-    deposit: &DepositState,
-    state: &GameState<'_>,
-    budget: &mut WorkBudget,
-) -> Option<IVec2> {
-    let center = world_to_intent_cell(deposit.position);
-    let Some(map) = state.reachability else {
-        return Some(center);
-    };
-    let region = InteractionRegion::deposit(
-        &Transform::from_translation(deposit.position.extend(0.0)),
-        deposit.radius,
-    );
-    let radius = Vec2::splat(deposit.radius);
-    let min = world_to_intent_cell(deposit.position - radius);
-    let max = world_to_intent_cell(deposit.position + radius);
-    let other_cells = (min.y..=max.y).flat_map(|y| (min.x..=max.x).map(move |x| IVec2::new(x, y)));
-    for cell in std::iter::once(center).chain(other_cells.filter(|cell| *cell != center)) {
-        if !budget.spend(1) {
-            return None;
-        }
-        if cell_overlaps_circle(cell, deposit.position, deposit.radius)
-            && map.contains(owner, cell, state.grid)
-            && map.interaction_is_reachable(owner, region.within_cell(cell))
-        {
-            return Some(cell);
-        }
-    }
-    None
-}
-
 pub(super) fn generate_candidates(
     tuning: &AutonomyTuning,
     owner: SwarmId,
     state: &GameState<'_>,
+    economy: &EconomyPlan,
     current: Option<&IntentPlan>,
+    denied_deposits: &mut BTreeSet<(u64, SwarmId)>,
     budget: &mut WorkBudget,
 ) -> Vec<PlanCandidate> {
     let owner_state = state.swarms.iter().find(|swarm| {
         let within_budget = budget.spend(1);
         within_budget && swarm.id == owner
     });
-    let home = owner_state
-        .map(|swarm| swarm.home)
-        .or_else(|| {
-            state
-                .bots
-                .iter()
-                .take(MAX_BOTS)
-                .find(|bot| bot.owner == owner)
-                .map(|bot| bot.position)
-        })
-        .unwrap_or(Vec2::ZERO);
+    let home = owner_state.map_or(Vec2::ZERO, |swarm| swarm.home);
     let home_cell = world_to_intent_cell(home);
-    let forces = estimate_forces(tuning, owner, state, budget);
-    let defend_target = (forces.friendly_defenders * 2 + 4).clamp(6, 20);
-    let mut available = Vec::new();
-    for deposit in state.deposits.iter().take(MAX_DEPOSITS) {
-        if !budget.spend(1) {
-            break;
-        }
-        if deposit.amount > 0
-            && let Some(cell) = gather_cell(owner, deposit, state, budget)
-        {
-            let value = deposit_value(tuning, deposit, home, state, budget);
-            available.push(((*deposit, cell), value));
-        }
-    }
-    let current_primary = current.and_then(|plan| plan.primary_deposit);
-    let primary = current_primary
-        .and_then(|id| {
-            available
-                .iter()
-                .find(|((deposit, _), _)| deposit.id == id)
-                .copied()
-        })
-        .or_else(|| {
-            available
-                .iter()
-                .max_by(|left, right| left.1.total_cmp(&right.1))
-                .copied()
-        });
-    let economy = EconomySelection {
-        primary: primary.map(|(deposit, _)| deposit),
-        value: primary.map_or(0.0, |(_, value)| value),
-    };
-    let supply = owner_state.map_or(0.0, |swarm| {
-        swarm.minerals as f32 * tuning.strategy_ledger_supply_weight
-    }) + state
-        .structures
-        .iter()
-        .take(MAX_STRUCTURES)
-        .filter(|structure| {
-            structure.owner == owner
-                && matches!(
-                    structure.kind,
-                    StructureKind::Source | StructureKind::Sink | StructureKind::Charger
-                )
-        })
-        .map(|structure| structure.minerals as f32 * tuning.strategy_buffer_supply_weight)
-        .sum::<f32>();
-    let key_charger = state
-        .structures
-        .iter()
-        .take(MAX_STRUCTURES)
-        .find(|structure| {
-            budget.spend(1)
-                && structure.owner == owner
-                && structure.kind == StructureKind::Charger
-                && structure.health > 0
-                && is_target_reachable(owner, state, structure.position)
-        })
-        .copied();
-    let pressure_readiness_penalty = (tuning.strategy_readiness_supply_target - supply).max(0.0)
-        * tuning.strategy_readiness_penalty_weight;
-
-    let mut candidates = Vec::new();
-    candidates.push(PlanCandidate {
-        objective: Objective::HoldHome,
-        economy,
-        attack_targets: Vec::new(),
+    let base = PlanCandidate {
+        objective: economy
+            .expansion
+            .map_or(Objective::HoldHome, Objective::SecureDeposit),
+        attack: None,
         anchor: home_cell,
         attack_target: None,
-        key_charger,
-        defend_target,
-        score: economy.value
-            + tuning.strategy_hold_base
-            + supply.min(tuning.strategy_hold_supply_cap) * tuning.strategy_hold_supply_weight
-            + forces.friendly_strength * tuning.strategy_hold_force_weight,
-    });
-
-    for &((deposit, target), value) in &available {
-        if !budget.spend(1) {
-            break;
-        }
-        let scarcity = (tuning.strategy_scarcity_supply_target - supply).max(0.0)
-            * tuning.strategy_scarcity_weight;
-        let score = tuning.strategy_secure_base
-            + value
-            + scarcity
-            + forces.friendly_strength * tuning.strategy_secure_force_weight
-            - forces.enemy_strength * tuning.strategy_secure_enemy_weight;
+        approach: None,
+        score: 0.0,
+        protected_home: None,
+    };
+    let mut candidates = vec![base.clone()];
+    if let Some((deposit, target)) = economy.threatened {
         candidates.push(PlanCandidate {
-            objective: Objective::SecureDeposit(deposit.id),
-            economy: EconomySelection {
-                primary: Some((deposit, target)),
-                value,
-            },
-            attack_targets: Vec::new(),
-            anchor: target,
-            attack_target: None,
-            key_charger,
-            defend_target,
-            score,
+            objective: Objective::DefendDeposit(deposit),
+            attack_target: Some(target),
+            ..base
         });
+        return candidates;
     }
 
-    let enemy_home = state
-        .swarms
-        .iter()
-        .filter(|swarm| swarm.id != owner)
-        .min_by(|left, right| {
-            home.distance_squared(left.home)
-                .total_cmp(&home.distance_squared(right.home))
-        })
-        .map(|swarm| swarm.home);
-    if let Some(enemy_home) = enemy_home {
-        let target = world_to_intent_cell(enemy_home);
-        let anchor = midpoint_cell(home_cell, target);
-        if is_target_reachable(owner, state, enemy_home) && is_reachable(owner, state, anchor) {
-            let distance = home.distance(enemy_home) / crate::ZONE_BLOCK_SIZE;
-            let score = economy.value
-                + tuning.strategy_pressure_base
-                + supply.min(tuning.strategy_pressure_supply_cap)
-                    * tuning.strategy_pressure_supply_weight
-                + forces.friendly_strength * tuning.strategy_pressure_force_weight
-                - forces.enemy_strength * tuning.strategy_pressure_enemy_weight
-                - forces.low_charge_defenders as f32 * tuning.strategy_pressure_low_charge_penalty
-                - pressure_readiness_penalty
-                - distance * tuning.strategy_pressure_distance_cost
-                - route_exposure(home, enemy_home, state.terrain, budget)
-                    * tuning.strategy_pressure_exposure_cost;
+    for &(deposit, cell, approach) in &economy.contested_deposits {
+        candidates.push(PlanCandidate {
+            objective: Objective::ContestDeposit(deposit),
+            attack_target: Some(cell),
+            approach: Some(approach),
+            score: -home_cell.as_vec2().distance(cell.as_vec2()),
+            ..base
+        });
+    }
+    if economy.free_deposit_exists || !economy.contested_deposits.is_empty() {
+        return candidates;
+    }
+
+    let forces = estimate_forces(tuning, owner, state, budget);
+    let own_income = owner_state.map_or(0.0, |swarm| swarm.mineral_income_per_second);
+    let mut hostile_bots = BTreeSet::new();
+    let mut recoverable = BTreeSet::new();
+    for bot in state.bots {
+        if !budget.spend(1) {
+            return candidates;
+        }
+        if bot.owner != owner && bot.health > 0 {
+            hostile_bots.insert(bot.owner);
+        }
+    }
+    let mut supply = owner_state.map_or(0.0, |swarm| {
+        swarm.minerals as f32 * tuning.strategy_ledger_supply_weight
+    });
+    for structure in state.structures {
+        if !budget.spend(1) {
+            return candidates;
+        }
+        if structure.health == 0 || structure.kind == StructureKind::Planned {
+            continue;
+        }
+        if structure.owner != owner {
+            if structure.kind == StructureKind::Facility
+                && (structure.minerals > 0 || hostile_bots.contains(&structure.owner))
+            {
+                recoverable.insert(structure.owner);
+            }
+        } else if matches!(
+            structure.kind,
+            StructureKind::Source | StructureKind::Sink | StructureKind::Charger
+        ) {
+            supply += structure.minerals as f32 * tuning.strategy_buffer_supply_weight;
+        }
+    }
+    for swarm in state.swarms {
+        if !budget.spend(1) {
+            return candidates;
+        }
+        if swarm.id == owner {
+            continue;
+        }
+        if swarm.mineral_income_per_second > 0.0 {
+            recoverable.insert(swarm.id);
+        }
+        if own_income - swarm.mineral_income_per_second > tuning.strategy_home_income_lead
+            && home_has_targets(swarm, state, budget)
+        {
+            let Ok(reachable) = is_target_reachable(owner, state, swarm.home, budget) else {
+                return candidates;
+            };
+            if !reachable {
+                continue;
+            }
             candidates.push(PlanCandidate {
-                objective: Objective::ForwardPressure(anchor),
-                economy,
-                attack_targets: Vec::new(),
-                anchor,
-                attack_target: Some(target),
-                key_charger,
-                defend_target,
-                score,
+                objective: Objective::PushHome(swarm.id),
+                attack_target: Some(world_to_intent_cell(swarm.home)),
+                score: -home.distance(swarm.home) / crate::ZONE_BLOCK_SIZE,
+                ..base
             });
         }
     }
 
-    for structure in state
-        .structures
-        .iter()
-        .take(MAX_STRUCTURES)
-        .filter(|structure| structure.owner != owner && structure.health > 0)
-        .filter(|structure| {
-            matches!(
-                structure.kind,
-                StructureKind::Facility
-                    | StructureKind::Source
-                    | StructureKind::Sink
-                    | StructureKind::Charger
-            )
-        })
-        .take(12)
-    {
+    let readiness_penalty = (tuning.strategy_readiness_supply_target - supply).max(0.0)
+        * tuning.strategy_readiness_penalty_weight;
+    let raid_value = tuning.strategy_raid_base
+        + supply.min(tuning.strategy_raid_supply_cap) * tuning.strategy_raid_supply_weight
+        + forces.friendly_strength * tuning.strategy_raid_force_weight
+        - forces.enemy_strength * tuning.strategy_raid_enemy_weight
+        - readiness_penalty;
+    let hunt_value = tuning.strategy_hunt_remnant_base
+        + forces.friendly_strength * tuning.strategy_hunt_force_weight;
+    let mut occupied_mines = BTreeSet::new();
+    let mut nearby_mines = Vec::new();
+    for structure in state.structures {
         if !budget.spend(1) {
-            break;
+            return candidates;
         }
-        let target = world_to_intent_cell(structure.position);
-        let anchor = midpoint_cell(home_cell, target);
-        if !is_target_reachable(owner, state, structure.position)
-            || !is_reachable(owner, state, anchor)
+        if structure.owner == owner
+            || structure.health == 0
+            || structure.kind == StructureKind::Planned
         {
             continue;
         }
+        let attack = AttackObligation {
+            kind: AttackTargetKind::Structure,
+            id: structure.id,
+            cell: world_to_intent_cell(structure.position),
+            health: structure.health,
+        };
+        nearby_mines.clear();
+        let mine = mine_target(
+            economy,
+            owner,
+            structure.owner,
+            structure.position,
+            state,
+            &mut nearby_mines,
+            budget,
+        );
+        let objective = if let Some((deposit, _)) = mine {
+            Objective::RaidDeposit {
+                deposit,
+                target: structure.id,
+            }
+        } else if !recoverable.contains(&structure.owner) {
+            Objective::FinishStructure(structure.id)
+        } else {
+            continue;
+        };
+        let Ok(reachable) = is_target_reachable(owner, state, structure.position, budget) else {
+            return candidates;
+        };
+        if !reachable {
+            continue;
+        }
+        occupied_mines.extend(nearby_mines.iter().copied());
         let strategic_value = match structure.kind {
             StructureKind::Charger => tuning.strategy_raid_charger_value,
             StructureKind::Source | StructureKind::Sink => tuning.strategy_raid_stockpile_value,
@@ -714,126 +348,261 @@ pub(super) fn generate_candidates(
             StructureKind::Planned | StructureKind::Other => 0.0,
         };
         let distance = home.distance(structure.position) / crate::ZONE_BLOCK_SIZE;
-        let vulnerability = health_deficit(structure.health, structure.max_health)
-            * tuning.strategy_raid_vulnerability_weight;
-        let score = economy.value
-            + tuning.strategy_raid_base
+        let score = raid_value
             + strategic_value
-            + vulnerability
-            + supply.min(tuning.strategy_raid_supply_cap) * tuning.strategy_raid_supply_weight
+            + health_deficit(structure.health, structure.max_health)
+                * tuning.strategy_raid_vulnerability_weight
             + structure.minerals as f32 * tuning.strategy_raid_cargo_weight
-            + forces.friendly_strength * tuning.strategy_raid_force_weight
-            - forces.enemy_strength * tuning.strategy_raid_enemy_weight
-            - pressure_readiness_penalty
-            - distance * tuning.strategy_raid_distance_cost
-            - route_exposure(home, structure.position, state.terrain, budget)
-                * tuning.strategy_raid_exposure_cost;
+            - distance * tuning.strategy_raid_distance_cost;
         candidates.push(PlanCandidate {
-            objective: Objective::RaidLogistics(structure.id),
-            economy,
-            attack_targets: vec![AttackObligation {
-                kind: AttackTargetKind::Structure,
-                id: structure.id,
-                cell: target,
-                health: structure.health,
-            }],
-            anchor,
-            attack_target: Some(target),
-            key_charger,
-            defend_target,
+            objective,
+            attack: Some(attack),
+            attack_target: Some(attack.cell),
             score,
+            protected_home: mine.and_then(|(_, home_cell)| home_cell),
+            ..base
         });
     }
 
-    let mut completed_structure_owners = BTreeSet::new();
-    for structure in state.structures.iter().take(MAX_STRUCTURES) {
+    for bot in state.bots {
         if !budget.spend(1) {
-            break;
+            return candidates;
         }
-        if structure.health > 0
-            && matches!(
-                structure.kind,
-                StructureKind::Facility
-                    | StructureKind::Source
-                    | StructureKind::Sink
-                    | StructureKind::Charger
-            )
-        {
-            completed_structure_owners.insert(structure.owner);
-        }
-    }
-    for bot in state
-        .bots
-        .iter()
-        .take(MAX_BOTS)
-        .filter(|bot| bot.owner != owner && bot.health > 0)
-        .take(12)
-    {
-        if !budget.spend(1) {
-            break;
-        }
-        let target = world_to_intent_cell(bot.position);
-        let anchor = midpoint_cell(home_cell, target);
-        if !is_target_reachable(owner, state, bot.position) || !is_reachable(owner, state, anchor) {
+        if bot.owner == owner || bot.health == 0 {
             continue;
         }
+        nearby_mines.clear();
+        let mine = mine_target(
+            economy,
+            owner,
+            bot.owner,
+            bot.position,
+            state,
+            &mut nearby_mines,
+            budget,
+        );
+        let objective = if let Some((deposit, _)) = mine {
+            Objective::RaidDeposit {
+                deposit,
+                target: bot.id,
+            }
+        } else if !recoverable.contains(&bot.owner) {
+            Objective::HuntRemnant(bot.id)
+        } else {
+            continue;
+        };
+        let Ok(reachable) = is_target_reachable(owner, state, bot.position, budget) else {
+            return candidates;
+        };
+        if !reachable {
+            continue;
+        }
+        occupied_mines.extend(nearby_mines.iter().copied());
+        let attack = AttackObligation {
+            kind: AttackTargetKind::Nanobot,
+            id: bot.id,
+            cell: world_to_intent_cell(bot.position),
+            health: bot.health,
+        };
         let danger = match bot.kind {
             NanobotType::Defender => tuning.strategy_hunt_defender_value,
             NanobotType::Hauler => tuning.strategy_hunt_hauler_value,
             NanobotType::Worker => tuning.strategy_hunt_worker_value,
         };
         let distance = home.distance(bot.position) / crate::ZONE_BLOCK_SIZE;
-        let vulnerability =
-            health_deficit(bot.health, bot.max_health) * tuning.strategy_hunt_vulnerability_weight;
-        let (cleanup_priority, cleanup_readiness_penalty) =
-            if completed_structure_owners.contains(&bot.owner) {
-                (
-                    tuning.strategy_hunt_supported_base,
-                    pressure_readiness_penalty,
-                )
-            } else {
-                (tuning.strategy_hunt_remnant_base, 0.0)
-            };
-        let score = economy.value
-            + cleanup_priority
-            + danger
-            + vulnerability
-            + forces.friendly_strength * tuning.strategy_hunt_force_weight
-            - cleanup_readiness_penalty
-            - distance * tuning.strategy_hunt_distance_cost
-            - route_exposure(home, bot.position, state.terrain, budget)
-                * tuning.strategy_hunt_exposure_cost;
+        let score = if mine.is_some() {
+            raid_value
+        } else {
+            hunt_value
+        } + danger
+            + health_deficit(bot.health, bot.max_health)
+                * tuning.strategy_hunt_vulnerability_weight
+            - distance * tuning.strategy_hunt_distance_cost;
         candidates.push(PlanCandidate {
-            objective: Objective::HuntRemnant(bot.id),
-            economy,
-            attack_targets: vec![AttackObligation {
-                kind: AttackTargetKind::Nanobot,
-                id: bot.id,
-                cell: target,
-                health: bot.health,
-            }],
-            anchor,
-            attack_target: Some(target),
-            key_charger,
-            defend_target,
+            objective,
+            attack: Some(attack),
+            attack_target: Some(attack.cell),
             score,
+            protected_home: mine.and_then(|(_, home_cell)| home_cell),
+            ..base
         });
+    }
+    let secured_mine = current.and_then(|plan| {
+        let Objective::DenyDeposit(id) = plan.objective else {
+            return None;
+        };
+        (!occupied_mines.contains(&id)
+            && plan.staging.as_ref().is_some_and(|front| {
+                front.destination_secured(
+                    owner,
+                    state,
+                    tuning.strategy_staging_arrival_fraction,
+                    budget,
+                )
+            }))
+        .then_some(id)
+    });
+    for (deposit, enemy) in &economy.enemy_deposits {
+        if !budget.spend(1) {
+            return candidates;
+        }
+        let claim = (deposit.id, *enemy);
+        if occupied_mines.contains(&deposit.id) {
+            denied_deposits.remove(&claim);
+            continue;
+        }
+        if denied_deposits.contains(&claim) || !economy.enemy_gather_claims.contains(&claim) {
+            continue;
+        }
+        let protected_home = swarm_home_cell(*enemy, state, budget);
+        let region = deposit_region(deposit);
+        for cell in deposit_candidate_cells(state.grid, deposit.position, deposit.radius) {
+            if !budget.spend(1) {
+                return candidates;
+            }
+            if Some(cell) == protected_home
+                || !cell_overlaps_circle(cell, deposit.position, deposit.radius)
+                || !state
+                    .grid
+                    .cell(cell)
+                    .is_some_and(|intent| intent.has_owned(IntentKind::Gather, *enemy))
+            {
+                continue;
+            }
+            let interaction = region.within_cell(cell);
+            if let Some(map) = state.reachability {
+                match cell_is_reachable(owner, state, cell, budget) {
+                    Some(true) => {}
+                    Some(false) => continue,
+                    None => return candidates,
+                }
+                if state.route_query.is_none() {
+                    match map.interaction_is_reachable_with_budget(owner, interaction, &mut || {
+                        budget.spend(1)
+                    }) {
+                        Ok(true) => {}
+                        Ok(false) => continue,
+                        Err(()) => return candidates,
+                    }
+                }
+            }
+            if secured_mine == Some(deposit.id) {
+                denied_deposits.insert(claim);
+                break;
+            }
+            candidates.push(PlanCandidate {
+                objective: Objective::DenyDeposit(deposit.id),
+                attack_target: Some(cell),
+                approach: Some(RouteGoal::Interaction(interaction)),
+                score: raid_value
+                    - home_cell.as_vec2().distance(cell.as_vec2())
+                        * tuning.strategy_raid_distance_cost,
+                protected_home,
+                ..base
+            });
+        }
     }
     candidates
 }
 
-pub(super) fn estimate_forces(
+fn home_has_targets(swarm: &SwarmState, state: &GameState<'_>, budget: &mut WorkBudget) -> bool {
+    let near_home =
+        |position: Vec2| position.distance_squared(swarm.home) <= crate::ZONE_BLOCK_SIZE.powi(2);
+    state
+        .structures
+        .iter()
+        .take_while(|_| budget.spend(1))
+        .any(|structure| {
+            structure.owner == swarm.id
+                && structure.health > 0
+                && structure.kind != StructureKind::Planned
+                && near_home(structure.position)
+        })
+        || state
+            .bots
+            .iter()
+            .take_while(|_| budget.spend(1))
+            .any(|bot| bot.owner == swarm.id && bot.health > 0 && near_home(bot.position))
+}
+
+fn swarm_home_cell(
+    owner: SwarmId,
+    state: &GameState<'_>,
+    budget: &mut WorkBudget,
+) -> Option<IVec2> {
+    state
+        .swarms
+        .iter()
+        .take_while(|_| budget.spend(1))
+        .find(|swarm| swarm.id == owner)
+        .map(|swarm| world_to_intent_cell(swarm.home))
+}
+
+fn mine_target(
+    economy: &EconomyPlan,
+    attacker: SwarmId,
+    owner: SwarmId,
+    position: Vec2,
+    state: &GameState<'_>,
+    nearby_mines: &mut Vec<u64>,
+    budget: &mut WorkBudget,
+) -> Option<(u64, Option<IVec2>)> {
+    let home_cell = swarm_home_cell(owner, state, budget);
+    if home_cell == Some(world_to_intent_cell(position)) {
+        return None;
+    }
+    let mut closest = None;
+    for (deposit, mine_owner) in &economy.enemy_deposits {
+        if !budget.spend(1) {
+            return None;
+        }
+        if *mine_owner != owner {
+            continue;
+        }
+        let distance = position.distance_squared(deposit.position);
+        if distance <= (deposit.radius + crate::ZONE_BLOCK_SIZE).powi(2)
+            && deposit_is_reachable(attacker, deposit, state, budget)?
+        {
+            nearby_mines.push(deposit.id);
+            if closest.is_none_or(|(_, best_distance)| distance < best_distance) {
+                closest = Some((deposit.id, distance));
+            }
+        }
+    }
+    closest.map(|(id, _)| (id, home_cell))
+}
+
+fn deposit_is_reachable(
+    owner: SwarmId,
+    deposit: &DepositState,
+    state: &GameState<'_>,
+    budget: &mut WorkBudget,
+) -> Option<bool> {
+    for cell in deposit_candidate_cells(state.grid, deposit.position, deposit.radius) {
+        if !budget.spend(1) {
+            return None;
+        }
+        if cell_overlaps_circle(cell, deposit.position, deposit.radius)
+            && cell_is_reachable(owner, state, cell, budget)?
+        {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
+fn estimate_forces(
     tuning: &AutonomyTuning,
     owner: SwarmId,
     state: &GameState<'_>,
     budget: &mut WorkBudget,
 ) -> ForceEstimate {
     let mut estimate = ForceEstimate::default();
-    for bot in state.bots.iter().take(MAX_BOTS) {
+    for bot in state.bots {
         if !budget.spend(1) {
             break;
         }
-        if bot.kind != NanobotType::Defender {
+        if bot.kind != NanobotType::Defender || bot.health == 0 {
             continue;
         }
         let charge = if bot.charge.is_finite() {
@@ -844,28 +613,12 @@ pub(super) fn estimate_forces(
         let strength = bot.health as f32
             * (tuning.strategy_force_base_weight + charge * tuning.strategy_force_charge_weight);
         if bot.owner == owner {
-            estimate.friendly_defenders += 1;
             estimate.friendly_strength += strength;
-            estimate.low_charge_defenders += usize::from(charge < tuning.min_front_charge);
         } else {
             estimate.enemy_strength += strength;
         }
     }
     estimate
-}
-
-pub(super) fn deposit_value(
-    tuning: &AutonomyTuning,
-    deposit: &DepositState,
-    home: Vec2,
-    state: &GameState<'_>,
-    budget: &mut WorkBudget,
-) -> f32 {
-    let travel = home.distance(deposit.position) / crate::ZONE_BLOCK_SIZE;
-    let exposure = route_exposure(home, deposit.position, state.terrain, budget);
-    (deposit.amount as f32 + 1.0).ln() * tuning.strategy_deposit_amount_weight
-        - travel * tuning.strategy_deposit_distance_cost
-        - exposure * tuning.strategy_deposit_exposure_cost
 }
 
 fn health_deficit(health: u32, max_health: u32) -> f32 {
