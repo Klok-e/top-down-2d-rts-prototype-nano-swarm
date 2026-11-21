@@ -1,6 +1,6 @@
 # Issue tracker: GitHub
 
-Use the `gh` CLI for GitHub operations. Load its token with `source ./.env && export GH_TOKEN`.
+Use the `gh` CLI for GitHub operations.
 
 Set and export `GH_REPO` to the `OWNER/REPO` from `git remote get-url origin` before running tracker commands. Verify the target with `gh repo view --json nameWithOwner`.
 
