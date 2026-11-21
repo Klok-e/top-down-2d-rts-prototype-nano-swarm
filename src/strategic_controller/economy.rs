@@ -1,13 +1,19 @@
 use super::{
     lifecycle::WorkBudget,
-    materialize::{corridor_route, intent_cell_center, route_exposure, world_to_intent_cell},
+    materialize::{
+        CorridorPaintLimit, corridor_route, intent_cell_center, route_exposure,
+        world_to_intent_cell,
+    },
     *,
 };
 use crate::nanobot::{InteractionRegion, cell_overlaps_circle};
 use bevy::prelude::Transform;
+use std::collections::HashSet;
 
 // Leave room for the home base and mandatory military support.
-const ECONOMY_PAINT_LIMIT: usize = MAX_PLAN_CELLS - 8;
+pub(super) const SUPPORT_PAINT_RESERVE: usize = 8;
+const ECONOMY_EXPANSION_PAINT_LIMIT: usize = EXPANSION_PLAN_CELLS - SUPPORT_PAINT_RESERVE;
+const ECONOMY_RETENTION_PAINT_LIMIT: usize = MAX_PLAN_CELLS - SUPPORT_PAINT_RESERVE;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct OwnedDeposit {
@@ -23,27 +29,27 @@ pub(super) struct EconomyPlan {
     pub(super) owned_deposits: Vec<OwnedDeposit>,
     pub(super) desired: Vec<DesiredIntent>,
     pub(super) expansion: Option<u64>,
+    paint_set: HashSet<DesiredIntent>,
 }
 
 impl EconomyPlan {
-    fn added_paint<'a>(
-        &'a self,
-        mine: &'a OwnedDeposit,
-    ) -> impl Iterator<Item = DesiredIntent> + 'a {
-        let desired = &self.desired;
-        mine.desired
-            .iter()
-            .copied()
-            .filter(move |intent| !desired.contains(intent))
-    }
-
-    fn can_fit(&self, mine: &OwnedDeposit) -> bool {
-        self.desired.len() + self.added_paint(mine).count() <= ECONOMY_PAINT_LIMIT
+    fn can_fit(&self, mine: &OwnedDeposit, limit: usize) -> bool {
+        self.desired.len()
+            + mine
+                .desired
+                .iter()
+                .filter(|intent| !self.paint_set.contains(intent))
+                .count()
+            <= limit
     }
 
     fn add(&mut self, mine: OwnedDeposit) {
-        let extra = self.added_paint(&mine).collect::<Vec<_>>();
-        self.desired.extend(extra);
+        self.desired.extend(
+            mine.desired
+                .iter()
+                .copied()
+                .filter(|intent| self.paint_set.insert(*intent)),
+        );
         self.owned_deposits.push(mine);
     }
 }
@@ -118,13 +124,15 @@ pub(super) fn plan_economy(
         else {
             continue;
         };
-        if let Some((supported, _)) = mine_support(owner, deposit, state, home, budget) {
-            if !economy.can_fit(&supported) {
-                return None;
+        match mine_support(owner, deposit, state, home, budget).ok()? {
+            Some((supported, _)) => {
+                if !economy.can_fit(&supported, ECONOMY_RETENTION_PAINT_LIMIT) {
+                    return None;
+                }
+                economy.add(supported);
             }
-            economy.add(supported);
-        } else if budget.exhausted {
-            return None;
+            None if budget.exhausted => return None,
+            None => {}
         }
     }
 
@@ -139,8 +147,8 @@ pub(super) fn plan_economy(
         }
         let (own_gather, foreign_gather) = gather_paint(owner, deposit, state, budget)?;
         if own_gather || deposit.owner == Some(owner) {
-            if let Some((mine, _)) = mine_support(owner, deposit, state, home, budget)
-                && economy.can_fit(&mine)
+            if let Ok(Some((mine, _))) = mine_support(owner, deposit, state, home, budget)
+                && economy.can_fit(&mine, ECONOMY_EXPANSION_PAINT_LIMIT)
             {
                 economy.add(mine);
             }
@@ -199,14 +207,16 @@ pub(super) fn plan_economy(
         if optimistic <= best.as_ref().map_or(0.0, |(_, score)| *score) {
             continue;
         }
-        let Some((mine, distance)) = mine_support(owner, deposit, state, home, budget) else {
+        let Ok(Some((mine, distance))) = mine_support(owner, deposit, state, home, budget) else {
             if budget.exhausted {
                 return None;
             }
             continue;
         };
         let score = value - distance / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_haul_cost;
-        if economy.can_fit(&mine) && score > best.as_ref().map_or(0.0, |(_, score)| *score) {
+        if economy.can_fit(&mine, ECONOMY_EXPANSION_PAINT_LIMIT)
+            && score > best.as_ref().map_or(0.0, |(_, score)| *score)
+        {
             best = Some((mine, score));
         }
     }
@@ -300,7 +310,7 @@ fn mine_support(
     state: &GameState<'_>,
     home: Vec2,
     budget: &mut WorkBudget,
-) -> Option<(OwnedDeposit, f32)> {
+) -> Result<Option<(OwnedDeposit, f32)>, CorridorPaintLimit> {
     let center = world_to_intent_cell(deposit.position);
     let region = InteractionRegion::deposit(
         &Transform::from_translation(deposit.position.extend(0.0)),
@@ -308,9 +318,10 @@ fn mine_support(
     );
     let cells = std::iter::once(center)
         .chain(deposit_cells(deposit, state.grid).filter(|cell| *cell != center));
+    let mut exceeds_paint_limit = false;
     for gather_cell in cells {
         if !budget.spend(1) {
-            return None;
+            return Ok(None);
         }
         if !state.grid.in_bounds(gather_cell)
             || !cell_overlaps_circle(gather_cell, deposit.position, deposit.radius)
@@ -323,11 +334,14 @@ fn mine_support(
             continue;
         }
         let goal = RouteGoal::Interaction(region.within_cell(gather_cell));
-        let Some((route, distance)) = corridor_route(state, budget, home, gather_cell, goal) else {
-            if budget.exhausted {
-                return None;
+        let (route, distance) = match corridor_route(state, budget, home, gather_cell, goal) {
+            Ok(Some(route)) => route,
+            Ok(None) if budget.exhausted => return Ok(None),
+            Ok(None) => continue,
+            Err(_) => {
+                exceeds_paint_limit = true;
+                continue;
             }
-            continue;
         };
         let viable = |cell| {
             state.grid.in_bounds(cell)
@@ -379,9 +393,9 @@ fn mine_support(
             kind: IntentKind::Corridor,
         }));
         if !budget.spend(desired.len()) {
-            return None;
+            return Ok(None);
         }
-        return Some((
+        return Ok(Some((
             OwnedDeposit {
                 id: deposit.id,
                 position: deposit.position,
@@ -390,7 +404,11 @@ fn mine_support(
                 desired,
             },
             distance,
-        ));
+        )));
     }
-    None
+    if exceeds_paint_limit {
+        Err(CorridorPaintLimit)
+    } else {
+        Ok(None)
+    }
 }

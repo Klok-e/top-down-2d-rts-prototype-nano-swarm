@@ -204,7 +204,7 @@ fn strategic_intent_system(
     outcome: Option<Res<MatchOutcome>>,
     mut telemetry: ResMut<ControllerTelemetry>,
     mut routes: Local<StrategicRouteCache>,
-    mut income_history: Local<BTreeMap<SwarmId, MineralIncomeHistory>>,
+    mut income_history: Local<BTreeMap<Entity, MineralIncomeHistory>>,
 ) {
     if controllers.is_empty()
         || outcome
@@ -215,7 +215,7 @@ fn strategic_intent_system(
     }
     let owners: BTreeMap<_, _> = swarms.iter().map(|(entity, id, _)| (entity, *id)).collect();
     let tick = (time.elapsed_secs_f64() * crate::SIMULATION_HZ).round() as u64;
-    income_history.retain(|id, _| owners.values().any(|owner| owner == id));
+    income_history.retain(|entity, _| owners.contains_key(entity));
     let mut production_saturated = BTreeMap::new();
     for (_, _, owner, condition, facility, ..) in &structures {
         if let Some(owner) = owner.and_then(|owner| owners.get(&owner.0))
@@ -228,12 +228,12 @@ fn strategic_intent_system(
     }
     let mut swarm_states: Vec<_> = swarms
         .iter()
-        .map(|(_, id, position)| SwarmState {
+        .map(|(entity, id, position)| SwarmState {
             id: *id,
             home: position.map_or(Vec2::ZERO, |t| t.translation.truncate()),
             minerals: ledger.total_for(*id, ResourceKind::Minerals),
             mineral_income_per_second: income_history
-                .entry(*id)
+                .entry(entity)
                 .or_default()
                 .per_second(tick, ledger.extracted_minerals_for(*id)),
             production_saturated: production_saturated.get(id).copied().unwrap_or(false),

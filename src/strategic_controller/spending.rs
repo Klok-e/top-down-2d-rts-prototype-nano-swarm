@@ -1,5 +1,4 @@
 use super::{
-    economy::OwnedDeposit,
     lifecycle::WorkBudget,
     materialize::{push_desired, world_to_intent_cell},
     *,
@@ -11,6 +10,7 @@ pub(super) fn affordable_defend_tiles(
     swarm: Option<&SwarmState>,
     state: &GameState<'_>,
     desired: &mut Vec<DesiredIntent>,
+    paint_capacity: usize,
     budget: &mut WorkBudget,
 ) -> (Option<u64>, usize) {
     let charge_per_second = state.charge.drain_per_tick * crate::SIMULATION_HZ as f32;
@@ -28,13 +28,13 @@ pub(super) fn affordable_defend_tiles(
         let income = swarm.map_or(0.0, |swarm| swarm.mineral_income_per_second);
         let rate = income * tuning.strategy_income_spending_weight * reserve_fraction
             + bank.saturating_sub(reserve) as f32 / tuning.strategy_bank_spending_seconds;
-        (rate / upkeep).clamp(baseline, MAX_PLAN_CELLS.div_ceil(2) as f32)
+        (rate / upkeep).clamp(baseline, EXPANSION_PLAN_CELLS.div_ceil(2) as f32)
     } else {
-        MAX_PLAN_CELLS.div_ceil(2) as f32
+        EXPANSION_PLAN_CELLS.div_ceil(2) as f32
     };
 
     let mut living_defenders = 0;
-    for bot in state.bots.iter().take(MAX_BOTS) {
+    for bot in state.bots {
         if !budget.spend(1) {
             return (None, 1);
         }
@@ -51,8 +51,15 @@ pub(super) fn affordable_defend_tiles(
         .max(promised_slots)
         .div_ceil(state.charge.max_defenders_per_charger)
         .max(1) as usize;
-    let (key_charger, supplied_slots) =
-        keep_charger_support(tuning, owner, state, max_chargers, desired, budget);
+    let (key_charger, supplied_slots) = keep_charger_support(
+        tuning,
+        owner,
+        state,
+        max_chargers,
+        desired,
+        paint_capacity,
+        budget,
+    );
     let sustainable = if charging_fraction > 0.0 {
         mineral_limit
             .min(supplied_slots / charging_fraction)
@@ -70,10 +77,11 @@ fn keep_charger_support(
     state: &GameState<'_>,
     max_chargers: usize,
     desired: &mut Vec<DesiredIntent>,
+    paint_capacity: usize,
     budget: &mut WorkBudget,
 ) -> (Option<u64>, f32) {
     let mut chargers = Vec::new();
-    for structure in state.structures.iter().take(MAX_STRUCTURES) {
+    for structure in state.structures {
         if !budget.spend(1) {
             return (None, 0.0);
         }
@@ -111,23 +119,27 @@ fn keep_charger_support(
             cell,
             kind: IntentKind::Defend,
         };
-        if !desired.contains(&defend) && !push_desired(desired, owner, defend, state, true, budget)
+        if !desired.contains(&defend)
+            && (desired.len() >= paint_capacity
+                || !push_desired(desired, owner, defend, state, true, budget))
         {
             continue;
         }
         key_charger.get_or_insert(id);
         supplied += buffer as f32 / tuning.strategy_charger_reserve as f32;
-        push_desired(
-            desired,
-            owner,
-            DesiredIntent {
-                cell,
-                kind: IntentKind::Corridor,
-            },
-            state,
-            true,
-            budget,
-        );
+        if desired.len() < paint_capacity {
+            push_desired(
+                desired,
+                owner,
+                DesiredIntent {
+                    cell,
+                    kind: IntentKind::Corridor,
+                },
+                state,
+                true,
+                budget,
+            );
+        }
         kept += 1;
         if kept == max_chargers {
             break;
@@ -142,10 +154,10 @@ fn keep_charger_support(
 pub(super) fn add_production_room(
     tuning: &AutonomyTuning,
     swarm: &SwarmState,
-    home: IVec2,
-    deposits: &[OwnedDeposit],
+    origins: impl Iterator<Item = IVec2>,
     state: &GameState<'_>,
     desired: &mut Vec<DesiredIntent>,
+    paint_capacity: usize,
     budget: &mut WorkBudget,
 ) {
     if !swarm.production_saturated || swarm.minerals <= tuning.strategy_production_mineral_threshold
@@ -154,9 +166,9 @@ pub(super) fn add_production_room(
     }
     let mut remaining = tuning.strategy_production_room_cells;
     let offsets = [IVec2::X, -IVec2::X, IVec2::Y, -IVec2::Y];
-    for origin in std::iter::once(home).chain(deposits.iter().map(|mine| mine.build_cell)) {
+    for origin in origins {
         for offset in offsets {
-            if remaining == 0 || budget.exhausted {
+            if remaining == 0 || desired.len() >= paint_capacity || budget.exhausted {
                 return;
             }
             let intent = DesiredIntent {

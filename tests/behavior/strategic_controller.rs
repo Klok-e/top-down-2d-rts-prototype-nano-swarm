@@ -887,6 +887,7 @@ fn saturated_economy_supplies_build_room_for_real_production_pressure() {
         ))
         .id();
     app.world_mut().spawn((rock, rock_transform));
+    common::spawn_worker_at(&mut app, Vec2::new(600.0, 256.0));
     let facility =
         common::spawn_facility_at(&mut app, swarm, common::cell_world_center(IVec2::new(2, 1)));
     app.world_mut()
