@@ -2,12 +2,10 @@
 status: accepted
 ---
 
-# Strategic Controllers provide a competent novice opponent
+# The Strategic Controller provides an opponent for novice players
 
-The user replaced the research-grade strength objective with a clean, maintainable local AI that can challenge a novice player. Statistical superiority, a progressively harder benchmark ladder, large reserved evaluations, and open-ended optimization are no longer release requirements. Prefer a simple competent policy over accumulating special cases.
+Standard needs a maintainable opponent that challenges a novice through the same gameplay rules available to the player. The Strategic Controller observes the game state and changes only its swarm's intent. Each planning review has bounded work, and useful plans persist while Nanobots carry them out.
 
-Retain the immutable-state to owned-intent-edits interface, bounded planning, shared gameplay rules, and useful plan retention. The AI should sustain its economy, mount meaningful attacks, react to pressure or lost support, retarget exhausted resources, and finish exposed enemies or distant survivors. Make it available in normal player-versus-AI play, not only experiments. Shared action durations remain in scope for responsive, readable pacing.
+The controller should sustain an economy and a fighting force, respond to pressure or lost support, replace exhausted resource sites, and finish exposed structures and distant survivors. These behaviors can be exercised in simulation. Judging the difficulty a novice actually experiences requires human play in Standard.
 
-Use focused behavioral tests, one small AI Battle smoke matrix across two layouts and both starts, and short normal-speed offscreen observation. Keep useful damage and anti-farming diagnostics, but do not require beating benchmark opponents. Finish repository verification, review, and commit. Human play remains the authority on actual novice difficulty; do not claim human-tested challenge without that evidence. [Issue #72](https://github.com/Klok-e/top-down-2d-rts-prototype-nano-swarm/issues/72) defines the revised acceptance checks.
-
-Prior competitive experiments and their superseded criteria remain in the [research history](../verification/strategic-controller-research-history.md); they are evidence, not release gates.
+Early experiments compared competing policies. Their results helped identify failures in execution, but relative scores alone could not show whether the opponent was suitable for a player. The [single-policy decision](0023-one-strategic-controller-policy.md) retains the gameplay objective and the [research archive](../verification/strategic-controller-research-history.md) preserves the experimental findings.
