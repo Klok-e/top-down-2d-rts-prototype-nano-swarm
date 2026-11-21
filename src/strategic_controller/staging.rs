@@ -284,7 +284,7 @@ fn ground(
 ) -> Option<Vec2> {
     if let Some(map) = state.reachability {
         return map
-            .reachable_point_with_budget(owner, cell, state.grid, &mut || budget.spend(1))
+            .planning_point_with_budget(owner, cell, state.grid, &mut || budget.spend(1))
             .ok()
             .flatten();
     }
