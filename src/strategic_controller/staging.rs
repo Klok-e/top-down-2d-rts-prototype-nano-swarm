@@ -1,8 +1,10 @@
 use super::{
     lifecycle::WorkBudget,
-    materialize::{intent_cell_center, world_to_intent_cell},
+    materialize::{intent_cell_center, query_route, world_to_intent_cell},
     *,
 };
+
+use crate::navigation::RouteGoal;
 
 const MAX_STAGING_POINTS: usize = 6;
 const PURSUIT_AREA_CELLS: usize = 9;
@@ -148,7 +150,20 @@ pub(super) fn plan_staging(
     );
     let start_cell = world_to_intent_cell(start);
     let destination = ground(owner, state, target)?;
-    let waypoints = [destination];
+    let waypoints = if state.route_query.is_some() {
+        query_route(
+            state,
+            start,
+            RouteGoal::Range {
+                center: destination,
+                radius: crate::ZONE_BLOCK_SIZE / 4.0,
+            },
+            budget,
+        )?
+        .waypoints
+    } else {
+        vec![destination]
+    };
     let mut points = staging_points(
         start,
         &waypoints,

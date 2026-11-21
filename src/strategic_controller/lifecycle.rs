@@ -127,7 +127,6 @@ impl PlannerState {
         };
         let PlanValidation {
             invalidation,
-            observed_attack,
             attack_progressed,
             covered_attack,
             covered_attack_movement,
@@ -239,7 +238,7 @@ impl PlannerState {
                 format!("selected {label} from economic, support, and combat alternatives"),
             )
         };
-        let mut staging = plan_staging(
+        let staging = plan_staging(
             tuning,
             &selected,
             self.current.as_ref(),
@@ -284,10 +283,7 @@ impl PlannerState {
             .current
             .as_ref()
             .is_some_and(|current| current.objective == selected.objective);
-        if keeps_objective && observed_attack.is_some() {
-            selected.attack = observed_attack;
-        }
-        let selected = materialize_plan(selected, staging.take(), owner, state, &mut budget);
+        let selected = materialize_plan(selected, staging, owner, state, &mut budget);
         if budget.exhausted || !selected.is_coordinated() {
             self.tuning_review_requested |= tuning_review && budget.exhausted;
             self.work_used = budget.used;

@@ -1,6 +1,6 @@
 use super::{
     lifecycle::WorkBudget,
-    materialize::{intent_cell_center, midpoint_cell, route_exposure, world_to_intent_cell},
+    materialize::{route_exposure, world_to_intent_cell},
     *,
 };
 use crate::nanobot::{InteractionRegion, cell_overlaps_circle};
@@ -99,7 +99,6 @@ pub(super) fn validate_plan(
                 observed.cell
             )
         }),
-        observed_attack: Some(observed),
         attack_progressed: observed.health < target.health,
         covered_attack: covered,
         covered_attack_movement: moved && covered,
@@ -348,7 +347,6 @@ pub(super) fn generate_candidates(
         .map(|swarm| swarm.home);
     if let Some(enemy_home) = enemy_home {
         let target = world_to_intent_cell(enemy_home);
-        let anchor = midpoint_cell(home_cell, target);
         if is_target_reachable(owner, state, enemy_home) {
             let distance = home.distance(enemy_home) / crate::ZONE_BLOCK_SIZE;
             let score = economy.value
@@ -363,10 +361,10 @@ pub(super) fn generate_candidates(
                 - route_exposure(home, enemy_home, state.terrain, budget)
                     * tuning.strategy_pressure_exposure_cost;
             candidates.push(PlanCandidate {
-                objective: Objective::ForwardPressure(anchor),
+                objective: Objective::ForwardPressure(target),
                 economy,
                 attack: None,
-                anchor,
+                anchor: home_cell,
                 attack_target: Some(target),
                 key_charger,
                 defend_target,
@@ -395,7 +393,6 @@ pub(super) fn generate_candidates(
             break;
         }
         let target = world_to_intent_cell(structure.position);
-        let anchor = midpoint_cell(home_cell, target);
         if !is_target_reachable(owner, state, structure.position) {
             continue;
         }
@@ -429,7 +426,7 @@ pub(super) fn generate_candidates(
                 cell: target,
                 health: structure.health,
             }),
-            anchor,
+            anchor: home_cell,
             attack_target: Some(target),
             key_charger,
             defend_target,
@@ -465,7 +462,6 @@ pub(super) fn generate_candidates(
             break;
         }
         let target = world_to_intent_cell(bot.position);
-        let anchor = midpoint_cell(home_cell, target);
         if !is_target_reachable(owner, state, bot.position) {
             continue;
         }
@@ -504,7 +500,7 @@ pub(super) fn generate_candidates(
                 cell: target,
                 health: bot.health,
             }),
-            anchor,
+            anchor: home_cell,
             attack_target: Some(target),
             key_charger,
             defend_target,

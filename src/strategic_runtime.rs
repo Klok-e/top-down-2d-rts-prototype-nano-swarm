@@ -11,6 +11,7 @@ use crate::{
         PlannedStructure, ProductionFacility, RegionalAllocationSet, Structure, Swarm, SwarmId,
         SwarmMember,
     },
+    navigation::Navigation,
     reachability::{IntentWriteAction, SwarmReachabilityMap, apply_reachable_intent},
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole},
     strategic_controller::{
@@ -127,6 +128,7 @@ fn strategic_intent_system(
     ledger: Res<ResourceLedger>,
     mut grid: ResMut<IntentGrid>,
     reachability: Res<SwarmReachabilityMap>,
+    navigation: Res<Navigation>,
     time: Res<Time<Fixed>>,
     outcome: Option<Res<MatchOutcome>>,
     mut telemetry: ResMut<ControllerTelemetry>,
@@ -214,6 +216,9 @@ fn strategic_intent_system(
         .iter()
         .map(|(rock, transform)| rock.obstacle(transform))
         .collect();
+    let route_query = |start, goal, allow_work: &mut dyn FnMut() -> bool| {
+        navigation.route_without_paint(start, goal, allow_work)
+    };
     let state = GameState {
         grid: &grid,
         swarms: &swarm_states,
@@ -222,6 +227,7 @@ fn strategic_intent_system(
         deposits: &deposit_states,
         terrain: &terrain,
         reachability: Some(&reachability),
+        route_query: Some(&route_query),
         tick: (time.elapsed_secs_f64() * crate::SIMULATION_HZ).round() as u64,
         finished: false,
     };

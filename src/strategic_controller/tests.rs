@@ -1,4 +1,11 @@
-use super::{materialize::*, *};
+use super::*;
+
+fn direct_attack_tuning() -> AutonomyTuning {
+    AutonomyTuning {
+        strategy_staging_spacing_cells: 64,
+        ..AutonomyTuning::default()
+    }
+}
 
 fn world(cell: IVec2) -> Vec2 {
     (cell.as_vec2() + Vec2::splat(0.5)) * crate::ZONE_BLOCK_SIZE
@@ -23,9 +30,193 @@ fn empty_state<'a>(grid: &'a IntentGrid, tick: u64) -> GameState<'a> {
         deposits: &[],
         terrain: &[],
         reachability: None,
+        route_query: None,
         tick,
         finished: false,
     }
+}
+
+fn corridor_paint(decision: &Decision) -> BTreeSet<(i32, i32)> {
+    decision
+        .edits
+        .iter()
+        .filter(|edit| edit.kind == IntentKind::Corridor && edit.action == IntentEditAction::Paint)
+        .map(|edit| (edit.cell.x, edit.cell.y))
+        .collect()
+}
+
+#[test]
+fn corridor_paint_follows_the_supplied_deposit_route() {
+    let owner = SwarmId::PLAYER;
+    let grid = IntentGrid::new(16, 16);
+    let swarms = [SwarmState {
+        id: owner,
+        home: world(IVec2::ZERO),
+        minerals: 1_000,
+    }];
+    let deposits = [DepositState {
+        id: 1,
+        position: world(IVec2::new(4, 0)),
+        amount: 72_000,
+        radius: 80.0,
+    }];
+    let route = |_, goal, _: &mut dyn FnMut() -> bool| {
+        Some(match goal {
+            RouteGoal::Interaction(_) => RouteOutcome::Found(crate::navigation::Route {
+                waypoints: [(0, 2), (4, 2), (4, 0)]
+                    .map(|(x, y)| world(IVec2::new(x, y)))
+                    .to_vec(),
+                cost: 8.0 * crate::ZONE_BLOCK_SIZE,
+            }),
+            _ => RouteOutcome::Unreachable,
+        })
+    };
+
+    let decision = Controller::new(owner).decide(
+        &AutonomyTuning::default(),
+        &GameState {
+            swarms: &swarms,
+            deposits: &deposits,
+            route_query: Some(&route),
+            ..empty_state(&grid, 0)
+        },
+    );
+
+    assert_eq!(
+        corridor_paint(&decision),
+        BTreeSet::from([
+            (0, 0),
+            (0, 1),
+            (0, 2),
+            (1, 2),
+            (2, 2),
+            (3, 2),
+            (4, 2),
+            (4, 1),
+            (4, 0),
+        ])
+    );
+}
+
+#[test]
+fn corridor_paint_without_routing_follows_a_straight_cell_line() {
+    let owner = SwarmId::PLAYER;
+    let grid = IntentGrid::new(16, 16);
+    let swarms = [SwarmState {
+        id: owner,
+        home: world(IVec2::ZERO),
+        minerals: 1_000,
+    }];
+    let deposits = [DepositState {
+        id: 1,
+        position: world(IVec2::new(6, 2)),
+        amount: 72_000,
+        radius: 80.0,
+    }];
+    let decision = Controller::new(owner).decide(
+        &AutonomyTuning::default(),
+        &GameState {
+            swarms: &swarms,
+            deposits: &deposits,
+            ..empty_state(&grid, 0)
+        },
+    );
+
+    assert_eq!(
+        corridor_paint(&decision),
+        BTreeSet::from([(0, 0), (1, 0), (2, 1), (3, 1), (4, 1), (5, 2), (6, 2)])
+    );
+}
+
+#[test]
+fn corridor_paint_does_not_cross_rock_when_the_straight_fallback_is_blocked() {
+    let owner = SwarmId::PLAYER;
+    let grid = IntentGrid::new(16, 16);
+    let swarms = [SwarmState {
+        id: owner,
+        home: world(IVec2::ZERO),
+        minerals: 1_000,
+    }];
+    let deposits = [DepositState {
+        id: 1,
+        position: world(IVec2::new(4, 0)),
+        amount: 72_000,
+        radius: 80.0,
+    }];
+    let terrain = [Obstacle::Circle {
+        center: world(IVec2::new(2, 0)),
+        radius: 260.0,
+    }];
+    let decision = Controller::new(owner).decide(
+        &AutonomyTuning::default(),
+        &GameState {
+            swarms: &swarms,
+            deposits: &deposits,
+            terrain: &terrain,
+            ..empty_state(&grid, 0)
+        },
+    );
+
+    assert!(decision.edits.contains(&IntentEdit {
+        cell: IVec2::new(4, 0),
+        kind: IntentKind::Gather,
+        action: IntentEditAction::Paint,
+    }));
+    assert_eq!(corridor_paint(&decision), BTreeSet::from([(0, 0)]));
+}
+
+#[test]
+fn corridor_search_spends_planning_work_and_keeps_existing_paint_on_exhaustion() {
+    let owner = SwarmId::PLAYER;
+    let mut grid = IntentGrid::new(16, 16);
+    let swarms = [SwarmState {
+        id: owner,
+        home: world(IVec2::ZERO),
+        minerals: 1_000,
+    }];
+    let deposit = DepositState {
+        id: 1,
+        position: world(IVec2::new(4, 0)),
+        amount: 72_000,
+        radius: 80.0,
+    };
+    let tuning = AutonomyTuning::default();
+    let mut controller = Controller::new(owner);
+    let first = controller.decide(
+        &tuning,
+        &GameState {
+            swarms: &swarms,
+            deposits: &[deposit],
+            ..empty_state(&grid, 0)
+        },
+    );
+    apply(&mut grid, owner, &first);
+    let next_deposit = DepositState {
+        position: world(IVec2::new(0, 4)),
+        ..deposit
+    };
+    let route = |_, _, allow_work: &mut dyn FnMut() -> bool| {
+        for _ in 0..PLANNING_WORK_BUDGET {
+            if !allow_work() {
+                return None;
+            }
+        }
+        panic!("route search exceeded the entire planning allowance")
+    };
+    let next = controller.decide(
+        &tuning,
+        &GameState {
+            swarms: &swarms,
+            deposits: &[next_deposit],
+            route_query: Some(&route),
+            ..empty_state(&grid, tuning.controller_review_period_ticks)
+        },
+    );
+
+    assert!(next.explanation.contains("planning allowance exhausted"));
+    assert!(next.edits.is_empty());
+    assert!(next.work_units > first.work_units);
+    assert!(next.work_units <= PLANNING_WORK_BUDGET);
 }
 
 #[test]
@@ -145,6 +336,7 @@ fn controller_erases_legacy_intent_and_never_paints_across_permanent_terrain() {
         deposits: &[],
         terrain: &terrain,
         reachability: Some(&reachability),
+        route_query: None,
         tick: 0,
         finished: false,
     };
@@ -187,7 +379,7 @@ fn controller_stops_hunting_a_target_on_the_isolated_side_of_a_painted_tile() {
         max_charge: 1.0,
         cargo: 0,
     };
-    let tuning = AutonomyTuning::default();
+    let tuning = direct_attack_tuning();
     let mut controller = Controller::new(owner);
     let initial = controller.decide(
         &tuning,
@@ -196,6 +388,7 @@ fn controller_stops_hunting_a_target_on_the_isolated_side_of_a_painted_tile() {
             bots: &[target],
             terrain: &terrain,
             reachability: Some(&reachability),
+            route_query: None,
             ..empty_state(&grid, 0)
         },
     );
@@ -219,6 +412,7 @@ fn controller_stops_hunting_a_target_on_the_isolated_side_of_a_painted_tile() {
             bots: &[moved],
             terrain: &terrain,
             reachability: Some(&reachability),
+            route_query: None,
             ..empty_state(&grid, 1)
         },
     );
@@ -362,11 +556,12 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
         deposits: &deposits,
         terrain: &[],
         reachability: None,
+        route_query: None,
         tick: 0,
         finished: false,
     };
 
-    let decision = Controller::new(owner).decide(&crate::tuning::AutonomyTuning::default(), &state);
+    let decision = Controller::new(owner).decide(&direct_attack_tuning(), &state);
 
     assert!(decision.reviewed);
     assert!(decision.work_units <= PLANNING_WORK_BUDGET);
@@ -429,7 +624,7 @@ fn raid_retains_the_established_primary() {
     let primary_chain = funded_primary_chain(owner, home, deposits[0]);
     let mut controller = Controller::new(owner);
     let initial = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &initial_swarms,
@@ -438,6 +633,7 @@ fn raid_retains_the_established_primary() {
             deposits: &deposits,
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },
@@ -499,7 +695,7 @@ fn raid_retains_the_established_primary() {
         },
     ];
     let raid = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &supplied_swarms,
@@ -512,6 +708,7 @@ fn raid_retains_the_established_primary() {
             deposits: &deposits,
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -572,7 +769,7 @@ fn advantaged_raid_paints_enemy_logistics_and_keeps_home_economy() {
     }];
 
     let decision = Controller::new(owner).decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -581,6 +778,7 @@ fn advantaged_raid_paints_enemy_logistics_and_keeps_home_economy() {
             deposits: &deposits,
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },
@@ -595,8 +793,7 @@ fn advantaged_raid_paints_enemy_logistics_and_keeps_home_economy() {
     assert!(decision.edits.iter().any(|edit| {
         edit.action == IntentEditAction::Paint
             && edit.kind == IntentKind::Build
-            && edit.cell != IVec2::ZERO
-            && edit.cell.abs().max_element() <= 1
+            && edit.cell == IVec2::ZERO
     }));
     assert!(decision.edits.iter().any(|edit| {
         edit.action == IntentEditAction::Paint
@@ -660,7 +857,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
     let mut controller = Controller::new(owner);
 
     let initial = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -669,6 +866,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },
@@ -692,7 +890,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
     bots.truncate(friendly_defenders.len());
     bots.extend([progressing_target, fresh_target]);
     let revised = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -701,6 +899,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -729,248 +928,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
 }
 
 #[test]
-fn progressing_live_attack_remains_when_a_supported_new_target_appears() {
-    let mut grid = IntentGrid::new(64, 64);
-    let owner = SwarmId(4);
-    let enemy = SwarmId(9);
-    let swarms = [
-        SwarmState {
-            id: owner,
-            home: world(IVec2::ZERO),
-            minerals: 2_000,
-        },
-        SwarmState {
-            id: enemy,
-            home: world(IVec2::new(24, 24)),
-            minerals: 0,
-        },
-    ];
-    let bots = (0..10)
-        .map(|id| BotState {
-            id,
-            owner,
-            kind: NanobotType::Defender,
-            position: swarms[0].home,
-            health: 100,
-            max_health: 100,
-            charge: 1.0,
-            max_charge: 1.0,
-            cargo: 0,
-        })
-        .collect::<Vec<_>>();
-    let friendly_charger = StructureState {
-        id: 20,
-        owner,
-        position: world(IVec2::new(1, 0)),
-        kind: StructureKind::Charger,
-        health: 100,
-        max_health: 100,
-        minerals: 100,
-    };
-    let incumbent = StructureState {
-        id: 30,
-        owner: enemy,
-        position: world(IVec2::new(24, 24)),
-        kind: StructureKind::Sink,
-        health: 100,
-        max_health: 100,
-        minerals: 0,
-    };
-    let mut controller = Controller::new(owner);
-    let initial = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &[friendly_charger, incumbent],
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: 0,
-            finished: false,
-        },
-    );
-    apply(&mut grid, owner, &initial);
-    assert!(
-        grid.cell(IVec2::new(24, 24))
-            .is_some_and(|intent| { intent.has_owned(IntentKind::Defend, owner) })
-    );
-
-    let progressing_incumbent = StructureState {
-        health: 80,
-        ..incumbent
-    };
-    let new_forward_target = StructureState {
-        id: 31,
-        owner: enemy,
-        position: world(IVec2::new(10, 10)),
-        kind: StructureKind::Charger,
-        health: 5,
-        max_health: 100,
-        minerals: 1_000,
-    };
-    let revised = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &[friendly_charger, progressing_incumbent, new_forward_target],
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: WORK_WINDOW_TICKS,
-            finished: false,
-        },
-    );
-    apply(&mut grid, owner, &revised);
-
-    assert!(
-        grid.cell(IVec2::new(24, 24))
-            .is_some_and(|intent| { intent.has_owned(IntentKind::Defend, owner) })
-    );
-    assert!(
-        grid.cell(IVec2::new(10, 10))
-            .is_some_and(|intent| { intent.has_owned(IntentKind::Defend, owner) })
-    );
-    assert!(
-        grid.iter_active_cells()
-            .filter(|(_, intent)| IntentKind::ALL
-                .into_iter()
-                .any(|kind| intent.has_owned(kind, owner)))
-            .count()
-            <= MAX_PLAN_CELLS
-    );
-
-    let depleted_defenders = bots
-        .iter()
-        .map(|bot| BotState {
-            charge: 0.1,
-            ..*bot
-        })
-        .collect::<Vec<_>>();
-    let empty_charger = StructureState {
-        minerals: 0,
-        ..friendly_charger
-    };
-    let unsupported = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &depleted_defenders,
-            structures: &[empty_charger, progressing_incumbent, new_forward_target],
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: WORK_WINDOW_TICKS * 2,
-            finished: false,
-        },
-    );
-    apply(&mut grid, owner, &unsupported);
-
-    let retained_fronts = [IVec2::new(24, 24), IVec2::new(10, 10)]
-        .into_iter()
-        .filter(|cell| {
-            grid.cell(*cell)
-                .is_some_and(|intent| intent.has_owned(IntentKind::Defend, owner))
-        })
-        .count();
-    assert_eq!(retained_fronts, 1);
-}
-
-#[test]
-fn supported_attack_targets_a_recovery_bot_while_enemy_structures_remain() {
-    let grid = IntentGrid::new(32, 32);
-    let owner = SwarmId(4);
-    let enemy = SwarmId(9);
-    let swarms = [
-        SwarmState {
-            id: owner,
-            home: world(IVec2::ZERO),
-            minerals: 2_000,
-        },
-        SwarmState {
-            id: enemy,
-            home: world(IVec2::new(12, 0)),
-            minerals: 0,
-        },
-    ];
-    let mut bots = (0..8)
-        .map(|id| BotState {
-            id,
-            owner,
-            kind: NanobotType::Defender,
-            position: swarms[0].home,
-            health: 100,
-            max_health: 100,
-            charge: 1.0,
-            max_charge: 1.0,
-            cargo: 0,
-        })
-        .collect::<Vec<_>>();
-    bots.push(BotState {
-        id: 50,
-        owner: enemy,
-        kind: NanobotType::Worker,
-        position: world(IVec2::new(3, 5)),
-        health: 100,
-        max_health: 100,
-        charge: 1.0,
-        max_charge: 1.0,
-        cargo: 0,
-    });
-    let structures = [
-        StructureState {
-            id: 20,
-            owner,
-            position: world(IVec2::new(1, 0)),
-            kind: StructureKind::Charger,
-            health: 100,
-            max_health: 100,
-            minerals: 100,
-        },
-        StructureState {
-            id: 30,
-            owner: enemy,
-            position: world(IVec2::new(12, 0)),
-            kind: StructureKind::Sink,
-            health: 100,
-            max_health: 100,
-            minerals: 0,
-        },
-    ];
-
-    let decision = Controller::new(owner).decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &structures,
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: 0,
-            finished: false,
-        },
-    );
-
-    assert!(decision.edits.iter().any(|edit| {
-        edit.action == IntentEditAction::Paint
-            && edit.kind == IntentKind::Defend
-            && edit.cell == IVec2::new(12, 0)
-    }));
-    assert!(decision.edits.iter().any(|edit| {
-        edit.action == IntentEditAction::Paint
-            && edit.kind == IntentKind::Defend
-            && edit.cell == IVec2::new(3, 5)
-    }));
-}
-
-#[test]
-fn progressing_incumbent_wins_redeployment_when_only_one_front_is_supportable() {
+fn progressing_structure_attack_retains_the_only_front() {
     let mut grid = IntentGrid::new(32, 32);
     let owner = SwarmId(4);
     let enemy = SwarmId(9);
@@ -986,7 +944,7 @@ fn progressing_incumbent_wins_redeployment_when_only_one_front_is_supportable() 
             minerals: 0,
         },
     ];
-    let bots = (0..2)
+    let bots = (0..8)
         .map(|id| BotState {
             id,
             owner,
@@ -1019,7 +977,7 @@ fn progressing_incumbent_wins_redeployment_when_only_one_front_is_supportable() 
     };
     let mut controller = Controller::new(owner);
     let initial = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -1028,6 +986,7 @@ fn progressing_incumbent_wins_redeployment_when_only_one_front_is_supportable() 
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },
@@ -1048,7 +1007,7 @@ fn progressing_incumbent_wins_redeployment_when_only_one_front_is_supportable() 
         minerals: 1_000,
     };
     let revised = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -1057,6 +1016,7 @@ fn progressing_incumbent_wins_redeployment_when_only_one_front_is_supportable() 
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -1108,6 +1068,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
             deposits: &deposits,
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },
@@ -1124,6 +1085,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
             deposits: &deposits,
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: WORK_WINDOW_TICKS - 1,
             finished: false,
         },
@@ -1141,6 +1103,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
             deposits: &deposits,
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -1177,6 +1140,7 @@ fn clearly_better_resource_opportunity_replaces_a_viable_plan() {
             deposits: &[original],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },
@@ -1202,6 +1166,7 @@ fn clearly_better_resource_opportunity_replaces_a_viable_plan() {
             deposits: &opportunities,
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -1275,7 +1240,7 @@ fn accumulated_supply_and_a_logistics_target_replace_the_economy_plan() {
     };
     let mut controller = Controller::new(owner);
     let initial = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &initial_swarms,
@@ -1284,6 +1249,7 @@ fn accumulated_supply_and_a_logistics_target_replace_the_economy_plan() {
             deposits: &deposit,
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },
@@ -1305,7 +1271,7 @@ fn accumulated_supply_and_a_logistics_target_replace_the_economy_plan() {
         ..facility
     };
     let pressure = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &supplied_swarms,
@@ -1314,6 +1280,7 @@ fn accumulated_supply_and_a_logistics_target_replace_the_economy_plan() {
             deposits: &deposit,
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -1369,6 +1336,7 @@ fn terrain_exposure_changes_which_equal_deposit_is_secured() {
             deposits: &deposits,
             terrain: &terrain,
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },
@@ -1429,6 +1397,7 @@ fn irrelevant_far_rocks_do_not_dilute_an_obstructed_deposit_approach() {
                 deposits: &deposits,
                 terrain,
                 reachability: None,
+                route_query: None,
                 tick: 0,
                 finished: false,
             },
@@ -1446,560 +1415,6 @@ fn irrelevant_far_rocks_do_not_dilute_an_obstructed_deposit_approach() {
             edit.action == IntentEditAction::Paint
                 && edit.kind == IntentKind::Gather
                 && edit.cell == IVec2::new(4, 0)
-        }));
-    }
-}
-
-#[test]
-fn combat_support_build_follows_the_living_defender_cohort_without_outlier_drift() {
-    let mut grid = IntentGrid::new(64, 64);
-    let owner = SwarmId(4);
-    let enemy = SwarmId(9);
-    let home_cell = IVec2::ZERO;
-    let cohort_cell = IVec2::new(4, 0);
-    let midpoint = IVec2::new(6, 0);
-    let target_cell = IVec2::new(12, 0);
-    let home = world(home_cell);
-    let swarms = [
-        SwarmState {
-            id: owner,
-            home,
-            minerals: 1_000,
-        },
-        SwarmState {
-            id: enemy,
-            home: world(target_cell),
-            minerals: 0,
-        },
-    ];
-    let mut bots = (0..5)
-        .map(|id| BotState {
-            id,
-            owner,
-            kind: NanobotType::Defender,
-            position: home,
-            health: 100,
-            max_health: 100,
-            charge: 1.0,
-            max_charge: 1.0,
-            cargo: 0,
-        })
-        .collect::<Vec<_>>();
-    bots.extend([
-        BotState {
-            id: 5,
-            owner,
-            kind: NanobotType::Defender,
-            position: world(IVec2::new(11, 0)),
-            health: 100,
-            max_health: 100,
-            charge: 1.0,
-            max_charge: 1.0,
-            cargo: 0,
-        },
-        BotState {
-            id: 6,
-            owner,
-            kind: NanobotType::Worker,
-            position: world(IVec2::new(10, 0)),
-            health: 100,
-            max_health: 100,
-            charge: 1.0,
-            max_charge: 1.0,
-            cargo: 0,
-        },
-        BotState {
-            id: 7,
-            owner: enemy,
-            kind: NanobotType::Defender,
-            position: world(IVec2::new(-10, 0)),
-            health: 100,
-            max_health: 100,
-            charge: 1.0,
-            max_charge: 1.0,
-            cargo: 0,
-        },
-        BotState {
-            id: 8,
-            owner,
-            kind: NanobotType::Defender,
-            position: world(IVec2::new(10, 0)),
-            health: 0,
-            max_health: 100,
-            charge: 1.0,
-            max_charge: 1.0,
-            cargo: 0,
-        },
-    ]);
-    let deposit = [DepositState {
-        id: 20,
-        position: world(IVec2::new(-2, 0)),
-        amount: 500,
-        radius: 100.0,
-    }];
-    let structures = [
-        StructureState {
-            id: 29,
-            owner,
-            position: world(IVec2::new(-1, 0)),
-            kind: StructureKind::Charger,
-            health: 100,
-            max_health: 100,
-            minerals: 0,
-        },
-        StructureState {
-            id: 30,
-            owner: enemy,
-            position: world(target_cell),
-            kind: StructureKind::Sink,
-            health: 20,
-            max_health: 100,
-            minerals: 100,
-        },
-    ];
-    let mut controller = Controller::new(owner);
-
-    let home_decision = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &structures,
-            deposits: &deposit,
-            terrain: &[],
-            reachability: None,
-            tick: 0,
-            finished: false,
-        },
-    );
-    assert!(
-        home_decision
-            .explanation
-            .contains("attack enemy logistics structure 30")
-    );
-    assert!(home_decision.edits.iter().any(|edit| {
-        edit.action == IntentEditAction::Paint
-            && edit.kind == IntentKind::Gather
-            && edit.cell == IVec2::new(-2, 0)
-    }));
-    assert!(home_decision.edits.iter().any(|edit| {
-        edit.action == IntentEditAction::Paint
-            && edit.kind == IntentKind::Defend
-            && edit.cell == target_cell
-    }));
-    assert!(
-        home_decision
-            .edits
-            .iter()
-            .filter(|edit| {
-                edit.action == IntentEditAction::Paint
-                    && edit.kind == IntentKind::Build
-                    && edit.cell != home_cell
-            })
-            .all(|edit| (edit.cell - home_cell).abs().max_element() <= 1),
-        "support must stay with the home cohort rather than open at midpoint {midpoint}: {:?}",
-        home_decision.edits
-    );
-    assert!(!home_decision.edits.iter().any(|edit| {
-        edit.action == IntentEditAction::Paint
-            && edit.kind == IntentKind::Build
-            && edit.cell == midpoint
-    }));
-    apply(&mut grid, owner, &home_decision);
-
-    for bot in bots.iter_mut().filter(|bot| bot.id < 5) {
-        bot.position = world(cohort_cell);
-    }
-    let obstruction = Obstacle::Circle {
-        center: world(cohort_cell),
-        radius: crate::ZONE_BLOCK_SIZE * 0.6,
-    };
-    let advanced = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &structures,
-            deposits: &deposit,
-            terrain: &[obstruction],
-            reachability: None,
-            tick: WORK_WINDOW_TICKS,
-            finished: false,
-        },
-    );
-    apply(&mut grid, owner, &advanced);
-
-    let forward_builds = grid
-        .iter_active_cells()
-        .filter_map(|(cell, intent)| {
-            (cell != home_cell && intent.has_owned(IntentKind::Build, owner)).then_some(cell)
-        })
-        .collect::<Vec<_>>();
-    assert!(
-        forward_builds.iter().any(|cell| {
-            (*cell - cohort_cell).abs().max_element() <= 1 && obstruction.admits_body(world(*cell))
-        }),
-        "an open support Build must follow the advanced cohort: {forward_builds:?}; {}",
-        advanced.explanation
-    );
-    assert!(
-        forward_builds
-            .iter()
-            .all(|cell| (*cell - cohort_cell).abs().max_element() <= 1),
-        "outliers or remote obstacle alternatives dragged support away: {forward_builds:?}"
-    );
-    assert!(!forward_builds.contains(&midpoint));
-    assert!(
-        grid.cell(target_cell)
-            .is_some_and(|intent| { intent.has_owned(IntentKind::Defend, owner) })
-    );
-    assert!(
-        grid.cell(IVec2::new(-2, 0))
-            .is_some_and(|intent| { intent.has_owned(IntentKind::Gather, owner) })
-    );
-}
-
-#[test]
-fn combat_support_retains_a_nearby_open_build_during_small_cohort_drift() {
-    let mut grid = IntentGrid::new(32, 32);
-    let owner = SwarmId(4);
-    let enemy = SwarmId(9);
-    let home_cell = IVec2::ZERO;
-    let home = world(home_cell);
-    let swarms = [
-        SwarmState {
-            id: owner,
-            home,
-            minerals: 1_000,
-        },
-        SwarmState {
-            id: enemy,
-            home: world(IVec2::new(8, 0)),
-            minerals: 0,
-        },
-    ];
-    let mut bots = (0..6)
-        .map(|id| BotState {
-            id,
-            owner,
-            kind: NanobotType::Defender,
-            position: home,
-            health: 100,
-            max_health: 100,
-            charge: 1.0,
-            max_charge: 1.0,
-            cargo: 0,
-        })
-        .collect::<Vec<_>>();
-    let deposits = [DepositState {
-        id: 20,
-        position: world(IVec2::new(-1, 0)),
-        amount: 500,
-        radius: 100.0,
-    }];
-    let structures = [StructureState {
-        id: 30,
-        owner: enemy,
-        position: world(IVec2::new(8, 0)),
-        kind: StructureKind::Sink,
-        health: 20,
-        max_health: 100,
-        minerals: 100,
-    }];
-    let mut controller = Controller::new(owner);
-    let initial = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &structures,
-            deposits: &deposits,
-            terrain: &[],
-            reachability: None,
-            tick: 0,
-            finished: false,
-        },
-    );
-    assert!(
-        initial
-            .explanation
-            .contains("attack enemy logistics structure 30")
-    );
-    apply(&mut grid, owner, &initial);
-    let incumbent = grid
-        .iter_active_cells()
-        .find_map(|(cell, intent)| {
-            (cell != home_cell && intent.has_owned(IntentKind::Build, owner)).then_some(cell)
-        })
-        .expect("the attack plan needs one non-home support Build");
-
-    for bot in &mut bots {
-        bot.position = world(IVec2::new(1, 0));
-    }
-    let drift = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &structures,
-            deposits: &deposits,
-            terrain: &[],
-            reachability: None,
-            tick: WORK_WINDOW_TICKS,
-            finished: false,
-        },
-    );
-    assert!(
-        !drift.edits.iter().any(|edit| {
-            edit.kind == IntentKind::Build
-                && (edit.cell == incumbent || edit.action == IntentEditAction::Paint)
-        }),
-        "an open support Build one cell from the cohort must not churn: {:?}",
-        drift.edits
-    );
-    apply(&mut grid, owner, &drift);
-    assert!(
-        grid.cell(incumbent)
-            .is_some_and(|intent| intent.has_owned(IntentKind::Build, owner))
-    );
-
-    let obstruction = Obstacle::Circle {
-        center: world(incumbent),
-        radius: crate::ZONE_BLOCK_SIZE * 0.6,
-    };
-    let obstructed = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &structures,
-            deposits: &deposits,
-            terrain: &[obstruction],
-            reachability: None,
-            tick: WORK_WINDOW_TICKS * 2,
-            finished: false,
-        },
-    );
-    apply(&mut grid, owner, &obstructed);
-    assert!(
-        grid.cell(incumbent)
-            .is_none_or(|intent| !intent.has_owned(IntentKind::Build, owner)),
-        "an obstructed incumbent must be released"
-    );
-    assert!(grid.iter_active_cells().any(|(cell, intent)| {
-        cell != home_cell
-            && (cell - IVec2::new(1, 0)).abs().max_element() <= 1
-            && obstruction.admits_body(world(cell))
-            && intent.has_owned(IntentKind::Build, owner)
-    }));
-}
-
-#[test]
-fn even_split_cohort_support_uses_an_occupied_flank_instead_of_the_empty_median_gap() {
-    let grid = IntentGrid::new(32, 32);
-    let owner = SwarmId(4);
-    let enemy = SwarmId(9);
-    let home = world(IVec2::ZERO);
-    let swarms = [
-        SwarmState {
-            id: owner,
-            home,
-            minerals: 1_000,
-        },
-        SwarmState {
-            id: enemy,
-            home: world(IVec2::new(12, 0)),
-            minerals: 0,
-        },
-    ];
-    let bots = (0..6)
-        .map(|id| BotState {
-            id,
-            owner,
-            kind: NanobotType::Defender,
-            position: world(if id < 3 {
-                IVec2::ZERO
-            } else {
-                IVec2::new(6, 0)
-            }),
-            health: 100,
-            max_health: 100,
-            charge: 1.0,
-            max_charge: 1.0,
-            cargo: 0,
-        })
-        .collect::<Vec<_>>();
-    let deposits = [DepositState {
-        id: 20,
-        position: world(IVec2::new(-1, 0)),
-        amount: 500,
-        radius: 100.0,
-    }];
-    let structures = [StructureState {
-        id: 30,
-        owner: enemy,
-        position: world(IVec2::new(12, 0)),
-        kind: StructureKind::Sink,
-        health: 20,
-        max_health: 100,
-        minerals: 100,
-    }];
-
-    let decision = Controller::new(owner).decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &structures,
-            deposits: &deposits,
-            terrain: &[],
-            reachability: None,
-            tick: 0,
-            finished: false,
-        },
-    );
-    assert!(
-        decision
-            .explanation
-            .contains("attack enemy logistics structure 30")
-    );
-    let forward_builds = decision
-        .edits
-        .iter()
-        .filter(|edit| {
-            edit.action == IntentEditAction::Paint
-                && edit.kind == IntentKind::Build
-                && edit.cell != IVec2::ZERO
-        })
-        .map(|edit| edit.cell)
-        .collect::<Vec<_>>();
-    assert!(
-        forward_builds
-            .iter()
-            .all(|cell| cell.abs().max_element() <= 1),
-        "equal cohort flanks must choose the home-nearest occupied flank, not the empty median gap: {forward_builds:?}"
-    );
-    assert!(
-        forward_builds
-            .iter()
-            .all(|cell| { (*cell - IVec2::new(3, 0)).abs().max_element() > 1 })
-    );
-}
-
-#[test]
-fn pressure_support_uses_the_open_side_of_a_swapped_obstruction() {
-    let owner = SwarmId(4);
-    let enemy = SwarmId(9);
-    let home = world(IVec2::ZERO);
-    let cohort_cell = IVec2::new(4, 0);
-    let enemy_home = world(IVec2::new(12, 0));
-    let swarms = [
-        SwarmState {
-            id: owner,
-            home,
-            minerals: 1_000,
-        },
-        SwarmState {
-            id: enemy,
-            home: enemy_home,
-            minerals: 0,
-        },
-    ];
-    let bots = [
-        Vec2::new(-250.0, -250.0),
-        Vec2::new(250.0, -250.0),
-        Vec2::new(-250.0, 250.0),
-        Vec2::new(250.0, 250.0),
-    ]
-    .into_iter()
-    .enumerate()
-    .map(|(id, offset)| BotState {
-        id: id as u64,
-        owner,
-        kind: NanobotType::Defender,
-        position: world(cohort_cell) + offset,
-        health: 100,
-        max_health: 100,
-        charge: 1.0,
-        max_charge: 1.0,
-        cargo: 0,
-    })
-    .collect::<Vec<_>>();
-    let deposit = [DepositState {
-        id: 20,
-        position: world(IVec2::new(-1, 0)),
-        amount: 500,
-        radius: 100.0,
-    }];
-    let enemy_sink = [StructureState {
-        id: 30,
-        owner: enemy,
-        position: enemy_home,
-        kind: StructureKind::Sink,
-        health: 20,
-        max_health: 100,
-        minerals: 100,
-    }];
-
-    for (blocked_side, expected_open_side) in [(1, -1), (-1, 1)] {
-        let grid = IntentGrid::new(64, 64);
-        let terrain = [
-            Obstacle::Circle {
-                center: world(cohort_cell),
-                radius: crate::ZONE_BLOCK_SIZE * 0.6,
-            },
-            Obstacle::Circle {
-                center: world(cohort_cell + IVec2::new(0, blocked_side)),
-                radius: crate::ZONE_BLOCK_SIZE * 0.6,
-            },
-        ];
-        assert!(bots.iter().all(|bot| {
-            terrain
-                .iter()
-                .all(|obstacle| obstacle.admits_body(bot.position))
-        }));
-        let decision = Controller::new(owner).decide(
-            &crate::tuning::AutonomyTuning::default(),
-            &GameState {
-                grid: &grid,
-                swarms: &swarms,
-                bots: &bots,
-                structures: &enemy_sink,
-                deposits: &deposit,
-                terrain: &terrain,
-                reachability: None,
-                tick: 0,
-                finished: false,
-            },
-        );
-
-        assert!(
-            decision.edits.iter().any(|edit| {
-                edit.action == IntentEditAction::Paint
-                    && edit.kind == IntentKind::Build
-                    && edit.cell.x == cohort_cell.x
-                    && (edit.cell - cohort_cell).abs().max_element() == 1
-                    && edit.cell.y.signum() == expected_open_side
-            }),
-            "expected open side {expected_open_side}: {}; edits: {:?}",
-            decision.explanation,
-            decision.edits
-        );
-        assert!(decision.edits.iter().any(|edit| {
-            edit.action == IntentEditAction::Paint
-                && edit.kind == IntentKind::Defend
-                && edit.cell == IVec2::new(12, 0)
-        }));
-        assert!(decision.edits.iter().any(|edit| {
-            edit.action == IntentEditAction::Paint
-                && edit.kind == IntentKind::Gather
-                && edit.cell == IVec2::new(-1, 0)
         }));
     }
 }
@@ -2070,6 +1485,7 @@ fn authored_terrain_leaves_budget_for_a_coordinated_plan() {
             deposits: &deposits,
             terrain: &terrain,
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },
@@ -2152,7 +1568,7 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
         .collect::<Vec<_>>();
 
     let decision = Controller::new(owner).decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -2161,6 +1577,7 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
             deposits: &deposits,
             terrain: &terrain,
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },
@@ -2224,7 +1641,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
     let bots = friendly_defenders.chain([target]).collect::<Vec<_>>();
     let mut controller = Controller::new(owner);
     let initial = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -2233,6 +1650,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },
@@ -2252,7 +1670,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
     let mut bots = bots;
     *bots.last_mut().unwrap() = moved_progressing;
     let immediate = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -2261,6 +1679,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 1,
             finished: false,
         },
@@ -2269,7 +1688,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
     assert!(immediate.edits.is_empty());
 
     let regular = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -2278,6 +1697,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -2348,7 +1768,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
     };
     let mut controller = Controller::new(owner);
     let initial = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -2357,6 +1777,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },
@@ -2372,7 +1793,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
         ..target
     };
     let immediate = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -2381,6 +1802,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 1,
             finished: false,
         },
@@ -2388,7 +1810,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
     assert!(!immediate.reviewed);
     assert!(immediate.edits.is_empty());
     let grace = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -2397,6 +1819,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -2404,7 +1827,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
     assert!(grace.reviewed);
     assert!(grace.edits.is_empty());
     let reassessed = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -2413,6 +1836,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: WORK_WINDOW_TICKS * 2,
             finished: false,
         },
@@ -2469,7 +1893,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
     let mut bots = friendly_defenders.chain([target]).collect::<Vec<_>>();
     let mut controller = Controller::new(owner);
     let initial = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -2478,6 +1902,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },
@@ -2500,7 +1925,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
         ..target
     };
     let covered = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -2509,6 +1934,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 1,
             finished: false,
         },
@@ -2522,7 +1948,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
         ..target
     };
     let exited = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -2531,6 +1957,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 2,
             finished: false,
         },
@@ -2540,155 +1967,6 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
         edit.action == IntentEditAction::Paint
             && edit.kind == IntentKind::Defend
             && edit.cell == uncovered_cell
-    }));
-}
-
-#[test]
-fn stalled_covered_target_yields_to_a_clearly_better_plan_after_one_grace_review() {
-    let mut grid = IntentGrid::new(32, 32);
-    let owner = SwarmId(4);
-    let enemy = SwarmId(9);
-    let target_cell = IVec2::new(6, 0);
-    let covered_cell = IVec2::new(5, -1);
-    let alternative_cell = IVec2::new(8, 4);
-    let swarms = [
-        SwarmState {
-            id: owner,
-            home: world(IVec2::ZERO),
-            minerals: 2_000,
-        },
-        SwarmState {
-            id: enemy,
-            home: world(IVec2::new(12, 0)),
-            minerals: 0,
-        },
-    ];
-    let friendly_defenders = (0..2).map(|id| BotState {
-        id,
-        owner,
-        kind: NanobotType::Defender,
-        position: swarms[0].home,
-        health: 100,
-        max_health: 100,
-        charge: 1.0,
-        max_charge: 1.0,
-        cargo: 0,
-    });
-    let target = BotState {
-        id: 50,
-        owner: enemy,
-        kind: NanobotType::Worker,
-        position: world(target_cell),
-        health: 100,
-        max_health: 100,
-        charge: 1.0,
-        max_charge: 1.0,
-        cargo: 0,
-    };
-    let mut bots = friendly_defenders.chain([target]).collect::<Vec<_>>();
-    let alternative = StructureState {
-        id: 30,
-        owner: enemy,
-        position: world(alternative_cell),
-        kind: StructureKind::Charger,
-        health: 1,
-        max_health: 100,
-        minerals: 1_000,
-    };
-    let mut controller = Controller::new(owner);
-    let initial = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &[],
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: 0,
-            finished: false,
-        },
-    );
-    apply(&mut grid, owner, &initial);
-    assert!(
-        grid.cell(covered_cell)
-            .is_some_and(|intent| intent.has_owned(IntentKind::Defend, owner))
-    );
-
-    *bots.last_mut().unwrap() = BotState {
-        position: world(covered_cell),
-        health: 80,
-        ..target
-    };
-    let immediate = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &[],
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: 1,
-            finished: false,
-        },
-    );
-    assert!(!immediate.reviewed);
-    assert!(immediate.edits.is_empty());
-    let progress_review = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &[],
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: WORK_WINDOW_TICKS,
-            finished: false,
-        },
-    );
-    assert!(progress_review.reviewed);
-    assert!(progress_review.edits.is_empty());
-
-    let grace = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &[alternative],
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: WORK_WINDOW_TICKS * 2,
-            finished: false,
-        },
-    );
-    assert!(grace.reviewed);
-    assert!(grace.edits.is_empty());
-    let reassessed = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &[alternative],
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: WORK_WINDOW_TICKS * 3,
-            finished: false,
-        },
-    );
-    assert!(reassessed.reviewed);
-    assert!(reassessed.edits.iter().any(|edit| {
-        edit.action == IntentEditAction::Paint
-            && edit.kind == IntentKind::Defend
-            && edit.cell == alternative_cell
     }));
 }
 
@@ -2746,7 +2024,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
     };
     let mut controller = Controller::new(owner);
     let initial = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -2755,6 +2033,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },
@@ -2771,7 +2050,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
         ..target
     };
     let immediate = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -2780,6 +2059,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 1,
             finished: false,
         },
@@ -2787,7 +2067,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
     assert!(!immediate.reviewed);
     assert!(immediate.edits.is_empty());
     let progress_review = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -2796,13 +2076,14 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
     );
     assert!(progress_review.edits.is_empty());
     let first_grace = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -2811,6 +2092,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: WORK_WINDOW_TICKS * 2,
             finished: false,
         },
@@ -2819,7 +2101,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
 
     bots.last_mut().unwrap().health = 60;
     let renewed_progress = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -2828,6 +2110,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: WORK_WINDOW_TICKS * 3,
             finished: false,
         },
@@ -2835,7 +2118,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
     assert!(renewed_progress.reviewed);
     assert!(renewed_progress.edits.is_empty());
     let reset_grace = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -2844,6 +2127,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: WORK_WINDOW_TICKS * 4,
             finished: false,
         },
@@ -2851,7 +2135,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
     assert!(reset_grace.reviewed);
     assert!(reset_grace.edits.is_empty());
     let reassessed = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -2860,6 +2144,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             deposits: &[],
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: WORK_WINDOW_TICKS * 5,
             finished: false,
         },
@@ -2872,456 +2157,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
 }
 
 #[test]
-fn covered_progress_restores_owned_defend_lost_by_another_target() {
-    let mut grid = IntentGrid::new(32, 32);
-    let owner = SwarmId(4);
-    let enemy = SwarmId(9);
-    let swarms = [
-        SwarmState {
-            id: owner,
-            home: world(IVec2::ZERO),
-            minerals: 2_000,
-        },
-        SwarmState {
-            id: enemy,
-            home: world(IVec2::new(12, 0)),
-            minerals: 0,
-        },
-    ];
-    let bots = (0..10)
-        .map(|id| BotState {
-            id,
-            owner,
-            kind: NanobotType::Defender,
-            position: swarms[0].home,
-            health: 100,
-            max_health: 100,
-            charge: 1.0,
-            max_charge: 1.0,
-            cargo: 0,
-        })
-        .collect::<Vec<_>>();
-    let friendly_charger = StructureState {
-        id: 20,
-        owner,
-        position: world(IVec2::new(1, 0)),
-        kind: StructureKind::Charger,
-        health: 100,
-        max_health: 100,
-        minerals: 100,
-    };
-    let moving_target = StructureState {
-        id: 30,
-        owner: enemy,
-        position: world(IVec2::new(6, 4)),
-        kind: StructureKind::Charger,
-        health: 100,
-        max_health: 100,
-        minerals: 1_000,
-    };
-    let other_target = StructureState {
-        id: 31,
-        owner: enemy,
-        position: world(IVec2::new(12, 0)),
-        kind: StructureKind::Sink,
-        health: 100,
-        max_health: 100,
-        minerals: 0,
-    };
-    let other_cell = world_to_intent_cell(other_target.position);
-    let mut controller = Controller::new(owner);
-    let initial = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &[friendly_charger, moving_target, other_target],
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: 0,
-            finished: false,
-        },
-    );
-    apply(&mut grid, owner, &initial);
-    assert!(
-        grid.cell(other_cell)
-            .is_some_and(|intent| intent.has_owned(IntentKind::Defend, owner)),
-        "the fixture must establish the second attack obligation"
-    );
-    let moving_cell = world_to_intent_cell(moving_target.position);
-    let covered_cell = grid
-        .iter_active_cells()
-        .map(|(cell, _)| cell)
-        .find(|cell| {
-            *cell != moving_cell
-                && (*cell - moving_cell).abs().max_element() <= 2
-                && grid
-                    .cell(*cell)
-                    .is_some_and(|intent| intent.has_owned(IntentKind::Defend, owner))
-        })
-        .expect("the moving target needs another actually covered cell");
-    let moving_target = StructureState {
-        position: world(covered_cell),
-        health: 80,
-        ..moving_target
-    };
-    let immediate = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &[friendly_charger, moving_target, other_target],
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: 1,
-            finished: false,
-        },
-    );
-    assert!(!immediate.reviewed);
-    assert!(immediate.edits.is_empty());
-
-    grid.erase(other_cell, IntentKind::Defend, owner);
-    let replanned = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &[friendly_charger, moving_target, other_target],
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: 2,
-            finished: false,
-        },
-    );
-    assert!(replanned.reviewed);
-    assert!(replanned.edits.iter().any(|edit| {
-        edit.action == IntentEditAction::Paint
-            && edit.kind == IntentKind::Defend
-            && edit.cell == other_cell
-    }));
-}
-
-#[test]
-fn covered_progress_reduces_an_attack_front_when_ready_force_falls() {
-    let mut grid = IntentGrid::new(32, 32);
-    let owner = SwarmId(4);
-    let enemy = SwarmId(9);
-    let swarms = [
-        SwarmState {
-            id: owner,
-            home: world(IVec2::ZERO),
-            minerals: 2_000,
-        },
-        SwarmState {
-            id: enemy,
-            home: world(IVec2::new(12, 0)),
-            minerals: 0,
-        },
-    ];
-    let bots = (0..10)
-        .map(|id| BotState {
-            id,
-            owner,
-            kind: NanobotType::Defender,
-            position: swarms[0].home,
-            health: 100,
-            max_health: 100,
-            charge: 1.0,
-            max_charge: 1.0,
-            cargo: 0,
-        })
-        .collect::<Vec<_>>();
-    let friendly_charger = StructureState {
-        id: 20,
-        owner,
-        position: world(IVec2::new(1, 0)),
-        kind: StructureKind::Charger,
-        health: 100,
-        max_health: 100,
-        minerals: 100,
-    };
-    let moving_target = StructureState {
-        id: 30,
-        owner: enemy,
-        position: world(IVec2::new(6, 4)),
-        kind: StructureKind::Charger,
-        health: 100,
-        max_health: 100,
-        minerals: 1_000,
-    };
-    let other_target = StructureState {
-        id: 31,
-        owner: enemy,
-        position: world(IVec2::new(12, 0)),
-        kind: StructureKind::Sink,
-        health: 100,
-        max_health: 100,
-        minerals: 0,
-    };
-    let other_cell = world_to_intent_cell(other_target.position);
-    let mut controller = Controller::new(owner);
-    let initial = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &[friendly_charger, moving_target, other_target],
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: 0,
-            finished: false,
-        },
-    );
-    apply(&mut grid, owner, &initial);
-    let moving_cell = world_to_intent_cell(moving_target.position);
-    let covered_cell = grid
-        .iter_active_cells()
-        .map(|(cell, _)| cell)
-        .find(|cell| {
-            *cell != moving_cell
-                && (*cell - moving_cell).abs().max_element() <= 2
-                && grid
-                    .cell(*cell)
-                    .is_some_and(|intent| intent.has_owned(IntentKind::Defend, owner))
-        })
-        .expect("the moving target needs another actually covered cell");
-    let moving_target = StructureState {
-        position: world(covered_cell),
-        health: 80,
-        ..moving_target
-    };
-    let immediate = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &[friendly_charger, moving_target, other_target],
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: 1,
-            finished: false,
-        },
-    );
-    assert!(!immediate.reviewed);
-    assert!(immediate.edits.is_empty());
-
-    let depleted_defenders = bots
-        .iter()
-        .map(|bot| BotState {
-            charge: 0.1,
-            ..*bot
-        })
-        .collect::<Vec<_>>();
-    let empty_charger = StructureState {
-        minerals: 0,
-        ..friendly_charger
-    };
-    let regular = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &depleted_defenders,
-            structures: &[empty_charger, moving_target, other_target],
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: WORK_WINDOW_TICKS,
-            finished: false,
-        },
-    );
-    assert!(regular.reviewed);
-    assert!(!regular.edits.is_empty());
-    apply(&mut grid, owner, &regular);
-    assert!(
-        grid.cell(covered_cell)
-            .is_some_and(|intent| intent.has_owned(IntentKind::Defend, owner))
-    );
-    assert!(
-        !grid
-            .cell(other_cell)
-            .is_some_and(|intent| intent.has_owned(IntentKind::Defend, owner))
-    );
-}
-
-#[test]
-fn covered_progress_opens_a_new_front_when_ready_force_grows() {
-    let mut grid = IntentGrid::new(32, 32);
-    let owner = SwarmId(4);
-    let enemy = SwarmId(9);
-    let target_cell = IVec2::new(6, 0);
-    let covered_cell = IVec2::new(5, -1);
-    let new_target_cell = IVec2::new(10, 4);
-    let swarms = [
-        SwarmState {
-            id: owner,
-            home: world(IVec2::ZERO),
-            minerals: 2_000,
-        },
-        SwarmState {
-            id: enemy,
-            home: world(IVec2::new(12, 0)),
-            minerals: 0,
-        },
-    ];
-    let target = BotState {
-        id: 50,
-        owner: enemy,
-        kind: NanobotType::Worker,
-        position: world(target_cell),
-        health: 100,
-        max_health: 100,
-        charge: 1.0,
-        max_charge: 1.0,
-        cargo: 0,
-    };
-    let mut bots = (0..2)
-        .map(|id| BotState {
-            id,
-            owner,
-            kind: NanobotType::Defender,
-            position: swarms[0].home,
-            health: 100,
-            max_health: 100,
-            charge: 1.0,
-            max_charge: 1.0,
-            cargo: 0,
-        })
-        .chain([target])
-        .collect::<Vec<_>>();
-    let mut controller = Controller::new(owner);
-    let initial = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &[],
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: 0,
-            finished: false,
-        },
-    );
-    apply(&mut grid, owner, &initial);
-    assert!(
-        grid.cell(covered_cell)
-            .is_some_and(|intent| intent.has_owned(IntentKind::Defend, owner))
-    );
-
-    *bots.last_mut().unwrap() = BotState {
-        position: world(covered_cell),
-        health: 80,
-        ..target
-    };
-    let immediate = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &[],
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: 1,
-            finished: false,
-        },
-    );
-    assert!(!immediate.reviewed);
-    assert!(immediate.edits.is_empty());
-
-    bots.truncate(2);
-    bots.extend((2..8).map(|id| BotState {
-        id,
-        owner,
-        kind: NanobotType::Defender,
-        position: swarms[0].home,
-        health: 100,
-        max_health: 100,
-        charge: 1.0,
-        max_charge: 1.0,
-        cargo: 0,
-    }));
-    bots.push(BotState {
-        position: world(covered_cell),
-        health: 60,
-        ..target
-    });
-    let supplied_charger = StructureState {
-        id: 20,
-        owner,
-        position: world(IVec2::new(1, 0)),
-        kind: StructureKind::Charger,
-        health: 100,
-        max_health: 100,
-        minerals: 100,
-    };
-    let no_fresh_target = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &[supplied_charger],
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: WORK_WINDOW_TICKS,
-            finished: false,
-        },
-    );
-    assert!(no_fresh_target.reviewed);
-    assert!(no_fresh_target.edits.is_empty());
-
-    bots.last_mut().unwrap().health = 40;
-    let new_target = StructureState {
-        id: 30,
-        owner: enemy,
-        position: world(new_target_cell),
-        kind: StructureKind::Charger,
-        health: 20,
-        max_health: 100,
-        minerals: 1_000,
-    };
-    let expanded = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &[supplied_charger, new_target],
-            deposits: &[],
-            terrain: &[],
-            reachability: None,
-            tick: WORK_WINDOW_TICKS * 2,
-            finished: false,
-        },
-    );
-    apply(&mut grid, owner, &expanded);
-    assert!(
-        grid.cell(covered_cell)
-            .is_some_and(|intent| intent.has_owned(IntentKind::Defend, owner))
-    );
-    assert!(
-        grid.cell(new_target_cell)
-            .is_some_and(|intent| intent.has_owned(IntentKind::Defend, owner))
-    );
-}
-
-#[test]
-fn structure_free_remnant_is_followed_across_cells_and_after_disappearance() {
+fn hunt_paint_holds_until_the_target_leaves_its_block() {
     let mut grid = IntentGrid::new(64, 64);
     let owner = SwarmId(4);
     let enemy = SwarmId(9);
@@ -3356,7 +2192,7 @@ fn structure_free_remnant_is_followed_across_cells_and_after_disappearance() {
     };
     let mut controller = Controller::new(owner);
     let first = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -3365,6 +2201,7 @@ fn structure_free_remnant_is_followed_across_cells_and_after_disappearance() {
             deposits: &deposit,
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },
@@ -3377,53 +2214,62 @@ fn structure_free_remnant_is_followed_across_cells_and_after_disappearance() {
     }));
     apply(&mut grid, owner, &first);
 
+    let first_block = owned_defend_cells(&grid, owner);
+    for (review, cell) in [IVec2::new(13, 3), IVec2::new(12, 4), IVec2::new(11, 3)]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(first_block.contains(&(cell.x, cell.y)));
+        let inside = controller.decide(
+            &direct_attack_tuning(),
+            &GameState {
+                swarms: &swarms,
+                bots: &[BotState {
+                    position: world(cell),
+                    ..remnant
+                }],
+                deposits: &deposit,
+                ..empty_state(&grid, (review as u64 + 1) * WORK_WINDOW_TICKS)
+            },
+        );
+        assert!(inside.reviewed);
+        assert!(inside.edits.is_empty(), "{inside:?}");
+    }
     let moved = BotState {
-        position: world(IVec2::new(13, 3)),
+        position: world(IVec2::new(14, 3)),
         ..remnant
     };
     let relocated = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
-            grid: &grid,
             swarms: &swarms,
             bots: &[moved],
-            structures: &[],
             deposits: &deposit,
-            terrain: &[],
-            reachability: None,
-            tick: 1,
-            finished: false,
+            ..empty_state(&grid, 3 * WORK_WINDOW_TICKS + 1)
         },
     );
     assert!(relocated.reviewed);
-    assert!(relocated.explanation.contains("moved"));
     assert!(relocated.edits.iter().any(|edit| {
         edit.action == IntentEditAction::Paint
             && edit.kind == IntentKind::Defend
-            && edit.cell == IVec2::new(13, 3)
+            && edit.cell == IVec2::new(14, 3)
     }));
     apply(&mut grid, owner, &relocated);
+    assert!(!owned_defend_cells(&grid, owner).contains(&(11, 3)));
 
     let disappeared = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
-            grid: &grid,
             swarms: &swarms,
-            bots: &[],
-            structures: &[],
             deposits: &deposit,
-            terrain: &[],
-            reachability: None,
-            tick: 2,
-            finished: false,
+            ..empty_state(&grid, 3 * WORK_WINDOW_TICKS + 2)
         },
     );
     assert!(disappeared.reviewed);
-    assert!(disappeared.explanation.contains("disappeared"));
     assert!(disappeared.edits.iter().any(|edit| {
         edit.action == IntentEditAction::Erase
             && edit.kind == IntentKind::Defend
-            && edit.cell == IVec2::new(13, 3)
+            && edit.cell == IVec2::new(14, 3)
     }));
 }
 
@@ -3488,7 +2334,7 @@ fn mature_funded_force_retains_attack_and_primary_mining_for_a_minute() {
     };
     let mut controller = Controller::new(owner);
     let initial = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
@@ -3497,6 +2343,7 @@ fn mature_funded_force_retains_attack_and_primary_mining_for_a_minute() {
             deposits: &deposits,
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },
@@ -3535,7 +2382,7 @@ fn mature_funded_force_retains_attack_and_primary_mining_for_a_minute() {
         .collect::<Vec<_>>();
     for review in 1..=120 {
         let pressure = controller.decide(
-            &crate::tuning::AutonomyTuning::default(),
+            &direct_attack_tuning(),
             &GameState {
                 grid: &grid,
                 swarms: &supplied_swarms,
@@ -3544,21 +2391,20 @@ fn mature_funded_force_retains_attack_and_primary_mining_for_a_minute() {
                 deposits: &deposits,
                 terrain: &[],
                 reachability: None,
+                route_query: None,
                 tick: review * WORK_WINDOW_TICKS,
                 finished: false,
             },
         );
         assert!(pressure.reviewed);
         assert!(
-            pressure.explanation.contains("target [32, 0]"),
+            pressure.explanation.contains("staging point [32, 0]"),
             "pressure decision lacked diagnostic coordinates: {}",
             pressure.explanation
         );
         apply(&mut grid, owner, &pressure);
         assert!(grid.iter_active_cells().any(|(cell, intent)| {
-            cell != IVec2::ZERO
-                && cell.abs().max_element() <= 1
-                && intent.has_owned(IntentKind::Build, owner)
+            cell == IVec2::ZERO && intent.has_owned(IntentKind::Build, owner)
         }));
         assert!(
             grid.cell(IVec2::new(32, 0))
@@ -3601,7 +2447,7 @@ fn live_scoring_review_changes_intent_without_refilling_the_planning_allowance()
     }];
     let bots = [enemy];
     let mut grid = IntentGrid::new(32, 32);
-    let mut tuning = AutonomyTuning::default();
+    let mut tuning = direct_attack_tuning();
     let mut controller = Controller::new(owner);
     let initial = controller.decide(
         &tuning,
@@ -3856,4 +2702,105 @@ fn a_compact_front_leads_the_army_and_waits_for_most_defenders() {
         "the old front must be erased"
     );
     assert_eq!(next.iter().map(|&(_, y)| y).min(), Some(min_y));
+}
+
+#[test]
+fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
+    use std::cell::Cell;
+
+    use crate::navigation::Route;
+
+    let owner = SwarmId::PLAYER;
+    let mut grid = IntentGrid::new(32, 32);
+    let swarms = [SwarmState {
+        id: owner,
+        home: world(IVec2::ZERO),
+        minerals: 2_000,
+    }];
+    let target = StructureState {
+        id: 10,
+        owner: SwarmId(9),
+        position: world(IVec2::new(12, 0)),
+        kind: StructureKind::Sink,
+        health: 100,
+        max_health: 100,
+        minerals: 0,
+    };
+    let side = Cell::new(-6);
+    let route = |_, goal, _: &mut dyn FnMut() -> bool| {
+        let waypoints = match goal {
+            RouteGoal::Range { center, .. } => vec![
+                world(IVec2::new(0, side.get())),
+                world(IVec2::new(12, side.get())),
+                center,
+            ],
+            RouteGoal::Point(center) => vec![center],
+            RouteGoal::Interaction(_) => unreachable!(),
+        };
+        Some(RouteOutcome::Found(Route {
+            waypoints,
+            cost: 0.0,
+        }))
+    };
+    let defender = BotState {
+        id: 1,
+        owner,
+        kind: NanobotType::Defender,
+        position: swarms[0].home,
+        health: 100,
+        max_health: 100,
+        charge: 1.0,
+        max_charge: 1.0,
+        cargo: 0,
+    };
+    let mut controller = Controller::new(owner);
+    let tuning = AutonomyTuning::default();
+    let review = |controller: &mut Controller, grid: &mut IntentGrid, defender, tick| {
+        let decision = controller.decide(
+            &tuning,
+            &GameState {
+                swarms: &swarms,
+                bots: &[defender],
+                structures: &[target],
+                route_query: Some(&route),
+                ..empty_state(grid, tick)
+            },
+        );
+        assert!(decision.reviewed);
+        apply(grid, owner, &decision);
+    };
+
+    review(&mut controller, &mut grid, defender, 0);
+    let first = owned_defend_cells(&grid, owner);
+    assert!(
+        first.contains(&(0, -4)),
+        "the block must follow the reachable approach: {first:?}"
+    );
+
+    side.set(6);
+    review(
+        &mut controller,
+        &mut grid,
+        BotState {
+            position: world(IVec2::new(1, 2)),
+            ..defender
+        },
+        WORK_WINDOW_TICKS,
+    );
+    assert_eq!(owned_defend_cells(&grid, owner), first);
+
+    review(
+        &mut controller,
+        &mut grid,
+        BotState {
+            position: world(IVec2::new(0, -4)),
+            ..defender
+        },
+        2 * WORK_WINDOW_TICKS,
+    );
+    let next = owned_defend_cells(&grid, owner);
+    assert!(
+        next.contains(&(2, -6)) && !next.contains(&(0, -4)),
+        "{next:?}"
+    );
 }

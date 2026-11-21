@@ -7,7 +7,7 @@
 //! assignments can still drain them defensively for tests.
 
 use crate::battle_statistics::{BattleCounters, BattleEvent};
-use crate::tuning::Tuning;
+use crate::{intent::IntentGrid, tuning::Tuning};
 use bevy::prelude::*;
 
 use crate::nanobot::{
@@ -122,6 +122,7 @@ pub fn hauler_load_system(
     tuning: Res<Tuning>,
     mut commands: Commands,
     navigation: Res<Navigation>,
+    grid: Res<IntentGrid>,
     mut haulers: Query<
         (
             Entity,
@@ -214,7 +215,7 @@ pub fn hauler_load_system(
             continue;
         }
 
-        if let Ok((mut deposit, _)) = deposits.get_mut(assignment.source) {
+        if let Ok((mut deposit, deposit_transform)) = deposits.get_mut(assignment.source) {
             if deposit.amount == 0 {
                 finish_reservation(reservation.as_deref_mut(), cargo.amount);
                 transition_to_carrying(&mut commands, entity, cargo.amount);
@@ -230,7 +231,22 @@ pub fn hauler_load_system(
             deposit.amount -= actual;
             ledger.add_for(swarm.0, deposit.kind, actual);
             if let Some(counters) = counters.as_deref_mut() {
-                counters.record(swarm.0, BattleEvent::Gathered(actual));
+                let painted_deposit = super::gather::painted_gather_regions(
+                    &grid,
+                    swarm.0,
+                    *deposit_transform,
+                    deposit.radius,
+                )
+                .next()
+                .is_some()
+                .then_some(assignment.source);
+                counters.record(
+                    swarm.0,
+                    BattleEvent::Gathered {
+                        amount: actual,
+                        painted_deposit,
+                    },
+                );
             }
             if let Some(reservation) = reservation.as_deref_mut() {
                 reservation.source_remaining = reservation.source_remaining.saturating_sub(actual);

@@ -3,6 +3,8 @@ use super::{
     staging::{DefendBlock, StagingFront},
     *,
 };
+use crate::{nanobot::InteractionRegion, navigation::Route};
+use bevy::prelude::Transform;
 
 pub(super) fn materialize_plan(
     candidate: PlanCandidate,
@@ -31,7 +33,18 @@ pub(super) fn materialize_plan(
     let home_cell = world_to_intent_cell(home);
     let mut desired = Vec::new();
 
-    if let Some((_, deposit_cell)) = economy.primary {
+    push_desired(
+        &mut desired,
+        owner,
+        DesiredIntent {
+            cell: home_cell,
+            kind: IntentKind::Corridor,
+        },
+        state,
+        true,
+        budget,
+    );
+    if let Some((deposit, deposit_cell)) = economy.primary {
         push_desired(
             &mut desired,
             owner,
@@ -43,19 +56,20 @@ pub(super) fn materialize_plan(
             false,
             budget,
         );
-        for cell in line_cells(deposit_cell, home_cell, 32) {
-            push_desired(
-                &mut desired,
-                owner,
-                DesiredIntent {
-                    cell,
-                    kind: IntentKind::Corridor,
-                },
-                state,
-                true,
-                budget,
-            );
-        }
+        let destination = InteractionRegion::deposit(
+            &Transform::from_translation(deposit.position.extend(0.0)),
+            deposit.radius,
+        )
+        .within_cell(deposit_cell);
+        paint_corridor(
+            &mut desired,
+            owner,
+            state,
+            budget,
+            home,
+            deposit_cell,
+            RouteGoal::Interaction(destination),
+        );
     }
 
     if let Some(charger) = key_charger {
@@ -120,17 +134,15 @@ pub(super) fn materialize_plan(
         );
     }
 
-    for cell in line_cells(home_cell, anchor, 32) {
-        push_desired(
+    if anchor != home_cell && economy.primary.is_none_or(|(_, cell)| cell != anchor) {
+        paint_corridor(
             &mut desired,
             owner,
-            DesiredIntent {
-                cell,
-                kind: IntentKind::Corridor,
-            },
             state,
-            true,
             budget,
+            home,
+            anchor,
+            RouteGoal::Point(intent_cell_center(anchor)),
         );
     }
     desired.sort_by_key(|intent| (intent.cell.y, intent.cell.x, intent.kind.index()));
@@ -326,17 +338,71 @@ pub(super) fn intent_cell_center(cell: IVec2) -> Vec2 {
     (cell.as_vec2() + Vec2::splat(0.5)) * crate::ZONE_BLOCK_SIZE
 }
 
-pub(super) fn midpoint_cell(left: IVec2, right: IVec2) -> IVec2 {
-    IVec2::new((left.x + right.x) / 2, (left.y + right.y) / 2)
+pub(super) fn query_route(
+    state: &GameState<'_>,
+    start: Vec2,
+    goal: RouteGoal,
+    budget: &mut WorkBudget,
+) -> Option<Route> {
+    let route_query = state.route_query?;
+    if !budget.spend(1) {
+        return None;
+    }
+    match route_query(start, goal, &mut || budget.spend(1))? {
+        RouteOutcome::Found(route) => Some(route),
+        RouteOutcome::Unreachable => None,
+    }
 }
 
-pub(super) fn line_cells(start: IVec2, target: IVec2, limit: usize) -> Vec<IVec2> {
-    let mut cells = Vec::new();
-    let mut current = start;
-    cells.push(current);
-    while current != target && cells.len() < limit {
-        current += (target - current).signum();
-        cells.push(current);
+fn paint_corridor(
+    desired: &mut Vec<DesiredIntent>,
+    owner: SwarmId,
+    state: &GameState<'_>,
+    budget: &mut WorkBudget,
+    mut start: Vec2,
+    target: IVec2,
+    goal: RouteGoal,
+) {
+    let waypoints = if state.route_query.is_some() {
+        let Some(route) = query_route(state, start, goal, budget) else {
+            return;
+        };
+        route.waypoints
+    } else {
+        start = intent_cell_center(world_to_intent_cell(start));
+        let end = intent_cell_center(target);
+        for obstacle in state.terrain {
+            if !budget.spend(1) || !obstacle.segment_clear(start, end) {
+                return;
+            }
+        }
+        vec![end]
+    };
+    let mut last = world_to_intent_cell(start);
+    for end in waypoints {
+        let span = (end - start).abs().max_element() / crate::ZONE_BLOCK_SIZE;
+        let steps = (span.ceil() as usize).max(1);
+        for step in 1..=steps {
+            if !budget.spend(1) || desired.len() >= MAX_PLAN_CELLS {
+                return;
+            }
+            let point = start.lerp(end, step as f32 / steps as f32);
+            let cell = world_to_intent_cell(point);
+            if cell != last {
+                push_desired(
+                    desired,
+                    owner,
+                    DesiredIntent {
+                        cell,
+                        kind: IntentKind::Corridor,
+                    },
+                    state,
+                    false,
+                    budget,
+                );
+                last = cell;
+            }
+        }
+        start = end;
     }
-    cells
 }
