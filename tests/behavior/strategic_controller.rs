@@ -94,6 +94,69 @@ fn strategic_adapter_applies_only_its_owners_intent_without_mutating_resources()
 }
 
 #[test]
+fn strategic_adapter_connects_the_deposit_to_home_around_rock() {
+    use top_down_2d_rts_prototype_nano_swarm::terrain::RockFormation;
+
+    let mut app = common::minimal_app();
+    app.insert_resource(IntentGrid::new(16, 16));
+    app.add_plugins(StrategicControllerPlugin);
+    let owner = SwarmId::PLAYER;
+    let home_cell = IVec2::new(-3, 0);
+    let deposit_cell = IVec2::new(3, 0);
+    let home = common::cell_world_center(home_cell);
+    let rock = RockFormation::Rectangle {
+        half: Vec2::new(256.0, 650.0),
+    };
+    let rock_transform =
+        Transform::from_translation(common::cell_world_center(IVec2::ZERO).extend(0.0));
+    app.world_mut().spawn((
+        Swarm {},
+        owner,
+        Transform::from_translation(home.extend(0.0)),
+        StrategicController::new(owner),
+    ));
+    app.world_mut().spawn((rock, rock_transform));
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: common::cell_world_center(deposit_cell),
+            amount: 72_000,
+            capacity: 72_000,
+            radius: 80.0,
+        },
+    );
+    let reachability = SwarmReachabilityMap::new(
+        app.world().resource::<IntentGrid>(),
+        [rock.obstacle(&rock_transform)],
+        [(owner, home)],
+    )
+    .unwrap();
+    app.insert_resource(reachability);
+    app.update();
+    let grid = app.world().resource::<IntentGrid>();
+    let corridor = |cell| {
+        grid.cell(cell)
+            .is_some_and(|intent| intent.has_owned(IntentKind::Corridor, owner))
+    };
+    assert!(corridor(home_cell));
+    assert!(!corridor(IVec2::ZERO), "the direct corridor is blocked");
+
+    let mut connected = std::collections::HashSet::from([home_cell]);
+    let mut frontier = vec![home_cell];
+    while let Some(cell) = frontier.pop() {
+        for next in (-1..=1).flat_map(|y| (-1..=1).map(move |x| cell + IVec2::new(x, y))) {
+            if corridor(next) && connected.insert(next) {
+                frontier.push(next);
+            }
+        }
+    }
+    assert!(
+        connected.contains(&deposit_cell),
+        "corridor cells: {connected:?}"
+    );
+}
+
+#[test]
 fn controller_telemetry_counts_invalidation_checks_between_reviews() {
     use top_down_2d_rts_prototype_nano_swarm::strategic_runtime::ControllerTelemetry;
 
@@ -164,6 +227,7 @@ fn controller_eventually_erases_stale_owned_intent_after_large_foreign_prefix() 
                 deposits: &[],
                 terrain: &[],
                 reachability: None,
+                route_query: None,
                 tick: review * 30,
                 finished: false,
             },
@@ -227,6 +291,7 @@ fn controller_retargets_when_its_primary_resource_is_exhausted() {
             deposits: &deposits,
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },
@@ -250,6 +315,7 @@ fn controller_retargets_when_its_primary_resource_is_exhausted() {
             deposits: &depleted,
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 1,
             finished: false,
         },
@@ -311,6 +377,7 @@ fn controller_urgently_replans_when_key_support_is_lost() {
             deposits: &deposits,
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },
@@ -327,6 +394,7 @@ fn controller_urgently_replans_when_key_support_is_lost() {
             deposits: &deposits,
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 1,
             finished: false,
         },
@@ -402,6 +470,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
             deposits: &deposit,
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },
@@ -429,6 +498,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
             deposits: &deposit,
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 1,
             finished: false,
         },
@@ -463,6 +533,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
             deposits: &deposit,
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 2,
             finished: false,
         },
@@ -574,6 +645,7 @@ fn mature_economy_keeps_one_active_resource_site() {
             deposits: &deposits,
             terrain: &[],
             reachability: None,
+            route_query: None,
             tick: 0,
             finished: false,
         },

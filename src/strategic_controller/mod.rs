@@ -13,7 +13,7 @@ use bevy::prelude::{IVec2, Vec2};
 use crate::{
     intent::{IntentGrid, IntentKind},
     nanobot::{NanobotType, SwarmId},
-    navigation::Obstacle,
+    navigation::{Obstacle, RouteGoal, RouteOutcome},
     reachability::SwarmReachabilityMap,
 };
 
@@ -77,7 +77,11 @@ pub struct DepositState {
     pub radius: f32,
 }
 
-#[derive(Debug)]
+/// A shared navigation query. Ask for each work unit and return no outcome
+/// if the planner denies further work.
+pub type RouteQuery<'a> =
+    dyn Fn(Vec2, RouteGoal, &mut dyn FnMut() -> bool) -> Option<RouteOutcome> + 'a;
+
 pub struct GameState<'a> {
     pub grid: &'a IntentGrid,
     pub swarms: &'a [SwarmState],
@@ -87,6 +91,7 @@ pub struct GameState<'a> {
     pub terrain: &'a [Obstacle],
     /// Present for gameplay controllers; omitted by terrain-agnostic unit fixtures.
     pub reachability: Option<&'a SwarmReachabilityMap>,
+    pub route_query: Option<&'a RouteQuery<'a>>,
     pub tick: u64,
     pub finished: bool,
 }

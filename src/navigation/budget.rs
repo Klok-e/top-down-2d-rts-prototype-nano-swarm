@@ -1160,6 +1160,68 @@ impl Navigation {
         }
     }
 
+    /// Reuse movement routing without making existing Corridor paint favor its own path.
+    /// Return no outcome when the caller's planning allowance is exhausted.
+    pub(crate) fn route_without_paint(
+        &self,
+        origin: Vec2,
+        goal: RouteGoal,
+        mut allow_work: impl FnMut() -> bool,
+    ) -> Option<RouteOutcome> {
+        let paint = PaintCosts::default();
+        let future = async {
+            let Some(start) = self.clear_origin_in_tile(origin).await else {
+                return RouteOutcome::Unreachable;
+            };
+            let mut outcome = self
+                .async_solve(start, goal, &paint, SwarmId::PLAYER, false)
+                .await;
+            if start != origin
+                && let RouteOutcome::Found(route) = &mut outcome
+            {
+                route.waypoints.insert(0, start);
+            }
+            outcome
+        };
+        let mut future = std::pin::pin!(future);
+        let mut context = Context::from_waker(Waker::noop());
+        while allow_work() {
+            if let Poll::Ready(result) = future.as_mut().poll(&mut context) {
+                return Some(result);
+            }
+        }
+        None
+    }
+
+    async fn clear_origin_in_tile(&self, origin: Vec2) -> Option<Vec2> {
+        if self.async_point_clear(origin).await {
+            return Some(origin);
+        }
+        if !origin.is_finite() || !origin.cmpge(self.min).all() || !origin.cmplt(self.max).all() {
+            return None;
+        }
+        let tile = world_to_cell(origin);
+        let min = Self::cell(tile.as_vec2() * ZONE_BLOCK_SIZE);
+        let max = Self::cell((tile + IVec2::ONE).as_vec2() * ZONE_BLOCK_SIZE);
+        let mut nearest = None;
+        let mut best_distance = f32::INFINITY;
+        for y in min.y..=max.y {
+            for x in min.x..=max.x {
+                WorkUnit::new().await;
+                let point = Self::center(IVec2::new(x, y));
+                let distance = point.distance_squared(origin);
+                if world_to_cell(point) == tile
+                    && distance < best_distance
+                    && self.async_point_clear(point).await
+                {
+                    nearest = Some(point);
+                    best_distance = distance;
+                }
+            }
+        }
+        nearest
+    }
+
     pub(super) fn solve(
         &self,
         start: Vec2,
@@ -1188,24 +1250,32 @@ impl Navigation {
                 .map(|(p, c)| (p, c.clone()))
                 .collect(),
         };
-        let future = async {
-            match goal {
-                RouteGoal::Point(end) => self.async_route(start, end, &paint, swarm, hauler).await,
-                RouteGoal::Range { center, radius } => {
-                    self.async_route_within_range(start, center, radius, &paint, swarm, hauler)
-                        .await
-                }
-                RouteGoal::Interaction(region) => {
-                    self.async_route_to_interaction(start, region, &paint, swarm, hauler)
-                        .await
-                }
-            }
-        };
+        let future = self.async_solve(start, goal, &paint, swarm, hauler);
         let mut future = std::pin::pin!(future);
         let mut context = Context::from_waker(Waker::noop());
         loop {
             if let Poll::Ready(result) = future.as_mut().poll(&mut context) {
                 return result;
+            }
+        }
+    }
+    async fn async_solve(
+        &self,
+        start: Vec2,
+        goal: RouteGoal,
+        paint: &PaintCosts,
+        swarm: SwarmId,
+        hauler: bool,
+    ) -> RouteOutcome {
+        match goal {
+            RouteGoal::Point(end) => self.async_route(start, end, paint, swarm, hauler).await,
+            RouteGoal::Range { center, radius } => {
+                self.async_route_within_range(start, center, radius, paint, swarm, hauler)
+                    .await
+            }
+            RouteGoal::Interaction(region) => {
+                self.async_route_to_interaction(start, region, paint, swarm, hauler)
+                    .await
             }
         }
     }
