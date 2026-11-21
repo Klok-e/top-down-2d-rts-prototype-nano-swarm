@@ -1,5 +1,6 @@
-use super::economy::{EconomyPlan, validate_owned_deposits};
+use super::economy::{EconomyPlan, deposit_cells, deposit_region, validate_owned_deposits};
 use super::{lifecycle::WorkBudget, materialize::world_to_intent_cell, *};
+use crate::nanobot::cell_overlaps_circle;
 
 fn is_reachable(owner: SwarmId, state: &GameState<'_>, cell: IVec2) -> bool {
     state
@@ -159,6 +160,8 @@ pub(super) fn generate_candidates(
     owner: SwarmId,
     state: &GameState<'_>,
     economy: &EconomyPlan,
+    current: Option<&IntentPlan>,
+    denied_deposits: &mut BTreeSet<u64>,
     budget: &mut WorkBudget,
 ) -> Vec<PlanCandidate> {
     let owner_state = state.swarms.iter().find(|swarm| {
@@ -197,7 +200,7 @@ pub(super) fn generate_candidates(
             ..base
         });
     }
-    if economy.free_deposit_exists {
+    if economy.free_deposit_exists || !economy.contested_deposits.is_empty() {
         return candidates;
     }
 
@@ -205,7 +208,7 @@ pub(super) fn generate_candidates(
     let own_income = owner_state.map_or(0.0, |swarm| swarm.mineral_income_per_second);
     let mut hostile_bots = BTreeSet::new();
     let mut recoverable = BTreeSet::new();
-    for bot in state.bots.iter().take(MAX_BOTS) {
+    for bot in state.bots {
         if !budget.spend(1) {
             return candidates;
         }
@@ -216,7 +219,7 @@ pub(super) fn generate_candidates(
     let mut supply = owner_state.map_or(0.0, |swarm| {
         swarm.minerals as f32 * tuning.strategy_ledger_supply_weight
     });
-    for structure in state.structures.iter().take(MAX_STRUCTURES) {
+    for structure in state.structures {
         if !budget.spend(1) {
             return candidates;
         }
@@ -268,7 +271,8 @@ pub(super) fn generate_candidates(
         - readiness_penalty;
     let hunt_value = tuning.strategy_hunt_remnant_base
         + forces.friendly_strength * tuning.strategy_hunt_force_weight;
-    for structure in state.structures.iter().take(MAX_STRUCTURES) {
+    let mut occupied_mines = BTreeSet::new();
+    for structure in state.structures {
         if !budget.spend(1) {
             return candidates;
         }
@@ -284,7 +288,14 @@ pub(super) fn generate_candidates(
             cell: world_to_intent_cell(structure.position),
             health: structure.health,
         };
-        let mine = mine_target(economy, structure.owner, structure.position, state, budget);
+        let mine = mine_target(
+            economy,
+            structure.owner,
+            structure.position,
+            state,
+            &mut occupied_mines,
+            budget,
+        );
         let objective = if let Some((deposit, _)) = mine {
             Objective::RaidDeposit {
                 deposit,
@@ -321,14 +332,21 @@ pub(super) fn generate_candidates(
         });
     }
 
-    for bot in state.bots.iter().take(MAX_BOTS) {
+    for bot in state.bots {
         if !budget.spend(1) {
             return candidates;
         }
         if bot.owner == owner || bot.health == 0 {
             continue;
         }
-        let mine = mine_target(economy, bot.owner, bot.position, state, budget);
+        let mine = mine_target(
+            economy,
+            bot.owner,
+            bot.position,
+            state,
+            &mut occupied_mines,
+            budget,
+        );
         let objective = if let Some((deposit, _)) = mine {
             Objective::RaidDeposit {
                 deposit,
@@ -371,6 +389,64 @@ pub(super) fn generate_candidates(
             ..base
         });
     }
+    let secured_mine = current.and_then(|plan| {
+        let Objective::DenyDeposit(id) = plan.objective else {
+            return None;
+        };
+        (!occupied_mines.contains(&id)
+            && plan.staging.as_ref().is_some_and(|front| {
+                front.destination_secured(
+                    owner,
+                    state,
+                    tuning.strategy_staging_arrival_fraction,
+                    budget,
+                )
+            }))
+        .then_some(id)
+    });
+    let mut still_denied = BTreeSet::new();
+    for (deposit, enemy) in &economy.enemy_deposits {
+        if occupied_mines.contains(&deposit.id) {
+            continue;
+        }
+        let protected_home = swarm_home_cell(*enemy, state, budget);
+        let region = deposit_region(deposit);
+        for cell in deposit_cells(deposit, state.grid) {
+            if !budget.spend(1) {
+                return candidates;
+            }
+            let interaction = region.within_cell(cell);
+            if Some(cell) == protected_home
+                || !is_reachable(owner, state, cell)
+                || !cell_overlaps_circle(cell, deposit.position, deposit.radius)
+                || !state
+                    .grid
+                    .cell(cell)
+                    .is_some_and(|intent| intent.has_owned(IntentKind::Gather, *enemy))
+                || state.route_query.is_none()
+                    && state
+                        .reachability
+                        .is_some_and(|map| !map.interaction_is_reachable(owner, interaction))
+            {
+                continue;
+            }
+            if secured_mine == Some(deposit.id) || denied_deposits.contains(&deposit.id) {
+                still_denied.insert(deposit.id);
+                break;
+            }
+            candidates.push(PlanCandidate {
+                objective: Objective::DenyDeposit(deposit.id),
+                attack_target: Some(cell),
+                approach: Some(RouteGoal::Interaction(interaction)),
+                score: raid_value
+                    - home_cell.as_vec2().distance(cell.as_vec2())
+                        * tuning.strategy_raid_distance_cost,
+                protected_home,
+                ..base
+            });
+        }
+    }
+    *denied_deposits = still_denied;
     candidates
 }
 
@@ -380,17 +456,31 @@ fn home_has_targets(swarm: &SwarmState, state: &GameState<'_>, budget: &mut Work
     state
         .structures
         .iter()
-        .take(MAX_STRUCTURES)
+        .take_while(|_| budget.spend(1))
         .any(|structure| {
-            budget.spend(1)
-                && structure.owner == swarm.id
+            structure.owner == swarm.id
                 && structure.health > 0
                 && structure.kind != StructureKind::Planned
                 && near_home(structure.position)
         })
-        || state.bots.iter().take(MAX_BOTS).any(|bot| {
-            budget.spend(1) && bot.owner == swarm.id && bot.health > 0 && near_home(bot.position)
-        })
+        || state
+            .bots
+            .iter()
+            .take_while(|_| budget.spend(1))
+            .any(|bot| bot.owner == swarm.id && bot.health > 0 && near_home(bot.position))
+}
+
+fn swarm_home_cell(
+    owner: SwarmId,
+    state: &GameState<'_>,
+    budget: &mut WorkBudget,
+) -> Option<IVec2> {
+    state
+        .swarms
+        .iter()
+        .take_while(|_| budget.spend(1))
+        .find(|swarm| swarm.id == owner)
+        .map(|swarm| world_to_intent_cell(swarm.home))
 }
 
 fn mine_target(
@@ -398,13 +488,10 @@ fn mine_target(
     owner: SwarmId,
     position: Vec2,
     state: &GameState<'_>,
+    occupied: &mut BTreeSet<u64>,
     budget: &mut WorkBudget,
 ) -> Option<(u64, Option<IVec2>)> {
-    let home_cell = state
-        .swarms
-        .iter()
-        .find(|swarm| budget.spend(1) && swarm.id == owner)
-        .map(|swarm| world_to_intent_cell(swarm.home));
+    let home_cell = swarm_home_cell(owner, state, budget);
     if home_cell == Some(world_to_intent_cell(position)) {
         return None;
     }
@@ -417,23 +504,24 @@ fn mine_target(
             continue;
         }
         let distance = position.distance_squared(deposit.position);
-        if distance <= (deposit.radius + crate::ZONE_BLOCK_SIZE).powi(2)
-            && closest.is_none_or(|(_, best_distance)| distance < best_distance)
-        {
-            closest = Some((deposit.id, distance));
+        if distance <= (deposit.radius + crate::ZONE_BLOCK_SIZE).powi(2) {
+            occupied.insert(deposit.id);
+            if closest.is_none_or(|(_, best_distance)| distance < best_distance) {
+                closest = Some((deposit.id, distance));
+            }
         }
     }
     closest.map(|(id, _)| (id, home_cell))
 }
 
-pub(super) fn estimate_forces(
+fn estimate_forces(
     tuning: &AutonomyTuning,
     owner: SwarmId,
     state: &GameState<'_>,
     budget: &mut WorkBudget,
 ) -> ForceEstimate {
     let mut estimate = ForceEstimate::default();
-    for bot in state.bots.iter().take(MAX_BOTS) {
+    for bot in state.bots {
         if !budget.spend(1) {
             break;
         }

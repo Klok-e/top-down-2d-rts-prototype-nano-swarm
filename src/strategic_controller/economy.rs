@@ -256,11 +256,6 @@ pub(super) fn plan_economy(
             return None;
         }
     }
-    if !economy.contested_deposits.is_empty() {
-        economy.free_deposit_exists = true;
-        return Some(economy);
-    }
-
     if economy
         .owned_deposits
         .first()
@@ -415,7 +410,10 @@ fn deposit_access(
     Some((reachable, gather_owners))
 }
 
-fn deposit_cells(deposit: &DepositState, grid: &IntentGrid) -> impl Iterator<Item = IVec2> {
+pub(super) fn deposit_cells(
+    deposit: &DepositState,
+    grid: &IntentGrid,
+) -> impl Iterator<Item = IVec2> {
     let size = IVec2::new(grid.width(), grid.height());
     let map_min = -(size / 2);
     let radius = Vec2::splat(deposit.radius.max(0.0));
@@ -426,7 +424,7 @@ fn deposit_cells(deposit: &DepositState, grid: &IntentGrid) -> impl Iterator<Ite
     (min.y..=max.y).flat_map(move |y| (min.x..=max.x).map(move |x| IVec2::new(x, y)))
 }
 
-fn deposit_region(deposit: &DepositState) -> InteractionRegion {
+pub(super) fn deposit_region(deposit: &DepositState) -> InteractionRegion {
     InteractionRegion::deposit(
         &Transform::from_translation(deposit.position.extend(0.0)),
         deposit.radius,

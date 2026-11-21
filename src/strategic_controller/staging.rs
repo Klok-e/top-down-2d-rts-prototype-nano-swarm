@@ -68,14 +68,36 @@ impl StagingFront {
         fraction: f32,
         budget: &mut WorkBudget,
     ) {
-        if self.active + 1 == self.points.len() {
-            return;
+        if self.active + 1 < self.points.len()
+            && self.defenders_arrived(owner, state, fraction, budget)
+        {
+            self.active += 1;
         }
+    }
+
+    pub(super) fn destination_secured(
+        &self,
+        owner: SwarmId,
+        state: &GameState<'_>,
+        fraction: f32,
+        budget: &mut WorkBudget,
+    ) -> bool {
+        self.active + 1 == self.points.len()
+            && self.defenders_arrived(owner, state, fraction, budget)
+    }
+
+    fn defenders_arrived(
+        &self,
+        owner: SwarmId,
+        state: &GameState<'_>,
+        fraction: f32,
+        budget: &mut WorkBudget,
+    ) -> bool {
         let mut arrived = 0;
         let mut living = 0;
         for bot in state.bots {
             if !budget.spend(1) {
-                return;
+                return false;
             }
             if bot.owner == owner && bot.kind == NanobotType::Defender && bot.health > 0 {
                 living += 1;
@@ -86,9 +108,7 @@ impl StagingFront {
                 }
             }
         }
-        if living > 0 && arrived as f32 >= living as f32 * fraction {
-            self.active += 1;
-        }
+        living > 0 && arrived as f32 >= living as f32 * fraction
     }
 }
 

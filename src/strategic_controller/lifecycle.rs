@@ -18,6 +18,7 @@ pub(super) struct PlannerState {
     retained_covered_movement: bool,
     covered_stall_grace_used: bool,
     current: Option<IntentPlan>,
+    denied_deposits: BTreeSet<u64>,
 }
 
 #[derive(Debug)]
@@ -189,8 +190,20 @@ impl PlannerState {
                 work_units: budget.call_work(),
             };
         };
-        let mut candidates = generate_candidates(tuning, owner, state, &economy, &mut budget);
-        if budget.exhausted {
+        let mut denied_deposits = self.denied_deposits.clone();
+        let mut candidates = generate_candidates(
+            tuning,
+            owner,
+            state,
+            &economy,
+            self.current.as_ref(),
+            &mut denied_deposits,
+            &mut budget,
+        );
+        let candidate_count = candidates.len();
+        if budget.exhausted
+            || !budget.spend(candidate_count.saturating_mul(candidate_count.ilog2() as usize + 1))
+        {
             self.tuning_review_requested |= tuning_review;
             self.work_used = budget.used;
             return Decision {
@@ -259,7 +272,10 @@ impl PlannerState {
         );
         if selected.attack_target.is_some() && staging.is_none() && !budget.exhausted {
             for alternative in candidates.iter().rev() {
-                if alternative.objective == selected.objective {
+                if alternative.objective == selected.objective
+                    && alternative.attack_target == selected.attack_target
+                    && alternative.protected_home == selected.protected_home
+                {
                     continue;
                 }
                 let approach = plan_staging(
@@ -347,6 +363,7 @@ impl PlannerState {
         self.covered_stall_grace_used = self.retained_covered_movement
             && !attack_progressed
             && (stall_grace || self.covered_stall_grace_used);
+        self.denied_deposits = denied_deposits;
         selected.append_context(&mut explanation);
         self.current = Some(selected);
         Decision {
