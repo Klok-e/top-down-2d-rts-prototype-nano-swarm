@@ -1,5 +1,9 @@
 use super::economy::{EconomyPlan, deposit_region, validate_owned_deposits};
-use super::{lifecycle::WorkBudget, materialize::world_to_intent_cell, *};
+use super::{
+    lifecycle::WorkBudget,
+    materialize::{cell_is_reachable, world_to_intent_cell},
+    *,
+};
 use crate::nanobot::{cell_overlaps_circle, deposit_candidate_cells};
 
 fn is_target_reachable(
@@ -313,6 +317,7 @@ pub(super) fn generate_candidates(
         nearby_mines.clear();
         let mine = mine_target(
             economy,
+            owner,
             structure.owner,
             structure.position,
             state,
@@ -369,6 +374,7 @@ pub(super) fn generate_candidates(
         nearby_mines.clear();
         let mine = mine_target(
             economy,
+            owner,
             bot.owner,
             bot.position,
             state,
@@ -539,6 +545,7 @@ fn swarm_home_cell(
 
 fn mine_target(
     economy: &EconomyPlan,
+    attacker: SwarmId,
     owner: SwarmId,
     position: Vec2,
     state: &GameState<'_>,
@@ -558,7 +565,9 @@ fn mine_target(
             continue;
         }
         let distance = position.distance_squared(deposit.position);
-        if distance <= (deposit.radius + crate::ZONE_BLOCK_SIZE).powi(2) {
+        if distance <= (deposit.radius + crate::ZONE_BLOCK_SIZE).powi(2)
+            && deposit_is_reachable(attacker, deposit, state, budget)?
+        {
             nearby_mines.push(deposit.id);
             if closest.is_none_or(|(_, best_distance)| distance < best_distance) {
                 closest = Some((deposit.id, distance));
@@ -566,6 +575,28 @@ fn mine_target(
         }
     }
     closest.map(|(id, _)| (id, home_cell))
+}
+
+fn deposit_is_reachable(
+    owner: SwarmId,
+    deposit: &DepositState,
+    state: &GameState<'_>,
+    budget: &mut WorkBudget,
+) -> Option<bool> {
+    if state.reachability.is_none() {
+        return Some(true);
+    }
+    for cell in deposit_candidate_cells(state.grid, deposit.position, deposit.radius) {
+        if !budget.spend(1) {
+            return None;
+        }
+        if cell_overlaps_circle(cell, deposit.position, deposit.radius)
+            && cell_is_reachable(owner, state, cell, budget)?
+        {
+            return Some(true);
+        }
+    }
+    Some(false)
 }
 
 fn estimate_forces(

@@ -95,7 +95,7 @@ pub(super) fn materialize_plan(
     let block_at_anchor = |count| DefendBlock::new(anchor, count).avoiding(anchor, protected_home);
     let minimum = block_at_anchor(minimum_cells);
     let anchor_ground = state.reachability.and_then(|map| {
-        map.reachable_point_with_budget(owner, anchor, state.grid, &mut || budget.spend(1))
+        map.planning_point_with_budget(owner, anchor, state.grid, &mut || budget.spend(1))
             .ok()
             .flatten()
             .map(|point| (anchor, point))

@@ -3835,6 +3835,92 @@ fn an_undefended_enemy_mine_is_raided_until_arrival_then_can_be_raided_again() {
 }
 
 #[test]
+fn a_hostile_near_an_unreachable_mine_does_not_preempt_an_income_backed_home_push() {
+    use crate::navigation::Route;
+    let owner = SwarmId::PLAYER;
+    let enemy = SwarmId(9);
+    let grid = IntentGrid::new(8, 8);
+    let home = world(IVec2::new(-3, 0));
+    let enemy_home = world(IVec2::new(-3, 3));
+    let wall = Obstacle::Rectangle {
+        center: Vec2::ZERO,
+        half: Vec2::new(36.0, 8_000.0),
+    };
+    let reachability = SwarmReachabilityMap::new(&grid, [wall], [(owner, home)]).unwrap();
+    let swarms = [
+        SwarmState {
+            id: owner,
+            home,
+            minerals: 100,
+            mineral_income_per_second: 100.0,
+            production_saturated: false,
+        },
+        SwarmState {
+            id: enemy,
+            home: enemy_home,
+            minerals: 100,
+            mineral_income_per_second: 1.0,
+            production_saturated: false,
+        },
+    ];
+    let deposit = DepositState {
+        id: 8,
+        owner: Some(enemy),
+        position: Vec2::new(180.0, 256.0),
+        amount: 70_000,
+        radius: 80.0,
+    };
+    let facility = StructureState {
+        id: 9,
+        owner: enemy,
+        position: enemy_home,
+        kind: StructureKind::Facility,
+        health: 100,
+        max_health: 100,
+        minerals: 100,
+    };
+    let hauler = BotState {
+        id: 10,
+        owner: enemy,
+        position: Vec2::new(-100.0, 256.0),
+        kind: NanobotType::Hauler,
+        health: 100,
+        max_health: 100,
+        charge: 1.0,
+        max_charge: 1.0,
+        cargo: 0,
+        displacement: Vec2::ZERO,
+    };
+    let route = |start, goal, _: &mut dyn FnMut() -> bool| {
+        let end = match goal {
+            RouteGoal::Point(point) | RouteGoal::Range { center: point, .. } => point,
+            RouteGoal::Interaction(_) => return Some(RouteOutcome::Unreachable),
+        };
+        Some(RouteOutcome::Found(Route {
+            waypoints: vec![end],
+            cost: end.distance(start),
+        }))
+    };
+    let decision = Controller::new(owner).decide(
+        &direct_attack_tuning(),
+        &GameState {
+            swarms: &swarms,
+            bots: &[hauler],
+            structures: &[facility],
+            deposits: &[deposit],
+            reachability: Some(&reachability),
+            route_query: Some(&route),
+            terrain: &[wall],
+            ..empty_state(&grid, 0)
+        },
+    );
+    assert!(
+        decision.explanation.contains("push enemy home"),
+        "{decision:?}"
+    );
+}
+
+#[test]
 fn military_priorities_protect_expansion_before_attacking_home() {
     let owner = SwarmId(4);
     let enemy = SwarmId(9);

@@ -206,22 +206,8 @@ impl SwarmReachabilityMap {
         let Some(&home) = self.inner.homes.get(&owner) else {
             return Ok(None);
         };
-        let cached = self
-            .inner
-            .cells
-            .lock()
-            .unwrap()
-            .get(&(owner, cell))
-            .copied();
-        if let Some(cached) = cached {
-            return Ok(cached.or_else(|| {
-                self.inner
-                    .ground_witnesses
-                    .lock()
-                    .unwrap()
-                    .get(&(owner, cell))
-                    .copied()
-            }));
+        if let Some(&point) = self.inner.cells.lock().unwrap().get(&(owner, cell)) {
+            return Ok(point);
         }
         let min = cell.as_vec2() * ZONE_BLOCK_SIZE;
         let center = min + Vec2::splat(ZONE_BLOCK_SIZE / 2.0);
@@ -243,10 +229,7 @@ impl SwarmReachabilityMap {
                 point = Some(home);
             } else {
                 let (_, max) = tile_bounds(cell);
-                point = match witnesses[0] {
-                    Some(witness) => Some(witness),
-                    None => navigation.tile_ground_point(home, min, max, center, allow_work)?,
-                };
+                point = navigation.tile_ground_point(home, min, max, center, allow_work)?;
             }
         }
         self.inner
@@ -257,10 +240,52 @@ impl SwarmReachabilityMap {
         Ok(point)
     }
 
+    pub(crate) fn planning_point_with_budget(
+        &self,
+        owner: SwarmId,
+        cell: IVec2,
+        grid: &IntentGrid,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<Vec2>, ()> {
+        if !grid.in_bounds(cell) {
+            return Ok(None);
+        }
+        let Some(&home) = self.inner.homes.get(&owner) else {
+            return Ok(None);
+        };
+        let (min, max) = tile_bounds(cell);
+        if let Some(point) = self
+            .inner
+            .navigation
+            .visible_tile_point(home, min, max, allow_work)?
+        {
+            self.inner
+                .ground_witnesses
+                .lock()
+                .unwrap()
+                .entry((owner, cell))
+                .or_insert(point);
+            return Ok(Some(point));
+        }
+        self.reachable_point_with_budget(owner, cell, grid, allow_work)
+    }
+
     /// Whether a specific point is accessible with normal body clearance.
     pub fn position_is_reachable(&self, owner: SwarmId, position: Vec2, grid: &IntentGrid) -> bool {
-        self.position_is_reachable_with_budget(owner, position, grid, &mut || true)
-            .expect("unlimited position reachability query")
+        let navigation = &self.inner.navigation;
+        let cell = world_to_cell(position);
+        if !grid.in_bounds(cell) || !navigation.point_clear(position) {
+            return false;
+        }
+        let Some(&home) = self.inner.homes.get(&owner) else {
+            return false;
+        };
+        self.reachable_point(owner, cell, grid)
+            .is_some_and(|ground| navigation.segment_clear(ground, position))
+            || navigation
+                .connected_point_with_budget(home, [Some(position)], &mut || true)
+                .expect("unlimited connectivity query")
+                .is_some()
     }
 
     pub(crate) fn position_is_reachable_with_budget(
@@ -278,29 +303,30 @@ impl SwarmReachabilityMap {
         if !grid.in_bounds(cell) {
             return Ok(false);
         }
-        if !allow_work() {
-            return Err(());
-        }
-        if !navigation.point_clear(position) {
+        if !navigation.point_clear_with_budget(position, allow_work)? {
             return Ok(false);
         }
-        let directly_reachable =
-            navigation.segment_clear_with_budget(home, position, allow_work)?;
-        let reachable = if directly_reachable {
-            true
-        } else {
-            let ground = self.reachable_point_with_budget(owner, cell, grid, allow_work)?;
-            let from_ground = match ground {
-                Some(ground) => {
-                    navigation.segment_clear_with_budget(ground, position, allow_work)?
-                }
-                None => false,
-            };
-            from_ground
-                || navigation
-                    .connected_point_with_budget(home, [Some(position)], allow_work)?
-                    .is_some()
+        let witness = self.nearby_ground(owner, cell)[0];
+        let from_witness = match witness {
+            Some(ground) => navigation.segment_clear_with_budget(ground, position, allow_work)?,
+            None => false,
         };
+        let reachable =
+            if from_witness || navigation.segment_clear_with_budget(home, position, allow_work)? {
+                true
+            } else {
+                let ground = self.reachable_point_with_budget(owner, cell, grid, allow_work)?;
+                let from_ground = match ground {
+                    Some(ground) if Some(ground) != witness => {
+                        navigation.segment_clear_with_budget(ground, position, allow_work)?
+                    }
+                    _ => false,
+                };
+                from_ground
+                    || navigation
+                        .connected_point_with_budget(home, [Some(position)], allow_work)?
+                        .is_some()
+            };
         if reachable {
             self.inner
                 .ground_witnesses
@@ -451,6 +477,29 @@ mod tests {
         let paint = grid.cell(tile).unwrap();
         assert!(paint.has_owned(IntentKind::Defend, left));
         assert!(paint.has_owned(IntentKind::Defend, right));
+    }
+
+    #[test]
+    fn asking_about_an_accessible_position_keeps_the_same_blocked_center_representative() {
+        let owner = SwarmId::PLAYER;
+        let grid = IntentGrid::new(8, 8);
+        let obstacle = Obstacle::Rectangle {
+            center: Vec2::new(256.0, 256.0),
+            half: Vec2::splat(36.0),
+        };
+        let ground = Vec2::new(100.0, 100.0);
+        let map = || {
+            SwarmReachabilityMap::new(&grid, [obstacle], [(owner, Vec2::new(-252.0, 36.0))])
+                .unwrap()
+        };
+
+        let cold = map().reachable_point(owner, IVec2::ZERO, &grid).unwrap();
+        let warm = map();
+        assert_eq!(
+            warm.position_is_reachable_with_budget(owner, ground, &grid, &mut || true),
+            Ok(true)
+        );
+        assert_eq!(warm.reachable_point(owner, IVec2::ZERO, &grid), Some(cold));
     }
 
     #[test]

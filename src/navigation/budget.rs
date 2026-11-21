@@ -1176,6 +1176,14 @@ impl Navigation {
         poll_with_budget(future, allow_work)
     }
 
+    pub(crate) fn point_clear_with_budget(
+        &self,
+        point: Vec2,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, ()> {
+        poll_with_budget(self.async_point_clear(point), allow_work)
+    }
+
     pub(crate) fn segment_clear_with_budget(
         &self,
         from: Vec2,
