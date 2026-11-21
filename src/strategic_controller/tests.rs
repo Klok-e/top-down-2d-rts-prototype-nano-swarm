@@ -247,7 +247,7 @@ fn a_corridor_that_does_not_fit_keeps_economy_and_defend_paint() {
     for (cell, kind) in [
         (deposit_cell, IntentKind::Gather),
         (IVec2::ZERO, IntentKind::Build),
-        (IVec2::ZERO, IntentKind::Defend),
+        (deposit_cell, IntentKind::Defend),
     ] {
         assert!(decision.edits.contains(&IntentEdit {
             cell,
@@ -1986,13 +1986,22 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
         health: 60,
         ..target
     };
+    let competing_charger = StructureState {
+        id: 30,
+        owner: enemy,
+        position: world(IVec2::new(2, 7)),
+        kind: StructureKind::Charger,
+        health: 1,
+        max_health: 100,
+        minerals: 1_000,
+    };
     let exited = controller.decide(
         &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
             bots: &bots,
-            structures: &[],
+            structures: &[competing_charger],
             deposits: &[],
             terrain: &[],
             reachability: None,
@@ -2002,6 +2011,13 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
         },
     );
     assert!(exited.reviewed);
+    assert!(
+        exited
+            .explanation
+            .contains("retained hunt remaining Nanobot 50"),
+        "exiting the block must preserve a progressing hunt: {}",
+        exited.explanation
+    );
     assert!(exited.edits.iter().any(|edit| {
         edit.action == IntentEditAction::Paint
             && edit.kind == IntentKind::Defend
@@ -2630,6 +2646,7 @@ fn wounded_target_priority_uses_the_edited_health_maximum() {
         "half-health Nanobots must receive their wound priority with a larger maximum"
     );
 }
+
 fn owned_defend_cells(grid: &IntentGrid, owner: SwarmId) -> BTreeSet<(i32, i32)> {
     grid.iter_active_cells()
         .filter(|(_, cell)| cell.has_owned(IntentKind::Defend, owner))
@@ -2655,7 +2672,7 @@ fn a_compact_front_leads_the_army_and_waits_for_most_defenders() {
         max_health: 100,
         minerals: 0,
     };
-    let defenders = (0..4).map(|id| BotState {
+    let defenders = (300..304).map(|id| BotState {
         id,
         owner,
         kind: NanobotType::Defender,
@@ -2668,16 +2685,28 @@ fn a_compact_front_leads_the_army_and_waits_for_most_defenders() {
     });
     let mut defenders = defenders.collect::<Vec<_>>();
     let mut controller = Controller::new(owner);
-    let tuning = AutonomyTuning {
+    let mut tuning = AutonomyTuning {
         controller_review_period_ticks: WORK_WINDOW_TICKS,
         ..AutonomyTuning::default()
     };
-    let review = |controller: &mut Controller, grid: &mut IntentGrid, bots: &[BotState], tick| {
+    let workers = (0..300)
+        .map(|id| BotState {
+            id,
+            kind: NanobotType::Worker,
+            ..defenders[0]
+        })
+        .collect::<Vec<_>>();
+    let review = |controller: &mut Controller,
+                  grid: &mut IntentGrid,
+                  tuning: &AutonomyTuning,
+                  defenders: &[BotState],
+                  tick| {
+        let bots = workers.iter().chain(defenders).copied().collect::<Vec<_>>();
         let decision = controller.decide(
-            &tuning,
+            tuning,
             &GameState {
                 swarms: &swarms,
-                bots,
+                bots: &bots,
                 structures: &[target],
                 ..empty_state(grid, tick)
             },
@@ -2686,7 +2715,7 @@ fn a_compact_front_leads_the_army_and_waits_for_most_defenders() {
         apply(grid, owner, &decision);
     };
 
-    review(&mut controller, &mut grid, &defenders, 0);
+    review(&mut controller, &mut grid, &tuning, &defenders, 0);
     let first = owned_defend_cells(&grid, owner);
     assert!(
         first.iter().all(|&(x, _)| (1..9).contains(&x)) && !first.is_empty(),
@@ -2706,7 +2735,13 @@ fn a_compact_front_leads_the_army_and_waits_for_most_defenders() {
     for defender in &mut defenders {
         defender.position = world(IVec2::new(1, 3));
     }
-    review(&mut controller, &mut grid, &defenders, WORK_WINDOW_TICKS);
+    review(
+        &mut controller,
+        &mut grid,
+        &tuning,
+        &defenders,
+        WORK_WINDOW_TICKS,
+    );
     assert_eq!(owned_defend_cells(&grid, owner), first);
 
     for defender in &mut defenders[..2] {
@@ -2718,6 +2753,7 @@ fn a_compact_front_leads_the_army_and_waits_for_most_defenders() {
     review(
         &mut controller,
         &mut grid,
+        &tuning,
         &defenders,
         2 * WORK_WINDOW_TICKS,
     );
@@ -2728,11 +2764,29 @@ fn a_compact_front_leads_the_army_and_waits_for_most_defenders() {
     );
 
     defenders[2].position = world(IVec2::new(max_x, max_y));
+    tuning.strategy_staging_arrival_fraction = 0.9;
+    controller.request_tuning_review();
     review(
         &mut controller,
         &mut grid,
+        &tuning,
         &defenders,
-        3 * WORK_WINDOW_TICKS,
+        2 * WORK_WINDOW_TICKS + 1,
+    );
+    assert_eq!(
+        owned_defend_cells(&grid, owner),
+        first,
+        "the new threshold still requires a fourth arrival"
+    );
+
+    tuning.strategy_staging_arrival_fraction = 0.6;
+    controller.request_tuning_review();
+    review(
+        &mut controller,
+        &mut grid,
+        &tuning,
+        &defenders,
+        2 * WORK_WINDOW_TICKS + 2,
     );
     let next = owned_defend_cells(&grid, owner);
     assert!(next.iter().any(|&(x, _)| x > max_x));
