@@ -1,7 +1,7 @@
 use super::{
     lifecycle::WorkBudget,
     materialize::{
-        CorridorPaintLimit, corridor_route, intent_cell_center, route_exposure,
+        CorridorPaintLimit, corridor_route, intent_cell_center, query_route, route_exposure,
         world_to_intent_cell,
     },
     *,
@@ -57,26 +57,11 @@ impl EconomyPlan {
             <= limit
     }
 
-    fn claim(
-        &mut self,
-        mut mine: OwnedDeposit,
-        deposit: &DepositState,
-        owner: SwarmId,
-        state: &GameState<'_>,
-        budget: &mut WorkBudget,
-    ) {
-        if self.owned_deposits.is_empty()
-            && !state.structures.iter().take(MAX_STRUCTURES).any(|source| {
-                budget.spend(1)
-                    && source.owner == owner
-                    && source.kind == StructureKind::Source
-                    && source.health > 0
-                    && world_to_intent_cell(source.position) == mine.gather_cell
-            })
-        {
+    fn claim(&mut self, mut mine: OwnedDeposit, amount: u32, tick: u64) {
+        if self.owned_deposits.is_empty() {
             mine.startup = Some(MineStartup {
-                initial_amount: deposit.amount,
-                deadline: state.tick.saturating_add(MINE_STARTUP_TICKS),
+                initial_amount: amount,
+                deadline: tick.saturating_add(MINE_STARTUP_TICKS),
             });
         }
         self.add(mine);
@@ -201,7 +186,7 @@ pub(super) fn plan_economy(
             if let Ok(Some((mine, _))) = mine_support(owner, deposit, state, home, budget)
                 && economy.can_fit(&mine, ECONOMY_EXPANSION_PAINT_LIMIT)
             {
-                economy.claim(mine, deposit, owner, state, budget);
+                economy.claim(mine, deposit.amount, state.tick);
             }
             continue;
         }
@@ -269,28 +254,9 @@ pub(super) fn plan_economy(
             .total_cmp(&home.distance_squared(b.position))
             .then_with(|| a.id.cmp(&b.id))
     });
-    if economy
-        .owned_deposits
-        .first()
-        .is_some_and(|mine| mine.startup.is_some())
-        && state
-            .bots
-            .iter()
-            .take(MAX_BOTS)
-            .filter(|bot| {
-                budget.spend(1)
-                    && bot.owner == owner
-                    && bot.kind == NanobotType::Worker
-                    && bot.health > 0
-                    && bot.position.is_finite()
-                    && state.reachability.is_none_or(|map| {
-                        map.position_is_reachable(owner, bot.position, state.grid)
-                    })
-            })
-            .take(PARALLEL_STARTUP_WORKERS)
-            .count()
-            < PARALLEL_STARTUP_WORKERS
-    {
+    if economy.owned_deposits.first().is_some_and(|mine| {
+        mine.startup.is_some() && !opening_can_staff_both_mines(owner, home, mine, state, budget)
+    }) {
         economy.free_deposit_exists |= unchecked.into_iter().any(|deposit| {
             !budget.exhausted
                 && !matches!(mine_support(owner, deposit, state, home, budget), Ok(None))
@@ -347,9 +313,64 @@ pub(super) fn plan_economy(
     }
     if let Some((mine, deposit, _)) = best {
         economy.expansion = Some(mine.id);
-        economy.claim(mine, deposit, owner, state, budget);
+        economy.claim(mine, deposit.amount, state.tick);
     }
     (!budget.exhausted).then_some(economy)
+}
+
+fn opening_can_staff_both_mines(
+    owner: SwarmId,
+    home: Vec2,
+    mine: &OwnedDeposit,
+    state: &GameState<'_>,
+    budget: &mut WorkBudget,
+) -> bool {
+    let mut required_workers = PARALLEL_STARTUP_WORKERS;
+    for source in state.structures.iter().take(MAX_STRUCTURES) {
+        if !budget.spend(1) {
+            return false;
+        }
+        if source.owner == owner
+            && source.kind == StructureKind::Source
+            && source.health > 0
+            && world_to_intent_cell(source.position) == mine.gather_cell
+        {
+            if source.minerals > 0 {
+                return true;
+            }
+            required_workers = PARALLEL_STARTUP_WORKERS - 1;
+        }
+    }
+
+    let workers: Vec<_> = state
+        .bots
+        .iter()
+        .take(MAX_BOTS)
+        .filter(|bot| {
+            budget.spend(1)
+                && bot.owner == owner
+                && bot.kind == NanobotType::Worker
+                && bot.health > 0
+                && bot.position.is_finite()
+        })
+        .map(|bot| bot.position)
+        .collect();
+
+    workers.len() >= required_workers
+        && workers
+            .into_iter()
+            .filter(|&position| {
+                if state.route_query.is_some() {
+                    query_route(state, home, RouteGoal::Point(position), budget).is_some()
+                } else {
+                    state
+                        .reachability
+                        .is_none_or(|map| map.position_is_reachable(owner, position, state.grid))
+                }
+            })
+            .take(required_workers)
+            .count()
+            == required_workers
 }
 
 fn approaches(bot: &BotState, deposit: &DepositState) -> bool {
