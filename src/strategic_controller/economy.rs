@@ -15,6 +15,8 @@ pub(super) const SUPPORT_PAINT_RESERVE: usize = 8;
 const ECONOMY_EXPANSION_PAINT_LIMIT: usize = EXPANSION_PLAN_CELLS - SUPPORT_PAINT_RESERVE;
 const ECONOMY_RETENTION_PAINT_LIMIT: usize = MAX_PLAN_CELLS - SUPPORT_PAINT_RESERVE;
 const MINE_STARTUP_TICKS: u64 = 30 * crate::SIMULATION_HZ as u64;
+// Both mines need an extractor and Source Stockpile builder, plus a shared Sink builder.
+const PARALLEL_STARTUP_WORKERS: usize = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MineStartup {
@@ -69,7 +71,6 @@ impl EconomyPlan {
                     && source.owner == owner
                     && source.kind == StructureKind::Source
                     && source.health > 0
-                    && source.minerals > 0
                     && world_to_intent_cell(source.position) == mine.gather_cell
             })
         {
@@ -261,10 +262,34 @@ pub(super) fn plan_economy(
         return Some(economy);
     }
 
+    // Start with the cheapest plausible routes so distant candidates usually
+    // need only an optimistic value bound, even when the map has many deposits.
+    unchecked.sort_by(|a, b| {
+        home.distance_squared(a.position)
+            .total_cmp(&home.distance_squared(b.position))
+            .then_with(|| a.id.cmp(&b.id))
+    });
     if economy
         .owned_deposits
         .first()
         .is_some_and(|mine| mine.startup.is_some())
+        && state
+            .bots
+            .iter()
+            .take(MAX_BOTS)
+            .filter(|bot| {
+                budget.spend(1)
+                    && bot.owner == owner
+                    && bot.kind == NanobotType::Worker
+                    && bot.health > 0
+                    && bot.position.is_finite()
+                    && state.reachability.is_none_or(|map| {
+                        map.position_is_reachable(owner, bot.position, state.grid)
+                    })
+            })
+            .take(PARALLEL_STARTUP_WORKERS)
+            .count()
+            < PARALLEL_STARTUP_WORKERS
     {
         economy.free_deposit_exists |= unchecked.into_iter().any(|deposit| {
             !budget.exhausted
@@ -274,13 +299,6 @@ pub(super) fn plan_economy(
     }
 
     let mut best: Option<(OwnedDeposit, &DepositState, f32)> = None;
-    // Start with the cheapest plausible routes so distant candidates usually
-    // need only an optimistic value bound, even when the map has many deposits.
-    unchecked.sort_by(|a, b| {
-        home.distance_squared(a.position)
-            .total_cmp(&home.distance_squared(b.position))
-            .then_with(|| a.id.cmp(&b.id))
-    });
     for deposit in unchecked {
         let terrain_exposure = route_exposure(home, deposit.position, state.terrain, budget);
         let enemy_exposure = enemy_home.map_or(0.0, |enemy| {
