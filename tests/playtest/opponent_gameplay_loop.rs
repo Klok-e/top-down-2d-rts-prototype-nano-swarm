@@ -561,34 +561,42 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
         first.0
     };
 
-    for _ in 0..2400 {
+    let mut advanced_defenders = 0;
+    for _ in 0..5_400 {
         app.update();
-        if app
-            .world()
+        let world = app.world_mut();
+        let target_support = world
             .resource::<IntentGrid>()
             .cell(target_cell)
-            .is_some_and(|cell| cell.has_owned(IntentKind::Defend, SwarmId::PLAYER))
-        {
+            .is_some_and(|cell| {
+                cell.has_owned(IntentKind::Build, SwarmId::PLAYER)
+                    && cell.has_owned(IntentKind::Defend, SwarmId::PLAYER)
+            });
+        if !target_support {
+            continue;
+        }
+        advanced_defenders = world
+            .query::<(&SwarmMember, &NanobotType, &Transform)>()
+            .iter(world)
+            .filter(|(member, kind, transform)| {
+                member.0 == SwarmId::PLAYER
+                    && **kind == NanobotType::Defender
+                    && transform.translation.truncate().distance(target_position)
+                        <= 2.0 * top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE
+            })
+            .count();
+        if advanced_defenders >= 4 {
             break;
         }
     }
-    for _ in 0..600 {
-        app.update();
-    }
-    let world = app.world_mut();
-    let advanced_defenders = world
-        .query::<(&SwarmMember, &NanobotType, &Transform)>()
-        .iter(world)
-        .filter(|(member, kind, transform)| {
-            member.0 == SwarmId::PLAYER
-                && **kind == NanobotType::Defender
-                && transform.translation.truncate().distance(target_position)
-                    <= 2.0 * top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE
-        })
-        .count();
+    let world = app.world();
+    let profiles = world
+        .resource::<top_down_2d_rts_prototype_nano_swarm::strategic_runtime::ControllerTelemetry>()
+        .profiles();
     assert!(
         advanced_defenders >= 4,
-        "shared movement must advance the main force, got {advanced_defenders}"
+        "shared movement must advance the main force, got {advanced_defenders} ({})",
+        profiles[&SwarmId::PLAYER.0].last_explanation
     );
     let grid = world.resource::<IntentGrid>();
     assert!(
