@@ -72,6 +72,7 @@ pub struct StructureState {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DepositState {
     pub id: u64,
+    pub owner: Option<SwarmId>,
     pub position: Vec2,
     pub amount: u32,
     pub radius: f32,
@@ -137,7 +138,7 @@ pub struct Controller {
 #[derive(Debug, Clone)]
 struct IntentPlan {
     objective: Objective,
-    primary_deposit: Option<u64>,
+    owned_deposits: Vec<economy::OwnedDeposit>,
     attack_targets: Vec<AttackObligation>,
     key_charger: Option<u64>,
     desired: Vec<DesiredIntent>,
@@ -152,16 +153,9 @@ struct PlanValidation {
     all_attack_targets_covered: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct EconomySelection {
-    primary: Option<(DepositState, IVec2)>,
-    value: f32,
-}
-
 #[derive(Debug, Clone)]
 struct PlanCandidate {
     objective: Objective,
-    economy: EconomySelection,
     attack_targets: Vec<AttackObligation>,
     anchor: IVec2,
     attack_target: Option<IVec2>,
@@ -210,7 +204,7 @@ impl IntentPlan {
         [IntentKind::Build, IntentKind::Defend, IntentKind::Corridor]
             .into_iter()
             .all(|kind| self.desired.iter().any(|intent| intent.kind == kind))
-            && (self.primary_deposit.is_none()
+            && (self.owned_deposits.is_empty()
                 || self
                     .desired
                     .iter()
@@ -232,6 +226,7 @@ struct ForceEstimate {
     low_charge_defenders: usize,
 }
 
+mod economy;
 mod lifecycle;
 mod materialize;
 mod strategy;

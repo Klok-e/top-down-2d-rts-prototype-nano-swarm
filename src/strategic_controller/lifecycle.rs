@@ -1,4 +1,5 @@
 use super::{
+    economy::plan_economy,
     materialize::{intent_edits, materialize_plan},
     strategy::{
         adapt_pressure_anchor, coordinate_attack_targets, generate_candidates,
@@ -145,6 +146,34 @@ impl PlannerState {
             invalidation =
                 Some("a retained attack target left existing owned Defend coverage".to_string());
         }
+        let previous_deposits = self
+            .current
+            .as_ref()
+            .map_or(&[][..], |plan| plan.owned_deposits.as_slice());
+        let economy = if regular_review || invalidation.is_some() {
+            let Some(economy) = plan_economy(tuning, owner, state, previous_deposits, &mut budget)
+            else {
+                self.tuning_review_requested |= tuning_review;
+                self.work_used = budget.used;
+                return Decision {
+                    edits: Vec::new(),
+                    explanation: if budget.exhausted {
+                        "planning allowance exhausted while reviewing owned Resource Deposits"
+                    } else {
+                        "owned Resource Deposit support would exceed available paint"
+                    }
+                    .to_string(),
+                    reviewed: true,
+                    work_units: budget.call_work(),
+                };
+            };
+            Some(economy)
+        } else {
+            None
+        };
+        let economy_unchanged = economy.as_ref().is_none_or(|economy| {
+            economy.expansion.is_none() && economy.owned_deposits == previous_deposits
+        });
         let reviewed_supportable_fronts = if !tuning_review
             && invalidation.is_none()
             && regular_review
@@ -163,6 +192,7 @@ impl PlannerState {
             covered_attack_progress && (covered_attack_movement || self.retained_covered_movement);
         let retains_covered_movement_between_reviews = covered_attack_movement && !regular_review;
         if !tuning_review
+            && economy_unchanged
             && invalidation.is_none()
             && (retains_covered_progress || retains_covered_movement_between_reviews)
             && all_attack_targets_covered
@@ -203,6 +233,7 @@ impl PlannerState {
             };
         }
         if !tuning_review
+            && economy_unchanged
             && invalidation.is_none()
             && regular_review
             && (self.retained_covered_movement || covered_attack_movement)
@@ -235,8 +266,8 @@ impl PlannerState {
             };
         }
 
-        let candidates =
-            generate_candidates(tuning, owner, state, self.current.as_ref(), &mut budget);
+        let economy = economy.expect("reviews plan the economy before selecting an objective");
+        let candidates = generate_candidates(tuning, owner, state, economy.expansion, &mut budget);
         if budget.exhausted {
             self.tuning_review_requested |= tuning_review;
             self.work_used = budget.used;
@@ -250,6 +281,7 @@ impl PlannerState {
             };
         }
         let reassessing_spare_front = !tuning_review
+            && economy_unchanged
             && invalidation.is_none()
             && regular_review
             && retains_covered_progress
@@ -306,8 +338,7 @@ impl PlannerState {
             if let Some(refreshed) = refreshed
                 && best.score
                     <= refreshed.score
-                        + (refreshed.score - refreshed.economy.value).abs()
-                            * (tuning.controller_switch_margin - 1.0)
+                        + refreshed.score.abs() * (tuning.controller_switch_margin - 1.0)
                         + tuning.controller_switch_bias
             {
                 (
@@ -373,15 +404,20 @@ impl PlannerState {
             };
         }
         let explanation = format!(
-            "{explanation}; anchor {}; target {}{}",
+            "{explanation}; anchor {}; target {}{}; owned Resource Deposits {:?}",
             selected.anchor,
             selected.attack_target.unwrap_or(selected.anchor),
             attack_explanation
                 .as_deref()
-                .map_or(String::new(), |detail| format!("; {detail}"))
+                .map_or(String::new(), |detail| format!("; {detail}")),
+            economy
+                .owned_deposits
+                .iter()
+                .map(|mine| mine.id)
+                .collect::<Vec<_>>()
         );
 
-        let selected = materialize_plan(selected, owner, state, &mut budget);
+        let selected = materialize_plan(selected, economy, owner, state, &mut budget);
         if budget.exhausted || !selected.is_coordinated() {
             self.tuning_review_requested |= tuning_review && budget.exhausted;
             self.work_used = budget.used;

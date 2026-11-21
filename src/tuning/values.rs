@@ -142,15 +142,14 @@ tuning_schema! {
         strategy_buffer_supply_weight: f32 = 0.05 => ("buffer supply weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_readiness_supply_target: f32 = 80.0 => ("readiness supply target", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_readiness_penalty_weight: f32 = 2.0 => ("readiness penalty weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
+        strategy_expansion_income_weight: f32 = 10.0 => ("Expansion deposit value", "", 1.0, 0.05, 0.0, 1_000_000.0);
+        strategy_expansion_travel_cost: f32 = 2.0 => ("Expansion travel cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
+        strategy_expansion_haul_cost: f32 = 3.0 => ("Expansion hauling cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
+        strategy_expansion_exposure_cost: f32 = 10.0 => ("Expansion exposure cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_hold_base: f32 = 25.0 => ("hold base", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_hold_supply_cap: f32 = 100.0 => ("hold supply cap", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_hold_supply_weight: f32 = 0.1 => ("hold supply weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_hold_force_weight: f32 = 0.02 => ("hold force weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_scarcity_supply_target: f32 = 60.0 => ("scarcity supply target", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_scarcity_weight: f32 = 0.4 => ("scarcity weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_secure_base: f32 = 75.0 => ("secure base", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_secure_force_weight: f32 = 0.025 => ("secure force weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_secure_enemy_weight: f32 = 0.01 => ("secure enemy weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_pressure_base: f32 = 160.0 => ("pressure base", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_pressure_supply_cap: f32 = 120.0 => ("pressure supply cap", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_pressure_supply_weight: f32 = 0.7 => ("pressure supply weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
@@ -182,9 +181,6 @@ tuning_schema! {
         strategy_hunt_exposure_cost: f32 = 14.0 => ("hunt exposure cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_force_base_weight: f32 = 0.35 => ("force base weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_force_charge_weight: f32 = 0.65 => ("force charge weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_deposit_amount_weight: f32 = 10.0 => ("deposit amount weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_deposit_distance_cost: f32 = 6.0 => ("deposit distance cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_deposit_exposure_cost: f32 = 10.0 => ("deposit exposure cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
     }
     presentation: PresentationTuning {
         effects_intensity: f32 = 1.0 => ("Combat effects intensity", "", 1.0, 0.1, 0.0, 4.0);

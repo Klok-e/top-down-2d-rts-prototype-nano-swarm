@@ -49,6 +49,7 @@ fn corridor_paint_follows_the_supplied_deposit_route() {
     }];
     let deposits = [DepositState {
         id: 1,
+        owner: None,
         position: world(IVec2::new(4, 0)),
         amount: 72_000,
         radius: 80.0,
@@ -102,6 +103,7 @@ fn corridor_paint_without_routing_follows_a_straight_cell_line() {
     }];
     let deposits = [DepositState {
         id: 1,
+        owner: None,
         position: world(IVec2::new(6, 2)),
         amount: 72_000,
         radius: 80.0,
@@ -122,7 +124,7 @@ fn corridor_paint_without_routing_follows_a_straight_cell_line() {
 }
 
 #[test]
-fn corridor_paint_does_not_cross_rock_when_the_straight_fallback_is_blocked() {
+fn a_neutral_deposit_is_not_claimed_when_no_corridor_reaches_it() {
     let owner = SwarmId::PLAYER;
     let grid = IntentGrid::new(16, 16);
     let swarms = [SwarmState {
@@ -132,6 +134,7 @@ fn corridor_paint_does_not_cross_rock_when_the_straight_fallback_is_blocked() {
     }];
     let deposits = [DepositState {
         id: 1,
+        owner: None,
         position: world(IVec2::new(4, 0)),
         amount: 72_000,
         radius: 80.0,
@@ -150,7 +153,7 @@ fn corridor_paint_does_not_cross_rock_when_the_straight_fallback_is_blocked() {
         },
     );
 
-    assert!(decision.edits.contains(&IntentEdit {
+    assert!(!decision.edits.contains(&IntentEdit {
         cell: IVec2::new(4, 0),
         kind: IntentKind::Gather,
         action: IntentEditAction::Paint,
@@ -169,6 +172,7 @@ fn corridor_search_spends_planning_work_and_keeps_existing_paint_on_exhaustion()
     }];
     let deposit = DepositState {
         id: 1,
+        owner: None,
         position: world(IVec2::new(4, 0)),
         amount: 72_000,
         radius: 80.0,
@@ -240,6 +244,7 @@ fn changed_plan_erases_superseded_paint_beyond_the_cleanup_cursor() {
     };
     let deposit = DepositState {
         id: 20,
+        owner: None,
         position: world(IVec2::new(0, 8)),
         amount: 72_000,
         radius: 80.0,
@@ -537,6 +542,7 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
     ];
     let deposits = [DepositState {
         id: 20,
+        owner: None,
         position: world(IVec2::new(2, 0)),
         amount: 500,
         radius: 100.0,
@@ -589,7 +595,7 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
 }
 
 #[test]
-fn raid_retains_the_established_primary() {
+fn profitable_neutral_expansion_preempts_a_viable_raid() {
     let mut grid = IntentGrid::new(32, 32);
     let owner = SwarmId(4);
     let enemy = SwarmId(9);
@@ -603,12 +609,14 @@ fn raid_retains_the_established_primary() {
     let deposits = [
         DepositState {
             id: 20,
+            owner: None,
             position: world(IVec2::new(-1, 0)),
             amount: 72_000,
             radius: 64.0,
         },
         DepositState {
             id: 21,
+            owner: None,
             position: world(IVec2::new(4, 0)),
             amount: 72_000,
             radius: 64.0,
@@ -687,7 +695,7 @@ fn raid_retains_the_established_primary() {
             ..primary_chain[1]
         },
     ];
-    let raid = controller.decide(
+    let expansion = controller.decide(
         &crate::tuning::AutonomyTuning::default(),
         &GameState {
             grid: &grid,
@@ -707,8 +715,17 @@ fn raid_retains_the_established_primary() {
         },
     );
 
-    assert!(raid.explanation.contains("attack enemy logistics"));
-    assert!(!raid.edits.iter().any(|edit| {
+    assert!(expansion.edits.iter().any(|edit| {
+        edit.action == IntentEditAction::Paint
+            && edit.kind == IntentKind::Gather
+            && edit.cell == IVec2::new(4, 0)
+    }));
+    assert!(!expansion.edits.iter().any(|edit| {
+        edit.action == IntentEditAction::Paint
+            && edit.kind == IntentKind::Defend
+            && edit.cell == IVec2::new(8, 0)
+    }));
+    assert!(!expansion.edits.iter().any(|edit| {
         edit.action == IntentEditAction::Erase
             && edit.kind == IntentKind::Gather
             && edit.cell == IVec2::new(-1, 0)
@@ -747,6 +764,7 @@ fn advantaged_raid_paints_enemy_logistics_and_keeps_home_economy() {
         .collect::<Vec<_>>();
     let deposits = [DepositState {
         id: 20,
+        owner: Some(owner),
         position: world(IVec2::new(-1, 0)),
         amount: 500,
         radius: 100.0,
@@ -1292,6 +1310,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
     }];
     let deposits = [DepositState {
         id: 20,
+        owner: Some(owner),
         position: world(IVec2::new(2, 0)),
         amount: 500,
         radius: 100.0,
@@ -1354,75 +1373,154 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
 }
 
 #[test]
-fn clearly_better_resource_opportunity_replaces_a_viable_plan() {
+fn new_neutral_deposit_keeps_the_existing_mine_supported() {
+    let owner = SwarmId::PLAYER;
     let mut grid = IntentGrid::new(32, 32);
-    let owner = SwarmId(4);
     let swarms = [SwarmState {
         id: owner,
         home: world(IVec2::ZERO),
         minerals: 0,
     }];
-    let original = DepositState {
-        id: 20,
-        position: world(IVec2::new(2, 0)),
-        amount: 100,
-        radius: 100.0,
-    };
+    let deposits = [
+        DepositState {
+            id: 20,
+            owner: None,
+            position: world(IVec2::new(4, 0)),
+            amount: 72_000,
+            radius: 80.0,
+        },
+        DepositState {
+            id: 21,
+            owner: None,
+            position: world(IVec2::new(0, 6)),
+            amount: 72_000,
+            radius: 80.0,
+        },
+    ];
+    let tuning = AutonomyTuning::default();
     let mut controller = Controller::new(owner);
     let initial = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+        &tuning,
         &GameState {
-            grid: &grid,
             swarms: &swarms,
-            bots: &[],
-            structures: &[],
-            deposits: &[original],
-            terrain: &[],
-            reachability: None,
-            route_query: None,
-            tick: 0,
-            finished: false,
+            deposits: &deposits,
+            ..empty_state(&grid, 0)
         },
     );
     apply(&mut grid, owner, &initial);
-
-    let opportunities = [
-        original,
-        DepositState {
-            id: 21,
-            position: world(IVec2::new(4, 0)),
-            amount: 1_000_000,
-            radius: 100.0,
-        },
-    ];
-    let changed = controller.decide(
-        &crate::tuning::AutonomyTuning::default(),
+    let expanded = controller.decide(
+        &tuning,
         &GameState {
-            grid: &grid,
             swarms: &swarms,
-            bots: &[],
-            structures: &[],
-            deposits: &opportunities,
-            terrain: &[],
-            reachability: None,
-            route_query: None,
-            tick: WORK_WINDOW_TICKS,
-            finished: false,
+            deposits: &deposits,
+            ..empty_state(&grid, WORK_WINDOW_TICKS)
         },
     );
+    apply(&mut grid, owner, &expanded);
 
-    assert!(changed.reviewed);
-    assert!(changed.explanation.contains("clearly better"));
-    assert!(changed.edits.iter().any(|edit| {
-        edit.action == IntentEditAction::Paint
-            && edit.kind == IntentKind::Gather
-            && edit.cell == IVec2::new(4, 0)
-    }));
-    assert!(changed.edits.iter().any(|edit| {
-        edit.action == IntentEditAction::Erase
-            && edit.kind == IntentKind::Gather
-            && edit.cell == IVec2::new(2, 0)
-    }));
+    for (gather, build) in [
+        (IVec2::new(4, 0), IVec2::new(3, 0)),
+        (IVec2::new(0, 6), IVec2::new(0, 5)),
+    ] {
+        for (cell, kind) in [
+            (gather, IntentKind::Gather),
+            (gather, IntentKind::Defend),
+            (build, IntentKind::Build),
+            (build, IntentKind::Defend),
+            (build, IntentKind::Corridor),
+        ] {
+            assert!(
+                grid.cell(cell)
+                    .is_some_and(|intent| intent.has_owned(kind, owner)),
+                "mine at {gather} lacks {kind:?} at {cell}"
+            );
+        }
+    }
+}
+
+#[test]
+fn depleted_and_unreachable_deposits_are_removed_without_abandoning_the_others() {
+    use crate::{nanobot::InteractionRegion, navigation::Route};
+
+    let owner = SwarmId::PLAYER;
+    let mut grid = IntentGrid::new(32, 32);
+    let home = world(IVec2::ZERO);
+    let swarms = [SwarmState {
+        id: owner,
+        home,
+        minerals: 0,
+    }];
+    let cells = [IVec2::new(4, 0), IVec2::new(0, 4), IVec2::new(-4, 0)];
+    let mut deposits = cells.map(|cell| DepositState {
+        id: (cell.x + 4) as u64,
+        owner: None,
+        position: world(cell),
+        amount: 72_000,
+        radius: 80.0,
+    });
+    let tuning = AutonomyTuning::default();
+    let mut controller = Controller::new(owner);
+    for cell in cells {
+        grid.paint(cell, IntentKind::Gather, owner);
+    }
+    let initial = controller.decide(
+        &tuning,
+        &GameState {
+            swarms: &swarms,
+            deposits: &deposits,
+            ..empty_state(&grid, 0)
+        },
+    );
+    apply(&mut grid, owner, &initial);
+    for cell in cells {
+        assert!(
+            grid.cell(cell)
+                .unwrap()
+                .has_owned(IntentKind::Gather, owner)
+        );
+    }
+    deposits[0].amount = 0;
+    let blocked = InteractionRegion::deposit(
+        &bevy::prelude::Transform::from_translation(deposits[1].position.extend(0.0)),
+        deposits[1].radius,
+    )
+    .within_cell(cells[1]);
+    let route = |start: Vec2, goal: RouteGoal, _: &mut dyn FnMut() -> bool| {
+        Some(match goal {
+            RouteGoal::Interaction(region) if region != blocked => {
+                let end = region.approach(start);
+                RouteOutcome::Found(Route {
+                    waypoints: vec![end],
+                    cost: start.distance(end),
+                })
+            }
+            _ => RouteOutcome::Unreachable,
+        })
+    };
+    let revised = controller.decide(
+        &tuning,
+        &GameState {
+            swarms: &swarms,
+            deposits: &deposits,
+            route_query: Some(&route),
+            ..empty_state(&grid, WORK_WINDOW_TICKS)
+        },
+    );
+    apply(&mut grid, owner, &revised);
+    for cell in [cells[0], cells[1]] {
+        assert!(
+            !grid
+                .cell(cell)
+                .unwrap()
+                .has_owned(IntentKind::Gather, owner),
+            "unavailable deposit at {cell} retained Gather"
+        );
+    }
+    assert!(
+        grid.cell(cells[2])
+            .unwrap()
+            .has_owned(IntentKind::Gather, owner)
+    );
 }
 
 #[test]
@@ -1464,6 +1562,7 @@ fn accumulated_supply_and_a_logistics_target_replace_the_economy_plan() {
         .collect::<Vec<_>>();
     let deposit = [DepositState {
         id: 20,
+        owner: None,
         position: world(IVec2::new(-1, -1)),
         amount: 72_000,
         radius: 64.0,
@@ -1549,12 +1648,14 @@ fn terrain_exposure_changes_which_equal_deposit_is_secured() {
     }];
     let exposed = DepositState {
         id: 20,
+        owner: None,
         position: world(IVec2::new(4, 0)),
         amount: 500,
         radius: 100.0,
     };
     let clear = DepositState {
         id: 21,
+        owner: None,
         position: world(IVec2::new(0, 4)),
         amount: 500,
         radius: 100.0,
@@ -1604,12 +1705,14 @@ fn irrelevant_far_rocks_do_not_dilute_an_obstructed_deposit_approach() {
     }];
     let obstructed = DepositState {
         id: 20,
+        owner: None,
         position: world(IVec2::new(4, 0)),
         amount: 500,
         radius: 100.0,
     };
     let clear = DepositState {
         id: 21,
+        owner: None,
         position: world(IVec2::new(0, 4)) + Vec2::new(0.0, 10.0),
         amount: 500,
         radius: 100.0,
@@ -1741,6 +1844,7 @@ fn combat_support_build_follows_the_living_defender_cohort_without_outlier_drift
     ]);
     let deposit = [DepositState {
         id: 20,
+        owner: Some(owner),
         position: world(IVec2::new(-2, 0)),
         amount: 500,
         radius: 100.0,
@@ -1905,6 +2009,7 @@ fn combat_support_retains_a_nearby_open_build_during_small_cohort_drift() {
         .collect::<Vec<_>>();
     let deposits = [DepositState {
         id: 20,
+        owner: Some(owner),
         position: world(IVec2::new(-1, 0)),
         amount: 500,
         radius: 100.0,
@@ -2049,6 +2154,7 @@ fn even_split_cohort_support_uses_an_occupied_flank_instead_of_the_empty_median_
         .collect::<Vec<_>>();
     let deposits = [DepositState {
         id: 20,
+        owner: Some(owner),
         position: world(IVec2::new(-1, 0)),
         amount: 500,
         radius: 100.0,
@@ -2147,6 +2253,7 @@ fn pressure_support_uses_the_open_side_of_a_swapped_obstruction() {
     .collect::<Vec<_>>();
     let deposit = [DepositState {
         id: 20,
+        owner: Some(owner),
         position: world(IVec2::new(-1, 0)),
         amount: 500,
         radius: 100.0,
@@ -2265,6 +2372,7 @@ fn authored_terrain_leaves_budget_for_a_coordinated_plan() {
         .enumerate()
         .map(|(id, cell)| DepositState {
             id: id as u64,
+            owner: None,
             position: crate::scenario::cell_origin(cell),
             amount: crate::scenario::STARTING_DEPOSIT_AMOUNT,
             radius: crate::scenario::STARTING_WORK_RADIUS,
@@ -2307,7 +2415,7 @@ fn authored_terrain_leaves_budget_for_a_coordinated_plan() {
 
 #[test]
 fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
-    let grid = IntentGrid::new(64, 64);
+    let mut grid = IntentGrid::new(64, 64);
     let owner = SwarmId::PLAYER;
     let enemy = SwarmId(1);
     let swarms = [
@@ -2343,11 +2451,19 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
         crate::scenario::NEUTRAL_DEPOSIT_CELLS[2],
         crate::scenario::NEUTRAL_DEPOSIT_CELLS[3],
     ];
+    for cell in crate::scenario::NEUTRAL_DEPOSIT_CELLS {
+        grid.paint(cell, IntentKind::Gather, enemy);
+    }
     let deposits = deposit_cells
         .into_iter()
         .enumerate()
         .map(|(id, cell)| DepositState {
             id: 20 + id as u64,
+            owner: match id {
+                0 => Some(owner),
+                1 => Some(enemy),
+                _ => None,
+            },
             position: crate::scenario::cell_origin(cell),
             amount: crate::scenario::STARTING_DEPOSIT_AMOUNT,
             radius: crate::scenario::STARTING_WORK_RADIUS,
@@ -3588,6 +3704,7 @@ fn structure_free_remnant_is_followed_across_cells_and_after_disappearance() {
     ];
     let deposit = [DepositState {
         id: 20,
+        owner: Some(owner),
         position: world(IVec2::new(-1, 0)),
         amount: 500,
         radius: 100.0,
@@ -3695,7 +3812,7 @@ fn controllers_stop_planning_after_the_match_finishes() {
 }
 
 #[test]
-fn mature_funded_force_retains_attack_and_primary_mining_for_a_minute() {
+fn mature_funded_force_retains_attack_and_mining_after_expansion() {
     let mut grid = IntentGrid::new(96, 96);
     let owner = SwarmId(4);
     let enemy = SwarmId(9);
@@ -3717,12 +3834,14 @@ fn mature_funded_force_retains_attack_and_primary_mining_for_a_minute() {
     let deposits = [
         DepositState {
             id: 20,
+            owner: None,
             position: world(IVec2::new(-1, 0)),
             amount: 72_000,
             radius: 64.0,
         },
         DepositState {
             id: 21,
+            owner: None,
             position: world(IVec2::new(4, 0)),
             amount: 72_000,
             radius: 64.0,
@@ -3786,7 +3905,19 @@ fn mature_funded_force_retains_attack_and_primary_mining_for_a_minute() {
             cargo: 0,
         }))
         .collect::<Vec<_>>();
-    for review in 1..=120 {
+    let expansion = controller.decide(
+        &AutonomyTuning::default(),
+        &GameState {
+            grid: &grid,
+            swarms: &supplied_swarms,
+            bots: &bots,
+            structures: &[primary_chain[0], primary_chain[1], enemy_facility],
+            deposits: &deposits,
+            ..empty_state(&grid, WORK_WINDOW_TICKS)
+        },
+    );
+    apply(&mut grid, owner, &expansion);
+    for review in 2..=120 {
         let pressure = controller.decide(
             &crate::tuning::AutonomyTuning::default(),
             &GameState {
@@ -3822,13 +3953,12 @@ fn mature_funded_force_retains_attack_and_primary_mining_for_a_minute() {
         assert!(
             grid.cell(IVec2::new(-1, 0))
                 .is_some_and(|intent| intent.has_owned(IntentKind::Gather, owner)),
-            "pressure abandoned the working primary deposit"
+            "pressure abandoned the original mine"
         );
         assert!(
-            !grid
-                .cell(IVec2::new(4, 0))
+            grid.cell(IVec2::new(4, 0))
                 .is_some_and(|intent| intent.has_owned(IntentKind::Gather, owner)),
-            "pressure opened a second resource site"
+            "pressure abandoned the expanded mine"
         );
     }
 }
