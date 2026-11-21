@@ -180,32 +180,41 @@ fn route_progress_away_from_goal_does_not_count_as_a_traffic_stall() {
 
 #[test]
 fn queued_recovery_separates_from_a_working_body_without_losing_cargo() {
+    for offset in [Vec2::ZERO, Vec2::X * 4320.0] {
+        check_queued_recovery(offset);
+    }
+}
+
+fn check_queued_recovery(offset: Vec2) {
+    use top_down_2d_rts_prototype_nano_swarm::intent::IntentGrid;
     use top_down_2d_rts_prototype_nano_swarm::nanobot::{
         Cargo, Commitment, RemainingTravel, VelocityComponent, WaitingForWork, WorkBlocked,
         separation_system, velocity_system, work_standing_system,
     };
     use top_down_2d_rts_prototype_nano_swarm::resources::ResourceKind;
     let mut app = common::minimal_app();
+    app.insert_resource(IntentGrid::new(32, 32));
     app.add_systems(
         FixedUpdate,
         (separation_system, velocity_system, work_standing_system).chain(),
     );
     for y in [252., 396.] {
-        let wall = common::spawn_structure_at(&mut app, Vec2::new(432., y));
+        let wall = common::spawn_structure_at(&mut app, Vec2::new(432., y) + offset);
         app.world_mut().get_mut::<Transform>(wall).unwrap().scale = Vec3::new(4.5, 1.125, 1.);
     }
-    let worker = common::spawn_worker_at(&mut app, Vec2::new(432., 324.));
+    let worker_position = Vec2::new(432., 324.) + offset;
+    let worker = common::spawn_worker_at(&mut app, worker_position);
     app.world_mut()
         .entity_mut(worker)
         .insert(Commitment::Working);
-    let loaded = common::spawn_hauler_at(&mut app, Vec2::new(360., 324.));
+    let loaded = common::spawn_hauler_at(&mut app, Vec2::new(360., 324.) + offset);
     app.world_mut().entity_mut(loaded).insert((
         Cargo {
             kind: ResourceKind::Minerals,
             amount: 20,
         },
         DirectMovementComponent {
-            xy: Vec2::new(504., 324.),
+            xy: Vec2::new(504., 324.) + offset,
             stop_radius: 0.,
             interaction: None,
             speed: None,
@@ -215,7 +224,7 @@ fn queued_recovery_separates_from_a_working_body_without_losing_cargo() {
     for _ in 0..180 {
         let x = app.world().get::<Transform>(loaded).unwrap().translation.x;
         app.world_mut().entity_mut(loaded).insert((
-            RemainingTravel(504. - x),
+            RemainingTravel(504. + offset.x - x),
             VelocityComponent {
                 value: Vec2::X * 5.,
             },
@@ -227,7 +236,7 @@ fn queued_recovery_separates_from_a_working_body_without_losing_cargo() {
             .unwrap()
             .translation
             .truncate();
-        if position.distance(Vec2::new(432., 324.)) <= 68.001 {
+        if position.distance(worker_position) <= 68.001 {
             crossed = true;
             break;
         }
@@ -241,7 +250,7 @@ fn queued_recovery_separates_from_a_working_body_without_losing_cargo() {
         .entity_mut(loaded)
         .insert(WaitingForWork)
         .remove::<RemainingTravel>();
-    for _ in 0..180 {
+    for _ in 0..240 {
         app.update();
     }
     let position = app
@@ -251,7 +260,7 @@ fn queued_recovery_separates_from_a_working_body_without_losing_cargo() {
         .translation
         .truncate();
     assert!(
-        position.distance(Vec2::new(432., 324.)) >= 67.999,
+        position.distance(worker_position) >= 67.999,
         "queued recovery remained embedded: {position:?}"
     );
     assert!(
@@ -264,7 +273,7 @@ fn queued_recovery_separates_from_a_working_body_without_losing_cargo() {
             .unwrap()
             .translation
             .truncate()
-            .distance(Vec2::new(432., 324.))
+            .distance(worker_position)
             < 0.001
     );
     assert_eq!(app.world().get::<Cargo>(loaded).unwrap().amount, 20);

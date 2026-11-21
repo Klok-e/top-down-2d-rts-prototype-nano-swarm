@@ -40,12 +40,11 @@ use bevy::prelude::*;
 use crate::ai::AiStateComponent;
 use crate::battle_statistics::{BattleCounters, BattleEvent};
 use crate::intent::{IntentGrid, IntentKind};
-use crate::nanobot::NanobotBundle;
-use crate::nanobot::PlannedStructure;
 use crate::nanobot::autonomy::{Commitment, NanobotType};
 use crate::nanobot::components::{Health, Nanobot, Swarm, SwarmId, SwarmMember, VelocityComponent};
 use crate::nanobot::maintenance::SupportCondition;
 use crate::nanobot::planned::{PlannedKind, planned_visual_components};
+use crate::nanobot::{CombatIdentity, NanobotBundle, PlannedStructure, combat_key};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
 use crate::structure_sprites::StructureSprites;
 
@@ -482,6 +481,7 @@ pub fn production_facility_work_system(
         &Transform,
         &OwnerSwarm,
         Option<&SupportCondition>,
+        Option<&CombatIdentity>,
     )>,
     swarms: Query<&SwarmId, With<Swarm>>,
     nanobots: Query<&Transform, With<Nanobot>>,
@@ -499,7 +499,7 @@ pub fn production_facility_work_system(
     let mut occupied: Vec<_> = nanobots.iter().map(|t| t.translation.truncate()).collect();
     let geometry = physical.snapshot();
     let mut ready = Vec::new();
-    for (entity, mut facility, _, _, condition) in &mut facilities {
+    for (entity, mut facility, _, _, condition, identity) in &mut facilities {
         if condition.is_some_and(|c| !c.is_operational()) || facility.current_target.is_none() {
             continue;
         }
@@ -509,12 +509,12 @@ pub fn production_facility_work_system(
             .min(tuning.production.ticks_per_bot);
         if facility.progress == tuning.production.ticks_per_bot {
             let finished = *facility.finished_at.get_or_insert(*tick);
-            ready.push((finished, entity));
+            ready.push((finished, combat_key(entity, identity), entity));
         }
     }
-    ready.sort_by_key(|(finished, entity)| (*finished, entity.to_bits()));
-    for (_, entity) in ready {
-        let Ok((_, mut facility, transform, owner, _)) = facilities.get_mut(entity) else {
+    ready.sort_unstable_by_key(|(finished, key, _)| (*finished, *key));
+    for (_, _, entity) in ready {
+        let Ok((_, mut facility, transform, owner, ..)) = facilities.get_mut(entity) else {
             continue;
         };
         let Ok(swarm_id) = swarms.get(owner.0).copied() else {

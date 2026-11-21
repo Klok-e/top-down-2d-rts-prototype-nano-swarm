@@ -5,7 +5,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         AllocationRegion, Health, OwnerSwarm, Structure, StructureKind, Swarm, SwarmId,
-        SwarmMember, TerritorySnapshot, ThreatKind,
+        SwarmMember, TerritorySnapshot, ThreatKind, VelocityComponent,
     },
 };
 
@@ -75,7 +75,8 @@ fn territory_snapshot_counts_living_hostiles_physically_inside_swarm_tiles() {
     let hostile_nanobot = common::spawn_worker_at(&mut app, Vec2::new(64.0, 64.0));
     app.world_mut()
         .entity_mut(hostile_nanobot)
-        .insert(SwarmMember::new(opponent));
+        .insert(SwarmMember::new(opponent))
+        .remove::<VelocityComponent>();
     let hostile_structure = app
         .world_mut()
         .spawn((

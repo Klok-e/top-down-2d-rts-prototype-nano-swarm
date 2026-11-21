@@ -24,7 +24,7 @@
 //!     -> Unengaged (markers cleared; current allocation re-picks)
 //! ```
 //!
-//! A Defender without available service continues its current duty while empty
+//! A Defender without available service remains in the field, where empty
 //! Charge drains health. Charge departure releases current regional ownership;
 //! completion or invalidation returns through current allocation without
 //! reclaiming prior work.
@@ -57,7 +57,10 @@ use crate::nanobot::components::{
 };
 use crate::nanobot::maintenance::SupportCondition;
 use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
-use crate::nanobot::{PlannedKind, PlannedStructure, planned_visual_components};
+use crate::nanobot::{
+    CombatIdentity, DefenderDisengagement, DefenderRout, PlannedKind, PlannedStructure, combat_key,
+    planned_visual_components,
+};
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
 use crate::structure_sprites::StructureSprites;
 
@@ -218,6 +221,7 @@ pub enum DefenderRotationDuty {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DefenderRotationCandidate {
     pub entity: Entity,
+    pub combat_key: u64,
     pub charge: f32,
     pub duty: DefenderRotationDuty,
 }
@@ -243,7 +247,7 @@ pub fn select_defenders_for_rotation(
         left.charge
             .total_cmp(&right.charge)
             .then_with(|| left.duty.cmp(&right.duty))
-            .then_with(|| left.entity.to_bits().cmp(&right.entity.to_bits()))
+            .then_with(|| left.combat_key.cmp(&right.combat_key))
     });
     ordered
         .into_iter()
@@ -269,14 +273,9 @@ pub fn minerals_to_fully_charge(current: f32, max: f32, tuning: &ChargeTuning) -
     ((missing_ticks - rounding_tolerance).ceil() as u32).saturating_mul(tuning.material_per_pulse)
 }
 
-/// Linear multiplier in `[0, 1]` derived from `charge`. A
-/// defender at full charge has a `1.0` multiplier; a defender
-/// at or above the configured weakened threshold is treated as
-/// "still strong" and also has a `1.0` multiplier. Below the
-/// threshold the multiplier scales linearly with charge so an
-/// empty defender has `0.0` attack and `0.0` defense. The
-/// function is pure and lives next to the charge data so unit
-/// tests can pin the contract without a Bevy `App`.
+/// Strength is zero at empty Charge and full at the weakened threshold.
+/// Positive Charge below the threshold scales between the configured floor
+/// and full strength.
 pub fn charge_strength_multiplier(charge: f32, tuning: &ChargeTuning) -> f32 {
     if charge <= 0.0 {
         return 0.0;
@@ -284,7 +283,8 @@ pub fn charge_strength_multiplier(charge: f32, tuning: &ChargeTuning) -> f32 {
     if charge >= tuning.weakened_threshold {
         return 1.0;
     }
-    charge / tuning.weakened_threshold
+    let floor = tuning.weakened_strength_floor;
+    floor + (1.0 - floor) * charge / tuning.weakened_threshold
 }
 
 /// Effective attack for a defender with `charge` current. The
@@ -412,6 +412,8 @@ pub fn charger_auto_creation_system(
             Option<&ChargerAssignment>,
             Option<&ChargerProgress>,
             Option<&DefenderResponse>,
+            Has<DefenderRout>,
+            Option<&CombatIdentity>,
         ),
         (With<Nanobot>, With<Charge>),
     >,
@@ -442,7 +444,7 @@ pub fn charger_auto_creation_system(
     let mut living_by_swarm = HashMap::<SwarmId, u32>::new();
     let mut rotating_by_swarm = HashMap::<SwarmId, u32>::new();
     let mut charger_loads = HashMap::<Entity, u32>::new();
-    for (_, _, _, kind, member, health, assignment, progress, _) in &defenders {
+    for (_, _, _, kind, member, health, assignment, progress, ..) in &defenders {
         if *kind != NanobotType::Defender || health.is_some_and(|health| health.current == 0) {
             continue;
         }
@@ -489,19 +491,23 @@ pub fn charger_auto_creation_system(
 
     let candidates = defenders
         .iter()
-        .filter(|(_, _, charge, kind, _, health, assignment, progress, _)| {
-            **kind == NanobotType::Defender
-                && !health.is_some_and(|health| health.current == 0)
-                && charge.needs_rotation(&tuning.charge)
-                && assignment.is_none()
-                && progress.is_none()
-        })
+        .filter(
+            |(_, _, charge, kind, _, health, assignment, progress, _, routing, _)| {
+                **kind == NanobotType::Defender
+                    && !health.is_some_and(|health| health.current == 0)
+                    && charge.needs_rotation(&tuning.charge)
+                    && assignment.is_none()
+                    && progress.is_none()
+                    && !routing
+            },
+        )
         .map(
-            |(entity, transform, charge, _, member, _, _, _, response)| {
+            |(entity, transform, charge, _, member, _, _, _, response, _, identity)| {
                 (
                     member.0,
                     DefenderRotationCandidate {
                         entity,
+                        combat_key: combat_key(entity, identity),
                         charge: charge.current,
                         duty: if response.is_some() {
                             DefenderRotationDuty::Tactical
@@ -615,8 +621,8 @@ fn charger_is_eligible(
 
 /// Find the nearest eligible Charger in the Defender's swarm.
 ///
-/// Loads include assignments made earlier in the same fixed tick. Entity bits
-/// break equal-distance ties deterministically.
+/// Loads include assignments made earlier in the same fixed tick. Combat
+/// identity breaks equal-distance ties.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn find_swarm_capacity_aware_charger(
     pos: Vec2,
@@ -628,14 +634,15 @@ pub fn find_swarm_capacity_aware_charger(
         &Transform,
         Option<&OwnerSwarm>,
         Option<&SupportCondition>,
+        Option<&CombatIdentity>,
     )>,
     swarms: &Query<&SwarmId, With<Swarm>>,
     charger_loads: &HashMap<Entity, u32>,
     navigation: &crate::navigation::Navigation,
     tuning: &ChargeTuning,
 ) -> Option<(Entity, Vec2)> {
-    let mut best: Option<(f32, Entity, Vec2)> = None;
-    for (entity, charger, transform, owner, condition) in chargers.iter() {
+    let mut best: Option<(f32, u64, Entity, Vec2)> = None;
+    for (entity, charger, transform, owner, condition, identity) in chargers.iter() {
         if !charger_is_eligible(charger, owner, condition, swarm, grid, swarms)
             || charger_loads.get(&entity).copied().unwrap_or_default()
                 >= tuning.max_defenders_per_charger
@@ -651,16 +658,18 @@ pub fn find_swarm_capacity_aware_charger(
             crate::navigation::ConnectivityStatus::Pending
             | crate::navigation::ConnectivityStatus::Unreachable => continue,
         };
-        let better = best.is_none_or(|(best_distance, best_entity, _)| {
-            distance.total_cmp(&best_distance).is_lt()
-                || (distance.total_cmp(&best_distance).is_eq()
-                    && entity.to_bits() < best_entity.to_bits())
+        let key = combat_key(entity, identity);
+        let better = best.is_none_or(|(best_distance, best_key, _, _)| {
+            distance
+                .total_cmp(&best_distance)
+                .then_with(|| key.cmp(&best_key))
+                .is_lt()
         });
         if better {
-            best = Some((distance, entity, position));
+            best = Some((distance, key, entity, position));
         }
     }
-    best.map(|(_, entity, position)| (entity, position))
+    best.map(|(_, _, entity, position)| (entity, position))
 }
 
 /// Rotate low-Charge Defenders to eligible Chargers across their swarm.
@@ -668,7 +677,7 @@ pub fn find_swarm_capacity_aware_charger(
 /// The system filters on `Without<ChargerAssignment>` and
 /// `Without<ChargerProgress>` so a defender who is already
 /// en route to a charger or already at one is not re-rotated.
-/// A Defender without working capacity continues its current duty.
+/// Disengaged Defenders can rotate as soon as service becomes available.
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub fn defender_rotation_to_charger_system(
@@ -686,6 +695,7 @@ pub fn defender_rotation_to_charger_system(
             &SwarmMember,
             Option<&Health>,
             Option<&DefenderResponse>,
+            Option<&CombatIdentity>,
         ),
         (
             With<Nanobot>,
@@ -693,6 +703,7 @@ pub fn defender_rotation_to_charger_system(
             With<Charge>,
             Without<ChargerAssignment>,
             Without<ChargerProgress>,
+            Without<DefenderRout>,
         ),
     >,
     defender_states: Query<
@@ -711,6 +722,7 @@ pub fn defender_rotation_to_charger_system(
         &Transform,
         Option<&OwnerSwarm>,
         Option<&SupportCondition>,
+        Option<&CombatIdentity>,
     )>,
     swarms: Query<&SwarmId, With<Swarm>>,
 ) {
@@ -733,26 +745,29 @@ pub fn defender_rotation_to_charger_system(
 
     let candidates = defenders
         .iter()
-        .filter(|(_, _, _, nanobot_type, _, health, _)| {
+        .filter(|(_, _, _, nanobot_type, _, health, ..)| {
             **nanobot_type == NanobotType::Defender
                 && !health.is_some_and(|health| health.current == 0)
         })
-        .filter(|(_, _, charge, _, _, _, _)| charge.needs_rotation(&tuning.charge))
-        .map(|(entity, transform, charge, _, member, _, response)| {
-            (
-                member.0,
-                DefenderRotationCandidate {
-                    entity,
-                    charge: charge.current,
-                    duty: if response.is_some() {
-                        DefenderRotationDuty::Tactical
-                    } else {
-                        DefenderRotationDuty::Staged
+        .filter(|(_, _, charge, ..)| charge.needs_rotation(&tuning.charge))
+        .map(
+            |(entity, transform, charge, _, member, _, response, identity)| {
+                (
+                    member.0,
+                    DefenderRotationCandidate {
+                        entity,
+                        combat_key: combat_key(entity, identity),
+                        charge: charge.current,
+                        duty: if response.is_some() {
+                            DefenderRotationDuty::Tactical
+                        } else {
+                            DefenderRotationDuty::Staged
+                        },
                     },
-                },
-                transform.translation.truncate(),
-            )
-        })
+                    transform.translation.truncate(),
+                )
+            },
+        )
         .collect::<Vec<_>>();
     let candidate_positions = candidates
         .iter()
@@ -793,7 +808,7 @@ pub fn defender_rotation_to_charger_system(
             ) else {
                 continue;
             };
-            let Ok((_, _, charger_transform, _, _)) = chargers.get(charger_entity) else {
+            let Ok((_, _, charger_transform, ..)) = chargers.get(charger_entity) else {
                 continue;
             };
             commands
@@ -917,6 +932,7 @@ pub fn defender_charger_work_system(
             Option<&mut ChargerPulseProgress>,
             &SwarmMember,
             Has<super::WorkBlocked>,
+            Option<&CombatIdentity>,
         ),
         (With<Nanobot>, With<ChargerProgress>),
     >,
@@ -933,12 +949,12 @@ pub fn defender_charger_work_system(
 ) {
     let mut ordered_defenders = defenders
         .iter_mut()
-        .map(|(entity, _, _, _, _, _, _)| entity)
+        .map(|(entity, _, _, _, _, _, _, identity)| (combat_key(entity, identity), entity))
         .collect::<Vec<_>>();
-    ordered_defenders.sort_by_key(|entity| entity.to_bits());
+    ordered_defenders.sort_unstable();
 
-    for entity in ordered_defenders {
-        let Ok((entity, mut charge, transform, assignment, pulse, member, blocked)) =
+    for (_, entity) in ordered_defenders {
+        let Ok((entity, mut charge, transform, assignment, pulse, member, blocked, _)) =
             defenders.get_mut(entity)
         else {
             continue;
@@ -993,6 +1009,9 @@ pub fn defender_charger_work_system(
             counters.record(member.0, BattleEvent::Consumed(consumed));
         }
         charge.current = (charge.current + tuning.charge.per_pulse).min(charge.max);
+        if charge.current >= tuning.charge.low_threshold {
+            commands.entity(entity).remove::<DefenderDisengagement>();
+        }
         if charge.is_full() || !charger.has_supply() {
             release_charger_state(&mut commands, entity, &mut allocation_wake);
         }
@@ -1295,23 +1314,24 @@ mod tests {
     }
 
     #[test]
-    fn charge_strength_multiplier_scales_linearly_below_weakened_threshold() {
-        let tuning = Tuning::default();
-        // Pin the linear scaling: half the threshold gives
-        // half the multiplier, quarter gives a quarter.
-        // The implementation uses a direct `charge / threshold`
-        // ratio so the linearity is exact (not approximate).
-        let half =
-            charge_strength_multiplier(tuning.charge.weakened_threshold * 0.5, &tuning.charge);
-        let quarter =
-            charge_strength_multiplier(tuning.charge.weakened_threshold * 0.25, &tuning.charge);
-        assert!(
-            (half - 0.5).abs() < 1e-6,
-            "half charge -> half multiplier; got {half}"
+    fn positive_charge_below_weakened_threshold_scales_from_the_strength_floor() {
+        let mut charge = Tuning::default().charge;
+        assert_abs_diff_eq!(
+            charge_strength_multiplier(0.001, &charge),
+            0.4,
+            epsilon = 0.01
         );
-        assert!(
-            (quarter - 0.25).abs() < 1e-6,
-            "quarter charge -> quarter multiplier; got {quarter}"
+        assert_abs_diff_eq!(
+            charge_strength_multiplier(charge.weakened_threshold * 0.5, &charge),
+            0.7,
+            epsilon = 1e-6
+        );
+
+        charge.weakened_strength_floor = 0.6;
+        assert_abs_diff_eq!(
+            charge_strength_multiplier(charge.weakened_threshold * 0.5, &charge),
+            0.8,
+            epsilon = 1e-6
         );
     }
 
@@ -1346,10 +1366,6 @@ mod tests {
     #[test]
     fn effective_attack_tracks_charge() {
         let tuning = Tuning::default();
-        // Acceptance: "Low Charge reduces Defender attack/defense."
-        // A defender at full charge has full attack; a
-        // defender at half the weakened threshold has half
-        // attack; a defender at empty charge has zero attack.
         assert!(
             (effective_attack(tuning.charge.max_charge, &tuning) - tuning.combat.base_attack).abs()
                 < 1e-5
@@ -1360,19 +1376,14 @@ mod tests {
                 .abs()
                 < 1e-5
         );
-        let half_attack = effective_attack(tuning.charge.weakened_threshold * 0.5, &tuning);
-        assert!(
-            (half_attack - tuning.combat.base_attack * 0.5).abs() < 1e-5,
-            "half charge -> half attack; got {half_attack}"
-        );
+        let weakened_attack = effective_attack(tuning.charge.weakened_threshold * 0.5, &tuning);
+        assert_abs_diff_eq!(weakened_attack, 18.2, epsilon = 1e-5);
         assert_abs_diff_eq!(effective_attack(0.0, &tuning), 0.0, epsilon = 1e-5);
     }
 
     #[test]
     fn effective_defense_tracks_charge() {
         let tuning = Tuning::default();
-        // Mirror of `effective_attack` for the defense
-        // side. The same linearity test pins the contract.
         assert!(
             (effective_defense(tuning.charge.max_charge, &tuning) - tuning.combat.base_defense)
                 .abs()
@@ -1384,11 +1395,8 @@ mod tests {
                 .abs()
                 < 1e-5
         );
-        let half_defense = effective_defense(tuning.charge.weakened_threshold * 0.5, &tuning);
-        assert!(
-            (half_defense - tuning.combat.base_defense * 0.5).abs() < 1e-5,
-            "half charge -> half defense; got {half_defense}"
-        );
+        let weakened_defense = effective_defense(tuning.charge.weakened_threshold * 0.5, &tuning);
+        assert_abs_diff_eq!(weakened_defense, 7.0, epsilon = 1e-5);
         assert_abs_diff_eq!(effective_defense(0.0, &tuning), 0.0, epsilon = 1e-5);
     }
 
@@ -1407,28 +1415,32 @@ mod tests {
 
     #[test]
     fn scarce_rotation_slots_prefer_charge_then_duty_then_identity() {
-        let first_spawned = Entity::from_bits(1);
+        let first_spawned = Entity::from_bits(5);
         let staged = Entity::from_bits(2);
         let tactical = Entity::from_bits(3);
         let lowest_charge = Entity::from_bits(4);
         let candidates = [
             DefenderRotationCandidate {
                 entity: tactical,
+                combat_key: 2,
                 charge: 0.2,
                 duty: DefenderRotationDuty::Tactical,
             },
             DefenderRotationCandidate {
                 entity: staged,
+                combat_key: 3,
                 charge: 0.2,
                 duty: DefenderRotationDuty::Staged,
             },
             DefenderRotationCandidate {
                 entity: first_spawned,
+                combat_key: 1,
                 charge: 0.2,
                 duty: DefenderRotationDuty::Staged,
             },
             DefenderRotationCandidate {
                 entity: lowest_charge,
+                combat_key: 4,
                 charge: 0.1,
                 duty: DefenderRotationDuty::Tactical,
             },

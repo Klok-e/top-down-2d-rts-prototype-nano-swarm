@@ -8,11 +8,9 @@ use crate::{
     resources::{ResourceKind, ResourceLedger},
 };
 
+use super::combat_presentation::{NanobotDied, NonCombatDestruction};
+
 /// Progress toward the next mineral moved by active material work.
-///
-/// This component exists only while a nanobot is stationary and performing
-/// gathering, hauling, or construction. Removing it resets partial progress
-/// when the work changes or movement resumes.
 #[derive(Debug, Component, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MaterialWorkProgress {
     pub ticks_elapsed: u32,
@@ -89,16 +87,22 @@ pub fn nanobot_death_cleanup_system(
     dead: Query<(Entity, &Health, &SwarmMember, Option<&Cargo>), (With<Nanobot>, Changed<Health>)>,
     mut ledger: ResMut<ResourceLedger>,
     mut counters: Option<ResMut<BattleCounters>>,
+    destruction: Option<Res<Messages<NonCombatDestruction>>>,
 ) {
-    for (entity, health, swarm, cargo) in &dead {
-        if health.current > 0 {
-            continue;
-        }
+    let mut deaths = dead
+        .iter()
+        .filter(|(_, health, _, _)| health.current == 0)
+        .collect::<Vec<_>>();
+    deaths.sort_unstable_by_key(|(entity, _, _, _)| entity.to_bits());
+    for (entity, _, swarm, cargo) in deaths {
         if let Some(counters) = counters.as_deref_mut() {
             counters.record(swarm.0, BattleEvent::Death);
         }
         if let Some(cargo) = cargo {
             ledger.remove_for(swarm.0, cargo.kind, cargo.amount);
+        }
+        if destruction.is_some() {
+            commands.trigger(NanobotDied { entity });
         }
         commands
             .entity(entity)

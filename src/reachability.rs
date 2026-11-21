@@ -10,8 +10,8 @@ use bevy::prelude::{IVec2, Resource, Vec2};
 use crate::{
     ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},
-    nanobot::SwarmId,
-    navigation::{Navigation, Obstacle, RouteOutcome},
+    nanobot::{SwarmId, world_to_cell},
+    navigation::{Navigation, Obstacle},
 };
 
 /// The action performed by a gameplay intent writer.
@@ -61,7 +61,7 @@ impl std::fmt::Debug for SwarmReachabilityMap {
 struct ReachabilityInner {
     navigation: Navigation,
     homes: BTreeMap<SwarmId, Vec2>,
-    cells: Mutex<HashMap<(SwarmId, IVec2), bool>>,
+    cells: Mutex<HashMap<(SwarmId, IVec2), Option<Vec2>>>,
 }
 
 impl SwarmReachabilityMap {
@@ -87,30 +87,72 @@ impl SwarmReachabilityMap {
         })
     }
 
-    /// Whether `owner` can route from its scenario home to `cell`'s center.
+    /// Whether the cell contains ground accessible from the swarm's scenario home.
     pub fn contains(&self, owner: SwarmId, cell: IVec2, grid: &IntentGrid) -> bool {
+        self.reachable_point(owner, cell, grid).is_some()
+    }
+
+    /// A representative point in the cell, preferring its center when accessible.
+    pub fn reachable_point(&self, owner: SwarmId, cell: IVec2, grid: &IntentGrid) -> Option<Vec2> {
         if !grid.in_bounds(cell) {
+            return None;
+        }
+        let &home = self.inner.homes.get(&owner)?;
+        if let Some(&point) = self.inner.cells.lock().unwrap().get(&(owner, cell)) {
+            return point;
+        }
+        let min = cell.as_vec2() * ZONE_BLOCK_SIZE;
+        let center = min + Vec2::splat(ZONE_BLOCK_SIZE / 2.0);
+        let navigation = &self.inner.navigation;
+        let point = navigation.connected_point(home, [center]).or_else(|| {
+            if world_to_cell(home) == cell {
+                return Some(home);
+            }
+            let upper = (cell + IVec2::ONE).as_vec2();
+            // Step inside in cell coordinates so dividing a negative coordinate by
+            // ZONE_BLOCK_SIZE cannot round across the origin into the next cell.
+            let max = Vec2::new(upper.x.next_down(), upper.y.next_down()) * ZONE_BLOCK_SIZE;
+            navigation.tile_ground_point(home, min, max, center)
+        });
+        self.inner
+            .cells
+            .lock()
+            .unwrap()
+            .insert((owner, cell), point);
+        point
+    }
+
+    /// Whether a specific point is accessible with normal body clearance.
+    pub fn position_is_reachable(&self, owner: SwarmId, position: Vec2, grid: &IntentGrid) -> bool {
+        let navigation = &self.inner.navigation;
+        let cell = world_to_cell(position);
+        if !grid.in_bounds(cell) || !navigation.point_clear(position) {
             return false;
         }
         let Some(&home) = self.inner.homes.get(&owner) else {
             return false;
         };
-        if let Some(&reachable) = self.inner.cells.lock().unwrap().get(&(owner, cell)) {
-            return reachable;
-        }
-        let center = (cell.as_vec2() + Vec2::splat(0.5)) * ZONE_BLOCK_SIZE;
-        let reachable = matches!(
-            self.inner
-                .navigation
-                .route(home, center, grid, owner, false),
-            RouteOutcome::Found(_)
-        );
-        self.inner
-            .cells
-            .lock()
-            .unwrap()
-            .insert((owner, cell), reachable);
-        reachable
+        self.reachable_point(owner, cell, grid)
+            .is_some_and(|ground| navigation.segment_clear(ground, position))
+            || navigation.connected_point(home, [position]).is_some()
+    }
+}
+
+impl SwarmReachabilityMap {
+    /// Whether permanent terrain permits a valid approach to an interaction region.
+    pub fn interaction_is_reachable(
+        &self,
+        owner: SwarmId,
+        region: crate::nanobot::InteractionRegion,
+    ) -> bool {
+        let Some(&home) = self.inner.homes.get(&owner) else {
+            return false;
+        };
+        let navigation = &self.inner.navigation;
+        region.contains(home)
+            || navigation
+                .connected_point(home, navigation.interaction_probes(home, region).flatten())
+                .is_some()
     }
 }
 
@@ -160,6 +202,49 @@ mod tests {
 
         assert!(map.contains(SwarmId::PLAYER, IVec2::new(-1, 0), &grid));
         assert!(!map.contains(SwarmId::PLAYER, IVec2::new(1, 0), &grid));
+    }
+
+    #[test]
+    fn both_swarms_can_paint_a_split_tile_with_ground_on_their_side() {
+        let mut grid = IntentGrid::new(8, 8);
+        let left = SwarmId::PLAYER;
+        let right = SwarmId(1);
+        let left_point = Vec2::new(96.0, 256.0);
+        let right_point = Vec2::new(416.0, 256.0);
+        let tile = IVec2::ZERO;
+        let map = SwarmReachabilityMap::new(
+            &grid,
+            [Obstacle::Rectangle {
+                center: Vec2::new(256.0, 0.0),
+                half: Vec2::new(36.0, 8_000.0),
+            }],
+            [(left, left_point), (right, right_point)],
+        )
+        .unwrap();
+
+        for (owner, accessible, isolated) in [
+            (left, left_point, right_point),
+            (right, right_point, left_point),
+        ] {
+            let point = map.reachable_point(owner, tile, &grid).unwrap();
+            assert_eq!(world_to_cell(point), tile);
+            assert!(map.position_is_reachable(owner, accessible, &grid));
+            assert!(!map.position_is_reachable(owner, isolated, &grid));
+            assert_eq!(
+                apply_reachable_intent(
+                    &mut grid,
+                    &map,
+                    owner,
+                    tile,
+                    IntentKind::Defend,
+                    IntentWriteAction::Paint,
+                ),
+                Ok(true)
+            );
+        }
+        let paint = grid.cell(tile).unwrap();
+        assert!(paint.has_owned(IntentKind::Defend, left));
+        assert!(paint.has_owned(IntentKind::Defend, right));
     }
 
     #[test]

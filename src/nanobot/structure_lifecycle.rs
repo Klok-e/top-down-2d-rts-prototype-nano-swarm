@@ -619,7 +619,7 @@ pub fn worker_planned_structure_work_system(
     }
 }
 
-fn release_planned_worker(commands: &mut Commands, worker: Entity) {
+pub(super) fn release_planned_worker(commands: &mut Commands, worker: Entity) {
     commands
         .entity(worker)
         .remove::<PlannedStructureClaim>()
@@ -736,6 +736,7 @@ impl Plugin for PlannedStructurePlugin {
             .add_systems(
                 FixedUpdate,
                 release_stale_planned_workers_system
+                    .after(crate::nanobot::NanobotSimulationSet::Movement)
                     .before(crate::nanobot::RegionalAllocationSet::Project),
             )
             .add_systems(

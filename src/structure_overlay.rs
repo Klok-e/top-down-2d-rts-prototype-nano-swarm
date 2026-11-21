@@ -13,7 +13,7 @@ use crate::fly_camera::CameraZoom2d;
 use crate::nanobot::{
     BOT_RADIUS, Cargo, Charger, ExtractProgress, HaulerLoading, LogisticsReservation,
     MaintenanceProgress, Nanobot, NanobotType, PLANNED_STRUCTURE_FOOTPRINT, PlannedStructure,
-    ProductionFacility, Structure,
+    PresentedNanobot, ProductionFacility, Structure, UpdateNanobotPresentation,
 };
 use crate::resources::{ResourceDeposit, Stockpile};
 use crate::tuning::{PresentationTuning, Tuning};
@@ -254,8 +254,8 @@ impl Plugin for StructureOverlayPlugin {
             (
                 structure_overlay_spawn_system,
                 condition_overlay_spawn_system,
-                structure_overlay_update_system,
-                condition_overlay_update_system,
+                structure_overlay_update_system.after(UpdateNanobotPresentation),
+                condition_overlay_update_system.after(UpdateNanobotPresentation),
                 structure_overlay_visibility_system,
                 structure_overlay_cleanup_system,
                 condition_overlay_cleanup_system,
@@ -596,17 +596,22 @@ pub fn condition_overlay_update_system(
     conditions: Query<&Structure, Without<ConditionOverlay>>,
     maintenance_workers: Query<&MaintenanceProgress, Without<ConditionOverlay>>,
     target_transforms: Query<
-        &Transform,
+        (&Transform, Option<&PresentedNanobot>),
         (Without<ConditionOverlay>, Without<ConditionOverlayFill>),
     >,
 ) {
     let settings = &tuning.presentation;
     for (overlay, mut transform, mut background) in &mut overlays {
         background.custom_size = Some(condition_bar_size(overlay.kind, settings));
-        let Ok(target_transform) = target_transforms.get(overlay.target) else {
+        let Ok((target_transform, presented)) = target_transforms.get(overlay.target) else {
             continue;
         };
-        transform.translation = (target_transform.translation.truncate()
+        transform.translation = (presented
+            .map_or(
+                target_transform.translation,
+                PresentedNanobot::sprite_translation,
+            )
+            .truncate()
             + Vec2::Y * condition_overlay_offset_y(overlay.kind, target_transform, settings))
         .extend(STRUCTURE_OVERLAY_Z);
         let (fraction, value) = match overlay.kind {
@@ -676,14 +681,14 @@ pub fn structure_overlay_update_system(
     cargo: Query<&Cargo, Without<StructureOverlay>>,
     reservations: Query<&LogisticsReservation>,
     target_transforms: Query<
-        &Transform,
+        (&Transform, Option<&PresentedNanobot>),
         (Without<StructureOverlay>, Without<StructureOverlayFill>),
     >,
 ) {
     let settings = &tuning.presentation;
     for (overlay, mut transform, mut background) in &mut overlays {
         background.custom_size = Some(overlay_bar_size(overlay.kind, settings));
-        let Ok(target_transform) = target_transforms.get(overlay.target) else {
+        let Ok((target_transform, presented)) = target_transforms.get(overlay.target) else {
             continue;
         };
         let deposit_radius = deposits.get(overlay.target).ok().map(|d| d.radius);
@@ -696,7 +701,12 @@ pub fn structure_overlay_update_system(
             }
             _ => overlay_label_offset_y(overlay.kind, deposit_radius, settings),
         };
-        transform.translation = (target_transform.translation.truncate()
+        transform.translation = (presented
+            .map_or(
+                target_transform.translation,
+                PresentedNanobot::sprite_translation,
+            )
+            .truncate()
             + Vec2::new(0.0, offset_y))
         .extend(STRUCTURE_OVERLAY_Z);
 

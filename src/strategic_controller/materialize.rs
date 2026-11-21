@@ -25,8 +25,7 @@ pub(super) fn materialize_plan(
     let home_cell = world_to_intent_cell(home);
     let mut desired = Vec::new();
 
-    if let Some(deposit) = economy.primary {
-        let deposit_cell = world_to_intent_cell(deposit.position);
+    if let Some((_, deposit_cell)) = economy.primary {
         push_desired(
             &mut desired,
             owner,
@@ -167,7 +166,7 @@ pub(super) fn materialize_plan(
 
     IntentPlan {
         objective,
-        primary_deposit: economy.primary.map(|deposit| deposit.id),
+        primary_deposit: economy.primary.map(|(deposit, _)| deposit.id),
         attack_targets,
         key_charger: key_charger.map(|charger| charger.id),
         desired,
@@ -192,7 +191,7 @@ pub(super) fn push_desired(
     {
         return false;
     }
-    if avoid_terrain {
+    if avoid_terrain && state.reachability.is_none() {
         let center = intent_cell_center(intent.cell);
         for obstacle in state.terrain {
             if !budget.spend(1) {

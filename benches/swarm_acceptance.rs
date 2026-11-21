@@ -1,14 +1,18 @@
+#[path = "../tests/common/combat_scenes.rs"]
+mod combat_scenes;
+
 use std::time::{Duration, Instant};
 
 use bevy::{prelude::*, time::TimeUpdateStrategy};
+use combat_scenes::{Scene, Variant, headless_scene};
 use criterion::{Criterion, Throughput};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         CombatPlugin, Commitment, DefenderResponse, DirectMovementComponent, Health, Nanobot,
         NanobotBundle, NanobotPlugin, NanobotSimulationSet, NanobotType, RegionalAllocationPlugin,
-        RegionalAllocationSet, SwarmId, SwarmMember, idle_spread_system, move_velocity_system,
-        separation_system, world_to_cell,
+        RegionalAllocationSet, ResolvedCombatFact, SwarmId, SwarmMember, idle_spread_system,
+        move_velocity_system, separation_system, world_to_cell,
     },
     resources::ResourceLedger,
     tuning::Tuning,
@@ -227,16 +231,28 @@ fn assert_warmed_load(app: &mut App, scenario: AcceptanceScenario) {
         .count();
     assert_eq!(population, BOT_COUNT, "benchmark warmup must preserve load");
     if scenario == AcceptanceScenario::ThreatResponse {
-        let responses = app
+        let capacity = usize::from(
+            app.world()
+                .resource::<Tuning>()
+                .combat
+                .responders_per_defender_threat,
+        );
+        let claims = app
             .world_mut()
             .query::<&DefenderResponse>()
             .iter(app.world())
-            .map(|response| response.target)
-            .collect::<std::collections::BTreeSet<_>>();
+            .fold(std::collections::BTreeMap::new(), |mut claims, response| {
+                *claims.entry(response.target).or_insert(0) += 1;
+                claims
+            });
         assert_eq!(
-            responses.len(),
+            claims.values().sum::<usize>(),
             BOT_COUNT / 2,
-            "benchmark warmup must cover every hostile Defender exactly once",
+            "benchmark warmup must assign every player Defender a response",
+        );
+        assert!(
+            claims.values().all(|&responders| responders <= capacity),
+            "warmed responses must stay within each hostile Defender's capacity",
         );
     } else if scenario == AcceptanceScenario::UnengagedStaging {
         let responses = app
@@ -448,6 +464,47 @@ fn unengaged_staging_edit_proof() {
     assert_eq!(unchanged_assignments, assignments);
 }
 
+fn bench_battle() {
+    const TICKS_AFTER_CONTACT: u32 = 600;
+    const CONTACT_LIMIT: u32 = 3_600;
+    let mut app = headless_scene(Scene::BenchBattle, Variant::Standard);
+    let mut hits = app
+        .world()
+        .resource::<Messages<ResolvedCombatFact>>()
+        .get_cursor();
+    app.update(); // The time plugin establishes its fixed-step clock on the first update.
+    let (contact_tick, contact_update) = (1..=CONTACT_LIMIT)
+        .find_map(|tick| {
+            let started = Instant::now();
+            app.update();
+            let elapsed = started.elapsed();
+            hits.read(app.world().resource::<Messages<ResolvedCombatFact>>())
+                .any(|fact| matches!(fact, ResolvedCombatFact::Hit(_)))
+                .then_some((tick, elapsed))
+        })
+        .expect("bench_battle must make contact");
+
+    let mut frames = Vec::with_capacity(TICKS_AFTER_CONTACT as usize + 1);
+    frames.push(contact_update);
+    for _ in 0..TICKS_AFTER_CONTACT {
+        let started = Instant::now();
+        app.update();
+        frames.push(started.elapsed());
+    }
+    let end_tick = contact_tick + TICKS_AFTER_CONTACT;
+    let fixed = app.world().resource::<Time<Fixed>>();
+    assert_eq!(
+        fixed.elapsed(),
+        fixed.timestep() * end_tick,
+        "bench_battle expects one fixed tick per update after initialization",
+    );
+    println!(
+        "acceptance_p95 bench_battle contact_tick={contact_tick} end_tick={end_tick} samples={} frame={:.4}ms",
+        frames.len(),
+        duration_ms(p95(&frames)),
+    );
+}
+
 fn swarm_acceptance(c: &mut Criterion) {
     let mut group = c.benchmark_group("swarm_acceptance_5000_bots");
     group.sample_size(10);
@@ -475,11 +532,17 @@ fn swarm_acceptance(c: &mut Criterion) {
 }
 
 fn main() {
+    if std::env::args_os().any(|arg| arg == "bench_battle") {
+        bench_battle();
+        return;
+    }
+
     defender_acceptance_p95_proof();
     unengaged_staging_edit_proof();
     if std::env::var_os(PROOF_ONLY_ENV).is_some() {
         return;
     }
+    bench_battle();
 
     let mut criterion = Criterion::default().configure_from_args();
     swarm_acceptance(&mut criterion);

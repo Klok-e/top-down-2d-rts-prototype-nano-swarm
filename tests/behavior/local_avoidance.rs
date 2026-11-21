@@ -5,7 +5,9 @@ mod common;
 
 #[test]
 fn opposing_types_pass_structure_corners_and_deposits_with_body_clearance() {
-    use top_down_2d_rts_prototype_nano_swarm::nanobot::{NanobotType, SwarmId, SwarmMember};
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{
+        ChargerAssignment, NanobotType, SwarmId, SwarmMember, world_to_cell,
+    };
     for kind in [
         NanobotType::Worker,
         NanobotType::Hauler,
@@ -31,6 +33,22 @@ fn opposing_types_pass_structure_corners_and_deposits_with_body_clearance() {
             .zip(goals)
             .zip([SwarmId::PLAYER, SwarmId(42)])
         {
+            if kind == NanobotType::Defender {
+                let charger_position =
+                    xy + (xy - starts[0].lerp(starts[1], 0.5)).normalize() * 108.0;
+                let charger = common::spawn_operational_charger_at(
+                    &mut app,
+                    world_to_cell(charger_position),
+                    20,
+                );
+                app.world_mut()
+                    .get_mut::<Transform>(charger)
+                    .unwrap()
+                    .translation = charger_position.extend(0.0);
+                app.world_mut()
+                    .entity_mut(entity)
+                    .insert(ChargerAssignment { charger });
+            }
             app.world_mut().entity_mut(entity).insert((
                 kind,
                 SwarmMember(swarm),

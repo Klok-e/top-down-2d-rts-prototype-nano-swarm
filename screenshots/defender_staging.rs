@@ -18,6 +18,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         NanobotType, OpponentSwarm, StrategicController, Swarm, SwarmId, SwarmMember,
         TerritorySnapshot, VelocityComponent, world_to_cell,
     },
+    reachability::SwarmReachabilityMap,
     tuning::Tuning,
 };
 
@@ -171,6 +172,17 @@ fn setup_scene(world: &mut World) -> StagingEvidence {
         world.entity_mut(entity).remove::<StrategicController>();
     }
 
+    let opponent = opponent_swarm_id(world);
+    let reachability = SwarmReachabilityMap::new(
+        world.resource::<IntentGrid>(),
+        [],
+        [
+            (EVIDENCE_SWARM, cell_center(INITIAL_STAGING_CELLS[0])),
+            (opponent, cell_center(THREAT_CELL)),
+        ],
+    )
+    .expect("the staging arena has clear ground at both homes");
+    world.insert_resource(reachability);
     world.spawn((Swarm {}, EVIDENCE_SWARM));
     {
         let mut grid = world.resource_mut::<IntentGrid>();

@@ -9,17 +9,17 @@ use bevy::{
 use top_down_2d_rts_prototype_nano_swarm::{
     Presentation, ZONE_BLOCK_SIZE, build_app_with_presentation,
     fly_camera::CameraZoom2d,
-    intent::{IntentGrid, IntentKind},
     nanobot::{
-        ActiveCombatPulses, DefenderResponse, Health, Nanobot, NanobotSprites, NanobotType,
-        OpponentSwarm, Swarm, SwarmId, SwarmMember, VelocityComponent,
+        ActiveCombatBolts, Health, Nanobot, NanobotSprites, NanobotType, OpponentSwarm, Swarm,
+        SwarmId, SwarmMember, VelocityComponent,
     },
     scenario::{PLAYER_CELL, cell_origin},
     structure_overlay::{StructureOverlay, StructureOverlayKind},
     tactical_overlay::{TacticalClusterKey, TacticalMarkerKind},
+    tuning::Tuning,
 };
 
-use std::{collections::HashMap, time::Duration};
+use std::collections::HashMap;
 
 #[path = "../common/mod.rs"]
 mod common;
@@ -260,34 +260,44 @@ fn full_app_offscreen_combat_uses_real_facts_and_keeps_gameplay_roots_fixed() {
         .expect("full app needs its authored Opponent Swarm");
     let cell = IVec2::new(0, 5);
     let center = common::cell_world_center(cell);
-    app.world_mut()
-        .resource_mut::<IntentGrid>()
-        .paint(cell, IntentKind::Defend, SwarmId::PLAYER);
-    let attacker = common::spawn_defender_at(&mut app, center + Vec2::new(-44.0, 0.0));
+    let mut cameras = app
+        .world_mut()
+        .query_filtered::<&mut Transform, With<CameraZoom2d>>();
+    let mut camera = cameras.single_mut(app.world_mut()).unwrap();
+    camera.translation.x = center.x;
+    camera.translation.y = center.y;
+    let attacker = common::spawn_defender_at(&mut app, center + Vec2::new(-52.0, 0.0));
     app.world_mut()
         .entity_mut(attacker)
         .remove::<VelocityComponent>();
-    let target = common::spawn_worker_at(&mut app, center + Vec2::new(44.0, 0.0));
+    let target = common::spawn_worker_at(&mut app, center + Vec2::new(52.0, 0.0));
     app.world_mut()
         .entity_mut(target)
         .insert(SwarmMember::new(opponent))
         .remove::<VelocityComponent>();
-    app.world_mut()
-        .entity_mut(attacker)
-        .insert(DefenderResponse { target });
     let attacker_root = *app.world().get::<Transform>(attacker).unwrap();
     let target_root = *app.world().get::<Transform>(target).unwrap();
-    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
-        17,
-    )));
-    app.update();
+    let fixed_step = app.world().resource::<Time<Fixed>>().timestep();
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(fixed_step));
+    let initial_health = app.world().get::<Health>(target).unwrap().current;
+    let attack_interval = app
+        .world()
+        .resource::<Tuning>()
+        .combat
+        .attack_interval_ticks;
+    for _ in 0..attack_interval {
+        app.update();
+        if app.world().get::<Health>(target).unwrap().current < initial_health {
+            break;
+        }
+    }
 
     assert_eq!(
         app.world().get::<Health>(target).unwrap().current,
-        90,
+        74,
         "the full app must apply its ordinary Defender damage before presentation",
     );
-    assert_eq!(app.world().resource::<ActiveCombatPulses>().len(), 1);
+    assert_eq!(app.world().resource::<ActiveCombatBolts>().len(), 1);
     let attacker_visual = common::nanobot_visual_child(app.world(), attacker);
     let target_visual = common::nanobot_visual_child(app.world(), target);
     assert!(
@@ -298,6 +308,17 @@ fn full_app_offscreen_combat_uses_real_facts_and_keeps_gameplay_roots_fixed() {
             .length()
             > 0.0,
     );
+    assert_eq!(
+        app.world().get::<Sprite>(target_visual).unwrap().color,
+        Color::WHITE,
+    );
+    for _ in 0..6 {
+        app.update();
+        if app.world().resource::<ActiveCombatBolts>().is_empty() {
+            break;
+        }
+    }
+    assert!(app.world().resource::<ActiveCombatBolts>().is_empty());
     assert_ne!(
         app.world().get::<Sprite>(target_visual).unwrap().color,
         Color::WHITE,

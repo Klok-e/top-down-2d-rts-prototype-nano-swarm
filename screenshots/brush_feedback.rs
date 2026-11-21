@@ -8,6 +8,9 @@ use top_down_2d_rts_prototype_nano_swarm::{
 
 use crate::harness::{SCREENSHOT_DIR, TestContext, TestFlow};
 
+const PARTLY_OPEN_TILE: IVec2 = IVec2::new(1, 5);
+const SOLID_MESA: IVec2 = IVec2::new(5, 12);
+
 pub fn brush_feedback(ctx: &mut TestContext) -> TestFlow {
     match ctx.frame {
         0 => {
@@ -17,12 +20,12 @@ pub fn brush_feedback(ctx: &mut TestContext) -> TestFlow {
             };
             window.set_cursor_position(Some(Vec2::new(640.0, 360.0)));
             ctx.world.spawn(window);
-            center_camera(ctx.world, IVec2::ZERO);
+            center_camera(ctx.world, PARTLY_OPEN_TILE);
         }
         3 => return TestFlow::Screenshot("brush_feedback_hover".into()),
         4 => {
             let hover = ctx.world.resource::<BrushFeedback>().hover.unwrap();
-            assert_eq!(hover.cell, IVec2::ZERO);
+            assert_eq!(hover.cell, PARTLY_OPEN_TILE);
             assert!(hover.accepts_action);
             assert_border("brush_feedback_hover", |[r, g, b, _]| {
                 r > 240 && g > 240 && b > 240
@@ -38,11 +41,11 @@ pub fn brush_feedback(ctx: &mut TestContext) -> TestFlow {
                 .resource_mut::<ButtonInput<KeyCode>>()
                 .release(KeyCode::ArrowRight);
             set_zoom_and_velocity(ctx.world, 2.0, Vec2::ZERO);
-            center_camera(ctx.world, IVec2::new(1, 5));
+            center_camera(ctx.world, SOLID_MESA);
         }
         7 => {
             let hover = ctx.world.resource::<BrushFeedback>().hover.unwrap();
-            assert_eq!(hover.cell, IVec2::new(1, 5));
+            assert_eq!(hover.cell, SOLID_MESA);
             assert!(!hover.accepts_action);
             ctx.world
                 .resource_mut::<ButtonInput<MouseButton>>()
@@ -93,9 +96,9 @@ fn set_zoom_and_velocity(world: &mut World, scale: f32, velocity: Vec2) {
 fn assert_preview_follows_camera(world: &mut World) {
     assert_eq!(
         world.resource::<BrushFeedback>().hover.unwrap().cell,
-        IVec2::ZERO
+        PARTLY_OPEN_TILE
     );
-    let cell_center = Vec2::splat(ZONE_BLOCK_SIZE / 2.0).extend(0.0);
+    let cell_center = ((PARTLY_OPEN_TILE.as_vec2() + 0.5) * ZONE_BLOCK_SIZE).extend(0.0);
     let (camera, pose) = world
         .query::<(&Camera, &GlobalTransform)>()
         .single(world)

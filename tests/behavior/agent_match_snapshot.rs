@@ -115,7 +115,7 @@ fn detailed_state_get_reports_defender_attack_and_charging_progress() {
             ChargerAssignment { charger },
             ChargerProgress { charger },
             ChargerPulseProgress { ticks_elapsed: 17 },
-            DefenderAttackCooldown { ticks_remaining: 9 },
+            DefenderAttackCooldown::new(9),
         ))
         .id();
     let (control, plugin) = AgentControlCorePlugin::channel(4);

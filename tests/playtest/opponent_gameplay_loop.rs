@@ -10,6 +10,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         SwarmMember, nanobot_death_cleanup_system,
     },
     reachability::SwarmReachabilityMap,
+    tuning::Tuning,
     ui::{
         FontsResource, FpsText, NanoswarmUiSetupPlugin,
         match_banner::{
@@ -128,6 +129,66 @@ fn strategic_intent_finishes_a_remnant_away_from_its_former_home() {
 }
 
 #[test]
+fn strategic_intent_finishes_a_hauler_on_the_reachable_flanks_rim() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        navigation::Navigation, scenario::default_rock_geometry,
+    };
+
+    let mut app = common::sim_app();
+    app.insert_resource(IntentGrid::new(64, 64))
+        .add_plugins((
+            CombatPlugin,
+            StrategicControllerPlugin,
+            SwarmEliminationPlugin,
+        ))
+        .add_systems(FixedLast, nanobot_death_cleanup_system);
+    let home = Vec2::new(-200.0, 3269.0374);
+    let hauler_position = Vec2::new(-520.12854, 3269.0374);
+    let hauler_cell = IVec2::new(-2, 6);
+    let player = common::spawn_swarm_with_nanobots(&mut app, home, &[(NanobotType::Defender, 2)]);
+    app.world_mut()
+        .entity_mut(player)
+        .insert(StrategicController::new(SwarmId::PLAYER));
+    common::spawn_opponent_swarm_with_nanobots(
+        &mut app,
+        hauler_position,
+        &[(NanobotType::Hauler, 1)],
+    );
+    let geometry = default_rock_geometry();
+    let terrain = geometry
+        .iter()
+        .map(|(rock, transform)| rock.obstacle(transform))
+        .collect::<Vec<_>>();
+    let grid = app.world().resource::<IntentGrid>();
+    let navigation = Navigation::new(grid, terrain.clone());
+    assert!(!navigation.point_clear(common::cell_world_center(hauler_cell)));
+    assert!(navigation.point_clear(hauler_position));
+    let reachability = SwarmReachabilityMap::new(grid, terrain, [(SwarmId::PLAYER, home)]).unwrap();
+    app.insert_resource(reachability);
+    for rock in geometry {
+        app.world_mut().spawn(rock);
+    }
+
+    app.update();
+    assert!(
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(hauler_cell)
+            .is_some_and(|cell| cell.has_owned(IntentKind::Defend, SwarmId::PLAYER))
+    );
+    for _ in 0..600 {
+        if *app.world().resource::<MatchOutcome>() != MatchOutcome::InProgress {
+            break;
+        }
+        app.update();
+    }
+    assert_eq!(
+        *app.world().resource::<MatchOutcome>(),
+        MatchOutcome::Winner(SwarmId::PLAYER)
+    );
+}
+
+#[test]
 fn strategic_intent_clears_a_structure_and_distant_hauler_concurrently() {
     use std::{collections::BTreeSet, time::Duration};
 
@@ -135,6 +196,7 @@ fn strategic_intent_clears_a_structure_and_distant_hauler_concurrently() {
     use top_down_2d_rts_prototype_nano_swarm::{
         nanobot::{ChargePlugin, DefenderResponse, PlannedKind, Structure, StructureKind},
         resources::{ResourceKind, ResourceLedger},
+        terrain::RockFormation,
         tuning::Tuning,
     };
 
@@ -158,7 +220,6 @@ fn strategic_intent_clears_a_structure_and_distant_hauler_concurrently() {
     app.world_mut()
         .entity_mut(own)
         .insert(StrategicController::new(SwarmId::PLAYER));
-    install_empty_reachability(&mut app);
     app.world_mut().resource_mut::<ResourceLedger>().add_for(
         SwarmId::PLAYER,
         ResourceKind::Minerals,
@@ -174,9 +235,22 @@ fn strategic_intent_clears_a_structure_and_distant_hauler_concurrently() {
     );
     app.world_mut().entity_mut(support).insert(OwnerSwarm(own));
 
+    let hauler_start = common::cell_world_center(IVec2::new(0, 4));
+    let rock = RockFormation::Rectangle {
+        half: Vec2::new(1_024.0, 72.0),
+    };
+    let rock_transform = Transform::from_translation((hauler_start + Vec2::Y * 280.0).extend(0.0));
+    app.world_mut().spawn((rock, rock_transform));
+    let reachability = SwarmReachabilityMap::new(
+        app.world().resource::<IntentGrid>(),
+        [rock.obstacle(&rock_transform)],
+        [(SwarmId::PLAYER, home)],
+    )
+    .unwrap();
+    app.insert_resource(reachability);
     let enemy = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
-        common::cell_world_center(IVec2::new(0, 4)),
+        hauler_start,
         &[(NanobotType::Hauler, 1)],
     );
     let enemy_id = *app.world().get::<SwarmId>(enemy).unwrap();
@@ -564,6 +638,11 @@ fn mutual_final_combat_deaths_show_a_dismissible_draw_in_the_same_tick() {
         .insert_resource(FontsResource { font: default() })
         .add_systems(Startup, setup_match_banner)
         .add_systems(Update, update_match_banner_system);
+    // Keep both first shots on the same tick so the test exercises mutual elimination.
+    app.world_mut()
+        .resource_mut::<Tuning>()
+        .combat
+        .attack_interval_ticks = 1;
     let center = common::cell_world_center(IVec2::ZERO);
     common::spawn_swarm_with_nanobots(
         &mut app,
@@ -653,12 +732,23 @@ fn hud_shows(app: &mut App, message: &str) -> bool {
         .any(|(text, node)| node.display != Display::None && text.0.contains(message))
 }
 
+fn visible_combat_alert(app: &mut App) -> Option<BackgroundColor> {
+    app.world_mut()
+        .query::<(&Name, &Node, &BackgroundColor, Option<&Interaction>)>()
+        .iter(app.world())
+        .find_map(|(name, node, background, interaction)| {
+            (name.as_str() == "Combat alert" && node.display != Display::None).then(|| {
+                assert!(interaction.is_none(), "the combat alert is passive");
+                *background
+            })
+        })
+}
+
 #[test]
-fn swarm_hud_warns_of_combat_and_a_missing_delivery_crew() {
+fn swarm_hud_shows_distinct_graphical_combat_alerts_and_delivery_status() {
     use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-        ActionableProjection, DefenderAttackCooldown, DefenderResponse, Health,
-        PopulationDemandPlugin, TerritorySnapshot, population_demand_system,
-        project_territory_snapshot_system,
+        ActionableProjection, Health, PopulationDemandPlugin, TerritorySnapshot,
+        population_demand_system, project_territory_snapshot_system,
     };
 
     let mut app = app_with_hud();
@@ -670,12 +760,16 @@ fn swarm_hud_warns_of_combat_and_a_missing_delivery_crew() {
             project_territory_snapshot_system.before(population_demand_system),
         )
         .add_systems(FixedLast, nanobot_death_cleanup_system);
+    app.world_mut()
+        .resource_mut::<Tuning>()
+        .combat
+        .attack_interval_ticks = 1;
     let home = common::cell_world_center(IVec2::ZERO);
     let player = common::spawn_swarm_with_nanobots(&mut app, home, &[]);
     let worker = common::spawn_worker_at(&mut app, home);
     let opponent = common::spawn_opponent_swarm_with_nanobots(&mut app, home, &[]);
     let opponent_id = *app.world().get::<SwarmId>(opponent).unwrap();
-    let intruder = common::spawn_defender_at(&mut app, home + Vec2::X * 72.0);
+    let intruder = common::spawn_defender_at(&mut app, home + Vec2::X * 160.0);
     app.world_mut()
         .entity_mut(intruder)
         .insert(SwarmMember::new(opponent_id));
@@ -696,26 +790,27 @@ fn swarm_hud_warns_of_combat_and_a_missing_delivery_crew() {
     );
 
     app.update();
-    assert!(hud_shows(&mut app, "Hostiles in your territory"));
+    let intrusion = visible_combat_alert(&mut app).expect("a hostile is inside player territory");
+    assert!(!hud_shows(&mut app, "Hostiles in your territory"));
     assert!(hud_shows(&mut app, "Workers: 1 / 0"));
     assert!(hud_shows(&mut app, "Production: 1 Hauler"));
     let starting_health = app.world().get::<Health>(worker).unwrap().current;
 
     app.world_mut()
-        .entity_mut(intruder)
-        .insert(DefenderResponse { target: worker });
+        .get_mut::<Transform>(intruder)
+        .unwrap()
+        .translation = (home + Vec2::X * 72.0).extend(0.0);
     app.update();
     assert!(app.world().get::<Health>(worker).unwrap().current < starting_health);
-    assert!(hud_shows(&mut app, "Swarm under attack"));
+    let under_attack = visible_combat_alert(&mut app).expect("the player swarm took damage");
+    assert_ne!(under_attack, intrusion);
+    assert!(!hud_shows(&mut app, "Swarm under attack"));
 
     app.world_mut().get_mut::<Health>(worker).unwrap().current = 1;
     app.world_mut()
         .get_mut::<ProductionFacility>(facility)
         .unwrap()
         .current_target = None;
-    app.world_mut()
-        .entity_mut(intruder)
-        .remove::<DefenderAttackCooldown>();
     app.update();
     assert!(app.world().get_entity(worker).is_err());
     assert_eq!(
@@ -724,6 +819,7 @@ fn swarm_hud_warns_of_combat_and_a_missing_delivery_crew() {
     );
     assert!(hud_shows(&mut app, "No nanobots remaining"));
     assert!(hud_shows(&mut app, "Production: no Haulers to deliver"));
+    assert!(visible_combat_alert(&mut app).is_none());
 }
 
 #[test]

@@ -68,11 +68,40 @@ pub type WorkerLoad = Cargo;
 pub struct GatherAssignment {
     pub cell: IVec2,
     pub deposit: Entity,
+    painted: bool,
 }
 
 impl GatherAssignment {
     pub fn new(cell: IVec2, deposit: Entity) -> Self {
-        Self { cell, deposit }
+        Self {
+            cell,
+            deposit,
+            painted: false,
+        }
+    }
+
+    pub(crate) fn from_paint(cell: IVec2, deposit: Entity) -> Self {
+        Self {
+            cell,
+            deposit,
+            painted: true,
+        }
+    }
+
+    pub(super) fn interaction(self, transform: &Transform, radius: f32) -> InteractionRegion {
+        let region = InteractionRegion::deposit(transform, radius);
+        if self.painted {
+            region.within_cell(self.cell)
+        } else {
+            region
+        }
+    }
+
+    pub(super) fn has_paint_support(self, grid: &IntentGrid, owner: SwarmId) -> bool {
+        !self.painted
+            || grid
+                .cell(self.cell)
+                .is_some_and(|cell| cell.has_owned(IntentKind::Gather, owner))
     }
 }
 
@@ -98,6 +127,31 @@ pub fn world_to_cell(world: Vec2) -> IVec2 {
         (world.x / ZONE_BLOCK_SIZE).floor() as i32,
         (world.y / ZONE_BLOCK_SIZE).floor() as i32,
     )
+}
+
+pub(super) fn painted_gather_regions(
+    grid: &IntentGrid,
+    owner: SwarmId,
+    transform: Transform,
+    radius: f32,
+) -> impl Iterator<Item = (IVec2, InteractionRegion)> + '_ {
+    let center = transform.translation.truncate();
+    let region = InteractionRegion::deposit(&transform, radius);
+    let size = IVec2::new(grid.width(), grid.height());
+    let map_min = -(size / 2);
+    let extent = Vec2::splat(radius.max(0.0));
+    let min = (((center - extent) / ZONE_BLOCK_SIZE).ceil() - Vec2::ONE)
+        .as_ivec2()
+        .max(map_min);
+    let max = world_to_cell(center + extent).min(map_min + size - IVec2::ONE);
+    (min.y..=max.y)
+        .flat_map(move |y| (min.x..=max.x).map(move |x| IVec2::new(x, y)))
+        .filter(move |cell| {
+            grid.cell(*cell)
+                .is_some_and(|intent| intent.has_owned(IntentKind::Gather, owner))
+                && cell_overlaps_circle(*cell, center, radius)
+        })
+        .map(move |cell| (cell, region.within_cell(cell)))
 }
 
 /// True when the circle (`circle_center`, `circle_radius`) visually
@@ -199,8 +253,15 @@ fn find_nearest_stockpile(
     swarms: &Query<&SwarmId, With<Swarm>>,
     reservations: &Query<(Entity, &LogisticsReservation)>,
     same_tick_reserved: &std::collections::HashMap<Entity, u32>,
+    identities: &Query<&super::CombatIdentity>,
     mut reachable: impl FnMut(&Transform) -> bool,
 ) -> Option<(Entity, u32)> {
+    let identity_key = |entity: Entity| {
+        (
+            super::combat_key(entity, identities.get(entity).ok()),
+            entity.to_bits(),
+        )
+    };
     let mut best: Option<(f32, Entity, u32)> = None;
     for (entity, stockpile, transform, role, owner, condition) in stockpiles.iter() {
         if Some(entity) == excluding_stockpile
@@ -223,7 +284,7 @@ fn find_nearest_stockpile(
         let distance = worker_pos.distance(transform.translation.truncate());
         if best.is_none_or(|(best_distance, best_entity, _)| {
             distance < best_distance
-                || (distance == best_distance && entity.to_bits() < best_entity.to_bits())
+                || (distance == best_distance && identity_key(entity) < identity_key(best_entity))
         }) {
             best = Some((distance, entity, available));
         }
@@ -692,8 +753,10 @@ pub fn worker_gather_assignment_system(
 
         slots.occupy(candidate.cell, IntentKind::Gather);
         commands.entity(entity).insert((
-            GatherAssignment::new(candidate.cell, deposit_entity),
-            InteractionRegion::deposit(deposit_transform, deposit.radius).movement_from(worker_pos),
+            GatherAssignment::from_paint(candidate.cell, deposit_entity),
+            InteractionRegion::deposit(deposit_transform, deposit.radius)
+                .within_cell(candidate.cell)
+                .movement_from(worker_pos),
         ));
     }
 }
@@ -727,6 +790,7 @@ pub fn worker_gather_assignment_system(
 pub fn worker_gather_arrive_system(
     tuning: Res<Tuning>,
     mut commands: Commands,
+    grid: Res<IntentGrid>,
     navigation: Res<Navigation>,
     clock: Option<Res<super::AllocationClock>>,
     mut workers: Query<
@@ -759,10 +823,27 @@ pub fn worker_gather_arrive_system(
     swarms: Query<&SwarmId, With<Swarm>>,
     planned_structures: Query<(&PlannedStructure, &Transform, Option<&OwnerSwarm>)>,
     reservations: Query<(Entity, &LogisticsReservation)>,
+    identities: Query<&super::CombatIdentity>,
+    mut ordered: Local<Vec<(u64, Entity)>>,
 ) {
     let mut same_tick_sources = std::collections::HashMap::<Entity, u32>::new();
     let mut same_tick_destinations = std::collections::HashMap::<Entity, u32>::new();
-    for (entity, transform, assignment, swarm_member, lease) in &mut workers {
+    ordered.clear();
+    ordered.extend(workers.iter().map(|(entity, ..)| {
+        (
+            super::combat_key(entity, identities.get(entity).ok()),
+            entity,
+        )
+    }));
+    ordered.sort_unstable();
+    for &(_, entity) in &*ordered {
+        let Ok((_, transform, assignment, swarm_member, lease)) = workers.get_mut(entity) else {
+            continue;
+        };
+        if !assignment.has_paint_support(&grid, swarm_member.0) {
+            commands.entity(entity).remove::<GatherAssignment>();
+            continue;
+        }
         let Ok((deposit, deposit_transform)) = deposits.get(assignment.deposit) else {
             commands.entity(entity).remove::<GatherAssignment>();
             continue;
@@ -781,7 +862,7 @@ pub fn worker_gather_arrive_system(
         }
 
         let worker_pos = transform.translation.truncate();
-        let region = InteractionRegion::deposit(deposit_transform, deposit.radius);
+        let region = assignment.interaction(deposit_transform, deposit.radius);
         if !region.contains(worker_pos) {
             commands
                 .entity(entity)
@@ -801,6 +882,7 @@ pub fn worker_gather_arrive_system(
             &swarms,
             &reservations,
             &same_tick_destinations,
+            &identities,
             |destination_transform| match navigation.query_connectivity(
                 worker_pos,
                 RouteGoal::Interaction(InteractionRegion::structure(destination_transform)),
@@ -877,10 +959,11 @@ pub fn worker_gather_arrive_system(
 /// interval while the worker is at the deposit and the load is not
 /// full. When the load is full or the deposit empties (or
 /// disappears), transition the worker to Carrying.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn worker_gather_extract_system(
     tuning: Res<Tuning>,
     mut commands: Commands,
+    grid: Res<IntentGrid>,
     navigation: Res<Navigation>,
     mut workers: Query<
         (
@@ -918,6 +1001,7 @@ pub fn worker_gather_extract_system(
         if cargo.amount >= reservation.amount
             || cargo.amount >= tuning.logistics.worker_carry_capacity
             || reservation.source_remaining == 0
+            || !assignment.has_paint_support(&grid, swarm.0)
         {
             reservation.source_remaining = 0;
             reservation.destination_remaining = cargo.amount;
@@ -930,7 +1014,7 @@ pub fn worker_gather_extract_system(
             transition_worker_to_carrying(&mut commands, entity, cargo.amount);
             continue;
         };
-        let region = InteractionRegion::deposit(deposit_transform, deposit.radius);
+        let region = assignment.interaction(deposit_transform, deposit.radius);
         let position = transform.translation.truncate();
         if !region.contains(position) {
             work.reset();
@@ -985,7 +1069,7 @@ pub fn worker_gather_extract_system(
     }
 }
 
-fn transition_worker_to_carrying(commands: &mut Commands, entity: Entity, amount: u32) {
+pub(super) fn transition_worker_to_carrying(commands: &mut Commands, entity: Entity, amount: u32) {
     commands
         .entity(entity)
         .remove::<ExtractProgress>()
@@ -1002,7 +1086,7 @@ fn transition_worker_to_carrying(commands: &mut Commands, entity: Entity, amount
 /// Keep loaded Workers routed to reachable, compatible stockpiles. A pending
 /// route preserves the current claim; a confirmed invalid destination releases
 /// capacity while the Worker retains its cargo and searches for a replacement.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn worker_gather_reroute_system(
     mut commands: Commands,
     navigation: Res<Navigation>,
@@ -1027,15 +1111,27 @@ pub fn worker_gather_reroute_system(
     )>,
     swarms: Query<&SwarmId, With<Swarm>>,
     reservations: Query<(Entity, &LogisticsReservation)>,
+    identities: Query<&super::CombatIdentity>,
+    mut ordered: Local<Vec<(u64, Entity)>>,
 ) {
     let mut same_tick_claims = std::collections::HashMap::new();
-    for (entity, transform, cargo, swarm_member, reservation, nanobot_type) in &workers {
-        if *nanobot_type != NanobotType::Worker {
+    ordered.clear();
+    ordered.extend(
+        workers
+            .iter()
+            .filter(|(_, _, cargo, _, _, kind)| cargo.amount > 0 && **kind == NanobotType::Worker)
+            .map(|(entity, ..)| {
+                (
+                    super::combat_key(entity, identities.get(entity).ok()),
+                    entity,
+                )
+            }),
+    );
+    ordered.sort_unstable();
+    for &(_, entity) in &*ordered {
+        let Ok((_, transform, cargo, swarm_member, reservation, _)) = workers.get(entity) else {
             continue;
-        }
-        if cargo.amount == 0 {
-            continue;
-        }
+        };
         let current_valid = stockpiles.get(reservation.destination).is_ok_and(
             |(_, stockpile, _, role, owner, condition)| {
                 reservation.destination_remaining > 0
@@ -1075,6 +1171,7 @@ pub fn worker_gather_reroute_system(
             &swarms,
             &reservations,
             &same_tick_claims,
+            &identities,
             |destination_transform| {
                 matches!(
                     navigation.query_connectivity(
@@ -1114,7 +1211,7 @@ pub fn worker_gather_reroute_system(
     }
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn worker_gather_carry_assign_system(
     mut commands: Commands,
     navigation: Res<Navigation>,
@@ -1144,12 +1241,27 @@ pub fn worker_gather_carry_assign_system(
     )>,
     swarms: Query<&SwarmId, With<Swarm>>,
     reservations: Query<(Entity, &LogisticsReservation)>,
+    identities: Query<&super::CombatIdentity>,
+    mut ordered: Local<Vec<(u64, Entity)>>,
 ) {
     let mut same_tick_claims = std::collections::HashMap::new();
-    for (entity, transform, load, swarm_member, reservation, nanobot_type) in &workers {
-        if *nanobot_type != NanobotType::Worker {
+    ordered.clear();
+    ordered.extend(
+        workers
+            .iter()
+            .filter(|(_, _, cargo, _, _, kind)| cargo.amount > 0 && **kind == NanobotType::Worker)
+            .map(|(entity, ..)| {
+                (
+                    super::combat_key(entity, identities.get(entity).ok()),
+                    entity,
+                )
+            }),
+    );
+    ordered.sort_unstable();
+    for &(_, entity) in &*ordered {
+        let Ok((_, transform, load, swarm_member, reservation, _)) = workers.get(entity) else {
             continue;
-        }
+        };
         let selected = if let Some(reservation) = reservation {
             stockpiles
                 .get(reservation.destination)
@@ -1175,9 +1287,7 @@ pub fn worker_gather_carry_assign_system(
                             )
                             >= reservation.destination_remaining.min(load.amount)
                 })
-                .map(|(destination, stockpile, transform, _, _, _)| {
-                    (destination, stockpile, transform)
-                })
+                .map(|(destination, _, transform, _, _, _)| (destination, transform, None))
         } else {
             find_nearest_stockpile(
                 load.kind,
@@ -1190,6 +1300,7 @@ pub fn worker_gather_carry_assign_system(
                 &swarms,
                 &reservations,
                 &same_tick_claims,
+                &identities,
                 |destination_transform| {
                     matches!(
                         navigation.query_connectivity(
@@ -1202,20 +1313,25 @@ pub fn worker_gather_carry_assign_system(
                     )
                 },
             )
-            .and_then(|(destination, _)| {
+            .and_then(|(destination, available)| {
                 stockpiles
                     .get(destination)
                     .ok()
-                    .map(|(_, stockpile, transform, _, _, _)| (destination, stockpile, transform))
+                    .map(|(_, _, transform, _, _, _)| {
+                        (destination, transform, Some(load.amount.min(available)))
+                    })
             })
         };
-        let Some((stockpile_entity, _stockpile, stockpile_transform)) = selected else {
+        let Some((stockpile_entity, stockpile_transform, new_claim)) = selected else {
             continue;
         };
-        let claim = load.amount.min(_stockpile.free_space().saturating_sub(
-            reserved_destination_capacity(&reservations, stockpile_entity, Some(entity)),
-        ));
-        *same_tick_claims.entry(stockpile_entity).or_default() += claim;
+        if let Some(claim) = new_claim {
+            *same_tick_claims.entry(stockpile_entity).or_default() += claim;
+            let mut reservation =
+                LogisticsReservation::new(entity, stockpile_entity, load.kind, claim);
+            reservation.source_remaining = 0;
+            commands.entity(entity).insert(reservation);
+        }
         commands.entity(entity).insert((
             ReturningToStockpile {
                 stockpile: stockpile_entity,

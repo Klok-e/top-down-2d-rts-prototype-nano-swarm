@@ -22,6 +22,7 @@ use crate::{
         PlannedStructureClaim, PlannedStructureProgress, ProductionFacility, ReturningToStockpile,
         SwarmId, SwarmMember, WorkerLoad,
         charge::{Charge, Charger, ChargerAssignment, ChargerProgress, minerals_to_fully_charge},
+        gather::painted_gather_regions,
         logistics_leg::{DestinationRole, PickupBuffer},
     },
     navigation::{ConnectivityStatus, Navigation, RouteGoal},
@@ -112,6 +113,9 @@ pub struct RegionalAllocationPlugin;
 
 impl Plugin for RegionalAllocationPlugin {
     fn build(&self, app: &mut App) {
+        if !app.is_plugin_added::<crate::nanobot::CombatIdentityPlugin>() {
+            app.add_plugins(crate::nanobot::CombatIdentityPlugin);
+        }
         app.init_resource::<crate::tuning::Tuning>()
             .init_resource::<ActionableProjection>()
             .init_resource::<super::TerritorySnapshot>()
@@ -193,7 +197,8 @@ struct BotSnapshot {
 
 #[allow(clippy::type_complexity)]
 #[derive(SystemParam)]
-pub struct TerminalLogisticsParams<'w, 's> {
+pub struct AllocationInputs<'w, 's> {
+    grid: Res<'w, crate::intent::IntentGrid>,
     facilities: Query<'w, 's, (&'static ProductionFacility, &'static Transform)>,
     chargers: Query<'w, 's, (&'static Charger, &'static Transform)>,
     defenders: Query<
@@ -253,7 +258,7 @@ pub fn regional_allocation_acquisition_system(
     mut planned: Query<(Entity, &mut PlannedStructure, &Transform)>,
     structures: Query<&Transform>,
     stockpiles: Query<(&Stockpile, &Transform, Option<&StockpileRole>)>,
-    mut terminal: TerminalLogisticsParams,
+    mut terminal: AllocationInputs,
 ) {
     if projection
         .iter_regions()
@@ -524,6 +529,7 @@ pub fn regional_allocation_acquisition_system(
                 .or_default() += reservation.destination_remaining;
             selection.work
         } else {
+            let mut gather_approaches = BTreeMap::new();
             let Some(decision) = choose_bounded_candidate_from_ordered_regions_with_claims(
                 allocation_candidate(bot),
                 pull,
@@ -546,11 +552,37 @@ pub fn regional_allocation_acquisition_system(
                     ) {
                         return None;
                     }
+                    let reachable = |region| {
+                        rejected.is_none_or(|rejected| rejected.region != region)
+                            && matches!(
+                                navigation.query_connectivity(
+                                    bot.position,
+                                    RouteGoal::Interaction(region)
+                                ),
+                                ConnectivityStatus::Connected { .. }
+                            )
+                    };
                     let region = match work.target {
-                        OpportunityTarget::Gather { deposit, .. } => {
-                            deposits.get(deposit).ok().map(|(deposit, transform)| {
-                                InteractionRegion::deposit(transform, deposit.radius)
-                            })
+                        OpportunityTarget::Gather { deposit, cell } => {
+                            let (state, transform) = deposits.get(deposit).ok()?;
+                            let preferred = InteractionRegion::deposit(transform, state.radius)
+                                .within_cell(cell);
+                            let approach = if reachable(preferred) {
+                                (cell, preferred)
+                            } else {
+                                painted_gather_regions(
+                                    &terminal.grid,
+                                    bot.swarm,
+                                    *transform,
+                                    state.radius,
+                                )
+                                .filter(|(candidate, region)| {
+                                    *candidate != cell && reachable(*region)
+                                })
+                                .min_by_key(|(candidate, _)| (candidate.x, candidate.y))?
+                            };
+                            gather_approaches.insert(deposit, approach);
+                            return Some(claims);
                         }
                         OpportunityTarget::PlannedBuild { structure, .. }
                         | OpportunityTarget::Maintenance { structure } => structures
@@ -559,14 +591,7 @@ pub fn regional_allocation_acquisition_system(
                             .map(InteractionRegion::structure),
                         OpportunityTarget::Haul { .. } => None,
                     }?;
-                    if rejected.is_some_and(|rejected| rejected.region == region) {
-                        return None;
-                    }
-                    matches!(
-                        navigation.query_connectivity(bot.position, RouteGoal::Interaction(region)),
-                        ConnectivityStatus::Connected { .. }
-                    )
-                    .then_some(claims)
+                    reachable(region).then_some(claims)
                 },
             ) else {
                 continue;
@@ -575,7 +600,7 @@ pub fn regional_allocation_acquisition_system(
                 &mut commands,
                 bot,
                 decision.opportunity,
-                &deposits,
+                &gather_approaches,
                 &mut planned,
                 &structures,
             ) {
@@ -847,19 +872,18 @@ fn assign_worker_work(
     commands: &mut Commands,
     bot: BotSnapshot,
     work: ActionableOpportunity,
-    deposits: &Query<(&ResourceDeposit, &Transform)>,
+    gather_approaches: &BTreeMap<Entity, (IVec2, InteractionRegion)>,
     planned: &mut Query<(Entity, &mut PlannedStructure, &Transform)>,
     structures: &Query<&Transform>,
 ) -> bool {
     match work.target {
-        OpportunityTarget::Gather { deposit, cell } => {
-            let Ok((deposit_state, transform)) = deposits.get(deposit) else {
+        OpportunityTarget::Gather { deposit, .. } => {
+            let Some(&(cell, approach)) = gather_approaches.get(&deposit) else {
                 return false;
             };
             commands.entity(bot.entity).insert((
-                GatherAssignment::new(cell, deposit),
-                InteractionRegion::deposit(transform, deposit_state.radius)
-                    .movement_from(bot.position),
+                GatherAssignment::from_paint(cell, deposit),
+                approach.movement_from(bot.position),
             ));
         }
         OpportunityTarget::PlannedBuild { structure, .. } => {

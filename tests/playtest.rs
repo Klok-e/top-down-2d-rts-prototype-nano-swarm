@@ -2,12 +2,20 @@
 
 #[path = "playtest/camera_controls.rs"]
 mod camera_controls;
+#[path = "playtest/combat_motion.rs"]
+mod combat_motion;
 #[path = "playtest/combat_presentation.rs"]
 mod combat_presentation;
+#[path = "playtest/combat_scenes.rs"]
+mod combat_scenes;
+#[path = "playtest/combat_shake.rs"]
+mod combat_shake;
 #[path = "playtest/congested_economy.rs"]
 mod congested_economy;
 #[path = "playtest/defender_feel.rs"]
 mod defender_feel;
+#[path = "playtest/defender_reachable_ground.rs"]
+mod defender_reachable_ground;
 #[path = "playtest/exterior_work_flow.rs"]
 mod exterior_work_flow;
 #[path = "playtest/intent_layer_flow.rs"]
@@ -26,6 +34,8 @@ mod production_exits;
 mod regional_allocation;
 #[path = "playtest/shared_navigation.rs"]
 mod shared_navigation;
+#[path = "playtest/skirmish_end.rs"]
+mod skirmish_end;
 #[path = "playtest/typed_population_demand.rs"]
 mod typed_population_demand;
 #[path = "playtest/world_space_nanobots.rs"]

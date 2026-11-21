@@ -262,8 +262,15 @@ impl Navigation {
                 cost: 0.0,
             });
         }
-        for endpoint in region.candidates(start) {
+        let mut probes = self.interaction_probes(start, region);
+        loop {
             WorkUnit::new().await;
+            let Some(probe) = probes.next() else {
+                break;
+            };
+            let Some(endpoint) = probe else {
+                continue;
+            };
             if let RouteOutcome::Found(route) =
                 self.async_route(start, endpoint, grid, swarm, hauler).await
             {
@@ -276,8 +283,8 @@ impl Navigation {
         if !self.async_point_clear(start).await {
             return RouteOutcome::Unreachable;
         }
-        let mut endpoints = match goal {
-            RouteGoal::Point(end) => vec![end],
+        match goal {
+            RouteGoal::Point(end) => self.first_connected_endpoint(start, [Some(end)]).await,
             RouteGoal::Interaction(region) => {
                 if region.contains(start) {
                     return RouteOutcome::Found(Route {
@@ -285,7 +292,8 @@ impl Navigation {
                         cost: 0.0,
                     });
                 }
-                region.candidates(start)
+                self.first_connected_endpoint(start, self.interaction_probes(start, region))
+                    .await
             }
             RouteGoal::Range { center, radius } => {
                 if !radius.is_finite() || radius < 0.0 || !center.is_finite() {
@@ -310,16 +318,31 @@ impl Navigation {
                         }
                     }
                 }
-                points
+                points.sort_by(|a, b| {
+                    a.distance_squared(start)
+                        .total_cmp(&b.distance_squared(start))
+                });
+                self.first_connected_endpoint(start, points.into_iter().map(Some))
+                    .await
             }
-        };
-        endpoints.sort_by(|a, b| {
-            a.distance_squared(start)
-                .total_cmp(&b.distance_squared(start))
-        });
+        }
+    }
+
+    async fn first_connected_endpoint(
+        &self,
+        start: Vec2,
+        probes: impl IntoIterator<Item = Option<Vec2>>,
+    ) -> RouteOutcome {
         let paint = PaintCosts::default();
-        for endpoint in endpoints {
+        let mut probes = probes.into_iter();
+        loop {
             WorkUnit::new().await;
+            let Some(probe) = probes.next() else {
+                break;
+            };
+            let Some(endpoint) = probe else {
+                continue;
+            };
             if let result @ RouteOutcome::Found(_) = self
                 .async_route_search(start, endpoint, &paint, SwarmId::PLAYER, false, true)
                 .await
@@ -328,6 +351,18 @@ impl Navigation {
             }
         }
         RouteOutcome::Unreachable
+    }
+
+    pub(crate) fn interaction_probes(
+        &self,
+        start: Vec2,
+        region: crate::nanobot::InteractionRegion,
+    ) -> impl Iterator<Item = Option<Vec2>> + '_ {
+        region
+            .candidates(start)
+            .into_iter()
+            .map(Some)
+            .chain(self.visible_interaction_probes(start, region))
     }
     async fn async_route(
         &self,
@@ -1083,6 +1118,48 @@ impl Navigation {
 }
 
 impl Navigation {
+    /// Find a candidate connected through permanent navigation geometry without routing paint.
+    pub(crate) fn connected_point(
+        &self,
+        start: Vec2,
+        points: impl IntoIterator<Item = Vec2>,
+    ) -> Option<Vec2> {
+        let future = async {
+            let mut checked_regions = HashSet::new();
+            for point in points {
+                if !self.point_clear(point) {
+                    continue;
+                }
+                if self.async_segment_clear(start, point).await {
+                    return Some(point);
+                }
+                let mut unchecked = false;
+                for connector in self.async_connectors(point).await {
+                    if let Some(region) = self.async_region(connector).await {
+                        unchecked |= checked_regions.insert(region);
+                    }
+                }
+                if unchecked
+                    && matches!(
+                        self.async_connectivity(start, RouteGoal::Point(point))
+                            .await,
+                        RouteOutcome::Found(_)
+                    )
+                {
+                    return Some(point);
+                }
+            }
+            None
+        };
+        let mut future = std::pin::pin!(future);
+        let mut context = Context::from_waker(Waker::noop());
+        loop {
+            if let Poll::Ready(result) = future.as_mut().poll(&mut context) {
+                return result;
+            }
+        }
+    }
+
     pub(super) fn solve(
         &self,
         start: Vec2,
@@ -1148,6 +1225,15 @@ impl Navigation {
     /// Moving origins share the exact fine-cell component already built in their chunk.
     /// Paint and nanobot occupancy cannot change this geometric answer.
     pub fn query_connectivity(&self, start: Vec2, goal: RouteGoal) -> ConnectivityStatus {
+        self.query_connectivity_with_origin(start, goal).0
+    }
+
+    /// Retain the original attachment point when sharing a cached connection's endpoint.
+    pub(crate) fn query_connectivity_with_origin(
+        &self,
+        start: Vec2,
+        goal: RouteGoal,
+    ) -> (ConnectivityStatus, Vec2) {
         let cell = Self::cell(start);
         let region = if self.clearing.is_empty() && self.segment_clear(start, Self::center(cell)) {
             self.chunks
@@ -1185,13 +1271,15 @@ impl Navigation {
             });
             if reusable {
                 scheduler.connectivity_cached.get_mut(&key).unwrap().1 = tick;
-                return match &scheduler.requests[&id].result {
+                let request = &scheduler.requests[&id];
+                let status = match &request.result {
                     RouteStatus::Pending => ConnectivityStatus::Pending,
                     RouteStatus::Found(route) => ConnectivityStatus::Connected {
                         endpoint: *route.waypoints.last().unwrap(),
                     },
                     RouteStatus::Unreachable => ConnectivityStatus::Unreachable,
                 };
+                return (status, request.start);
             }
             scheduler.connectivity_cached.remove(&key);
             scheduler.requests.remove(&id);
@@ -1201,7 +1289,7 @@ impl Navigation {
         let mut scheduler = self.scheduler.lock().unwrap();
         scheduler.requests.get_mut(&id).unwrap().purpose = RequestPurpose::Connectivity;
         scheduler.connectivity_cached.insert(key, (id, tick));
-        ConnectivityStatus::Pending
+        (ConnectivityStatus::Pending, start)
     }
 }
 

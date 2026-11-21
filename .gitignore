@@ -10,3 +10,4 @@ __pycache__/
 /.pi/afk/results/
 /.pi/tasks/tasks-*.json
 /.pi/extensions/afk/node_modules/
+/docs/plans/

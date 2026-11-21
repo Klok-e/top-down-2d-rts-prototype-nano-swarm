@@ -1,6 +1,6 @@
 //! Offscreen evidence for the generic nanobot presentation-child cutover.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
@@ -36,7 +36,9 @@ struct EvidenceLayout {
 }
 
 fn prepare_evidence(world: &mut World) {
-    world.resource_mut::<Time<Virtual>>().pause();
+    let mut fixed = world.resource_mut::<Time<Fixed>>();
+    fixed.discard_overstep(Duration::MAX);
+    fixed.set_timestep(Duration::from_secs(60 * 60));
     for rock in world
         .query_filtered::<Entity, With<RockFormation>>()
         .iter(world)
@@ -178,7 +180,11 @@ pub fn nanobot_presentation(ctx: &mut TestContext) -> TestFlow {
         prepare_evidence(ctx.world);
         return TestFlow::Continue;
     }
-    if ctx.frame == 1 {
+    if ctx.frame < 30 {
+        return TestFlow::Continue;
+    }
+    if ctx.frame == 30 {
+        ctx.world.resource_mut::<Time<Virtual>>().pause();
         assert_evidence(ctx.world);
         return TestFlow::Screenshot("nanobot_presentation".to_string());
     }

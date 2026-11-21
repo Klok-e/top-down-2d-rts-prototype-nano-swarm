@@ -23,8 +23,12 @@ mod combat;
 mod combat_presentation;
 #[path = "behavior/defender_response.rs"]
 mod defender_response;
+#[path = "behavior/defender_retreat.rs"]
+mod defender_retreat;
 #[path = "behavior/defender_staging.rs"]
 mod defender_staging;
+#[path = "behavior/engaged_movement.rs"]
+mod engaged_movement;
 #[path = "behavior/fixed_simulation.rs"]
 mod fixed_simulation;
 #[path = "behavior/full_source_stockpile.rs"]

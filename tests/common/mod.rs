@@ -45,12 +45,13 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         ActionableProjection, Charge, ChargePlugin, Charger, CombatPlugin, Commitment,
-        GatherPlugin, HaulPlugin, Health, MaintenancePlugin, Nanobot, NanobotBundle,
-        NanobotSimulationSet, NanobotType, NanobotVisual, OpponentSwarm, OwnerSwarm,
+        DefenderEngagements, GatherPlugin, HaulPlugin, Health, MaintenancePlugin, Nanobot,
+        NanobotBundle, NanobotSimulationSet, NanobotType, NanobotVisual, OpponentSwarm, OwnerSwarm,
         PlannedStructure, PlannedStructurePlugin, PopulationDemandPlugin, ProductionFacility,
         ProductionPlugin, RegionalAllocationPlugin, SoftWorkSlots, Structure, StructureKind, Swarm,
         SwarmEliminationPlugin, SwarmId, SwarmMember, VelocityComponent, bot_debug_circle_system,
-        idle_spread_system, initialize_nanobot_type_components, move_velocity_system,
+        defender_engagement_system, defender_retreat_system, idle_spread_system,
+        initialize_nanobot_type_components, move_velocity_system,
         project_actionable_opportunities_system, separation_system, velocity_system,
         work_standing_system,
     },
@@ -71,6 +72,8 @@ pub const DEFAULT_GRID_HEIGHT: i32 = 8;
 /// Register deterministic fixed-tick movement and frame-driven debug drawing.
 /// Simulation plugins order their work after `move_velocity_system`.
 fn register_movement_systems(app: &mut App) {
+    app.add_plugins(top_down_2d_rts_prototype_nano_swarm::nanobot::CombatIdentityPlugin);
+    app.init_resource::<DefenderEngagements>();
     app.add_observer(initialize_nanobot_type_components);
     app.configure_sets(
         FixedUpdate,
@@ -85,6 +88,8 @@ fn register_movement_systems(app: &mut App) {
     app.add_systems(
         FixedUpdate,
         (
+            defender_engagement_system,
+            defender_retreat_system,
             move_velocity_system,
             separation_system,
             idle_spread_system,
@@ -495,6 +500,15 @@ pub fn spawn_defender_at(app: &mut App, world_pos: Vec2) -> Entity {
             Transform::from_translation(world_pos.extend(0.0)),
         ))
         .id()
+}
+
+pub fn spawn_stationary_defender_at(app: &mut App, position: Vec2, swarm: SwarmId) -> Entity {
+    let defender = spawn_defender_at(app, position);
+    app.world_mut()
+        .entity_mut(defender)
+        .insert(SwarmMember(swarm))
+        .remove::<VelocityComponent>();
+    defender
 }
 
 /// Spawn a full-Charge player Defender physically inside `cell`.

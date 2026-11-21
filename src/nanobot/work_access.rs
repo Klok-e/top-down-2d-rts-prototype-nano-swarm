@@ -1,9 +1,10 @@
 //! Shared tri-state work reachability for assignment, demand, and recovery.
 use super::{
-    InteractionRegion, Nanobot, NanobotType, OpportunityTarget, OwnerSwarm, ProductionFacility,
-    SupportCondition, SwarmId, SwarmMember,
+    GatherAssignment, InteractionRegion, Nanobot, NanobotType, OpportunityTarget, OwnerSwarm,
+    ProductionFacility, SupportCondition, SwarmId, SwarmMember, gather::painted_gather_regions,
 };
 use crate::{
+    intent::IntentGrid,
     navigation::{ConnectivityStatus, Navigation, RouteGoal},
     resources::ResourceDeposit,
 };
@@ -31,6 +32,7 @@ pub struct WorkAccess<'w, 's> {
     origins: Local<'s, std::cell::RefCell<WorkOrigins>>,
     generation: Option<Res<'w, crate::session_lifecycle::SessionGeneration>>,
     navigation: Res<'w, Navigation>,
+    grid: Res<'w, IntentGrid>,
     bots: Query<
         'w,
         's,
@@ -56,6 +58,18 @@ pub struct WorkAccess<'w, 's> {
 }
 
 impl WorkAccess<'_, '_> {
+    pub(crate) fn assigned_gather_region(
+        &self,
+        assignment: GatherAssignment,
+        swarm: SwarmId,
+    ) -> Option<InteractionRegion> {
+        if !assignment.has_paint_support(&self.grid, swarm) {
+            return None;
+        }
+        let (transform, deposit) = self.targets.get(assignment.deposit).ok()?;
+        Some(assignment.interaction(transform, deposit?.radius))
+    }
+
     pub(crate) fn region(&self, entity: Entity) -> Option<InteractionRegion> {
         self.targets.get(entity).ok().map(|(transform, deposit)| {
             deposit.map_or_else(
@@ -207,7 +221,33 @@ impl WorkAccess<'_, '_> {
         target: OpportunityTarget,
     ) -> WorkReachability {
         let (entity, kind) = match target {
-            OpportunityTarget::Gather { deposit, .. } => (deposit, NanobotType::Worker),
+            OpportunityTarget::Gather { deposit, cell } => {
+                let Ok((transform, Some(deposit))) = self.targets.get(deposit) else {
+                    return WorkReachability::Unreachable;
+                };
+                let preferred =
+                    InteractionRegion::deposit(transform, deposit.radius).within_cell(cell);
+                let preferred_access = self.crew(swarm, NanobotType::Worker, preferred, true);
+                if preferred_access == WorkReachability::Reachable {
+                    return preferred_access;
+                }
+                let mut pending = preferred_access == WorkReachability::Pending;
+                for (_, region) in
+                    painted_gather_regions(&self.grid, swarm, *transform, deposit.radius)
+                        .filter(|(candidate, _)| *candidate != cell)
+                {
+                    match self.crew(swarm, NanobotType::Worker, region, true) {
+                        WorkReachability::Reachable => return WorkReachability::Reachable,
+                        WorkReachability::Pending => pending = true,
+                        WorkReachability::Unreachable => {}
+                    }
+                }
+                return if pending {
+                    WorkReachability::Pending
+                } else {
+                    WorkReachability::Unreachable
+                };
+            }
             OpportunityTarget::PlannedBuild { structure, .. }
             | OpportunityTarget::Maintenance { structure } => (structure, NanobotType::Worker),
             OpportunityTarget::Haul { source, .. } => (source, NanobotType::Hauler),

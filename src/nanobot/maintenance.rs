@@ -57,6 +57,8 @@ use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::{Charger, ProductionFacility};
 use crate::resources::Stockpile;
 
+use super::combat_presentation::{NonCombatDestruction, StructureCollapsed};
+
 /// Shared condition carried by every completed support structure.
 pub type SupportCondition = Structure;
 
@@ -152,14 +154,8 @@ pub struct MaintenanceProgress {
 /// "maintenance was just done" tick is not also a "degrade one
 /// health" tick. The `MaintenancePlugin` wires the order.
 ///
-/// Structures that have just collapsed (health reached zero on
-/// the previous tick) are despawned here so the rest of the
-/// chain does not see a zero-health structure lingering in
-/// queries. The despawn is a hard remove: there is no
-/// `Collapsed` marker, no debris, no recoverable corpse in the
-/// first implementation. A future issue can add a collapse
-/// animation or recovery flow without changing the public
-/// contract.
+/// A structure collapses as soon as degradation reduces its health to zero,
+/// making its cell available for construction again.
 #[allow(clippy::type_complexity)]
 pub fn structure_degradation_system(
     tuning: Res<Tuning>,
@@ -167,6 +163,7 @@ pub fn structure_degradation_system(
     mut structures: Query<(Entity, &mut Structure, Option<&crate::nanobot::OwnerSwarm>)>,
     swarms: Query<&crate::nanobot::SwarmId>,
     mut counters: Option<ResMut<BattleCounters>>,
+    destruction: Option<Res<Messages<NonCombatDestruction>>>,
 ) {
     for (entity, mut structure, owner) in &mut structures {
         // Always advance the buffer counter. Workers reset it
@@ -181,6 +178,7 @@ pub fn structure_degradation_system(
         {
             // Buffer expired; the structure is unstable and loses health at the
             // fixed degradation cadence.
+            let was_operational = structure.health > 0;
             let next_health = structure
                 .health
                 .saturating_sub(tuning.maintenance.degradation_per_step);
@@ -194,6 +192,9 @@ pub fn structure_degradation_system(
                     && let Some(swarm) = owner.and_then(|owner| swarms.get(owner.0).ok())
                 {
                     counters.record(*swarm, BattleEvent::StructureLost);
+                }
+                if was_operational && destruction.is_some() {
+                    commands.trigger(StructureCollapsed { entity });
                 }
                 commands.entity(entity).despawn();
             }
@@ -423,7 +424,7 @@ pub fn worker_maintenance_work_system(
 }
 
 /// Clear maintenance lifecycle markers.
-fn release_maintenance_worker(commands: &mut Commands, entity: Entity) {
+pub(super) fn release_maintenance_worker(commands: &mut Commands, entity: Entity) {
     commands
         .entity(entity)
         .remove::<MaintenanceAssignment>()

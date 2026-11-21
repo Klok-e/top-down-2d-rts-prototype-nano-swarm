@@ -3,11 +3,20 @@ use super::{
     materialize::{intent_cell_center, midpoint_cell, route_exposure, world_to_intent_cell},
     *,
 };
+use crate::nanobot::{InteractionRegion, cell_overlaps_circle};
+use bevy::prelude::Transform;
 
 fn is_reachable(owner: SwarmId, state: &GameState<'_>, cell: IVec2) -> bool {
     state
         .reachability
         .is_none_or(|reachability| reachability.contains(owner, cell, state.grid))
+}
+
+fn is_target_reachable(owner: SwarmId, state: &GameState<'_>, position: Vec2) -> bool {
+    state.reachability.is_none_or(|map| {
+        map.contains(owner, world_to_intent_cell(position), state.grid)
+            && map.position_is_reachable(owner, position, state.grid)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -184,7 +193,7 @@ pub(super) fn adapt_pressure_anchor(
                     .grid
                     .cell(intent.cell)
                     .is_some_and(|cell| cell.has_owned(IntentKind::Build, owner))
-                && pressure_anchor_is_open(owner, intent.cell, state, budget)
+                && pressure_anchor_position(owner, intent.cell, state, budget).is_some()
             {
                 candidate.anchor = intent.cell;
                 return;
@@ -196,13 +205,15 @@ pub(super) fn adapt_pressure_anchor(
         return;
     }
     let lateral = IVec2::new(-direction.y, direction.x);
+    let target_position = state
+        .reachability
+        .and_then(|map| map.reachable_point(owner, target, state.grid))
+        .unwrap_or_else(|| intent_cell_center(target));
     let mut best = None;
     for anchor in [nominal, nominal + lateral, nominal - lateral] {
-        if !pressure_anchor_is_open(owner, anchor, state, budget) {
+        let Some(anchor_position) = pressure_anchor_position(owner, anchor, state, budget) else {
             continue;
-        }
-        let anchor_position = intent_cell_center(anchor);
-        let target_position = intent_cell_center(target);
+        };
         let travel = (cohort.distance(anchor_position) + anchor_position.distance(target_position))
             / crate::ZONE_BLOCK_SIZE;
         let exposure = route_exposure(cohort, anchor_position, state.terrain, budget)
@@ -217,25 +228,28 @@ pub(super) fn adapt_pressure_anchor(
     }
 }
 
-pub(super) fn pressure_anchor_is_open(
+fn pressure_anchor_position(
     owner: SwarmId,
     anchor: IVec2,
     state: &GameState<'_>,
     budget: &mut WorkBudget,
-) -> bool {
-    if !state.grid.in_bounds(anchor) || !is_reachable(owner, state, anchor) {
-        return false;
+) -> Option<Vec2> {
+    if let Some(map) = state.reachability {
+        return map.reachable_point(owner, anchor, state.grid);
+    }
+    if !state.grid.in_bounds(anchor) {
+        return None;
     }
     let anchor_position = intent_cell_center(anchor);
     for obstacle in state.terrain {
         if !budget.spend(1) {
-            return false;
+            return None;
         }
         if !obstacle.admits_body(anchor_position) {
-            return false;
+            return None;
         }
     }
-    true
+    Some(anchor_position)
 }
 
 pub(super) fn living_defender_cohort_position(
@@ -360,7 +374,7 @@ pub(super) fn validate_plan(
         let Some(observed) = observe_attack_target(*target, owner, state, budget)? else {
             return Ok(PlanValidation {
                 invalidation: Some(format!(
-                    "target {} {} disappeared",
+                    "target {} {} disappeared or became unreachable",
                     target.label(),
                     target.id
                 )),
@@ -423,6 +437,7 @@ pub(super) fn observe_attack_target(
                     && structure.owner != owner
                     && structure.health > 0
                     && structure.kind != StructureKind::Planned
+                    && is_target_reachable(owner, state, structure.position)
                 {
                     return Ok(Some(AttackObligation {
                         cell: world_to_intent_cell(structure.position),
@@ -437,7 +452,11 @@ pub(super) fn observe_attack_target(
                 if !budget.spend(1) {
                     return Err(());
                 }
-                if bot.id == target.id && bot.owner != owner && bot.health > 0 {
+                if bot.id == target.id
+                    && bot.owner != owner
+                    && bot.health > 0
+                    && is_target_reachable(owner, state, bot.position)
+                {
                     return Ok(Some(AttackObligation {
                         cell: world_to_intent_cell(bot.position),
                         health: bot.health,
@@ -464,6 +483,38 @@ pub(super) fn deposit_is_available(
         }
     }
     Ok(false)
+}
+
+fn gather_cell(
+    owner: SwarmId,
+    deposit: &DepositState,
+    state: &GameState<'_>,
+    budget: &mut WorkBudget,
+) -> Option<IVec2> {
+    let center = world_to_intent_cell(deposit.position);
+    let Some(map) = state.reachability else {
+        return Some(center);
+    };
+    let region = InteractionRegion::deposit(
+        &Transform::from_translation(deposit.position.extend(0.0)),
+        deposit.radius,
+    );
+    let radius = Vec2::splat(deposit.radius);
+    let min = world_to_intent_cell(deposit.position - radius);
+    let max = world_to_intent_cell(deposit.position + radius);
+    let other_cells = (min.y..=max.y).flat_map(|y| (min.x..=max.x).map(move |x| IVec2::new(x, y)));
+    for cell in std::iter::once(center).chain(other_cells.filter(|cell| *cell != center)) {
+        if !budget.spend(1) {
+            return None;
+        }
+        if cell_overlaps_circle(cell, deposit.position, deposit.radius)
+            && map.contains(owner, cell, state.grid)
+            && map.interaction_is_reachable(owner, region.within_cell(cell))
+        {
+            return Some(cell);
+        }
+    }
+    None
 }
 
 pub(super) fn generate_candidates(
@@ -496,10 +547,11 @@ pub(super) fn generate_candidates(
         if !budget.spend(1) {
             break;
         }
-        if deposit.amount > 0 && is_reachable(owner, state, world_to_intent_cell(deposit.position))
+        if deposit.amount > 0
+            && let Some(cell) = gather_cell(owner, deposit, state, budget)
         {
             let value = deposit_value(tuning, deposit, home, state, budget);
-            available.push((deposit, value));
+            available.push(((*deposit, cell), value));
         }
     }
     let current_primary = current.and_then(|plan| plan.primary_deposit);
@@ -507,14 +559,14 @@ pub(super) fn generate_candidates(
         .and_then(|id| {
             available
                 .iter()
-                .find(|(deposit, _)| deposit.id == id)
-                .map(|(deposit, value)| (**deposit, *value))
+                .find(|((deposit, _), _)| deposit.id == id)
+                .copied()
         })
         .or_else(|| {
             available
                 .iter()
                 .max_by(|left, right| left.1.total_cmp(&right.1))
-                .map(|(deposit, value)| (**deposit, *value))
+                .copied()
         });
     let economy = EconomySelection {
         primary: primary.map(|(deposit, _)| deposit),
@@ -544,7 +596,7 @@ pub(super) fn generate_candidates(
                 && structure.owner == owner
                 && structure.kind == StructureKind::Charger
                 && structure.health > 0
-                && is_reachable(owner, state, world_to_intent_cell(structure.position))
+                && is_target_reachable(owner, state, structure.position)
         })
         .copied();
     let pressure_readiness_penalty = (tuning.strategy_readiness_supply_target - supply).max(0.0)
@@ -565,11 +617,10 @@ pub(super) fn generate_candidates(
             + forces.friendly_strength * tuning.strategy_hold_force_weight,
     });
 
-    for &(deposit, value) in &available {
+    for &((deposit, target), value) in &available {
         if !budget.spend(1) {
             break;
         }
-        let target = world_to_intent_cell(deposit.position);
         let scarcity = (tuning.strategy_scarcity_supply_target - supply).max(0.0)
             * tuning.strategy_scarcity_weight;
         let score = tuning.strategy_secure_base
@@ -580,7 +631,7 @@ pub(super) fn generate_candidates(
         candidates.push(PlanCandidate {
             objective: Objective::SecureDeposit(deposit.id),
             economy: EconomySelection {
-                primary: Some(*deposit),
+                primary: Some((deposit, target)),
                 value,
             },
             attack_targets: Vec::new(),
@@ -604,7 +655,7 @@ pub(super) fn generate_candidates(
     if let Some(enemy_home) = enemy_home {
         let target = world_to_intent_cell(enemy_home);
         let anchor = midpoint_cell(home_cell, target);
-        if is_reachable(owner, state, target) && is_reachable(owner, state, anchor) {
+        if is_target_reachable(owner, state, enemy_home) && is_reachable(owner, state, anchor) {
             let distance = home.distance(enemy_home) / crate::ZONE_BLOCK_SIZE;
             let score = economy.value
                 + tuning.strategy_pressure_base
@@ -651,7 +702,9 @@ pub(super) fn generate_candidates(
         }
         let target = world_to_intent_cell(structure.position);
         let anchor = midpoint_cell(home_cell, target);
-        if !is_reachable(owner, state, target) || !is_reachable(owner, state, anchor) {
+        if !is_target_reachable(owner, state, structure.position)
+            || !is_reachable(owner, state, anchor)
+        {
             continue;
         }
         let strategic_value = match structure.kind {
@@ -721,7 +774,7 @@ pub(super) fn generate_candidates(
         }
         let target = world_to_intent_cell(bot.position);
         let anchor = midpoint_cell(home_cell, target);
-        if !is_reachable(owner, state, target) || !is_reachable(owner, state, anchor) {
+        if !is_target_reachable(owner, state, bot.position) || !is_reachable(owner, state, anchor) {
             continue;
         }
         let danger = match bot.kind {

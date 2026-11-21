@@ -225,6 +225,9 @@ impl Navigation {
                 .into_iter()
                 .all(|id| self.obstacles[id].admits_body(p))
     }
+    pub(crate) fn point_clear_for_entry(&self, point: Vec2) -> bool {
+        self.point_clear(point) && self.clearing.iter().all(|shape| shape.admits_body(point))
+    }
     /// Analytic swept-disc clearance covers every point of the movement segment.
     pub fn segment_clear(&self, a: Vec2, b: Vec2) -> bool {
         self.point_clear(a)
@@ -339,6 +342,9 @@ fn segment_box(a: Vec2, b: Vec2, min: Vec2, max: Vec2) -> bool {
 mod budget;
 pub use budget::*;
 
+#[path = "tile_visibility.rs"]
+mod tile_visibility;
+
 impl Obstacle {
     pub fn segment_clear(self, a: Vec2, b: Vec2) -> bool {
         match self {
@@ -346,23 +352,29 @@ impl Obstacle {
                 point_segment_distance(center, a, b) >= radius + BODY_RADIUS
             }
             Obstacle::Rectangle { center, half } => {
-                let min = center - half;
-                let max = center + half;
-                // A rectangle expanded by a disc consists of two strips and four round corners.
-                !segment_box(
-                    a,
-                    b,
-                    min - Vec2::new(BODY_RADIUS, 0.0),
-                    max + Vec2::new(BODY_RADIUS, 0.0),
-                ) && !segment_box(
-                    a,
-                    b,
-                    min - Vec2::new(0.0, BODY_RADIUS),
-                    max + Vec2::new(0.0, BODY_RADIUS),
-                ) && [min, max, Vec2::new(min.x, max.y), Vec2::new(max.x, min.y)]
-                    .iter()
-                    .all(|&corner| point_segment_distance(corner, a, b) >= BODY_RADIUS)
+                let (strips, corners) = expanded_rectangle(center, half);
+                strips
+                    .into_iter()
+                    .all(|(min, max)| !segment_box(a, b, min, max))
+                    && corners
+                        .into_iter()
+                        .all(|corner| point_segment_distance(corner, a, b) >= BODY_RADIUS)
             }
         }
     }
+}
+
+// A rectangle expanded by a disc consists of two strips and four round corners.
+fn expanded_rectangle(center: Vec2, half: Vec2) -> ([(Vec2, Vec2); 2], [Vec2; 4]) {
+    let min = center - half;
+    let max = center + half;
+    let horizontal = Vec2::new(BODY_RADIUS, 0.0);
+    let vertical = Vec2::new(0.0, BODY_RADIUS);
+    (
+        [
+            (min - horizontal, max + horizontal),
+            (min - vertical, max + vertical),
+        ],
+        [min, max, Vec2::new(min.x, max.y), Vec2::new(max.x, min.y)],
+    )
 }

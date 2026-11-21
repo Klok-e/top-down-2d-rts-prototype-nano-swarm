@@ -63,10 +63,11 @@ use crate::nanobot::components::{
 };
 use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::{
-    Cargo, ExtractProgress, GatherAssignment, HaulerAssignment, HaulerLoading,
-    MaintenanceAssignment, MaintenanceProgress, PlannedStructureClaim, PlannedStructureProgress,
-    ReturningToStockpile,
+    Cargo, DefenderDisengagement, DefenderRout, ExtractProgress, GatherAssignment,
+    HaulerAssignment, HaulerLoading, MaintenanceAssignment, MaintenanceProgress,
+    PlannedStructureClaim, PlannedStructureProgress, ReturningToStockpile,
 };
+use crate::reachability::SwarmReachabilityMap;
 
 /// Per-tick velocity nudge magnitude applied to idle bots spreading
 /// across their type-fit region. Sized near [`BOT_SEPARATION_FORCE`]
@@ -140,9 +141,8 @@ pub fn fit_neighbour_cells(ntype: NanobotType, cell: IVec2, grid: &IntentGrid) -
 /// Choose the gradient-step target cell for an in-region idle bot.
 ///
 /// `own_density_excl_self` is the count of *other* bots in the bot's
-/// own cell (the bot's own body is excluded so a lone bot reads `0`
-/// and falls through to random exploration rather than always fleeing
-/// itself). `fit_neighbours` is `[(cell, density)]` for each in-bounds
+/// own cell. A lone bot reads `0` and falls through to random exploration.
+/// `fit_neighbours` is `[(cell, density)]` for each in-bounds
 /// type-fit king-move neighbour, with `density` counting every bot in
 /// that neighbour cell.
 ///
@@ -310,6 +310,7 @@ fn type_index(ntype: NanobotType) -> usize {
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn idle_spread_system(
     grid: Res<IntentGrid>,
+    reachability: Option<Res<SwarmReachabilityMap>>,
     time: Res<Time<Fixed>>,
     all_bots: Query<(&Transform, &SwarmMember), With<Nanobot>>,
     mut idle_bots: Query<
@@ -321,7 +322,12 @@ pub fn idle_spread_system(
             &Commitment,
             &mut VelocityComponent,
         ),
-        (With<Nanobot>, Without<DirectMovementComponent>),
+        (
+            With<Nanobot>,
+            Without<DirectMovementComponent>,
+            Without<DefenderDisengagement>,
+            Without<DefenderRout>,
+        ),
     >,
     active_tasks: Query<
         (),
@@ -377,6 +383,9 @@ pub fn idle_spread_system(
                 if kinds
                     .iter()
                     .any(|kind| intent_cell.has_owned(*kind, *swarm))
+                    && reachability
+                        .as_deref()
+                        .is_none_or(|map| map.contains(*swarm, cell, &grid))
                 {
                     indexes[type_idx].insert(cell);
                 }
@@ -404,15 +413,23 @@ pub fn idle_spread_system(
         let Some(swarm_fit_cells) = fit_cells.get(&member.0) else {
             continue;
         };
+        let target_point = |cell| {
+            reachability.as_deref().map_or_else(
+                || Some(get_world_from_zone(cell)),
+                |map| map.reachable_point(member.0, cell, &grid),
+            )
+        };
 
         let retained = targets.get_mut(&entity).and_then(|target| {
-            let offset = pos - get_world_from_zone(target.cell);
+            let point = target_point(target.cell)?;
+            let offset = pos - point;
             let distance = offset.length();
             if distance + 2.0 < target.best_distance {
                 target.best_distance = distance;
                 target.last_progress = now;
             }
-            let arrived = offset.abs().max_element() <= crate::ZONE_BLOCK_SIZE * 0.25;
+            let arrived = own_cell == target.cell
+                && offset.abs().max_element() <= crate::ZONE_BLOCK_SIZE * 0.25;
             (!arrived
                 && now - target.last_progress < 1.0
                 && grid.cell(target.cell).is_some_and(|cell| {
@@ -443,7 +460,8 @@ pub fn idle_spread_system(
                     let neighbour = grid.cell(n)?;
                     let fit = kind_sets[type_idx]
                         .iter()
-                        .any(|kind| neighbour.has_owned(*kind, member.0));
+                        .any(|kind| neighbour.has_owned(*kind, member.0))
+                        && target_point(n).is_some();
                     fit.then(|| (n, density.get(&n).copied().unwrap_or(0)))
                 })
                 .collect();
@@ -457,20 +475,21 @@ pub fn idle_spread_system(
             swarm_fit_cells[type_idx].nearest(pos)
         };
 
-        if let Some(target_cell) = target {
-            let target_center = get_world_from_zone(target_cell);
+        if let Some((target_cell, point)) =
+            target.and_then(|cell| Some((cell, target_point(cell)?)))
+        {
             if retained.is_none() {
                 targets.insert(
                     entity,
                     SpreadTarget {
                         cell: target_cell,
-                        best_distance: pos.distance(target_center),
+                        best_distance: pos.distance(point),
                         last_progress: now,
                     },
                 );
             }
-            let dir = target_center - pos;
-            // Near-zero direction (bot already on the target center)
+            let dir = point - pos;
+            // Near-zero direction (bot already at its destination)
             // yields no nudge rather than a NaN from normalising zero.
             if dir.length() > 1e-3 {
                 velocity.value += dir.normalize() * BOT_SPREAD_FORCE;

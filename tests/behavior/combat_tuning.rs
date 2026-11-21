@@ -4,11 +4,10 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Charge, Charger, ChargerAssignment, ChargerProgress, ChargerPulseProgress,
-        DefenderAttackCooldown, DefenderResponse, EmptyChargeProgress, Health, Nanobot,
-        NanobotBundle, NanobotType, OwnerSwarm, ResolvedCombatFact, Structure, StructureKind,
-        Swarm, SwarmId, defender_charge_drain_system, defender_charger_work_system,
-        defender_combat_system, defender_health_loss_when_empty_system, reconcile_charge_tuning,
-        reconcile_combat_tuning,
+        DefenderAttackCooldown, EmptyChargeProgress, Health, Nanobot, NanobotBundle, NanobotType,
+        OwnerSwarm, ResolvedCombatFact, Structure, StructureKind, Swarm, SwarmId,
+        defender_charge_drain_system, defender_charger_work_system, defender_combat_system,
+        defender_health_loss_when_empty_system, reconcile_charge_tuning, reconcile_combat_tuning,
     },
     resources::{ResourceKind, ResourceLedger},
     tuning::Tuning,
@@ -27,46 +26,53 @@ fn combat_edits_change_existing_defender_reach_damage_and_attack_cadence() {
             Transform::from_xyz(140.0, 0.0, 0.0),
         ))
         .id();
-    let attacker = app
-        .world_mut()
-        .spawn((
-            NanobotBundle {
-                nanobot_type: NanobotType::Defender,
-                swarm_member: top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmMember(SwarmId(
-                    1,
-                )),
-                ..default()
-            },
-            Transform::default(),
-            Charge::default(),
-            DefenderResponse { target: victim },
-        ))
-        .id();
-    app.update();
+    app.world_mut().spawn((
+        NanobotBundle {
+            nanobot_type: NanobotType::Defender,
+            swarm_member: top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmMember(SwarmId(1)),
+            ..default()
+        },
+        Transform::default(),
+        Charge::default(),
+    ));
+    let old = app.world().resource::<Tuning>().clone();
+    for _ in 0..old.combat.attack_interval_ticks {
+        app.update();
+    }
     assert_eq!(app.world().get::<Health>(victim).unwrap().current, 100);
 
-    let old = app.world().resource::<Tuning>().clone();
     let mut new = old.clone();
     new.combat.attack_range = 160.0;
     new.combat.base_attack = 24.0;
     new.combat.attack_interval_ticks = 4;
+    new.combat.cadence_jitter = 0.0;
     app.insert_resource(new.clone());
     reconcile_combat_tuning(app.world_mut(), &old, &new);
-    app.update();
+    for _ in 0..new.combat.attack_interval_ticks {
+        app.update();
+        if app.world().get::<Health>(victim).unwrap().current < 100 {
+            break;
+        }
+    }
     assert_eq!(app.world().get::<Health>(victim).unwrap().current, 76);
-    assert_eq!(
-        app.world()
-            .get::<DefenderAttackCooldown>(attacker)
-            .unwrap()
-            .ticks_remaining,
-        3
-    );
-    for _ in 0..3 {
+
+    let old = new.clone();
+    new.combat.attack_interval_ticks = 8;
+    app.insert_resource(new.clone());
+    reconcile_combat_tuning(app.world_mut(), &old, &new);
+    for _ in 0..6 {
         app.update();
     }
     assert_eq!(app.world().get::<Health>(victim).unwrap().current, 76);
     app.update();
     assert_eq!(app.world().get::<Health>(victim).unwrap().current, 52);
+
+    let old = new.clone();
+    new.combat.attack_interval_ticks = 1;
+    app.insert_resource(new.clone());
+    reconcile_combat_tuning(app.world_mut(), &old, &new);
+    app.update();
+    assert_eq!(app.world().get::<Health>(victim).unwrap().current, 28);
 }
 
 #[test]
@@ -99,9 +105,7 @@ fn combat_and_charge_reconcile_preserve_life_progress_and_material_custody() {
                 current: 0.25,
                 max: 1.0,
             },
-            DefenderAttackCooldown {
-                ticks_remaining: 15,
-            },
+            DefenderAttackCooldown::new(20),
             ChargerPulseProgress { ticks_elapsed: 75 },
             EmptyChargeProgress { ticks_elapsed: 3 },
             ChargerAssignment { charger },

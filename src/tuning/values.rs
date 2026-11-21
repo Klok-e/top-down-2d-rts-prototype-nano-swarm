@@ -85,11 +85,20 @@ tuning_schema! {
         corridor_cost_multiplier: f32 = 0.35 => ("Corridor cost multiplier", "", 1.0, 0.05, 0.01, 1.0);
     }
     combat: CombatTuning {
-        attack_range: f32 = 96.0 => ("Attack range", "world", 1.0, 8.0, 1.0, 1_000_000.0);
-        attack_interval_ticks: u16 = 30 => ("Attack interval", "s", 1.0 / 60.0, 1.0 / 60.0, 1.0, 65535.0);
-        structure_damage_factor: f32 = 0.5 => ("Structure damage factor", "", 1.0, 0.05, 0.0, 100.0);
+        rout_radius: f32 = 384.0 => ("Rout strength radius", "world", 1.0, 16.0, 0.0, 1536.0);
+        rout_ratio: f32 = 0.4 => ("Rout strength ratio", "", 1.0, 0.05, 0.0, 1.6);
+        rout_confirm_ticks: u32 = 45 => ("Rout confirmation", "s", 1.0 / 60.0, 1.0 / 60.0, 0.0, 180.0);
+        rout_min_ticks: u32 = 180 => ("Minimum rout time", "s", 1.0 / 60.0, 1.0 / 60.0, 0.0, 720.0);
+        cadence_jitter: f32 = 0.1 => ("Attack cadence jitter", "", 1.0, 0.01, 0.0, 1.0);
+        responders_per_defender_threat: u16 = 2 => ("Responders per hostile Defender", "", 1.0, 1.0, 0.0, 64.0);
+        engage_range_factor: f32 = 2.0 => ("Engagement range multiplier", "×", 1.0, 0.1, 0.0, 8.0);
+        band_depth: f32 = 32.0 => ("Engagement band depth", "world", 1.0, 1.0, 0.0, 128.0);
+        strafe_speed_fraction: f32 = 0.35 => ("Strafe speed fraction", "", 1.0, 0.05, 0.0, 1.4);
+        attack_range: f32 = 120.0 => ("Attack range", "world", 1.0, 8.0, 1.0, 1_000_000.0);
+        attack_interval_ticks: u16 = 40 => ("Attack interval", "s", 1.0 / 60.0, 1.0 / 60.0, 1.0, 65535.0);
+        structure_damage_factor: f32 = 0.25 => ("Structure damage factor", "", 1.0, 0.05, 0.0, 100.0);
         nanobot_max_health: u32 = 100 => ("Nanobot max health", "", 1.0, 1.0, 1.0, 1_000_000.0);
-        base_attack: f32 = 10.0 => ("Base attack", "", 1.0, 1.0, 0.0, 1_000_000.0);
+        base_attack: f32 = 26.0 => ("Base attack", "", 1.0, 1.0, 0.0, 1_000_000.0);
         base_defense: f32 = 10.0 => ("Base defense", "", 1.0, 1.0, 0.0, 1_000_000.0);
     }
     charge: ChargeTuning {
@@ -99,6 +108,7 @@ tuning_schema! {
         per_pulse: f32 = 0.03 => ("Per pulse", "", 1.0, 0.01, 0.000001, 100.0);
         material_per_pulse: u32 = 2 => ("Material per pulse", "", 1.0, 1.0, 1.0, 1_000_000.0);
         weakened_threshold: f32 = 0.3 => ("Weakened threshold", "", 1.0, 0.05, 0.0, 100.0);
+        weakened_strength_floor: f32 = 0.4 => ("Weakened strength floor", "", 1.0, 0.05, 0.0, 2.0);
         low_threshold: f32 = 0.5 => ("Low threshold", "", 1.0, 0.05, 0.0, 100.0);
         empty_damage_interval_ticks: u8 = 6 => ("Empty charge damage interval", "s", 1.0 / 60.0, 1.0 / 60.0, 1.0, 255.0);
         empty_health_damage: u32 = 1 => ("Empty health damage", "", 1.0, 1.0, 1.0, 1_000_000.0);
@@ -177,6 +187,11 @@ tuning_schema! {
         strategy_deposit_exposure_cost: f32 = 10.0 => ("deposit exposure cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
     }
     presentation: PresentationTuning {
+        effects_intensity: f32 = 1.0 => ("Combat effects intensity", "", 1.0, 0.1, 0.0, 4.0);
+        bloom_intensity: f32 = 0.3 => ("Bloom intensity", "", 1.0, 0.05, 0.0, 1.2);
+        defender_turn_rate: f32 = 720.0 => ("Defender turn rate", "°/s", 1.0, 30.0, 0.0, 2880.0);
+        nanobot_turn_rate: f32 = 540.0 => ("Nanobot turn rate", "°/s", 1.0, 30.0, 0.0, 2160.0);
+        aim_hold_secs: f32 = 0.6 => ("Defender aim hold", "s", 1.0, 0.05, 0.0, 2.4);
         camera_accel: f32 = 16000.0 => ("Camera accel", "", 1.0, 1.0, 0.000001, 1_000_000.0);
         camera_max_speed: f32 = 1300.0 => ("Camera max speed", "", 1.0, 1.0, 0.000001, 1_000_000.0);
         camera_friction: f32 = 50000.0 => ("Camera friction", "", 1.0, 1.0, 0.000001, 1_000_000.0);
@@ -195,20 +210,19 @@ tuning_schema! {
         condition_bar_gap: f32 = 2.0 => ("Condition bar gap", "", 1.0, 1.0, 0.000001, 1_000_000.0);
         structure_label_gap: f32 = 12.0 => ("Structure label gap", "", 1.0, 1.0, 0.000001, 1_000_000.0);
         cargo_label_gap: f32 = 8.0 => ("Cargo label gap", "", 1.0, 1.0, 0.000001, 1_000_000.0);
-        combat_pulse_duration_secs: f32 = 0.06 => ("Combat pulse duration", "s", 1.0, 0.01, 0.000001, 1_000_000.0);
         combat_recovery_duration_secs: f32 = 0.18 => ("Combat recovery duration", "s", 1.0, 0.01, 0.000001, 1_000_000.0);
         combat_death_duration_secs: f32 = 0.32 => ("Combat death duration", "s", 1.0, 0.01, 0.000001, 1_000_000.0);
         combat_jab_distance: f32 = 12.0 => ("Combat jab distance", "", 1.0, 1.0, 0.000001, 1_000_000.0);
         combat_recoil_distance: f32 = 10.0 => ("Combat recoil distance", "", 1.0, 1.0, 0.000001, 1_000_000.0);
-        combat_minimum_impact_screen_distance: f32 = 2.0 => ("Combat minimum impact screen distance", "", 1.0, 1.0, 0.000001, 1_000_000.0);
         combat_reaction_flash_per_hit: f32 = 0.65 => ("Combat reaction flash per hit", "", 1.0, 0.01, 0.000001, 1_000_000.0);
         combat_reaction_flash_cap: f32 = 0.9 => ("Combat reaction flash cap", "", 1.0, 0.01, 0.000001, 1_000_000.0);
-        combat_pulse_thickness: f32 = 3.0 => ("Combat pulse thickness", "", 1.0, 1.0, 0.000001, 1_000_000.0);
-        combat_decoration_length: f32 = 10.0 => ("Combat decoration length", "", 1.0, 1.0, 0.000001, 1_000_000.0);
-        combat_decoration_thickness: f32 = 2.0 => ("Combat decoration thickness", "", 1.0, 1.0, 0.000001, 1_000_000.0);
         combat_structure_ring_start_radius: f32 = 18.0 => ("Combat structure ring start radius", "", 1.0, 1.0, 0.000001, 1_000_000.0);
         combat_structure_ring_end_radius: f32 = 42.0 => ("Combat structure ring end radius", "", 1.0, 1.0, 0.000001, 1_000_000.0);
         combat_structure_ring_thickness: f32 = 3.0 => ("Combat structure ring thickness", "", 1.0, 1.0, 0.000001, 1_000_000.0);
-        combat_zoom_cutoff: f32 = 8.0 => ("Combat zoom cutoff", "", 1.0, 1.0, 0.000001, 1_000_000.0);
+        effects_mid_zoom: f32 = 2.5 => ("Mid combat effects zoom", "", 1.0, 0.5, 0.0, 10.0);
+        effects_far_zoom: f32 = 8.0 => ("Far combat effects zoom", "", 1.0, 0.5, 0.0, 32.0);
+        effect_min_screen_px: f32 = 3.0 => ("Minimum combat effect size", "px", 1.0, 0.5, 0.0, 12.0);
+        battle_marker_heat: f32 = 20.0 => ("Battle marker heat threshold", "", 1.0, 1.0, 0.0, 80.0);
+        camera_shake_intensity: f32 = 1.0 => ("Camera shake intensity", "", 1.0, 0.1, 0.0, 4.0);
     }
 }

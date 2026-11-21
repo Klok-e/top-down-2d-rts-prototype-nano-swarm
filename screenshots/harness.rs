@@ -173,7 +173,17 @@ fn run_scenario_with_limits(
         update_app(&mut session.app)?;
     }
 
+    session
+        .app
+        .world_mut()
+        .resource_mut::<Time<Virtual>>()
+        .pause();
     prime_readback_path(&mut session)?;
+    session
+        .app
+        .world_mut()
+        .resource_mut::<Time<Virtual>>()
+        .unpause();
 
     session
         .app
@@ -227,8 +237,8 @@ impl Drop for ScreenshotSession {
     }
 }
 
-/// Primes dependency-owned render asset and GPU readback state before trial's
-/// first callback. Priming uses normal app updates and can advance gameplay.
+/// Primes dependency-owned render asset and GPU readback state before the first
+/// callback. Pausing virtual time keeps the starting tick independent of readback time.
 fn prime_readback_path(session: &mut ScreenshotSession) -> Result<(), String> {
     let destination = PathBuf::from(SCREENSHOT_DIR).join(".readback-prime.png");
     let artifact = TemporaryArtifact::new(destination);

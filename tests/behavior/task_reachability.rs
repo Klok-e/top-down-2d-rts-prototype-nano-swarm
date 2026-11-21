@@ -175,3 +175,266 @@ fn blocked_empty_hauler_releases_pickup_reservation() {
         100
     );
 }
+
+#[test]
+fn gather_requires_contact_ground_in_an_owned_painted_tile() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{GatherAssignment, OwnerSwarm, world_to_cell},
+        reachability::{IntentWriteAction, SwarmReachabilityMap, apply_reachable_intent},
+        resources::{ResourceDeposit, StockpileRole},
+        terrain::RockFormation,
+        tuning::Tuning,
+    };
+
+    let mut app = common::sim_app_with_gather();
+    let home = Vec2::new(96.0, 256.0);
+    let swarm = common::spawn_swarm_at(&mut app, home);
+    let worker = common::spawn_worker_at(&mut app, home);
+    let source = common::spawn_stockpile(&mut app, Vec2::new(160.0, 155.0), 0, 10);
+    app.world_mut()
+        .entity_mut(source)
+        .insert((OwnerSwarm(swarm), StockpileRole::Source));
+    let mut terrain = Vec::new();
+    for (center, half) in [
+        (Vec2::new(256.0, 256.0), Vec2::new(20.0, 70.0)),
+        (Vec2::new(450.0, 256.0), Vec2::new(30.0, 135.0)),
+    ] {
+        let rock = RockFormation::Rectangle { half };
+        let transform = Transform::from_translation(center.extend(0.0));
+        app.world_mut().spawn((rock, transform));
+        terrain.push(rock.obstacle(&transform));
+    }
+    let reachable = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(144.0, 370.0),
+            amount: 1,
+            capacity: 1,
+            radius: 32.0,
+        },
+    );
+    let around_the_wall = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(505.0, 256.0),
+            amount: 3,
+            capacity: 3,
+            radius: 22.0,
+        },
+    );
+    let map = SwarmReachabilityMap::new(
+        app.world().resource::<IntentGrid>(),
+        terrain,
+        [(SwarmId::PLAYER, home)],
+    )
+    .unwrap();
+    app.insert_resource(map.clone());
+    app.world_mut()
+        .resource_mut::<Tuning>()
+        .logistics
+        .material_work_ticks = 2;
+    let paint = |app: &mut App, cell| {
+        assert!(
+            apply_reachable_intent(
+                &mut app.world_mut().resource_mut::<IntentGrid>(),
+                &map,
+                SwarmId::PLAYER,
+                cell,
+                IntentKind::Gather,
+                IntentWriteAction::Paint
+            )
+            .unwrap()
+        );
+    };
+    paint(&mut app, IVec2::ZERO);
+
+    for _ in 0..550 {
+        app.update();
+    }
+    assert_eq!(
+        app.world()
+            .get::<ResourceDeposit>(reachable)
+            .unwrap()
+            .amount,
+        0
+    );
+    assert_eq!(
+        app.world()
+            .get::<ResourceDeposit>(around_the_wall)
+            .unwrap()
+            .amount,
+        3,
+        "an accessible but unpainted exterior cannot perform the work"
+    );
+    assert!(app.world().get::<GatherAssignment>(worker).is_none());
+
+    paint(&mut app, IVec2::X);
+    for _ in 0..550 {
+        app.update();
+        if app
+            .world()
+            .get::<ResourceDeposit>(around_the_wall)
+            .unwrap()
+            .amount
+            == 2
+        {
+            break;
+        }
+    }
+    assert_eq!(
+        app.world()
+            .get::<ResourceDeposit>(around_the_wall)
+            .unwrap()
+            .amount,
+        2
+    );
+    assert_eq!(
+        app.world().get::<GatherAssignment>(worker).unwrap().cell,
+        IVec2::X,
+        "the Worker uses the paint on the usable side of the wall"
+    );
+    let position = app
+        .world()
+        .get::<Transform>(worker)
+        .unwrap()
+        .translation
+        .truncate();
+    assert_eq!(world_to_cell(position), IVec2::X);
+}
+
+#[test]
+fn worker_extracts_through_narrow_contact_ground_at_tile_edges() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{
+            DirectMovementComponent, GatherAssignment, InteractionRegion, OwnerSwarm, world_to_cell,
+        },
+        reachability::{IntentWriteAction, SwarmReachabilityMap, apply_reachable_intent},
+        resources::{ResourceDeposit, StockpileRole},
+        terrain::RockFormation,
+        tuning::Tuning,
+    };
+
+    for (home, deposit_position, radius, source_position, rocks) in [
+        (
+            Vec2::new(-1600.0, -1550.0),
+            Vec2::new(331.0, 544.0),
+            600.0,
+            Vec2::new(-160.0, -300.0),
+            &[][..],
+        ),
+        (
+            Vec2::new(1600.0, 1600.0),
+            Vec2::new(63.69218, 63.69218),
+            600.0,
+            Vec2::new(800.0, 620.0),
+            &[][..],
+        ),
+        (
+            Vec2::new(-150.0, 302.0),
+            Vec2::new(0.0, 256.0),
+            10.0,
+            Vec2::new(-180.0, 160.0),
+            &[(Vec2::new(529.025, 0.0), Vec2::new(495.0, 5000.0))][..],
+        ),
+        (
+            Vec2::new(-150.0, 301.6),
+            Vec2::new(0.0, 256.0),
+            10.0,
+            Vec2::new(-300.0, 301.6),
+            &[
+                (Vec2::new(529.025, 0.0), Vec2::new(495.0, 5000.0)),
+                (Vec2::new(502.0, 267.25), Vec2::new(522.0, 0.25)),
+                (Vec2::new(502.0, 335.875), Vec2::new(522.0, 0.125)),
+                (Vec2::new(502.0, 209.0), Vec2::new(522.0, 5.0)),
+            ][..],
+        ),
+        (
+            Vec2::new(-22.0, 302.8),
+            Vec2::new(128.0, 256.0),
+            10.0,
+            Vec2::new(-300.0, 302.8),
+            &[
+                (Vec2::new(0.0, 267.35), Vec2::new(5000.0, 0.35)),
+                (Vec2::new(0.0, 337.8), Vec2::new(5000.0, 0.2)),
+            ][..],
+        ),
+    ] {
+        let mut app = common::sim_app_with_gather();
+        let swarm = common::spawn_swarm_at(&mut app, home);
+        let worker = common::spawn_worker_at(&mut app, home);
+        let deposit = common::spawn_deposit(
+            &mut app,
+            common::DepositFixture {
+                world_pos: deposit_position,
+                amount: 1,
+                capacity: 1,
+                radius,
+            },
+        );
+        let source = common::spawn_stockpile(&mut app, source_position, 0, 10);
+        app.world_mut()
+            .entity_mut(source)
+            .insert((OwnerSwarm(swarm), StockpileRole::Source));
+        let terrain: Vec<_> = rocks
+            .iter()
+            .map(|&(center, half)| {
+                let rock = RockFormation::Rectangle { half };
+                let transform = Transform::from_translation(center.extend(0.0));
+                app.world_mut().spawn((rock, transform));
+                rock.obstacle(&transform)
+            })
+            .collect();
+        let map = SwarmReachabilityMap::new(
+            app.world().resource::<IntentGrid>(),
+            terrain,
+            [(SwarmId::PLAYER, home)],
+        )
+        .unwrap();
+        let region =
+            InteractionRegion::deposit(app.world().get::<Transform>(deposit).unwrap(), radius)
+                .within_cell(IVec2::ZERO);
+        assert!(
+            map.interaction_is_reachable(SwarmId::PLAYER, region),
+            "the permanent approach should be reachable from {home:?}"
+        );
+        app.insert_resource(map.clone());
+        {
+            let mut tuning = app.world_mut().resource_mut::<Tuning>();
+            tuning.logistics.material_work_ticks = 1;
+            tuning.logistics.bot_speed = 10.0;
+        }
+        assert!(
+            apply_reachable_intent(
+                &mut app.world_mut().resource_mut::<IntentGrid>(),
+                &map,
+                SwarmId::PLAYER,
+                IVec2::ZERO,
+                IntentKind::Gather,
+                IntentWriteAction::Paint,
+            )
+            .unwrap()
+        );
+        for _ in 0..450 {
+            app.update();
+            if app.world().get::<ResourceDeposit>(deposit).unwrap().amount == 0 {
+                break;
+            }
+        }
+
+        let position = app
+            .world()
+            .get::<Transform>(worker)
+            .unwrap()
+            .translation
+            .truncate();
+        assert_eq!(
+            app.world().get::<ResourceDeposit>(deposit).unwrap().amount,
+            0,
+            "worker from {home:?} reached {position:?} without harvesting the deposit at {deposit_position:?} with radius {radius}, assignment: {:?}, order: {:?}",
+            app.world().get::<GatherAssignment>(worker),
+            app.world().get::<DirectMovementComponent>(worker),
+        );
+        assert_eq!(world_to_cell(position), IVec2::ZERO);
+        assert!(region.contains(position));
+    }
+}

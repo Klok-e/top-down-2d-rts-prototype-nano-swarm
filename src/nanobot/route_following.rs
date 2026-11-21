@@ -2,6 +2,8 @@ use bevy::prelude::*;
 
 use crate::navigation::Navigation;
 
+pub(super) const WAYPOINT_REACHED_DISTANCE: f32 = 0.01;
+
 /// Tracks the waypoint selected for the current movement leg.
 #[derive(Clone, Copy, Default)]
 pub(super) struct RouteFollower {
@@ -37,7 +39,7 @@ impl RouteFollower {
             let reached = waypoints.get(index).is_some_and(|point| {
                 let offset = position - *point;
                 let distance = offset.length();
-                distance < 0.01
+                distance < WAYPOINT_REACHED_DISTANCE
                     || (distance <= crate::navigation::BODY_RADIUS
                         && waypoints.get(index + 1).is_some_and(|next| {
                             // A local sidestep can pass the turn without touching the waypoint.
@@ -61,7 +63,7 @@ impl RouteFollower {
         }
         while waypoints
             .get(*current)
-            .is_some_and(|point| position.distance(*point) < 0.01)
+            .is_some_and(|point| position.distance(*point) < WAYPOINT_REACHED_DISTANCE)
         {
             *current += 1;
         }

@@ -1,121 +1,140 @@
 //! Render-time presentation of facts already resolved by Defender combat.
 
-use std::{
-    collections::{HashMap, HashSet},
-    time::Duration,
-};
+mod effects;
+mod heat;
+mod indicators;
+mod render_anchor;
+mod shake;
+mod skirmish_end;
+
+use std::{collections::HashMap, time::Duration};
 
 use bevy::{
+    camera::CameraProjection,
     ecs::{query::QueryData, system::SystemParam},
-    gizmos::GizmoPlugin,
+    math::I64Vec2,
     prelude::*,
-    render::{
-        Extract, ExtractSchedule, RenderApp, sync_world::TemporaryRenderEntity,
-        view::RenderVisibleEntities,
-    },
-    sprite_render::{ExtractedSprite, ExtractedSpriteKind, ExtractedSprites, SpriteSystems},
 };
-
-use crate::tuning::{PresentationTuning, Tuning};
 
 use crate::{
-    GAMEPLAY_SPRITE_Z,
-    fly_camera::CameraZoom2d,
-    nanobot::{
-        CombatAppearance, CombatVisualSnapshot, NanobotSprites, NanobotVisual, ResolvedCombatDeath,
-        ResolvedCombatFact, ResolvedCombatHit, SwarmId, completed_visual_color,
-        rotation_for_direction,
-    },
-    structure_sprites::{StructureSprites, StructureVisual},
+    GAMEPLAY_SPRITE_Z, MainCamera,
+    fly_camera::camera_2d_movement_system,
+    structure_sprites::StructureVisual,
+    tuning::{PresentationTuning, Tuning},
 };
 
-const MAX_DECORATIVE_EFFECTS: usize = 24;
+use super::{
+    CombatAppearance, CombatVisualSnapshot, Nanobot, NanobotType, NanobotVisual, PresentedNanobot,
+    ResolvedCombatFact, ResolvedCombatHit, SwarmMember, UpdateNanobotPresentation,
+    motion_presentation::{CombatTickSnapshots, capture_fixed_motion},
+    swarm_presentation_color,
+};
 
-/// One visible connection produced by a resolved hit.
+pub use effects::{
+    ActiveCombatEffects, CombatCasualtyFlash, CombatDeathPop, CombatEffectSpawns, CombatParticle,
+    CombatParticleKind,
+};
+use effects::{CombatEffectRequest, CombatEffectsPlugin};
+pub use heat::{BattleMarker, CombatHeat};
+use indicators::CombatIndicatorsPlugin;
+pub use indicators::{ActiveCombatIndicators, CombatIndicator, CombatIndicatorKind};
+pub use skirmish_end::{ActiveSkirmishRings, SkirmishRing};
+
+/// Destruction from the gameplay lifecycle outside resolved combat.
+#[derive(Debug, Clone, Copy, Message)]
+pub enum NonCombatDestruction {
+    Nanobot {
+        victim: CombatVisualSnapshot,
+        occurred_at: Duration,
+    },
+    Structure {
+        position: Vec2,
+    },
+}
+
+#[derive(EntityEvent)]
+pub(super) struct NanobotDied {
+    pub entity: Entity,
+}
+
+#[derive(EntityEvent)]
+pub(super) struct StructureCollapsed {
+    pub entity: Entity,
+}
+
+const MAX_BOLTS_PER_FRAME: usize = 300;
+const BOLT_SPEED: f32 = 1600.0;
+const MIN_FLIGHT_SECS: f32 = 0.04;
+const MAX_FLIGHT_SECS: f32 = 0.09;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CombatPulse {
+pub struct CombatBolt {
+    pub attacker: Entity,
+    pub target: Entity,
     pub start: Vec2,
+    pub position: Vec2,
     pub end: Vec2,
+    pub direction: Vec2,
     pub color: Color,
+    pub flight_time: Duration,
+    pub elapsed: Duration,
+    pub target_destroyed: bool,
 }
 
-#[derive(Debug)]
-struct ActiveCombatPulse {
-    visual: CombatPulse,
-    elapsed: Duration,
-    just_started: bool,
-}
+impl CombatBolt {
+    fn aim_at(&mut self, end: Vec2) {
+        self.end = end;
+        self.direction = (end - self.start).normalize_or(Vec2::X);
+        self.flight_time = Duration::from_secs_f32(
+            (self.start.distance(end) / BOLT_SPEED).clamp(MIN_FLIGHT_SECS, MAX_FLIGHT_SECS),
+        );
+    }
 
-/// Presentation-only pulse state, kept outside the gameplay entity allocator.
-#[derive(Debug, Default, Resource)]
-pub struct ActiveCombatPulses {
-    active: Vec<ActiveCombatPulse>,
-}
-
-/// One bounded secondary impact mark produced by a resolved hit.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CombatDecoration {
-    pub start: Vec2,
-    pub end: Vec2,
-    pub color: Color,
-}
-
-#[derive(Debug)]
-struct ActiveCombatDecoration {
-    visual: CombatDecoration,
-    elapsed: Duration,
-    just_started: bool,
-}
-
-/// Presentation-only secondary combat effects, bounded independently of pulses.
-#[derive(Debug, Default, Resource)]
-pub struct ActiveCombatDecorations {
-    active: Vec<ActiveCombatDecoration>,
-}
-
-/// Public render state for one nanobot destroyed by resolved combat.
-#[derive(Debug, Clone, PartialEq)]
-pub struct NanobotDeathGhost {
-    pub victim: CombatVisualSnapshot,
-    pub transform: Transform,
-    pub color: Color,
-    pub image: Handle<Image>,
-}
-
-/// Public render state for one support structure destroyed by resolved combat.
-#[derive(Debug, Clone, PartialEq)]
-pub struct StructureDeathGhost {
-    pub victim: CombatVisualSnapshot,
-    pub transform: Transform,
-    pub color: Color,
-    pub image: Handle<Image>,
-    pub ring_radius: f32,
-    pub ring_color: Color,
-}
-
-#[derive(Debug)]
-struct ActiveDeathGhost<T> {
-    visual: T,
-    elapsed: Duration,
-    just_started: bool,
-}
-
-/// Presentation-only death state kept outside gameplay entity allocators.
-#[derive(Debug, Resource)]
-pub struct ActiveDeathGhosts<T: Send + Sync + 'static> {
-    active: Vec<ActiveDeathGhost<T>>,
-}
-
-pub type ActiveNanobotDeathGhosts = ActiveDeathGhosts<NanobotDeathGhost>;
-pub type ActiveStructureDeathGhosts = ActiveDeathGhosts<StructureDeathGhost>;
-
-impl<T: Send + Sync + 'static> Default for ActiveDeathGhosts<T> {
-    fn default() -> Self {
-        Self { active: Vec::new() }
+    fn move_towards(&mut self, end: Vec2) {
+        self.end = end;
+        let progress = (self.elapsed.as_secs_f32() / self.flight_time.as_secs_f32()).min(1.0);
+        let position = self.start.lerp(end, progress);
+        self.direction = (position - self.position).normalize_or(self.direction);
+        self.position = position;
     }
 }
 
-impl<T: Send + Sync + 'static> ActiveDeathGhosts<T> {
+/// The frozen render state of a victim whose death is awaiting bolt arrival.
+#[derive(Debug)]
+pub struct PendingCombatVictim {
+    pub snapshot: CombatVisualSnapshot,
+    pub transform: Transform,
+    pub sprite: Option<Sprite>,
+}
+
+#[derive(Debug)]
+struct PendingDeath {
+    visual: PendingCombatVictim,
+    active_bolts: usize,
+    has_killing_bolt: bool,
+    played: bool,
+}
+
+impl PendingDeath {
+    fn play(&mut self, effects: &mut MessageWriter<CombatEffectRequest>) {
+        if !self.played {
+            effects.write(CombatEffectRequest::Death {
+                victim: self.visual.snapshot,
+            });
+            self.played = true;
+        }
+    }
+}
+
+/// Presentation state lives outside the gameplay entity allocator.
+#[derive(Debug, Default, Resource)]
+pub struct ActiveCombatBolts {
+    active: Vec<CombatBolt>,
+    deaths: HashMap<Entity, PendingDeath>,
+    spawned_this_frame: usize,
+}
+
+impl ActiveCombatBolts {
     pub fn len(&self) -> usize {
         self.active.len()
     }
@@ -124,107 +143,170 @@ impl<T: Send + Sync + 'static> ActiveDeathGhosts<T> {
         self.active.is_empty()
     }
 
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = &T> {
-        self.active.iter().map(|ghost| &ghost.visual)
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &CombatBolt> {
+        self.active.iter()
     }
 
-    fn push(&mut self, visual: T) {
-        self.active.push(ActiveDeathGhost {
-            visual,
-            elapsed: Duration::ZERO,
-            just_started: true,
-        });
-    }
-}
-
-impl ActiveCombatPulses {
-    pub fn len(&self) -> usize {
-        self.active.len()
+    pub fn pending_victims(&self) -> impl Iterator<Item = &PendingCombatVictim> {
+        self.deaths
+            .values()
+            .filter(|death| !death.played && death.active_bolts > 0)
+            .map(|death| &death.visual)
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = &CombatPulse> {
-        self.active.iter().map(|pulse| &pulse.visual)
-    }
-
-    fn push(&mut self, visual: CombatPulse) {
-        self.active.push(ActiveCombatPulse {
-            visual,
-            elapsed: Duration::ZERO,
-            just_started: true,
-        });
+    pub fn spawned_this_frame(&self) -> usize {
+        self.spawned_this_frame
     }
 }
 
-impl ActiveCombatDecorations {
-    pub fn len(&self) -> usize {
-        self.active.len()
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CombatZoomTier {
+    Close,
+    Mid,
+    Far,
+}
 
-    pub fn is_empty(&self) -> bool {
-        self.active.is_empty()
-    }
-
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = &CombatDecoration> {
-        self.active.iter().map(|decoration| &decoration.visual)
-    }
-
-    fn push(&mut self, visual: CombatDecoration, limit: usize) {
-        if limit == 0 {
-            return;
+impl CombatZoomTier {
+    fn at_zoom(zoom: f32, settings: &PresentationTuning) -> Self {
+        if zoom >= settings.effects_far_zoom {
+            Self::Far
+        } else if zoom >= settings.effects_mid_zoom {
+            Self::Mid
+        } else {
+            Self::Close
         }
-        let excess = self.active.len().saturating_add(1).saturating_sub(limit);
-        if excess > 0 {
-            self.active.drain(..excess);
-        }
-        self.active.push(ActiveCombatDecoration {
-            visual,
-            elapsed: Duration::ZERO,
-            just_started: true,
-        });
     }
 }
 
 #[derive(Debug, Resource)]
-struct CombatPresentationView {
+struct CombatView {
+    bounds: Option<Rect>,
+    tier: CombatZoomTier,
     zoom: f32,
-    visible: bool,
+    world_per_pixel: f32,
+    minimum_effect_size: f32,
 }
 
-impl Default for CombatPresentationView {
+impl Default for CombatView {
     fn default() -> Self {
         Self {
+            bounds: None,
+            tier: CombatZoomTier::Close,
             zoom: 1.0,
-            visible: true,
+            world_per_pixel: 1.0,
+            minimum_effect_size: 0.0,
         }
     }
 }
 
-#[derive(Default, Reflect, GizmoConfigGroup)]
-struct CombatGizmos;
+impl CombatView {
+    fn effect_size(&self, size: Vec2) -> Vec2 {
+        size.max(Vec2::splat(self.minimum_effect_size))
+    }
 
-#[derive(Default, Reflect, GizmoConfigGroup)]
-struct CombatDecorationGizmos;
+    fn line_width(&self, width: f32) -> f32 {
+        width.clamp(1.5 * self.world_per_pixel, 3.0 * self.world_per_pixel)
+    }
 
-#[derive(Default, Reflect, GizmoConfigGroup)]
-struct StructureDeathRingGizmos;
+    fn center(&self) -> Vec2 {
+        self.bounds.map_or(Vec2::ZERO, |bounds| bounds.center())
+    }
+
+    fn contains(&self, point: Vec2) -> bool {
+        self.contains_with_margin(point, 0.0)
+    }
+
+    fn contains_with_margin(&self, point: Vec2, margin: f32) -> bool {
+        self.bounds
+            .is_none_or(|bounds| bounds.inflate(margin).contains(point))
+    }
+
+    fn hit_distance(&self, start: Vec2, end: Vec2) -> Option<f32> {
+        [start, end]
+            .into_iter()
+            .filter(|position| self.contains(*position))
+            .map(|position| position.distance_squared(self.center()))
+            .reduce(f32::min)
+    }
+}
+
+pub(super) fn combat_hdr(color: Color, intensity: f32) -> Color {
+    let color = color.to_linear();
+    let brightness = 4.0 * intensity;
+    Color::linear_rgba(
+        color.red * brightness,
+        color.green * brightness,
+        color.blue * brightness,
+        color.alpha,
+    )
+}
 
 #[derive(Debug, Component)]
 struct CombatPose {
     attack_direction: Option<Vec2>,
     reaction_direction: Option<Vec2>,
     reaction_hits: f32,
+    blend_from: Option<Vec2>,
+    offset: Vec2,
     elapsed: Duration,
-    just_started: bool,
+}
+
+impl CombatPose {
+    fn progress(&self, settings: &PresentationTuning) -> f32 {
+        (self.elapsed.as_secs_f32() / settings.combat_recovery_duration_secs).min(1.0)
+    }
+
+    fn eased_offset(&self, strength: f32, settings: &PresentationTuning) -> Vec2 {
+        let jab = strength.powi(3);
+        // One minus easeOutBack, with a 10% overshoot before returning to zero.
+        let recoil = strength.powi(2) * (2.70158 * strength - 1.70158);
+        let offset =
+            self.attack_direction.unwrap_or(Vec2::ZERO) * settings.combat_jab_distance * jab
+                + self.reaction_direction.unwrap_or(Vec2::ZERO)
+                    * settings.combat_recoil_distance
+                    * recoil;
+        self.blend_from
+            .map_or(offset, |previous| offset.lerp(previous * jab, jab))
+    }
 }
 
 #[derive(Debug, Default)]
 struct PendingCombatPose {
-    attack_directions: Vec<Vec2>,
-    reaction_directions: Vec<Vec2>,
+    attack_directions: ImpactDirections,
+    reaction_directions: ImpactDirections,
+}
+
+#[derive(Debug, Default)]
+struct ImpactDirections {
+    sum: I64Vec2,
+    fallback: Option<Vec2>,
+    count: usize,
+}
+
+impl ImpactDirections {
+    fn push(&mut self, direction: Vec2) {
+        // Fixed-point addition keeps simultaneous hits independent of fact order.
+        const DIRECTION_SCALE: f32 = (1 << 24) as f32;
+        self.sum += (direction * DIRECTION_SCALE).round().as_i64vec2();
+        self.count += 1;
+
+        if self.fallback.is_none_or(|min| {
+            direction
+                .x
+                .total_cmp(&min.x)
+                .then_with(|| direction.y.total_cmp(&min.y))
+                .is_lt()
+        }) {
+            self.fallback = Some(direction);
+        }
+    }
+
+    fn direction(&self) -> Option<Vec2> {
+        self.sum.as_vec2().try_normalize().or_else(|| {
+            self.fallback
+                .map(|direction| direction.normalize_or(Vec2::X))
+        })
+    }
 }
 
 #[derive(Debug, Component)]
@@ -242,7 +324,7 @@ struct AnimatedCombatVisual {
     parent: &'static ChildOf,
     transform: &'static mut Transform,
     sprite: &'static mut Sprite,
-    pose: &'static mut CombatPose,
+    pose: Option<&'static mut CombatPose>,
 }
 
 #[derive(QueryData)]
@@ -254,111 +336,84 @@ struct AnimatedStructureVisual {
 }
 
 #[derive(SystemParam)]
-struct CombatFactParticipants<'w, 's> {
-    visuals: Query<'w, 's, (Entity, &'static ChildOf), With<NanobotVisual>>,
+struct CombatParticipants<'w, 's> {
+    roots: Query<'w, 's, (Option<&'static Children>, &'static mut PresentedNanobot), With<Nanobot>>,
+    visuals: Query<'w, 's, Option<&'static CombatPose>, With<NanobotVisual>>,
     structures: Query<
         'w,
         's,
-        (&'static Sprite, Option<&'static StructureCombatFlash>),
+        (
+            &'static Transform,
+            &'static Sprite,
+            Option<&'static StructureCombatFlash>,
+        ),
         With<StructureVisual>,
     >,
-    nanobot_sprites: Res<'w, NanobotSprites>,
-    structure_sprites: Option<Res<'w, StructureSprites>>,
 }
 
-#[derive(SystemParam)]
-struct AnimatedCombatEntities<'w, 's> {
-    roots: Query<'w, 's, &'static Transform, Without<NanobotVisual>>,
-    visuals: Query<'w, 's, AnimatedCombatVisual, (With<NanobotVisual>, Without<StructureVisual>)>,
-    structures:
-        Query<'w, 's, AnimatedStructureVisual, (With<StructureVisual>, Without<NanobotVisual>)>,
+impl CombatParticipants<'_, '_> {
+    fn position(&self, entity: Entity) -> Option<Vec2> {
+        self.roots
+            .get(entity)
+            .ok()
+            .map(|(_, presented)| presented.sprite_translation().truncate())
+            .or_else(|| {
+                self.structures
+                    .get(entity)
+                    .ok()
+                    .map(|(transform, ..)| transform.translation.truncate())
+            })
+    }
+
+    fn visual(&self, entity: Entity) -> Option<Entity> {
+        let (children, _) = self.roots.get(entity).ok()?;
+        children?.iter().find(|child| self.visuals.contains(*child))
+    }
 }
 
-#[derive(SystemParam)]
-struct CombatTransients<'w> {
-    pulses: ResMut<'w, ActiveCombatPulses>,
-    decorations: ResMut<'w, ActiveCombatDecorations>,
-    ghosts: ResMut<'w, ActiveNanobotDeathGhosts>,
-    structure_ghosts: ResMut<'w, ActiveStructureDeathGhosts>,
+#[derive(Debug)]
+struct ShotCandidate {
+    hit: ResolvedCombatHit,
+    start: Vec2,
+    end: Vec2,
+    view_distance: f32,
+    order: usize,
 }
 
 pub(crate) struct CombatPresentationPlugin;
 
 pub fn reconcile_combat_presentation_tuning(world: &mut World, old: &Tuning, new: &Tuning) {
-    let old = &old.presentation;
-    let new = &new.presentation;
-    let rescale = |elapsed: &mut Duration, previous: f32, next: f32| {
-        if previous != next {
-            *elapsed = Duration::from_secs_f32(elapsed.as_secs_f32() / previous * next);
-        }
+    let previous = old.presentation.combat_recovery_duration_secs;
+    let next = new.presentation.combat_recovery_duration_secs;
+    if previous == next {
+        return;
+    }
+    let rescale = |elapsed: &mut Duration| {
+        *elapsed = Duration::from_secs_f32(elapsed.as_secs_f32() / previous * next);
     };
     for mut pose in world.query::<&mut CombatPose>().iter_mut(world) {
-        rescale(
-            &mut pose.elapsed,
-            old.combat_recovery_duration_secs,
-            new.combat_recovery_duration_secs,
-        );
+        rescale(&mut pose.elapsed);
     }
     for mut flash in world.query::<&mut StructureCombatFlash>().iter_mut(world) {
-        rescale(
-            &mut flash.elapsed,
-            old.combat_recovery_duration_secs,
-            new.combat_recovery_duration_secs,
-        );
-    }
-    if let Some(mut pulses) = world.get_resource_mut::<ActiveCombatPulses>() {
-        for pulse in &mut pulses.active {
-            rescale(
-                &mut pulse.elapsed,
-                old.combat_pulse_duration_secs,
-                new.combat_pulse_duration_secs,
-            );
-        }
-    }
-    if let Some(mut decorations) = world.get_resource_mut::<ActiveCombatDecorations>() {
-        for decoration in &mut decorations.active {
-            rescale(
-                &mut decoration.elapsed,
-                old.combat_pulse_duration_secs,
-                new.combat_pulse_duration_secs,
-            );
-        }
-    }
-    if let Some(mut ghosts) = world.get_resource_mut::<ActiveNanobotDeathGhosts>() {
-        for ghost in &mut ghosts.active {
-            rescale(
-                &mut ghost.elapsed,
-                old.combat_death_duration_secs,
-                new.combat_death_duration_secs,
-            );
-        }
-    }
-    if let Some(mut ghosts) = world.get_resource_mut::<ActiveStructureDeathGhosts>() {
-        for ghost in &mut ghosts.active {
-            rescale(
-                &mut ghost.elapsed,
-                old.combat_death_duration_secs,
-                new.combat_death_duration_secs,
-            );
-        }
+        rescale(&mut flash.elapsed);
     }
 }
 
 pub(super) fn reset_session(world: &mut World) {
-    fn reset<T: Resource + Default>(world: &mut World) {
-        if let Some(mut resource) = world.get_resource_mut::<T>() {
-            *resource = T::default();
-        }
-    }
-
-    reset::<ActiveCombatPulses>(world);
-    reset::<ActiveCombatDecorations>(world);
-    reset::<CombatPresentationView>(world);
-    reset::<ActiveNanobotDeathGhosts>(world);
-    reset::<ActiveStructureDeathGhosts>(world);
+    super::reset_resource::<ActiveCombatBolts>(world);
+    super::reset_resource::<CombatView>(world);
+    super::reset_resource::<CombatTickSnapshots>(world);
     if let Some(mut facts) = world.get_resource_mut::<Messages<ResolvedCombatFact>>() {
         facts.clear();
     }
+    if let Some(mut destruction) = world.get_resource_mut::<Messages<NonCombatDestruction>>() {
+        destruction.clear();
+    }
+    effects::reset_session(world);
+    heat::reset_session(world);
+    indicators::reset_session(world);
+    shake::reset_session(world);
+    skirmish_end::reset_session(world);
 }
 
 impl Plugin for CombatPresentationPlugin {
@@ -370,249 +425,388 @@ impl Plugin for CombatPresentationPlugin {
             app.add_message::<ResolvedCombatFact>();
         }
         app.init_resource::<Tuning>()
-            .init_resource::<ActiveCombatPulses>()
-            .init_resource::<ActiveCombatDecorations>()
-            .init_resource::<CombatPresentationView>()
-            .init_resource::<ActiveNanobotDeathGhosts>()
-            .init_resource::<ActiveStructureDeathGhosts>();
-        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app.add_systems(
-                ExtractSchedule,
-                extract_combat_death_ghosts.after(SpriteSystems::ExtractSprites),
-            );
-        }
-        if app.is_plugin_added::<GizmoPlugin>() {
-            app.init_gizmo_group::<CombatGizmos>()
-                .init_gizmo_group::<CombatDecorationGizmos>()
-                .init_gizmo_group::<StructureDeathRingGizmos>()
-                .add_systems(
-                    Update,
-                    (
-                        update_combat_view,
-                        consume_resolved_combat,
-                        animate_combat,
-                        sync_combat_gizmo_settings,
-                        draw_combat_pulses,
-                        draw_combat_decorations,
-                        draw_structure_death_rings,
-                    )
-                        .chain(),
-                );
-        } else {
-            app.add_systems(
+            .add_message::<NonCombatDestruction>()
+            .init_resource::<ActiveCombatBolts>()
+            .init_resource::<CombatView>()
+            .init_resource::<CombatTickSnapshots>()
+            .add_plugins((
+                CombatEffectsPlugin,
+                CombatIndicatorsPlugin,
+                heat::CombatHeatPlugin,
+                shake::CombatShakePlugin,
+                skirmish_end::SkirmishEndPlugin,
+            ))
+            .add_observer(capture_despawning_structure)
+            .add_observer(report_noncombat_nanobot_death)
+            .add_observer(report_structure_collapse)
+            // Combat deaths still have their gameplay transforms before FixedLast settlement.
+            .add_systems(FixedPostUpdate, capture_fixed_motion)
+            .add_systems(
                 Update,
-                (update_combat_view, consume_resolved_combat, animate_combat).chain(),
+                (
+                    update_combat_view.after(camera_2d_movement_system),
+                    update_nanobot_positions,
+                    resolve_combat,
+                    animate_nanobot_visuals,
+                    align_flying_bolts,
+                    animate_structure_flashes,
+                )
+                    .chain()
+                    .in_set(UpdateNanobotPresentation),
             );
-        }
+    }
+}
+
+fn capture_despawning_structure(
+    despawned: On<Despawn, StructureVisual>,
+    structures: Query<(&Transform, &Sprite), With<StructureVisual>>,
+    mut snapshots: ResMut<CombatTickSnapshots>,
+) {
+    if let Ok((transform, sprite)) = structures.get(despawned.entity) {
+        snapshots.record_structure_death(despawned.entity, *transform, sprite.clone());
+    }
+}
+
+fn report_noncombat_nanobot_death(
+    death: On<NanobotDied>,
+    bots: Query<(
+        &Transform,
+        &NanobotType,
+        &SwarmMember,
+        Option<&PresentedNanobot>,
+    )>,
+    snapshots: Res<CombatTickSnapshots>,
+    fixed: Option<Res<Time<Fixed>>>,
+    mut destruction: MessageWriter<NonCombatDestruction>,
+) {
+    if snapshots.death_time(death.entity).is_some() {
+        return;
+    }
+    let Ok((transform, kind, member, presented)) = bots.get(death.entity) else {
+        return;
+    };
+    let victim = CombatVisualSnapshot {
+        entity: death.entity,
+        position: presented.map_or(transform.translation.truncate(), |pose| {
+            pose.fixed_death_position(fixed.as_deref())
+        }),
+        swarm: member.0,
+        appearance: CombatAppearance::Nanobot(*kind),
+    };
+    destruction.write(NonCombatDestruction::Nanobot {
+        victim,
+        occurred_at: fixed.as_ref().map_or(Duration::ZERO, |time| time.elapsed()),
+    });
+}
+
+fn report_structure_collapse(
+    collapse: On<StructureCollapsed>,
+    structures: Query<&Transform>,
+    mut destruction: MessageWriter<NonCombatDestruction>,
+) {
+    if let Ok(transform) = structures.get(collapse.entity) {
+        destruction.write(NonCombatDestruction::Structure {
+            position: transform.translation.truncate(),
+        });
     }
 }
 
 fn update_combat_view(
+    camera: Query<(&Transform, &Projection, Option<&Camera>), With<MainCamera>>,
     tuning: Res<Tuning>,
-    zooms: Query<&CameraZoom2d>,
-    mut view: ResMut<CombatPresentationView>,
+    mut view: ResMut<CombatView>,
 ) {
     let settings = &tuning.presentation;
-    view.zoom = zooms.iter().next().map_or(1.0, |zoom| zoom.zoom);
-    view.visible = view.zoom < settings.combat_zoom_cutoff;
-}
-
-fn faction_color(swarm: SwarmId) -> Color {
-    if swarm.is_player() {
-        Color::srgb(0.25, 0.72, 1.0)
-    } else {
-        Color::srgb(1.0, 0.28, 0.22)
-    }
-}
-
-fn direction_between(attacker: CombatVisualSnapshot, target: CombatVisualSnapshot) -> Vec2 {
-    (target.position - attacker.position).normalize_or(Vec2::X)
-}
-
-fn visual_for(
-    root: Entity,
-    visuals: &Query<(Entity, &ChildOf), With<NanobotVisual>>,
-) -> Option<Entity> {
-    visuals
-        .iter()
-        .find_map(|(entity, parent)| (parent.parent() == root).then_some(entity))
-}
-
-fn consume_resolved_combat(
-    mut commands: Commands,
-    mut facts: MessageReader<ResolvedCombatFact>,
-    participants: CombatFactParticipants,
-    tuning: Res<Tuning>,
-    transients: CombatTransients,
-) {
-    let settings = &tuning.presentation;
-    let CombatFactParticipants {
-        visuals,
-        structures,
-        nanobot_sprites,
-        structure_sprites,
-    } = participants;
-    let CombatTransients {
-        mut pulses,
-        mut decorations,
-        mut ghosts,
-        mut structure_ghosts,
-    } = transients;
-    let mut hits = Vec::new();
-    let mut deaths = Vec::new();
-    for fact in facts.read() {
-        match *fact {
-            ResolvedCombatFact::Hit(hit) => hits.push(hit),
-            ResolvedCombatFact::Death(death) => deaths.push(death),
+    let mut next = CombatView::default();
+    if let Ok((transform, Projection::Orthographic(ortho), camera)) = camera.single() {
+        let mut ortho = ortho.clone();
+        next.zoom = ortho.scale.max(f32::EPSILON);
+        next.world_per_pixel = next.zoom;
+        if let Some(size) = camera.and_then(Camera::logical_viewport_size)
+            && size.x > 0.0
+            && size.y > 0.0
+        {
+            ortho.update(size.x, size.y);
+            if let Some(pixels) = camera.and_then(Camera::physical_viewport_size)
+                && pixels.x > 0
+            {
+                next.world_per_pixel = ortho.area.width() / pixels.x as f32;
+            }
         }
+        let translation = transform.translation.truncate();
+        next.bounds = Some(Rect::from_corners(
+            ortho.area.min + translation,
+            ortho.area.max + translation,
+        ));
     }
-    present_hits(
-        &mut commands,
-        &visuals,
-        &structures,
-        settings,
-        &mut pulses,
-        &mut decorations,
-        hits,
-    );
-    for death in deaths {
-        present_death(
-            &nanobot_sprites,
-            structure_sprites.as_deref(),
-            settings,
-            &mut ghosts,
-            &mut structure_ghosts,
-            death,
-        );
-    }
+    next.tier = CombatZoomTier::at_zoom(next.zoom, settings);
+    next.minimum_effect_size = settings.effect_min_screen_px * next.world_per_pixel;
+    *view = next;
 }
 
-fn present_death(
-    sprites: &NanobotSprites,
-    structure_sprites: Option<&StructureSprites>,
-    settings: &PresentationTuning,
-    ghosts: &mut ActiveNanobotDeathGhosts,
-    structure_ghosts: &mut ActiveStructureDeathGhosts,
-    death: ResolvedCombatDeath,
+fn update_nanobot_positions(
+    fixed: Option<Res<Time<Fixed>>>,
+    time: Option<Res<Time>>,
+    tuning: Res<Tuning>,
+    view: Res<CombatView>,
+    mut roots: Query<(&Transform, &mut PresentedNanobot), With<Nanobot>>,
+    mut poses: Query<(&ChildOf, &mut CombatPose)>,
 ) {
-    match death.victim.appearance {
-        CombatAppearance::Nanobot(kind) => ghosts.push(NanobotDeathGhost {
-            victim: death.victim,
-            transform: Transform::from_translation(death.victim.position.extend(GAMEPLAY_SPRITE_Z)),
-            color: Color::WHITE,
-            image: sprites.handle(kind, !death.victim.swarm.is_player()),
-        }),
-        CombatAppearance::Structure(appearance) => {
-            let (Some(structure_sprites), Some(visual)) = (structure_sprites, appearance.visual)
-            else {
-                return;
-            };
-            structure_ghosts.push(StructureDeathGhost {
-                victim: death.victim,
-                transform: Transform::from_translation(
-                    death.victim.position.extend(GAMEPLAY_SPRITE_Z),
-                ),
-                color: Color::WHITE,
-                image: structure_sprites.handle(visual.kind, visual.state),
-                ring_radius: settings.combat_structure_ring_start_radius.max(0.0),
-                ring_color: faction_color(death.victim.swarm),
-            });
+    let overstep = fixed.as_ref().map_or(1.0, |time| time.overstep_fraction());
+    for (transform, mut presented) in &mut roots {
+        presented.update_translation(transform, overstep);
+    }
+    let settings = &tuning.presentation;
+    let show_poses = view.tier == CombatZoomTier::Close;
+    let delta = time.as_ref().map_or(Duration::ZERO, |time| time.delta());
+    for (parent, mut pose) in &mut poses {
+        // Resolve this frame's impacts at the drawn position before applying the new recoil.
+        pose.elapsed += delta;
+        pose.offset = if show_poses {
+            pose.eased_offset(1.0 - pose.progress(settings), settings)
+        } else {
+            Vec2::ZERO
+        };
+        if let Ok((_, mut presented)) = roots.get_mut(parent.parent()) {
+            presented.impact_offset = pose.offset;
         }
     }
 }
 
-fn aggregate_direction(directions: &mut [Vec2]) -> Option<Vec2> {
-    if directions.is_empty() {
-        return None;
-    }
-    directions.sort_by(|left, right| {
-        left.x
-            .total_cmp(&right.x)
-            .then_with(|| left.y.total_cmp(&right.y))
-    });
-    let fallback = directions[0].normalize_or(Vec2::X);
-    Some(
-        directions
-            .iter()
-            .copied()
-            .fold(Vec2::ZERO, |sum, direction| sum + direction)
-            .try_normalize()
-            .unwrap_or(fallback),
+fn effect_position(
+    snapshot: CombatVisualSnapshot,
+    deaths: &HashMap<Entity, PendingDeath>,
+    participants: &CombatParticipants,
+) -> Vec2 {
+    deaths.get(&snapshot.entity).map_or_else(
+        || {
+            participants
+                .position(snapshot.entity)
+                .unwrap_or(snapshot.position)
+        },
+        |death| death.visual.snapshot.position,
     )
 }
 
-fn impact_world_distance(configured: f32, zoom: f32, minimum_screen_distance: f32) -> f32 {
-    configured
-        .max(0.0)
-        .max(zoom.max(0.0) * minimum_screen_distance.max(0.0))
-}
-
-fn present_hits(
-    commands: &mut Commands,
-    visuals: &Query<(Entity, &ChildOf), With<NanobotVisual>>,
-    structures: &Query<(&Sprite, Option<&StructureCombatFlash>), With<StructureVisual>>,
-    settings: &PresentationTuning,
-    pulses: &mut ActiveCombatPulses,
-    decorations: &mut ActiveCombatDecorations,
-    hits: Vec<ResolvedCombatHit>,
+#[allow(clippy::too_many_arguments)]
+fn resolve_combat(
+    mut commands: Commands,
+    mut facts: MessageReader<ResolvedCombatFact>,
+    mut effects: MessageWriter<CombatEffectRequest>,
+    mut participants: CombatParticipants,
+    mut tick_snapshots: ResMut<CombatTickSnapshots>,
+    mut bolts: ResMut<ActiveCombatBolts>,
+    view: Res<CombatView>,
+    time: Option<Res<Time>>,
+    fixed: Option<Res<Time<Fixed>>>,
 ) {
+    let (now, delta) = time
+        .as_ref()
+        .map_or((Duration::ZERO, Duration::ZERO), |time| {
+            (time.elapsed(), time.delta())
+        });
+    let mut hits = Vec::new();
+    let mut dead_victims = Vec::new();
+    for (fact, id) in facts.read_with_id() {
+        match *fact {
+            ResolvedCombatFact::Hit(hit) => {
+                hits.push((hit, tick_snapshots.hit_time(id).unwrap_or(now)))
+            }
+            ResolvedCombatFact::Death(death) => dead_victims.push(death.victim),
+        }
+    }
+    // A destroyed target can appear in several hits from the same simulation tick.
+    dead_victims.extend(
+        hits.iter()
+            .filter_map(|(hit, _)| hit.target_destroyed.then_some(hit.target)),
+    );
+    for mut victim in dead_victims {
+        bolts.deaths.entry(victim.entity).or_insert_with(|| {
+            let (transform, sprite) = tick_snapshots
+                .take_death_visual(victim.entity, fixed.as_deref())
+                .unwrap_or_else(|| {
+                    let position = participants
+                        .position(victim.entity)
+                        .unwrap_or(victim.position);
+                    (
+                        Transform::from_translation(position.extend(GAMEPLAY_SPRITE_Z)),
+                        None,
+                    )
+                });
+            victim.position = transform.translation.truncate();
+            if matches!(victim.appearance, CombatAppearance::Nanobot(_)) {
+                effects.write(CombatEffectRequest::Casualty { victim });
+            }
+            PendingDeath {
+                visual: PendingCombatVictim {
+                    snapshot: victim,
+                    transform,
+                    sprite,
+                },
+                active_bolts: 0,
+                has_killing_bolt: false,
+                played: false,
+            }
+        });
+    }
+    tick_snapshots.clear();
+
+    let mut shots = hits
+        .into_iter()
+        .enumerate()
+        .filter_map(|(order, (hit, hit_at))| {
+            let start = effect_position(hit.attacker, &bolts.deaths, &participants);
+            let end = effect_position(hit.target, &bolts.deaths, &participants);
+            if hit.attacker.appearance == CombatAppearance::Nanobot(NanobotType::Defender)
+                && let Ok((_, mut presented)) = participants.roots.get_mut(hit.attacker.entity)
+            {
+                presented.aim_at((end - start).normalize_or(Vec2::X), hit_at);
+            }
+            if view.tier == CombatZoomTier::Far {
+                return None;
+            }
+            let view_distance = view.hit_distance(start, end)?;
+            Some(ShotCandidate {
+                hit,
+                start,
+                end,
+                view_distance,
+                order,
+            })
+        })
+        .collect::<Vec<_>>();
+    if shots.len() > MAX_BOLTS_PER_FRAME {
+        shots.select_nth_unstable_by(MAX_BOLTS_PER_FRAME, |left, right| {
+            right
+                .hit
+                .target_destroyed
+                .cmp(&left.hit.target_destroyed)
+                .then_with(|| left.view_distance.total_cmp(&right.view_distance))
+                .then_with(|| left.order.cmp(&right.order))
+        });
+        shots.truncate(MAX_BOLTS_PER_FRAME);
+        shots.sort_unstable_by_key(|shot| shot.order);
+    }
+
     let mut poses = HashMap::<Entity, PendingCombatPose>::new();
-    let mut structure_hit_counts = HashMap::<Entity, usize>::new();
-    for hit in hits {
-        let direction = direction_between(hit.attacker, hit.target);
-        if let Some(visual) = visual_for(hit.attacker.entity, visuals) {
+    let mut structure_hits = HashMap::<Entity, usize>::new();
+    let ActiveCombatBolts {
+        active,
+        deaths,
+        spawned_this_frame,
+    } = &mut *bolts;
+    if view.tier == CombatZoomTier::Far {
+        active.clear();
+    }
+    let flying_before_launch = active.len();
+    *spawned_this_frame = shots.len();
+    for shot in shots {
+        let direction = (shot.end - shot.start).normalize_or(Vec2::X);
+        let attacker = shot.hit.attacker.entity;
+        let target = shot.hit.target.entity;
+        if view.tier == CombatZoomTier::Close
+            && let Some(visual) = participants.visual(attacker)
+        {
             poses
                 .entry(visual)
                 .or_default()
                 .attack_directions
                 .push(direction);
         }
-        if let Some(visual) = visual_for(hit.target.entity, visuals) {
-            poses
-                .entry(visual)
-                .or_default()
-                .reaction_directions
-                .push(direction);
-        } else if matches!(hit.target.appearance, CombatAppearance::Structure(_))
-            && structures.get(hit.target.entity).is_ok()
-        {
-            *structure_hit_counts.entry(hit.target.entity).or_default() += 1;
-        }
 
-        pulses.push(CombatPulse {
-            start: hit.attacker.position,
-            end: hit.target.position,
-            color: faction_color(hit.attacker.swarm),
-        });
-        let decoration_half_extent =
-            direction.perp() * settings.combat_decoration_length.max(0.0) * 0.5;
-        decorations.push(
-            CombatDecoration {
-                start: hit.target.position - decoration_half_extent,
-                end: hit.target.position + decoration_half_extent,
-                color: faction_color(hit.attacker.swarm),
-            },
-            MAX_DECORATIVE_EFFECTS,
-        );
-    }
-
-    let mut poses = poses.into_iter().collect::<Vec<_>>();
-    poses.sort_by_key(|(visual, _)| visual.to_bits());
-    for (visual, mut pending) in poses {
-        let reaction_count = pending.reaction_directions.len() as f32;
-        commands.entity(visual).insert(CombatPose {
-            attack_direction: aggregate_direction(&mut pending.attack_directions),
-            reaction_direction: aggregate_direction(&mut pending.reaction_directions),
-            reaction_hits: reaction_count,
+        let color = swarm_presentation_color(shot.hit.attacker.swarm);
+        active.push(CombatBolt {
+            attacker,
+            target,
+            start: shot.start,
+            position: shot.start,
+            end: shot.end,
+            direction,
+            color,
             elapsed: Duration::ZERO,
-            just_started: true,
+            flight_time: Duration::ZERO,
+            target_destroyed: shot.hit.target_destroyed,
         });
     }
+    for death in deaths.values_mut() {
+        death.active_bolts = 0;
+        death.has_killing_bolt = false;
+    }
+    for bolt in active.iter() {
+        if let Some(death) = deaths.get_mut(&bolt.target) {
+            death.active_bolts += 1;
+            death.has_killing_bolt |= bolt.target_destroyed;
+        }
+    }
 
-    let mut structure_hit_counts = structure_hit_counts.into_iter().collect::<Vec<_>>();
-    structure_hit_counts.sort_by_key(|(structure, _)| structure.to_bits());
-    for (structure, hit_count) in structure_hit_counts {
-        let Ok((sprite, active_flash)) = structures.get(structure) else {
+    let mut existing_bolts = flying_before_launch;
+    active.retain_mut(|bolt| {
+        if existing_bolts == 0 {
+            return true;
+        }
+        existing_bolts -= 1;
+        bolt.elapsed += delta;
+        if bolt.elapsed < bolt.flight_time {
+            return true;
+        }
+        let death = deaths.get_mut(&bolt.target);
+        let impact = match &death {
+            Some(death) => death.visual.snapshot.position,
+            None => participants.position(bolt.target).unwrap_or(bolt.end),
+        };
+        bolt.move_towards(impact);
+        effects.write(CombatEffectRequest::Impact {
+            position: bolt.end,
+            incoming: bolt.direction,
+            color: bolt.color,
+        });
+        if let Some(death) = death {
+            death.active_bolts -= 1;
+            if bolt.target_destroyed || !death.has_killing_bolt {
+                death.play(&mut effects);
+            }
+        } else if view.tier == CombatZoomTier::Close {
+            if let Some(visual) = participants.visual(bolt.target) {
+                poses
+                    .entry(visual)
+                    .or_default()
+                    .reaction_directions
+                    .push(bolt.direction);
+            } else if participants.structures.contains(bolt.target) {
+                *structure_hits.entry(bolt.target).or_default() += 1;
+            }
+        }
+        false
+    });
+
+    deaths.retain(|_, death| {
+        if death.active_bolts > 0 {
+            return true;
+        }
+        if view.tier != CombatZoomTier::Far && view.contains(death.visual.snapshot.position) {
+            death.play(&mut effects);
+        }
+        false
+    });
+
+    for (visual, pending) in poses {
+        commands.entity(visual).insert(CombatPose {
+            attack_direction: pending.attack_directions.direction(),
+            reaction_direction: pending.reaction_directions.direction(),
+            reaction_hits: pending.reaction_directions.count as f32,
+            blend_from: participants
+                .visuals
+                .get(visual)
+                .ok()
+                .flatten()
+                .filter(|pose| pose.offset != Vec2::ZERO)
+                .map(|pose| pose.offset),
+            offset: Vec2::ZERO,
+            elapsed: Duration::ZERO,
+        });
+    }
+    for (structure, hit_count) in structure_hits {
+        let Ok((_, sprite, active_flash)) = participants.structures.get(structure) else {
             continue;
         };
         commands.entity(structure).insert(StructureCombatFlash {
@@ -621,6 +815,42 @@ fn present_hits(
             elapsed: Duration::ZERO,
             just_started: true,
         });
+    }
+}
+
+fn align_flying_bolts(
+    mut bolts: ResMut<ActiveCombatBolts>,
+    participants: CombatParticipants,
+    mut effects: MessageWriter<CombatEffectRequest>,
+    view: Res<CombatView>,
+) {
+    let ActiveCombatBolts {
+        active,
+        deaths,
+        spawned_this_frame,
+    } = &mut *bolts;
+    let first_new = active.len() - *spawned_this_frame;
+    for (index, bolt) in active.iter_mut().enumerate() {
+        let end = deaths.get(&bolt.target).map_or_else(
+            || participants.position(bolt.target).unwrap_or(bolt.end),
+            |death| death.visual.snapshot.position,
+        );
+        if index >= first_new {
+            if let Some(start) = participants.position(bolt.attacker) {
+                bolt.start = start;
+                bolt.position = start;
+            }
+            bolt.aim_at(end);
+            if view.tier == CombatZoomTier::Close {
+                effects.write(CombatEffectRequest::Muzzle {
+                    attacker: bolt.attacker,
+                    position: bolt.start,
+                    color: bolt.color,
+                });
+            }
+        } else {
+            bolt.move_towards(end);
+        }
     }
 }
 
@@ -638,94 +868,81 @@ fn transient_progress(
     (elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0)
 }
 
-fn animate_combat(
+#[allow(clippy::type_complexity)]
+fn animate_nanobot_visuals(
+    mut commands: Commands,
+    time: Option<Res<Time>>,
+    fixed: Option<Res<Time<Fixed>>>,
+    tuning: Res<Tuning>,
+    view: Res<CombatView>,
+    mut roots: Query<(&Transform, &NanobotType, &mut PresentedNanobot), With<Nanobot>>,
+    mut visuals: Query<AnimatedCombatVisual, (With<NanobotVisual>, Without<Nanobot>)>,
+) {
+    let settings = &tuning.presentation;
+    let (now, delta) = time
+        .as_ref()
+        .map_or((Duration::ZERO, Duration::ZERO), |time| {
+            (time.elapsed(), time.delta())
+        });
+    let overstep = fixed.as_ref().map_or(1.0, |time| time.overstep_fraction());
+    let show_poses = view.tier == CombatZoomTier::Close;
+    let frame = (now, delta.as_secs_f32());
+
+    for mut visual in &mut visuals {
+        let Ok((root, kind, mut presented)) = roots.get_mut(visual.parent.parent()) else {
+            continue;
+        };
+        presented.update_rotation(*kind, overstep, frame, settings);
+        let mut offset = Vec2::ZERO;
+        if let Some(mut pose) = visual.pose {
+            let pose = &mut *pose;
+            let progress = pose.progress(settings);
+            if progress >= 1.0 {
+                visual.sprite.color = Color::WHITE;
+                commands.entity(visual.entity).remove::<CombatPose>();
+            } else if show_poses {
+                let strength = 1.0 - progress;
+                offset = pose.eased_offset(strength, settings);
+                let flash_gain = (settings.combat_reaction_flash_per_hit * pose.reaction_hits)
+                    .min(settings.combat_reaction_flash_cap)
+                    .clamp(0.0, 1.0)
+                    * strength;
+                visual.sprite.color =
+                    Color::linear_rgb(1.0 + flash_gain, 1.0 + flash_gain, 1.0 + flash_gain);
+            } else {
+                visual.sprite.color = Color::WHITE;
+            }
+            pose.offset = offset;
+        }
+
+        let inverse_rotation = root.rotation.inverse();
+        presented.impact_offset = offset;
+        let position_delta = presented.sprite_translation() - root.translation;
+        let local_translation = inverse_rotation * position_delta / root.scale;
+        let local_rotation = if presented.rotation() == root.rotation {
+            Quat::IDENTITY
+        } else {
+            inverse_rotation * presented.rotation()
+        };
+        if visual.transform.translation != local_translation {
+            visual.transform.translation = local_translation;
+        }
+        if visual.transform.rotation != local_rotation {
+            visual.transform.rotation = local_rotation;
+        }
+    }
+}
+
+fn animate_structure_flashes(
     mut commands: Commands,
     time: Option<Res<Time>>,
     tuning: Res<Tuning>,
-    view: Res<CombatPresentationView>,
-    entities: AnimatedCombatEntities,
-    transients: CombatTransients,
+    view: Res<CombatView>,
+    mut structures: Query<AnimatedStructureVisual, With<StructureVisual>>,
 ) {
     let settings = &tuning.presentation;
-    let AnimatedCombatEntities {
-        roots,
-        mut visuals,
-        mut structures,
-    } = entities;
-    let CombatTransients {
-        mut pulses,
-        mut decorations,
-        mut ghosts,
-        mut structure_ghosts,
-    } = transients;
+    let show_poses = view.tier == CombatZoomTier::Close;
     let delta = time.as_ref().map_or(Duration::ZERO, |time| time.delta());
-    for mut visual in &mut visuals {
-        let pose = &mut *visual.pose;
-        let progress = transient_progress(
-            &mut pose.elapsed,
-            &mut pose.just_started,
-            delta,
-            Duration::from_secs_f32(settings.combat_recovery_duration_secs),
-        );
-        if progress >= 1.0 {
-            *visual.transform = Transform::IDENTITY;
-            visual.sprite.color = Color::WHITE;
-            commands.entity(visual.entity).remove::<CombatPose>();
-            continue;
-        }
-
-        if !view.visible {
-            *visual.transform = Transform::IDENTITY;
-            visual.sprite.color = Color::WHITE;
-            continue;
-        }
-
-        let strength = 1.0 - progress;
-        let Ok(root) = roots.get(visual.parent.parent()) else {
-            continue;
-        };
-        let inverse_root_rotation = root.rotation.inverse();
-        let jab_distance = impact_world_distance(
-            settings.combat_jab_distance,
-            view.zoom,
-            settings.combat_minimum_impact_screen_distance,
-        );
-        let recoil_distance = impact_world_distance(
-            settings.combat_recoil_distance,
-            view.zoom,
-            settings.combat_minimum_impact_screen_distance,
-        );
-        let attack_offset = visual
-            .pose
-            .attack_direction
-            .map_or(Vec2::ZERO, |direction| {
-                (inverse_root_rotation * direction.extend(0.0)).truncate() * jab_distance * strength
-            });
-        let reaction_offset = visual
-            .pose
-            .reaction_direction
-            .map_or(Vec2::ZERO, |direction| {
-                (inverse_root_rotation * direction.extend(0.0)).truncate()
-                    * recoil_distance
-                    * strength
-            });
-        visual.transform.translation = (attack_offset + reaction_offset).extend(0.0);
-        let attack_rotation = visual
-            .pose
-            .attack_direction
-            .map_or(Quat::IDENTITY, |direction| {
-                let world_facing = rotation_for_direction(direction).unwrap_or(Quat::IDENTITY);
-                inverse_root_rotation * world_facing
-            });
-        visual.transform.rotation = Quat::IDENTITY.slerp(attack_rotation, strength);
-        let flash_gain = (settings.combat_reaction_flash_per_hit * visual.pose.reaction_hits)
-            .min(settings.combat_reaction_flash_cap)
-            .clamp(0.0, 1.0)
-            * strength;
-        visual.sprite.color =
-            Color::linear_rgb(1.0 + flash_gain, 1.0 + flash_gain, 1.0 + flash_gain);
-    }
-
     for mut structure in &mut structures {
         let flash = &mut *structure.flash;
         let progress = transient_progress(
@@ -741,7 +958,7 @@ fn animate_combat(
                 .remove::<StructureCombatFlash>();
             continue;
         }
-        if !view.visible {
+        if !show_poses {
             structure.sprite.color = flash.neutral_color;
             continue;
         }
@@ -757,197 +974,30 @@ fn animate_combat(
             neutral.alpha,
         );
     }
-
-    ghosts.active.retain_mut(|ghost| {
-        let progress = transient_progress(
-            &mut ghost.elapsed,
-            &mut ghost.just_started,
-            delta,
-            Duration::from_secs_f32(settings.combat_death_duration_secs),
-        );
-        if progress >= 1.0 {
-            return false;
-        }
-
-        ghost.visual.transform.scale = Vec3::new(1.0 - 0.25 * progress, 1.0 - 0.9 * progress, 1.0);
-        let faction = faction_color(ghost.visual.victim.swarm).to_srgba();
-        let flash = 0.75 * (1.0 - progress / 0.25).clamp(0.0, 1.0);
-        let alpha = (1.0 - (progress - 0.2).max(0.0) / 0.8).clamp(0.0, 1.0);
-        ghost.visual.color = Color::srgba(
-            faction.red + (1.0 - faction.red) * flash,
-            faction.green + (1.0 - faction.green) * flash,
-            faction.blue + (1.0 - faction.blue) * flash,
-            alpha,
-        );
-        true
-    });
-
-    structure_ghosts.active.retain_mut(|ghost| {
-        let progress = transient_progress(
-            &mut ghost.elapsed,
-            &mut ghost.just_started,
-            delta,
-            Duration::from_secs_f32(settings.combat_death_duration_secs),
-        );
-        if progress >= 1.0 {
-            return false;
-        }
-
-        let neutral = completed_visual_color().to_srgba();
-        let flash = (1.0 - progress / 0.25).clamp(0.0, 1.0);
-        let alpha = (1.0 - (progress - 0.2).max(0.0) / 0.8).clamp(0.0, 1.0);
-        ghost.visual.color = Color::srgba(
-            neutral.red + (1.0 - neutral.red) * flash,
-            neutral.green + (1.0 - neutral.green) * flash,
-            neutral.blue + (1.0 - neutral.blue) * flash,
-            alpha,
-        );
-        ghost.visual.ring_radius = settings
-            .combat_structure_ring_start_radius
-            .max(0.0)
-            .lerp(settings.combat_structure_ring_end_radius.max(0.0), progress);
-        let ring = faction_color(ghost.visual.victim.swarm).to_srgba();
-        ghost.visual.ring_color = Color::srgba(ring.red, ring.green, ring.blue, 1.0 - progress);
-        true
-    });
-
-    pulses.active.retain_mut(|pulse| {
-        transient_progress(
-            &mut pulse.elapsed,
-            &mut pulse.just_started,
-            delta,
-            Duration::from_secs_f32(settings.combat_pulse_duration_secs),
-        ) < 1.0
-    });
-    decorations.active.retain_mut(|decoration| {
-        let midpoint = (decoration.visual.start + decoration.visual.end) * 0.5;
-        let half_extent = (decoration.visual.end - decoration.visual.start).normalize_or(Vec2::Y)
-            * settings.combat_decoration_length
-            * 0.5;
-        decoration.visual.start = midpoint - half_extent;
-        decoration.visual.end = midpoint + half_extent;
-        transient_progress(
-            &mut decoration.elapsed,
-            &mut decoration.just_started,
-            delta,
-            Duration::from_secs_f32(settings.combat_pulse_duration_secs),
-        ) < 1.0
-    });
-}
-
-fn extract_combat_death_ghosts(
-    mut commands: Commands,
-    nanobot_ghosts: Extract<Res<ActiveNanobotDeathGhosts>>,
-    structure_ghosts: Extract<Res<ActiveStructureDeathGhosts>>,
-    view: Extract<Res<CombatPresentationView>>,
-    views: Query<&RenderVisibleEntities>,
-    mut extracted_sprites: ResMut<ExtractedSprites>,
-) {
-    if !view.visible {
-        return;
-    }
-    let visible_sprite_anchors = views
-        .iter()
-        .filter_map(|visible| visible.iter::<Sprite>().next().map(|(_, main)| **main))
-        .collect::<HashSet<_>>();
-    for main_entity in visible_sprite_anchors {
-        let ghosts = nanobot_ghosts
-            .iter()
-            .map(|ghost| (&ghost.transform, ghost.color, ghost.image.id()))
-            .chain(
-                structure_ghosts
-                    .iter()
-                    .map(|ghost| (&ghost.transform, ghost.color, ghost.image.id())),
-            );
-        for (transform, color, image_handle_id) in ghosts {
-            extracted_sprites.sprites.push(ExtractedSprite {
-                main_entity,
-                render_entity: commands.spawn(TemporaryRenderEntity).id(),
-                transform: GlobalTransform::from(*transform),
-                color: color.into(),
-                image_handle_id,
-                flip_x: false,
-                flip_y: false,
-                kind: ExtractedSpriteKind::Single {
-                    anchor: Vec2::ZERO,
-                    rect: None,
-                    scaling_mode: None,
-                    custom_size: None,
-                },
-            });
-        }
-    }
-}
-
-fn sync_combat_gizmo_settings(tuning: Res<Tuning>, mut configs: ResMut<GizmoConfigStore>) {
-    let settings = &tuning.presentation;
-    configs.config_mut::<CombatGizmos>().0.line.width = settings.combat_pulse_thickness;
-    configs.config_mut::<CombatDecorationGizmos>().0.line.width =
-        settings.combat_decoration_thickness;
-    configs
-        .config_mut::<StructureDeathRingGizmos>()
-        .0
-        .line
-        .width = settings.combat_structure_ring_thickness;
-}
-
-fn draw_combat_pulses(
-    view: Res<CombatPresentationView>,
-    pulses: Res<ActiveCombatPulses>,
-    mut gizmos: Gizmos<CombatGizmos>,
-) {
-    if !view.visible {
-        return;
-    }
-    for pulse in pulses.iter() {
-        gizmos.line_2d(pulse.start, pulse.end, pulse.color);
-    }
-}
-
-fn draw_combat_decorations(
-    view: Res<CombatPresentationView>,
-    decorations: Res<ActiveCombatDecorations>,
-    mut gizmos: Gizmos<CombatDecorationGizmos>,
-) {
-    if !view.visible {
-        return;
-    }
-    for decoration in decorations.iter() {
-        gizmos.line_2d(decoration.start, decoration.end, decoration.color);
-    }
-}
-
-fn draw_structure_death_rings(
-    view: Res<CombatPresentationView>,
-    ghosts: Res<ActiveStructureDeathGhosts>,
-    mut gizmos: Gizmos<StructureDeathRingGizmos>,
-) {
-    if !view.visible {
-        return;
-    }
-    for ghost in ghosts.iter() {
-        gizmos.circle_2d(
-            Isometry2d::from_translation(ghost.victim.position),
-            ghost.ring_radius,
-            ghost.ring_color,
-        );
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn aggregate_direction(directions: &[Vec2]) -> Option<Vec2> {
+        let mut aggregate = ImpactDirections::default();
+        for &direction in directions {
+            aggregate.push(direction);
+        }
+        aggregate.direction()
+    }
+
     #[test]
     fn aggregate_direction_handles_empty_single_and_cancelling_inputs() {
-        assert_eq!(aggregate_direction(&mut []), None);
+        assert_eq!(aggregate_direction(&[]), None);
         assert!(
-            aggregate_direction(&mut [Vec2::X])
+            aggregate_direction(&[Vec2::X])
                 .unwrap()
                 .abs_diff_eq(Vec2::X, 1e-5)
         );
         assert!(
-            aggregate_direction(&mut [Vec2::X, Vec2::NEG_X])
+            aggregate_direction(&[Vec2::X, Vec2::NEG_X])
                 .unwrap()
                 .abs_diff_eq(Vec2::NEG_X, 1e-5)
         );
@@ -955,19 +1005,9 @@ mod tests {
 
     #[test]
     fn aggregate_direction_is_independent_of_input_order() {
-        let mut forward = [Vec2::new(0.8, 0.6), Vec2::new(0.8, -0.6), Vec2::Y];
-        let mut reverse = [Vec2::Y, Vec2::new(0.8, -0.6), Vec2::new(0.8, 0.6)];
+        let forward = [Vec2::new(0.8, 0.6), Vec2::new(0.8, -0.6), Vec2::Y];
+        let reverse = [Vec2::Y, Vec2::new(0.8, -0.6), Vec2::new(0.8, 0.6)];
 
-        assert_eq!(
-            aggregate_direction(&mut forward),
-            aggregate_direction(&mut reverse),
-        );
-    }
-
-    #[test]
-    fn impact_distance_keeps_its_configured_and_screen_space_minimums() {
-        assert_eq!(impact_world_distance(10.0, 1.0, 2.0), 10.0);
-        assert!((impact_world_distance(10.0, 7.99, 2.0) - 15.98).abs() < 0.001);
-        assert_eq!(impact_world_distance(-1.0, -1.0, -1.0), 0.0);
+        assert_eq!(aggregate_direction(&forward), aggregate_direction(&reverse),);
     }
 }

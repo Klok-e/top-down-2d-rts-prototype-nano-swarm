@@ -149,7 +149,7 @@ struct PlanValidation {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct EconomySelection {
-    primary: Option<DepositState>,
+    primary: Option<(DepositState, IVec2)>,
     value: f32,
 }
 

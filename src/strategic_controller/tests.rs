@@ -72,6 +72,71 @@ fn controller_erases_legacy_intent_and_never_paints_across_permanent_terrain() {
     }));
 }
 
+#[test]
+fn controller_stops_hunting_a_target_on_the_isolated_side_of_a_painted_tile() {
+    let owner = SwarmId::PLAYER;
+    let home = Vec2::new(-252.0, 36.0);
+    let mut grid = IntentGrid::new(8, 8);
+    let terrain = [Obstacle::Rectangle {
+        center: Vec2::new(256.0, 0.0),
+        half: Vec2::new(36.0, 8_000.0),
+    }];
+    let reachability = SwarmReachabilityMap::new(&grid, terrain, [(owner, home)]).unwrap();
+    let swarms = [SwarmState {
+        id: owner,
+        home,
+        minerals: 0,
+    }];
+    let target = BotState {
+        id: 1,
+        owner: SwarmId(1),
+        kind: NanobotType::Hauler,
+        position: Vec2::new(128.0, 256.0),
+        health: 100,
+        max_health: 100,
+        charge: 0.0,
+        max_charge: 1.0,
+        cargo: 0,
+    };
+    let tuning = AutonomyTuning::default();
+    let mut controller = Controller::new(owner);
+    let initial = controller.decide(
+        &tuning,
+        &GameState {
+            swarms: &swarms,
+            bots: &[target],
+            terrain: &terrain,
+            reachability: Some(&reachability),
+            ..empty_state(&grid, 0)
+        },
+    );
+    let hunt = Objective::HuntRemnant(target.id).label();
+    assert!(initial.explanation.contains(&hunt));
+    apply(&mut grid, owner, &initial);
+    assert!(
+        grid.cell(IVec2::ZERO)
+            .unwrap()
+            .has_owned(IntentKind::Defend, owner)
+    );
+
+    let moved = BotState {
+        position: Vec2::new(416.0, 256.0),
+        ..target
+    };
+    let revised = controller.decide(
+        &tuning,
+        &GameState {
+            swarms: &swarms,
+            bots: &[moved],
+            terrain: &terrain,
+            reachability: Some(&reachability),
+            ..empty_state(&grid, 1)
+        },
+    );
+    assert!(revised.reviewed);
+    assert!(!revised.explanation.contains(&hunt));
+}
+
 fn mature_economy_bots(owner: SwarmId, home: Vec2) -> Vec<BotState> {
     (0..4)
         .map(|id| BotState {

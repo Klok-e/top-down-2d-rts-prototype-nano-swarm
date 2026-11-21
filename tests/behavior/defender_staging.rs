@@ -466,7 +466,7 @@ fn swarm_tiles_stage_defenders_when_owned_defend_paint_is_absent() {
 }
 
 #[test]
-fn engaged_defenders_do_not_consume_staging_slots() {
+fn response_and_charging_defenders_do_not_consume_staging_slots() {
     let mut app = common::sim_app();
     let crowded = IVec2::ZERO;
     let empty = IVec2::X;
