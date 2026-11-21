@@ -8,10 +8,8 @@ Implement the work described by the user in the spec or tickets.
 
 If the user passes a ticket reference, fetch it from the issue tracker and state its title before starting. If the reference is ambiguous, ask.
 
-Call the Skill tool with "tdd" where possible, at pre-agreed seams.
+Record the starting commit before editing. If the user has agreed on a public interface to test, build one behavior at a time through that interface. Confirm that the test fails before implementing the behavior and passes afterward.
 
 Run typechecking regularly, single test files regularly, and the full test suite once at the end.
 
-Once done, call the Skill tool with "code-review" to review the work.
-
-Commit your work to the current branch.
+Commit the implementation to the current branch. Run `code-review` against the recorded starting commit with the originating spec or ticket. Fix actionable findings and commit the fixes.

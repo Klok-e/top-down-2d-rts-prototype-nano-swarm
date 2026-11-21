@@ -1,11 +1,11 @@
 # Domain Docs
 
-How the engineering skills should consume this repo's domain documentation when exploring the codebase.
+This repository uses a single-context layout.
 
 ## Before exploring, read these
 
-- Read `GLOSSARY.md` at the repo root. If the root has a `GLOSSARY-MAP.md`, use it to find and read the relevant glossaries.
-- Read the relevant ADRs in `docs/adr/`. In multi-context repos, also check `src/<context>/docs/adr/` for context-scoped decisions.
+- Read `GLOSSARY.md` at the repo root.
+- Read the relevant ADRs in `docs/adr/`.
 
 If any of these files don't exist, proceed silently.
 
