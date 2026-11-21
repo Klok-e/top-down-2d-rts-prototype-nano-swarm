@@ -22,7 +22,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     resources::{ResourceDeposit, ResourceKind, ResourceLedger},
     scenario::spawn_selected_scenario,
     scenario_selection::Scenario,
-    tuning::Tuning,
+    tuning::{Tuning, TuningStore},
 };
 
 #[path = "../common/mod.rs"]
@@ -90,6 +90,9 @@ fn authored_default_scenario_keeps_separated_economies_operational() {
         PLAYER_DEPOSIT_CELL, STARTING_DEPOSIT_AMOUNT,
     };
     let mut app = default_headless_app();
+    let (_, tuning) = TuningStore::load(TuningStore::default_path())
+        .expect("the authored economy uses the shipped balance");
+    app.insert_resource(tuning);
     let fixed_step = app.world().resource::<Time<Fixed>>().timestep();
     app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO));
     app.update();
