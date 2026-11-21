@@ -3849,7 +3849,6 @@ fn production_room_requires_saturation_and_mineral_surplus() {
             home: world(home),
             minerals,
             mineral_income_per_second: 0.0,
-            production_saturated: false,
             production_saturated,
         }];
         let decision = Controller::new(owner).decide(
