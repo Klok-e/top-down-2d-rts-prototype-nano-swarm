@@ -1,7 +1,12 @@
-use super::{lifecycle::WorkBudget, *};
+use super::{
+    lifecycle::WorkBudget,
+    staging::{DefendBlock, StagingFront},
+    *,
+};
 
 pub(super) fn materialize_plan(
     candidate: PlanCandidate,
+    mut staging: Option<StagingFront>,
     owner: SwarmId,
     state: &GameState<'_>,
     budget: &mut WorkBudget,
@@ -9,13 +14,14 @@ pub(super) fn materialize_plan(
     let PlanCandidate {
         objective,
         economy,
-        attack_targets,
+        attack,
         anchor,
-        attack_target,
+        attack_target: _,
         key_charger,
         defend_target,
         score: _,
     } = candidate;
+    let anchor = staging.as_ref().map_or(anchor, StagingFront::point);
     let home = state
         .swarms
         .iter()
@@ -96,46 +102,11 @@ pub(super) fn materialize_plan(
         }
     }
 
-    let mut defend_candidates = vec![home_cell, anchor];
-    let mut attack_cells = attack_targets
-        .iter()
-        .map(|target| target.cell)
-        .collect::<Vec<_>>();
-    if attack_cells.is_empty()
-        && let Some(target) = attack_target
-    {
-        attack_cells.push(target);
+    let block = DefendBlock::new(anchor, defend_target);
+    if let Some(front) = staging.as_mut() {
+        front.block = block;
     }
-    defend_candidates.extend(attack_cells.iter().copied());
-    for target in attack_cells {
-        for radius in 1_i32..=2 {
-            for y in -radius..=radius {
-                for x in -radius..=radius {
-                    if x.abs().max(y.abs()) == radius {
-                        defend_candidates.push(target + IVec2::new(x, y));
-                    }
-                }
-            }
-        }
-    }
-    for radius in 0_i32..=3 {
-        for y in -radius..=radius {
-            for x in -radius..=radius {
-                if x.abs().max(y.abs()) == radius {
-                    defend_candidates.push(anchor + IVec2::new(x, y));
-                }
-            }
-        }
-    }
-    for cell in defend_candidates {
-        if desired
-            .iter()
-            .filter(|intent| intent.kind == IntentKind::Defend)
-            .count()
-            >= defend_target
-        {
-            break;
-        }
+    for cell in block.cells() {
         push_desired(
             &mut desired,
             owner,
@@ -167,7 +138,8 @@ pub(super) fn materialize_plan(
     IntentPlan {
         objective,
         primary_deposit: economy.primary.map(|(deposit, _)| deposit.id),
-        attack_targets,
+        attack,
+        staging,
         key_charger: key_charger.map(|charger| charger.id),
         desired,
     }

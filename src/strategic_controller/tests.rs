@@ -3745,3 +3745,115 @@ fn wounded_target_priority_uses_the_edited_health_maximum() {
         "half-health Nanobots must receive their wound priority with a larger maximum"
     );
 }
+fn owned_defend_cells(grid: &IntentGrid, owner: SwarmId) -> BTreeSet<(i32, i32)> {
+    grid.iter_active_cells()
+        .filter(|(_, cell)| cell.has_owned(IntentKind::Defend, owner))
+        .map(|(cell, _)| (cell.x, cell.y))
+        .collect()
+}
+
+#[test]
+fn a_compact_front_leads_the_army_and_waits_for_most_defenders() {
+    let owner = SwarmId::PLAYER;
+    let mut grid = IntentGrid::new(24, 24);
+    let swarms = [SwarmState {
+        id: owner,
+        home: world(IVec2::ZERO),
+        minerals: 2_000,
+    }];
+    let target = StructureState {
+        id: 10,
+        owner: SwarmId(9),
+        position: world(IVec2::new(9, 0)),
+        kind: StructureKind::Sink,
+        health: 100,
+        max_health: 100,
+        minerals: 0,
+    };
+    let defenders = (0..4).map(|id| BotState {
+        id,
+        owner,
+        kind: NanobotType::Defender,
+        position: swarms[0].home,
+        health: 100,
+        max_health: 100,
+        charge: 1.0,
+        max_charge: 1.0,
+        cargo: 0,
+    });
+    let mut defenders = defenders.collect::<Vec<_>>();
+    let mut controller = Controller::new(owner);
+    let tuning = AutonomyTuning {
+        controller_review_period_ticks: WORK_WINDOW_TICKS,
+        ..AutonomyTuning::default()
+    };
+    let review = |controller: &mut Controller, grid: &mut IntentGrid, bots: &[BotState], tick| {
+        let decision = controller.decide(
+            &tuning,
+            &GameState {
+                swarms: &swarms,
+                bots,
+                structures: &[target],
+                ..empty_state(grid, tick)
+            },
+        );
+        assert!(decision.reviewed);
+        apply(grid, owner, &decision);
+    };
+
+    review(&mut controller, &mut grid, &defenders, 0);
+    let first = owned_defend_cells(&grid, owner);
+    assert!(
+        first.iter().all(|&(x, _)| (1..9).contains(&x)) && !first.is_empty(),
+        "the intermediate front must lead the army: {first:?}"
+    );
+    let min_x = first.iter().map(|&(x, _)| x).min().unwrap();
+    let max_x = first.iter().map(|&(x, _)| x).max().unwrap();
+    let min_y = first.iter().map(|&(_, y)| y).min().unwrap();
+    let max_y = first.iter().map(|&(_, y)| y).max().unwrap();
+    assert!(min_y < max_y && min_x < max_x);
+    assert_eq!(
+        first.len(),
+        ((max_x - min_x + 1) * (max_y - min_y + 1)) as usize,
+        "the intermediate Defend block must have no holes: {first:?}"
+    );
+
+    for defender in &mut defenders {
+        defender.position = world(IVec2::new(1, 3));
+    }
+    review(&mut controller, &mut grid, &defenders, WORK_WINDOW_TICKS);
+    assert_eq!(owned_defend_cells(&grid, owner), first);
+
+    for defender in &mut defenders[..2] {
+        defender.position = world(IVec2::new(min_x, min_y));
+    }
+    for defender in &mut defenders[2..] {
+        defender.position = world(IVec2::new(1, -3));
+    }
+    review(
+        &mut controller,
+        &mut grid,
+        &defenders,
+        2 * WORK_WINDOW_TICKS,
+    );
+    assert_eq!(
+        owned_defend_cells(&grid, owner),
+        first,
+        "half the force has arrived"
+    );
+
+    defenders[2].position = world(IVec2::new(max_x, max_y));
+    review(
+        &mut controller,
+        &mut grid,
+        &defenders,
+        3 * WORK_WINDOW_TICKS,
+    );
+    let next = owned_defend_cells(&grid, owner);
+    assert!(next.iter().any(|&(x, _)| x > max_x));
+    assert!(
+        !next.contains(&(min_x, min_y)),
+        "the old front must be erased"
+    );
+    assert_eq!(next.iter().map(|&(_, y)| y).min(), Some(min_y));
+}

@@ -134,10 +134,9 @@ tuning_schema! {
         controller_review_period_ticks: u64 = 30 => ("Controller review interval", "s", 1.0 / 60.0, 1.0 / 60.0, 1.0, 1_000_000_000.0);
         controller_switch_margin: f32 = 1.15 => ("Controller switch margin", "", 1.0, 0.05, 0.0, 1_000_000.0);
         controller_switch_bias: f32 = 10.0 => ("Controller switch bias", "", 1.0, 1.0, 0.0, 1_000_000.0);
-        min_second_front_defenders: u32 = 4 => ("Min second front defenders", "", 1.0, 1.0, 1.0, 1_000_000.0);
-        min_front_health_fraction: f32 = 0.5 => ("Min front health fraction", "", 1.0, 0.05, 0.0, 1.0);
+        strategy_staging_spacing_cells: u32 = 3 => ("Staging point spacing", "cells", 1.0, 1.0, 1.0, 64.0);
+        strategy_staging_arrival_fraction: f32 = 0.6 => ("Staging arrival fraction", "%", 100.0, 5.0, 10.0, 100.0);
         min_front_charge: f32 = 0.45 => ("Min front charge", "", 1.0, 0.05, 0.0, 1.0);
-        strategy_pressure_anchor_exposure_cost: f32 = 12.0 => ("pressure anchor exposure cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_ledger_supply_weight: f32 = 0.1 => ("ledger supply weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_buffer_supply_weight: f32 = 0.05 => ("buffer supply weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_readiness_supply_target: f32 = 80.0 => ("readiness supply target", "", 1.0, 0.05, 0.0, 1_000_000.0);
