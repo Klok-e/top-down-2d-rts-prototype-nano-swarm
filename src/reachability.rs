@@ -109,14 +109,25 @@ impl SwarmReachabilityMap {
         if !grid.in_bounds(cell) {
             return Ok(false);
         }
-        if self
-            .inner
-            .ground_witnesses
-            .lock()
-            .unwrap()
-            .contains_key(&(owner, cell))
-        {
+        // A certified point proves membership without choosing the movement representative.
+        let witnesses = self.nearby_ground(owner, cell);
+        if witnesses[0].is_some() {
             return Ok(true);
+        }
+        let center = (cell.as_vec2() + Vec2::splat(0.5)) * ZONE_BLOCK_SIZE;
+        for witness in witnesses.into_iter().flatten() {
+            if self
+                .inner
+                .navigation
+                .segment_clear_with_budget(witness, center, allow_work)?
+            {
+                self.inner
+                    .ground_witnesses
+                    .lock()
+                    .unwrap()
+                    .insert((owner, cell), center);
+                return Ok(true);
+            }
         }
         Ok(self
             .reachable_point_with_budget(owner, cell, grid, allow_work)?
@@ -212,17 +223,6 @@ impl SwarmReachabilityMap {
         let min = cell.as_vec2() * ZONE_BLOCK_SIZE;
         let center = min + Vec2::splat(ZONE_BLOCK_SIZE / 2.0);
         let navigation = &self.inner.navigation;
-        let witnesses = self.nearby_ground(owner, cell);
-        for witness in witnesses.into_iter().flatten() {
-            if navigation.segment_clear_with_budget(witness, center, allow_work)? {
-                self.inner
-                    .cells
-                    .lock()
-                    .unwrap()
-                    .insert((owner, cell), Some(center));
-                return Ok(Some(center));
-            }
-        }
         let mut point = navigation.connected_point_with_budget(home, [Some(center)], allow_work)?;
         if point.is_none() {
             if world_to_cell(home) == cell {
@@ -500,6 +500,32 @@ mod tests {
             Ok(true)
         );
         assert_eq!(warm.reachable_point(owner, IVec2::ZERO, &grid), Some(cold));
+    }
+
+    #[test]
+    fn a_route_through_a_subcell_gap_preserves_the_canonical_tile_representative() {
+        let owner = SwarmId::PLAYER;
+        let grid = IntentGrid::new(8, 8);
+        let home = Vec2::new(-252.0, 36.0);
+        let terrain = [
+            Obstacle::Rectangle {
+                center: Vec2::new(256.0, 100.0),
+                half: Vec2::new(110.0, 120.0),
+            },
+            Obstacle::Rectangle {
+                center: Vec2::new(256.0, 400.0),
+                half: Vec2::new(110.0, 108.0),
+            },
+        ];
+        let map = || SwarmReachabilityMap::new(&grid, terrain, [(owner, home)]).unwrap();
+        let cell = IVec2::ZERO;
+        let cold = map().reachable_point(owner, cell, &grid).unwrap();
+        let warm = map();
+        let waypoints = [Vec2::new(100.0, 256.0), Vec2::splat(256.0)];
+        warm.remember_route_ground(owner, home, &waypoints, &waypoints[..1], &mut || true)
+            .unwrap();
+        assert!(warm.contains(owner, cell, &grid));
+        assert_eq!(warm.reachable_point(owner, cell, &grid), Some(cold));
     }
 
     #[test]
