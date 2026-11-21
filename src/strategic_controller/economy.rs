@@ -29,7 +29,8 @@ pub(super) struct EconomyPlan {
     pub(super) desired: Vec<DesiredIntent>,
     pub(super) expansion: Option<u64>,
     pub(super) threatened: Option<(u64, IVec2)>,
-    pub(super) neutral_deposits: Vec<DepositState>,
+    pub(super) free_deposit_exists: bool,
+    pub(super) contested_deposits: Vec<DepositState>,
     pub(super) enemy_deposits: Vec<(DepositState, SwarmId)>,
     paint_set: HashSet<DesiredIntent>,
 }
@@ -171,16 +172,7 @@ pub(super) fn plan_economy(
                 .extend(gather_owners.into_iter().map(|other| (*deposit, other)));
             continue;
         }
-        economy.neutral_deposits.push(*deposit);
-        let terrain_exposure = route_exposure(home, deposit.position, state.terrain, budget);
-        let enemy_exposure = enemy_home.map_or(0.0, |enemy| {
-            let friendly_distance = home.distance(deposit.position);
-            let enemy_distance = enemy.distance(deposit.position);
-            friendly_distance / (friendly_distance + enemy_distance).max(crate::ZONE_BLOCK_SIZE)
-        });
-        let value = (deposit.amount as f32 + 1.0).ln() * tuning.strategy_expansion_income_weight
-            - (terrain_exposure + enemy_exposure) * tuning.strategy_expansion_exposure_cost;
-        opportunities.push((deposit, value));
+        opportunities.push(deposit);
     }
     if budget.exhausted {
         return None;
@@ -194,15 +186,45 @@ pub(super) fn plan_economy(
         return Some(economy);
     }
 
+    let mut unchecked = Vec::new();
+    for deposit in opportunities {
+        let approached = state.bots.iter().take(MAX_BOTS).any(|bot| {
+            budget.spend(1) && bot.owner != owner && bot.health > 0 && approaches(bot, deposit)
+        });
+        if approached {
+            match mine_support(owner, deposit, state, home, budget) {
+                Ok(Some(_)) | Err(_) => economy.contested_deposits.push(*deposit),
+                Ok(None) => {}
+            }
+        } else {
+            unchecked.push(deposit);
+        }
+        if budget.exhausted {
+            return None;
+        }
+    }
+    if !economy.contested_deposits.is_empty() {
+        economy.free_deposit_exists = true;
+        return Some(economy);
+    }
+
     let mut best: Option<(OwnedDeposit, f32)> = None;
     // Start with the cheapest plausible routes so distant candidates usually
     // need only an optimistic value bound, even when the map has many deposits.
-    opportunities.sort_by(|(a, _), (b, _)| {
+    unchecked.sort_by(|a, b| {
         home.distance_squared(a.position)
             .total_cmp(&home.distance_squared(b.position))
             .then_with(|| a.id.cmp(&b.id))
     });
-    for (deposit, value) in opportunities {
+    for deposit in unchecked {
+        let terrain_exposure = route_exposure(home, deposit.position, state.terrain, budget);
+        let enemy_exposure = enemy_home.map_or(0.0, |enemy| {
+            let friendly_distance = home.distance(deposit.position);
+            let enemy_distance = enemy.distance(deposit.position);
+            friendly_distance / (friendly_distance + enemy_distance).max(crate::ZONE_BLOCK_SIZE)
+        });
+        let value = (deposit.amount as f32 + 1.0).ln() * tuning.strategy_expansion_income_weight
+            - (terrain_exposure + enemy_exposure) * tuning.strategy_expansion_exposure_cost;
         let travel = home.distance(deposit.position);
         let value = value - travel / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_travel_cost;
         // Navigation can move an obstructed origin to clear ground in its tile.
@@ -219,15 +241,20 @@ pub(super) fn plan_economy(
             .max(0.0);
         let optimistic =
             value - min_route / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_haul_cost;
-        if optimistic <= best.as_ref().map_or(0.0, |(_, score)| *score) {
+        let could_claim = optimistic > best.as_ref().map_or(0.0, |(_, score)| *score);
+        if !could_claim && economy.free_deposit_exists {
             continue;
         }
-        let Ok(Some((mine, distance))) = mine_support(owner, deposit, state, home, budget) else {
-            if budget.exhausted {
-                return None;
+        let (mine, distance) = match mine_support(owner, deposit, state, home, budget) {
+            Ok(Some(support)) => support,
+            Ok(None) if budget.exhausted => return None,
+            Ok(None) => continue,
+            Err(_) => {
+                economy.free_deposit_exists = true;
+                continue;
             }
-            continue;
         };
+        economy.free_deposit_exists = true;
         let score = value - distance / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_haul_cost;
         if economy.can_fit(&mine, ECONOMY_EXPANSION_PAINT_LIMIT)
             && score > best.as_ref().map_or(0.0, |(_, score)| *score)
@@ -240,6 +267,17 @@ pub(super) fn plan_economy(
         economy.add(mine);
     }
     (!budget.exhausted).then_some(economy)
+}
+
+fn approaches(bot: &BotState, deposit: &DepositState) -> bool {
+    let offset = deposit.position - bot.position;
+    offset.length_squared() <= (2.0 * crate::ZONE_BLOCK_SIZE).powi(2)
+        && bot.displacement.length_squared() >= 0.25
+        && bot
+            .displacement
+            .normalize_or_zero()
+            .dot(offset.normalize_or_zero())
+            >= 0.8
 }
 
 fn threatened_deposit(

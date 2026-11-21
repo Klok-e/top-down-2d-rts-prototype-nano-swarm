@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
 };
 
 use crate::{
@@ -12,7 +12,7 @@ use crate::{
     nanobot::{
         Cargo, Charge, Charger, Health, MatchOutcome, Nanobot, NanobotType, OwnerSwarm,
         PlannedStructure, ProductionFacility, RegionalAllocationSet, Structure, Swarm, SwarmId,
-        SwarmMember, VelocityComponent,
+        SwarmMember,
     },
     navigation::{Navigation, RouteGoal, RouteOutcome},
     reachability::{IntentWriteAction, SwarmReachabilityMap, apply_reachable_intent},
@@ -171,7 +171,6 @@ fn strategic_intent_system(
             &Health,
             Option<&Charge>,
             Option<&Cargo>,
-            Option<&VelocityComponent>,
         ),
         With<Nanobot>,
     >,
@@ -205,6 +204,7 @@ fn strategic_intent_system(
     outcome: Option<Res<MatchOutcome>>,
     mut telemetry: ResMut<ControllerTelemetry>,
     mut routes: Local<StrategicRouteCache>,
+    mut previous_positions: Local<HashMap<Entity, Vec2>>,
     mut income_history: Local<BTreeMap<SwarmId, MineralIncomeHistory>>,
 ) {
     if controllers.is_empty()
@@ -230,22 +230,27 @@ fn strategic_intent_system(
         })
         .collect();
     swarm_states.sort_by_key(|swarm| swarm.id);
+    previous_positions.retain(|entity, _| bots.get(*entity).is_ok());
     let mut bot_states: Vec<_> = bots
         .iter()
-        .map(
-            |(entity, owner, kind, transform, health, charge, cargo, velocity)| BotState {
+        .map(|(entity, owner, kind, transform, health, charge, cargo)| {
+            let position = transform.translation.truncate();
+            let previous = previous_positions
+                .insert(entity, position)
+                .unwrap_or(position);
+            BotState {
                 id: entity.to_bits(),
                 owner: owner.0,
                 kind: *kind,
-                position: transform.translation.truncate(),
+                position,
                 health: health.current,
                 max_health: health.max,
                 charge: charge.map_or(1.0, |c| c.current),
                 max_charge: charge.map_or(1.0, |c| c.max),
                 cargo: cargo.map_or(0, |c| c.amount),
-                velocity: velocity.map_or(Vec2::ZERO, |v| v.value),
-            },
-        )
+                displacement: position - previous,
+            }
+        })
         .collect();
     bot_states.sort_by_key(|bot| bot.id);
     let mut structure_states: Vec<_> = structures

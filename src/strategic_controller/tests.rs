@@ -304,7 +304,7 @@ fn changed_plan_erases_superseded_paint_beyond_the_cleanup_cursor() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
-        velocity: Vec2::ZERO,
+        displacement: Vec2::ZERO,
     };
     let deposit = DepositState {
         id: 20,
@@ -442,7 +442,7 @@ fn controller_stops_hunting_a_target_on_the_isolated_side_of_a_painted_tile() {
         charge: 0.0,
         max_charge: 1.0,
         cargo: 0,
-        velocity: Vec2::ZERO,
+        displacement: Vec2::ZERO,
     };
     let tuning = direct_attack_tuning();
     let mut controller = Controller::new(owner);
@@ -497,7 +497,7 @@ fn mature_economy_bots(owner: SwarmId, home: Vec2) -> Vec<BotState> {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
-            velocity: Vec2::ZERO,
+            displacement: Vec2::ZERO,
         })
         .chain((4..8).map(|id| BotState {
             id,
@@ -509,7 +509,7 @@ fn mature_economy_bots(owner: SwarmId, home: Vec2) -> Vec<BotState> {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
-            velocity: Vec2::ZERO,
+            displacement: Vec2::ZERO,
         }))
         .collect()
 }
@@ -567,7 +567,7 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
-            velocity: Vec2::ZERO,
+            displacement: Vec2::ZERO,
         },
         BotState {
             id: 2,
@@ -579,7 +579,7 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
-            velocity: Vec2::ZERO,
+            displacement: Vec2::ZERO,
         },
         BotState {
             id: 3,
@@ -591,7 +591,7 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
             charge: 0.3,
             max_charge: 1.0,
             cargo: 0,
-            velocity: Vec2::ZERO,
+            displacement: Vec2::ZERO,
         },
     ];
     let structures = [
@@ -755,7 +755,7 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
-        velocity: Vec2::ZERO,
+        displacement: Vec2::ZERO,
     });
     let bots = economy_bots
         .into_iter()
@@ -847,7 +847,7 @@ fn advantaged_raid_paints_enemy_logistics_and_keeps_home_economy() {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
-            velocity: Vec2::ZERO,
+            displacement: Vec2::ZERO,
         })
         .collect::<Vec<_>>();
     let deposits = [
@@ -944,7 +944,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
-            velocity: Vec2::ZERO,
+            displacement: Vec2::ZERO,
         })
         .collect::<Vec<_>>();
     let rich_charger = StructureState {
@@ -966,7 +966,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
-        velocity: Vec2::ZERO,
+        displacement: Vec2::ZERO,
     };
     let mut bots = friendly_defenders.clone();
     bots.push(damage_target);
@@ -1073,7 +1073,7 @@ fn losing_a_mine_keeps_a_progressing_attack_front() {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
-            velocity: Vec2::ZERO,
+            displacement: Vec2::ZERO,
         })
         .collect::<Vec<_>>();
     let friendly_charger = StructureState {
@@ -1515,7 +1515,7 @@ fn income_lead_adds_a_home_push_without_abandoning_the_mine() {
                 charge: 1.0,
                 max_charge: 1.0,
                 cargo: 0,
-                velocity: Vec2::ZERO,
+                displacement: Vec2::ZERO,
             })
         })
         .collect::<Vec<_>>();
@@ -1701,7 +1701,7 @@ fn authored_terrain_leaves_budget_for_a_coordinated_plan() {
                 charge: 1.0,
                 max_charge: 1.0,
                 cargo: 0,
-                velocity: Vec2::ZERO,
+                displacement: Vec2::ZERO,
             })
         })
         .collect::<Vec<_>>();
@@ -1789,7 +1789,7 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
-            velocity: Vec2::ZERO,
+            displacement: Vec2::ZERO,
         })
         .collect::<Vec<_>>();
     let deposit_cells = [
@@ -1863,6 +1863,9 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
             && edit.kind == IntentKind::Defend
             && edit.cell == crate::scenario::OPPONENT_DEPOSIT_CELL
     }));
+    assert!(!decision.edits.iter().any(|edit| {
+        edit.action == IntentEditAction::Paint && edit.cell == crate::scenario::OPPONENT_CELL
+    }));
     assert!(decision.work_units < PLANNING_WORK_BUDGET);
 }
 
@@ -1897,7 +1900,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
-        velocity: Vec2::ZERO,
+        displacement: Vec2::ZERO,
     });
     let target = BotState {
         id: 50,
@@ -1909,7 +1912,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
-        velocity: Vec2::ZERO,
+        displacement: Vec2::ZERO,
     };
     let bots = friendly_defenders.chain([target]).collect::<Vec<_>>();
     let mut controller = Controller::new(owner);
@@ -2019,7 +2022,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
-        velocity: Vec2::ZERO,
+        displacement: Vec2::ZERO,
     });
     let target = BotState {
         id: 50,
@@ -2031,7 +2034,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
-        velocity: Vec2::ZERO,
+        displacement: Vec2::ZERO,
     };
     let mut bots = friendly_defenders.chain([target]).collect::<Vec<_>>();
     let alternative = StructureState {
@@ -2157,7 +2160,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
-        velocity: Vec2::ZERO,
+        displacement: Vec2::ZERO,
     });
     let target = BotState {
         id: 50,
@@ -2169,7 +2172,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
-        velocity: Vec2::ZERO,
+        displacement: Vec2::ZERO,
     };
     let mut bots = friendly_defenders.chain([target]).collect::<Vec<_>>();
     let mut controller = Controller::new(owner);
@@ -2299,7 +2302,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
-        velocity: Vec2::ZERO,
+        displacement: Vec2::ZERO,
     });
     let target = BotState {
         id: 50,
@@ -2311,7 +2314,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
-        velocity: Vec2::ZERO,
+        displacement: Vec2::ZERO,
     };
     let mut bots = friendly_defenders.chain([target]).collect::<Vec<_>>();
     let alternative = StructureState {
@@ -2493,7 +2496,7 @@ fn hunt_paint_holds_until_the_target_leaves_its_block() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
-        velocity: Vec2::ZERO,
+        displacement: Vec2::ZERO,
     };
     let mut controller = Controller::new(owner);
     let first = controller.decide(
@@ -2688,7 +2691,7 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
-            velocity: Vec2::ZERO,
+            displacement: Vec2::ZERO,
         }))
         .collect::<Vec<_>>();
     let expansion = controller.decide(
@@ -2761,7 +2764,7 @@ fn live_scoring_review_changes_intent_without_refilling_the_planning_allowance()
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
-        velocity: Vec2::ZERO,
+        displacement: Vec2::ZERO,
     };
     let swarms = [
         SwarmState {
@@ -2901,7 +2904,7 @@ fn wounded_target_priority_uses_the_edited_health_maximum() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
-        velocity: Vec2::ZERO,
+        displacement: Vec2::ZERO,
     };
     let nearer_bot = BotState {
         id: 13,
@@ -2968,7 +2971,7 @@ fn a_compact_front_leads_the_army_and_waits_for_most_defenders() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
-        velocity: Vec2::ZERO,
+        displacement: Vec2::ZERO,
     });
     let mut defenders = defenders.collect::<Vec<_>>();
     let mut controller = Controller::new(owner);
@@ -3133,7 +3136,7 @@ fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
-        velocity: Vec2::ZERO,
+        displacement: Vec2::ZERO,
     };
     let mut controller = Controller::new(owner);
     let mut tuning = AutonomyTuning::default();
@@ -3292,17 +3295,17 @@ fn military_priorities_protect_expansion_before_attacking_home() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
-        velocity: Vec2::ZERO,
+        displacement: Vec2::ZERO,
     };
     let approaching = BotState {
         id: 51,
         kind: NanobotType::Worker,
         position: world(neutral + IVec2::X),
-        velocity: -Vec2::X,
+        displacement: -Vec2::X,
         ..intruder
     };
     let leaving = BotState {
-        velocity: Vec2::X,
+        displacement: Vec2::X,
         ..approaching
     };
     let decide = |deposits: &[DepositState], structures: &[StructureState], bots: &[BotState]| {
@@ -3356,6 +3359,13 @@ fn military_priorities_protect_expansion_before_attacking_home() {
             .any(|edit| { edit.kind == IntentKind::Defend && edit.cell == neutral })
     );
 
+    assert!(
+        !contest
+            .edits
+            .iter()
+            .any(|edit| { edit.kind == IntentKind::Gather && edit.cell == neutral })
+    );
+
     let expansion = decide(&deposits, &structures, &[leaving]);
     assert!(
         expansion.explanation.contains("secure Resource Deposit 30"),
@@ -3377,6 +3387,38 @@ fn military_priorities_protect_expansion_before_attacking_home() {
     assert!(home.explanation.contains("push enemy home"), "{home:?}");
     assert!(
         home.edits
+            .iter()
+            .any(|edit| { edit.kind == IntentKind::Defend && edit.cell == enemy_home })
+    );
+
+    let blocked_approach = |_, goal, _: &mut dyn FnMut() -> bool| {
+        Some(match goal {
+            RouteGoal::Range { center, .. } if center == raid_target.position => {
+                RouteOutcome::Unreachable
+            }
+            _ => RouteOutcome::Found(crate::navigation::Route {
+                waypoints: vec![],
+                cost: 0.0,
+            }),
+        })
+    };
+    let reachable_home = Controller::new(owner).decide(
+        &direct_attack_tuning(),
+        &GameState {
+            swarms: &swarms,
+            deposits: &deposits[..2],
+            structures: &structures,
+            route_query: Some(&blocked_approach),
+            ..empty_state(&grid, 0)
+        },
+    );
+    assert!(
+        reachable_home.explanation.contains("push enemy home"),
+        "{reachable_home:?}"
+    );
+    assert!(
+        reachable_home
+            .edits
             .iter()
             .any(|edit| { edit.kind == IntentKind::Defend && edit.cell == enemy_home })
     );

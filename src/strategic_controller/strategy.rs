@@ -1,9 +1,5 @@
 use super::economy::{EconomyPlan, validate_owned_deposits};
-use super::{
-    lifecycle::WorkBudget,
-    materialize::{route_exposure, world_to_intent_cell},
-    *,
-};
+use super::{lifecycle::WorkBudget, materialize::world_to_intent_cell, *};
 
 fn is_reachable(owner: SwarmId, state: &GameState<'_>, cell: IVec2) -> bool {
     state
@@ -195,6 +191,7 @@ pub(super) fn generate_candidates(
         key_charger,
         defend_target,
         score: 0.0,
+        protected_home: None,
     };
     let mut candidates = vec![base.clone()];
     if let Some((deposit, target)) = economy.threatened {
@@ -206,24 +203,15 @@ pub(super) fn generate_candidates(
         return candidates;
     }
 
-    for deposit in &economy.neutral_deposits {
-        let approaching = state.bots.iter().take(MAX_BOTS).any(|bot| {
-            budget.spend(1)
-                && bot.owner != owner
-                && bot.health > 0
-                && approaches(bot, deposit)
-                && is_target_reachable(owner, state, bot.position)
+    for deposit in &economy.contested_deposits {
+        candidates.push(PlanCandidate {
+            objective: Objective::ContestDeposit(deposit.id),
+            attack_target: Some(world_to_intent_cell(deposit.position)),
+            score: -home.distance(deposit.position) / crate::ZONE_BLOCK_SIZE,
+            ..base
         });
-        if approaching {
-            candidates.push(PlanCandidate {
-                objective: Objective::ContestDeposit(deposit.id),
-                attack_target: Some(world_to_intent_cell(deposit.position)),
-                score: -home.distance(deposit.position) / crate::ZONE_BLOCK_SIZE,
-                ..base
-            });
-        }
     }
-    if !economy.neutral_deposits.is_empty() || budget.exhausted {
+    if economy.free_deposit_exists {
         return candidates;
     }
 
@@ -312,7 +300,7 @@ pub(super) fn generate_candidates(
             health: structure.health,
         };
         let mine = mine_target(economy, structure.owner, structure.position, state, budget);
-        let objective = if let Some(deposit) = mine {
+        let objective = if let Some((deposit, _)) = mine {
             Objective::RaidDeposit {
                 deposit,
                 target: structure.id,
@@ -337,14 +325,13 @@ pub(super) fn generate_candidates(
             + health_deficit(structure.health, structure.max_health)
                 * tuning.strategy_raid_vulnerability_weight
             + structure.minerals as f32 * tuning.strategy_raid_cargo_weight
-            - distance * tuning.strategy_raid_distance_cost
-            - route_exposure(home, structure.position, state.terrain, budget)
-                * tuning.strategy_raid_exposure_cost;
+            - distance * tuning.strategy_raid_distance_cost;
         candidates.push(PlanCandidate {
             objective,
             attack: Some(attack),
             attack_target: Some(attack.cell),
             score,
+            protected_home: mine.and_then(|(_, home_cell)| home_cell),
             ..base
         });
     }
@@ -357,7 +344,7 @@ pub(super) fn generate_candidates(
             continue;
         }
         let mine = mine_target(economy, bot.owner, bot.position, state, budget);
-        let objective = if let Some(deposit) = mine {
+        let objective = if let Some((deposit, _)) = mine {
             Objective::RaidDeposit {
                 deposit,
                 target: bot.id,
@@ -389,28 +376,17 @@ pub(super) fn generate_candidates(
         } + danger
             + health_deficit(bot.health, bot.max_health)
                 * tuning.strategy_hunt_vulnerability_weight
-            - distance * tuning.strategy_hunt_distance_cost
-            - route_exposure(home, bot.position, state.terrain, budget)
-                * tuning.strategy_hunt_exposure_cost;
+            - distance * tuning.strategy_hunt_distance_cost;
         candidates.push(PlanCandidate {
             objective,
             attack: Some(attack),
             attack_target: Some(attack.cell),
             score,
+            protected_home: mine.and_then(|(_, home_cell)| home_cell),
             ..base
         });
     }
     candidates
-}
-
-fn approaches(bot: &BotState, deposit: &DepositState) -> bool {
-    let offset = deposit.position - bot.position;
-    offset.length_squared() <= (2.0 * crate::ZONE_BLOCK_SIZE).powi(2)
-        && bot
-            .velocity
-            .normalize_or_zero()
-            .dot(offset.normalize_or_zero())
-            >= 0.8
 }
 
 fn mine_target(
@@ -419,7 +395,7 @@ fn mine_target(
     position: Vec2,
     state: &GameState<'_>,
     budget: &mut WorkBudget,
-) -> Option<u64> {
+) -> Option<(u64, Option<IVec2>)> {
     let home_cell = state
         .swarms
         .iter()
@@ -443,7 +419,7 @@ fn mine_target(
             closest = Some((deposit.id, distance));
         }
     }
-    closest.map(|(id, _)| id)
+    closest.map(|(id, _)| (id, home_cell))
 }
 
 pub(super) fn estimate_forces(

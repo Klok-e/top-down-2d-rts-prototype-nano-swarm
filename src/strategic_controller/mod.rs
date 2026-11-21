@@ -48,7 +48,7 @@ pub struct BotState {
     pub charge: f32,
     pub max_charge: f32,
     pub cargo: u32,
-    pub velocity: Vec2,
+    pub displacement: Vec2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,6 +166,7 @@ struct PlanCandidate {
     key_charger: Option<StructureState>,
     defend_target: usize,
     score: f32,
+    protected_home: Option<IVec2>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,6 +225,21 @@ impl Objective {
 }
 
 impl IntentPlan {
+    fn append_context(&self, explanation: &mut String) {
+        if let Some(front) = &self.staging {
+            explanation.push_str(&format!(", staging point {}", front.point()));
+        } else {
+            explanation.push_str(", no active staging point");
+        }
+        explanation.push_str(&format!(
+            ", owned Resource Deposits {:?}",
+            self.owned_deposits
+                .iter()
+                .map(|mine| mine.id)
+                .collect::<Vec<_>>()
+        ));
+    }
+
     fn is_coordinated(&self) -> bool {
         [IntentKind::Build, IntentKind::Defend, IntentKind::Corridor]
             .into_iter()

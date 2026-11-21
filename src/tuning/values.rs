@@ -136,7 +136,6 @@ tuning_schema! {
         controller_switch_bias: f32 = 10.0 => ("Controller switch bias", "", 1.0, 1.0, 0.0, 1_000_000.0);
         strategy_staging_spacing_cells: u32 = 3 => ("Staging point spacing", "cells", 1.0, 1.0, 1.0, 64.0);
         strategy_staging_arrival_fraction: f32 = 0.6 => ("Staging arrival fraction", "%", 100.0, 5.0, 0.1, 1.0);
-        min_front_charge: f32 = 0.45 => ("Min front charge", "", 1.0, 0.05, 0.0, 1.0);
         strategy_ledger_supply_weight: f32 = 0.1 => ("ledger supply weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_buffer_supply_weight: f32 = 0.05 => ("buffer supply weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_readiness_supply_target: f32 = 80.0 => ("readiness supply target", "", 1.0, 0.05, 0.0, 1_000_000.0);
@@ -157,7 +156,6 @@ tuning_schema! {
         strategy_raid_force_weight: f32 = 0.045 => ("raid force weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_raid_enemy_weight: f32 = 0.04 => ("raid enemy weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_raid_distance_cost: f32 = 3.0 => ("raid distance cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_raid_exposure_cost: f32 = 14.0 => ("raid exposure cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_hunt_defender_value: f32 = 60.0 => ("hunt defender value", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_hunt_hauler_value: f32 = 25.0 => ("hunt hauler value", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_hunt_worker_value: f32 = 15.0 => ("hunt worker value", "", 1.0, 0.05, 0.0, 1_000_000.0);
@@ -165,7 +163,6 @@ tuning_schema! {
         strategy_hunt_remnant_base: f32 = 500.0 => ("hunt remnant base", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_hunt_force_weight: f32 = 0.04 => ("hunt force weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_hunt_distance_cost: f32 = 2.0 => ("hunt distance cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_hunt_exposure_cost: f32 = 14.0 => ("hunt exposure cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_force_base_weight: f32 = 0.35 => ("force base weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_force_charge_weight: f32 = 0.65 => ("force charge weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
     }

@@ -352,7 +352,19 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
     let enemy_id = *app.world().get::<SwarmId>(enemy).unwrap();
     app.world_mut()
         .entity_mut(enemy)
-        .insert(Transform::from_translation(target.extend(0.0)));
+        .insert(Transform::from_translation(
+            common::cell_world_center(target_cell + IVec2::X * 3).extend(0.0),
+        ));
+    let mine = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: common::cell_world_center(target_cell + IVec2::Y),
+            amount: 500,
+            capacity: 500,
+            radius: 80.0,
+        },
+    );
+    app.world_mut().entity_mut(mine).insert(OwnerSwarm(enemy));
     let facility = common::spawn_facility_at(&mut app, enemy, target);
     app.world_mut()
         .entity_mut(facility)
