@@ -138,7 +138,8 @@ pub struct Controller {
 struct IntentPlan {
     objective: Objective,
     primary_deposit: Option<u64>,
-    attack_targets: Vec<AttackObligation>,
+    attack: Option<AttackObligation>,
+    staging: Option<staging::StagingFront>,
     key_charger: Option<u64>,
     desired: Vec<DesiredIntent>,
 }
@@ -146,10 +147,9 @@ struct IntentPlan {
 #[derive(Debug, Default)]
 struct PlanValidation {
     invalidation: Option<String>,
-    observed_attack_targets: Vec<AttackObligation>,
-    covered_attack_progress: bool,
+    attack_progressed: bool,
+    covered_attack: bool,
     covered_attack_movement: bool,
-    all_attack_targets_covered: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -162,7 +162,7 @@ struct EconomySelection {
 struct PlanCandidate {
     objective: Objective,
     economy: EconomySelection,
-    attack_targets: Vec<AttackObligation>,
+    attack: Option<AttackObligation>,
     anchor: IVec2,
     attack_target: Option<IVec2>,
     key_charger: Option<StructureState>,
@@ -234,6 +234,7 @@ struct ForceEstimate {
 
 mod lifecycle;
 mod materialize;
+mod staging;
 mod strategy;
 
 #[cfg(test)]

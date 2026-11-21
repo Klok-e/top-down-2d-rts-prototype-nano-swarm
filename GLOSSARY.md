@@ -24,6 +24,10 @@ _Avoid_: AI variant, opponent policy, Nanobot autonomy, scripted assault, direct
 A Strategic Controller's coordinated arrangement of Gather, Build, Defend, and Corridor intent across its Swarm-Reachable Map. It expresses intended economic, support, and combat work without assigning individual Nanobots; paint outside that map is removed at the next review.
 _Avoid_: Build order, squad orders
 
+**Staging Point**:
+A fixed position on the approach to a military objective where the Strategic Controller paints a Defend block to rally its Defenders before advancing.
+_Avoid_: Cohort anchor
+
 **Nanobot**:
 An individual autonomous agent within the swarm. It may choose tasks from player intent, but is not a persistent command target.
 _Avoid_: Unit, soldier, worker

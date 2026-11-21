@@ -753,10 +753,11 @@ fn controller_primary_site_extracts_and_hauls_under_normal_pacing() {
 }
 
 #[test]
-fn controller_new_front_keeps_the_progressing_fronts_shared_defender_response() {
+fn controller_retains_the_progressing_fronts_shared_defender_response() {
     use top_down_2d_rts_prototype_nano_swarm::nanobot::{
         DefenderResponse, OwnerSwarm, PlannedKind, Structure, StructureKind,
     };
+    use top_down_2d_rts_prototype_nano_swarm::strategic_runtime::ControllerTelemetry;
 
     let mut app = common::sim_app();
     app.insert_resource(IntentGrid::new(64, 64));
@@ -767,6 +768,10 @@ fn controller_new_front_keeps_the_progressing_fronts_shared_defender_response() 
         .entity_mut(own)
         .insert(StrategicController::new(SwarmId::PLAYER));
     install_empty_reachability(&mut app, [SwarmId::PLAYER]);
+    app.world_mut()
+        .resource_mut::<top_down_2d_rts_prototype_nano_swarm::tuning::Tuning>()
+        .autonomy
+        .strategy_staging_spacing_cells = 64;
     let enemy_cell = IVec2::new(12, 0);
     let enemy = app
         .world_mut()
@@ -800,7 +805,8 @@ fn controller_new_front_keeps_the_progressing_fronts_shared_defender_response() 
         .map(|index| {
             common::spawn_defender_at(
                 &mut app,
-                common::cell_world_center(IVec2::new(9, 0)) + Vec2::new(0.0, index as f32 * 80.0),
+                common::cell_world_center(enemy_cell)
+                    + Vec2::new(-160.0, index as f32 * 48.0 - 168.0),
             )
         })
         .collect::<Vec<_>>();
@@ -844,23 +850,28 @@ fn controller_new_front_keeps_the_progressing_fronts_shared_defender_response() 
         .get_mut::<Structure>(new_front)
         .unwrap()
         .health = 20;
+    let prior_reviews = app.world().resource::<ControllerTelemetry>().profiles()[&0].reviews;
     for _ in 0..DEFENDER_RESPONSE_TICK_BUDGET {
         app.update();
+        if app.world().resource::<ControllerTelemetry>().profiles()[&0].reviews > prior_reviews {
+            break;
+        }
     }
+    assert!(app.world().resource::<ControllerTelemetry>().profiles()[&0].reviews > prior_reviews);
 
     assert!(
-        defenders.iter().any(|defender| {
-            app.world()
-                .get::<DefenderResponse>(*defender)
-                .is_some_and(|response| response.target == new_front)
-        }),
-        "the new front should receive an additional shared-autonomy response"
+        !app.world()
+            .resource::<IntentGrid>()
+            .cell(IVec2::new(3, 5))
+            .unwrap()
+            .has_owned(IntentKind::Defend, SwarmId::PLAYER),
+        "progress at an active front must keep a competing target from taking its place"
     );
     assert_eq!(
         app.world()
             .get::<DefenderResponse>(original_responder)
             .map(|response| response.target),
         Some(old_front),
-        "adding a supportable front must not cancel the progressing front's response"
+        "the progressing attack must preserve its shared-autonomy response"
     );
 }
