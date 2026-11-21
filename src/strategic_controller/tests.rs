@@ -3477,6 +3477,270 @@ fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
 }
 
 #[test]
+fn a_contest_keeps_an_established_mine_and_claims_a_different_free_deposit() {
+    let owner = SwarmId(4);
+    let enemy = SwarmId(9);
+    let established = IVec2::new(-5, 0);
+    let contested = IVec2::new(3, 6);
+    let free = IVec2::new(-4, -5);
+    let mut grid = IntentGrid::new(32, 32);
+    let deposits = [
+        DepositState {
+            id: 10,
+            owner: Some(owner),
+            position: world(established),
+            amount: 70_000,
+            radius: 100.0,
+        },
+        DepositState {
+            id: 20,
+            owner: None,
+            position: world(contested),
+            amount: 70_000,
+            radius: 100.0,
+        },
+        DepositState {
+            id: 30,
+            owner: None,
+            position: world(free),
+            amount: 70_000,
+            radius: 100.0,
+        },
+    ];
+    let mut controller = Controller::new(owner);
+    let tuning = direct_attack_tuning();
+    let approaching = [BotState {
+        id: 40,
+        owner: enemy,
+        kind: NanobotType::Worker,
+        position: world(contested + IVec2::X),
+        health: 100,
+        max_health: 100,
+        charge: 0.0,
+        max_charge: 1.0,
+        cargo: 0,
+        displacement: -Vec2::X,
+    }];
+    let opening = controller.decide(
+        &tuning,
+        &GameState {
+            deposits: &deposits,
+            bots: &approaching,
+            ..empty_state(&grid, 0)
+        },
+    );
+    apply(&mut grid, owner, &opening);
+    let has = |grid: &IntentGrid, cell, kind| {
+        grid.cell(cell)
+            .is_some_and(|cell| cell.has_owned(kind, owner))
+    };
+    assert!(has(&grid, established, IntentKind::Gather));
+    assert!(
+        !has(&grid, free, IntentKind::Gather),
+        "first mine is still starting"
+    );
+
+    let mut producing_deposits = deposits;
+    producing_deposits[0].amount -= 1;
+    let expanded = controller.decide(
+        &tuning,
+        &GameState {
+            deposits: &producing_deposits,
+            bots: &approaching,
+            ..empty_state(&grid, WORK_WINDOW_TICKS)
+        },
+    );
+    apply(&mut grid, owner, &expanded);
+    assert!(has(&grid, free, IntentKind::Gather), "{expanded:?}");
+    assert!(has(&grid, established, IntentKind::Gather));
+    assert!(has(&grid, contested, IntentKind::Defend));
+    assert!(!has(&grid, contested, IntentKind::Gather));
+}
+
+#[test]
+fn an_undefended_enemy_mine_is_raided_until_arrival_then_can_be_raided_again() {
+    let owner = SwarmId(4);
+    let enemy = SwarmId(9);
+    let enemy_mine = IVec2::new(4, 4);
+    let enemy_home = IVec2::new(8, -3);
+    let home_mine = IVec2::new(-4, 0);
+    let fresh_mine = IVec2::new(2, -1);
+    let mut grid = IntentGrid::new(32, 32);
+    grid.paint(enemy_mine, IntentKind::Gather, enemy);
+    let swarms = [
+        SwarmState {
+            id: owner,
+            home: world(IVec2::ZERO),
+            minerals: 100,
+            mineral_income_per_second: 100.0,
+            production_saturated: false,
+        },
+        SwarmState {
+            id: enemy,
+            home: world(enemy_home),
+            minerals: 100,
+            mineral_income_per_second: 1.0,
+            production_saturated: false,
+        },
+    ];
+    let claimed = DepositState {
+        id: 30,
+        owner: None,
+        position: world(enemy_mine),
+        amount: 70_000,
+        radius: 100.0,
+    };
+    let deposits = [
+        claimed,
+        DepositState {
+            id: 31,
+            owner: Some(enemy),
+            position: world(fresh_mine),
+            ..claimed
+        },
+        DepositState {
+            id: 10,
+            owner: Some(owner),
+            position: world(home_mine),
+            ..claimed
+        },
+    ];
+    let structures = [StructureState {
+        id: 40,
+        owner: enemy,
+        position: world(enemy_home),
+        kind: StructureKind::Facility,
+        health: 100,
+        max_health: 100,
+        minerals: 40,
+    }];
+    let mut controller = Controller::new(owner);
+    let tuning = AutonomyTuning {
+        strategy_hunt_distance_cost: 1000.0,
+        ..direct_attack_tuning()
+    };
+    let decide = |controller: &mut Controller, grid: &IntentGrid, bots: &[BotState], tick| {
+        controller.decide(
+            &tuning,
+            &GameState {
+                swarms: &swarms,
+                deposits: &deposits,
+                structures: &structures,
+                bots,
+                ..empty_state(grid, tick)
+            },
+        )
+    };
+    let raid = decide(&mut controller, &grid, &[], 0);
+    apply(&mut grid, owner, &raid);
+    let has = |grid: &IntentGrid, cell, kind, who| {
+        grid.cell(cell)
+            .is_some_and(|cell| cell.has_owned(kind, who))
+    };
+    assert!(
+        has(&grid, enemy_mine, IntentKind::Defend, owner),
+        "{raid:?}"
+    );
+    assert!(!has(&grid, enemy_mine, IntentKind::Gather, owner));
+    assert!(!has(&grid, enemy_home, IntentKind::Defend, owner));
+
+    let waiting = decide(&mut controller, &grid, &[], WORK_WINDOW_TICKS);
+    apply(&mut grid, owner, &waiting);
+    assert!(has(&grid, enemy_mine, IntentKind::Defend, owner));
+    assert!(!has(&grid, enemy_home, IntentKind::Defend, owner));
+
+    let arrived = BotState {
+        id: 50,
+        owner,
+        kind: NanobotType::Defender,
+        position: world(enemy_mine) + 150.0 * Vec2::X,
+        health: 100,
+        max_health: 100,
+        charge: 1.0,
+        max_charge: 1.0,
+        cargo: 0,
+        displacement: Vec2::ZERO,
+    };
+    let push = decide(&mut controller, &grid, &[arrived], 2 * WORK_WINDOW_TICKS);
+    apply(&mut grid, owner, &push);
+    assert!(
+        has(&grid, enemy_home, IntentKind::Defend, owner),
+        "{push:?}"
+    );
+    assert!(!has(&grid, enemy_mine, IntentKind::Defend, owner));
+    assert!(has(&grid, enemy_mine, IntentKind::Gather, enemy));
+
+    let continuation = decide(&mut controller, &grid, &[], 3 * WORK_WINDOW_TICKS);
+    apply(&mut grid, owner, &continuation);
+    assert!(has(&grid, enemy_home, IntentKind::Defend, owner));
+    assert!(!has(&grid, enemy_mine, IntentKind::Defend, owner));
+
+    let intruder = BotState {
+        id: 60,
+        owner: enemy,
+        position: world(home_mine),
+        ..arrived
+    };
+    grid.erase(enemy_mine, IntentKind::Gather, enemy);
+    let defense = decide(&mut controller, &grid, &[intruder], 4 * WORK_WINDOW_TICKS);
+    apply(&mut grid, owner, &defense);
+    assert!(
+        defense
+            .explanation
+            .contains("defend owned Resource Deposit 10")
+    );
+
+    grid.paint(enemy_mine, IntentKind::Gather, enemy);
+    let reclaim = decide(&mut controller, &grid, &[], 5 * WORK_WINDOW_TICKS);
+    apply(&mut grid, owner, &reclaim);
+    assert!(
+        has(&grid, enemy_mine, IntentKind::Defend, owner),
+        "{reclaim:?}"
+    );
+
+    let release = decide(&mut controller, &grid, &[arrived], 6 * WORK_WINDOW_TICKS);
+    apply(&mut grid, owner, &release);
+
+    let mine_approach = enemy_mine + IVec2::X;
+    let returned = BotState {
+        id: 51,
+        owner: enemy,
+        kind: NanobotType::Worker,
+        position: world(mine_approach),
+        ..arrived
+    };
+    let mut crowded: Vec<_> = (0..256)
+        .map(|index| BotState {
+            id: 100 + index,
+            kind: NanobotType::Worker,
+            position: world(IVec2::ZERO),
+            ..arrived
+        })
+        .collect();
+    crowded.push(returned);
+    let renewed = decide(&mut controller, &grid, &crowded, 7 * WORK_WINDOW_TICKS);
+    apply(&mut grid, owner, &renewed);
+    assert!(
+        has(&grid, mine_approach, IntentKind::Defend, owner),
+        "{renewed:?}"
+    );
+    assert!(!has(&grid, enemy_home, IntentKind::Defend, owner));
+
+    grid.paint(fresh_mine, IntentKind::Gather, enemy);
+    let wounded = BotState {
+        health: 50,
+        ..returned
+    };
+    let retained = decide(&mut controller, &grid, &[wounded], 8 * WORK_WINDOW_TICKS);
+    apply(&mut grid, owner, &retained);
+    assert!(
+        has(&grid, mine_approach, IntentKind::Defend, owner),
+        "{retained:?}"
+    );
+    assert!(!has(&grid, fresh_mine, IntentKind::Defend, owner));
+}
+
+#[test]
 fn military_priorities_protect_expansion_before_attacking_home() {
     let owner = SwarmId(4);
     let enemy = SwarmId(9);
@@ -3674,7 +3938,7 @@ fn military_priorities_protect_expansion_before_attacking_home() {
             .any(|edit| { edit.kind == IntentKind::Defend && edit.cell == enemy_mine + IVec2::Y })
     );
 
-    let home = decide(&deposits[..2], &[own_source, home_facility], &[]);
+    let home = decide(&deposits[..1], &[own_source, home_facility], &[]);
     assert!(home.explanation.contains("push enemy home"), "{home:?}");
     assert!(
         home.edits
