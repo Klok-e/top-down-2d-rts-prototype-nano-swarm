@@ -14,6 +14,6 @@ This is a hard cutover: remove contest state, presence-based resolution, capture
 - Swarms with overlapping Gather paint may harvest the same deposit. Actual extraction consumes its single finite resource pool; paint reserves no share and grants no exclusive access.
 - Swarms with overlapping Build paint may construct in physically free space. Structures and construction reservations block placement regardless of owner. Paint alone reserves no space, and enemy structures remain enemy-owned.
 - Defend staging and Charger eligibility use each swarm's own Defend paint. Overlap does not neutralize either swarm's orders. Corridor guidance likewise uses the travelling swarm's own paint.
-- The overlay preserves the player's intent colors and adds an enemy-colored hatch where enemy paint overlaps. The hatch communicates overlapping orders, with no contest state or capture progress.
+- Each intent keeps its own color. When both swarms paint a cell, the overlay gives each swarm a separate row and shows every intent it owns. The player sees solid fill for their orders and hatching for the opponent’s. AI Battle uses opposite hatch directions for its two swarms.
 
 Independent overlap is preferred to blocking enemy paint or retaining shared unowned intent because each swarm can express its orders without editing another swarm's orders. Competition occurs through physical combat, finite resources, and occupied construction space.

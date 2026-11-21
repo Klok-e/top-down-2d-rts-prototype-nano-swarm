@@ -108,8 +108,15 @@ enum DriverState {
 /// final captured artifact. Missing captures, callback panics, invalid images,
 /// and stalled callbacks/readbacks are failures.
 pub fn run_screenshot_test(cb: fn(&mut TestContext) -> TestFlow) -> Result<PathBuf, String> {
+    run_screenshot_test_at_size(cb, (WIDTH, HEIGHT))
+}
+
+pub fn run_screenshot_test_at_size(
+    cb: fn(&mut TestContext) -> TestFlow,
+    size: (u32, u32),
+) -> Result<PathBuf, String> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_screenshot_test_with_limits(cb, HarnessLimits::default())
+        run_scenario_with_limits(cb, HarnessLimits::default(), Default::default(), size)
     })) {
         Ok(result) => result,
         Err(payload) => Err(format!(
@@ -124,7 +131,7 @@ pub fn run_screenshot_test_for_scenario(
     scenario: top_down_2d_rts_prototype_nano_swarm::scenario_selection::Scenario,
 ) -> Result<PathBuf, String> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_scenario_with_limits(cb, HarnessLimits::default(), scenario)
+        run_scenario_with_limits(cb, HarnessLimits::default(), scenario, (WIDTH, HEIGHT))
     })) {
         Ok(result) => result,
         Err(payload) => Err(format!(
@@ -138,20 +145,21 @@ fn run_screenshot_test_with_limits(
     cb: fn(&mut TestContext) -> TestFlow,
     limits: HarnessLimits,
 ) -> Result<PathBuf, String> {
-    run_scenario_with_limits(cb, limits, Default::default())
+    run_scenario_with_limits(cb, limits, Default::default(), (WIDTH, HEIGHT))
 }
 
 fn run_scenario_with_limits(
     cb: fn(&mut TestContext) -> TestFlow,
     limits: HarnessLimits,
     scenario: top_down_2d_rts_prototype_nano_swarm::scenario_selection::Scenario,
+    size: (u32, u32),
 ) -> Result<PathBuf, String> {
     std::fs::create_dir_all(SCREENSHOT_DIR)
         .map_err(|err| format!("create {SCREENSHOT_DIR}: {err}"))?;
 
     let mut app = build_app_with_presentation(Presentation::Offscreen {
-        width: WIDTH,
-        height: HEIGHT,
+        width: size.0,
+        height: size.1,
     });
     app.world_mut().resource_mut::<top_down_2d_rts_prototype_nano_swarm::scenario_selection::ScenarioSelection>().current = scenario;
     app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_micros(
@@ -177,7 +185,7 @@ fn run_scenario_with_limits(
             failure: None,
         })
         .add_systems(First, test_driver_system);
-    let run_result = drive_screenshot_test(&mut session, limits);
+    let run_result = drive_screenshot_test(&mut session, limits, size);
     let cleanup_result = session.cleanup();
     match (run_result, cleanup_result) {
         (Ok(path), Ok(())) => Ok(path),
@@ -281,6 +289,7 @@ impl Drop for TemporaryArtifact {
 fn drive_screenshot_test(
     session: &mut ScreenshotSession,
     limits: HarnessLimits,
+    size: (u32, u32),
 ) -> Result<PathBuf, String> {
     let mut capture_artifact = None;
     let mut last_captured_path = None;
@@ -334,7 +343,7 @@ fn drive_screenshot_test(
                                 path.display()
                             ));
                         }
-                        validate_artifact(&path)?;
+                        validate_artifact(&path, size)?;
                         capture_artifact
                             .take()
                             .expect("waiting capture must retain artifact guard")
@@ -428,13 +437,13 @@ fn update_app(app: &mut App) -> Result<(), String> {
         .map_err(|payload| format!("app update panicked: {}", panic_message(payload.as_ref())))
 }
 
-fn validate_artifact(path: &Path) -> Result<(), String> {
+fn validate_artifact(path: &Path, size: (u32, u32)) -> Result<(), String> {
     let image = image::open(path)
         .map_err(|err| format!("decode captured PNG {}: {err}", path.display()))?;
     let dimensions = image.dimensions();
-    if dimensions != (WIDTH, HEIGHT) {
+    if dimensions != size {
         return Err(format!(
-            "captured PNG {} has dimensions {dimensions:?}, expected ({WIDTH}, {HEIGHT})",
+            "captured PNG {} has dimensions {dimensions:?}, expected {size:?}",
             path.display()
         ));
     }

@@ -1,15 +1,46 @@
-use bevy::prelude::*;
+use bevy::{prelude::*, ui::UiGlobalTransform};
 use top_down_2d_rts_prototype_nano_swarm::{
+    intent::IntentKind,
     tuning::Tuning,
-    ui::tuning_panel::{TuningEditor, TuningPanelRoot, edit_value},
+    ui::{
+        intent_layer_panel::IntentLayerButton,
+        tuning_panel::{TuningEditor, TuningPanelRoot, edit_value},
+    },
 };
 
 use crate::harness::{TestContext, TestFlow};
 
 pub fn tuning_panel(ctx: &mut TestContext) -> TestFlow {
+    if ctx.frame == 0 {
+        ctx.world.resource_mut::<TuningEditor>().set_open(true);
+    }
     if ctx.frame == 2 {
+        let panel = ctx
+            .world
+            .query_filtered::<(&ComputedNode, &UiGlobalTransform), With<TuningPanelRoot>>()
+            .single(ctx.world)
+            .unwrap();
+        let panel = Rect::from_center_size(panel.1.translation, panel.0.size());
+        let mut buttons = ctx
+            .world
+            .query_filtered::<(&ComputedNode, &UiGlobalTransform), With<IntentLayerButton>>();
+        assert_eq!(buttons.iter(ctx.world).count(), IntentKind::COUNT);
+        for (button, transform) in buttons.iter(ctx.world) {
+            let button = Rect::from_center_size(transform.translation, button.size());
+            let overlap = panel.intersect(button);
+            assert!(
+                overlap.is_empty(),
+                "the tuning panel covers a brush button at 800×600: {overlap:?}"
+            );
+        }
+        assert!(
+            panel.max.y < 600.0,
+            "the collapsed panel must end before the bottom of the viewport"
+        );
+        return TestFlow::Screenshot("tuning_panel_collapsed".into());
+    }
+    if ctx.frame == 3 {
         let mut editor = ctx.world.resource_mut::<TuningEditor>();
-        editor.set_open(true);
         for group in ["production", "construction", "logistics"] {
             editor.set_group_expanded(group, true);
         }

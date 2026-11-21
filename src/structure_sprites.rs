@@ -1,6 +1,11 @@
-use bevy::prelude::{AssetServer, Component, Handle, Image, Resource, Sprite};
+use bevy::prelude::*;
 
-use crate::nanobot::PlannedKind;
+use crate::nanobot::{
+    OwnerSwarm, PlannedKind, SwarmId, completed_visual_color, planned_visual_color,
+};
+use crate::navigation::STRUCTURE_SPRITE_SIZE;
+
+pub(crate) const PRODUCTION_FACILITY_TEXTURE: &str = "production_facility.png";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StructureVisualState {
@@ -28,6 +33,23 @@ impl StructureVisual {
             state: StructureVisualState::Completed,
         }
     }
+
+    pub(crate) fn components(
+        self,
+        image: Handle<Image>,
+        transform: Transform,
+    ) -> (Sprite, Transform, Self) {
+        let sprite = Sprite {
+            image,
+            color: match self.state {
+                StructureVisualState::Planned => planned_visual_color(),
+                StructureVisualState::Completed => completed_visual_color(),
+            },
+            custom_size: Some(Vec2::splat(STRUCTURE_SPRITE_SIZE)),
+            ..default()
+        };
+        (sprite, transform, self)
+    }
 }
 
 #[derive(Debug, Clone, Resource)]
@@ -52,7 +74,7 @@ impl StructureSprites {
             planned_charger: asset_server.load("planned_charger.png"),
             charger: asset_server.load("charger.png"),
             planned_production_facility: asset_server.load("planned_production_facility.png"),
-            production_facility: asset_server.load("production_facility.png"),
+            production_facility: asset_server.load(PRODUCTION_FACILITY_TEXTURE),
         }
     }
 
@@ -122,25 +144,68 @@ impl StructureSprites {
     }
 }
 
-/// Texture transparency does not hide the physical footprint boundary.
+#[derive(Component)]
+pub(crate) struct FootprintDecoration;
+
 pub(crate) fn attach_footprint_outline(
-    added: bevy::prelude::On<bevy::prelude::Add, StructureVisual>,
-    mut commands: bevy::prelude::Commands,
+    inserted: On<Insert, StructureVisual>,
+    mut commands: Commands,
+    structures: Query<(&StructureVisual, Option<&OwnerSwarm>, Option<&Children>)>,
+    swarms: Query<&SwarmId>,
+    decorations: Query<(), With<FootprintDecoration>>,
 ) {
-    use bevy::prelude::*;
-    let size = crate::navigation::STRUCTURE_SPRITE_SIZE;
-    let edge = size / 2.0 - 0.5;
-    commands.entity(added.entity).with_children(|parent| {
-        for (position, dimensions) in [
-            (Vec2::new(-edge, 0.0), Vec2::new(1.0, size)),
-            (Vec2::new(edge, 0.0), Vec2::new(1.0, size)),
-            (Vec2::new(0.0, -edge), Vec2::new(size, 1.0)),
-            (Vec2::new(0.0, edge), Vec2::new(size, 1.0)),
-        ] {
-            parent.spawn((
-                Sprite::from_color(Color::srgba(0.7, 0.85, 0.9, 0.7), dimensions),
-                Transform::from_translation(position.extend(0.01)),
-            ));
+    let Ok((visual, owner, children)) = structures.get(inserted.entity) else {
+        return;
+    };
+    for child in children.into_iter().flat_map(|children| children.iter()) {
+        if decorations.contains(child) {
+            commands.entity(child).despawn();
+        }
+    }
+
+    let planned = visual.state == StructureVisualState::Planned;
+    let size = STRUCTURE_SPRITE_SIZE;
+    let thickness = if planned { 4.0 } else { 3.0 };
+    let edge = (size - thickness) / 2.0;
+    let length = if planned { 15.0 } else { size };
+    let along_edge = (size - length) / 2.0;
+    let centers: &[f32] = if planned {
+        &[-along_edge, along_edge]
+    } else {
+        &[0.0]
+    };
+    let owner_color = owner
+        .and_then(|owner| swarms.get(owner.0).ok())
+        .map_or(Color::srgb(0.71, 0.77, 0.80), |&swarm| {
+            crate::nanobot::swarm_presentation_color(swarm)
+        });
+    let edge_color = if planned {
+        Color::srgb(0.94, 0.96, 0.99)
+    } else {
+        owner_color
+    };
+    commands.entity(inserted.entity).with_children(|parent| {
+        parent.spawn((
+            FootprintDecoration,
+            Sprite::from_color(
+                Color::srgba(0.045, 0.055, 0.075, if planned { 0.65 } else { 0.88 }),
+                Vec2::splat(size),
+            ),
+            Transform::from_xyz(0.0, 0.0, -0.01),
+        ));
+        for side in [-edge, edge] {
+            for &center in centers {
+                for (position, dimensions) in [
+                    (Vec2::new(center, side), Vec2::new(length, thickness)),
+                    (Vec2::new(side, center), Vec2::new(thickness, length)),
+                ] {
+                    parent.spawn((
+                        FootprintDecoration,
+                        Sprite::from_color(edge_color, dimensions),
+                        Transform::from_translation(position.extend(0.01)),
+                    ));
+                }
+            }
         }
     });
 }

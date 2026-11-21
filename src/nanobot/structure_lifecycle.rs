@@ -14,9 +14,7 @@ use crate::{
     structure_sprites::{StructureSprites, StructureVisualState},
 };
 
-use super::planned::{
-    PLANNED_STRUCTURE_FOOTPRINT, PlannedKind, completed_visual_color, sink_stockpile_demand_system,
-};
+use super::planned::{PlannedKind, sink_stockpile_demand_system};
 use crate::resources::{ResourceKind, Stockpile, StockpileRole};
 use crate::structure_sprites::StructureVisual;
 
@@ -643,7 +641,10 @@ fn promote_planned_to_completion(
     commands
         .entity(planned_entity)
         .remove::<(PlannedStructure, StructureClearing)>();
-    let visual = completed_visual_bundle(kind, structure_sprites, transform);
+    let visual = StructureVisual::completed(kind).components(
+        structure_sprites.handle(kind, StructureVisualState::Completed),
+        transform,
+    );
     match kind {
         PlannedKind::SourceStockpile => {
             commands.entity(planned_entity).insert((
@@ -683,21 +684,6 @@ fn promote_planned_to_completion(
             commands.entity(planned_entity).insert((charger, visual));
         }
     }
-}
-
-/// The "build finished" visual shared by every completed
-/// planned-structure kind. Bevy replaces the planned
-/// `Sprite` on `insert`, so the planned visual does not
-/// leak through to the completed entity.
-fn completed_visual_bundle(
-    kind: PlannedKind,
-    structure_sprites: &StructureSprites,
-    transform: Transform,
-) -> (Sprite, Transform, StructureVisual) {
-    let mut sprite = structure_sprites.sprite(kind, StructureVisualState::Completed);
-    sprite.color = completed_visual_color();
-    sprite.custom_size = Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT));
-    (sprite, transform, StructureVisual::completed(kind))
 }
 
 /// Empty mineral buffer used by every completed planned kind

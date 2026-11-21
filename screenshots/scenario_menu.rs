@@ -1,6 +1,7 @@
 use crate::harness::{TestContext, TestFlow};
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
+    nanobot::MatchOutcome,
     scenario_selection::{Scenario, ScenarioSelection},
     ui::scenario_menu::{MenuAction, MenuInputSet, ScenarioMenu},
 };
@@ -13,13 +14,20 @@ pub fn scenario_menu(ctx: &mut TestContext) -> TestFlow {
     if ctx.frame < 5 {
         return TestFlow::Continue;
     }
-    if ctx.frame <= 6 {
+    if ctx.frame <= 8 {
         assert!(ctx.world.resource::<Time<Virtual>>().is_paused());
     }
     if ctx.frame == 5 {
         return TestFlow::Screenshot("scenario_menu".into());
     }
     if ctx.frame == 6 {
+        ctx.world.insert_resource(MatchOutcome::Draw);
+        return TestFlow::Continue;
+    }
+    if ctx.frame == 7 {
+        return TestFlow::Screenshot("scenario_menu_match_complete".into());
+    }
+    if ctx.frame == 8 {
         let start = ctx
             .world
             .query::<(Entity, &MenuAction)>()
@@ -43,7 +51,7 @@ pub fn scenario_menu(ctx: &mut TestContext) -> TestFlow {
             );
         return TestFlow::Continue;
     }
-    if ctx.frame == 7 {
+    if ctx.frame == 9 {
         assert_eq!(
             ctx.world.resource::<ScenarioSelection>().current,
             Scenario::Sandbox
@@ -51,7 +59,7 @@ pub fn scenario_menu(ctx: &mut TestContext) -> TestFlow {
         assert!(!ctx.world.resource::<ScenarioMenu>().open);
         return TestFlow::Screenshot("scenario_started_sandbox".into());
     }
-    if ctx.frame < 8 {
+    if ctx.frame < 10 {
         return TestFlow::Continue;
     }
     TestFlow::Exit
@@ -70,12 +78,6 @@ pub fn ai_battle_spectator(ctx: &mut TestContext) -> TestFlow {
                 .iter(ctx.world)
                 .count(),
             2
-        );
-        assert!(
-            ctx.world
-                .query::<&Text>()
-                .iter(ctx.world)
-                .any(|text| text.0.contains("Spectating"))
         );
         return TestFlow::Screenshot("ai_battle_spectator".into());
     }

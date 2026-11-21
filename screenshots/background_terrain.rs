@@ -8,8 +8,9 @@ use top_down_2d_rts_prototype_nano_swarm::{BACKGROUND_OVERLAY_Z, fly_camera::Cam
 const CAMERA_SCALE: f32 = 2.0;
 
 pub fn background_terrain(ctx: &mut TestContext) -> TestFlow {
+    ctx.world.resource_mut::<Time<Virtual>>().pause();
     if ctx.frame == 2 {
-        focus_camera(ctx.world);
+        focus_camera(ctx.world, Vec2::new(768.0, 512.0));
     }
     if ctx.frame >= 2 {
         hide_non_background_scene(ctx.world);
@@ -103,11 +104,11 @@ pub fn validate_background_terrain(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn focus_camera(world: &mut World) {
+fn focus_camera(world: &mut World, position: Vec2) {
     let mut cameras = world.query::<(&mut Transform, &mut Projection, &mut CameraZoom2d)>();
     for (mut transform, mut projection, mut zoom) in cameras.iter_mut(world) {
-        transform.translation.x = 0.0;
-        transform.translation.y = 0.0;
+        transform.translation.x = position.x;
+        transform.translation.y = position.y;
         zoom.zoom = CAMERA_SCALE;
         if let Projection::Orthographic(orthographic) = &mut *projection {
             orthographic.scale = CAMERA_SCALE;
@@ -136,9 +137,10 @@ fn hide_non_background_scene(world: &mut World) {
         .iter(world)
         .collect::<Vec<_>>();
     for entity in meshes.into_iter().chain(ui) {
-        world
-            .entity_mut(entity)
-            .remove::<Mesh2d>()
-            .insert(Visibility::Hidden);
+        let mut entity = world.entity_mut(entity);
+        entity.remove::<Mesh2d>().insert(Visibility::Hidden);
+        if let Some(mut node) = entity.get_mut::<Node>() {
+            node.display = Display::None;
+        }
     }
 }

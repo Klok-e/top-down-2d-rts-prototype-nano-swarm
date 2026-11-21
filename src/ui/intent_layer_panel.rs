@@ -1,24 +1,22 @@
-//! Visible swarm-intent layer controls.
-//!
-//! Keyboard number-row keys are the primary brush-layer binding; this panel
-//! gives the player a visible control surface for the same action. It spawns
-//! a row of buttons (one per [`IntentKind`]) that drive [`BrushSelection`]
-//! and highlights the active button in the layer's zone-shader colour.
-
 use std::collections::HashSet;
 
 use bevy::prelude::{
     BackgroundColor, BorderColor, Bundle, Button, Changed, Children, Color, Commands, Component,
-    DetectChanges, Entity, Interaction, Node, PositionType, Query, Res, ResMut, Text, TextColor,
-    TextFont, Val, With, World, default,
+    DetectChanges, Entity, Handle, Interaction, Local, Node, PositionType, Query, Res, ResMut,
+    Text, TextColor, TextFont, Val, With, Without, World, default,
 };
 use bevy::ui::{
-    AlignItems, BorderRadius, FlexDirection, JustifyContent, RelativeCursorPosition, UiRect,
+    AlignItems, BorderRadius, FlexDirection, FlexWrap, JustifyContent, RelativeCursorPosition,
+    UiRect,
 };
 
-use crate::intent::{BrushSelection, IntentKind};
-use crate::session::SessionRules;
-use crate::ui::ui_setup::FontsResource;
+use crate::{
+    intent::{BrushSelection, IntentKind},
+    nanobot::{MatchOutcome, SwarmId, swarm_presentation_color},
+    session::SessionRules,
+    ui::ui_setup::FontsResource,
+    zones::zone_color,
+};
 
 use super::consts::NORMAL_BUTTON;
 use super::ui_interaction_system::NoPointerCapture;
@@ -43,37 +41,19 @@ pub struct IntentLayerButton {
     pub kind: IntentKind,
 }
 
-/// Stable colour for each layer button. Matches the zone shader palette
-/// (`zone_shader.wgsl`) so the on-screen UI cue lines up with the colour
-/// the player sees in the world when they paint that layer.
-const LAYER_COLORS: [(IntentKind, Color); IntentKind::COUNT] = [
-    (IntentKind::Gather, Color::srgb(0.85, 0.20, 0.20)),
-    (IntentKind::Build, Color::srgb(0.85, 0.20, 0.85)),
-    (IntentKind::Defend, Color::srgb(0.20, 0.30, 0.90)),
-    (IntentKind::Corridor, Color::srgb(0.85, 0.80, 0.10)),
-];
+#[derive(Component)]
+pub struct IntentBrushHint;
 
 const ACTIVE_BORDER_THICKNESS: f32 = 3.0;
 const INACTIVE_BORDER_THICKNESS: f32 = 1.0;
 const BORDER_INACTIVE: Color = Color::srgb(0.30, 0.30, 0.30);
-const BORDER_ACTIVE: Color = Color::srgb(1.0, 1.0, 1.0);
-const PANEL_GAP: f32 = 8.0;
-const BUTTON_PADDING_X: f32 = 12.0;
-const BUTTON_PADDING_Y: f32 = 6.0;
-const PANEL_FONT_SIZE: f32 = 16.0;
-const PANEL_TOP: f32 = 8.0;
+const BORDER_ACTIVE: Color = Color::WHITE;
+const PANEL_BACKGROUND: Color = Color::srgba(0.03, 0.04, 0.05, 0.90);
+const PANEL_GAP: f32 = 6.0;
+const PANEL_FONT_SIZE: f32 = 14.0;
+const ERASE_HINT: &str = "Right-click erases the selected layer";
+const ENDED_HINT: &str = "Painting disabled · Match finished";
 
-fn layer_color(kind: IntentKind) -> Color {
-    LAYER_COLORS
-        .iter()
-        .find(|(k, _)| *k == kind)
-        .map(|(_, c)| *c)
-        .expect("every IntentKind has a layer color")
-}
-
-/// Visual style for a layer button: background, border, and border
-/// thickness. Pure function so unit tests can verify the styling without a
-/// Bevy `App`.
 fn layer_button_style(is_active: bool, layer_color: Color) -> (BackgroundColor, BorderColor, f32) {
     if is_active {
         (
@@ -90,29 +70,23 @@ fn layer_button_style(is_active: bool, layer_color: Color) -> (BackgroundColor, 
     }
 }
 
-/// Spawn the intent-layer panel: a horizontal row of four buttons across
-/// the top-center of the screen, plus a small "Swarm Intent" label so the
-/// player knows what the controls affect. The parent spans the full width
-/// and centers its children, so the row stays centered as more buttons
-/// are added.
 pub fn setup_intent_layer_panel(
     mut commands: Commands,
     fonts: Res<FontsResource>,
     rules: Res<SessionRules>,
 ) {
-    let font = fonts.font.clone();
+    let font = &fonts.font;
 
     commands
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                top: Val::Px(PANEL_TOP),
-                left: Val::Px(0.0),
-                right: Val::Px(0.0),
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(PANEL_GAP),
+                top: Val::Px(8.0),
+                left: Val::Px(4.0),
+                right: Val::Px(4.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(4.0),
                 align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
                 ..default()
             },
             IntentLayerPanelRoot,
@@ -120,34 +94,104 @@ pub fn setup_intent_layer_panel(
             RelativeCursorPosition::default(),
         ))
         .with_children(|parent| {
-            if rules.spectator() {
-                parent.spawn((
-                    Text::new("Spectating | Painting disabled"),
-                    TextFont {
-                        font: font.clone(),
-                        font_size: PANEL_FONT_SIZE,
-                        ..default()
-                    },
-                    TextColor(Color::WHITE),
+            parent.spawn(legend_row()).with_children(|row| {
+                row.spawn(panel_text(
+                    "Swarm Intent",
+                    font,
+                    PANEL_FONT_SIZE,
+                    Color::WHITE,
                 ));
-                return;
-            }
-            for (kind, _) in LAYER_COLORS {
-                parent
-                    .spawn(spawn_layer_button(kind))
-                    .with_children(|button| {
-                        button.spawn((
-                            Text::new(layer_label(kind)),
-                            TextFont {
-                                font: font.clone(),
-                                font_size: PANEL_FONT_SIZE,
+                for kind in IntentKind::ALL {
+                    let label = if rules.spectator() {
+                        kind_name(kind).to_owned()
+                    } else {
+                        layer_label(kind)
+                    };
+                    let mut chip = row.spawn((
+                        Node {
+                            align_items: AlignItems::Center,
+                            column_gap: Val::Px(5.0),
+                            padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)),
+                            border: UiRect::all(Val::Px(INACTIVE_BORDER_THICKNESS)),
+                            border_radius: BorderRadius::all(Val::Px(4.0)),
+                            ..default()
+                        },
+                        BackgroundColor(NORMAL_BUTTON),
+                        BorderColor::all(BORDER_INACTIVE),
+                    ));
+                    if !rules.spectator() {
+                        chip.insert((
+                            Button,
+                            IntentLayerButton { kind },
+                            RelativeCursorPosition::default(),
+                        ));
+                    }
+                    chip.with_children(|chip| {
+                        chip.spawn((
+                            Node {
+                                width: Val::Px(9.0),
+                                height: Val::Px(9.0),
+                                border: UiRect::all(Val::Px(1.0)),
+                                border_radius: BorderRadius::all(Val::Px(2.0)),
                                 ..default()
                             },
-                            TextColor(Color::WHITE),
+                            BackgroundColor(zone_color(kind)),
+                            BorderColor::all(Color::srgb(0.17, 0.18, 0.2)),
                         ));
+                        chip.spawn(panel_text(label, font, PANEL_FONT_SIZE, Color::WHITE));
                     });
+                }
+            });
+
+            if !rules.spectator() {
+                parent.spawn(legend_row()).with_children(|row| {
+                    for (label, color) in [
+                        ("Solid · Your swarm", swarm_presentation_color(SwarmId(0))),
+                        ("/ hatch · Opponent", swarm_presentation_color(SwarmId(1))),
+                        ("Two rows · Both swarms", Color::WHITE),
+                    ] {
+                        row.spawn(panel_text(label, font, 13.0, color));
+                    }
+                    row.spawn((
+                        panel_text(ERASE_HINT, font, 13.0, Color::srgb(0.76, 0.80, 0.85)),
+                        IntentBrushHint,
+                    ));
+                });
             }
         });
+}
+
+fn legend_row() -> impl Bundle {
+    (
+        Node {
+            flex_wrap: FlexWrap::Wrap,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            column_gap: Val::Px(PANEL_GAP),
+            padding: UiRect::axes(Val::Px(7.0), Val::Px(2.0)),
+            border_radius: BorderRadius::all(Val::Px(4.0)),
+            ..default()
+        },
+        BackgroundColor(PANEL_BACKGROUND),
+        RelativeCursorPosition::default(),
+    )
+}
+
+fn panel_text(
+    text: impl Into<String>,
+    font: &Handle<bevy::prelude::Font>,
+    font_size: f32,
+    color: Color,
+) -> impl Bundle {
+    (
+        Text::new(text),
+        TextFont {
+            font: font.clone(),
+            font_size,
+            ..default()
+        },
+        TextColor(color),
+    )
 }
 
 /// Rebuild the scenario-dependent panel inside the persistent application shell.
@@ -169,27 +213,6 @@ pub(crate) fn reset_for_session(world: &mut World) {
         .run_system_cached(setup_intent_layer_panel)
         .expect("intent layer panel setup has its required resources");
     world.flush();
-}
-
-fn spawn_layer_button(kind: IntentKind) -> impl Bundle {
-    (
-        Button,
-        IntentLayerButton { kind },
-        BackgroundColor(NORMAL_BUTTON),
-        BorderColor::all(BORDER_INACTIVE),
-        RelativeCursorPosition::default(),
-        Node {
-            padding: UiRect {
-                left: Val::Px(BUTTON_PADDING_X),
-                right: Val::Px(BUTTON_PADDING_X),
-                top: Val::Px(BUTTON_PADDING_Y),
-                bottom: Val::Px(BUTTON_PADDING_Y),
-            },
-            border: UiRect::all(Val::Px(INACTIVE_BORDER_THICKNESS)),
-            border_radius: BorderRadius::all(Val::Px(4.0)),
-            ..default()
-        },
-    )
 }
 
 fn layer_label(kind: IntentKind) -> String {
@@ -227,8 +250,11 @@ pub fn intent_layer_button_click_system(
     >,
     children_query: Query<&Children>,
     menu: Option<Res<crate::ui::scenario_menu::ScenarioMenu>>,
+    outcome: Option<Res<MatchOutcome>>,
 ) {
-    if menu.is_some_and(|menu| menu.blocks_world_input) {
+    if menu.is_some_and(|menu| menu.blocks_world_input)
+        || outcome.is_some_and(|outcome| *outcome != MatchOutcome::InProgress)
+    {
         return;
     }
     let Ok(panel_root) = panel_root_query.single() else {
@@ -251,12 +277,11 @@ pub fn intent_layer_button_click_system(
 }
 
 /// Update the visual style of every panel-owned layer button to reflect
-/// the active [`BrushSelection`]. Only runs when the selection changes
-/// so the per-frame button-bg system can handle hover/press feedback
-/// without being clobbered.
-#[allow(clippy::type_complexity)]
+/// the active [`BrushSelection`] and remove control cues once the match ends.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn update_intent_layer_panel_highlight(
     brush_selection: Res<BrushSelection>,
+    outcome: Option<Res<MatchOutcome>>,
     panel_root_query: Query<Entity, With<IntentLayerPanelRoot>>,
     children_query: Query<&Children>,
     mut buttons: Query<
@@ -269,9 +294,18 @@ pub fn update_intent_layer_panel_highlight(
         ),
         With<Button>,
     >,
+    mut labels: Query<(&mut Text, &mut TextColor), Without<IntentBrushHint>>,
+    mut hint: Query<&mut Text, With<IntentBrushHint>>,
+    mut was_enabled: Local<Option<bool>>,
 ) {
-    if !brush_selection.is_changed() {
+    let enabled = outcome.is_none_or(|outcome| *outcome == MatchOutcome::InProgress);
+    let enabled_changed = *was_enabled != Some(enabled);
+    if !brush_selection.is_changed() && !enabled_changed {
         return;
+    }
+    *was_enabled = Some(enabled);
+    if enabled_changed && let Ok(mut hint) = hint.single_mut() {
+        **hint = if enabled { ERASE_HINT } else { ENDED_HINT }.to_owned();
     }
     let Ok(panel_root) = panel_root_query.single() else {
         return;
@@ -281,16 +315,27 @@ pub fn update_intent_layer_panel_highlight(
         .chain(std::iter::once(panel_root))
         .collect();
 
-    let active = brush_selection.kind;
     for (entity, button, mut bg, mut border, mut node) in &mut buttons {
         if !panel_children.contains(&entity) {
             continue;
         }
-        let (new_bg, new_border, thickness) =
-            layer_button_style(button.kind == active, layer_color(button.kind));
+        let active = enabled && button.kind == brush_selection.kind;
+        let (new_bg, new_border, thickness) = layer_button_style(active, zone_color(button.kind));
         *bg = new_bg;
         *border = new_border;
         node.border = UiRect::all(Val::Px(thickness));
+        for child in children_query.iter_descendants(entity) {
+            if let Ok((mut label, mut color)) = labels.get_mut(child) {
+                color.0 = if active { Color::BLACK } else { Color::WHITE };
+                if enabled_changed {
+                    **label = if enabled {
+                        layer_label(button.kind)
+                    } else {
+                        kind_name(button.kind).to_owned()
+                    };
+                }
+            }
+        }
     }
 }
 
@@ -303,7 +348,7 @@ mod tests {
 
     #[test]
     fn layer_button_style_marks_active_button_with_layer_color_and_thick_border() {
-        let color = layer_color(IntentKind::Gather);
+        let color = zone_color(IntentKind::Gather);
         let (bg, border, thickness) = layer_button_style(true, color);
         assert_eq!(bg.0, color);
         assert_eq!(border.top, BORDER_ACTIVE);
@@ -315,30 +360,13 @@ mod tests {
 
     #[test]
     fn layer_button_style_resets_inactive_button_to_normal() {
-        let (bg, border, thickness) = layer_button_style(false, layer_color(IntentKind::Defend));
+        let (bg, border, thickness) = layer_button_style(false, zone_color(IntentKind::Defend));
         assert_eq!(bg.0, NORMAL_BUTTON);
         assert_eq!(border.top, BORDER_INACTIVE);
         assert_eq!(border.right, BORDER_INACTIVE);
         assert_eq!(border.bottom, BORDER_INACTIVE);
         assert_eq!(border.left, BORDER_INACTIVE);
         assert_eq!(thickness, INACTIVE_BORDER_THICKNESS);
-    }
-
-    #[test]
-    fn layer_buttons_participate_in_pointer_capture() {
-        let mut app = bevy::prelude::App::new();
-        let button = app
-            .world_mut()
-            .spawn(spawn_layer_button(IntentKind::Gather))
-            .id();
-
-        assert!(
-            app.world()
-                .entity(button)
-                .get::<RelativeCursorPosition>()
-                .is_some(),
-            "intent buttons must expose RelativeCursorPosition so UI capture can block world brush input"
-        );
     }
 
     fn spawn_button_in_panel(app: &mut bevy::prelude::App, root: Entity, kind: IntentKind) {
@@ -374,7 +402,7 @@ mod tests {
             .find(|(b, _, _, _)| b.kind == IntentKind::Gather)
             .expect("active button must exist");
         let (expected_bg, expected_border, expected_thickness) =
-            layer_button_style(true, layer_color(IntentKind::Gather));
+            layer_button_style(true, zone_color(IntentKind::Gather));
         assert_eq!(*bg, expected_bg);
         assert_eq!(*border, expected_border);
         assert_eq!(node.border.left, Val::Px(expected_thickness));
@@ -399,7 +427,7 @@ mod tests {
                 continue;
             }
             let (expected_bg, expected_border, expected_thickness) =
-                layer_button_style(false, layer_color(button.kind));
+                layer_button_style(false, zone_color(button.kind));
             assert_eq!(
                 *bg, expected_bg,
                 "{:?} must keep the inactive background",

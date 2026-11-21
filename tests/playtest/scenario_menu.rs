@@ -250,6 +250,12 @@ fn scenario_selection_updates_the_selected_label_and_start_requests_it() {
     let directory = SettingsDirectory::new();
     let mut app = menu_app(ScenarioSelection::load(directory.path()));
     press_escape(&mut app);
+    assert!(
+        app.world_mut()
+            .query::<&Text>()
+            .iter(app.world())
+            .any(|text| text.0 == "Paused")
+    );
     click(&mut app, MenuAction::Select(Scenario::Sandbox));
     let labels = app
         .world_mut()
@@ -258,7 +264,9 @@ fn scenario_selection_updates_the_selected_label_and_start_requests_it() {
         .map(|text| text.0.as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(labels.contains("Current: Standard\nSelected: Sandbox"));
+    assert!(labels.lines().any(|line| line == "Current: Standard"));
+    assert!(labels.contains("Sandbox: Open-ended, no opponent · Selected"));
+    assert_eq!(labels.matches(" · Selected").count(), 1);
     assert!(!labels.contains("ESC: Menu"));
     assert!(!labels.lines().any(|line| line == "Resume"));
     assert!(labels.lines().any(|line| line == "Start selected scenario"));
@@ -313,6 +321,12 @@ fn completed_match_still_allows_menu_start_and_quit_through_agent_controls() {
                 .unwrap();
             app.update();
             assert!(response.try_recv().unwrap().ok);
+            assert!(
+                app.world_mut()
+                    .query::<&Text>()
+                    .iter(app.world())
+                    .any(|text| text.0 == "Match complete")
+            );
         }
         let response = control
             .submit(AgentRequest {

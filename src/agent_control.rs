@@ -120,6 +120,8 @@ pub enum ProtocolButton {
     MenuAiBattle,
     #[serde(rename = "menu.quit")]
     MenuQuit,
+    #[serde(rename = "match.dismiss")]
+    MatchDismiss,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -174,8 +176,7 @@ pub enum AgentCommand {
 impl AgentCommand {
     fn is_player_action(&self) -> bool {
         matches!(self, Self::IntentSelect { .. } | Self::MapApply { .. })
-            || matches!(self, Self::ButtonPress { button } if button.menu_action().is_none()
-            )
+            || matches!(self, Self::ButtonPress { button } if button.intent().is_some())
     }
 }
 
@@ -1188,56 +1189,16 @@ fn execute_agent_command(
             }
         },
         AgentCommand::ButtonPress { button } => {
-            if let Some(action) = button.menu_action() {
-                if !world
-                    .get_resource::<ScenarioMenu>()
-                    .is_some_and(|menu| menu.open)
-                {
+            let entity = match resolve_button(world, button) {
+                Ok(entity) => entity,
+                Err(message) => {
                     return AgentResponse::failure(
                         request.id,
                         clock,
                         "button_unavailable",
-                        "open the menu first",
+                        message,
                     );
                 }
-                let entity = world
-                    .query::<(Entity, &MenuAction)>()
-                    .iter(world)
-                    .find_map(|(entity, marker)| (*marker == action).then_some(entity));
-                let Some(entity) = entity else {
-                    return AgentResponse::failure(
-                        request.id,
-                        clock,
-                        "button_unavailable",
-                        "requested UI button is unavailable",
-                    );
-                };
-                world.entity_mut(entity).insert(Interaction::Pressed);
-                world.resource_mut::<PendingButtonReleases>().0.push(entity);
-                return AgentResponse::success(
-                    request.id,
-                    clock,
-                    serde_json::json!({ "button": button }),
-                );
-            }
-            let kind = button.intent().expect("intent button");
-            let candidates = {
-                let mut buttons = world.query::<(Entity, &IntentLayerButton)>();
-                buttons
-                    .iter(world)
-                    .filter_map(|(entity, marker)| (marker.kind == kind).then_some(entity))
-                    .collect::<Vec<_>>()
-            };
-            let Some(entity) = candidates
-                .into_iter()
-                .find(|entity| is_intent_panel_descendant(world, *entity))
-            else {
-                return AgentResponse::failure(
-                    request.id,
-                    clock,
-                    "button_unavailable",
-                    "requested UI button is unavailable",
-                );
             };
             world.entity_mut(entity).insert(Interaction::Pressed);
             world.resource_mut::<PendingButtonReleases>().0.push(entity);
@@ -1282,7 +1243,7 @@ fn execute_agent_command(
             menu.toggle();
             serde_json::json!({ "menu_open": menu.open })
         }
-        AgentCommand::CameraSet { x, y, zoom } => {
+        command @ (AgentCommand::CameraSet { .. } | AgentCommand::CameraPan { .. }) => {
             let camera_result = {
                 let mut cameras = world.query_filtered::<(
                     &mut Transform,
@@ -1300,65 +1261,21 @@ fn execute_agent_command(
                         "runtime must have exactly one main camera",
                     );
                 };
-                set_camera_view(
-                    &mut transform,
-                    &mut projection,
-                    &mut camera_zoom,
-                    &mut movement,
-                    Vec2::new(x, y),
-                    zoom,
-                )
-            };
-            match camera_result {
-                Ok(applied_zoom) => {
-                    serde_json::json!({ "x": x, "y": y, "zoom": applied_zoom })
-                }
-                Err(CameraControlError::NonFinite) => {
-                    return AgentResponse::failure(
-                        request.id,
-                        clock,
-                        "invalid_camera",
-                        CameraControlError::NonFinite.to_string(),
-                    );
-                }
-                Err(CameraControlError::UnsupportedProjection) => {
-                    return AgentResponse::failure(
-                        request.id,
-                        clock,
-                        "camera_unavailable",
-                        CameraControlError::UnsupportedProjection.to_string(),
-                    );
-                }
-            }
-        }
-        AgentCommand::CameraPan { dx, dy } => {
-            let camera_result = {
-                let mut cameras = world.query_filtered::<(
-                    &mut Transform,
-                    &mut Projection,
-                    &mut CameraZoom2d,
-                    &mut FlyCamera2d,
-                ), With<MainCamera>>();
-                let Ok((mut transform, mut projection, mut camera_zoom, mut movement)) =
-                    cameras.single_mut(world)
-                else {
-                    return AgentResponse::failure(
-                        request.id,
-                        clock,
-                        "camera_unavailable",
-                        "runtime must have exactly one main camera",
-                    );
+                let (position, requested_zoom) = match command {
+                    AgentCommand::CameraSet { x, y, zoom } => (Vec2::new(x, y), zoom),
+                    AgentCommand::CameraPan { dx, dy } => {
+                        (transform.translation.truncate() + Vec2::new(dx, dy), None)
+                    }
+                    _ => unreachable!("only camera set and pan enter this branch"),
                 };
-                let position = transform.translation.truncate() + Vec2::new(dx, dy);
                 set_camera_view(
                     &mut transform,
                     &mut projection,
                     &mut camera_zoom,
                     &mut movement,
                     position,
-                    None,
+                    requested_zoom,
                 )
-                .map(|zoom| (position, zoom))
             };
             match camera_result {
                 Ok((position, zoom)) => {
@@ -1734,6 +1651,46 @@ fn nanobot_type_index(kind: NanobotType) -> usize {
         NanobotType::Hauler => 1,
         NanobotType::Defender => 2,
     }
+}
+
+fn resolve_button(world: &mut World, button: ProtocolButton) -> Result<Entity, &'static str> {
+    use crate::ui::match_banner::{MatchBannerDismiss, MatchBannerRoot};
+
+    let menu_open = world
+        .get_resource::<ScenarioMenu>()
+        .is_some_and(|menu| menu.open);
+    let entity = if let Some(action) = button.menu_action() {
+        if !menu_open {
+            return Err("open the menu first");
+        }
+        world
+            .query::<(Entity, &MenuAction)>()
+            .iter(world)
+            .find_map(|(entity, marker)| (*marker == action).then_some(entity))
+    } else if let Some(kind) = button.intent() {
+        world
+            .query::<(Entity, &IntentLayerButton)>()
+            .iter(world)
+            .find_map(|(entity, marker)| {
+                (marker.kind == kind && is_intent_panel_descendant(world, entity)).then_some(entity)
+            })
+    } else {
+        let finished = world
+            .get_resource::<MatchOutcome>()
+            .is_some_and(|outcome| *outcome != MatchOutcome::InProgress);
+        let visible = world
+            .query_filtered::<&Visibility, With<MatchBannerRoot>>()
+            .single(world)
+            .is_ok_and(|visibility| *visibility == Visibility::Visible);
+        if menu_open || !finished || !visible {
+            return Err("the match banner is unavailable");
+        }
+        world
+            .query_filtered::<Entity, With<MatchBannerDismiss>>()
+            .single(world)
+            .ok()
+    };
+    entity.ok_or("requested UI button is unavailable")
 }
 
 fn is_intent_panel_descendant(world: &World, entity: Entity) -> bool {
@@ -2709,7 +2666,7 @@ mod tests {
     }
 
     #[test]
-    fn camera_command_synchronizes_position_projection_zoom_and_velocity() {
+    fn camera_set_returns_the_bounded_view_applied_to_the_camera() {
         use crate::{
             MainCamera,
             fly_camera::{CameraZoom2d, FlyCamera2d},
@@ -2728,7 +2685,6 @@ mod tests {
                 }),
                 CameraZoom2d {
                     zoom: 3.0,
-                    zoom_min_max: (1.0, 10.0),
                     ..default()
                 },
                 FlyCamera2d {
@@ -2744,9 +2700,9 @@ mod tests {
             .submit(AgentRequest {
                 id: RequestId::Number(16),
                 command: AgentCommand::CameraSet {
-                    x: 1024.0,
-                    y: 256.0,
-                    zoom: Some(2.0),
+                    x: -50000.0,
+                    y: 6000.0,
+                    zoom: Some(100.0),
                 },
             })
             .unwrap();
@@ -2754,20 +2710,24 @@ mod tests {
         let response = response.recv().unwrap();
 
         assert!(response.ok, "{:?}", response.error);
+        assert_eq!(
+            response.result.unwrap(),
+            serde_json::json!({"x": -768.0, "y": 6000.0, "zoom": 30.0})
+        );
         let entity = app.world().entity(camera);
         let translation = entity.get::<Transform>().unwrap().translation;
-        assert_abs_diff_eq!(translation.x, 1024.0, epsilon = 0.01);
-        assert_abs_diff_eq!(translation.y, 256.0, epsilon = 0.01);
+        assert_abs_diff_eq!(translation.x, -768.0, epsilon = 0.01);
+        assert_abs_diff_eq!(translation.y, 6000.0, epsilon = 0.01);
         assert_abs_diff_eq!(translation.z, 7.0, epsilon = 0.01);
         assert_abs_diff_eq!(
             entity.get::<CameraZoom2d>().unwrap().zoom,
-            2.0,
+            30.0,
             epsilon = 1e-5
         );
         let Projection::Orthographic(projection) = entity.get::<Projection>().unwrap() else {
             panic!("main camera must use an orthographic projection");
         };
-        assert_abs_diff_eq!(projection.scale, 2.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(projection.scale, 30.0, epsilon = 1e-5);
         let velocity = entity.get::<FlyCamera2d>().unwrap().velocity;
         assert_abs_diff_eq!(velocity.x, 0.0, epsilon = 1e-5);
         assert_abs_diff_eq!(velocity.y, 0.0, epsilon = 1e-5);

@@ -1,24 +1,4 @@
-//! Zoomed-out tactical overlay (issue #36).
-//!
-//! When the camera zooms past the structure overlay's hide
-//! threshold the always-visible status labels disappear.
-//! The tactical overlay takes their place: semi-transparent
-//! icon markers for the player base, opponent base,
-//! deposits, facilities, stockpiles, planned structures,
-//! and chargers, with progressive merging as the player
-//! zooms farther out.
-//!
-//! Markers stay screen-constant by setting the body's
-//! `Transform::scale` to `screen_size * zoom` against a
-//! unit-rectangle sprite, so the on-screen footprint
-//! stays constant regardless of the orthographic
-//! projection's scale. The `cluster_tactical_markers`
-//! algorithm stamps every cluster with a coarse spatial slot
-//! (see [`CLUSTER_SPATIAL_SLOT_SIZE`]); reconciliation retains
-//! every entity in a slot and matches clusters one-to-one. A
-//! de-overlap pass nudges
-//! cluster positions apart in screen space so visible
-//! icons do not overlap.
+//! Screen-sized landmark icons replace status bars at far zoom.
 
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -26,20 +6,17 @@ use std::collections::{HashMap, HashSet};
 use crate::fly_camera::CameraZoom2d;
 use crate::nanobot::{
     Charger, OpponentSwarm, OwnerSwarm, PlannedStructure, ProductionFacility, Swarm, SwarmId,
+    swarm_presentation_color,
 };
 use crate::resources::{ResourceDeposit, Stockpile};
+use crate::scenario::{clamp_to_map, map_bounds};
 use crate::tuning::{PresentationTuning, Tuning};
 
-/// Alpha (0..=1) of every tactical marker body. Issue
-/// #36 commits the overlay to a semi-transparent icon
-/// look so the player can still see the underlying map
-/// through the markers at far zoom.
+/// Opacity of the icon over the map.
 pub const TACTICAL_MARKER_ALPHA: f32 = 0.5;
 
-/// Z-translation for the marker body sprites. Sits between
-/// the zone overlay and the gameplay sprites so a marker
-/// never eclipses a real structure.
-pub const TACTICAL_MARKER_Z: f32 = 0.5;
+/// Place icons in front of the objects they identify.
+pub const TACTICAL_MARKER_Z: f32 = crate::GAMEPLAY_SPRITE_Z + 1.0;
 
 /// Spatial slot size used to bucket same-kind, same-owner
 /// clusters during marker reconciliation. Distinct clusters
@@ -85,6 +62,26 @@ pub enum TacticalMarkerKind {
     Charger,
 }
 
+impl TacticalMarkerKind {
+    fn icon_rect(self) -> Rect {
+        // The sheet's 64px tiles follow the marker kinds' declaration order.
+        let x = self as u8 as f32 * 64.0;
+        Rect::new(x, 0.0, x + 64.0, 64.0)
+    }
+
+    fn color(self, owner: SwarmId) -> Color {
+        let color = match self {
+            Self::Facility | Self::Stockpile | Self::Planned | Self::Charger
+                if owner != UNOWNED_SWARM_ID =>
+            {
+                swarm_presentation_color(owner)
+            }
+            _ => Color::WHITE,
+        };
+        color.with_alpha(TACTICAL_MARKER_ALPHA)
+    }
+}
+
 /// The cluster key for a marker. Two markers with the same
 /// `(kind, owner, slot)` and a world distance below the
 /// current merge radius collapse to a single cluster.
@@ -101,13 +98,7 @@ pub struct TacticalClusterKey {
     pub slot: (i32, i32),
 }
 
-/// Marker on every spawned tactical icon entity. The
-/// body is a single `Sprite` (no child text entity):
-/// issue #36 drops text labels in favour of a
-/// semi-transparent icon whose shape and color encode
-/// the cluster kind. Only the cluster key is needed to
-/// reconcile the entity on subsequent ticks; the cluster
-/// itself carries the count of merged sources.
+/// Marker on each spawned tactical icon.
 #[derive(Debug, Component, Clone, Copy, Default)]
 pub struct TacticalMarker;
 
@@ -247,11 +238,7 @@ pub fn cluster_tactical_markers(
 ///
 /// Algorithm:
 ///
-/// 1. Convert `icon_screen_size` to the minimum world
-///    distance for non-overlap: `min_world =
-///    icon_screen_size * zoom`. Two icons are
-///    non-overlapping when their centres are at least
-///    `min_world` apart in world space.
+/// 1. Reserve enough world distance for the icons' diagonals.
 /// 2. Run [`DEOVERLAP_ITERATIONS`] relaxation passes.
 ///    Each pass scans every unordered pair, and for any
 ///    pair whose distance is below `min_world` pushes the
@@ -264,19 +251,29 @@ pub fn cluster_tactical_markers(
 /// `zoom < 1.0` clamps to `1.0` (matching
 /// [`marker_world_size_for_zoom`]) so a misconfigured
 /// camera cannot produce an infinitely small nudge.
-/// Empty or single-cluster input is returned unchanged.
+/// Landmarks inside the map keep their icons inside the enclosing wall as they separate.
 pub fn deoverlap_clusters(
     clusters: Vec<TacticalCluster>,
     zoom: f32,
     icon_screen_size: f32,
 ) -> Vec<TacticalCluster> {
     let n = clusters.len();
-    if n <= 1 {
-        return clusters;
-    }
-    let effective_zoom = if zoom >= 1.0 { zoom } else { 1.0 };
-    let min_world_dist = icon_screen_size * effective_zoom;
-    let mut positions: Vec<Vec2> = clusters.iter().map(|c| c.position).collect();
+    let marker_size = displayed_marker_size(zoom, icon_screen_size);
+    let min_world_dist = marker_size * std::f32::consts::SQRT_2;
+    let inset = marker_size * std::f32::consts::FRAC_1_SQRT_2;
+    let bounds = map_bounds();
+    let constrain = |index: usize, position| {
+        if bounds.contains(clusters[index].position) {
+            clamp_to_map(position, inset)
+        } else {
+            position
+        }
+    };
+    let mut positions: Vec<Vec2> = clusters
+        .iter()
+        .enumerate()
+        .map(|(index, cluster)| constrain(index, cluster.position))
+        .collect();
     for _ in 0..DEOVERLAP_ITERATIONS {
         for i in 0..n {
             for j in (i + 1)..n {
@@ -294,8 +291,8 @@ pub fn deoverlap_clusters(
                     let axis = if (i + j) % 2 == 0 { Vec2::X } else { Vec2::Y };
                     (axis, min_world_dist * 0.5)
                 };
-                positions[i] -= dir * push;
-                positions[j] += dir * push;
+                positions[i] = constrain(i, positions[i] - dir * push);
+                positions[j] = constrain(j, positions[j] + dir * push);
             }
         }
     }
@@ -308,26 +305,6 @@ pub fn deoverlap_clusters(
             c
         })
         .collect()
-}
-
-/// Background color of the marker panel for a cluster.
-/// The RGB channels are shared with the structure overlay
-/// so a marker overlaid on its target reads as the same
-/// hue at two zoom levels; the alpha is fixed at
-/// [`TACTICAL_MARKER_ALPHA`] so the marker is
-/// semi-transparent and the player can still see the
-/// underlying map through it.
-pub fn cluster_color(kind: TacticalMarkerKind) -> Color {
-    let (r, g, b) = match kind {
-        TacticalMarkerKind::PlayerBase => (0.10, 0.55, 0.90),
-        TacticalMarkerKind::OpponentBase => (0.85, 0.20, 0.20),
-        TacticalMarkerKind::Deposit => (0.08, 0.72, 0.84),
-        TacticalMarkerKind::Facility => (0.20, 0.40, 0.70),
-        TacticalMarkerKind::Stockpile => (0.20, 0.50, 0.20),
-        TacticalMarkerKind::Planned => (0.45, 0.45, 0.45),
-        TacticalMarkerKind::Charger => (0.55, 0.30, 0.70),
-    };
-    Color::srgba(r, g, b, TACTICAL_MARKER_ALPHA)
 }
 
 /// Decide the visibility for the overlay given the current
@@ -366,6 +343,11 @@ pub fn marker_world_size_for_zoom(zoom: f32, screen_size: f32) -> f32 {
     screen_size * effective_zoom
 }
 
+fn displayed_marker_size(zoom: f32, screen_size: f32) -> f32 {
+    let max_size = map_bounds().size().min_element() * std::f32::consts::FRAC_1_SQRT_2;
+    marker_world_size_for_zoom(zoom, screen_size).min(max_size)
+}
+
 // ---------------------------------------------------------------------------
 // Bevy systems
 // ---------------------------------------------------------------------------
@@ -389,15 +371,10 @@ impl Plugin for TacticalOverlayPlugin {
 /// a new cluster spawns a fresh body with the correct
 /// initial visibility, and an unmatched existing marker
 /// is despawned.
-///
-/// Each marker is a single `Sprite` entity with a
-/// `TacticalMarker` and a `TacticalClusterKey`. There is
-/// no child label entity: issue #36 drops text labels in
-/// favour of a semi-transparent icon body whose shape and
-/// color encode the cluster kind.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn tactical_overlay_update_system(
     mut commands: Commands,
+    asset_server: Option<Res<AssetServer>>,
     tuning: Res<Tuning>,
     zoom_query: Query<&CameraZoom2d>,
     swarms: Query<
@@ -433,7 +410,7 @@ pub fn tactical_overlay_update_system(
     let settings = &tuning.presentation;
     let zoom = zoom_query.iter().next().map(|z| z.zoom).unwrap_or(1.0);
     let visibility = tactical_visibility_for_zoom(zoom, settings.overlay_zoom_threshold);
-    let marker_size = marker_world_size_for_zoom(zoom, settings.tactical_marker_screen_size);
+    let marker_size = displayed_marker_size(zoom, settings.tactical_marker_screen_size);
 
     source_cache.clear();
     let mut swarm_ids = HashMap::new();
@@ -516,46 +493,44 @@ pub fn tactical_overlay_update_system(
             owner: cluster.owner,
             slot: cluster.slot,
         };
+        let position = cluster.position;
+        let marker_transform = Transform::from_translation(position.extend(TACTICAL_MARKER_Z))
+            .with_scale(Vec3::splat(marker_size));
         let existing_entity = by_key.get_mut(&key).and_then(|markers| {
             let nearest = markers
                 .iter()
                 .enumerate()
                 .min_by(|(_, left), (_, right)| {
                     left.1
-                        .distance_squared(cluster.position)
-                        .total_cmp(&right.1.distance_squared(cluster.position))
+                        .distance_squared(position)
+                        .total_cmp(&right.1.distance_squared(position))
                         .then_with(|| left.0.to_bits().cmp(&right.0.to_bits()))
                 })
                 .map(|(index, _)| index)?;
             Some(markers.swap_remove(nearest).0)
         });
         if let Some(entity) = existing_entity {
-            // Patch: update position, scale, and
-            // visibility on the survivor.
             if let Ok((_, _, _, mut transform, mut vis)) = existing.get_mut(entity) {
-                transform.translation = cluster.position.extend(TACTICAL_MARKER_Z);
-                transform.scale = Vec3::splat(marker_size);
+                *transform = marker_transform;
                 if *vis != visibility {
                     *vis = visibility;
                 }
             }
             matched.insert(entity);
         } else {
-            // Spawn a fresh marker body. The body is a
-            // unit-rectangle sprite scaled by marker_size
-            // so its on-screen footprint stays
-            // `marker_screen_size` pixels regardless of
-            // zoom. The sprite color is the per-kind
-            // 50%-alpha panel color from `cluster_color`.
             let body = commands
                 .spawn((
                     Sprite {
-                        color: cluster_color(cluster.kind),
-                        custom_size: Some(Vec2::splat(1.0)),
+                        image: asset_server
+                            .as_ref()
+                            .map(|server| server.load("tactical_markers.png"))
+                            .unwrap_or_default(),
+                        rect: Some(cluster.kind.icon_rect()),
+                        color: cluster.kind.color(cluster.owner),
+                        custom_size: Some(Vec2::ONE),
                         ..default()
                     },
-                    Transform::from_translation(cluster.position.extend(TACTICAL_MARKER_Z))
-                        .with_scale(Vec3::splat(marker_size)),
+                    marker_transform,
                     TacticalMarker,
                     key,
                     visibility,
@@ -951,58 +926,6 @@ mod tests {
         let out = deoverlap_clusters(vec![a, b], 0.0, 32.0);
         for c in &out {
             assert!(c.position.is_finite());
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // cluster_color
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn cluster_color_alpha_is_50_percent() {
-        // Every tactical marker is semi-transparent
-        // (issue #36 acceptance #2). The alpha is
-        // shared across kinds, so all seven colors
-        // share the same alpha component.
-        for kind in [
-            TacticalMarkerKind::PlayerBase,
-            TacticalMarkerKind::OpponentBase,
-            TacticalMarkerKind::Deposit,
-            TacticalMarkerKind::Facility,
-            TacticalMarkerKind::Stockpile,
-            TacticalMarkerKind::Planned,
-            TacticalMarkerKind::Charger,
-        ] {
-            let c = cluster_color(kind);
-            let srgba = c.to_srgba();
-            assert!(
-                (srgba.alpha - TACTICAL_MARKER_ALPHA).abs() < 1e-4,
-                "{kind:?} must have alpha {TACTICAL_MARKER_ALPHA}, got {}",
-                srgba.alpha
-            );
-        }
-    }
-
-    #[test]
-    fn cluster_color_pairwise_distinct() {
-        let kinds = [
-            TacticalMarkerKind::PlayerBase,
-            TacticalMarkerKind::OpponentBase,
-            TacticalMarkerKind::Deposit,
-            TacticalMarkerKind::Facility,
-            TacticalMarkerKind::Stockpile,
-            TacticalMarkerKind::Planned,
-            TacticalMarkerKind::Charger,
-        ];
-        let colors: Vec<Color> = kinds.iter().map(|k| cluster_color(*k)).collect();
-        for i in 0..colors.len() {
-            for j in (i + 1)..colors.len() {
-                assert_ne!(
-                    colors[i], colors[j],
-                    "kinds {:?} and {:?} must have distinct colors",
-                    kinds[i], kinds[j]
-                );
-            }
         }
     }
 

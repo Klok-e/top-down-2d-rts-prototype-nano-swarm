@@ -1,20 +1,10 @@
-use bevy::{
-    input::ButtonInput,
-    math::{Vec2, Vec3},
-    prelude::{Component, KeyCode, Projection, Query, Res, Time, Transform},
-};
+use bevy::{input::ButtonInput, prelude::*, window::PrimaryWindow};
+
+use crate::{DEFAULT_CAMERA_ZOOM, scenario::clamp_to_map, ui::UiHandling};
 
 use super::CameraZoom2d;
 
-/// A set of options for initializing a FlyCamera.
-/// Attach this component to a [`Camera2dBundle`](https://docs.rs/bevy/0.4.0/bevy/prelude/struct.Camera2dBundle.html) bundle to control it with your keyboard.
-/// # Example
-/// ```no_compile
-/// fn setup(mut commands: Commands) {
-///   commands
-///     .spawn(Camera2dBundle::default())
-///     .with(FlyCamera2d::default());
-/// }
+/// Pan settings and opening position for a 2D strategy camera.
 #[derive(Component)]
 pub struct FlyCamera2d {
     /// The speed the FlyCamera2d accelerates at.
@@ -23,17 +13,19 @@ pub struct FlyCamera2d {
     pub max_speed: f32,
     /// The amount of deceleration to apply to the camera's motion.
     pub friction: f32,
-    /// The current velocity of the FlyCamera2d. This value is always up-to-date, enforced by [FlyCameraPlugin](struct.FlyCameraPlugin.html)
+    /// Current pan velocity, in screen pixels per second.
     pub velocity: Vec2,
+    pub home: Vec2,
+    /// Changes when the view jumps, so the brush can start a fresh stroke segment.
+    pub view_revision: u64,
     /// Key used to move left. Defaults to <kbd>A</kbd>
     pub key_left: KeyCode,
     /// Key used to move right. Defaults to <kbd>D</kbd>
     pub key_right: KeyCode,
     /// Key used to move up. Defaults to <kbd>W</kbd>
     pub key_up: KeyCode,
-    /// Key used to move forward. Defaults to <kbd>S</kbd>
+    /// Key used to move down. Defaults to <kbd>S</kbd>
     pub key_down: KeyCode,
-    /// If `false`, disable keyboard control of the camera. Defaults to `true`
     pub enabled: bool,
 }
 
@@ -45,6 +37,8 @@ impl Default for FlyCamera2d {
             max_speed: tuning.camera_max_speed,
             friction: tuning.camera_friction,
             velocity: Vec2::ZERO,
+            home: Vec2::ZERO,
+            view_revision: 0,
             key_left: KeyCode::KeyA,
             key_right: KeyCode::KeyD,
             key_up: KeyCode::KeyW,
@@ -69,7 +63,7 @@ pub fn set_camera_view(
     movement: &mut FlyCamera2d,
     position: Vec2,
     requested_zoom: Option<f32>,
-) -> Result<f32, CameraControlError> {
+) -> Result<(Vec2, f32), CameraControlError> {
     let applied_zoom = requested_zoom.unwrap_or(zoom.zoom);
     if !position.is_finite() || !applied_zoom.is_finite() {
         return Err(CameraControlError::NonFinite);
@@ -79,86 +73,141 @@ pub fn set_camera_view(
     };
     let applied_zoom = applied_zoom.clamp(zoom.zoom_min_max.0, zoom.zoom_min_max.1);
 
-    transform.translation.x = position.x;
-    transform.translation.y = position.y;
+    let previous_position = transform.translation.truncate();
+    let applied_position = move_camera_to(transform, position);
+    if applied_position != previous_position || applied_zoom != zoom.zoom {
+        movement.view_revision = movement.view_revision.wrapping_add(1);
+    }
     zoom.zoom = applied_zoom;
     orthographic.scale = applied_zoom;
     movement.velocity = Vec2::ZERO;
-    Ok(applied_zoom)
+    Ok((applied_position, applied_zoom))
 }
 
+pub(super) fn move_camera_to(transform: &mut Transform, position: Vec2) -> Vec2 {
+    let position = clamp_to_map(position, 0.0);
+    transform.translation.x = position.x;
+    transform.translation.y = position.y;
+    position
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn camera_2d_movement_system(
     time: Res<Time>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut query: Query<(&mut FlyCamera2d, &mut Transform, Option<&Projection>)>,
+    mouse_input: Option<Res<ButtonInput<MouseButton>>>,
+    primary_window: Query<&Window, With<PrimaryWindow>>,
+    ui: Option<Res<UiHandling>>,
+    mut drag_cursor: Local<Option<Vec2>>,
+    mut query: Query<(
+        &mut FlyCamera2d,
+        &mut Transform,
+        Option<&mut Projection>,
+        Option<&mut CameraZoom2d>,
+    )>,
     menu: Option<Res<crate::ui::scenario_menu::ScenarioMenu>>,
     editor: Option<Res<crate::ui::tuning_panel::TuningEditor>>,
 ) {
-    if menu.is_some_and(|menu| menu.blocks_world_input)
-        || editor.is_some_and(|editor| editor.keyboard_captured())
+    let window = primary_window.single().ok();
+    let keyboard_captured = editor
+        .as_ref()
+        .is_some_and(|editor| editor.keyboard_captured());
+    let pointer_captured = ui.is_some_and(|ui| ui.is_pointer_over_ui)
+        || editor.is_some_and(|editor| editor.pointer_captured());
+    let blocked = menu.is_some_and(|menu| menu.blocks_world_input)
+        || window.is_some_and(|window| !window.focused);
+    let cursor = window.and_then(Window::cursor_position);
+    let mut drag_delta = None;
+    if let Some((cursor, mouse)) = cursor
+        .zip(mouse_input.as_deref())
+        .filter(|(_, mouse)| !blocked && mouse.pressed(MouseButton::Middle))
     {
-        for (mut options, _, _) in &mut query {
-            options.velocity = Vec2::ZERO;
+        if drag_cursor.is_some() || (!pointer_captured && mouse.just_pressed(MouseButton::Middle)) {
+            drag_delta = Some(cursor - drag_cursor.replace(cursor).unwrap_or(cursor));
         }
-        return;
+    } else {
+        *drag_cursor = None;
     }
-    for (mut options, mut transform, ortho) in query.iter_mut() {
-        let (axis_h, axis_v) = if options.enabled {
-            (
-                movement_axis(&keyboard_input, options.key_right, options.key_left),
-                movement_axis(&keyboard_input, options.key_up, options.key_down),
-            )
-        } else {
-            (0.0, 0.0)
-        };
+    let edge_pan = if pointer_captured {
+        Vec2::ZERO
+    } else {
+        window.zip(cursor).map_or(Vec2::ZERO, |(window, cursor)| {
+            let margin = Vec2::splat(14.0).min(window.size() / 4.0);
+            let low = cursor.cmplt(margin);
+            let high = cursor.cmpgt(window.size() - margin);
+            Vec2::new(axis(high.x, low.x), axis(low.y, high.y))
+        })
+    };
 
-        let accel: Vec2 = (Vec2::X * axis_h) + (Vec2::Y * axis_v);
-        let accel: Vec2 = if accel.length() != 0.0 {
-            accel.normalize() * options.accel
-        } else {
-            Vec2::ZERO
-        };
-
-        let friction: Vec2 = if options.velocity.length() != 0.0 {
-            options.velocity.normalize() * -1.0 * options.friction
-        } else {
-            Vec2::ZERO
-        };
-
-        options.velocity += accel * time.delta_secs();
-
-        // clamp within max speed
-        if options.velocity.length() > options.max_speed {
-            options.velocity = options.velocity.normalize() * options.max_speed;
+    for (mut options, mut transform, projection, zoom) in &mut query {
+        if blocked || !options.enabled {
+            options.velocity = Vec2::ZERO;
+            continue;
+        }
+        if !keyboard_captured && keyboard_input.just_pressed(KeyCode::Home) {
+            let home = options.home;
+            if let Some((mut projection, mut zoom)) = projection.zip(zoom) {
+                let _ = set_camera_view(
+                    &mut transform,
+                    &mut projection,
+                    &mut zoom,
+                    &mut options,
+                    home,
+                    Some(DEFAULT_CAMERA_ZOOM),
+                );
+            }
+            *drag_cursor = None;
+            continue;
         }
 
-        let delta_friction = friction * time.delta_secs();
-
-        options.velocity =
-            if (options.velocity + delta_friction).signum() != options.velocity.signum() {
-                Vec2::ZERO
-            } else {
-                options.velocity + delta_friction
-            };
-
-        let scale = match ortho {
+        let scale = match projection.as_deref() {
             Some(Projection::Orthographic(ortho)) => ortho.scale,
-            _ => 1.,
+            _ => 1.0,
         };
-        transform.translation +=
-            Vec3::new(options.velocity.x, options.velocity.y, 0.0) * scale * time.delta_secs();
+        let position = transform.translation.truncate();
+        if let Some(delta) = drag_delta {
+            options.velocity = Vec2::ZERO;
+            move_camera_to(
+                &mut transform,
+                position + Vec2::new(-delta.x, delta.y) * scale,
+            );
+            continue;
+        }
+
+        let keyboard_pan = if keyboard_captured {
+            Vec2::ZERO
+        } else {
+            let pressed = |key, arrow| keyboard_input.pressed(key) || keyboard_input.pressed(arrow);
+            Vec2::new(
+                axis(
+                    pressed(options.key_right, KeyCode::ArrowRight),
+                    pressed(options.key_left, KeyCode::ArrowLeft),
+                ),
+                axis(
+                    pressed(options.key_up, KeyCode::ArrowUp),
+                    pressed(options.key_down, KeyCode::ArrowDown),
+                ),
+            )
+        };
+        let direction = (keyboard_pan + edge_pan).normalize_or_zero();
+        let rate = if direction == Vec2::ZERO {
+            options.friction
+        } else {
+            options.accel
+        };
+        let dt = time.delta_secs();
+        options.velocity = options
+            .velocity
+            .move_towards(direction * options.max_speed, rate * dt);
+        let displacement = options.velocity * scale * dt;
+        if displacement != Vec2::ZERO {
+            move_camera_to(&mut transform, position + displacement);
+        }
     }
 }
 
-fn movement_axis(input: &Res<ButtonInput<KeyCode>>, plus: KeyCode, minus: KeyCode) -> f32 {
-    let mut axis = 0.0;
-    if input.pressed(plus) {
-        axis += 1.0;
-    }
-    if input.pressed(minus) {
-        axis -= 1.0;
-    }
-    axis
+fn axis(positive: bool, negative: bool) -> f32 {
+    (i8::from(positive) - i8::from(negative)) as f32
 }
 
 #[cfg(test)]
@@ -222,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn default_keyboard_pan_keeps_a_usable_one_second_distance() {
+    fn default_keyboard_pan_covers_over_a_thousand_pixels_in_one_second() {
         let distance = distance_after_one_second(
             Duration::from_secs_f64(1.0 / 60.0),
             60,
@@ -230,8 +279,8 @@ mod tests {
         );
 
         assert!(
-            (distance - 374.375).abs() < 1.0,
-            "default held input should travel about 374 screen pixels in one second, got {distance}",
+            distance > 1000.0,
+            "default held input traveled {distance} screen pixels in one second",
         );
     }
 }

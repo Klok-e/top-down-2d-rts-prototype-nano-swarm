@@ -12,6 +12,7 @@ use bevy::{
 };
 
 use super::scenario_menu::{MenuInputSet, ScenarioMenu};
+use super::ui_setup::FontsResource;
 use crate::tuning::{Tuning, set_value};
 
 #[derive(Resource, Default)]
@@ -142,15 +143,16 @@ impl Plugin for TuningPanelPlugin {
                     .before(MenuInputSet::Keyboard),
             )
             .add_systems(PreUpdate, tuning_input.in_set(TuningInputSet))
-            .add_systems(Startup, setup_panel)
+            .add_systems(PostStartup, setup_panel)
             .add_systems(Update, refresh_panel);
     }
 }
 
-fn text(value: impl Into<String>, size: f32) -> impl Bundle {
+fn text(value: impl Into<String>, size: f32, font: &Handle<Font>) -> impl Bundle {
     (
         Text::new(value),
         TextFont {
+            font: font.clone(),
             font_size: size,
             ..default()
         },
@@ -166,22 +168,34 @@ fn group_label(group: &str) -> String {
         .unwrap_or_default()
 }
 
-fn setup_panel(mut commands: Commands) {
+fn setup_panel(mut commands: Commands, fonts: Option<Res<FontsResource>>) {
+    let font = fonts.map(|fonts| fonts.font.clone()).unwrap_or_default();
+    let panel_area = commands
+        .spawn(Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(72.0),
+            right: Val::Px(8.0),
+            bottom: Val::Px(8.0),
+            left: Val::Px(8.0),
+            justify_content: JustifyContent::FlexEnd,
+            align_items: AlignItems::FlexStart,
+            ..default()
+        })
+        .id();
     commands
         .spawn((
+            ChildOf(panel_area),
             TuningPanelRoot,
             Node {
                 display: Display::None,
-                position_type: PositionType::Absolute,
-                top: Val::Px(0.0),
-                right: Val::Px(0.0),
-                bottom: Val::Px(0.0),
                 width: Val::Px(430.0),
-                max_width: Val::Percent(95.0),
+                max_width: Val::Percent(100.0),
+                max_height: Val::Percent(100.0),
                 padding: UiRect::all(Val::Px(14.0)),
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(8.0),
                 overflow: Overflow::scroll_y(),
+                border_radius: BorderRadius::all(Val::Px(8.0)),
                 ..default()
             },
             GlobalZIndex(90),
@@ -190,6 +204,18 @@ fn setup_panel(mut commands: Commands) {
             BackgroundColor(Color::srgba(0.035, 0.05, 0.072, 0.98)),
         ))
         .with_children(|panel| {
+            panel
+                .spawn(Node {
+                    align_items: AlignItems::Baseline,
+                    justify_content: JustifyContent::SpaceBetween,
+                    column_gap: Val::Px(8.0),
+                    flex_shrink: 0.0,
+                    ..default()
+                })
+                .with_children(|header| {
+                    header.spawn(text("Tuning", 22.0, &font));
+                    header.spawn(text("F2 to close", 14.0, &font));
+                });
             let mut groups = BTreeSet::new();
             for field in Tuning::fields() {
                 if !groups.insert(field.group) {
@@ -209,7 +235,7 @@ fn setup_panel(mut commands: Commands) {
                     ))
                     .with_children(|button| {
                         button.spawn((
-                            text(group_label(field.group), 17.0),
+                            text(group_label(field.group), 17.0, &font),
                             GroupLabel(field.group),
                         ));
                     });
@@ -243,7 +269,7 @@ fn setup_panel(mut commands: Commands) {
                                 })
                                 .with_children(|line| {
                                     line.spawn((
-                                        text(field.label, 14.0),
+                                        text(field.label, 14.0, &font),
                                         Node {
                                             flex_grow: 1.0,
                                             flex_basis: Val::Px(0.0),
@@ -264,12 +290,14 @@ fn setup_panel(mut commands: Commands) {
                                         BorderColor::all(Color::srgb(0.23, 0.30, 0.38)),
                                     ))
                                     .with_children(|button| {
-                                        button.spawn((text("", 15.0), ValueLabel(field.key)));
+                                        button
+                                            .spawn((text("", 15.0, &font), ValueLabel(field.key)));
                                     });
                                     line.spawn((
-                                        text(field.unit, 12.0),
+                                        text(field.unit, 12.0, &font),
                                         Node {
-                                            width: Val::Px(36.0),
+                                            width: Val::Px(64.0),
+                                            flex_shrink: 0.0,
                                             ..default()
                                         },
                                     ));
@@ -277,6 +305,7 @@ fn setup_panel(mut commands: Commands) {
                                 row.spawn((
                                     Text::new(""),
                                     TextFont {
+                                        font: font.clone(),
                                         font_size: 12.0,
                                         ..default()
                                     },

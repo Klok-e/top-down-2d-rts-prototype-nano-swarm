@@ -1,5 +1,7 @@
 #![allow(clippy::duplicate_mod)]
 
+#[path = "playtest/camera_controls.rs"]
+mod camera_controls;
 #[path = "playtest/combat_presentation.rs"]
 mod combat_presentation;
 #[path = "playtest/congested_economy.rs"]

@@ -177,9 +177,9 @@ tuning_schema! {
         strategy_deposit_exposure_cost: f32 = 10.0 => ("deposit exposure cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
     }
     presentation: PresentationTuning {
-        camera_accel: f32 = 1800.0 => ("Camera accel", "", 1.0, 1.0, 0.000001, 1_000_000.0);
-        camera_max_speed: f32 = 600.0 => ("Camera max speed", "", 1.0, 1.0, 0.000001, 1_000_000.0);
-        camera_friction: f32 = 1050.0 => ("Camera friction", "", 1.0, 1.0, 0.000001, 1_000_000.0);
+        camera_accel: f32 = 16000.0 => ("Camera accel", "", 1.0, 1.0, 0.000001, 1_000_000.0);
+        camera_max_speed: f32 = 1300.0 => ("Camera max speed", "", 1.0, 1.0, 0.000001, 1_000_000.0);
+        camera_friction: f32 = 50000.0 => ("Camera friction", "", 1.0, 1.0, 0.000001, 1_000_000.0);
         camera_zoom_speed: f32 = 0.15 => ("Camera zoom speed", "", 1.0, 0.01, 0.000001, 1_000_000.0);
         overlay_zoom_threshold: f32 = 8.0 => ("Overlay zoom threshold", "", 1.0, 1.0, 0.000001, 1_000_000.0);
         tactical_merge_radius_world: f32 = 2048.0 => ("Tactical merge radius world", "", 1.0, 1.0, 0.000001, 1_000_000.0);

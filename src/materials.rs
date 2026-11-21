@@ -3,6 +3,8 @@ use bevy::{
     shader::ShaderRef, sprite_render::Material2d,
 };
 
+use crate::zones::BrushFeedback;
+
 #[derive(AsBindGroup, TypePath, Asset, Debug, Clone)]
 pub struct BackgroundMaterial {
     #[uniform(0)]
@@ -20,31 +22,12 @@ impl Default for BackgroundMaterial {
 /// Cell guides appear only during a world-space paint or erase gesture.
 pub fn update_paint_grid(
     materials: Option<ResMut<Assets<BackgroundMaterial>>>,
-    buttons: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
-    cameras: Query<(&Camera, &GlobalTransform)>,
-    ui: Res<crate::ui::UiHandling>,
-    outcome: Option<Res<crate::nanobot::MatchOutcome>>,
-    menu: Option<Res<crate::ui::scenario_menu::ScenarioMenu>>,
+    feedback: Res<BrushFeedback>,
 ) {
     let Some(mut materials) = materials else {
         return;
     };
-    let active = !menu.is_some_and(|menu| menu.blocks_world_input)
-        && !ui.is_pointer_over_ui
-        && outcome
-            .as_deref()
-            .is_none_or(|outcome| *outcome == crate::nanobot::MatchOutcome::InProgress)
-        && (buttons.pressed(MouseButton::Left) || buttons.pressed(MouseButton::Right))
-        && windows
-            .single()
-            .ok()
-            .and_then(Window::cursor_position)
-            .is_some_and(|cursor| {
-                cameras.single().is_ok_and(|(camera, transform)| {
-                    camera.viewport_to_world_2d(transform, cursor).is_ok()
-                })
-            });
+    let active = feedback.active_gesture;
     let visibility = if active { 1.0 } else { 0.0 };
     let changed = materials
         .iter()

@@ -1,14 +1,36 @@
 //! Open basins, sheltered clearings, and rounded landforms in intent-cell units.
 
-use bevy::prelude::*;
+use bevy::{asset::RenderAssetUsages, mesh::PrimitiveTopology, prelude::*};
 
 use crate::{ZONE_BLOCK_SIZE, terrain::RockFormation};
 
 use super::{PLAYER_CELL, cell_origin};
 
 const MIN: f32 = -2.0;
+const HALF: f32 = 14.0;
+const CORNER_RADIUS: f32 = 0.85;
 const TILE: f32 = 0.125;
-const SIDE: usize = 224;
+const SIDE: usize = (2.0 * HALF / TILE) as usize;
+
+pub(crate) fn map_bounds() -> Rect {
+    let min = cell_origin(PLAYER_CELL) + Vec2::splat(MIN * ZONE_BLOCK_SIZE);
+    Rect::from_corners(min, min + Vec2::splat(2.0 * HALF * ZONE_BLOCK_SIZE))
+}
+
+pub(crate) fn clamp_to_map(position: Vec2, inset: f32) -> Vec2 {
+    let bounds = map_bounds();
+    let local = position - bounds.center();
+    let half = (bounds.half_size() - Vec2::splat(inset)).max(Vec2::ZERO);
+    let radius = (CORNER_RADIUS * ZONE_BLOCK_SIZE - inset).max(0.0);
+    let corner_center = half - Vec2::splat(radius);
+    let outside_corner = (local.abs() - corner_center).max(Vec2::ZERO);
+    if local.abs().cmple(half).all() && outside_corner.length_squared() <= radius * radius {
+        return position;
+    }
+    let offset = local.abs().min(half);
+    let corner = (offset - corner_center).max(Vec2::ZERO);
+    bounds.center() + local.signum() * (offset - corner + corner.clamp_length_max(radius))
+}
 
 fn segment_distance(point: Vec2, start: Vec2, end: Vec2) -> f32 {
     let direction = end - start;
@@ -23,7 +45,7 @@ fn path_contains(point: Vec2, points: &[(f32, f32)], width: f32) -> bool {
 }
 
 fn rounded_square(point: Vec2, half: f32, radius: f32) -> bool {
-    let q = (point - Vec2::splat(12.0)).abs() - Vec2::splat(half - radius);
+    let q = (point - Vec2::splat(MIN + HALF)).abs() - Vec2::splat(half - radius);
     q.max(Vec2::ZERO).length() + q.max_element().min(0.0) < radius
 }
 
@@ -68,11 +90,47 @@ fn landforms(point: Vec2) -> bool {
         || oval(point, Vec2::new(7.5, 25.6), Vec2::new(3.4, 1.5), 0.1)
 }
 
+fn inside_outer_wall(point: Vec2) -> bool {
+    rounded_square(point, HALF, CORNER_RADIUS)
+}
+
 fn solid_at(point: Vec2) -> bool {
-    rounded_square(point, 14.0, 0.85)
+    inside_outer_wall(point)
         && (!rounded_square(point, 13.65, 0.5)
             || landforms(point)
             || landforms(Vec2::splat(24.0) - point))
+}
+
+pub(crate) fn map_floor_mesh() -> Mesh {
+    let bounds = map_bounds();
+    let mut positions = Vec::new();
+    for y in 0..SIDE {
+        let mut row = (0..SIDE).filter(|&x| {
+            inside_outer_wall(Vec2::splat(MIN) + Vec2::new(x as f32 + 0.5, y as f32 + 0.5) * TILE)
+        });
+        let Some(first) = row.next() else {
+            continue;
+        };
+        let last = row.next_back().unwrap_or(first);
+        let min = bounds.min + Vec2::new(first as f32, y as f32) * (TILE * ZONE_BLOCK_SIZE);
+        let max =
+            bounds.min + Vec2::new((last + 1) as f32, (y + 1) as f32) * (TILE * ZONE_BLOCK_SIZE);
+        for point in [
+            min,
+            Vec2::new(max.x, min.y),
+            max,
+            min,
+            max,
+            Vec2::new(min.x, max.y),
+        ] {
+            positions.push(point.extend(0.0).to_array());
+        }
+    }
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
 }
 
 /// Solid rectangles exactly cover the authored rock silhouette. Merging adjacent
@@ -128,7 +186,6 @@ pub fn spawn_terrain_geometry(
 }
 
 pub(crate) fn rock_surface_mesh(origin: Vec2) -> Mesh {
-    use bevy::{asset::RenderAssetUsages, mesh::PrimitiveTopology};
     let mut positions = Vec::<[f32; 3]>::new();
     let mut colors = Vec::<[f32; 4]>::new();
     let face = [0.12, 0.16, 0.21, 1.0];

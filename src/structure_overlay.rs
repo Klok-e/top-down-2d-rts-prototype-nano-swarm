@@ -13,7 +13,7 @@ use crate::fly_camera::CameraZoom2d;
 use crate::nanobot::{
     BOT_RADIUS, Cargo, Charger, ExtractProgress, HaulerLoading, LogisticsReservation,
     MaintenanceProgress, Nanobot, NanobotType, PLANNED_STRUCTURE_FOOTPRINT, PlannedStructure,
-    ProductionFacility, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure,
+    ProductionFacility, Structure,
 };
 use crate::resources::{ResourceDeposit, Stockpile};
 use crate::tuning::{PresentationTuning, Tuning};
@@ -164,20 +164,11 @@ pub fn health_fill_fraction(health: u32, tuning: &Tuning) -> f32 {
 
 pub fn condition_fill_color(kind: ConditionOverlayKind, value: u32, tuning: &Tuning) -> Color {
     match kind {
-        ConditionOverlayKind::Maintenance if value >= tuning.maintenance.buffer_ticks => {
-            Color::srgb(1.0, 0.22, 0.18)
-        }
         ConditionOverlayKind::Maintenance if value >= tuning.maintenance.needs_threshold => {
-            Color::srgb(1.0, 0.68, 0.20)
+            Color::srgb(1.0, 0.65, 0.21)
         }
-        ConditionOverlayKind::Maintenance => Color::srgb(0.25, 0.85, 0.35),
-        ConditionOverlayKind::Health if value < SUPPORT_OPERATIONAL_HEALTH_THRESHOLD => {
-            Color::srgb(1.0, 0.22, 0.18)
-        }
-        ConditionOverlayKind::Health if value < tuning.construction.max_health => {
-            Color::srgb(1.0, 0.68, 0.20)
-        }
-        ConditionOverlayKind::Health => Color::srgb(0.25, 0.85, 0.35),
+        ConditionOverlayKind::Maintenance => Color::srgb(1.0, 0.80, 0.38),
+        ConditionOverlayKind::Health => Color::srgb(0.43, 0.93, 0.54),
         ConditionOverlayKind::WorkerProgress => Color::WHITE,
     }
 }
@@ -193,15 +184,21 @@ pub fn overlay_bar_size(kind: StructureOverlayKind, settings: &PresentationTunin
 }
 
 /// Dark backing panel shared by every bar.
-pub fn overlay_background_color(_kind: StructureOverlayKind) -> Color {
-    Color::srgba(0.0, 0.0, 0.0, 0.65)
+pub fn overlay_background_color(kind: StructureOverlayKind) -> Color {
+    match kind {
+        StructureOverlayKind::Stockpile
+        | StructureOverlayKind::Facility
+        | StructureOverlayKind::Planned
+        | StructureOverlayKind::Charger => Color::srgb(0.13, 0.16, 0.21),
+        _ => Color::srgba(0.0, 0.0, 0.0, 0.65),
+    }
 }
 
 /// Fill color for each kind.
 pub fn overlay_fill_color(kind: StructureOverlayKind) -> Color {
     match kind {
-        StructureOverlayKind::Deposit => Color::srgb(0.18, 0.88, 0.96),
-        StructureOverlayKind::Stockpile => Color::srgb(0.25, 0.85, 0.35),
+        StructureOverlayKind::Deposit => Color::srgb_u8(248, 200, 102),
+        StructureOverlayKind::Stockpile => Color::srgb(0.24, 0.79, 0.98),
         StructureOverlayKind::Facility => Color::srgb(0.25, 0.55, 1.0),
         StructureOverlayKind::Planned => Color::srgb(0.85, 0.85, 0.90),
         StructureOverlayKind::Charger => Color::srgb(0.75, 0.35, 1.0),
@@ -563,9 +560,16 @@ fn condition_bar_size(kind: ConditionOverlayKind, settings: &PresentationTuning)
     }
 }
 
-fn condition_overlay_offset_y(kind: ConditionOverlayKind, settings: &PresentationTuning) -> f32 {
-    let resource_y = PLANNED_STRUCTURE_FOOTPRINT / 2.0 + settings.structure_label_gap;
-    let maintenance_y = resource_y
+fn support_resource_offset_y(target: &Transform, settings: &PresentationTuning) -> f32 {
+    PLANNED_STRUCTURE_FOOTPRINT / 2.0 * target.scale.y.abs() + settings.structure_label_gap
+}
+
+fn condition_overlay_offset_y(
+    kind: ConditionOverlayKind,
+    target: &Transform,
+    settings: &PresentationTuning,
+) -> f32 {
+    let maintenance_y = support_resource_offset_y(target, settings)
         + settings.structure_bar_height / 2.0
         + settings.condition_bar_gap
         + settings.condition_bar_height / 2.0;
@@ -603,7 +607,7 @@ pub fn condition_overlay_update_system(
             continue;
         };
         transform.translation = (target_transform.translation.truncate()
-            + Vec2::Y * condition_overlay_offset_y(overlay.kind, settings))
+            + Vec2::Y * condition_overlay_offset_y(overlay.kind, target_transform, settings))
         .extend(STRUCTURE_OVERLAY_Z);
         let (fraction, value) = match overlay.kind {
             ConditionOverlayKind::Maintenance => conditions
@@ -683,16 +687,15 @@ pub fn structure_overlay_update_system(
             continue;
         };
         let deposit_radius = deposits.get(overlay.target).ok().map(|d| d.radius);
-        let mut offset_y = overlay_label_offset_y(overlay.kind, deposit_radius, settings);
-        if matches!(
-            overlay.kind,
+        let offset_y = match overlay.kind {
             StructureOverlayKind::Stockpile
-                | StructureOverlayKind::Facility
-                | StructureOverlayKind::Planned
-                | StructureOverlayKind::Charger
-        ) {
-            offset_y += PLANNED_STRUCTURE_FOOTPRINT / 2.0 * (target_transform.scale.y.abs() - 1.0);
-        }
+            | StructureOverlayKind::Facility
+            | StructureOverlayKind::Planned
+            | StructureOverlayKind::Charger => {
+                support_resource_offset_y(target_transform, settings)
+            }
+            _ => overlay_label_offset_y(overlay.kind, deposit_radius, settings),
+        };
         transform.translation = (target_transform.translation.truncate()
             + Vec2::new(0.0, offset_y))
         .extend(STRUCTURE_OVERLAY_Z);

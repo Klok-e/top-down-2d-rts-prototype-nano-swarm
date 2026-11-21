@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 pub mod agent_control;
 pub mod ai;
 pub mod ai_battle;
@@ -34,7 +36,7 @@ use ai::AiPlugin;
 use anyhow::Result;
 use bevy::{
     app::TerminalCtrlCHandlerPlugin,
-    camera::RenderTarget,
+    camera::{ClearColorConfig, RenderTarget},
     log::LogPlugin,
     prelude::*,
     render::{
@@ -296,9 +298,7 @@ pub const MAP_WIDTH: u32 = 1000;
 pub const MAP_HEIGHT: u32 = 1000;
 pub const ZONE_BLOCK_SIZE: f32 = 512.;
 
-/// Z-translation for the full-map background mesh. Bevy 2D draws
-/// meshes with the largest `translation.z` first, so a negative z
-/// keeps the background behind every other render layer.
+/// Z-translation for the floor, behind the intent grid and terrain.
 pub const BACKGROUND_OVERLAY_Z: f32 = -100.0;
 
 /// Z-translation for the player-intent zone mesh. Sits above the
@@ -315,19 +315,7 @@ pub const GAMEPLAY_SPRITE_Z: f32 = 1.0;
 /// Startup camera zoom shared by [`CameraZoom2d`] and the orthographic projection.
 pub const DEFAULT_CAMERA_ZOOM: f32 = 2.0;
 
-/// Build the [`Transform`] for the full-map background mesh. The
-/// draw-order z lives on the translation (the field Bevy 2D reads
-/// for draw order); the mesh scale keeps `z = 1.0` so the unit
-/// rectangle is not distorted.
-pub fn background_overlay_transform(width: f32, height: f32) -> Transform {
-    Transform::from_translation(Vec3::new(0.0, 0.0, BACKGROUND_OVERLAY_Z))
-        .with_scale(Vec3::new(width, height, 1.0))
-}
-
-/// Build the [`Transform`] for the player-intent zone mesh. Same
-/// draw-order contract as [`background_overlay_transform`]: z on
-/// the translation, scale `z = 1.0`, and the zone sits above the
-/// background and below the gameplay sprites.
+/// Place the Intent Zone mesh above the floor and below the terrain.
 pub fn zone_overlay_transform(width: f32, height: f32) -> Transform {
     Transform::from_translation(Vec3::new(0.0, 0.0, ZONE_OVERLAY_Z))
         .with_scale(Vec3::new(width, height, 1.0))
@@ -354,8 +342,11 @@ fn setup_things_startup(
     let mut camera = commands.spawn((
         MainCamera,
         Camera2d,
+        Camera {
+            clear_color: ClearColorConfig::Custom(Color::srgb(0.025, 0.032, 0.04)),
+            ..default()
+        },
         render_target,
-        Transform::from_translation(scenario::cell_origin(scenario::PLAYER_CELL).extend(0.0)),
         Projection::Orthographic(OrthographicProjection {
             scale: DEFAULT_CAMERA_ZOOM,
             ..OrthographicProjection::default_2d()
@@ -373,8 +364,7 @@ fn setup_things_startup(
         })
         .insert(CameraZoom2d {
             zoom_speed: tuning.presentation.camera_zoom_speed,
-            zoom_min_max: (1., 100.),
-            zoom: DEFAULT_CAMERA_ZOOM,
+            ..default()
         })
         .insert(ZoneMaterialHandleComponent {
             handle: handle.clone(),
@@ -384,12 +374,9 @@ fn setup_things_startup(
 
     // background
     commands.spawn((
-        Mesh2d(meshes.add(Mesh::from(Rectangle::default()))),
+        Mesh2d(meshes.add(scenario::map_floor_mesh())),
         MeshMaterial2d(bg_mats.add(BackgroundMaterial::default())),
-        background_overlay_transform(
-            MAP_WIDTH as f32 * ZONE_BLOCK_SIZE,
-            MAP_HEIGHT as f32 * ZONE_BLOCK_SIZE,
-        ),
+        Transform::from_xyz(0.0, 0.0, BACKGROUND_OVERLAY_Z),
     ));
 
     // zones
@@ -454,25 +441,15 @@ mod overlay_transform_tests {
     }
 
     #[test]
-    fn background_overlay_transform_uses_translation_z_not_scale_z() {
-        let t = background_overlay_transform(1024.0, 2048.0);
-        assert_abs_diff_eq!(t.translation.z, BACKGROUND_OVERLAY_Z, epsilon = 1e-5);
-        assert_abs_diff_eq!(t.scale.x, 1024.0, epsilon = 0.01);
-        assert_abs_diff_eq!(t.scale.y, 2048.0, epsilon = 0.01);
-        assert_abs_diff_eq!(t.scale.z, 1.0, epsilon = 1e-5);
-    }
-
-    #[test]
     fn zone_overlay_transform_uses_translation_z_above_background() {
-        let bg = background_overlay_transform(1024.0, 2048.0);
         let zone = zone_overlay_transform(1024.0, 2048.0);
         assert_abs_diff_eq!(zone.translation.z, ZONE_OVERLAY_Z, epsilon = 1e-5);
         assert!(
-            zone.translation.z > bg.translation.z,
+            zone.translation.z > BACKGROUND_OVERLAY_Z,
             "zone overlay must draw in front of the background \
              (zone z={} must be greater than background z={})",
             zone.translation.z,
-            bg.translation.z
+            BACKGROUND_OVERLAY_Z
         );
         assert_abs_diff_eq!(zone.scale.z, 1.0, epsilon = 1e-5);
     }

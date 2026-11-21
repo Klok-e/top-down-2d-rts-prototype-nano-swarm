@@ -25,6 +25,7 @@ use libtest_mimic::{Arguments, Conclusion, Failed, Trial};
 
 mod approach_delivery;
 mod background_terrain;
+mod brush_feedback;
 mod build_zone_placement;
 mod combat_presentation;
 mod congested_work;
@@ -95,8 +96,17 @@ fn main() -> std::process::ExitCode {
         Trial::test("match_defeat_banner", || run(match_banner::defeat_banner))
             .with_ignored_flag(true),
         Trial::test("match_draw_banner", || run(match_banner::draw_banner)).with_ignored_flag(true),
+        Trial::test("hud_attack_and_wipeout", || {
+            run(match_banner::hud_attack_and_wipeout)
+        })
+        .with_ignored_flag(true),
         Trial::test("scenario_menu", || run(scenario_menu::scenario_menu)).with_ignored_flag(true),
-        Trial::test("tuning_panel", || run(tuning_panel::tuning_panel)).with_ignored_flag(true),
+        Trial::test("tuning_panel", || {
+            harness::run_screenshot_test_at_size(tuning_panel::tuning_panel, (800, 600))
+                .map(|_| ())
+                .map_err(Failed::from)
+        })
+        .with_ignored_flag(true),
         Trial::test("approach_delivery", || {
             run(approach_delivery::approach_delivery)
         })
@@ -164,6 +174,8 @@ fn main() -> std::process::ExitCode {
             )
         })
         .with_ignored_flag(true),
+        Trial::test("brush_feedback", || run(brush_feedback::brush_feedback))
+            .with_ignored_flag(true),
         Trial::test("combat_presentation", || {
             run(combat_presentation::combat_presentation)
         })

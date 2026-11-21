@@ -32,6 +32,7 @@ fn accelerated_battle_runtime_saves_terminal_results_before_requesting_exit() {
     let mut app = build_runtime_app(
         RuntimeOptions::parse([
             "--headless",
+            "--unbounded",
             "--scenario",
             "ai-battle",
             "--seed",
