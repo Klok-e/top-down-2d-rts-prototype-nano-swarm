@@ -1557,7 +1557,7 @@ fn expansion_prefers_income_after_hauling_and_exposure_costs() {
     let deposits = [
         (poor, 35),
         (best, 12_000),
-        (exposed, 12_000),
+        (exposed, 12_700),
         (costly, 40_000),
     ]
     .into_iter()
@@ -1596,24 +1596,33 @@ fn expansion_prefers_income_after_hauling_and_exposure_costs() {
             _ => RouteOutcome::Unreachable,
         })
     };
-    let decision = Controller::new(owner).decide(
-        &AutonomyTuning::default(),
-        &GameState {
-            swarms: &swarms,
-            deposits: &deposits,
-            terrain: &terrain,
-            route_query: Some(&route),
-            ..empty_state(&grid, 0)
-        },
-    );
+    let choose = |tuning: &AutonomyTuning| {
+        let decision = Controller::new(owner).decide(
+            tuning,
+            &GameState {
+                swarms: &swarms,
+                deposits: &deposits,
+                terrain: &terrain,
+                route_query: Some(&route),
+                ..empty_state(&grid, 0)
+            },
+        );
+        decision
+            .edits
+            .iter()
+            .filter(|edit| edit.kind == IntentKind::Gather)
+            .map(|edit| edit.cell)
+            .collect::<Vec<_>>()
+    };
 
-    let gather = decision
-        .edits
-        .iter()
-        .filter(|edit| edit.kind == IntentKind::Gather)
-        .map(|edit| edit.cell)
-        .collect::<Vec<_>>();
-    assert_eq!(gather, [best]);
+    assert_eq!(choose(&AutonomyTuning::default()), [best]);
+    assert_eq!(
+        choose(&AutonomyTuning {
+            strategy_expansion_exposure_cost: 0.0,
+            ..Default::default()
+        }),
+        [exposed],
+    );
 }
 
 #[test]
