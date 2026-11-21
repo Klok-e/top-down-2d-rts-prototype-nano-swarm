@@ -214,6 +214,7 @@ fn controller_eventually_erases_stale_owned_intent_after_large_foreign_prefix() 
         id: owner,
         home: Vec2::ZERO,
         minerals: 0,
+        mineral_income_per_second: 0.0,
     }];
     let mut controller = Controller::new(owner);
     for review in 0..3 {
@@ -265,6 +266,7 @@ fn controller_reviews_immediately_when_an_owned_deposit_is_exhausted() {
         id: owner,
         home: world(IVec2::ZERO),
         minerals: 0,
+        mineral_income_per_second: 0.0,
     }];
     let deposits = [
         DepositState {
@@ -352,6 +354,7 @@ fn controller_urgently_replans_when_key_support_is_lost() {
         id: owner,
         home: world(IVec2::ZERO),
         minerals: 20,
+        mineral_income_per_second: 0.0,
     }];
     let deposits = [DepositState {
         id: 20,
@@ -429,11 +432,13 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
             id: owner,
             home: world(IVec2::ZERO),
             minerals: 100,
+            mineral_income_per_second: 0.0,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(24, 24)),
             minerals: 0,
+            mineral_income_per_second: 0.0,
         },
     ];
     let deposit = [DepositState {

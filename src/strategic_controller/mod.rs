@@ -33,6 +33,7 @@ pub struct SwarmState {
     pub id: SwarmId,
     pub home: Vec2,
     pub minerals: u32,
+    pub mineral_income_per_second: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

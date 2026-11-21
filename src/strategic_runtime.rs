@@ -121,6 +121,42 @@ impl StrategicRouteCache {
     }
 }
 
+#[derive(Default)]
+struct MineralIncomeHistory {
+    samples: VecDeque<(u64, u64)>,
+}
+
+impl MineralIncomeHistory {
+    fn per_second(&mut self, tick: u64, extracted: u64) -> f32 {
+        const TICKS_PER_SECOND: u64 = crate::SIMULATION_HZ as u64;
+        const INCOME_WINDOW_SECONDS: u64 = 8;
+
+        if self
+            .samples
+            .back()
+            .is_some_and(|&(previous_tick, previous_total)| {
+                tick < previous_tick || extracted < previous_total
+            })
+        {
+            self.samples.clear();
+        }
+        if self.samples.back().is_none_or(|&(previous_tick, _)| {
+            tick.saturating_sub(previous_tick) >= TICKS_PER_SECOND
+        }) {
+            self.samples.push_back((tick, extracted));
+        }
+        while self.samples.len() > 1
+            && tick.saturating_sub(self.samples[1].0) >= INCOME_WINDOW_SECONDS * TICKS_PER_SECOND
+        {
+            self.samples.pop_front();
+        }
+
+        let (start, total) = self.samples[0];
+        let elapsed_seconds = (tick - start) as f32 / TICKS_PER_SECOND as f32;
+        (extracted - total) as f32 / elapsed_seconds.max(1.0)
+    }
+}
+
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn strategic_intent_system(
     tuning: Res<crate::tuning::Tuning>,
@@ -168,6 +204,7 @@ fn strategic_intent_system(
     outcome: Option<Res<MatchOutcome>>,
     mut telemetry: ResMut<ControllerTelemetry>,
     mut routes: Local<StrategicRouteCache>,
+    mut income_history: Local<BTreeMap<SwarmId, MineralIncomeHistory>>,
 ) {
     if controllers.is_empty()
         || outcome
@@ -177,12 +214,18 @@ fn strategic_intent_system(
         return;
     }
     let owners: BTreeMap<_, _> = swarms.iter().map(|(entity, id, _)| (entity, *id)).collect();
+    let tick = (time.elapsed_secs_f64() * crate::SIMULATION_HZ).round() as u64;
+    income_history.retain(|id, _| owners.values().any(|owner| owner == id));
     let mut swarm_states: Vec<_> = swarms
         .iter()
         .map(|(_, id, position)| SwarmState {
             id: *id,
             home: position.map_or(Vec2::ZERO, |t| t.translation.truncate()),
             minerals: ledger.total_for(*id, ResourceKind::Minerals),
+            mineral_income_per_second: income_history
+                .entry(*id)
+                .or_default()
+                .per_second(tick, ledger.extracted_minerals_for(*id)),
         })
         .collect();
     swarm_states.sort_by_key(|swarm| swarm.id);
@@ -278,7 +321,7 @@ fn strategic_intent_system(
         terrain: &terrain,
         reachability: Some(&reachability),
         route_query: Some(&route_query),
-        tick: (time.elapsed_secs_f64() * crate::SIMULATION_HZ).round() as u64,
+        tick,
         finished: false,
     };
     let mut ordered: Vec<_> = controllers

@@ -53,6 +53,7 @@ fn corridor_paint_follows_the_supplied_deposit_route() {
         id: owner,
         home: world(IVec2::ZERO),
         minerals: 1_000,
+        mineral_income_per_second: 0.0,
     }];
     let deposits = [DepositState {
         id: 1,
@@ -107,6 +108,7 @@ fn corridor_paint_without_routing_follows_a_straight_cell_line() {
         id: owner,
         home: world(IVec2::ZERO),
         minerals: 1_000,
+        mineral_income_per_second: 0.0,
     }];
     let deposits = [DepositState {
         id: 1,
@@ -138,6 +140,7 @@ fn a_neutral_deposit_is_not_claimed_when_no_corridor_reaches_it() {
         id: owner,
         home: world(IVec2::ZERO),
         minerals: 1_000,
+        mineral_income_per_second: 0.0,
     }];
     let deposits = [DepositState {
         id: 1,
@@ -176,6 +179,7 @@ fn corridor_search_spends_planning_work_and_keeps_existing_paint_on_exhaustion()
         id: owner,
         home: world(IVec2::ZERO),
         minerals: 1_000,
+        mineral_income_per_second: 0.0,
     }];
     let deposit = DepositState {
         id: 1,
@@ -231,6 +235,7 @@ fn expansion_rejects_a_deposit_whose_corridor_exceeds_paint_capacity() {
         id: owner,
         home: world(IVec2::ZERO),
         minerals: 1_000,
+        mineral_income_per_second: 0.0,
     }];
     let deposit_cell = IVec2::new(98, 0);
     let deposits = [DepositState {
@@ -287,6 +292,7 @@ fn changed_plan_erases_superseded_paint_beyond_the_cleanup_cursor() {
         id: owner,
         home: world(IVec2::ZERO),
         minerals: 100,
+        mineral_income_per_second: 0.0,
     }];
     let target = BotState {
         id: 42,
@@ -381,6 +387,7 @@ fn controller_erases_legacy_intent_and_never_paints_across_permanent_terrain() {
         id: owner,
         home: Vec2::new(-252.0, 36.0),
         minerals: 0,
+        mineral_income_per_second: 0.0,
     }];
     let terrain = [wall];
     let state = GameState {
@@ -422,6 +429,7 @@ fn controller_stops_hunting_a_target_on_the_isolated_side_of_a_painted_tile() {
         id: owner,
         home,
         minerals: 0,
+        mineral_income_per_second: 0.0,
     }];
     let target = BotState {
         id: 1,
@@ -535,11 +543,13 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
             id: owner,
             home: world(IVec2::ZERO),
             minerals: 40,
+            mineral_income_per_second: 0.0,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(8, 0)),
             minerals: 20,
+            mineral_income_per_second: 0.0,
         },
     ];
     let bots = [
@@ -661,6 +671,7 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
         id: owner,
         home,
         minerals: 0,
+        mineral_income_per_second: 0.0,
     }];
     let economy_bots = mature_economy_bots(owner, home);
     let deposits = [
@@ -710,12 +721,14 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
     let supplied_swarms = [
         SwarmState {
             minerals: 2_000,
+            mineral_income_per_second: 0.0,
             ..initial_swarms[0]
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(8, 0)),
             minerals: 0,
+            mineral_income_per_second: 0.0,
         },
     ];
     let defenders = (0..8).map(|id| BotState {
@@ -799,11 +812,13 @@ fn advantaged_raid_paints_enemy_logistics_and_keeps_home_economy() {
             id: owner,
             home: world(IVec2::ZERO),
             minerals: 1_000,
+            mineral_income_per_second: 0.0,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(8, 0)),
             minerals: 0,
+            mineral_income_per_second: 0.0,
         },
     ];
     let bots = (0..8)
@@ -880,11 +895,13 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
             id: owner,
             home: world(IVec2::ZERO),
             minerals: 2_000,
+            mineral_income_per_second: 0.0,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(12, 0)),
             minerals: 0,
+            mineral_income_per_second: 0.0,
         },
     ];
     let friendly_defenders = (0..2)
@@ -1005,11 +1022,13 @@ fn losing_a_mine_keeps_a_progressing_attack_front() {
             id: owner,
             home: world(IVec2::ZERO),
             minerals: 2_000,
+            mineral_income_per_second: 0.0,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(12, 0)),
             minerals: 0,
+            mineral_income_per_second: 0.0,
         },
     ];
     let bots = (0..8)
@@ -1138,6 +1157,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
         id: owner,
         home: world(IVec2::ZERO),
         minerals: 20,
+        mineral_income_per_second: 0.0,
     }];
     let deposits = [DepositState {
         id: 20,
@@ -1211,6 +1231,7 @@ fn new_neutral_deposit_keeps_the_existing_mine_supported() {
         id: owner,
         home: world(IVec2::ZERO),
         minerals: 0,
+        mineral_income_per_second: 0.0,
     }];
     let deposits = [
         DepositState {
@@ -1280,6 +1301,7 @@ fn depleted_and_unreachable_deposits_are_removed_without_abandoning_the_others()
         id: owner,
         home,
         minerals: 0,
+        mineral_income_per_second: 0.0,
     }];
     let cells = [IVec2::new(4, 0), IVec2::new(0, 4), IVec2::new(-4, 0)];
     let mut deposits = cells.map(|cell| DepositState {
@@ -1364,11 +1386,13 @@ fn accumulated_supply_and_a_logistics_target_replace_the_economy_plan() {
             id: owner,
             home: world(IVec2::ZERO),
             minerals: 0,
+            mineral_income_per_second: 0.0,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(24, 24)),
             minerals: 0,
+            mineral_income_per_second: 0.0,
         },
     ];
     let bots = [owner, enemy]
@@ -1429,6 +1453,7 @@ fn accumulated_supply_and_a_logistics_target_replace_the_economy_plan() {
     let supplied_swarms = [
         SwarmState {
             minerals: 2_000,
+            mineral_income_per_second: 0.0,
             ..initial_swarms[0]
         },
         initial_swarms[1],
@@ -1479,6 +1504,7 @@ fn expansion_prefers_income_after_hauling_and_exposure_costs() {
         id: owner,
         home,
         minerals: 0,
+        mineral_income_per_second: 0.0,
     }];
     let poor = IVec2::new(0, -2);
     let best = IVec2::new(0, 5);
@@ -1556,11 +1582,13 @@ fn authored_terrain_leaves_budget_for_a_coordinated_plan() {
             id: owner,
             home: crate::scenario::cell_origin(crate::scenario::PLAYER_CELL),
             minerals: 0,
+            mineral_income_per_second: 0.0,
         },
         SwarmState {
             id: enemy,
             home: crate::scenario::cell_origin(crate::scenario::OPPONENT_CELL),
             minerals: 0,
+            mineral_income_per_second: 0.0,
         },
     ];
     let bots = NanobotType::ALL
@@ -1643,11 +1671,13 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
             id: owner,
             home: crate::scenario::cell_origin(crate::scenario::PLAYER_CELL),
             minerals: 2_000,
+            mineral_income_per_second: 0.0,
         },
         SwarmState {
             id: enemy,
             home: crate::scenario::cell_origin(crate::scenario::OPPONENT_CELL),
             minerals: 0,
+            mineral_income_per_second: 0.0,
         },
     ];
     let bots = (0..10)
@@ -1745,11 +1775,13 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
             id: owner,
             home: world(IVec2::ZERO),
             minerals: 2_000,
+            mineral_income_per_second: 0.0,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(12, 0)),
             minerals: 0,
+            mineral_income_per_second: 0.0,
         },
     ];
     let friendly_defenders = (0..2).map(|id| BotState {
@@ -1863,11 +1895,13 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             id: owner,
             home: world(IVec2::ZERO),
             minerals: 2_000,
+            mineral_income_per_second: 0.0,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(12, 0)),
             minerals: 0,
+            mineral_income_per_second: 0.0,
         },
     ];
     let friendly_defenders = (0..2).map(|id| BotState {
@@ -1997,11 +2031,13 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
             id: owner,
             home: world(IVec2::ZERO),
             minerals: 2_000,
+            mineral_income_per_second: 0.0,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(12, 0)),
             minerals: 0,
+            mineral_income_per_second: 0.0,
         },
     ];
     let friendly_defenders = (0..2).map(|id| BotState {
@@ -2135,11 +2171,13 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             id: owner,
             home: world(IVec2::ZERO),
             minerals: 2_000,
+            mineral_income_per_second: 0.0,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(12, 0)),
             minerals: 0,
+            mineral_income_per_second: 0.0,
         },
     ];
     let friendly_defenders = (0..2).map(|id| BotState {
@@ -2318,11 +2356,13 @@ fn hunt_paint_holds_until_the_target_leaves_its_block() {
             id: owner,
             home: world(IVec2::ZERO),
             minerals: 100,
+            mineral_income_per_second: 0.0,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(20, 20)),
             minerals: 0,
+            mineral_income_per_second: 0.0,
         },
     ];
     let deposit = [DepositState {
@@ -2453,11 +2493,13 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
             id: owner,
             home,
             minerals: 0,
+            mineral_income_per_second: 0.0,
         },
         SwarmState {
             id: enemy,
             home: enemy_home,
             minerals: 0,
+            mineral_income_per_second: 0.0,
         },
     ];
     let economy_bots = mature_economy_bots(owner, home);
@@ -2517,6 +2559,7 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
     let supplied_swarms = [
         SwarmState {
             minerals: 2_000,
+            mineral_income_per_second: 0.0,
             ..swarms[0]
         },
         swarms[1],
@@ -2610,6 +2653,7 @@ fn live_scoring_review_changes_intent_without_refilling_the_planning_allowance()
         id: owner,
         home: world(IVec2::ZERO),
         minerals: 0,
+        mineral_income_per_second: 0.0,
     }];
     let bots = [enemy];
     let mut grid = IntentGrid::new(32, 32);
@@ -2685,6 +2729,7 @@ fn wounded_target_priority_uses_the_edited_health_maximum() {
         id: owner,
         home: world(IVec2::ZERO),
         minerals: 0,
+        mineral_income_per_second: 0.0,
     }];
     let mut structure = StructureState {
         id: 9,
@@ -2773,6 +2818,7 @@ fn a_compact_front_leads_the_army_and_waits_for_most_defenders() {
         id: owner,
         home: world(IVec2::ZERO),
         minerals: 2_000,
+        mineral_income_per_second: 0.0,
     }];
     let target = StructureState {
         id: 10,
@@ -2920,6 +2966,7 @@ fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
         id: owner,
         home: world(IVec2::ZERO),
         minerals: 2_000,
+        mineral_income_per_second: 0.0,
     }];
     let target = StructureState {
         id: 10,

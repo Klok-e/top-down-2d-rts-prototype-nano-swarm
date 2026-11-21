@@ -134,6 +134,7 @@ pub enum StockpileRole {
 pub struct ResourceLedger {
     pub totals: HashMap<ResourceKind, u32>,
     swarm_totals: HashMap<crate::nanobot::SwarmId, HashMap<ResourceKind, u32>>,
+    extracted_minerals: HashMap<crate::nanobot::SwarmId, u64>,
 }
 
 impl ResourceLedger {
@@ -172,6 +173,22 @@ impl ResourceLedger {
             .entry(kind)
             .or_insert(0);
         *owned = owned.saturating_add(amount);
+    }
+
+    pub(crate) fn extract_for(
+        &mut self,
+        swarm: crate::nanobot::SwarmId,
+        kind: ResourceKind,
+        amount: u32,
+    ) {
+        self.add_for(swarm, kind, amount);
+        if kind == ResourceKind::Minerals {
+            *self.extracted_minerals.entry(swarm).or_default() += u64::from(amount);
+        }
+    }
+
+    pub(crate) fn extracted_minerals_for(&self, swarm: crate::nanobot::SwarmId) -> u64 {
+        self.extracted_minerals.get(&swarm).copied().unwrap_or(0)
     }
 
     /// Legacy player-owned subtraction.
