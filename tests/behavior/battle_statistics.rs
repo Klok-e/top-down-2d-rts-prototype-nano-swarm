@@ -706,3 +706,60 @@ fn battle_samples_measure_unfunded_demand_and_empty_charge_per_swarm() {
     assert_eq!(player_sample[1], 0.0);
     assert_eq!(latest_csv_columns(&output, "1", &fields), [0.0, 1.0]);
 }
+
+#[test]
+fn battle_unspent_minerals_drop_when_a_stockpile_collapses() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{
+            Cargo, Charger, OwnerSwarm, ProductionFacility, Structure, StructureKind,
+            structure_degradation_system,
+        },
+        resources::{ResourceKind, ResourceLedger},
+        tuning::Tuning,
+    };
+
+    let output = Output::new();
+    let mut app = common::minimal_app();
+    record_battle(&mut app, &output);
+    app.add_systems(FixedUpdate, structure_degradation_system);
+
+    let owner = OwnerSwarm(common::spawn_swarm_at(&mut app, Vec2::ZERO));
+    let stockpile = common::spawn_stockpile(&mut app, Vec2::X * 128.0, 40, 100);
+    let worker = common::spawn_worker_at(&mut app, Vec2::Y * 128.0);
+    let world = app.world_mut();
+    world.entity_mut(stockpile).insert(owner);
+    world.entity_mut(worker).insert(Cargo {
+        kind: ResourceKind::Minerals,
+        amount: 3,
+    });
+    let mut facility = ProductionFacility::new();
+    facility.input_amount = 12;
+    world.spawn((facility, owner));
+    let mut charger = Charger::new(IVec2::ZERO);
+    charger.amount = 7;
+    world.spawn((charger, owner));
+    world
+        .resource_mut::<ResourceLedger>()
+        .add_for(SwarmId::PLAYER, ResourceKind::Minerals, 62);
+
+    let columns = ["unspent_minerals"];
+    for _ in 0..60 {
+        app.update();
+    }
+    assert_eq!(latest_csv_columns(&output, "0", &columns), [62.0]);
+
+    let world = app.world_mut();
+    let maintenance = &world.resource::<Tuning>().maintenance;
+    let condition = Structure {
+        kind: StructureKind::Basic,
+        health: 1,
+        ticks_since_maintained: maintenance.buffer_ticks + maintenance.degradation_interval_ticks
+            - 1,
+    };
+    world.entity_mut(stockpile).insert(condition);
+    for _ in 0..60 {
+        app.update();
+    }
+    assert!(app.world().get_entity(stockpile).is_err());
+    assert_eq!(latest_csv_columns(&output, "0", &columns), [22.0]);
+}

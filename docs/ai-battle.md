@@ -35,7 +35,7 @@ The economy columns are recorded separately for each swarm. Window totals cover 
 | `owned_deposits` | Distinct Resource Deposits that yielded minerals to the swarm while covered by its Gather paint during the window. |
 | `mineral_income` | Minerals the swarm extracted during the window. |
 | `mineral_starved_facility_seconds` | Simulated seconds summed across operational Production Facilities that had unmet Population Demand and too few minerals in their input buffer to start production. Two such facilities idle for one second contribute two facility-seconds. |
-| `unspent_minerals` | Minerals the swarm holds at sample time across all buffers and Nanobot cargo. |
+| `unspent_minerals` | Minerals held by the swarm at sample time in surviving Stockpiles, Production Facilities, Chargers, and Nanobot cargo. |
 | `empty_charge_defenders` | Defenders at zero Charge at sample time. |
 
 `summary.json` uses schema version 7. `tuning` contains the full native-unit configuration at battle start. `tuning_edits` records accepted changes with `revision`, `key`, `old_value`, `value`, and `fixed_tick`. Edit values use the editor's display units; ticks are relative to the current battle's start. Earlier-session edits are excluded, and a fresh battle snapshots the current configuration. Unchanged assignments and rejected edits add no revision.

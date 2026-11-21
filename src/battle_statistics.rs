@@ -3,10 +3,11 @@
 use crate::{
     ai_battle::AiBattleConfig,
     nanobot::{
-        Charge, MatchOutcome, Nanobot, NanobotType, Swarm, SwarmEliminationSet,
+        Cargo, Charge, Charger, Health, MatchOutcome, Nanobot, NanobotType, OwnerSwarm,
+        PlannedStructure, ProductionFacility, Structure, Swarm, SwarmEliminationSet,
         SwarmEliminationState, SwarmId, SwarmMember,
     },
-    resources::{ResourceKind, ResourceLedger},
+    resources::{ResourceKind, Stockpile, buffered_minerals},
     session::SessionRules,
     strategic_runtime::{ControllerProfile, ControllerTelemetry},
     tuning::{Tuning, TuningEdit, TuningJournal},
@@ -519,14 +520,27 @@ fn snapshot(world: &mut World, run: &mut BattleRun) -> BattleSample {
         run.tuning_journal_offset = journal.entries.len();
     }
     let mut swarms = BTreeMap::new();
-    for id in world.query_filtered::<&SwarmId, With<Swarm>>().iter(world) {
+    let mut owners = world.query_filtered::<&SwarmId, With<Swarm>>();
+    for id in owners.iter(world) {
         swarms.insert(id.0, SwarmSample::default());
     }
-    for (owner, kind, charge) in world
-        .query_filtered::<(&SwarmMember, &NanobotType, Option<&Charge>), With<Nanobot>>()
+    for (owner, kind, charge, cargo, health) in world
+        .query_filtered::<(
+            &SwarmMember,
+            &NanobotType,
+            Option<&Charge>,
+            Option<&Cargo>,
+            Option<&Health>,
+        ), With<Nanobot>>()
         .iter(world)
     {
         let s = swarms.entry(owner.0.0).or_default();
+        if let Some(cargo) = cargo
+            && cargo.kind == ResourceKind::Minerals
+            && health.is_none_or(|health| health.current > 0)
+        {
+            s.unspent_minerals = s.unspent_minerals.saturating_add(cargo.amount);
+        }
         s.population += 1;
         match kind {
             NanobotType::Worker => s.workers += 1,
@@ -537,11 +551,32 @@ fn snapshot(world: &mut World, run: &mut BattleRun) -> BattleSample {
             }
         }
     }
+    for (owner, condition, facility, stockpile, charger) in world
+        .query_filtered::<(
+            &OwnerSwarm,
+            Option<&Structure>,
+            Option<&ProductionFacility>,
+            Option<&Stockpile>,
+            Option<&Charger>,
+        ), (
+            Without<PlannedStructure>,
+            Or<(With<ProductionFacility>, With<Stockpile>, With<Charger>)>,
+        )>()
+        .iter(world)
+    {
+        if condition.is_none_or(Structure::is_operational)
+            && let Ok(id) = owners.get(world, owner.0)
+        {
+            let swarm = swarms.entry(id.0).or_default();
+            swarm.unspent_minerals = swarm
+                .unspent_minerals
+                .saturating_add(buffered_minerals(facility, stockpile, charger));
+        }
+    }
     let simulation_seconds = run.ticks as f64 * run.summary.timestep_seconds;
     let economy_windows =
         std::mem::take(&mut world.resource_mut::<BattleCounters>().economy_windows);
     let counters = world.resource::<BattleCounters>();
-    let ledger = world.get_resource::<ResourceLedger>();
     for (id, swarm) in &mut swarms {
         swarm.totals = counters.totals_for(SwarmId(*id));
         let previously_gathered = run
@@ -556,9 +591,6 @@ fn snapshot(world: &mut World, run: &mut BattleRun) -> BattleSample {
             swarm.mineral_starved_facility_seconds =
                 window.mineral_starved_facility_ticks as f64 * run.summary.timestep_seconds;
         }
-        swarm.unspent_minerals = ledger.map_or(0, |ledger| {
-            ledger.total_for(SwarmId(*id), ResourceKind::Minerals)
-        });
         swarm.elimination_seconds = run
             .elimination_ticks
             .get(&SwarmId(*id))
