@@ -112,7 +112,7 @@ impl StagingFront {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct DefendBlock {
     min: IVec2,
     size: IVec2,
@@ -181,7 +181,7 @@ pub(super) fn plan_staging(
         && previous.destination_contains(target, owner, state)
         && previous.points[previous.active..]
             .iter()
-            .all(|point| stageable(owner, state, candidate.protected_home, point.cell))
+            .all(|point| stageable(owner, state, candidate.protected_home, point.cell, budget))
     {
         let mut retained = previous.clone();
         if previous.spacing_cells != spacing && previous.active + 1 < previous.points.len() {
@@ -192,9 +192,12 @@ pub(super) fn plan_staging(
                 spacing,
                 budget,
             )?;
-            retained
-                .points
-                .retain(|point| stageable(owner, state, candidate.protected_home, point.cell));
+            retained.points.retain(|point| {
+                stageable(owner, state, candidate.protected_home, point.cell, budget)
+            });
+            if retained.points.is_empty() || budget.exhausted {
+                return None;
+            }
             retained.active = 0;
         }
         retained.spacing_cells = spacing;
@@ -202,6 +205,9 @@ pub(super) fn plan_staging(
         return Some(retained);
     }
 
+    if budget.exhausted {
+        return None;
+    }
     let home = state
         .swarms
         .iter()
@@ -209,9 +215,12 @@ pub(super) fn plan_staging(
         .map_or(Vec2::ZERO, |swarm| swarm.home);
     let mut start = previous.map_or(home, |previous| {
         let cell = previous.point();
-        ground(owner, state, cell).unwrap_or_else(|| intent_cell_center(cell))
+        ground(owner, state, cell, budget).unwrap_or_else(|| intent_cell_center(cell))
     });
-    let destination = ground(owner, state, target)?;
+    let destination = ground(owner, state, target, budget)?;
+    if budget.exhausted {
+        return None;
+    }
     let waypoints = if state.route_query.is_some() {
         let goal = candidate.approach.unwrap_or(RouteGoal::Range {
             center: destination,
@@ -233,14 +242,17 @@ pub(super) fn plan_staging(
     let held_stage = previous.filter(|previous| {
         same_objective
             && previous.active + 1 < previous.points.len()
-            && ground(owner, state, previous.point()).is_some()
+            && ground(owner, state, previous.point(), budget).is_some()
     });
     let first = held_stage.map(|stage| StagingPoint {
         cell: stage.point(),
         distance: 0.0,
     });
     let mut points = staging_points(&route, first, target, spacing, budget)?;
-    points.retain(|point| stageable(owner, state, candidate.protected_home, point.cell));
+    points.retain(|point| stageable(owner, state, candidate.protected_home, point.cell, budget));
+    if points.is_empty() || budget.exhausted {
+        return None;
+    }
     let mut staging = StagingFront {
         route,
         points,
@@ -254,13 +266,27 @@ pub(super) fn plan_staging(
     Some(staging)
 }
 
-fn stageable(owner: SwarmId, state: &GameState<'_>, protected: Option<IVec2>, cell: IVec2) -> bool {
-    protected != Some(cell) && ground(owner, state, cell).is_some()
+fn stageable(
+    owner: SwarmId,
+    state: &GameState<'_>,
+    protected: Option<IVec2>,
+    cell: IVec2,
+    budget: &mut WorkBudget,
+) -> bool {
+    protected != Some(cell) && ground(owner, state, cell, budget).is_some()
 }
 
-fn ground(owner: SwarmId, state: &GameState<'_>, cell: IVec2) -> Option<Vec2> {
+fn ground(
+    owner: SwarmId,
+    state: &GameState<'_>,
+    cell: IVec2,
+    budget: &mut WorkBudget,
+) -> Option<Vec2> {
     if let Some(map) = state.reachability {
-        return map.reachable_point(owner, cell, state.grid);
+        return map
+            .reachable_point_with_budget(owner, cell, state.grid, &mut || budget.spend(1))
+            .ok()
+            .flatten();
     }
     state.grid.in_bounds(cell).then(|| intent_cell_center(cell))
 }

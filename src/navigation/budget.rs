@@ -48,6 +48,20 @@ impl Future for WorkUnit {
     }
 }
 
+fn poll_with_budget<F: Future>(
+    future: F,
+    allow_work: &mut dyn FnMut() -> bool,
+) -> Result<F::Output, ()> {
+    let mut future = std::pin::pin!(future);
+    let mut context = Context::from_waker(Waker::noop());
+    while allow_work() {
+        if let Poll::Ready(result) = future.as_mut().poll(&mut context) {
+            return Ok(result);
+        }
+    }
+    Err(())
+}
+
 impl Navigation {
     fn region_build_snapshot(&self) -> Navigation {
         Navigation {
@@ -1118,16 +1132,6 @@ impl Navigation {
 }
 
 impl Navigation {
-    /// Find a candidate connected through permanent navigation geometry without routing paint.
-    pub(crate) fn connected_point(
-        &self,
-        start: Vec2,
-        points: impl IntoIterator<Item = Vec2>,
-    ) -> Option<Vec2> {
-        self.connected_point_with_budget(start, points.into_iter().map(Some), &mut || true)
-            .expect("unlimited connectivity query")
-    }
-
     pub(crate) fn connected_point_with_budget(
         &self,
         start: Vec2,
@@ -1169,14 +1173,23 @@ impl Navigation {
             }
             None
         };
-        let mut future = std::pin::pin!(future);
-        let mut context = Context::from_waker(Waker::noop());
-        while allow_work() {
-            if let Poll::Ready(result) = future.as_mut().poll(&mut context) {
-                return Ok(result);
-            }
-        }
-        Err(())
+        poll_with_budget(future, allow_work)
+    }
+
+    pub(crate) fn segment_clear_with_budget(
+        &self,
+        from: Vec2,
+        to: Vec2,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, ()> {
+        poll_with_budget(
+            async {
+                self.async_point_clear(from).await
+                    && self.async_point_clear(to).await
+                    && self.async_segment_clear(from, to).await
+            },
+            allow_work,
+        )
     }
 
     /// Reuse movement routing without making existing Corridor paint favor its own path.

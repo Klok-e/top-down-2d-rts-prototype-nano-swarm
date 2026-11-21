@@ -421,11 +421,14 @@ fn controller_erases_legacy_intent_and_never_paints_across_permanent_terrain() {
 
     let decision = Controller::new(owner).decide(&crate::tuning::AutonomyTuning::default(), &state);
 
-    assert!(decision.edits.contains(&IntentEdit {
-        cell: blocked,
-        kind: IntentKind::Defend,
-        action: IntentEditAction::Erase,
-    }));
+    assert!(
+        decision.edits.contains(&IntentEdit {
+            cell: blocked,
+            kind: IntentKind::Defend,
+            action: IntentEditAction::Erase,
+        }),
+        "{decision:?}"
+    );
     assert!(decision.edits.iter().all(|edit| {
         edit.action == IntentEditAction::Erase || reachability.contains(owner, edit.cell, &grid)
     }));
