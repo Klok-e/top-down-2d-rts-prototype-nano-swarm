@@ -179,7 +179,7 @@ pub(super) fn generate_candidates(
     state: &GameState<'_>,
     economy: &EconomyPlan,
     current: Option<&IntentPlan>,
-    denied_deposits: &mut BTreeSet<u64>,
+    denied_deposits: &mut BTreeSet<(u64, SwarmId)>,
     budget: &mut WorkBudget,
 ) -> Vec<PlanCandidate> {
     let owner_state = state.swarms.iter().find(|swarm| {
@@ -297,6 +297,7 @@ pub(super) fn generate_candidates(
         if structure.owner == owner
             || structure.health == 0
             || structure.kind == StructureKind::Planned
+            || !is_target_reachable(owner, state, structure.position)
         {
             continue;
         }
@@ -324,9 +325,6 @@ pub(super) fn generate_candidates(
         } else {
             continue;
         };
-        if !is_target_reachable(owner, state, structure.position) {
-            continue;
-        }
         let strategic_value = match structure.kind {
             StructureKind::Charger => tuning.strategy_raid_charger_value,
             StructureKind::Source | StructureKind::Sink => tuning.strategy_raid_stockpile_value,
@@ -354,7 +352,8 @@ pub(super) fn generate_candidates(
         if !budget.spend(1) {
             return candidates;
         }
-        if bot.owner == owner || bot.health == 0 {
+        if bot.owner == owner || bot.health == 0 || !is_target_reachable(owner, state, bot.position)
+        {
             continue;
         }
         let mine = mine_target(
@@ -375,9 +374,6 @@ pub(super) fn generate_candidates(
         } else {
             continue;
         };
-        if !is_target_reachable(owner, state, bot.position) {
-            continue;
-        }
         let attack = AttackObligation {
             kind: AttackTargetKind::Nanobot,
             id: bot.id,
@@ -422,9 +418,16 @@ pub(super) fn generate_candidates(
             }))
         .then_some(id)
     });
-    let mut still_denied = BTreeSet::new();
     for (deposit, enemy) in &economy.enemy_deposits {
+        if !budget.spend(1) {
+            return candidates;
+        }
+        let claim = (deposit.id, *enemy);
         if occupied_mines.contains(&deposit.id) {
+            denied_deposits.remove(&claim);
+            continue;
+        }
+        if denied_deposits.contains(&claim) || !economy.enemy_gather_claims.contains(&claim) {
             continue;
         }
         let protected_home = swarm_home_cell(*enemy, state, budget);
@@ -448,8 +451,8 @@ pub(super) fn generate_candidates(
             {
                 continue;
             }
-            if secured_mine == Some(deposit.id) || denied_deposits.contains(&deposit.id) {
-                still_denied.insert(deposit.id);
+            if secured_mine == Some(deposit.id) {
+                denied_deposits.insert(claim);
                 break;
             }
             candidates.push(PlanCandidate {
@@ -464,7 +467,6 @@ pub(super) fn generate_candidates(
             });
         }
     }
-    *denied_deposits = still_denied;
     candidates
 }
 

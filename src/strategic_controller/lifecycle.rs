@@ -18,7 +18,7 @@ pub(super) struct PlannerState {
     retained_covered_movement: bool,
     covered_stall_grace_used: bool,
     current: Option<IntentPlan>,
-    denied_deposits: BTreeSet<u64>,
+    denied_deposits: BTreeSet<(u64, SwarmId)>,
 }
 
 #[derive(Debug)]
@@ -190,7 +190,13 @@ impl PlannerState {
                 work_units: budget.call_work(),
             };
         };
-        let mut denied_deposits = self.denied_deposits.clone();
+        let mut denied_deposits = self
+            .denied_deposits
+            .iter()
+            .take_while(|_| budget.spend(1))
+            .filter(|claim| economy.enemy_gather_claims.contains(claim))
+            .copied()
+            .collect();
         let mut candidates = generate_candidates(
             tuning,
             owner,
@@ -226,10 +232,11 @@ impl PlannerState {
             .expect("the home economy is a candidate")
             .clone();
 
-        let progressing_attack = attack_progressed && best.attack.is_some() && !tuning_review;
+        let progressing_attack = attack_progressed && !tuning_review;
         let refreshed = self.current.as_ref().and_then(|current| {
             candidates
                 .iter()
+                .rev()
                 .find(|candidate| candidate.objective == current.objective)
         });
         let (mut selected, mut explanation) = if let Some(refreshed) = refreshed

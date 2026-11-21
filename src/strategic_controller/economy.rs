@@ -43,6 +43,7 @@ pub(super) struct EconomyPlan {
     pub(super) free_deposit_exists: bool,
     pub(super) contested_deposits: Vec<(u64, IVec2, RouteGoal)>,
     pub(super) enemy_deposits: Vec<(DepositState, SwarmId)>,
+    pub(super) enemy_gather_claims: BTreeSet<(u64, SwarmId)>,
 }
 
 impl EconomyPlan {
@@ -239,6 +240,9 @@ pub(super) fn plan_economy(
         }
         if let Some(other) = deposit.owner.filter(|other| *other != owner) {
             economy.enemy_deposits.push((*deposit, other));
+            if gather_owners.contains(&other) {
+                economy.enemy_gather_claims.insert((deposit.id, other));
+            }
             continue;
         }
         if gather_owners.contains(&owner) || deposit.owner == Some(owner) {
@@ -253,9 +257,13 @@ pub(super) fn plan_economy(
             continue;
         }
         if !gather_owners.is_empty() {
-            economy
-                .enemy_deposits
-                .extend(gather_owners.into_iter().map(|other| (*deposit, other)));
+            for other in gather_owners {
+                if !budget.spend(1) {
+                    return None;
+                }
+                economy.enemy_deposits.push((*deposit, other));
+                economy.enemy_gather_claims.insert((deposit.id, other));
+            }
             continue;
         }
         opportunities.push(deposit);

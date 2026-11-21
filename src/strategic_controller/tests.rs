@@ -3540,6 +3540,8 @@ fn an_undefended_enemy_mine_is_raided_until_arrival_then_can_be_raided_again() {
     let enemy = SwarmId(9);
     let enemy_mine = IVec2::new(4, 4);
     let enemy_home = IVec2::new(8, -3);
+    let home_mine = IVec2::new(-4, 0);
+    let fresh_mine = IVec2::new(2, -1);
     let mut grid = IntentGrid::new(32, 32);
     grid.paint(enemy_mine, IntentKind::Gather, enemy);
     let swarms = [
@@ -3558,13 +3560,28 @@ fn an_undefended_enemy_mine_is_raided_until_arrival_then_can_be_raided_again() {
             production_saturated: false,
         },
     ];
-    let deposits = [DepositState {
+    let claimed = DepositState {
         id: 30,
         owner: None,
         position: world(enemy_mine),
         amount: 70_000,
         radius: 100.0,
-    }];
+    };
+    let deposits = [
+        claimed,
+        DepositState {
+            id: 31,
+            owner: Some(enemy),
+            position: world(fresh_mine),
+            ..claimed
+        },
+        DepositState {
+            id: 10,
+            owner: Some(owner),
+            position: world(home_mine),
+            ..claimed
+        },
+    ];
     let structures = [StructureState {
         id: 40,
         owner: enemy,
@@ -3575,7 +3592,10 @@ fn an_undefended_enemy_mine_is_raided_until_arrival_then_can_be_raided_again() {
         minerals: 40,
     }];
     let mut controller = Controller::new(owner);
-    let tuning = direct_attack_tuning();
+    let tuning = AutonomyTuning {
+        strategy_hunt_distance_cost: 1000.0,
+        ..direct_attack_tuning()
+    };
     let decide = |controller: &mut Controller, grid: &IntentGrid, bots: &[BotState], tick| {
         controller.decide(
             &tuning,
@@ -3632,6 +3652,32 @@ fn an_undefended_enemy_mine_is_raided_until_arrival_then_can_be_raided_again() {
     assert!(has(&grid, enemy_home, IntentKind::Defend, owner));
     assert!(!has(&grid, enemy_mine, IntentKind::Defend, owner));
 
+    let intruder = BotState {
+        id: 60,
+        owner: enemy,
+        position: world(home_mine),
+        ..arrived
+    };
+    grid.erase(enemy_mine, IntentKind::Gather, enemy);
+    let defense = decide(&mut controller, &grid, &[intruder], 4 * WORK_WINDOW_TICKS);
+    apply(&mut grid, owner, &defense);
+    assert!(
+        defense
+            .explanation
+            .contains("defend owned Resource Deposit 10")
+    );
+
+    grid.paint(enemy_mine, IntentKind::Gather, enemy);
+    let reclaim = decide(&mut controller, &grid, &[], 5 * WORK_WINDOW_TICKS);
+    apply(&mut grid, owner, &reclaim);
+    assert!(
+        has(&grid, enemy_mine, IntentKind::Defend, owner),
+        "{reclaim:?}"
+    );
+
+    let release = decide(&mut controller, &grid, &[arrived], 6 * WORK_WINDOW_TICKS);
+    apply(&mut grid, owner, &release);
+
     let mine_approach = enemy_mine + IVec2::X;
     let returned = BotState {
         id: 51,
@@ -3649,13 +3695,26 @@ fn an_undefended_enemy_mine_is_raided_until_arrival_then_can_be_raided_again() {
         })
         .collect();
     crowded.push(returned);
-    let renewed = decide(&mut controller, &grid, &crowded, 4 * WORK_WINDOW_TICKS);
+    let renewed = decide(&mut controller, &grid, &crowded, 7 * WORK_WINDOW_TICKS);
     apply(&mut grid, owner, &renewed);
     assert!(
         has(&grid, mine_approach, IntentKind::Defend, owner),
         "{renewed:?}"
     );
     assert!(!has(&grid, enemy_home, IntentKind::Defend, owner));
+
+    grid.paint(fresh_mine, IntentKind::Gather, enemy);
+    let wounded = BotState {
+        health: 50,
+        ..returned
+    };
+    let retained = decide(&mut controller, &grid, &[wounded], 8 * WORK_WINDOW_TICKS);
+    apply(&mut grid, owner, &retained);
+    assert!(
+        has(&grid, mine_approach, IntentKind::Defend, owner),
+        "{retained:?}"
+    );
+    assert!(!has(&grid, fresh_mine, IntentKind::Defend, owner));
 }
 
 #[test]
