@@ -86,8 +86,22 @@ pub struct DepositState {
 pub type RouteQuery<'a> =
     dyn Fn(Vec2, RouteGoal, &mut dyn FnMut() -> bool) -> Option<RouteOutcome> + 'a;
 
-/// A budgeted snapshot query for nearby usable Source Stockpiles.
-pub type SourceQuery<'a> = dyn Fn(SwarmId, Vec2, &mut dyn FnMut() -> bool) -> Option<bool> + 'a;
+#[derive(Clone, Copy, Default)]
+pub struct SourceSupport {
+    pub has_space: bool,
+    pub stocked: bool,
+}
+
+#[derive(Clone, Copy)]
+pub enum SourceNeed {
+    Space,
+    /// Stocked support settles startup immediately. Without it, report open capacity.
+    Opening,
+}
+
+/// A budgeted snapshot query for qualifying nearby operational Source Stockpiles.
+pub type SourceQuery<'a> =
+    dyn Fn(SwarmId, Vec2, SourceNeed, &mut dyn FnMut() -> bool) -> Option<SourceSupport> + 'a;
 
 pub struct GameState<'a> {
     pub grid: &'a IntentGrid,
@@ -100,7 +114,7 @@ pub struct GameState<'a> {
     /// Present for gameplay controllers; omitted by terrain-agnostic unit fixtures.
     pub reachability: Option<&'a SwarmReachabilityMap>,
     pub route_query: Option<&'a RouteQuery<'a>>,
-    /// Fixtures without this query assume prospective sites need new Sources.
+    /// Fixtures without this query assume no existing Source Stockpile support.
     pub source_query: Option<&'a SourceQuery<'a>>,
     pub tick: u64,
     pub finished: bool,

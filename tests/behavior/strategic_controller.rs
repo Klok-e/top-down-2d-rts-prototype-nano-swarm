@@ -642,6 +642,71 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
 }
 
 #[test]
+fn opening_source_support_follows_the_tuned_distance_across_tile_edges() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{NanobotType, OwnerSwarm},
+        strategic_runtime::ControllerTelemetry,
+        tuning::Tuning,
+    };
+
+    let owner = SwarmId::PLAYER;
+    let opening = IVec2::new(2, 0);
+    let expansion = IVec2::new(5, 0);
+    let opening_position = common::cell_world_center(opening);
+    for (offset, minerals, workers, should_expand) in [
+        (Vec2::Y * 300.0, 0, 4, true),
+        (Vec2::Y * 300.0, 60, 1, true),
+        (Vec2::new(240.0, 240.0), 60, 1, false),
+    ] {
+        let mut app = common::minimal_app();
+        app.insert_resource(IntentGrid::new(16, 16));
+        app.add_plugins(StrategicControllerPlugin);
+        app.world_mut()
+            .resource_mut::<Tuning>()
+            .logistics
+            .source_proximity_radius = 300.0;
+        let swarm = common::spawn_swarm_with_nanobots(
+            &mut app,
+            common::cell_world_center(IVec2::ZERO),
+            &[(NanobotType::Worker, workers)],
+        );
+        app.world_mut()
+            .entity_mut(swarm)
+            .insert(StrategicController::new(owner));
+        install_empty_reachability(&mut app, [owner]);
+        for cell in [opening, expansion] {
+            common::spawn_deposit(
+                &mut app,
+                common::DepositFixture {
+                    world_pos: common::cell_world_center(cell),
+                    amount: 72_000,
+                    capacity: 72_000,
+                    radius: 64.0,
+                },
+            );
+        }
+        let source = common::spawn_stockpile(&mut app, opening_position + offset, minerals, 60);
+        app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
+
+        for _ in 0..60 {
+            app.update();
+        }
+        let profiles = app.world().resource::<ControllerTelemetry>().profiles();
+        let grid = app.world().resource::<IntentGrid>();
+        assert!(
+            grid.cell(opening)
+                .is_some_and(|cell| cell.has_owned(IntentKind::Gather, owner))
+        );
+        assert_eq!(
+            grid.cell(expansion)
+                .is_some_and(|cell| cell.has_owned(IntentKind::Gather, owner)),
+            should_expand,
+            "Source offset {offset}, minerals {minerals}, Workers {workers}, profiles {profiles:?}",
+        );
+    }
+}
+
+#[test]
 fn controller_keeps_several_deposits_extracting_and_hauling() {
     use top_down_2d_rts_prototype_nano_swarm::{
         nanobot::{Cargo, HaulerAssignment, NanobotType, OwnerSwarm},

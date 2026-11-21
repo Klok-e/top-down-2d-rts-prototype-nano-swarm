@@ -532,6 +532,20 @@ fn mature_economy_bots(owner: SwarmId, home: Vec2) -> Vec<BotState> {
         .collect()
 }
 
+fn source_at(
+    owner: SwarmId,
+    deposit: Vec2,
+    support: SourceSupport,
+) -> impl Fn(SwarmId, Vec2, SourceNeed, &mut dyn FnMut() -> bool) -> Option<SourceSupport> {
+    move |swarm, position, _, allow_work| {
+        allow_work().then_some(if owner == swarm && deposit == position {
+            support
+        } else {
+            SourceSupport::default()
+        })
+    }
+}
+
 fn funded_primary_chain(owner: SwarmId, home: Vec2, primary: DepositState) -> [StructureState; 2] {
     [
         StructureState {
@@ -807,6 +821,14 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
             ..primary_chain[1]
         },
     ];
+    let empty_source = source_at(
+        owner,
+        deposits[0].position,
+        SourceSupport {
+            has_space: true,
+            stocked: false,
+        },
+    );
     let expansion = controller.decide(
         &direct_attack_tuning(),
         &GameState {
@@ -823,7 +845,7 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            source_query: Some(&empty_source),
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -1404,17 +1426,21 @@ fn expansion_waits_for_extraction_and_keeps_existing_mine_supported() {
         (3 * WORK_WINDOW_TICKS, &deposits[..2], false),
         (4 * WORK_WINDOW_TICKS, &deposits[..], true),
     ] {
-        let source_query = |_: SwarmId, position, allow_work: &mut dyn FnMut() -> bool| {
-            for site in ready_sites {
-                if !allow_work() {
-                    return None;
+        let source_query =
+            |_: SwarmId, position, _: SourceNeed, allow_work: &mut dyn FnMut() -> bool| {
+                for site in ready_sites {
+                    if !allow_work() {
+                        return None;
+                    }
+                    if position == site.position {
+                        return Some(SourceSupport {
+                            has_space: true,
+                            stocked: false,
+                        });
+                    }
                 }
-                if position == site.position {
-                    return Some(true);
-                }
-            }
-            Some(false)
-        };
+                Some(SourceSupport::default())
+            };
         let decision = controller.decide(
             &tuning,
             &GameState {
@@ -1469,37 +1495,34 @@ fn opening_expands_when_the_crew_can_staff_both_mines_or_the_grace_expires() {
     crew.push(BotState { id: 100, ..crew[0] });
     let mut reduced_crew = crew.clone();
     reduced_crew.last_mut().unwrap().health = 0;
-    let empty_source = [StructureState {
-        id: 200,
-        owner,
-        position: world(opening) + Vec2::X * 140.0,
-        kind: StructureKind::Source,
-        health: 100,
-        max_health: 100,
-        minerals: 0,
-    }];
-    let stocked_source = [StructureState {
-        minerals: 4,
-        ..empty_source[0]
-    }];
-    for (bots, structures, review, should_expand) in [
-        (crew.as_slice(), &[][..], WORK_WINDOW_TICKS, true),
-        (reduced_crew.as_slice(), &[][..], WORK_WINDOW_TICKS, false),
+    let no_source = SourceSupport::default();
+    let empty_source = SourceSupport {
+        has_space: true,
+        stocked: false,
+    };
+    let stocked_source = SourceSupport {
+        has_space: false,
+        stocked: true,
+    };
+    for (bots, support, review, should_expand) in [
+        (crew.as_slice(), no_source, WORK_WINDOW_TICKS, true),
+        (reduced_crew.as_slice(), no_source, WORK_WINDOW_TICKS, false),
         (
             reduced_crew.as_slice(),
-            &empty_source[..],
+            empty_source,
             WORK_WINDOW_TICKS,
             true,
         ),
-        (&crew[..1], &empty_source[..], WORK_WINDOW_TICKS, false),
-        (&crew[..1], &stocked_source[..], WORK_WINDOW_TICKS, true),
+        (&crew[..1], empty_source, WORK_WINDOW_TICKS, false),
+        (&crew[..1], stocked_source, WORK_WINDOW_TICKS, true),
         (
             reduced_crew.as_slice(),
-            &[][..],
+            no_source,
             30 * crate::SIMULATION_HZ as u64,
             true,
         ),
     ] {
+        let source_query = source_at(owner, deposits[0].position, support);
         let mut grid = IntentGrid::new(16, 16);
         let mut controller = Controller::new(owner);
         for tick in [0, review] {
@@ -1508,7 +1531,7 @@ fn opening_expands_when_the_crew_can_staff_both_mines_or_the_grace_expires() {
                 &GameState {
                     swarms: &swarms,
                     bots,
-                    structures: if tick == 0 { &[] } else { structures },
+                    source_query: (tick != 0).then_some(&source_query as &SourceQuery<'_>),
                     deposits: &deposits,
                     ..empty_state(&grid, tick)
                 },
@@ -2995,6 +3018,14 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
             displacement: Vec2::ZERO,
         }))
         .collect::<Vec<_>>();
+    let stocked_source = source_at(
+        owner,
+        deposits[0].position,
+        SourceSupport {
+            has_space: true,
+            stocked: true,
+        },
+    );
     let expansion = controller.decide(
         &AutonomyTuning::default(),
         &GameState {
@@ -3003,6 +3034,7 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
             bots: &bots,
             structures: &[primary_chain[0], primary_chain[1], enemy_facility],
             deposits: &deposits,
+            source_query: Some(&stocked_source),
             ..empty_state(&grid, WORK_WINDOW_TICKS)
         },
     );
@@ -3892,6 +3924,14 @@ fn military_priorities_protect_expansion_before_attacking_home() {
         strategy_raid_distance_cost: 1_000.0,
         ..direct_attack_tuning()
     };
+    let stocked_source = source_at(
+        owner,
+        main_deposit.position,
+        SourceSupport {
+            has_space: true,
+            stocked: true,
+        },
+    );
     let decide = |deposits: &[DepositState], structures: &[StructureState], bots: &[BotState]| {
         Controller::new(owner).decide(
             &tuning,
@@ -3900,6 +3940,7 @@ fn military_priorities_protect_expansion_before_attacking_home() {
                 deposits,
                 structures,
                 bots,
+                source_query: Some(&stocked_source),
                 ..empty_state(&grid, 0)
             },
         )
