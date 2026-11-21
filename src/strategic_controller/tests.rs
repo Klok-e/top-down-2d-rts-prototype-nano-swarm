@@ -1410,12 +1410,12 @@ fn expansion_waits_for_extraction_and_keeps_existing_mine_supported() {
 }
 
 #[test]
-fn stalled_opening_mine_does_not_prevent_expansion() {
+fn opening_expands_when_the_crew_can_staff_both_mines_or_the_grace_expires() {
     let owner = SwarmId::PLAYER;
-    let mut grid = IntentGrid::new(16, 16);
+    let home = world(IVec2::ZERO);
     let swarms = [SwarmState {
         id: owner,
-        home: world(IVec2::ZERO),
+        home,
         minerals: 0,
         mineral_income_per_second: 0.0,
         production_saturated: false,
@@ -1430,23 +1430,43 @@ fn stalled_opening_mine_does_not_prevent_expansion() {
         radius: 80.0,
     });
     let tuning = AutonomyTuning::default();
-    let mut controller = Controller::new(owner);
-    for tick in [0, 30 * crate::SIMULATION_HZ as u64] {
-        let decision = controller.decide(
-            &tuning,
-            &GameState {
-                swarms: &swarms,
-                deposits: &deposits,
-                ..empty_state(&grid, tick)
-            },
-        );
-        apply(&mut grid, owner, &decision);
-    }
-    for cell in [opening, expansion] {
+    let mut crew = mature_economy_bots(owner, home);
+    crew.push(BotState { id: 100, ..crew[0] });
+    let mut reduced_crew = crew.clone();
+    reduced_crew.last_mut().unwrap().health = 0;
+    for (bots, review, should_expand) in [
+        (crew.as_slice(), WORK_WINDOW_TICKS, true),
+        (reduced_crew.as_slice(), WORK_WINDOW_TICKS, false),
+        (
+            reduced_crew.as_slice(),
+            30 * crate::SIMULATION_HZ as u64,
+            true,
+        ),
+    ] {
+        let mut grid = IntentGrid::new(16, 16);
+        let mut controller = Controller::new(owner);
+        for tick in [0, review] {
+            let decision = controller.decide(
+                &tuning,
+                &GameState {
+                    swarms: &swarms,
+                    bots,
+                    deposits: &deposits,
+                    ..empty_state(&grid, tick)
+                },
+            );
+            apply(&mut grid, owner, &decision);
+        }
         assert!(
-            grid.cell(cell)
+            grid.cell(opening)
                 .unwrap()
                 .has_owned(IntentKind::Gather, owner)
+        );
+        assert_eq!(
+            grid.cell(expansion)
+                .unwrap()
+                .has_owned(IntentKind::Gather, owner),
+            should_expand,
         );
     }
 }
@@ -3487,6 +3507,12 @@ fn military_priorities_protect_expansion_before_attacking_home() {
         max_health: 100,
         minerals: 40,
     };
+    let own_source = StructureState {
+        id: 11,
+        owner,
+        position: world(mine),
+        ..raid_target
+    };
     let home_facility = StructureState {
         id: 25,
         position: world(enemy_home),
@@ -3533,7 +3559,7 @@ fn military_priorities_protect_expansion_before_attacking_home() {
         )
     };
     let deposits = [main_deposit, enemy_deposit, contested_deposit];
-    let structures = [home_facility, raid_target];
+    let structures = [own_source, home_facility, raid_target];
 
     let friendly_bots = (0..256).map(|id| BotState {
         id: id + 100,
@@ -3625,7 +3651,7 @@ fn military_priorities_protect_expansion_before_attacking_home() {
             .any(|edit| { edit.kind == IntentKind::Defend && edit.cell == enemy_mine + IVec2::Y })
     );
 
-    let home = decide(&deposits[..2], &[home_facility], &[]);
+    let home = decide(&deposits[..2], &[own_source, home_facility], &[]);
     assert!(home.explanation.contains("push enemy home"), "{home:?}");
     assert!(
         home.edits
@@ -3685,7 +3711,7 @@ fn military_priorities_protect_expansion_before_attacking_home() {
         &GameState {
             swarms: &swarms,
             deposits: &deposits[..2],
-            structures: &[home_facility, damaged_mine],
+            structures: &[own_source, home_facility, damaged_mine],
             bots: &[intruder],
             ..empty_state(&grid, WORK_WINDOW_TICKS)
         },

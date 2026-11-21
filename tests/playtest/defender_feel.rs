@@ -3,7 +3,7 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use bevy::{asset::AssetPlugin, math::Vec2, prelude::*};
+use bevy::{asset::AssetPlugin, math::Vec2, prelude::*, time::TimeUpdateStrategy};
 use top_down_2d_rts_prototype_nano_swarm::{
     MAP_HEIGHT, MAP_WIDTH,
     ai::AiPlugin,
@@ -90,6 +90,34 @@ fn authored_default_scenario_keeps_separated_economies_operational() {
         PLAYER_DEPOSIT_CELL, STARTING_DEPOSIT_AMOUNT,
     };
     let mut app = default_headless_app();
+    let fixed_step = app.world().resource::<Time<Fixed>>().timestep();
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO));
+    app.update();
+
+    {
+        let grid = app.world().resource::<IntentGrid>();
+        assert!(
+            grid.cell(PLAYER_DEFEND_CELL)
+                .is_some_and(|cell| cell.has(IntentKind::Defend))
+        );
+        assert!(
+            grid.cell(OPPONENT_DEFEND_CELL)
+                .is_some_and(|cell| cell.has(IntentKind::Defend))
+        );
+        assert!(
+            !grid
+                .cell(PLAYER_BUILD_FLANK_CELL)
+                .is_some_and(|cell| cell.has(IntentKind::Defend))
+        );
+        assert!(
+            !grid
+                .cell(PLAYER_DEFEND_CELL)
+                .unwrap()
+                .has_owned(IntentKind::Defend, SwarmId(1))
+        );
+    }
+
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(fixed_step));
     app.update();
 
     let initial_defenders = |world: &mut World, swarm: SwarmId| {
@@ -117,29 +145,6 @@ fn authored_default_scenario_keeps_separated_economies_operational() {
         demand.desired_for(SwarmId(1), NanobotType::Defender) >= 2,
         "the strategic opponent must retain a peaceful Defender reserve",
     );
-
-    {
-        let grid = app.world().resource::<IntentGrid>();
-        assert!(
-            grid.cell(PLAYER_DEFEND_CELL)
-                .is_some_and(|cell| cell.has(IntentKind::Defend))
-        );
-        assert!(
-            grid.cell(OPPONENT_DEFEND_CELL)
-                .is_some_and(|cell| cell.has(IntentKind::Defend))
-        );
-        assert!(
-            !grid
-                .cell(PLAYER_BUILD_FLANK_CELL)
-                .is_some_and(|cell| cell.has(IntentKind::Defend))
-        );
-        assert!(
-            !grid
-                .cell(PLAYER_DEFEND_CELL)
-                .unwrap()
-                .has_owned(IntentKind::Defend, SwarmId(1))
-        );
-    }
 
     for _ in 0..299 {
         app.update();

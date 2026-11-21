@@ -15,6 +15,8 @@ pub(super) const SUPPORT_PAINT_RESERVE: usize = 8;
 const ECONOMY_EXPANSION_PAINT_LIMIT: usize = EXPANSION_PLAN_CELLS - SUPPORT_PAINT_RESERVE;
 const ECONOMY_RETENTION_PAINT_LIMIT: usize = MAX_PLAN_CELLS - SUPPORT_PAINT_RESERVE;
 const MINE_STARTUP_TICKS: u64 = 30 * crate::SIMULATION_HZ as u64;
+// Both mines need an extractor and Source Stockpile builder, plus a shared Sink builder.
+const PARALLEL_STARTUP_WORKERS: usize = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MineStartup {
@@ -82,7 +84,6 @@ impl EconomyPlan {
                 if source.owner == owner
                     && source.kind == StructureKind::Source
                     && source.health > 0
-                    && source.minerals > 0
                     && world_to_intent_cell(source.position) == mine.gather_cell
                 {
                     has_source = true;
@@ -315,19 +316,6 @@ pub(super) fn plan_economy(
         return Some(economy);
     }
 
-    if economy
-        .owned_deposits
-        .first()
-        .is_some_and(|mine| mine.startup.is_some())
-    {
-        economy.free_deposit_exists |= unchecked.into_iter().any(|deposit| {
-            !budget.exhausted
-                && !matches!(mine_support(owner, deposit, state, home, budget), Ok(None))
-        });
-        return (!budget.exhausted).then_some(economy);
-    }
-
-    let mut best: Option<(OwnedDeposit, &DepositState, f32)> = None;
     // Start with the cheapest plausible routes so distant candidates usually
     // need only an optimistic value bound, even when the map has many deposits.
     let opportunities_count = unchecked.len();
@@ -341,6 +329,20 @@ pub(super) fn plan_economy(
             .total_cmp(&home.distance_squared(b.position))
             .then_with(|| a.id.cmp(&b.id))
     });
+    if economy
+        .owned_deposits
+        .first()
+        .is_some_and(|mine| mine.startup.is_some())
+        && !can_staff_parallel_startup(owner, state, budget)?
+    {
+        economy.free_deposit_exists |= unchecked.into_iter().any(|deposit| {
+            !budget.exhausted
+                && !matches!(mine_support(owner, deposit, state, home, budget), Ok(None))
+        });
+        return (!budget.exhausted).then_some(economy);
+    }
+
+    let mut best: Option<(OwnedDeposit, &DepositState, f32)> = None;
     for deposit in unchecked {
         let terrain_exposure = route_exposure(home, deposit.position, state.terrain, budget);
         if budget.exhausted {
@@ -395,6 +397,33 @@ pub(super) fn plan_economy(
         economy.claim(mine, deposit, owner, state, budget);
     }
     (!budget.exhausted).then_some(economy)
+}
+
+fn can_staff_parallel_startup(
+    owner: SwarmId,
+    state: &GameState<'_>,
+    budget: &mut WorkBudget,
+) -> Option<bool> {
+    let mut available_workers = 0;
+    for bot in state.bots {
+        if !budget.spend(1) {
+            return None;
+        }
+        if bot.owner == owner
+            && bot.kind == NanobotType::Worker
+            && bot.health > 0
+            && bot.position.is_finite()
+            && state
+                .reachability
+                .is_none_or(|map| map.position_is_reachable(owner, bot.position, state.grid))
+        {
+            available_workers += 1;
+            if available_workers == PARALLEL_STARTUP_WORKERS {
+                return Some(true);
+            }
+        }
+    }
+    Some(false)
 }
 
 fn approaches(bot: &BotState, deposit: &DepositState) -> bool {
