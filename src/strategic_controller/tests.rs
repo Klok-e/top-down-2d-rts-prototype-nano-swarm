@@ -1385,6 +1385,8 @@ fn stalled_opening_mine_does_not_prevent_expansion() {
         id: owner,
         home: world(IVec2::ZERO),
         minerals: 0,
+        mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let opening = IVec2::new(2, 0);
     let expansion = IVec2::new(4, 0);
