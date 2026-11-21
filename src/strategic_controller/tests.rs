@@ -213,6 +213,45 @@ fn corridor_search_spends_planning_work_and_keeps_existing_paint_on_exhaustion()
 }
 
 #[test]
+fn a_corridor_that_does_not_fit_keeps_economy_and_defend_paint() {
+    let owner = SwarmId::PLAYER;
+    let grid = IntentGrid::new(220, 220);
+    let swarms = [SwarmState {
+        id: owner,
+        home: world(IVec2::ZERO),
+        minerals: 1_000,
+    }];
+    let deposit_cell = IVec2::new(98, 0);
+    let deposits = [DepositState {
+        id: 1,
+        position: world(deposit_cell),
+        amount: 72_000,
+        radius: 80.0,
+    }];
+    let decision = Controller::new(owner).decide(
+        &AutonomyTuning::default(),
+        &GameState {
+            swarms: &swarms,
+            deposits: &deposits,
+            ..empty_state(&grid, 0)
+        },
+    );
+
+    for (cell, kind) in [
+        (deposit_cell, IntentKind::Gather),
+        (IVec2::ZERO, IntentKind::Build),
+        (IVec2::ZERO, IntentKind::Defend),
+    ] {
+        assert!(decision.edits.contains(&IntentEdit {
+            cell,
+            kind,
+            action: IntentEditAction::Paint,
+        }));
+    }
+    assert_eq!(corridor_paint(&decision), BTreeSet::from([(0, 0)]));
+}
+
+#[test]
 fn changed_plan_erases_superseded_paint_beyond_the_cleanup_cursor() {
     let mut grid = IntentGrid::new(64, 64);
     let owner = SwarmId::PLAYER;

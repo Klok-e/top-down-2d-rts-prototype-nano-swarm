@@ -38,7 +38,7 @@ pub(super) fn materialize_plan(
         true,
         budget,
     );
-    if let Some((deposit, deposit_cell)) = economy.primary {
+    if let Some((_, deposit_cell)) = economy.primary {
         push_desired(
             &mut desired,
             owner,
@@ -49,20 +49,6 @@ pub(super) fn materialize_plan(
             state,
             false,
             budget,
-        );
-        let destination = InteractionRegion::deposit(
-            &Transform::from_translation(deposit.position.extend(0.0)),
-            deposit.radius,
-        )
-        .within_cell(deposit_cell);
-        paint_corridor(
-            &mut desired,
-            owner,
-            state,
-            budget,
-            home,
-            deposit_cell,
-            RouteGoal::Interaction(destination),
         );
     }
 
@@ -163,6 +149,22 @@ pub(super) fn materialize_plan(
         );
     }
 
+    if let Some((deposit, deposit_cell)) = economy.primary {
+        let destination = InteractionRegion::deposit(
+            &Transform::from_translation(deposit.position.extend(0.0)),
+            deposit.radius,
+        )
+        .within_cell(deposit_cell);
+        paint_corridor(
+            &mut desired,
+            owner,
+            state,
+            budget,
+            home,
+            deposit_cell,
+            RouteGoal::Interaction(destination),
+        );
+    }
     if anchor != home_cell && economy.primary.is_none_or(|(_, cell)| cell != anchor) {
         paint_corridor(
             &mut desired,
@@ -391,50 +393,68 @@ fn paint_corridor(
     owner: SwarmId,
     state: &GameState<'_>,
     budget: &mut WorkBudget,
-    mut start: Vec2,
+    start: Vec2,
     target: IVec2,
     goal: RouteGoal,
 ) {
-    let waypoints = if state.route_query.is_some() {
-        let Some(route) = query_route(state, start, goal, budget) else {
-            return;
+    let Some((cells, _)) = corridor_route(state, budget, start, target, goal) else {
+        return;
+    };
+    let previous_len = desired.len();
+    for cell in cells {
+        let intent = DesiredIntent {
+            cell,
+            kind: IntentKind::Corridor,
         };
-        route.waypoints
+        if !desired.contains(&intent) && !push_desired(desired, owner, intent, state, false, budget)
+        {
+            desired.truncate(previous_len);
+            return;
+        }
+    }
+}
+
+pub(super) fn corridor_route(
+    state: &GameState<'_>,
+    budget: &mut WorkBudget,
+    mut start: Vec2,
+    target: IVec2,
+    goal: RouteGoal,
+) -> Option<(Vec<IVec2>, f32)> {
+    let Route { waypoints, cost } = if state.route_query.is_some() {
+        query_route(state, start, goal, budget)?
     } else {
         start = intent_cell_center(world_to_intent_cell(start));
         let end = intent_cell_center(target);
         for obstacle in state.terrain {
             if !budget.spend(1) || !obstacle.segment_clear(start, end) {
-                return;
+                return None;
             }
         }
-        vec![end]
+        Route {
+            waypoints: vec![end],
+            cost: start.distance(end),
+        }
     };
-    let mut last = world_to_intent_cell(start);
+    let mut cells = vec![world_to_intent_cell(start)];
     for end in waypoints {
         let span = (end - start).abs().max_element() / crate::ZONE_BLOCK_SIZE;
         let steps = (span.ceil() as usize).max(1);
         for step in 1..=steps {
-            if !budget.spend(1) || desired.len() >= MAX_PLAN_CELLS {
-                return;
+            if !budget.spend(1) {
+                return None;
             }
             let point = start.lerp(end, step as f32 / steps as f32);
             let cell = world_to_intent_cell(point);
-            if cell != last {
-                push_desired(
-                    desired,
-                    owner,
-                    DesiredIntent {
-                        cell,
-                        kind: IntentKind::Corridor,
-                    },
-                    state,
-                    false,
-                    budget,
-                );
-                last = cell;
+            if cells.contains(&cell) {
+                continue;
             }
+            if cells.len() >= MAX_PLAN_CELLS {
+                return None;
+            }
+            cells.push(cell);
         }
         start = end;
     }
+    Some((cells, cost))
 }
