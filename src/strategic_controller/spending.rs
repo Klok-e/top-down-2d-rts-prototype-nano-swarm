@@ -4,78 +4,90 @@ use super::{
     *,
 };
 
-pub(super) fn affordable_defend_tiles(
-    tuning: &AutonomyTuning,
-    owner: SwarmId,
-    swarm: Option<&SwarmState>,
-    state: &GameState<'_>,
-    desired: &mut Vec<DesiredIntent>,
-    paint_capacity: usize,
-    budget: &mut WorkBudget,
-) -> (Option<u64>, usize) {
-    let charge_per_second = state.charge.drain_per_tick * crate::SIMULATION_HZ as f32;
-    let upkeep =
-        charge_per_second / state.charge.per_pulse * state.charge.material_per_pulse as f32;
-    let baseline = tuning.strategy_defender_baseline as f32;
-    let mineral_limit = if upkeep > 0.0 {
+pub(super) struct DefenderBudget {
+    baseline: f32,
+    mineral_limit: f32,
+    bank_fraction: f32,
+    charging_fraction: f32,
+    recovery_chargers: usize,
+    charger_limit: usize,
+}
+
+impl DefenderBudget {
+    pub(super) fn estimate(
+        tuning: &AutonomyTuning,
+        owner: SwarmId,
+        swarm: Option<&SwarmState>,
+        state: &GameState<'_>,
+        budget: &mut WorkBudget,
+    ) -> Self {
+        let baseline = tuning.strategy_defender_baseline as f32;
         let bank = swarm.map_or(0, |swarm| swarm.minerals);
         let reserve = tuning.strategy_mineral_reserve;
-        let reserve_fraction = if reserve > 0 {
+        let bank_fraction = if reserve > 0 {
             (bank as f32 / reserve as f32).min(1.0)
         } else {
             1.0
         };
-        let income = swarm.map_or(0.0, |swarm| swarm.mineral_income_per_second);
-        let rate = income * tuning.strategy_income_spending_weight * reserve_fraction
-            + bank.saturating_sub(reserve) as f32 / tuning.strategy_bank_spending_seconds;
-        (rate / upkeep).clamp(baseline, EXPANSION_PLAN_CELLS.div_ceil(2) as f32)
-    } else {
-        EXPANSION_PLAN_CELLS.div_ceil(2) as f32
-    };
 
-    let mut living_defenders = 0;
-    for bot in state.bots {
-        if !budget.spend(1) {
-            return (None, 1);
+        let charge = state.charge;
+        let charge_per_second = charge.drain_per_tick * crate::SIMULATION_HZ as f32;
+        let upkeep = charge_per_second / charge.per_pulse * charge.material_per_pulse as f32;
+        let charging_fraction =
+            charge.drain_per_tick * f32::from(charge.pulse_interval_ticks) / charge.per_pulse;
+        let upper_limit = EXPANSION_PLAN_CELLS.div_ceil(2) as f32;
+        let mineral_limit = if upkeep > 0.0 {
+            let income = swarm.map_or(0.0, |swarm| swarm.mineral_income_per_second);
+            let rate = income * tuning.strategy_income_spending_weight
+                + bank.saturating_sub(reserve) as f32 / tuning.strategy_bank_spending_seconds;
+            (rate / upkeep).clamp(baseline, upper_limit)
+        } else {
+            upper_limit
+        };
+
+        let mut living_defenders = 0;
+        for bot in state.bots {
+            if !budget.spend(1) {
+                break;
+            }
+            if bot.owner == owner && bot.kind == NanobotType::Defender && bot.health > 0 {
+                living_defenders += 1;
+            }
         }
-        if bot.owner == owner && bot.kind == NanobotType::Defender && bot.health > 0 {
-            living_defenders += 1;
+        let recovery_chargers = crate::nanobot::defender_rotation_capacity(living_defenders)
+            .div_ceil(charge.max_defenders_per_charger)
+            .max(1) as usize;
+        let funded = baseline + (mineral_limit - baseline) * bank_fraction;
+        let growth_chargers = ((funded * charging_fraction).ceil() as u32)
+            .div_ceil(charge.max_defenders_per_charger) as usize;
+        Self {
+            baseline,
+            mineral_limit,
+            bank_fraction,
+            charging_fraction,
+            recovery_chargers,
+            charger_limit: growth_chargers.max(recovery_chargers),
         }
     }
-    let charging_fraction = state.charge.drain_per_tick
-        * f32::from(state.charge.pulse_interval_ticks)
-        / state.charge.per_pulse;
-    let rotation_slots = crate::nanobot::defender_rotation_capacity(living_defenders);
-    let promised_slots = (mineral_limit * charging_fraction).ceil() as u32;
-    let max_chargers = rotation_slots
-        .max(promised_slots)
-        .div_ceil(state.charge.max_defenders_per_charger)
-        .max(1) as usize;
-    let (key_charger, supplied_slots) = keep_charger_support(
-        tuning,
-        owner,
-        state,
-        max_chargers,
-        desired,
-        paint_capacity,
-        budget,
-    );
-    let sustainable = if charging_fraction > 0.0 {
-        mineral_limit
-            .min(supplied_slots / charging_fraction)
-            .max(baseline)
-    } else {
-        mineral_limit
-    };
-    // A pair of unique Swarm Tiles contributes one Defender to Population Demand.
-    (key_charger, (sustainable as usize * 2).saturating_sub(1))
+
+    pub(super) fn tiles_with_supply(&self, supplied_slots: f32) -> usize {
+        let sustainable = if self.charging_fraction > 0.0 {
+            self.mineral_limit
+                .min(supplied_slots / self.charging_fraction)
+        } else {
+            self.mineral_limit
+        };
+        let extra = (sustainable.floor() - self.baseline).max(0.0) * self.bank_fraction;
+        // Use the smallest territory that yields this much rounded-up Population Demand.
+        ((self.baseline + extra) as usize * 2).saturating_sub(1)
+    }
 }
 
-fn keep_charger_support(
-    tuning: &AutonomyTuning,
+pub(super) fn keep_charger_support(
+    defense: &DefenderBudget,
+    charger_reserve: u32,
     owner: SwarmId,
     state: &GameState<'_>,
-    max_chargers: usize,
     desired: &mut Vec<DesiredIntent>,
     paint_capacity: usize,
     budget: &mut WorkBudget,
@@ -98,7 +110,7 @@ fn keep_charger_support(
         {
             continue;
         }
-        let supplied = structure.minerals.min(tuning.strategy_charger_reserve);
+        let supplied = structure.minerals.min(charger_reserve);
         let already_painted = state
             .grid
             .cell(cell)
@@ -114,11 +126,17 @@ fn keep_charger_support(
     let mut key_charger = None;
     let mut kept = 0;
     let mut supplied = 0.0;
+    let mut kept_for_recovery = 0;
     for (_, id, cell, buffer) in chargers {
         let defend = DesiredIntent {
             cell,
             kind: IntentKind::Defend,
         };
+        let requires_recovery_paint =
+            buffer < charger_reserve && !desired.iter().any(|intent| intent.cell == cell);
+        if requires_recovery_paint && kept_for_recovery >= defense.recovery_chargers {
+            continue;
+        }
         if !desired.contains(&defend)
             && (desired.len() >= paint_capacity
                 || !push_desired(desired, owner, defend, state, true, budget))
@@ -126,7 +144,8 @@ fn keep_charger_support(
             continue;
         }
         key_charger.get_or_insert(id);
-        supplied += buffer as f32 / tuning.strategy_charger_reserve as f32;
+        supplied += buffer as f32 / charger_reserve as f32;
+        kept_for_recovery += usize::from(requires_recovery_paint);
         if desired.len() < paint_capacity {
             push_desired(
                 desired,
@@ -141,7 +160,7 @@ fn keep_charger_support(
             );
         }
         kept += 1;
-        if kept == max_chargers {
+        if kept == defense.charger_limit {
             break;
         }
     }

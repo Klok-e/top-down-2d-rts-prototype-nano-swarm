@@ -3312,7 +3312,7 @@ fn defend_paint_follows_income_and_preserves_chargers_when_reserves_fall() {
     swarms[0].mineral_income_per_second = 12.0;
     let supplied = review(&mut grid, &swarms, &chargers, WORK_WINDOW_TICKS);
     assert!(supplied > initial, "sustained income grows Defend paint");
-    swarms[0].minerals = 0;
+    swarms[0].minerals = tuning.strategy_mineral_reserve - 1;
     assert!(
         review(&mut grid, &swarms, &chargers, 2 * WORK_WINDOW_TICKS) < supplied,
         "bank depletion shrinks Defend paint even while extraction continues"
@@ -3366,4 +3366,47 @@ fn production_room_requires_saturation_and_mineral_surplus() {
             .iter()
             .all(|&cell| (cell - home).abs().element_sum() <= 1)
     );
+}
+
+#[test]
+fn empty_chargers_do_not_create_demand_for_an_unaffordable_army() {
+    let owner = SwarmId::PLAYER;
+    let mut grid = IntentGrid::new(24, 24);
+    let swarms = [SwarmState {
+        id: owner,
+        home: world(IVec2::ZERO),
+        minerals: 4_000,
+        mineral_income_per_second: 30.0,
+        production_saturated: false,
+    }];
+    let chargers = (-5..=5)
+        .map(|row| StructureState {
+            id: (row + 10) as u64,
+            owner,
+            position: world(IVec2::new(8, row)),
+            kind: StructureKind::Charger,
+            health: 100,
+            max_health: 100,
+            minerals: 0,
+        })
+        .collect::<Vec<_>>();
+    let tuning = AutonomyTuning::default();
+    let decision = Controller::new(owner).decide(
+        &tuning,
+        &GameState {
+            swarms: &swarms,
+            structures: &chargers,
+            ..empty_state(&grid, 0)
+        },
+    );
+    apply(&mut grid, owner, &decision);
+    let territory = grid
+        .iter_active_cells()
+        .filter(|(_, cell)| {
+            IntentKind::ALL
+                .iter()
+                .any(|&kind| cell.has_owned(kind, owner))
+        })
+        .count();
+    assert!(territory.div_ceil(2) <= tuning.strategy_defender_baseline as usize);
 }

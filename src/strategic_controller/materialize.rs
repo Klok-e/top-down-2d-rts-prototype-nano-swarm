@@ -1,7 +1,7 @@
 use super::{
     economy::{EconomyPlan, SUPPORT_PAINT_RESERVE},
     lifecycle::WorkBudget,
-    spending::{add_production_room, affordable_defend_tiles},
+    spending::{DefenderBudget, add_production_room, keep_charger_support},
     staging::{DefendBlock, StagingFront},
     *,
 };
@@ -71,10 +71,11 @@ pub(super) fn materialize_plan(
         }
     }
 
-    let (key_charger, affordable_tiles) = affordable_defend_tiles(
-        tuning,
+    let defense = DefenderBudget::estimate(tuning, owner, swarm, state, budget);
+    let (key_charger, supplied_slots) = keep_charger_support(
+        &defense,
+        tuning.strategy_charger_reserve,
         owner,
-        swarm,
         state,
         &mut desired,
         paint_capacity.saturating_sub(1),
@@ -128,7 +129,7 @@ pub(super) fn materialize_plan(
         anchor,
         minimum,
         minimum_cells,
-        affordable_tiles,
+        defense.tiles_with_supply(supplied_slots),
         &desired,
         paint_capacity,
         budget,
@@ -173,9 +174,11 @@ fn fit_defend_block(
     if affordable_tiles <= minimum_cells || !budget.spend(desired.len()) {
         return minimum;
     }
-    let occupied_tiles: BTreeSet<_> = desired
+    let occupied_tiles: HashSet<_> = desired.iter().map(|intent| intent.cell).collect();
+    let defended_tiles: HashSet<_> = desired
         .iter()
-        .map(|intent| (intent.cell.x, intent.cell.y))
+        .filter(|intent| intent.kind == IntentKind::Defend)
+        .map(|intent| intent.cell)
         .collect();
     let extra_tiles = affordable_tiles.saturating_sub(occupied_tiles.len());
     let layer_room = paint_capacity.saturating_sub(desired.len());
@@ -190,13 +193,10 @@ fn fit_defend_block(
             if !budget.spend(1) {
                 return minimum;
             }
-            if !occupied_tiles.contains(&(cell.x, cell.y)) {
+            if !occupied_tiles.contains(&cell) {
                 new_tiles += 1;
             }
-            if !desired.contains(&DesiredIntent {
-                cell,
-                kind: IntentKind::Defend,
-            }) {
+            if !defended_tiles.contains(&cell) {
                 new_layers += 1;
             }
             if new_tiles > extra_tiles || new_layers > layer_room {

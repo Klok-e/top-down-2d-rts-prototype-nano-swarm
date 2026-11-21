@@ -33,8 +33,10 @@ const MAX_PLAN_CELLS: usize = EDIT_WORK_RESERVE / 2;
 pub struct SwarmState {
     pub id: SwarmId,
     pub home: Vec2,
+    /// Minerals currently held in this swarm’s operational structure buffers.
     pub minerals: u32,
     pub mineral_income_per_second: f32,
+    /// Every operational facility is producing, including zero operational facilities.
     pub production_saturated: bool,
 }
 

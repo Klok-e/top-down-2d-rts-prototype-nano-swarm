@@ -862,83 +862,109 @@ fn economic_defend_paint_changes_real_defender_population_demand() {
 #[test]
 fn saturated_economy_supplies_build_room_for_real_production_pressure() {
     use top_down_2d_rts_prototype_nano_swarm::{
-        nanobot::{NanobotType, PlannedKind, PlannedStructure, ProductionFacility},
+        nanobot::{NanobotType, OwnerSwarm, PlannedKind, PlannedStructure, ProductionFacility},
         terrain::RockFormation,
         tuning::Tuning,
     };
 
-    let mut app = common::sim_app_with_production();
-    app.add_plugins(StrategicControllerPlugin);
-    let owner = SwarmId::PLAYER;
-    let home_cell = IVec2::ZERO;
-    // Home is in a narrow reachable strip; a new facility needs a neighboring tile.
-    let home = Vec2::new(496.0, 256.0);
-    let rock = RockFormation::Rectangle {
-        half: Vec2::new(236.0, 512.0),
-    };
-    let rock_transform = Transform::from_xyz(220.0, 512.0, 0.0);
-    let swarm = app
-        .world_mut()
-        .spawn((
-            Swarm {},
-            owner,
-            Transform::from_translation(home.extend(0.0)),
-            StrategicController::new(owner),
-        ))
-        .id();
-    app.world_mut().spawn((rock, rock_transform));
-    common::spawn_worker_at(&mut app, Vec2::new(600.0, 256.0));
-    let facility =
-        common::spawn_facility_at(&mut app, swarm, common::cell_world_center(IVec2::new(2, 1)));
-    app.world_mut()
-        .get_mut::<ProductionFacility>(facility)
-        .unwrap()
-        .current_target = Some(NanobotType::Defender);
-    app.world_mut()
-        .resource_mut::<Tuning>()
-        .production
-        .pressure_ticks = 1;
-    let threshold = app
-        .world()
-        .resource::<Tuning>()
-        .autonomy
-        .strategy_production_mineral_threshold;
-    app.world_mut().resource_mut::<ResourceLedger>().add_for(
-        owner,
-        ResourceKind::Minerals,
-        threshold + 1,
-    );
-    let reachability = SwarmReachabilityMap::new(
-        app.world().resource::<IntentGrid>(),
-        [rock.obstacle(&rock_transform)],
-        [(owner, home)],
-    )
-    .unwrap();
-    app.insert_resource(reachability);
-    for _ in 0..90 {
-        app.update();
-        let world = app.world_mut();
-        if world
-            .query::<&PlannedStructure>()
-            .iter(world)
-            .any(|plan| plan.kind == PlannedKind::ProductionFacility)
-        {
-            break;
+    for existing_facility in [true, false] {
+        let mut app = common::sim_app_with_production();
+        app.add_plugins(StrategicControllerPlugin);
+        let owner = SwarmId::PLAYER;
+        let home_cell = IVec2::ZERO;
+        // Home is in a narrow reachable strip; a new facility needs a neighboring tile.
+        let home = Vec2::new(496.0, 256.0);
+        let rock = RockFormation::Rectangle {
+            half: Vec2::new(236.0, 512.0),
+        };
+        let rock_transform = Transform::from_xyz(220.0, 512.0, 0.0);
+        let swarm = app
+            .world_mut()
+            .spawn((
+                Swarm {},
+                owner,
+                Transform::from_translation(home.extend(0.0)),
+                StrategicController::new(owner),
+            ))
+            .id();
+        app.world_mut().spawn((rock, rock_transform));
+        common::spawn_worker_at(&mut app, Vec2::new(600.0, 256.0));
+        let facility_site = common::cell_world_center(IVec2::new(2, 1));
+        if existing_facility {
+            let facility = common::spawn_facility_at(&mut app, swarm, facility_site);
+            app.world_mut()
+                .get_mut::<ProductionFacility>(facility)
+                .unwrap()
+                .current_target = Some(NanobotType::Defender);
         }
+        app.world_mut()
+            .resource_mut::<Tuning>()
+            .production
+            .pressure_ticks = 1;
+        let threshold = app
+            .world()
+            .resource::<Tuning>()
+            .autonomy
+            .strategy_production_mineral_threshold;
+        let reachability = SwarmReachabilityMap::new(
+            app.world().resource::<IntentGrid>(),
+            [rock.obstacle(&rock_transform)],
+            [(owner, home)],
+        )
+        .unwrap();
+        app.insert_resource(reachability);
+
+        let reserve_site = common::cell_world_center(IVec2::new(2, 0));
+        let reserve = common::spawn_stockpile(&mut app, reserve_site, threshold + 1, threshold + 1);
+        app.world_mut()
+            .entity_mut(reserve)
+            .insert(OwnerSwarm(swarm));
+        app.world_mut().resource_mut::<ResourceLedger>().add_for(
+            owner,
+            ResourceKind::Minerals,
+            threshold + 1,
+        );
+        app.world_mut().despawn(reserve);
+
+        app.update();
+        let grid = app.world().resource::<IntentGrid>();
+        let builds = grid
+            .iter_active_cells()
+            .filter(|(_, cell)| cell.has_owned(IntentKind::Build, owner))
+            .map(|(cell, _)| cell)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            builds,
+            [home_cell],
+            "a destroyed reserve cannot fund extra Build room"
+        );
+
+        let reserve = common::spawn_stockpile(&mut app, reserve_site, threshold + 1, threshold + 1);
+        app.world_mut()
+            .entity_mut(reserve)
+            .insert(OwnerSwarm(swarm));
+        let mut planned_cell = None;
+        for _ in 0..90 {
+            app.update();
+            let world = app.world_mut();
+            planned_cell = world
+                .query::<&PlannedStructure>()
+                .iter(world)
+                .find(|plan| plan.kind == PlannedKind::ProductionFacility)
+                .map(|plan| plan.cell);
+            if planned_cell.is_some() {
+                break;
+            }
+        }
+        let cell =
+            planned_cell.expect("Production Pressure can use new room when busy or recovering");
+        assert_eq!((cell - home_cell).abs().element_sum(), 1);
+        assert!(
+            app.world()
+                .resource::<IntentGrid>()
+                .cell(cell)
+                .unwrap()
+                .has_owned(IntentKind::Build, owner)
+        );
     }
-    let world = app.world_mut();
-    let cell = world
-        .query::<&PlannedStructure>()
-        .iter(world)
-        .find(|plan| plan.kind == PlannedKind::ProductionFacility)
-        .expect("production pressure plans a facility when economic room is available")
-        .cell;
-    assert_eq!((cell - home_cell).abs().element_sum(), 1);
-    assert!(
-        world
-            .resource::<IntentGrid>()
-            .cell(cell)
-            .unwrap()
-            .has_owned(IntentKind::Build, owner)
-    );
 }

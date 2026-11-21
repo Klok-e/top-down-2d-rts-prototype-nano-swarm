@@ -16,7 +16,7 @@ use crate::{
     },
     navigation::{Navigation, RouteGoal, RouteOutcome},
     reachability::{IntentWriteAction, SwarmReachabilityMap, apply_reachable_intent},
-    resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole},
+    resources::{ResourceDeposit, ResourceLedger, Stockpile, StockpileRole, buffered_minerals},
     strategic_controller::{
         BotState, Controller, DepositState, GameState, IntentEditAction, StructureKind,
         StructureState, SwarmState,
@@ -157,6 +157,12 @@ impl MineralIncomeHistory {
     }
 }
 
+#[derive(Default, Clone, Copy)]
+struct EconomyObservation {
+    banked_minerals: u32,
+    has_idle_facility: bool,
+}
+
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn strategic_intent_system(
     tuning: Res<crate::tuning::Tuning>,
@@ -216,30 +222,6 @@ fn strategic_intent_system(
     let owners: BTreeMap<_, _> = swarms.iter().map(|(entity, id, _)| (entity, *id)).collect();
     let tick = (time.elapsed_secs_f64() * crate::SIMULATION_HZ).round() as u64;
     income_history.retain(|entity, _| owners.contains_key(entity));
-    let mut production_saturated = BTreeMap::new();
-    for (_, _, owner, condition, facility, ..) in &structures {
-        if let Some(owner) = owner.and_then(|owner| owners.get(&owner.0))
-            && let Some(facility) = facility
-            && condition.is_none_or(Structure::is_operational)
-        {
-            let busy = facility.is_busy(tuning.production.ticks_per_bot);
-            *production_saturated.entry(*owner).or_insert(true) &= busy;
-        }
-    }
-    let mut swarm_states: Vec<_> = swarms
-        .iter()
-        .map(|(entity, id, position)| SwarmState {
-            id: *id,
-            home: position.map_or(Vec2::ZERO, |t| t.translation.truncate()),
-            minerals: ledger.total_for(*id, ResourceKind::Minerals),
-            mineral_income_per_second: income_history
-                .entry(entity)
-                .or_default()
-                .per_second(tick, ledger.extracted_minerals_for(*id)),
-            production_saturated: production_saturated.get(id).copied().unwrap_or(false),
-        })
-        .collect();
-    swarm_states.sort_by_key(|swarm| swarm.id);
     let mut bot_states: Vec<_> = bots
         .iter()
         .map(
@@ -257,6 +239,7 @@ fn strategic_intent_system(
         )
         .collect();
     bot_states.sort_by_key(|bot| bot.id);
+    let mut economies = BTreeMap::<SwarmId, EconomyObservation>::new();
     let mut structure_states: Vec<_> = structures
         .iter()
         .filter_map(
@@ -277,6 +260,13 @@ fn strategic_intent_system(
                 } else {
                     StructureKind::Other
                 };
+                let minerals = buffered_minerals(facility, stockpile, charger);
+                if plan.is_none() && condition.is_none_or(Structure::is_operational) {
+                    let economy = economies.entry(owner).or_default();
+                    economy.banked_minerals = economy.banked_minerals.saturating_add(minerals);
+                    economy.has_idle_facility |= facility
+                        .is_some_and(|facility| !facility.is_busy(tuning.production.ticks_per_bot));
+                }
                 Some(StructureState {
                     id: entity.to_bits(),
                     owner,
@@ -284,14 +274,29 @@ fn strategic_intent_system(
                     kind,
                     health: condition.map_or(tuning.construction.max_health, |c| c.health),
                     max_health: tuning.construction.max_health,
-                    minerals: facility.map_or(0, |f| f.input_amount)
-                        + stockpile.map_or(0, |s| s.amount)
-                        + charger.map_or(0, |c| c.amount),
+                    minerals,
                 })
             },
         )
         .collect();
     structure_states.sort_by_key(|structure| structure.id);
+    let mut swarm_states: Vec<_> = swarms
+        .iter()
+        .map(|(entity, id, position)| {
+            let economy = economies.get(id).copied().unwrap_or_default();
+            SwarmState {
+                id: *id,
+                home: position.map_or(Vec2::ZERO, |t| t.translation.truncate()),
+                minerals: economy.banked_minerals,
+                mineral_income_per_second: income_history
+                    .entry(entity)
+                    .or_default()
+                    .per_second(tick, ledger.extracted_minerals_for(*id)),
+                production_saturated: !economy.has_idle_facility,
+            }
+        })
+        .collect();
+    swarm_states.sort_by_key(|swarm| swarm.id);
     let mut deposit_states: Vec<_> = deposits
         .iter()
         .filter_map(|(entity, transform, deposit, owner)| {
