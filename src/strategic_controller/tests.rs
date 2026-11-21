@@ -1434,11 +1434,33 @@ fn opening_expands_when_the_crew_can_staff_both_mines_or_the_grace_expires() {
     crew.push(BotState { id: 100, ..crew[0] });
     let mut reduced_crew = crew.clone();
     reduced_crew.last_mut().unwrap().health = 0;
-    for (bots, review, should_expand) in [
-        (crew.as_slice(), WORK_WINDOW_TICKS, true),
-        (reduced_crew.as_slice(), WORK_WINDOW_TICKS, false),
+    let empty_source = [StructureState {
+        id: 200,
+        owner,
+        position: world(opening) + Vec2::X * 140.0,
+        kind: StructureKind::Source,
+        health: 100,
+        max_health: 100,
+        minerals: 0,
+    }];
+    let stocked_source = [StructureState {
+        minerals: 4,
+        ..empty_source[0]
+    }];
+    for (bots, structures, review, should_expand) in [
+        (crew.as_slice(), &[][..], WORK_WINDOW_TICKS, true),
+        (reduced_crew.as_slice(), &[][..], WORK_WINDOW_TICKS, false),
         (
             reduced_crew.as_slice(),
+            &empty_source[..],
+            WORK_WINDOW_TICKS,
+            true,
+        ),
+        (&crew[..1], &empty_source[..], WORK_WINDOW_TICKS, false),
+        (&crew[..1], &stocked_source[..], WORK_WINDOW_TICKS, true),
+        (
+            reduced_crew.as_slice(),
+            &[][..],
             30 * crate::SIMULATION_HZ as u64,
             true,
         ),
@@ -1451,6 +1473,7 @@ fn opening_expands_when_the_crew_can_staff_both_mines_or_the_grace_expires() {
                 &GameState {
                     swarms: &swarms,
                     bots,
+                    structures: if tick == 0 { &[] } else { structures },
                     deposits: &deposits,
                     ..empty_state(&grid, tick)
                 },

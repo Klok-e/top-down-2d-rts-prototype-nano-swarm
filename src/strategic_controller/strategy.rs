@@ -2,17 +2,25 @@ use super::economy::{EconomyPlan, deposit_region, validate_owned_deposits};
 use super::{lifecycle::WorkBudget, materialize::world_to_intent_cell, *};
 use crate::nanobot::{cell_overlaps_circle, deposit_candidate_cells};
 
-fn is_reachable(owner: SwarmId, state: &GameState<'_>, cell: IVec2) -> bool {
-    state
-        .reachability
-        .is_none_or(|reachability| reachability.contains(owner, cell, state.grid))
-}
-
-fn is_target_reachable(owner: SwarmId, state: &GameState<'_>, position: Vec2) -> bool {
-    state.reachability.is_none_or(|map| {
-        map.contains(owner, world_to_intent_cell(position), state.grid)
-            && map.position_is_reachable(owner, position, state.grid)
-    })
+fn is_target_reachable(
+    owner: SwarmId,
+    state: &GameState<'_>,
+    position: Vec2,
+    budget: &mut WorkBudget,
+) -> Result<bool, ()> {
+    let Some(map) = state.reachability else {
+        return Ok(true);
+    };
+    let mut allow_work = || budget.spend(1);
+    Ok(map
+        .reachable_point_with_budget(
+            owner,
+            world_to_intent_cell(position),
+            state.grid,
+            &mut allow_work,
+        )?
+        .is_some()
+        && map.position_is_reachable_with_budget(owner, position, state.grid, &mut allow_work)?)
 }
 
 pub(super) fn validate_plan(
@@ -32,12 +40,16 @@ pub(super) fn validate_plan(
         if !budget.spend(plan.desired.len()) {
             return Err(());
         }
-        unreachable.extend(
-            plan.desired
-                .iter()
-                .copied()
-                .filter(|intent| !is_reachable(owner, state, intent.cell)),
-        );
+        for &intent in &plan.desired {
+            if map
+                .reachable_point_with_budget(owner, intent.cell, state.grid, &mut || {
+                    budget.spend(1)
+                })?
+                .is_none()
+            {
+                unreachable.insert(intent);
+            }
+        }
     }
     let validation = PlanValidation {
         lost_deposit: validate_owned_deposits(
@@ -141,7 +153,7 @@ pub(super) fn observe_attack_target(
                     && structure.owner != owner
                     && structure.health > 0
                     && structure.kind != StructureKind::Planned
-                    && is_target_reachable(owner, state, structure.position)
+                    && is_target_reachable(owner, state, structure.position, budget)?
                 {
                     return Ok(Some(AttackObligation {
                         cell: world_to_intent_cell(structure.position),
@@ -159,7 +171,7 @@ pub(super) fn observe_attack_target(
                 if bot.id == target.id
                     && bot.owner != owner
                     && bot.health > 0
-                    && is_target_reachable(owner, state, bot.position)
+                    && is_target_reachable(owner, state, bot.position, budget)?
                 {
                     return Ok(Some(AttackObligation {
                         cell: world_to_intent_cell(bot.position),
@@ -269,8 +281,13 @@ pub(super) fn generate_candidates(
         }
         if own_income - swarm.mineral_income_per_second > tuning.strategy_home_income_lead
             && home_has_targets(swarm, state, budget)
-            && is_target_reachable(owner, state, swarm.home)
         {
+            let Ok(reachable) = is_target_reachable(owner, state, swarm.home, budget) else {
+                return candidates;
+            };
+            if !reachable {
+                continue;
+            }
             candidates.push(PlanCandidate {
                 objective: Objective::PushHome(swarm.id),
                 attack_target: Some(world_to_intent_cell(swarm.home)),
@@ -290,6 +307,7 @@ pub(super) fn generate_candidates(
     let hunt_value = tuning.strategy_hunt_remnant_base
         + forces.friendly_strength * tuning.strategy_hunt_force_weight;
     let mut occupied_mines = BTreeSet::new();
+    let mut nearby_mines = Vec::new();
     for structure in state.structures {
         if !budget.spend(1) {
             return candidates;
@@ -297,7 +315,6 @@ pub(super) fn generate_candidates(
         if structure.owner == owner
             || structure.health == 0
             || structure.kind == StructureKind::Planned
-            || !is_target_reachable(owner, state, structure.position)
         {
             continue;
         }
@@ -307,12 +324,13 @@ pub(super) fn generate_candidates(
             cell: world_to_intent_cell(structure.position),
             health: structure.health,
         };
+        nearby_mines.clear();
         let mine = mine_target(
             economy,
             structure.owner,
             structure.position,
             state,
-            &mut occupied_mines,
+            &mut nearby_mines,
             budget,
         );
         let objective = if let Some((deposit, _)) = mine {
@@ -325,6 +343,13 @@ pub(super) fn generate_candidates(
         } else {
             continue;
         };
+        let Ok(reachable) = is_target_reachable(owner, state, structure.position, budget) else {
+            return candidates;
+        };
+        if !reachable {
+            continue;
+        }
+        occupied_mines.extend(nearby_mines.iter().copied());
         let strategic_value = match structure.kind {
             StructureKind::Charger => tuning.strategy_raid_charger_value,
             StructureKind::Source | StructureKind::Sink => tuning.strategy_raid_stockpile_value,
@@ -352,16 +377,16 @@ pub(super) fn generate_candidates(
         if !budget.spend(1) {
             return candidates;
         }
-        if bot.owner == owner || bot.health == 0 || !is_target_reachable(owner, state, bot.position)
-        {
+        if bot.owner == owner || bot.health == 0 {
             continue;
         }
+        nearby_mines.clear();
         let mine = mine_target(
             economy,
             bot.owner,
             bot.position,
             state,
-            &mut occupied_mines,
+            &mut nearby_mines,
             budget,
         );
         let objective = if let Some((deposit, _)) = mine {
@@ -374,6 +399,13 @@ pub(super) fn generate_candidates(
         } else {
             continue;
         };
+        let Ok(reachable) = is_target_reachable(owner, state, bot.position, budget) else {
+            return candidates;
+        };
+        if !reachable {
+            continue;
+        }
+        occupied_mines.extend(nearby_mines.iter().copied());
         let attack = AttackObligation {
             kind: AttackTargetKind::Nanobot,
             id: bot.id,
@@ -508,7 +540,7 @@ fn mine_target(
     owner: SwarmId,
     position: Vec2,
     state: &GameState<'_>,
-    occupied: &mut BTreeSet<u64>,
+    nearby_mines: &mut Vec<u64>,
     budget: &mut WorkBudget,
 ) -> Option<(u64, Option<IVec2>)> {
     let home_cell = swarm_home_cell(owner, state, budget);
@@ -525,7 +557,7 @@ fn mine_target(
         }
         let distance = position.distance_squared(deposit.position);
         if distance <= (deposit.radius + crate::ZONE_BLOCK_SIZE).powi(2) {
-            occupied.insert(deposit.id);
+            nearby_mines.push(deposit.id);
             if closest.is_none_or(|(_, best_distance)| distance < best_distance) {
                 closest = Some((deposit.id, distance));
             }
