@@ -26,7 +26,8 @@ const MAX_BOTS: usize = 256;
 const MAX_STRUCTURES: usize = 128;
 const MAX_DEPOSITS: usize = 24;
 const MAX_ACTIVE_CELLS: usize = 256;
-const MAX_PLAN_CELLS: usize = 96;
+const EXPANSION_PLAN_CELLS: usize = 96;
+const MAX_PLAN_CELLS: usize = EDIT_WORK_RESERVE / 2;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SwarmState {
@@ -213,7 +214,7 @@ impl IntentPlan {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct DesiredIntent {
     cell: IVec2,
     kind: IntentKind,

@@ -1355,6 +1355,76 @@ fn depleted_and_unreachable_deposits_are_removed_without_abandoning_the_others()
 }
 
 #[test]
+fn an_owned_mine_can_take_a_longer_corridor_when_another_depletes() {
+    use crate::navigation::Route;
+
+    let owner = SwarmId::PLAYER;
+    let mut grid = IntentGrid::new(128, 128);
+    let home = world(IVec2::ZERO);
+    let swarms = [SwarmState {
+        id: owner,
+        home,
+        minerals: 0,
+    }];
+    let west = IVec2::new(-4, 0);
+    let east = IVec2::new(4, 0);
+    let mut deposits = [west, east].map(|cell| DepositState {
+        id: (cell.x + 4) as u64,
+        owner: Some(owner),
+        position: world(cell),
+        amount: 72_000,
+        radius: 80.0,
+    });
+    let tuning = AutonomyTuning::default();
+    let mut controller = Controller::new(owner);
+    let initial = controller.decide(
+        &tuning,
+        &GameState {
+            swarms: &swarms,
+            deposits: &deposits,
+            ..empty_state(&grid, 0)
+        },
+    );
+    apply(&mut grid, owner, &initial);
+    let owns = |grid: &IntentGrid, cell, kind| grid.cell(cell).unwrap().has_owned(kind, owner);
+    assert!(owns(&grid, west, IntentKind::Gather));
+    assert!(owns(&grid, east, IntentKind::Gather));
+    assert!(owns(&grid, IVec2::new(2, 0), IntentKind::Corridor));
+
+    deposits[0].amount = 0;
+    let detour = |start: Vec2, goal: RouteGoal, _: &mut dyn FnMut() -> bool| {
+        let RouteGoal::Interaction(region) = goal else {
+            return Some(RouteOutcome::Unreachable);
+        };
+        let waypoints = vec![
+            world(IVec2::new(0, 60)),
+            world(IVec2::new(4, 60)),
+            region.approach(start),
+        ];
+        let cost = std::iter::once(&start)
+            .chain(&waypoints)
+            .zip(&waypoints)
+            .map(|(from, to)| from.distance(*to))
+            .sum();
+        Some(RouteOutcome::Found(Route { waypoints, cost }))
+    };
+    let revised = controller.decide(
+        &tuning,
+        &GameState {
+            swarms: &swarms,
+            deposits: &deposits,
+            route_query: Some(&detour),
+            ..empty_state(&grid, WORK_WINDOW_TICKS)
+        },
+    );
+    apply(&mut grid, owner, &revised);
+    assert!(!owns(&grid, west, IntentKind::Gather));
+    assert!(owns(&grid, east, IntentKind::Gather));
+    assert!(owns(&grid, IVec2::new(0, 50), IntentKind::Corridor));
+    assert!(!owns(&grid, IVec2::new(2, 0), IntentKind::Corridor));
+}
+
+#[test]
 fn accumulated_supply_and_a_logistics_target_replace_the_economy_plan() {
     let mut grid = IntentGrid::new(64, 64);
     let owner = SwarmId(4);
