@@ -18,14 +18,29 @@ The controller estimates upkeep from recent physical extraction, operational min
 
 The economy comparison uses seed 11, the tracked balance configuration, unbounded headless simulation, and one-second samples. Each opening covers the same first 7,200 fixed ticks. An active mine in the tables means a distinct deposit that yielded minerals under the swarm's Gather paint during that sample. A mine can keep its paint between extraction pulses. Starvation is summed across facilities, so two waiting facilities can accumulate two facility-seconds in one second of simulation. [AI Battle recording guide](../ai-battle.md)
 
-The telemetry baseline used commit `4a7c7e5`, which still used the single-deposit controller. Both layouts ran for 120 simulated seconds without recording combat damage. The peak active mine count was one for each swarm on each layout.
+The baseline used the single-deposit controller at `4a7c7e5`. Both layouts ran for 120 simulated seconds without combat damage or structure losses. No buffers were lost during the comparison window, so the baseline's ledger and the revised physical inventory measure the same unspent minerals.
 
-| Layout | Swarm | Minerals extracted | Mean unspent | Starved facility-seconds | Peak empty-Charge Defenders |
+Each pair shows the baseline followed by the expansion controller at `d2f7d4b`.
+
+| Layout | Swarm | Peak extracting deposits | Extracted minerals | Mean unspent minerals | Starved facility-seconds |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Standard | 0 | 277 | 123.4 | 217.5 | 0 |
-| Standard | 1 | 301 | 119.3 | 202.1 | 0 |
-| Flanks | 0 | 236 | 115.7 | 167.6 | 0 |
-| Flanks | 1 | 274 | 119.4 | 90.3 | 0 |
+| Standard | 0 | 1 → 2 | 277 → 132 | 123.4 → 44.2 | 217.5 → 137.6 |
+| Standard | 1 | 1 → 2 | 301 → 170 | 119.3 → 57.8 | 202.1 → 132.0 |
+| Flanks | 0 | 1 → 2 | 236 → 148 | 115.7 → 35.5 | 167.6 → 119.9 |
+| Flanks | 1 | 1 → 2 | 274 → 200 | 119.4 → 56.2 | 90.3 → 110.8 |
+
+All four swarms extracted from two deposits within one sample before major combat. Each kept fewer minerals unspent and also extracted fewer minerals in the first 120 seconds. Combined facility starvation fell on both layouts. Flanks swarm 1 spent 20.5 more facility-seconds waiting for minerals. No sampled Defender reached empty Charge during either opening in either revision.
+
+The outcome comparison defines the first major fight as the first sample in which cumulative effective damage by both sides reached 100, the health of one Nanobot. Pre-fight income counts minerals extracted over the preceding 30 simulated seconds. Standard swarm 0 led 14 to 4 before its fight at 155 seconds, although swarm 1 had extracted more since the start (176 to 148). Flanks swarm 1 led 65 to 58 before its fight at 301 seconds and also led in cumulative extraction (518 to 387). Both sides reached the same peak of two extracting sites before combat on each layout, so these games do not distinguish a better expander by that measure.
+
+| Layout | Pre-fight income leader | Population at shutdown, swarm 0 / 1 | Defender observations at empty Charge, swarm 0 / 1 | Outcome |
+| --- | --- | ---: | ---: | --- |
+| Standard | Swarm 0 | 20 / 2 | 11.36% / 6.10% | In progress at 30 minutes |
+| Flanks | Swarm 1 | 7 / 49 | 4.22% / 4.37% | In progress at 30 minutes |
+
+The side with the pre-fight income lead had the larger surviving population on both layouts. Neither game reached Swarm Elimination before shutdown, so neither established that the income leader wins. The Charge percentages divide all empty-Defender observations by all Defender observations across the full run. Standard swarm 0 spent the largest share of its observed Defender time empty.
+
+The Standard capture at 120 seconds shows compact blue fronts in the interior and a yellow supply route skirting the southern rock. At 200 seconds on Flanks, the yellow approach reaches a blue block beside the long central rock. In a separate controlled advance, two of four living Defenders held a 4×3 block at `(3, 0)`. When the third arrived, the block moved to `(6, 0)` in one review. All nine cells exclusive to the previous block lost their blue Defend hatching. The yellow Logistics Corridor remained visible. [Staging and erasure playtests](../../tests/playtest/opponent_gameplay_loop.rs)
 
 ## Earlier self-play
 
