@@ -87,6 +87,10 @@ impl SwarmReachabilityMap {
         })
     }
 
+    pub(crate) fn same_boundary(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     /// Whether the cell contains ground accessible from the swarm's scenario home.
     pub fn contains(&self, owner: SwarmId, cell: IVec2, grid: &IntentGrid) -> bool {
         self.reachable_point(owner, cell, grid).is_some()

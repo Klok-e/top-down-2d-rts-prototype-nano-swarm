@@ -6,15 +6,17 @@ use super::{
     },
     *,
 };
-use crate::nanobot::{InteractionRegion, cell_overlaps_circle};
+use crate::nanobot::{InteractionRegion, cell_overlaps_circle, deposit_candidate_cells};
 use bevy::prelude::Transform;
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 // Leave room for the home base and mandatory military support.
 pub(super) const SUPPORT_PAINT_RESERVE: usize = 8;
 const ECONOMY_EXPANSION_PAINT_LIMIT: usize = EXPANSION_PLAN_CELLS - SUPPORT_PAINT_RESERVE;
 const ECONOMY_RETENTION_PAINT_LIMIT: usize = MAX_PLAN_CELLS - SUPPORT_PAINT_RESERVE;
 const MINE_STARTUP_TICKS: u64 = 30 * crate::SIMULATION_HZ as u64;
+// Both mines need an extractor and Source Stockpile builder, plus a shared Sink builder.
+const PARALLEL_STARTUP_WORKERS: usize = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MineStartup {
@@ -29,30 +31,40 @@ pub(super) struct OwnedDeposit {
     startup: Option<MineStartup>,
     pub(super) gather_cell: IVec2,
     pub(super) build_cell: IVec2,
-    pub(super) desired: Vec<DesiredIntent>,
+    desired: Vec<DesiredIntent>,
 }
 
 #[derive(Default)]
 pub(super) struct EconomyPlan {
     pub(super) owned_deposits: Vec<OwnedDeposit>,
-    pub(super) desired: Vec<DesiredIntent>,
+    pub(super) desired: HashSet<DesiredIntent>,
     pub(super) expansion: Option<u64>,
     pub(super) threatened: Option<(u64, IVec2)>,
     pub(super) free_deposit_exists: bool,
     pub(super) contested_deposits: Vec<(u64, IVec2, RouteGoal)>,
     pub(super) enemy_deposits: Vec<(DepositState, SwarmId)>,
-    paint_set: HashSet<DesiredIntent>,
 }
 
 impl EconomyPlan {
-    fn can_fit(&self, mine: &OwnedDeposit, limit: usize) -> bool {
-        self.desired.len()
-            + mine
-                .desired
-                .iter()
-                .filter(|intent| !self.paint_set.contains(intent))
-                .count()
-            <= limit
+    fn can_fit(&self, mine: &OwnedDeposit, limit: usize, budget: &mut WorkBudget) -> bool {
+        let Some(mut room) = limit.checked_sub(self.desired.len()) else {
+            return false;
+        };
+        if mine.desired.len() <= room {
+            return true;
+        }
+        for intent in &mine.desired {
+            if !budget.spend(1) {
+                return false;
+            }
+            if !self.desired.contains(intent) {
+                let Some(remaining) = room.checked_sub(1) else {
+                    return false;
+                };
+                room = remaining;
+            }
+        }
+        true
     }
 
     fn claim(
@@ -63,32 +75,38 @@ impl EconomyPlan {
         state: &GameState<'_>,
         budget: &mut WorkBudget,
     ) {
-        if self.owned_deposits.is_empty()
-            && !state.structures.iter().take(MAX_STRUCTURES).any(|source| {
-                budget.spend(1)
-                    && source.owner == owner
+        if self.owned_deposits.is_empty() {
+            let mut has_source = false;
+            for source in state.structures {
+                if !budget.spend(1) {
+                    return;
+                }
+                if source.owner == owner
                     && source.kind == StructureKind::Source
                     && source.health > 0
-                    && source.minerals > 0
                     && world_to_intent_cell(source.position) == mine.gather_cell
-            })
-        {
-            mine.startup = Some(MineStartup {
-                initial_amount: deposit.amount,
-                deadline: state.tick.saturating_add(MINE_STARTUP_TICKS),
-            });
+                {
+                    has_source = true;
+                    break;
+                }
+            }
+            if !has_source {
+                mine.startup = Some(MineStartup {
+                    initial_amount: deposit.amount,
+                    deadline: state.tick.saturating_add(MINE_STARTUP_TICKS),
+                });
+            }
         }
-        self.add(mine);
+        self.add(mine, budget);
     }
 
-    fn add(&mut self, mine: OwnedDeposit) {
-        self.desired.extend(
-            mine.desired
-                .iter()
-                .copied()
-                .filter(|intent| self.paint_set.insert(*intent)),
-        );
+    fn add(&mut self, mine: OwnedDeposit, budget: &mut WorkBudget) -> bool {
+        if !budget.spend(mine.desired.len()) {
+            return false;
+        }
+        self.desired.extend(mine.desired.iter().copied());
         self.owned_deposits.push(mine);
+        true
     }
 }
 
@@ -100,21 +118,38 @@ pub(super) fn validate_owned_deposits(
     owned: &[OwnedDeposit],
     owner: SwarmId,
     state: &GameState<'_>,
+    unreachable: &mut HashSet<DesiredIntent>,
     budget: &mut WorkBudget,
 ) -> Result<Option<u64>, ()> {
+    let mut lost = None;
     for mine in owned {
-        let valid = find_deposit(mine.id, state, budget)?
-            .is_some_and(|deposit| available(deposit, owner) && deposit.position == mine.position);
-        let support_reachable = state.reachability.is_none_or(|map| {
-            mine.desired
-                .iter()
-                .all(|intent| map.contains(owner, intent.cell, state.grid))
-        });
-        if !valid || !support_reachable {
-            return Ok(Some(mine.id));
+        let mut valid = true;
+        if lost.is_none() {
+            valid = find_deposit(mine.id, state, budget)?.is_some_and(|deposit| {
+                available(deposit, owner) && deposit.position == mine.position
+            });
+        }
+        if !unreachable.is_empty() {
+            for intent in &mine.desired {
+                if !budget.spend(1) {
+                    return Err(());
+                }
+                if unreachable.remove(intent) {
+                    valid = false;
+                    if unreachable.is_empty() {
+                        break;
+                    }
+                }
+            }
+        }
+        if !valid {
+            lost.get_or_insert(mine.id);
+        }
+        if lost.is_some() && unreachable.is_empty() {
+            break;
         }
     }
-    Ok(None)
+    Ok(lost)
 }
 
 fn find_deposit<'a>(
@@ -140,6 +175,15 @@ pub(super) fn plan_economy(
     previous: &[OwnedDeposit],
     budget: &mut WorkBudget,
 ) -> Option<EconomyPlan> {
+    if !budget.spend(
+        state
+            .swarms
+            .len()
+            .saturating_mul(2)
+            .saturating_add(previous.len()),
+    ) {
+        return None;
+    }
     let home = state
         .swarms
         .iter()
@@ -167,10 +211,11 @@ pub(super) fn plan_economy(
                 supported.startup = mine.startup.filter(|startup| {
                     deposit.amount >= startup.initial_amount && state.tick < startup.deadline
                 });
-                if !economy.can_fit(&supported, ECONOMY_RETENTION_PAINT_LIMIT) {
+                if !economy.can_fit(&supported, ECONOMY_RETENTION_PAINT_LIMIT, budget)
+                    || !economy.add(supported, budget)
+                {
                     return None;
                 }
-                economy.add(supported);
             }
             None if budget.exhausted => return None,
             None => {}
@@ -179,12 +224,12 @@ pub(super) fn plan_economy(
 
     let mut opportunities = Vec::new();
 
-    for deposit in state.deposits.iter().take(MAX_DEPOSITS) {
+    let previous_ids: HashSet<_> = previous.iter().map(|mine| mine.id).collect();
+    for deposit in state.deposits {
         if !budget.spend(1) {
             return None;
         }
-        if deposit.amount == 0
-            || (available(deposit, owner) && previous.iter().any(|mine| mine.id == deposit.id))
+        if deposit.amount == 0 || (available(deposit, owner) && previous_ids.contains(&deposit.id))
         {
             continue;
         }
@@ -198,9 +243,12 @@ pub(super) fn plan_economy(
         }
         if gather_owners.contains(&owner) || deposit.owner == Some(owner) {
             if let Ok(Some((mine, _))) = mine_support(owner, deposit, state, home, budget)
-                && economy.can_fit(&mine, ECONOMY_EXPANSION_PAINT_LIMIT)
+                && economy.can_fit(&mine, ECONOMY_EXPANSION_PAINT_LIMIT, budget)
             {
                 economy.claim(mine, deposit, owner, state, budget);
+            }
+            if budget.exhausted {
+                return None;
             }
             continue;
         }
@@ -226,15 +274,22 @@ pub(super) fn plan_economy(
 
     let mut unchecked = Vec::new();
     for deposit in opportunities {
-        let approached = state.bots.iter().take(MAX_BOTS).any(|bot| {
-            budget.spend(1)
-                && bot.owner != owner
+        let mut approached = false;
+        for bot in state.bots {
+            if !budget.spend(1) {
+                return None;
+            }
+            if bot.owner != owner
                 && bot.health > 0
                 && approaches(bot, deposit)
                 && state
                     .reachability
                     .is_none_or(|map| map.position_is_reachable(owner, bot.position, state.grid))
-        });
+            {
+                approached = true;
+                break;
+            }
+        }
         if approached {
             match mine_support(owner, deposit, state, home, budget) {
                 Ok(Some((mine, _))) => {
@@ -256,10 +311,24 @@ pub(super) fn plan_economy(
             return None;
         }
     }
+    // Start with the cheapest plausible routes so distant candidates usually
+    // need only an optimistic value bound, even when the map has many deposits.
+    let opportunities_count = unchecked.len();
+    if opportunities_count > 1
+        && !budget.spend(opportunities_count.saturating_mul(opportunities_count.ilog2() as usize))
+    {
+        return None;
+    }
+    unchecked.sort_by(|a, b| {
+        home.distance_squared(a.position)
+            .total_cmp(&home.distance_squared(b.position))
+            .then_with(|| a.id.cmp(&b.id))
+    });
     if economy
         .owned_deposits
         .first()
         .is_some_and(|mine| mine.startup.is_some())
+        && !can_staff_parallel_startup(owner, state, budget)?
     {
         economy.free_deposit_exists |= unchecked.into_iter().any(|deposit| {
             !budget.exhausted
@@ -269,15 +338,11 @@ pub(super) fn plan_economy(
     }
 
     let mut best: Option<(OwnedDeposit, &DepositState, f32)> = None;
-    // Start with the cheapest plausible routes so distant candidates usually
-    // need only an optimistic value bound, even when the map has many deposits.
-    unchecked.sort_by(|a, b| {
-        home.distance_squared(a.position)
-            .total_cmp(&home.distance_squared(b.position))
-            .then_with(|| a.id.cmp(&b.id))
-    });
     for deposit in unchecked {
         let terrain_exposure = route_exposure(home, deposit.position, state.terrain, budget);
+        if budget.exhausted {
+            return None;
+        }
         let enemy_exposure = enemy_home.map_or(0.0, |enemy| {
             let friendly_distance = home.distance(deposit.position);
             let enemy_distance = enemy.distance(deposit.position);
@@ -316,8 +381,8 @@ pub(super) fn plan_economy(
         };
         economy.free_deposit_exists = true;
         let score = value - distance / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_haul_cost;
-        if economy.can_fit(&mine, ECONOMY_EXPANSION_PAINT_LIMIT)
-            && score > best.as_ref().map_or(0.0, |(_, _, score)| *score)
+        if score > best.as_ref().map_or(0.0, |(_, _, score)| *score)
+            && economy.can_fit(&mine, ECONOMY_EXPANSION_PAINT_LIMIT, budget)
         {
             best = Some((mine, deposit, score));
         }
@@ -327,6 +392,33 @@ pub(super) fn plan_economy(
         economy.claim(mine, deposit, owner, state, budget);
     }
     (!budget.exhausted).then_some(economy)
+}
+
+fn can_staff_parallel_startup(
+    owner: SwarmId,
+    state: &GameState<'_>,
+    budget: &mut WorkBudget,
+) -> Option<bool> {
+    let mut available_workers = 0;
+    for bot in state.bots {
+        if !budget.spend(1) {
+            return None;
+        }
+        if bot.owner == owner
+            && bot.kind == NanobotType::Worker
+            && bot.health > 0
+            && bot.position.is_finite()
+            && state
+                .reachability
+                .is_none_or(|map| map.position_is_reachable(owner, bot.position, state.grid))
+        {
+            available_workers += 1;
+            if available_workers == PARALLEL_STARTUP_WORKERS {
+                return Some(true);
+            }
+        }
+    }
+    Some(false)
 }
 
 fn approaches(bot: &BotState, deposit: &DepositState) -> bool {
@@ -349,19 +441,27 @@ fn threatened_deposit(
     if owned.is_empty() {
         return None;
     }
+    if !budget.spend(owned.len() * 2) {
+        return None;
+    }
+    let mut local_mines = HashMap::new();
+    for mine in owned {
+        for cell in [mine.gather_cell, mine.build_cell] {
+            local_mines.entry(cell).or_insert(mine.id);
+        }
+    }
     let entities = state
         .bots
         .iter()
-        .take(MAX_BOTS)
         .map(|bot| (bot.owner, bot.position, bot.health))
-        .chain(
-            state
-                .structures
-                .iter()
-                .take(MAX_STRUCTURES)
-                .filter(|structure| structure.kind != StructureKind::Planned)
-                .map(|structure| (structure.owner, structure.position, structure.health)),
-        );
+        .chain(state.structures.iter().map(|structure| {
+            let health = if structure.kind == StructureKind::Planned {
+                0
+            } else {
+                structure.health
+            };
+            (structure.owner, structure.position, health)
+        }));
     for (other, position, health) in entities {
         if !budget.spend(1) {
             return None;
@@ -370,17 +470,8 @@ fn threatened_deposit(
             continue;
         }
         let cell = world_to_intent_cell(position);
-        for mine in owned {
-            if !budget.spend(mine.desired.len()) {
-                return None;
-            }
-            if mine
-                .desired
-                .iter()
-                .any(|intent| intent.cell == cell && intent.kind != IntentKind::Corridor)
-            {
-                return Some((mine.id, cell));
-            }
+        if let Some(&mine) = local_mines.get(&cell) {
+            return Some((mine, cell));
         }
     }
     None
@@ -394,7 +485,7 @@ fn deposit_access(
 ) -> Option<(bool, BTreeSet<SwarmId>)> {
     let mut reachable = false;
     let mut gather_owners = BTreeSet::new();
-    for cell in deposit_cells(deposit, state.grid) {
+    for cell in deposit_candidate_cells(state.grid, deposit.position, deposit.radius) {
         if !budget.spend(1) {
             return None;
         }
@@ -404,24 +495,17 @@ fn deposit_access(
             reachable |= state
                 .reachability
                 .is_none_or(|map| map.contains(owner, cell, state.grid));
-            gather_owners.extend(intent.owners(IntentKind::Gather));
+            if intent.has(IntentKind::Gather) {
+                for other in intent.owners(IntentKind::Gather) {
+                    if !budget.spend(1) {
+                        return None;
+                    }
+                    gather_owners.insert(other);
+                }
+            }
         }
     }
     Some((reachable, gather_owners))
-}
-
-pub(super) fn deposit_cells(
-    deposit: &DepositState,
-    grid: &IntentGrid,
-) -> impl Iterator<Item = IVec2> {
-    let size = IVec2::new(grid.width(), grid.height());
-    let map_min = -(size / 2);
-    let radius = Vec2::splat(deposit.radius.max(0.0));
-    let min = (((deposit.position - radius) / crate::ZONE_BLOCK_SIZE).ceil() - Vec2::ONE)
-        .as_ivec2()
-        .max(map_min);
-    let max = world_to_intent_cell(deposit.position + radius).min(map_min + size - IVec2::ONE);
-    (min.y..=max.y).flat_map(move |y| (min.x..=max.x).map(move |x| IVec2::new(x, y)))
 }
 
 pub(super) fn deposit_region(deposit: &DepositState) -> InteractionRegion {
@@ -440,8 +524,10 @@ fn mine_support(
 ) -> Result<Option<(OwnedDeposit, f32)>, CorridorPaintLimit> {
     let center = world_to_intent_cell(deposit.position);
     let region = deposit_region(deposit);
-    let cells = std::iter::once(center)
-        .chain(deposit_cells(deposit, state.grid).filter(|cell| *cell != center));
+    let cells = std::iter::once(center).chain(
+        deposit_candidate_cells(state.grid, deposit.position, deposit.radius)
+            .filter(|cell| *cell != center),
+    );
     let mut exceeds_paint_limit = false;
     for gather_cell in cells {
         if !budget.spend(1) {
@@ -473,6 +559,9 @@ fn mine_support(
                     .reachability
                     .is_none_or(|map| map.contains(owner, cell, state.grid))
         };
+        if !budget.spend(route.len() + 4) {
+            return Ok(None);
+        }
         if !route.iter().copied().all(viable) {
             continue;
         }
@@ -516,9 +605,6 @@ fn mine_support(
             cell,
             kind: IntentKind::Corridor,
         }));
-        if !budget.spend(desired.len()) {
-            return Ok(None);
-        }
         return Ok(Some((
             OwnedDeposit {
                 id: deposit.id,

@@ -1,6 +1,6 @@
-use super::economy::{EconomyPlan, deposit_cells, deposit_region, validate_owned_deposits};
+use super::economy::{EconomyPlan, deposit_region, validate_owned_deposits};
 use super::{lifecycle::WorkBudget, materialize::world_to_intent_cell, *};
-use crate::nanobot::cell_overlaps_circle;
+use crate::nanobot::{cell_overlaps_circle, deposit_candidate_cells};
 
 fn is_reachable(owner: SwarmId, state: &GameState<'_>, cell: IVec2) -> bool {
     state
@@ -21,17 +21,35 @@ pub(super) fn validate_plan(
     state: &GameState<'_>,
     budget: &mut WorkBudget,
 ) -> Result<PlanValidation, ()> {
+    let mut unreachable = HashSet::new();
+    if let Some(map) = state.reachability
+        && (plan.grid_size != IVec2::new(state.grid.width(), state.grid.height())
+            || plan
+                .reachability
+                .as_ref()
+                .is_none_or(|previous| !map.same_boundary(previous)))
+    {
+        if !budget.spend(plan.desired.len()) {
+            return Err(());
+        }
+        unreachable.extend(
+            plan.desired
+                .iter()
+                .copied()
+                .filter(|intent| !is_reachable(owner, state, intent.cell)),
+        );
+    }
     let validation = PlanValidation {
-        lost_deposit: validate_owned_deposits(&plan.owned_deposits, owner, state, budget)?,
+        lost_deposit: validate_owned_deposits(
+            &plan.owned_deposits,
+            owner,
+            state,
+            &mut unreachable,
+            budget,
+        )?,
         ..PlanValidation::default()
     };
-    if plan.desired.iter().any(|intent| {
-        !is_reachable(owner, state, intent.cell)
-            && !plan
-                .owned_deposits
-                .iter()
-                .any(|mine| mine.desired.contains(intent))
-    }) {
+    if !unreachable.is_empty() {
         return Ok(PlanValidation {
             invalidation: Some("existing Intent Plan left the swarm-reachable map".to_string()),
             ..validation
@@ -411,7 +429,7 @@ pub(super) fn generate_candidates(
         }
         let protected_home = swarm_home_cell(*enemy, state, budget);
         let region = deposit_region(deposit);
-        for cell in deposit_cells(deposit, state.grid) {
+        for cell in deposit_candidate_cells(state.grid, deposit.position, deposit.radius) {
             if !budget.spend(1) {
                 return candidates;
             }

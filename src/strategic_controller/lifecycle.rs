@@ -331,7 +331,7 @@ impl PlannerState {
             tuning,
             &mut budget,
         );
-        if budget.exhausted || !selected.is_coordinated() {
+        if budget.exhausted || !budget.spend(selected.desired.len()) || !selected.is_coordinated() {
             self.tuning_review_requested |= tuning_review && budget.exhausted;
             self.work_used = budget.used;
             return Decision {
@@ -343,11 +343,8 @@ impl PlannerState {
                 work_units: budget.call_work(),
             };
         }
-        let previous = self
-            .current
-            .as_ref()
-            .map_or(&[][..], |plan| plan.desired.as_slice());
-        budget.release_edit_reserve(previous.len() + selected.desired.len());
+        let previous = self.current.as_ref().map(|plan| &plan.desired);
+        budget.release_edit_reserve(previous.map_or(0, HashSet::len) + selected.desired.len());
         let edits = intent_edits(
             owner,
             state,

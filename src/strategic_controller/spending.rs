@@ -88,7 +88,7 @@ pub(super) fn keep_charger_support(
     charger_reserve: u32,
     owner: SwarmId,
     state: &GameState<'_>,
-    desired: &mut Vec<DesiredIntent>,
+    desired: &mut HashSet<DesiredIntent>,
     paint_capacity: usize,
     budget: &mut WorkBudget,
 ) -> (Option<u64>, f32) {
@@ -132,8 +132,10 @@ pub(super) fn keep_charger_support(
             cell,
             kind: IntentKind::Defend,
         };
-        let requires_recovery_paint =
-            buffer < charger_reserve && !desired.iter().any(|intent| intent.cell == cell);
+        let requires_recovery_paint = buffer < charger_reserve
+            && !IntentKind::ALL
+                .into_iter()
+                .any(|kind| desired.contains(&DesiredIntent { cell, kind }));
         if requires_recovery_paint && kept_for_recovery >= defense.recovery_chargers {
             continue;
         }
@@ -175,7 +177,7 @@ pub(super) fn add_production_room(
     swarm: &SwarmState,
     origins: impl Iterator<Item = IVec2>,
     state: &GameState<'_>,
-    desired: &mut Vec<DesiredIntent>,
+    desired: &mut HashSet<DesiredIntent>,
     paint_capacity: usize,
     budget: &mut WorkBudget,
 ) {
