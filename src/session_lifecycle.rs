@@ -107,25 +107,6 @@ fn process_start_requests(world: &mut World) {
     if let Some(mut wheels) = world.get_resource_mut::<Messages<bevy::input::mouse::MouseWheel>>() {
         wheels.clear();
     }
-    for (mut transform, mut projection, mut zoom, mut movement) in world
-        .query_filtered::<(
-            &mut Transform,
-            &mut Projection,
-            &mut CameraZoom2d,
-            &mut FlyCamera2d,
-        ), With<MainCamera>>()
-        .iter_mut(world)
-    {
-        set_camera_view(
-            &mut transform,
-            &mut projection,
-            &mut zoom,
-            &mut movement,
-            crate::scenario::cell_origin(crate::scenario::PLAYER_CELL),
-            Some(crate::DEFAULT_CAMERA_ZOOM),
-        )
-        .expect("main camera uses an orthographic projection");
-    }
     if let Err(error) = populate_session(world, scenario) {
         world.resource_mut::<ScenarioSelection>().error = Some(error.to_string());
         return;
@@ -166,6 +147,10 @@ fn populate_session(
         &tuning,
     )?;
     state.apply(world);
+    frame_home(
+        world,
+        crate::scenario::scenario_layout(scenario, ai_battle.layout),
+    );
     world.insert_resource(reachability);
     world
         .run_system_cached(crate::scenario::configure_controllers)
@@ -173,4 +158,30 @@ fn populate_session(
     world.flush();
     crate::battle_statistics::start_session(world);
     Ok(())
+}
+
+fn frame_home(world: &mut World, layout: crate::scenario::LayoutSetup) {
+    let home = crate::scenario::cell_origin(layout.home);
+    let deposit = crate::scenario::cell_origin(layout.home_deposit);
+    let center = (home + deposit) / 2.0;
+    for (mut transform, mut projection, mut zoom, mut movement) in world
+        .query_filtered::<(
+            &mut Transform,
+            &mut Projection,
+            &mut CameraZoom2d,
+            &mut FlyCamera2d,
+        ), With<MainCamera>>()
+        .iter_mut(world)
+    {
+        movement.home = center;
+        set_camera_view(
+            &mut transform,
+            &mut projection,
+            &mut zoom,
+            &mut movement,
+            center,
+            Some(crate::DEFAULT_CAMERA_ZOOM),
+        )
+        .expect("main camera uses an orthographic projection");
+    }
 }

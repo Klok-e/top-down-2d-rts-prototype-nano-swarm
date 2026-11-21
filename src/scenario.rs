@@ -13,20 +13,21 @@ use crate::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Commitment, Health, Nanobot, NanobotBundle, NanobotType, OpponentSwarm, OwnerSwarm,
-        ProductionFacility, StrategicController, Swarm, SwarmBundle, SwarmId, SwarmMember,
-        VelocityComponent,
+        PlannedKind, ProductionFacility, StrategicController, Swarm, SwarmBundle, SwarmId,
+        SwarmMember, VelocityComponent,
     },
     reachability::{
         IntentWriteAction, ReachabilitySetupError, SwarmReachabilityMap, apply_reachable_intent,
     },
     resources::{ResourceDeposit, ResourceKind},
+    structure_sprites::{PRODUCTION_FACILITY_TEXTURE, StructureVisual},
 };
 
 mod layout;
 mod map;
 pub use layout::LayoutSetup;
 pub use map::default_rock_geometry;
-pub(crate) use map::rock_surface_mesh;
+pub(crate) use map::{clamp_to_map, map_bounds, map_floor_mesh, rock_surface_mesh};
 
 pub const PLAYER_CELL: IVec2 = IVec2::new(0, 0);
 pub const PLAYER_BUILD_FLANK_CELL: IVec2 = IVec2::new(0, 1);
@@ -171,7 +172,7 @@ fn economy_initial_intents(
 
 fn spawn_player_scenario(
     commands: &mut Commands<'_, '_>,
-    asset_server: &Res<'_, AssetServer>,
+    facility_texture: &Handle<Image>,
     grid: &mut IntentGrid,
     reachability: &SwarmReachabilityMap,
     setup: LayoutSetup,
@@ -189,7 +190,6 @@ fn spawn_player_scenario(
     let player_pos = cell_origin(setup.home);
     let facility_pos = player_pos + SEED_FACILITY_OFFSET;
     let deposit_pos = cell_origin(setup.home_deposit);
-    let facility_texture = asset_server.load("production_facility.png");
 
     let swarm = commands
         .spawn(SwarmBundle {
@@ -227,7 +227,7 @@ fn spawn_player_scenario(
     for cell in setup.neutral_deposits {
         spawn_deposit(commands, None, cell_origin(cell));
     }
-    spawn_production_facility(commands, swarm, facility_pos, &facility_texture, tuning);
+    spawn_production_facility(commands, swarm, facility_pos, facility_texture, tuning);
     Ok(())
 }
 
@@ -238,7 +238,7 @@ pub fn spawn_sandbox_resources(commands: &mut Commands<'_, '_>) {
 
 fn spawn_opponent_scenario(
     commands: &mut Commands<'_, '_>,
-    asset_server: &Res<'_, AssetServer>,
+    facility_texture: &Handle<Image>,
     grid: &mut IntentGrid,
     reachability: &SwarmReachabilityMap,
     opponent_swarm_id: SwarmId,
@@ -252,7 +252,6 @@ fn spawn_opponent_scenario(
     let opponent_pos = cell_origin(home);
     let facility_pos = opponent_pos + OPPONENT_FACILITY_OFFSET;
     let deposit_pos = cell_origin(deposit);
-    let facility_texture = asset_server.load("production_facility.png");
 
     let opponent = commands
         .spawn((
@@ -285,7 +284,7 @@ fn spawn_opponent_scenario(
     );
 
     spawn_deposit(commands, Some(opponent), deposit_pos);
-    spawn_production_facility(commands, opponent, facility_pos, &facility_texture, tuning);
+    spawn_production_facility(commands, opponent, facility_pos, facility_texture, tuning);
     Ok(())
 }
 
@@ -355,24 +354,16 @@ fn spawn_production_facility(
     texture: &Handle<Image>,
     tuning: &crate::tuning::Tuning,
 ) {
+    let transform = crate::navigation::align_structure(
+        Transform::from_translation(world_pos.extend(GAMEPLAY_SPRITE_Z))
+            .with_scale(vec3(3., 3., 1.)),
+    );
     commands.spawn((
         ProductionFacility::with_tuning(tuning),
         ProcessingFacility {},
-        crate::structure_sprites::StructureVisual::completed(
-            crate::nanobot::PlannedKind::ProductionFacility,
-        ),
         OwnerSwarm(owner),
-        (
-            Sprite {
-                image: texture.clone(),
-                custom_size: Some(Vec2::splat(crate::navigation::STRUCTURE_SPRITE_SIZE)),
-                ..default()
-            },
-            crate::navigation::align_structure(
-                Transform::from_translation(vec3(world_pos.x, world_pos.y, GAMEPLAY_SPRITE_Z))
-                    .with_scale(vec3(3., 3., 1.)),
-            ),
-        ),
+        StructureVisual::completed(PlannedKind::ProductionFacility)
+            .components(texture.clone(), transform),
     ));
 }
 
@@ -446,6 +437,19 @@ pub(crate) fn session_rules(
     scenario.definition().rules
 }
 
+pub(crate) fn scenario_layout(
+    scenario: crate::scenario_selection::Scenario,
+    ai_battle_layout: AiBattleLayout,
+) -> LayoutSetup {
+    LayoutSetup::for_layout(
+        if scenario == crate::scenario_selection::Scenario::AiBattle {
+            ai_battle_layout
+        } else {
+            AiBattleLayout::Standard
+        },
+    )
+}
+
 pub fn spawn_selected_scenario(
     scenario: crate::scenario_selection::Scenario,
     commands: &mut Commands<'_, '_>,
@@ -455,12 +459,7 @@ pub fn spawn_selected_scenario(
     layout: AiBattleLayout,
     tuning: &crate::tuning::Tuning,
 ) -> Result<SwarmReachabilityMap, ReachabilitySetupError> {
-    let layout = if scenario == crate::scenario_selection::Scenario::AiBattle {
-        layout
-    } else {
-        AiBattleLayout::Standard
-    };
-    let setup = LayoutSetup::for_layout(layout);
+    let setup = scenario_layout(scenario, layout);
     let opponent = scenario.definition().opponent.then(|| ids.next());
     let terrain = default_rock_geometry();
     let mut homes = vec![(SwarmId::PLAYER, cell_origin(setup.home))];
@@ -492,11 +491,19 @@ pub fn spawn_selected_scenario(
         );
     }
     map::spawn_terrain_geometry(commands, terrain);
-    spawn_player_scenario(commands, assets, grid, &reachability, setup, tuning)?;
+    let facility_texture = assets.load(PRODUCTION_FACILITY_TEXTURE);
+    spawn_player_scenario(
+        commands,
+        &facility_texture,
+        grid,
+        &reachability,
+        setup,
+        tuning,
+    )?;
     if scenario.definition().opponent {
         spawn_opponent_scenario(
             commands,
-            assets,
+            &facility_texture,
             grid,
             &reachability,
             opponent.expect("opponent scenario allocated an opponent swarm"),

@@ -113,9 +113,9 @@
         strategy_deposit_exposure_cost: 10.0,
     ),
     presentation: (
-        camera_accel: 1800.0,
-        camera_max_speed: 600.0,
-        camera_friction: 1050.0,
+        camera_accel: 16000.0,
+        camera_max_speed: 1300.0,
+        camera_friction: 50000.0,
         camera_zoom_speed: 0.15,
         overlay_zoom_threshold: 8.0,
         tactical_merge_radius_world: 2048.0,

@@ -102,7 +102,7 @@ Screenshot capture is asynchronous. A request received before any render submiss
 
 Valid intents are `gather`, `build`, `defend`, and `corridor`. Stable button IDs are `intent.gather`, `intent.build`, `intent.defend`, and `intent.corridor`.
 
-Player-action commands are rejected after Victory, Defeat, or Draw. State, camera, screenshot, wait, hello, and shutdown remain available for terminal-state inspection.
+Player-action commands are rejected after Victory, Defeat, or Draw. State, camera, screenshot, wait, hello, and shutdown remain available for terminal-state inspection. With the scenario menu closed, `button match.dismiss` hides the visible result banner so you can inspect the completed match. It returns `button_unavailable` when the banner is hidden or the menu is open.
 
 ## Live tuning
 
@@ -157,7 +157,7 @@ Socket map edits call the same semantic path as mouse painting:
   `unreachable_intent_cell`; it does not create intent.
 - Out-of-bounds edits and post-match player actions return errors.
 
-`button.press` sets the real button's `Interaction::Pressed`, lets the existing UI click system process it, and releases it on the next frame. Camera commands preserve camera depth, synchronize projection and zoom state, and clear keyboard movement velocity.
+`button.press` sets the real button's `Interaction::Pressed`, lets the existing UI click system process it, and releases it on the next frame. Camera commands return the applied center and zoom after clamping the center to the map boundary and zoom to 1 through 30. They preserve camera depth, synchronize projection and zoom state, and clear pan velocity.
 
 ## Screenshots
 

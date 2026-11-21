@@ -3,9 +3,14 @@
 //! and asserts deterministic ECS state on the visible side of the
 //! render mirror.
 
-use bevy::{camera::RenderTargetInfo, prelude::*, render::storage::ShaderStorageBuffer};
+use bevy::{
+    camera::{CameraProjection, RenderTargetInfo},
+    prelude::*,
+    render::storage::ShaderStorageBuffer,
+};
 use top_down_2d_rts_prototype_nano_swarm::{
     MAP_HEIGHT, MAP_WIDTH, ZONE_BLOCK_SIZE,
+    fly_camera::{CameraZoom2d, FlyCamera2d, camera_2d_movement_system},
     intent::{
         BrushSelection, IntentGrid, IntentKind, brush_key_for_kind, brush_selection_keyboard_system,
     },
@@ -13,10 +18,11 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{MatchOutcome, SwarmId},
     navigation::Obstacle,
     reachability::SwarmReachabilityMap,
+    session::SessionRules,
     ui::{UiHandling, check_ui_interaction},
     zones::{
-        ZoneMaterial, ZoneMaterialHandleComponent, ZoneOwnership, ZonePointData,
-        mirror_intent_to_zone_material_system, zone_brush_system,
+        BrushFeedback, BrushHover, ZoneMaterial, ZoneMaterialHandleComponent, ZoneOwnership,
+        ZonePointData, mirror_intent_to_zone_material_system, zone_brush_system,
     },
 };
 
@@ -28,18 +34,16 @@ use common::cell_world_center;
 fn build_app() -> App {
     // No `DefaultPlugins`: the headless schedule has no render world
     // and no window, and the swarm simulation plugins pull in
-    // resources the brush does not read. `TransformPlugin` keeps
-    // `GlobalTransform` in sync so `viewport_to_world_2d` projects
-    // to the camera's actual world position.
+    // resources the brush does not read.
     let grid = IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32);
     let reachability = SwarmReachabilityMap::new(&grid, [], [(SwarmId::PLAYER, Vec2::ZERO)])
         .expect("the empty paint-playtest map has a reachable player home");
     let mut app = App::new();
     app.add_plugins(bevy::time::TimePlugin)
         .add_plugins(top_down_2d_rts_prototype_nano_swarm::scenario::ScenarioPlugin)
-        .add_plugins(bevy::transform::TransformPlugin)
         .insert_resource(UiHandling::default())
         .init_resource::<BrushSelection>()
+        .init_resource::<BrushFeedback>()
         .insert_resource(grid)
         .insert_resource(reachability)
         .init_resource::<ButtonInput<KeyCode>>()
@@ -48,13 +52,11 @@ fn build_app() -> App {
         .init_resource::<Assets<ShaderStorageBuffer>>()
         .add_systems(
             Update,
-            (
-                brush_selection_keyboard_system,
-                check_ui_interaction,
-                zone_brush_system,
-                mirror_intent_to_zone_material_system,
-            )
-                .chain(),
+            (brush_selection_keyboard_system, check_ui_interaction).chain(),
+        )
+        .add_systems(
+            PostUpdate,
+            (zone_brush_system, mirror_intent_to_zone_material_system).chain(),
         );
     app
 }
@@ -112,6 +114,9 @@ fn spawn_camera(app: &mut App, world_pos: Vec2) -> Entity {
         physical_size: UVec2::new(1280, 720),
         scale_factor: 1.0,
     });
+    let mut projection = OrthographicProjection::default_2d();
+    projection.update(1280.0, 720.0);
+    camera.computed.clip_from_view = projection.get_clip_from_view();
     entity
 }
 
@@ -281,9 +286,24 @@ fn scripted_mouse_paint_skips_cells_behind_permanent_rock() {
         "the test wall must isolate the target before the brush runs"
     );
 
+    app.update();
+    assert_eq!(
+        app.world().resource::<BrushFeedback>().hover,
+        Some(BrushHover {
+            cell: target,
+            accepts_action: false,
+        }),
+        "hover must mark the unreachable target before the click"
+    );
+    assert!(!app.world().resource::<BrushFeedback>().unreachable);
+
     press_mouse(&mut app, MouseButton::Left);
     app.update();
 
+    assert!(
+        app.world().resource::<BrushFeedback>().unreachable,
+        "a refused paint stroke must raise the unreachable-cell notice"
+    );
     assert!(
         app.world()
             .resource::<IntentGrid>()
@@ -372,6 +392,85 @@ fn scripted_right_mouse_erase_clears_visible_bit_at_cursor() {
     assert!(!cell.present(IntentKind::Gather.index() as u32));
     for kind in IntentKind::ALL {
         assert!(!cell.present(kind.index() as u32));
+    }
+}
+
+#[test]
+fn fast_mouse_strokes_paint_and_erase_every_crossed_cell() {
+    let mut app = build_app();
+    let window = spawn_window(&mut app);
+    spawn_camera(&mut app, Vec2::new(0.0, 256.0));
+    app.update();
+
+    for (button, left, right, painted) in [
+        (MouseButton::Left, 90.0, 1190.0, true),
+        (MouseButton::Right, 1190.0, 90.0, false),
+    ] {
+        set_cursor(&mut app, window, Vec2::new(left, 360.0));
+        press_mouse(&mut app, button);
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .clear_just_pressed(button);
+        set_cursor(&mut app, window, Vec2::new(right, 360.0));
+        app.update();
+
+        let grid = app.world().resource::<IntentGrid>();
+        for x in -2..=1 {
+            assert_eq!(
+                grid.cell(IVec2::new(x, 0))
+                    .unwrap()
+                    .has_owned(IntentKind::Gather, SwarmId::PLAYER),
+                painted,
+                "stroke must visit cell ({x}, 0)"
+            );
+        }
+        clear_mouse(&mut app);
+        app.update();
+    }
+}
+
+#[test]
+fn home_does_not_erase_the_cells_between_camera_views() {
+    let mut app = build_app();
+    app.add_systems(
+        Update,
+        camera_2d_movement_system.after(check_ui_interaction),
+    );
+    let window = spawn_window(&mut app);
+    set_cursor(&mut app, window, Vec2::new(640.0, 360.0));
+    let start = IVec2::new(4, 0);
+    let camera = spawn_camera(&mut app, cell_world_center(start));
+    app.world_mut().entity_mut(camera).insert((
+        FlyCamera2d {
+            home: cell_world_center(IVec2::ZERO),
+            ..default()
+        },
+        CameraZoom2d::default(),
+    ));
+    for x in 0..=4 {
+        app.world_mut().resource_mut::<IntentGrid>().paint(
+            IVec2::new(x, 0),
+            IntentKind::Gather,
+            SwarmId::PLAYER,
+        );
+    }
+    press_mouse(&mut app, MouseButton::Right);
+    app.update();
+    app.world_mut()
+        .resource_mut::<ButtonInput<MouseButton>>()
+        .clear_just_pressed(MouseButton::Right);
+    press_key(&mut app, KeyCode::Home);
+
+    let grid = app.world().resource::<IntentGrid>();
+    for x in 0..=4 {
+        assert_eq!(
+            grid.cell(IVec2::new(x, 0))
+                .unwrap()
+                .has_owned(IntentKind::Gather, SwarmId::PLAYER),
+            x != 0 && x != 4,
+            "Home should preserve intermediate paint at ({x}, 0)"
+        );
     }
 }
 
@@ -524,10 +623,10 @@ fn scripted_paint_at_world_corner_lands_in_corner_cell() {
 }
 
 #[test]
-fn scripted_cell_guides_follow_paint_erase_and_ui_capture() {
+fn scripted_cell_preview_and_guides_follow_pointer_actions() {
     let mut app = build_app();
     app.init_resource::<Assets<BackgroundMaterial>>()
-        .add_systems(Update, update_paint_grid.after(check_ui_interaction));
+        .add_systems(PostUpdate, update_paint_grid.after(zone_brush_system));
     let ground = app
         .world_mut()
         .resource_mut::<Assets<BackgroundMaterial>>()
@@ -548,6 +647,21 @@ fn scripted_cell_guides_follow_paint_erase_and_ui_capture() {
 
     app.update();
     assert!(!visible(&app), "idle ground must have no cell guides");
+    assert_eq!(
+        app.world().resource::<BrushFeedback>().hover,
+        Some(BrushHover {
+            cell: IVec2::ZERO,
+            accepts_action: true,
+        }),
+        "the cursor cell must be visible before pressing a button"
+    );
+    set_cursor(&mut app, window, Vec2::new(575.0, 360.0));
+    app.update();
+    assert_eq!(
+        app.world().resource::<BrushFeedback>().hover.unwrap().cell,
+        IVec2::new(-1, 0),
+        "the preview must follow the cursor across a cell edge"
+    );
     press_mouse(&mut app, MouseButton::Left);
     app.update();
     assert!(visible(&app), "painting must show cell guides");
@@ -569,6 +683,7 @@ fn scripted_cell_guides_follow_paint_erase_and_ui_capture() {
         .id();
     app.update();
     assert!(!visible(&app), "UI capture must suppress cell guides");
+    assert!(app.world().resource::<BrushFeedback>().hover.is_none());
     app.world_mut().despawn(control);
     app.insert_resource(MatchOutcome::Winner(SwarmId::PLAYER));
     app.update();
@@ -576,6 +691,18 @@ fn scripted_cell_guides_follow_paint_erase_and_ui_capture() {
         !visible(&app),
         "finished matches must not show paint guides"
     );
+    assert!(app.world().resource::<BrushFeedback>().hover.is_none());
+    app.insert_resource(MatchOutcome::InProgress);
+    app.insert_resource(SessionRules {
+        player_swarm: None,
+        ..default()
+    });
+    app.update();
+    assert!(
+        !visible(&app),
+        "spectator clicks must not show paint guides"
+    );
+    assert!(app.world().resource::<BrushFeedback>().hover.is_none());
 }
 
 #[test]

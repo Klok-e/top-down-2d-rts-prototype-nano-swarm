@@ -11,8 +11,11 @@ use top_down_2d_rts_prototype_nano_swarm::{
     },
     reachability::SwarmReachabilityMap,
     ui::{
-        FontsResource,
-        match_banner::{MatchBannerText, setup_match_banner, update_match_banner_system},
+        FontsResource, FpsText, NanoswarmUiSetupPlugin,
+        match_banner::{
+            MatchBannerDismiss, MatchBannerRoot, MatchBannerText, setup_match_banner,
+            update_match_banner_system,
+        },
     },
 };
 
@@ -553,7 +556,7 @@ fn strategic_combat_support_follows_defenders_as_they_advance() {
 }
 
 #[test]
-fn mutual_final_combat_deaths_show_draw_in_the_same_tick() {
+fn mutual_final_combat_deaths_show_a_dismissible_draw_in_the_same_tick() {
     use top_down_2d_rts_prototype_nano_swarm::nanobot::Health;
     let mut app = common::sim_app();
     app.add_plugins((CombatPlugin, SwarmEliminationPlugin))
@@ -603,4 +606,148 @@ fn mutual_final_combat_deaths_show_draw_in_the_same_tick() {
             .0,
         "DRAW\nBoth Swarms Eliminated"
     );
+    assert!(
+        app.world_mut()
+            .query::<&Text>()
+            .iter(app.world())
+            .any(|text| text.0 == "Esc for menu")
+    );
+    let dismiss_button = app
+        .world_mut()
+        .query_filtered::<Entity, (With<Button>, With<MatchBannerDismiss>)>()
+        .single(app.world())
+        .expect("match outcome can be dismissed");
+    common::press_button(&mut app, dismiss_button);
+    assert_eq!(*app.world().resource::<MatchOutcome>(), MatchOutcome::Draw);
+    assert_eq!(
+        app.world_mut()
+            .query_filtered::<&Visibility, With<MatchBannerRoot>>()
+            .single(app.world())
+            .unwrap(),
+        &Visibility::Hidden
+    );
+}
+
+fn app_with_hud() -> App {
+    use bevy::diagnostic::FrameCountPlugin;
+    use top_down_2d_rts_prototype_nano_swarm::intent::BrushSelection;
+
+    let mut app = common::minimal_app();
+    app.add_plugins((
+        TaskPoolPlugin::default(),
+        AssetPlugin::default(),
+        FrameCountPlugin,
+    ))
+    .init_asset::<Font>()
+    .init_asset_loader::<bevy::text::FontLoader>()
+    .init_resource::<ButtonInput<KeyCode>>()
+    .init_resource::<BrushSelection>()
+    .add_plugins(NanoswarmUiSetupPlugin);
+    app
+}
+
+fn hud_shows(app: &mut App, message: &str) -> bool {
+    app.world_mut()
+        .query::<(&Text, &Node)>()
+        .iter(app.world())
+        .any(|(text, node)| node.display != Display::None && text.0.contains(message))
+}
+
+#[test]
+fn swarm_hud_warns_of_combat_and_a_missing_delivery_crew() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{
+        ActionableProjection, DefenderAttackCooldown, DefenderResponse, Health,
+        PopulationDemandPlugin, TerritorySnapshot, population_demand_system,
+        project_territory_snapshot_system,
+    };
+
+    let mut app = app_with_hud();
+    app.init_resource::<ActionableProjection>()
+        .init_resource::<TerritorySnapshot>()
+        .add_plugins((CombatPlugin, SwarmEliminationPlugin, PopulationDemandPlugin))
+        .add_systems(
+            FixedUpdate,
+            project_territory_snapshot_system.before(population_demand_system),
+        )
+        .add_systems(FixedLast, nanobot_death_cleanup_system);
+    let home = common::cell_world_center(IVec2::ZERO);
+    let player = common::spawn_swarm_with_nanobots(&mut app, home, &[]);
+    let worker = common::spawn_worker_at(&mut app, home);
+    let opponent = common::spawn_opponent_swarm_with_nanobots(&mut app, home, &[]);
+    let opponent_id = *app.world().get::<SwarmId>(opponent).unwrap();
+    let intruder = common::spawn_defender_at(&mut app, home + Vec2::X * 72.0);
+    app.world_mut()
+        .entity_mut(intruder)
+        .insert(SwarmMember::new(opponent_id));
+    let mut producing = ProductionFacility::new();
+    producing.current_target = Some(NanobotType::Hauler);
+    let facility = app
+        .world_mut()
+        .spawn((
+            producing,
+            OwnerSwarm(player),
+            Transform::from_translation((home + Vec2::Y * 256.0).extend(0.0)),
+        ))
+        .id();
+    app.world_mut().resource_mut::<IntentGrid>().paint(
+        IVec2::ZERO,
+        IntentKind::Build,
+        SwarmId::PLAYER,
+    );
+
+    app.update();
+    assert!(hud_shows(&mut app, "Hostiles in your territory"));
+    assert!(hud_shows(&mut app, "Workers: 1 / 0"));
+    assert!(hud_shows(&mut app, "Production: 1 Hauler"));
+    let starting_health = app.world().get::<Health>(worker).unwrap().current;
+
+    app.world_mut()
+        .entity_mut(intruder)
+        .insert(DefenderResponse { target: worker });
+    app.update();
+    assert!(app.world().get::<Health>(worker).unwrap().current < starting_health);
+    assert!(hud_shows(&mut app, "Swarm under attack"));
+
+    app.world_mut().get_mut::<Health>(worker).unwrap().current = 1;
+    app.world_mut()
+        .get_mut::<ProductionFacility>(facility)
+        .unwrap()
+        .current_target = None;
+    app.world_mut()
+        .entity_mut(intruder)
+        .remove::<DefenderAttackCooldown>();
+    app.update();
+    assert!(app.world().get_entity(worker).is_err());
+    assert_eq!(
+        *app.world().resource::<MatchOutcome>(),
+        MatchOutcome::InProgress
+    );
+    assert!(hud_shows(&mut app, "No nanobots remaining"));
+    assert!(hud_shows(&mut app, "Production: no Haulers to deliver"));
+}
+
+#[test]
+fn f3_shows_and_hides_the_fps_counter() {
+    let mut app = app_with_hud();
+    app.update();
+    let counter = app
+        .world_mut()
+        .query_filtered::<Entity, With<FpsText>>()
+        .single(app.world())
+        .unwrap();
+    assert_eq!(
+        app.world().get::<Visibility>(counter),
+        Some(&Visibility::Hidden)
+    );
+
+    for expected in [Visibility::Visible, Visibility::Hidden] {
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::F3);
+        app.update();
+        assert_eq!(app.world().get::<Visibility>(counter), Some(&expected));
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset(KeyCode::F3);
+    }
 }

@@ -22,23 +22,25 @@ const PRESENT_CELLS: [IVec2; 4] = [
 const OVERLAP_CELL: IVec2 = IVec2::new(2, 5);
 const ABSENT_CELL: IVec2 = IVec2::new(4, 5);
 // Absent, player Gather, opponent Build, overlapping Defend, player Corridor,
-// all four player-owned layers, and player Build overlapping enemy Gather.
+// all four player-owned layers, and player Gather overlapping three enemy kinds.
 // Presence occupies bits 0..=3 and each ownership class occupies two bits
 // beginning at bit 4.
-const DISPLAY_VALUES: [u32; 7] = [0, 17, 130, 772, 1032, 1375, 99];
+const DISPLAY_VALUES: [u32; 7] = [0, 17, 130, 772, 1032, 1375, 695];
 const CAPTURE_FRAME: u32 = 60;
 const FRAMING_SCALE: f32 = 2.8;
-const PATCH_SIZE: u32 = 32;
-const PIXEL_TOLERANCE: u8 = 12;
-const MIN_SOLID_MATCHING_PIXELS: usize = 920;
-const MIN_STRIPE_MATCHING_PIXELS: usize = 256;
+const STRIP_HEIGHT: f32 = ZONE_BLOCK_SIZE * 0.75;
+const PATCH_SIZE: u32 = 24;
+const PIXEL_TOLERANCE: u8 = 9;
+const MIN_SOLID_MATCHING_PIXELS: usize = 530;
+const MIN_STRIPE_MATCHING_PIXELS: usize = 106;
 
 pub fn zone_binary_overlay(ctx: &mut TestContext) -> TestFlow {
     if ctx.frame == 2 {
         focus_camera(ctx.world);
         hide_existing_scene(ctx.world);
         paint_examples(ctx.world);
-        spawn_binary_display(ctx.world);
+        spawn_binary_display(ctx.world, STRIP_HEIGHT / 2.0, false);
+        spawn_binary_display(ctx.world, -STRIP_HEIGHT / 2.0, true);
         return TestFlow::Continue;
     }
     if ctx.frame < CAPTURE_FRAME {
@@ -56,40 +58,110 @@ pub fn validate_zone_binary_overlay(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("decode zone screenshot {}: {error}", path.display()))?
         .to_rgba8();
     let cell_width = ZONE_BLOCK_SIZE / FRAMING_SCALE;
-    let first_center_x =
-        image.width() as f32 / 2.0 - (DISPLAY_VALUES.len() as f32 - 1.0) * cell_width / 2.0;
-    let center_y = image.height() as f32 / 2.0;
-    let center = |index: usize| Vec2::new(first_center_x + index as f32 * cell_width, center_y);
+    let strip_height = STRIP_HEIGHT / FRAMING_SCALE;
+    let display_width = DISPLAY_VALUES.len() as f32 * cell_width;
+    let left = (image.width() as f32 - display_width) / 2.0;
+    let top = image.height() as f32 / 2.0 - strip_height;
+    let position = |row: f32, cell: f32, u: f32, v: f32| {
+        Vec2::new(
+            left + (cell + u) * cell_width,
+            top + (row + v) * strip_height,
+        )
+    };
 
-    require_solid_patch(&image, center(0), [20, 20, 26], "absent zone")?;
-    require_solid_patch(&image, center(1), [135, 17, 22], "player Gather zone")?;
+    require_solid_patch(
+        &image,
+        position(0.0, 0.0, 0.5, 0.5),
+        [20, 20, 26],
+        "absent zone",
+    )?;
+    require_solid_patch(
+        &image,
+        position(0.0, 1.0, 0.5, 0.5),
+        [87, 37, 35],
+        "player Gather",
+    )?;
+    require_solid_patch(
+        &image,
+        position(0.0, 4.0, 0.5, 0.5),
+        [83, 71, 34],
+        "player Corridor",
+    )?;
+
+    let layers = [
+        ([87, 37, 35], [55, 27, 29], [106, 43, 40], "Gather"),
+        ([81, 41, 71], [51, 29, 47], [99, 49, 85], "Build"),
+        ([37, 59, 91], [27, 39, 58], [43, 72, 110], "Defend"),
+        ([83, 71, 34], [52, 45, 29], [101, 87, 38], "Corridor"),
+    ];
+    for (kind, (fill, hatch_gap, hatch_fill, label)) in layers.into_iter().enumerate() {
+        let column = (kind as f32 + 0.5) / 4.0;
+        require_solid_patch(&image, position(0.0, 5.0, column, 0.5), fill, label)?;
+        require_striped_patch(
+            &image,
+            position(1.0, 5.0, column, 0.5),
+            hatch_gap,
+            hatch_fill,
+            label,
+        )?;
+    }
     require_striped_patch(
         &image,
-        center(2),
-        [129, 34, 104],
-        [98, 27, 80],
-        "opponent Build zone",
+        position(0.0, 2.0, 0.5, 0.5),
+        layers[1].1,
+        layers[1].2,
+        "opponent Build keeps its hue",
+    )?;
+    require_solid_patch(
+        &image,
+        position(0.0, 3.0, 0.5, 0.25),
+        layers[2].0,
+        "shared Defend, player",
     )?;
     require_striped_patch(
         &image,
-        center(3),
-        [17, 17, 136],
-        [135, 53, 45],
-        "independent overlapping Defend zone",
+        position(0.0, 3.0, 0.5, 0.75),
+        layers[2].1,
+        layers[2].2,
+        "shared Defend, opponent",
     )?;
-    require_solid_patch(&image, center(4), [135, 135, 22], "player Corridor zone")?;
-    require_solid_patch(&image, center(5), [119, 73, 99], "overlapping player zones")?;
-    require_striped_patch(
+    require_solid_patch(
         &image,
-        center(6),
-        [135, 17, 136],
-        [135, 53, 45],
-        "player Build preserved under enemy Gather hatch",
+        position(0.0, 6.0, 0.5, 0.25),
+        layers[0].0,
+        "player Gather keeps its hue under overlap",
     )?;
-    let gather_center = center(1);
-    let edge_x = (gather_center.x - cell_width / 2.0).ceil() as u32;
-    let border = image.get_pixel(edge_x, center_y as u32).0;
-    let fill = image.get_pixel(gather_center.x as u32, center_y as u32).0;
+    for (kind, (_, hatch_gap, hatch_fill, label)) in layers[..3].iter().copied().enumerate() {
+        require_striped_patch(
+            &image,
+            position(0.0, 6.0, (kind as f32 + 0.5) / 3.0, 0.75),
+            hatch_gap,
+            hatch_fill,
+            label,
+        )?;
+    }
+
+    let pixel = |pos: Vec2| image.get_pixel(pos.x as u32, pos.y as u32).0;
+    let separator = pixel(position(0.0, 6.0, 0.5, 0.5));
+    if separator[1] < 85 || separator[0].abs_diff(separator[2]) > 12 {
+        return Err(format!(
+            "overlapping orders need a visible neutral separator: {separator:?}"
+        ));
+    }
+
+    let first_down = pixel(position(1.0, 3.0, 0.18, 0.055))[2];
+    let first_up = pixel(position(1.0, 3.0, 0.18, 0.195))[2];
+    let second_down = pixel(position(1.0, 3.0, 0.18, 0.555))[2];
+    let second_up = pixel(position(1.0, 3.0, 0.18, 0.695))[2];
+    if first_down < first_up.saturating_add(25) || second_up < second_down.saturating_add(25) {
+        return Err("spectator swarms need opposing hatch directions".into());
+    }
+    if first_down.abs_diff(second_up) > 9 || first_up.abs_diff(second_down) > 9 {
+        return Err("spectator swarms must have equal hatch contrast".into());
+    }
+
+    let border = pixel(position(0.0, 1.0, 0.004, 0.5));
+    let fill = pixel(position(0.0, 1.0, 0.5, 0.5));
     if border[0] < fill[0].saturating_add(35) {
         return Err(format!(
             "Gather border must be distinct from translucent fill: border={border:?}, fill={fill:?}"
@@ -170,42 +242,37 @@ fn paint_examples(world: &mut World) {
     }
 }
 
-/// Spawn a test strip through production [`ZoneMaterial`] with absent,
-/// player-only, enemy-only, and same-kind and cross-kind overlap examples. Static test data makes rendered colour evidence
-/// independent from asynchronous main-world storage-buffer extraction, while
-/// [`assert_mirror`] separately proves simulation-to-material mirroring.
-fn spawn_binary_display(world: &mut World) {
+/// Split the screenshot between the Standard and AI Battle presentations of the same cells.
+fn spawn_binary_display(world: &mut World, y: f32, spectator: bool) {
     let zone_data = DISPLAY_VALUES
         .into_iter()
         .map(|active| ZonePointData { active })
         .collect::<Vec<_>>();
-    let zone_map = world
-        .resource_mut::<Assets<ShaderStorageBuffer>>()
-        .add(ShaderStorageBuffer::from(DISPLAY_VALUES.to_vec()));
-    let material = world
-        .resource_mut::<Assets<ZoneMaterial>>()
-        .add(ZoneMaterial {
-            zone_map,
-            zone_data,
-            width: DISPLAY_VALUES.len() as u32,
-            height: 1,
-        });
+    let mut material = {
+        let mut buffers = world.resource_mut::<Assets<ShaderStorageBuffer>>();
+        let material = ZoneMaterial::new(DISPLAY_VALUES.len() as u32, 1, &mut buffers);
+        buffers
+            .get_mut(&material.zone_map)
+            .unwrap()
+            .set_data(DISPLAY_VALUES.to_vec());
+        material
+    };
+    material.zone_data = zone_data;
+    material.spectator = u32::from(spectator);
+    let material = world.resource_mut::<Assets<ZoneMaterial>>().add(material);
     let mesh = world
         .resource_mut::<Assets<Mesh>>()
         .add(Mesh::from(Rectangle::default()));
     let width = DISPLAY_VALUES.len() as f32 * ZONE_BLOCK_SIZE;
 
     world.spawn((
-        Sprite::from_color(
-            Color::srgb(0.08, 0.08, 0.1),
-            Vec2::new(width, ZONE_BLOCK_SIZE),
-        ),
-        Transform::from_xyz(0.0, 0.0, 0.0),
+        Sprite::from_color(Color::srgb(0.08, 0.08, 0.1), Vec2::new(width, STRIP_HEIGHT)),
+        Transform::from_xyz(0.0, y, 0.0),
     ));
     world.spawn((
         Mesh2d(mesh),
         MeshMaterial2d(material),
-        Transform::from_xyz(0.0, 0.0, 1.0).with_scale(Vec3::new(width, ZONE_BLOCK_SIZE, 1.0)),
+        Transform::from_xyz(0.0, y, 1.0).with_scale(Vec3::new(width, STRIP_HEIGHT, 1.0)),
     ));
 }
 

@@ -1,5 +1,7 @@
-//! Paused session controls and scenario selection.
+//! Session controls and scenario selection.
 
+use super::ui_setup::FontsResource;
+use crate::nanobot::MatchOutcome;
 use crate::scenario_selection::{Scenario, ScenarioSelection};
 use crate::session_lifecycle::StartScenario;
 use bevy::{input::InputSystems, prelude::*, ui::UiSystems};
@@ -41,9 +43,12 @@ pub enum MenuAction {
 #[derive(Component)]
 pub struct MenuRoot;
 #[derive(Component)]
-struct MenuStatus;
-#[derive(Component)]
-struct MenuError;
+enum MenuLabel {
+    Title,
+    CurrentScenario,
+    ScenarioChoice(Scenario, &'static str),
+    Error,
+}
 
 pub struct ScenarioMenuPlugin;
 impl Plugin for ScenarioMenuPlugin {
@@ -65,7 +70,7 @@ impl Plugin for ScenarioMenuPlugin {
                     .chain()
                     .in_set(MenuInputSet::Actions),
             )
-            .add_systems(Startup, setup_menu)
+            .add_systems(PostStartup, setup_menu)
             .add_systems(Update, refresh_menu);
     }
 }
@@ -131,10 +136,11 @@ fn synchronize_pause(mut menu: ResMut<ScenarioMenu>, mut time: ResMut<Time<Virtu
     }
 }
 
-fn menu_text(value: &str, size: f32) -> impl Bundle {
+fn menu_text(value: &str, size: f32, font: &Handle<Font>) -> impl Bundle {
     (
         Text::new(value),
         TextFont {
+            font: font.clone(),
             font_size: size,
             ..default()
         },
@@ -156,7 +162,8 @@ fn button(action: MenuAction) -> impl Bundle {
         BorderColor::all(Color::srgb(0.25, 0.34, 0.44)),
     )
 }
-fn setup_menu(mut commands: Commands) {
+fn setup_menu(mut commands: Commands, fonts: Option<Res<FontsResource>>) {
+    let font = fonts.map(|fonts| fonts.font.clone()).unwrap_or_default();
     commands
         .spawn((
             MenuRoot,
@@ -170,6 +177,7 @@ fn setup_menu(mut commands: Commands) {
                 ..default()
             },
             GlobalZIndex(100),
+            bevy::ui::FocusPolicy::Block,
             BackgroundColor(Color::srgba(0.015, 0.025, 0.04, 0.85)),
         ))
         .with_children(|root| {
@@ -186,12 +194,8 @@ fn setup_menu(mut commands: Commands) {
                 BackgroundColor(Color::srgb(0.045, 0.065, 0.095)),
             ))
             .with_children(|panel| {
-                panel.spawn(menu_text("Paused", 32.0));
-                panel.spawn((menu_text("", 19.0), MenuStatus));
-                panel.spawn(menu_text(
-                    "Choose a scenario, then start it immediately.",
-                    16.0,
-                ));
+                panel.spawn((menu_text("Paused", 32.0, &font), MenuLabel::Title));
+                panel.spawn((menu_text("", 19.0, &font), MenuLabel::CurrentScenario));
                 for (scenario, description) in [
                     (Scenario::Standard, "Standard: Face an advancing opponent"),
                     (Scenario::Sandbox, "Sandbox: Open-ended, no opponent"),
@@ -200,15 +204,18 @@ fn setup_menu(mut commands: Commands) {
                     panel
                         .spawn(button(MenuAction::Select(scenario)))
                         .with_children(|b| {
-                            b.spawn(menu_text(description, 17.0));
+                            b.spawn((
+                                menu_text(description, 17.0, &font),
+                                MenuLabel::ScenarioChoice(scenario, description),
+                            ));
                         });
                 }
-                panel.spawn((menu_text("", 15.0), MenuError));
+                panel.spawn((menu_text("", 15.0, &font), MenuLabel::Error));
                 panel.spawn(button(MenuAction::Start)).with_children(|b| {
-                    b.spawn(menu_text("Start selected scenario", 18.0));
+                    b.spawn(menu_text("Start selected scenario", 18.0, &font));
                 });
                 panel.spawn(button(MenuAction::Quit)).with_children(|b| {
-                    b.spawn(menu_text("Quit to desktop", 18.0));
+                    b.spawn(menu_text("Quit to desktop", 18.0, &font));
                 });
             });
         });
@@ -217,9 +224,9 @@ fn setup_menu(mut commands: Commands) {
 fn refresh_menu(
     menu: Res<ScenarioMenu>,
     selection: Res<ScenarioSelection>,
+    outcome: Option<Res<MatchOutcome>>,
     mut roots: Query<&mut Node, With<MenuRoot>>,
-    mut status: Query<&mut Text, (With<MenuStatus>, Without<MenuError>)>,
-    mut errors: Query<(&mut Text, &mut Node), (With<MenuError>, Without<MenuRoot>)>,
+    mut labels: Query<(&MenuLabel, &mut Text, &mut Node), Without<MenuRoot>>,
     mut buttons: Query<(
         &MenuAction,
         &Interaction,
@@ -234,20 +241,33 @@ fn refresh_menu(
             Display::None
         };
     }
-    for mut text in &mut status {
-        text.0 = format!(
-            "Current: {}\nSelected: {}",
-            selection.current.label(),
-            selection.next_launch.label()
-        );
+    if !menu.open {
+        return;
     }
-    for (mut text, mut node) in &mut errors {
-        text.0 = selection.error.clone().unwrap_or_default();
-        node.display = if selection.error.is_some() {
-            Display::Flex
-        } else {
-            Display::None
+    let complete = outcome.is_some_and(|outcome| *outcome != MatchOutcome::InProgress);
+    for (label, mut text, mut node) in &mut labels {
+        let value = match label {
+            MenuLabel::Title if complete => "Match complete".to_owned(),
+            MenuLabel::Title => "Paused".to_owned(),
+            MenuLabel::CurrentScenario => format!("Current: {}", selection.current.label()),
+            MenuLabel::ScenarioChoice(scenario, description)
+                if *scenario == selection.next_launch =>
+            {
+                format!("{description} · Selected")
+            }
+            MenuLabel::ScenarioChoice(_, description) => (*description).to_owned(),
+            MenuLabel::Error => {
+                node.display = if selection.error.is_some() {
+                    Display::Flex
+                } else {
+                    Display::None
+                };
+                selection.error.clone().unwrap_or_default()
+            }
         };
+        if text.0 != value {
+            text.0 = value;
+        }
     }
     for (action, interaction, mut background, mut border) in &mut buttons {
         let selected = *action == MenuAction::Select(selection.next_launch);
@@ -256,10 +276,11 @@ fn refresh_menu(
         } else {
             Color::srgb(0.25, 0.34, 0.44)
         });
-        background.0 = if *interaction == Interaction::Hovered {
-            Color::srgb(0.2, 0.28, 0.36)
-        } else {
-            Color::srgb(0.12, 0.17, 0.24)
+        background.0 = match (selected, *interaction == Interaction::Hovered) {
+            (true, true) => Color::srgb(0.13, 0.39, 0.42),
+            (true, false) => Color::srgb(0.10, 0.31, 0.33),
+            (false, true) => Color::srgb(0.20, 0.28, 0.36),
+            (false, false) => Color::srgb(0.12, 0.17, 0.24),
         };
     }
 }

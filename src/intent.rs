@@ -415,9 +415,13 @@ pub fn brush_selection_keyboard_system(
     mut brush_selection: ResMut<BrushSelection>,
     menu: Option<Res<crate::ui::scenario_menu::ScenarioMenu>>,
     editor: Option<Res<crate::ui::tuning_panel::TuningEditor>>,
+    outcome: Option<Res<crate::nanobot::MatchOutcome>>,
+    rules: Option<Res<crate::session::SessionRules>>,
 ) {
     if menu.is_some_and(|menu| menu.blocks_world_input)
         || editor.is_some_and(|editor| editor.keyboard_captured())
+        || outcome.is_some_and(|outcome| *outcome != crate::nanobot::MatchOutcome::InProgress)
+        || rules.is_some_and(|rules| rules.spectator())
     {
         return;
     }

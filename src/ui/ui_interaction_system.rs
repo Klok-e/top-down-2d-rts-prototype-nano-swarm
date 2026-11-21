@@ -17,7 +17,7 @@ pub fn check_ui_interaction(
     editor: Option<Res<super::tuning_panel::TuningEditor>>,
 ) {
     let any = interaction_query.iter().any(|x| x.cursor_over())
-        || editor.is_some_and(|editor| editor.pointer_captured() || editor.keyboard_captured());
+        || editor.is_some_and(|editor| editor.pointer_captured());
     if ui_handling.is_pointer_over_ui != any {
         ui_handling.is_pointer_over_ui = any;
     }

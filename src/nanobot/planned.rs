@@ -97,23 +97,14 @@ impl PlannedKind {
     ];
 }
 
-/// Color the planned-structure visual uses. Semi-transparent
-/// so the player can still see the underlying map and so the
-/// structure is clearly "not finished yet" at a glance. The
-/// completed structure (Source or Sink Stockpile) uses
-/// [`completed_visual_color`] instead, so the visual flip on
-/// completion is visible even without a sprite swap.
+/// Tint for the translucent artwork on Planned Structures.
 pub const fn planned_visual_color() -> Color {
-    Color::srgba(0.6, 0.6, 0.7, 0.5)
+    Color::srgba(1.0, 1.0, 1.0, 0.85)
 }
 
-/// Color the completed structure visual uses (Source and
-/// Sink Stockpiles both). Full opacity and a different hue
-/// from the planned visual so the promotion moment is
-/// visible. Tests can pin the distinction by reading the
-/// `Sprite` `color` field.
+/// Neutral tint preserves the artwork palette and leaves headroom for hit flashes.
 pub const fn completed_visual_color() -> Color {
-    Color::srgba(0.2, 0.6, 0.3, 1.0)
+    Color::srgb(0.86, 0.86, 0.86)
 }
 
 /// Build-painted cells where a consumer may place its local Sink Stockpile.
@@ -306,15 +297,11 @@ pub(crate) fn planned_visual_components(
     structure_sprites: &StructureSprites,
     world_pos: Vec2,
 ) -> (Sprite, Transform, StructureVisual) {
-    let mut sprite = structure_sprites.sprite(kind, StructureVisualState::Planned);
-    sprite.color = planned_visual_color();
-    sprite.custom_size = Some(Vec2::splat(PLANNED_STRUCTURE_FOOTPRINT));
-    (
-        sprite,
+    StructureVisual::planned(kind).components(
+        structure_sprites.handle(kind, StructureVisualState::Planned),
         crate::navigation::align_structure(Transform::from_translation(
             world_pos.extend(GAMEPLAY_SPRITE_Z),
         )),
-        StructureVisual::planned(kind),
     )
 }
 

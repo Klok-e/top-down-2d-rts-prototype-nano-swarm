@@ -1064,6 +1064,53 @@ fn authored_starting_facilities_align_without_changing_deposit_geometry() {
 }
 
 #[test]
+fn completed_facility_uses_the_same_art_as_the_starting_facility() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{ProductionFacility, StructureClearing},
+        structure_sprites::StructureSprites,
+    };
+
+    let mut app = default_headless_app();
+    let sprites = StructureSprites::load(app.world().resource::<AssetServer>());
+    app.insert_resource(sprites);
+    app.update();
+    let world = app.world_mut();
+    let starting = world
+        .query_filtered::<(&OwnerSwarm, &Sprite), With<ProductionFacility>>()
+        .iter(world)
+        .find(|(owner, _)| world.get::<SwarmId>(owner.0) == Some(&SwarmId::PLAYER))
+        .unwrap()
+        .1
+        .clone();
+
+    let plan = common::spawn_planned_production_facility_at_cell(&mut app, IVec2::Y);
+    let world = app.world_mut();
+    let state = *world.get::<PlannedStructure>(plan).unwrap();
+    let center = world.get::<Transform>(plan).unwrap().translation.truncate();
+    world.entity_mut(plan).insert((
+        state.with_work_remaining(0),
+        StructureClearing::awaiting_validation(center + Vec2::X * 72.0),
+    ));
+    for _ in 0..16 {
+        app.update();
+        if app.world().get::<ProductionFacility>(plan).is_some() {
+            break;
+        }
+    }
+
+    assert!(
+        app.world().get::<ProductionFacility>(plan).is_some(),
+        "the finished plan must open as a Production Facility"
+    );
+    let built = app.world().get::<Sprite>(plan).unwrap();
+    assert_eq!(built.image, starting.image);
+    assert_eq!(
+        built.color, starting.color,
+        "both facilities must show the same artwork"
+    );
+}
+
+#[test]
 fn default_economy_loaded_bots_do_not_wait_for_clear_routes() {
     use top_down_2d_rts_prototype_nano_swarm::{
         nanobot::{Cargo, ExtractProgress, HaulerLoading, WaitingForWork, WorkBlocked},

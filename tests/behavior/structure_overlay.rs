@@ -136,9 +136,12 @@ fn charger_overlay_bar_uses_amount_over_capacity() {
 fn completed_support_structure_gets_stacked_condition_bars() {
     let mut app = build_app();
     let stockpile = common::spawn_stockpile(&mut app, Vec2::ZERO, 50, 100);
+    let transform = top_down_2d_rts_prototype_nano_swarm::navigation::align_structure(
+        Transform::from_xyz(0.0, 0.0, GAMEPLAY_SPRITE_Z),
+    );
     app.world_mut()
         .entity_mut(stockpile)
-        .insert(Structure::new(StructureKind::Basic));
+        .insert((Structure::new(StructureKind::Basic), transform));
 
     app.update();
 
@@ -146,38 +149,17 @@ fn completed_support_structure_gets_stacked_condition_bars() {
     let maintenance =
         find_condition_overlay_for(&mut app, stockpile, ConditionOverlayKind::Maintenance);
     let health = find_condition_overlay_for(&mut app, stockpile, ConditionOverlayKind::Health);
-    let resource_y = app
-        .world()
-        .entity(resource)
-        .get::<Transform>()
-        .unwrap()
-        .translation
-        .y;
-    let maintenance_y = app
-        .world()
-        .entity(maintenance)
-        .get::<Transform>()
-        .unwrap()
-        .translation
-        .y;
-    let health_y = app
-        .world()
-        .entity(health)
-        .get::<Transform>()
-        .unwrap()
-        .translation
-        .y;
-
-    assert_abs_diff_eq!(Vec2::new(48.0, 3.0).x, 48.0, epsilon = 1e-5);
-    assert_abs_diff_eq!(Vec2::new(48.0, 3.0).y, 3.0, epsilon = 1e-5);
-    assert!(
-        (maintenance_y
-            - resource_y
-            - (Vec2::new(48.0, 6.0).y / 2.0 + 2.0 + Vec2::new(48.0, 3.0).y / 2.0))
-            .abs()
-            < 0.01
-    );
-    assert!((health_y - maintenance_y - (Vec2::new(48.0, 3.0).y + 2.0)).abs() < 0.01);
+    let mut previous_top = transform.translation.y + 36.0;
+    for bar in [resource, maintenance, health] {
+        let bar = app.world().entity(bar);
+        let center = bar.get::<Transform>().unwrap().translation.y;
+        let half_height = bar.get::<Sprite>().unwrap().custom_size.unwrap().y / 2.0;
+        assert!(
+            center - half_height >= previous_top + 1.0,
+            "each bar needs a gap above the preceding footprint or row"
+        );
+        previous_top = center + half_height;
+    }
 }
 
 #[test]
@@ -194,8 +176,8 @@ fn maintenance_and_health_bars_track_live_condition() {
     let maintenance =
         find_condition_overlay_for(&mut app, facility, ConditionOverlayKind::Maintenance);
     let health = find_condition_overlay_for(&mut app, facility, ConditionOverlayKind::Health);
-    assert_condition_fill(&app, maintenance, 24.0, Color::srgb(1.0, 0.68, 0.20));
-    assert_condition_fill(&app, health, 0.48, Color::srgb(1.0, 0.68, 0.20));
+    assert_condition_fill(&app, maintenance, 24.0, Color::srgb(1.0, 0.65, 0.21));
+    assert_condition_fill(&app, health, 0.48, Color::srgb(0.43, 0.93, 0.54));
 }
 
 #[test]

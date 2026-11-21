@@ -4,28 +4,40 @@ use std::{
     time::Duration,
 };
 
-use bevy::{asset::AssetPlugin, input::InputPlugin, prelude::*};
+use bevy::{
+    asset::AssetPlugin,
+    input::{
+        ButtonState, InputPlugin,
+        keyboard::{Key, KeyboardInput},
+    },
+    prelude::*,
+    ui::RelativeCursorPosition,
+};
 use top_down_2d_rts_prototype_nano_swarm::{
-    DEFAULT_CAMERA_ZOOM, MAP_HEIGHT, MAP_WIDTH, MainCamera,
+    DEFAULT_CAMERA_ZOOM, MAP_HEIGHT, MAP_WIDTH, MainCamera, ZONE_BLOCK_SIZE,
+    ai_battle::{AiBattleConfig, AiBattleLayout},
     battle_statistics::{
         BattleRun, BattleStatisticsConfig, BattleStatisticsPlugin, BattleSummary, RunStatus,
     },
     building::ProcessingFacility,
     fly_camera::{CameraZoom2d, FlyCamera2d},
-    intent::{IntentGrid, IntentKind},
+    intent::{BrushSelection, IntentGrid, IntentKind, brush_selection_keyboard_system},
     nanobot::{
         MatchOutcome, Nanobot, OpponentSwarmIdAlloc, StrategicController,
         StrategicControllerPlugin, Swarm, SwarmEliminationPlugin, SwarmId,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger},
-    scenario::{PLAYER_CELL, cell_origin},
+    scenario::{PLAYER_CELL, PLAYER_DEPOSIT_CELL, cell_origin},
     scenario_selection::{Scenario, ScenarioSelection},
     session::SessionRules,
     session_lifecycle::{SessionEntity, SessionGeneration, SessionLifecyclePlugin, StartScenario},
     tuning::Tuning,
     ui::{
         FontsResource,
-        intent_layer_panel::{IntentLayerButton, setup_intent_layer_panel},
+        intent_layer_panel::{
+            IntentLayerButton, intent_layer_button_click_system, setup_intent_layer_panel,
+            update_intent_layer_panel_highlight,
+        },
         scenario_menu::{MenuAction, ScenarioMenu, ScenarioMenuPlugin},
     },
 };
@@ -78,6 +90,7 @@ fn session_app(statistics_root: &Path) -> (App, Entity) {
         })
         .init_resource::<OpponentSwarmIdAlloc>()
         .init_resource::<SimulatedTicks>()
+        .init_resource::<BrushSelection>()
         .insert_resource(FontsResource { font: default() })
         .add_plugins(TaskPoolPlugin::default())
         .add_plugins(AssetPlugin::default())
@@ -89,6 +102,15 @@ fn session_app(statistics_root: &Path) -> (App, Entity) {
         .add_plugins(SwarmEliminationPlugin)
         .add_plugins(BattleStatisticsPlugin)
         .add_systems(Startup, setup_intent_layer_panel)
+        .add_systems(
+            Update,
+            (
+                brush_selection_keyboard_system,
+                intent_layer_button_click_system,
+                update_intent_layer_panel_highlight,
+            )
+                .chain(),
+        )
         .add_systems(FixedUpdate, |mut ticks: ResMut<SimulatedTicks>| {
             ticks.0 += 1
         });
@@ -185,11 +207,11 @@ fn assert_standard_opponent_recovers_owned_intent_within_one_second(app: &mut Ap
     panic!("the normal Standard opponent did not recover owned intent within one simulated second");
 }
 
-fn has_spectator_label(world: &mut World) -> bool {
+fn has_label(world: &mut World, label: &str) -> bool {
     world
         .query::<&Text>()
         .iter(world)
-        .any(|text| text.0 == "Spectating | Painting disabled")
+        .any(|text| text.0.contains(label))
 }
 
 fn click(app: &mut App, action: MenuAction) {
@@ -234,19 +256,57 @@ fn menu_start_replaces_the_match_and_keeps_the_application_shell() {
 }
 
 #[test]
-fn intent_panel_tracks_the_scenario_across_same_process_restarts() {
+fn intent_panel_tracks_the_scenario_and_disables_controls_when_the_match_ends() {
     let output = TemporaryDirectory::new();
     let (mut app, _) = session_app(output.path());
     assert_eq!(
         count::<IntentLayerButton>(app.world_mut()),
         IntentKind::COUNT
     );
-    assert!(!has_spectator_label(app.world_mut()));
+    assert!(has_label(
+        app.world_mut(),
+        "Right-click erases the selected layer"
+    ));
+    let buttons = app
+        .world_mut()
+        .query::<(Entity, &IntentLayerButton, &RelativeCursorPosition)>()
+        .iter(app.world())
+        .map(|(entity, button, _)| (button.kind, entity))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    press_intent_button(&mut app, buttons[&IntentKind::Defend]);
+    assert_eq!(
+        app.world().resource::<BrushSelection>().kind,
+        IntentKind::Defend
+    );
+
+    *app.world_mut().resource_mut::<MatchOutcome>() = MatchOutcome::Winner(SwarmId(1));
+    press_intent_button(&mut app, buttons[&IntentKind::Build]);
+    assert_eq!(
+        app.world().resource::<BrushSelection>().kind,
+        IntentKind::Defend
+    );
+    app.world_mut().write_message(KeyboardInput {
+        key_code: KeyCode::Digit4,
+        logical_key: Key::Character("4".into()),
+        state: ButtonState::Pressed,
+        text: Some("4".into()),
+        repeat: false,
+        window: Entity::PLACEHOLDER,
+    });
+    app.update();
+    assert_eq!(
+        app.world().resource::<BrushSelection>().kind,
+        IntentKind::Defend
+    );
+    assert!(has_label(app.world_mut(), "Painting disabled"));
+    assert!(!has_label(app.world_mut(), "3: Defend"));
 
     request_start(&mut app, Scenario::AiBattle);
 
     assert_eq!(count::<IntentLayerButton>(app.world_mut()), 0);
-    assert!(has_spectator_label(app.world_mut()));
+    assert!(!has_label(app.world_mut(), "Painting disabled"));
+    assert!(!has_label(app.world_mut(), "Both swarms"));
 
     request_start(&mut app, Scenario::Standard);
 
@@ -254,7 +314,15 @@ fn intent_panel_tracks_the_scenario_across_same_process_restarts() {
         count::<IntentLayerButton>(app.world_mut()),
         IntentKind::COUNT
     );
-    assert!(!has_spectator_label(app.world_mut()));
+    assert!(has_label(app.world_mut(), "3: Defend"));
+}
+
+fn press_intent_button(app: &mut App, button: Entity) {
+    app.world_mut()
+        .entity_mut(button)
+        .insert(Interaction::Pressed);
+    app.update();
+    app.world_mut().entity_mut(button).insert(Interaction::None);
 }
 
 #[test]
@@ -298,6 +366,8 @@ fn session_restarts_keep_current_shared_tuning() {
 fn restarting_clears_mutated_session_state_and_rebuilds_the_selected_scenario() {
     let output = TemporaryDirectory::new();
     let (mut app, camera) = session_app(output.path());
+    assert_home_visible(&app, camera, PLAYER_CELL, PLAYER_DEPOSIT_CELL);
+    let opening_camera = app.world().get::<Transform>(camera).unwrap().translation;
     let stale_runtime_bot = app.world_mut().spawn(Nanobot {}).id();
     assert!(
         app.world()
@@ -353,7 +423,7 @@ fn restarting_clears_mutated_session_state_and_rebuilds_the_selected_scenario() 
     let camera_entity = app.world().entity(camera);
     assert_eq!(
         camera_entity.get::<Transform>().unwrap().translation,
-        cell_origin(PLAYER_CELL).extend(0.0)
+        opening_camera
     );
     assert_eq!(
         camera_entity.get::<CameraZoom2d>().unwrap().zoom,
@@ -368,9 +438,29 @@ fn restarting_clears_mutated_session_state_and_rebuilds_the_selected_scenario() 
     };
     assert_eq!(projection.scale, DEFAULT_CAMERA_ZOOM);
 
+    app.world_mut().resource_mut::<AiBattleConfig>().layout = AiBattleLayout::Flanks;
     request_start(&mut app, Scenario::AiBattle);
     assert_scenario_shape(&mut app, Scenario::AiBattle);
     assert_eq!(app.world().resource::<SessionGeneration>().0, 2);
+    assert_home_visible(&app, camera, IVec2::new(0, 2), IVec2::new(-1, 1));
+}
+
+fn assert_home_visible(app: &App, camera: Entity, home: IVec2, deposit: IVec2) {
+    let center = app
+        .world()
+        .get::<Transform>(camera)
+        .unwrap()
+        .translation
+        .truncate();
+    let zoom = app.world().get::<CameraZoom2d>(camera).unwrap().zoom;
+    let viewport_half = Vec2::new(400.0, 300.0) * zoom;
+    for cell in [home, deposit] {
+        let outer_edges = (cell_origin(cell) - center).abs() + Vec2::splat(ZONE_BLOCK_SIZE / 2.0);
+        assert!(
+            outer_edges.cmple(viewport_half).all(),
+            "opening view clips cell {cell}"
+        );
+    }
 }
 
 fn persisted_summary(directory: &Path) -> BattleSummary {

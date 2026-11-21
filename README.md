@@ -34,6 +34,10 @@ Run the normal windowed game:
 cargo run
 ```
 
+Pan with **WASD**, the **arrow keys**, the **middle mouse button** (drag), or the screen edge. Scroll the wheel to zoom around the pointer. Press **Home** to frame the starting base and its deposit again.
+
+Select **Gather**, **Build**, **Defend**, or **Corridor** with **1–4** or the intent buttons. The outline shows the cell under the pointer. Left-drag to paint and right-drag to erase the selected layer. Press **F3** to toggle the FPS counter.
+
 Press **ESC** to pause and open the scenario menu. Choose **Standard** for the opponent match, **Sandbox** for open-ended play without an opponent, or **AI Battle** to watch two automatically controlled swarms and record battle statistics. The choice saves immediately for future launches. **Start selected scenario** begins a fresh match in the current window and resets the camera, even when restarting the same scenario. ESC closes the menu and returns to the current session. **Quit to desktop** exits the game.
 
 Press **F2** to open the live tuning panel. Expand a group and edit its numeric fields, or use Up/Down to step a focused value. Each valid change saves immediately and applies to both swarms. Invalid input or a save failure leaves the active value unchanged and shows an error beside the field. Escape releases field focus; with no field focused, Escape opens the scenario menu. The panel leaves simulation running.

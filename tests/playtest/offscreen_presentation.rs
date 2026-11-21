@@ -7,15 +7,19 @@ use bevy::{
     time::TimeUpdateStrategy,
 };
 use top_down_2d_rts_prototype_nano_swarm::{
-    Presentation, build_app_with_presentation,
+    Presentation, ZONE_BLOCK_SIZE, build_app_with_presentation,
+    fly_camera::CameraZoom2d,
     intent::{IntentGrid, IntentKind},
     nanobot::{
         ActiveCombatPulses, DefenderResponse, Health, Nanobot, NanobotSprites, NanobotType,
         OpponentSwarm, Swarm, SwarmId, SwarmMember, VelocityComponent,
     },
+    scenario::{PLAYER_CELL, cell_origin},
+    structure_overlay::{StructureOverlay, StructureOverlayKind},
+    tactical_overlay::{TacticalClusterKey, TacticalMarkerKind},
 };
 
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 #[path = "../common/mod.rs"]
 mod common;
@@ -69,6 +73,7 @@ fn offscreen_presentation_starts_full_scene_without_a_window() {
         .map(|(entity, kind, member)| (entity, *kind, member.0))
         .collect::<Vec<_>>();
     assert!(!nanobots.is_empty(), "full startup must spawn nanobots");
+    let mut type_icons = HashMap::new();
     for (root, kind, member) in nanobots {
         assert!(
             app.world().get::<ChildOf>(root).is_none(),
@@ -86,7 +91,47 @@ fn offscreen_presentation_starts_full_scene_without_a_window() {
                 .image,
             sprites.handle(kind, member == opponent)
         );
+        let type_icon = app
+            .world()
+            .get::<Children>(visual)
+            .and_then(|children| {
+                children
+                    .iter()
+                    .find_map(|child| app.world().get::<Sprite>(child)?.rect)
+            })
+            .expect("every nanobot needs a visible type insignia");
+        if let Some(other_icon) = type_icons.insert(kind, type_icon) {
+            assert_eq!(
+                type_icon, other_icon,
+                "both swarms use the same type symbols"
+            );
+        }
     }
+    for (index, kind) in NanobotType::ALL.iter().enumerate() {
+        for other in &NanobotType::ALL[..index] {
+            assert_ne!(type_icons[kind], type_icons[other]);
+        }
+    }
+
+    let deposit_fill = app
+        .world_mut()
+        .query::<(&StructureOverlay, &InheritedVisibility)>()
+        .iter(app.world())
+        .find(|(overlay, visibility)| {
+            overlay.kind == StructureOverlayKind::Deposit && visibility.get()
+        })
+        .map(|(overlay, _)| overlay.fill)
+        .expect("a Resource Deposit has a visible amount bar at opening zoom");
+    let color = app
+        .world()
+        .get::<Sprite>(deposit_fill)
+        .unwrap()
+        .color
+        .to_srgba();
+    assert!(
+        color.red > color.green && color.green > color.blue,
+        "deposit quantity must read as amber: {color:?}"
+    );
 
     let (camera, image_handle) = {
         let mut cameras = app
@@ -135,6 +180,70 @@ fn offscreen_presentation_starts_full_scene_without_a_window() {
         targeted_roots.iter().all(|target| *target == Some(camera)),
         "every root UI node must render through main offscreen camera"
     );
+
+    let mut view = app.world_mut().entity_mut(camera);
+    view.get_mut::<CameraZoom2d>().unwrap().zoom = 30.0;
+    if let Projection::Orthographic(ortho) = &mut *view.get_mut::<Projection>().unwrap() {
+        ortho.scale = 30.0;
+    }
+    app.update();
+
+    let mut mark_icons = HashMap::new();
+    let wall_center = cell_origin(PLAYER_CELL) + Vec2::splat(12.0 * ZONE_BLOCK_SIZE);
+    let wall_half = 14.0 * ZONE_BLOCK_SIZE;
+    let corner_radius = 0.85 * ZONE_BLOCK_SIZE;
+    for (key, transform, sprite, visibility) in app
+        .world_mut()
+        .query::<(
+            &TacticalClusterKey,
+            &Transform,
+            &Sprite,
+            &InheritedVisibility,
+        )>()
+        .iter(app.world())
+    {
+        assert!(visibility.get(), "far zoom must reveal the tactical icons");
+        let half_size = transform.scale.truncate() * sprite.custom_size.unwrap() / 2.0;
+        for corner in [
+            Vec2::ONE,
+            Vec2::new(-1., 1.),
+            Vec2::new(1., -1.),
+            Vec2::NEG_ONE,
+        ] {
+            let point = transform.translation.truncate() + half_size * corner;
+            let round_corner = (point - wall_center).abs() - (wall_half - corner_radius);
+            assert!(
+                round_corner.max(Vec2::ZERO).length() <= corner_radius,
+                "{:?} icon extends outside the map wall at {point:?}",
+                key.kind,
+            );
+        }
+        if key.kind == TacticalMarkerKind::Facility {
+            let color = sprite.color.to_srgba();
+            assert!(
+                if key.owner == SwarmId::PLAYER {
+                    color.blue > color.red
+                } else {
+                    color.red > color.blue
+                },
+                "facility icons must retain the owning swarm's appearance"
+            );
+        }
+        mark_icons.insert(
+            key.kind,
+            sprite
+                .rect
+                .expect("a landmark needs a recognizable pictogram"),
+        );
+    }
+    assert!(mark_icons.len() >= 4);
+    for (kind, icon) in &mark_icons {
+        assert!(
+            mark_icons
+                .iter()
+                .all(|(other, other_icon)| kind == other || icon != other_icon)
+        );
+    }
 }
 
 #[test]

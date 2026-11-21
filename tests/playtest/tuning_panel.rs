@@ -9,7 +9,7 @@ use bevy::{
     input::{
         ButtonState, InputPlugin,
         keyboard::{Key, KeyboardInput},
-        mouse::{MouseScrollUnit, MouseWheel},
+        mouse::{MouseButtonInput, MouseScrollUnit, MouseWheel},
     },
     prelude::*,
     time::{TimePlugin, TimeUpdateStrategy},
@@ -244,7 +244,7 @@ fn tuning_panel_captures_world_input_and_escape_releases_focus_before_menu() {
     app.insert_resource(grid)
         .insert_resource(reachability)
         .init_resource::<SessionRules>()
-        .add_systems(Update, zone_brush_system.after(check_ui_interaction));
+        .add_systems(PostUpdate, zone_brush_system);
     let mut window = Window {
         resolution: (1280, 720).into(),
         ..default()
@@ -337,6 +337,28 @@ fn tuning_panel_captures_world_input_and_escape_releases_focus_before_menu() {
     key(&mut app, KeyCode::Escape, None);
     assert!(app.world().resource::<TuningEditor>().focused.is_none());
     assert!(!app.world().resource::<ScenarioMenu>().open);
+    click_field(&mut app, "production.cost_per_bot");
+    app.world_mut()
+        .entity_mut(root)
+        .insert(RelativeCursorPosition::default());
+    app.world_mut().write_message(MouseButtonInput {
+        window: Entity::PLACEHOLDER,
+        button: MouseButton::Left,
+        state: ButtonState::Pressed,
+    });
+    app.update();
+    assert!(app.world().resource::<TuningEditor>().focused.is_none());
+    assert!(
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(IVec2::ZERO)
+            .unwrap()
+            .has_owned(IntentKind::Gather, SwarmId::PLAYER),
+        "the first world click after editing must clear focus and paint"
+    );
+    app.world_mut()
+        .resource_mut::<ButtonInput<MouseButton>>()
+        .reset(MouseButton::Left);
     key(&mut app, KeyCode::Escape, None);
     assert!(app.world().resource::<ScenarioMenu>().open);
 }

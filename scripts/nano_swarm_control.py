@@ -68,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     button = commands.add_parser("button")
     button.add_argument(
         "button",
-        choices=tuple(f"intent.{intent}" for intent in INTENTS) + ("menu.start", "menu.standard", "menu.sandbox", "menu.ai_battle", "menu.quit"),
+        choices=tuple(f"intent.{intent}" for intent in INTENTS) + ("menu.start", "menu.standard", "menu.sandbox", "menu.ai_battle", "menu.quit", "match.dismiss"),
     )
 
     commands.add_parser("menu")

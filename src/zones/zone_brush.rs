@@ -1,10 +1,7 @@
 use bevy::{
     asset::Asset,
     math::{ivec2, vec2},
-    prelude::{
-        Assets, ButtonInput, Camera, GlobalTransform, Handle, IVec2, MouseButton, Query, Res,
-        ResMut, Vec2, Window,
-    },
+    prelude::{Assets, Color, Handle, IVec2, Query, Res, ResMut, Vec2, Vec4},
     reflect::TypePath,
     render::{render_resource::AsBindGroup, storage::ShaderStorageBuffer},
     shader::ShaderRef,
@@ -13,14 +10,22 @@ use bevy::{
 
 use crate::{
     ZONE_BLOCK_SIZE,
-    intent::{BrushSelection, IntentCell, IntentGrid, IntentKind},
+    intent::{IntentCell, IntentGrid, IntentKind},
     nanobot::{MatchOutcome, SwarmId},
     reachability::{
         IntentWriteAction, IntentWriteError, SwarmReachabilityMap, apply_reachable_intent,
     },
     session::SessionRules,
-    ui::UiHandling,
 };
+
+pub fn zone_color(kind: IntentKind) -> Color {
+    match kind {
+        IntentKind::Gather => Color::srgb(0.91, 0.36, 0.30),
+        IntentKind::Build => Color::srgb(0.85, 0.42, 0.73),
+        IntentKind::Defend => Color::srgb(0.36, 0.62, 0.94),
+        IntentKind::Corridor => Color::srgb(0.87, 0.75, 0.28),
+    }
+}
 
 /// Per-cell presence and ownership bits uploaded to the zone shader.
 #[derive(AsBindGroup, Asset, TypePath, Debug, Clone)]
@@ -32,6 +37,10 @@ pub struct ZoneMaterial {
     pub width: u32,
     #[uniform(4)]
     pub height: u32,
+    #[uniform(5)]
+    palette: [Vec4; IntentKind::COUNT],
+    #[uniform(6)]
+    pub spectator: u32,
 }
 
 impl ZoneMaterial {
@@ -42,6 +51,11 @@ impl ZoneMaterial {
             zone_data,
             width,
             height,
+            palette: IntentKind::ALL.map(|kind| {
+                let color = zone_color(kind).to_linear();
+                Vec4::new(color.red, color.green, color.blue, color.alpha)
+            }),
+            spectator: 0,
         }
     }
 
@@ -205,74 +219,6 @@ pub fn apply_player_intent(
     })
 }
 
-/// Reads mouse input and writes player intent into the [`IntentGrid`]
-/// resource for the layer currently selected in [`BrushSelection`]. The
-/// simulation owns the grid; the GPU zone material is a downstream mirror of
-/// the resource, updated by [`mirror_intent_to_zone_material_system`].
-#[allow(clippy::too_many_arguments)]
-pub fn zone_brush_system(
-    windows: Query<&Window>,
-    mouse_button_input: Res<ButtonInput<MouseButton>>,
-    brush_selection: Res<BrushSelection>,
-    ui_handling: Res<UiHandling>,
-    outcome: Option<Res<MatchOutcome>>,
-    camera_query: Query<(&GlobalTransform, &Camera)>,
-    mut intent_grid: ResMut<IntentGrid>,
-    reachability: Option<Res<SwarmReachabilityMap>>,
-    menu: Option<Res<crate::ui::scenario_menu::ScenarioMenu>>,
-    rules: Res<SessionRules>,
-) {
-    if menu.is_some_and(|menu| menu.blocks_world_input) {
-        return;
-    }
-    if outcome
-        .as_deref()
-        .is_some_and(|outcome| *outcome != MatchOutcome::InProgress)
-    {
-        return;
-    }
-    if ui_handling.is_pointer_over_ui {
-        return;
-    }
-
-    let Ok(window) = windows.single() else {
-        return;
-    };
-    let Some(cursor_pos) = window.cursor_position() else {
-        return;
-    };
-
-    let Ok((camera_transform, camera)) = camera_query.single() else {
-        return;
-    };
-    let cursor_pos_world =
-        if let Ok(pos) = camera.viewport_to_world_2d(camera_transform, cursor_pos) {
-            pos
-        } else {
-            return;
-        };
-
-    let action = if mouse_button_input.pressed(MouseButton::Left) {
-        PlayerIntentAction::Paint
-    } else if mouse_button_input.pressed(MouseButton::Right) {
-        PlayerIntentAction::Erase
-    } else {
-        return;
-    };
-    let Some(reachability) = reachability else {
-        return;
-    };
-    let _ = apply_player_intent(
-        &mut intent_grid,
-        &reachability,
-        outcome.as_deref().copied().unwrap_or_default(),
-        *rules,
-        get_zone_pos_from_world(cursor_pos_world),
-        brush_selection.kind,
-        action,
-    );
-}
-
 /// Drains render-dirty cells from [`IntentGrid`] and mirrors them into the
 /// [`ZoneMaterial`] GPU buffer. Projection dirty state remains available to
 /// simulation consumers.
@@ -281,18 +227,27 @@ pub fn mirror_intent_to_zone_material_system(
     mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
     zone_handle: Query<&ZoneMaterialHandleComponent>,
     mut intent_grid: ResMut<IntentGrid>,
+    rules: Option<Res<SessionRules>>,
 ) {
     let Ok(handle) = zone_handle.single() else {
         return;
     };
     let dirty = intent_grid.drain_render_dirty();
-    if dirty.is_empty() {
+    let spectator = u32::from(rules.is_some_and(|rules| rules.spectator()));
+    if dirty.is_empty()
+        && zone_mats
+            .get(&handle.handle)
+            .is_none_or(|material| material.spectator == spectator)
+    {
         return;
     }
-    // Single GPU upload per frame: snapshot the material, mutate, push.
     let mat = zone_mats
         .get_mut(&handle.handle)
         .expect("Zone material handle must be valid");
+    mat.spectator = spectator;
+    if dirty.is_empty() {
+        return;
+    }
 
     for point in dirty {
         let Some(idx) =

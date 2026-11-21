@@ -1,43 +1,76 @@
 use bevy::{
     input::mouse::{MouseScrollUnit, MouseWheel},
-    prelude::{Component, MessageReader, Projection, Query, Res},
+    prelude::*,
 };
 
-#[derive(Default, Component)]
+use crate::{DEFAULT_CAMERA_ZOOM, ui::UiHandling};
+
+use super::camera_move::move_camera_to;
+
+#[derive(Component)]
 pub struct CameraZoom2d {
     /// Fraction of the current zoom applied per wheel step.
     pub zoom_speed: f32,
-    /// The maximum and minimum zoom levels allowed.
+    /// The minimum and maximum zoom levels allowed.
     pub zoom_min_max: (f32, f32),
     /// The current zoom level.
     pub zoom: f32,
 }
 
+impl Default for CameraZoom2d {
+    fn default() -> Self {
+        Self {
+            zoom_speed: crate::tuning::PresentationTuning::default().camera_zoom_speed,
+            zoom_min_max: (1.0, 30.0),
+            zoom: DEFAULT_CAMERA_ZOOM,
+        }
+    }
+}
+
 pub fn camera_2d_zoom_system(
     mut mouse_wheel_event_reader: MessageReader<MouseWheel>,
-    mut query: Query<(&mut CameraZoom2d, &mut Projection)>,
+    mut query: Query<(&mut CameraZoom2d, &mut Projection, &mut Transform)>,
+    windows: Query<&Window>,
+    ui: Option<Res<UiHandling>>,
     menu: Option<Res<crate::ui::scenario_menu::ScenarioMenu>>,
     editor: Option<Res<crate::ui::tuning_panel::TuningEditor>>,
 ) {
     if menu.is_some_and(|menu| menu.blocks_world_input)
-        || editor.is_some_and(|editor| editor.keyboard_captured() || editor.pointer_captured())
+        || editor.is_some_and(|editor| editor.pointer_captured())
+        || ui.is_some_and(|ui| ui.is_pointer_over_ui)
     {
         mouse_wheel_event_reader.clear();
         return;
     }
-    for (mut zoom, mut projection) in query.iter_mut() {
-        for event in mouse_wheel_event_reader.read() {
-            let dynamic_zoom_speed = zoom.zoom_speed * zoom.zoom;
-            let delta = match event.unit {
-                MouseScrollUnit::Line => event.y,
-                MouseScrollUnit::Pixel => event.y / MouseScrollUnit::SCROLL_UNIT_CONVERSION_FACTOR,
+    for event in mouse_wheel_event_reader.read() {
+        let delta = match event.unit {
+            MouseScrollUnit::Line => event.y,
+            MouseScrollUnit::Pixel => event.y / MouseScrollUnit::SCROLL_UNIT_CONVERSION_FACTOR,
+        };
+        if !delta.is_finite() || delta == 0.0 {
+            continue;
+        }
+        let cursor_offset = windows
+            .get(event.window)
+            .ok()
+            .and_then(|window| {
+                window
+                    .cursor_position()
+                    .map(|cursor| cursor - window.size() / 2.0)
+            })
+            .unwrap_or(Vec2::ZERO);
+        let cursor_offset = Vec2::new(cursor_offset.x, -cursor_offset.y);
+        for (mut zoom, mut projection, mut transform) in &mut query {
+            let Projection::Orthographic(ortho) = &mut *projection else {
+                continue;
             };
-            zoom.zoom -= delta * dynamic_zoom_speed;
-            zoom.zoom = zoom.zoom.clamp(zoom.zoom_min_max.0, zoom.zoom_min_max.1);
-
-            if let Projection::Orthographic(ortho) = &mut *projection {
-                ortho.scale = zoom.zoom;
-            }
+            let old_scale = ortho.scale;
+            let scale = (zoom.zoom - delta * zoom.zoom_speed * zoom.zoom)
+                .clamp(zoom.zoom_min_max.0, zoom.zoom_min_max.1);
+            let position = transform.translation.truncate() + cursor_offset * (old_scale - scale);
+            move_camera_to(&mut transform, position);
+            ortho.scale = scale;
+            zoom.zoom = scale;
         }
     }
 }
@@ -73,7 +106,11 @@ mod tests {
                     zoom_min_max: (1.0, 100.0),
                     zoom: 10.0,
                 },
-                Projection::Orthographic(OrthographicProjection::default_2d()),
+                Projection::Orthographic(OrthographicProjection {
+                    scale: 10.0,
+                    ..OrthographicProjection::default_2d()
+                }),
+                Transform::default(),
             ))
             .id();
         app.world_mut().write_message(MouseWheel {
