@@ -14,7 +14,6 @@ pub(super) struct OwnedDeposit {
     pub(super) id: u64,
     position: Vec2,
     pub(super) gather_cell: IVec2,
-    build_cell: IVec2,
     pub(super) desired: Vec<DesiredIntent>,
 }
 
@@ -23,6 +22,9 @@ pub(super) struct EconomyPlan {
     pub(super) owned_deposits: Vec<OwnedDeposit>,
     pub(super) desired: Vec<DesiredIntent>,
     pub(super) expansion: Option<u64>,
+    pub(super) threatened: Option<(u64, IVec2)>,
+    pub(super) neutral_deposits: Vec<DepositState>,
+    pub(super) enemy_deposits: Vec<(DepositState, SwarmId)>,
 }
 
 impl EconomyPlan {
@@ -134,11 +136,20 @@ pub(super) fn plan_economy(
         if !budget.spend(1) {
             return None;
         }
-        if !available(deposit, owner) || previous.iter().any(|mine| mine.id == deposit.id) {
+        if deposit.amount == 0
+            || (available(deposit, owner) && previous.iter().any(|mine| mine.id == deposit.id))
+        {
             continue;
         }
-        let (own_gather, foreign_gather) = gather_paint(owner, deposit, state, budget)?;
-        if own_gather || deposit.owner == Some(owner) {
+        let (reachable, gather_owners) = deposit_access(owner, deposit, state, budget)?;
+        if !reachable {
+            continue;
+        }
+        if let Some(other) = deposit.owner.filter(|other| *other != owner) {
+            economy.enemy_deposits.push((*deposit, other));
+            continue;
+        }
+        if gather_owners.contains(&owner) || deposit.owner == Some(owner) {
             if let Some((mine, _)) = mine_support(owner, deposit, state, home, budget)
                 && economy.can_fit(&mine)
             {
@@ -146,9 +157,13 @@ pub(super) fn plan_economy(
             }
             continue;
         }
-        if foreign_gather {
+        if !gather_owners.is_empty() {
+            economy
+                .enemy_deposits
+                .extend(gather_owners.into_iter().map(|other| (*deposit, other)));
             continue;
         }
+        economy.neutral_deposits.push(*deposit);
         let terrain_exposure = route_exposure(home, deposit.position, state.terrain, budget);
         let enemy_exposure = enemy_home.map_or(0.0, |enemy| {
             let friendly_distance = home.distance(deposit.position);
@@ -163,11 +178,11 @@ pub(super) fn plan_economy(
         return None;
     }
 
-    let threatened = threatened_deposit(&economy.owned_deposits, owner, state, budget);
+    economy.threatened = threatened_deposit(&economy.owned_deposits, owner, state, budget);
     if budget.exhausted {
         return None;
     }
-    if threatened.is_some() {
+    if economy.threatened.is_some() {
         return Some(economy);
     }
 
@@ -217,12 +232,12 @@ pub(super) fn plan_economy(
     (!budget.exhausted).then_some(economy)
 }
 
-pub(super) fn threatened_deposit(
+fn threatened_deposit(
     owned: &[OwnedDeposit],
     owner: SwarmId,
     state: &GameState<'_>,
     budget: &mut WorkBudget,
-) -> Option<u64> {
+) -> Option<(u64, IVec2)> {
     if owned.is_empty() {
         return None;
     }
@@ -248,25 +263,29 @@ pub(super) fn threatened_deposit(
         }
         let cell = world_to_intent_cell(position);
         for mine in owned {
-            if !budget.spend(1) {
+            if !budget.spend(mine.desired.len()) {
                 return None;
             }
-            if cell == mine.gather_cell || cell == mine.build_cell {
-                return Some(mine.id);
+            if mine
+                .desired
+                .iter()
+                .any(|intent| intent.cell == cell && intent.kind != IntentKind::Corridor)
+            {
+                return Some((mine.id, cell));
             }
         }
     }
     None
 }
 
-fn gather_paint(
+fn deposit_access(
     owner: SwarmId,
     deposit: &DepositState,
     state: &GameState<'_>,
     budget: &mut WorkBudget,
-) -> Option<(bool, bool)> {
-    let mut own = false;
-    let mut foreign = false;
+) -> Option<(bool, BTreeSet<SwarmId>)> {
+    let mut reachable = false;
+    let mut gather_owners = BTreeSet::new();
     for cell in deposit_cells(deposit, state.grid) {
         if !budget.spend(1) {
             return None;
@@ -274,13 +293,13 @@ fn gather_paint(
         if let Some(intent) = state.grid.cell(cell)
             && cell_overlaps_circle(cell, deposit.position, deposit.radius)
         {
-            own |= intent.has_owned(IntentKind::Gather, owner);
-            foreign |= intent
-                .owners(IntentKind::Gather)
-                .any(|swarm| swarm != owner);
+            reachable |= state
+                .reachability
+                .is_none_or(|map| map.contains(owner, cell, state.grid));
+            gather_owners.extend(intent.owners(IntentKind::Gather));
         }
     }
-    Some((own, foreign))
+    Some((reachable, gather_owners))
 }
 
 fn deposit_cells(deposit: &DepositState, grid: &IntentGrid) -> impl Iterator<Item = IVec2> {
@@ -386,7 +405,6 @@ fn mine_support(
                 id: deposit.id,
                 position: deposit.position,
                 gather_cell,
-                build_cell,
                 desired,
             },
             distance,

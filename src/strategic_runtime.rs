@@ -12,7 +12,7 @@ use crate::{
     nanobot::{
         Cargo, Charge, Charger, Health, MatchOutcome, Nanobot, NanobotType, OwnerSwarm,
         PlannedStructure, ProductionFacility, RegionalAllocationSet, Structure, Swarm, SwarmId,
-        SwarmMember,
+        SwarmMember, VelocityComponent,
     },
     navigation::{Navigation, RouteGoal, RouteOutcome},
     reachability::{IntentWriteAction, SwarmReachabilityMap, apply_reachable_intent},
@@ -171,6 +171,7 @@ fn strategic_intent_system(
             &Health,
             Option<&Charge>,
             Option<&Cargo>,
+            Option<&VelocityComponent>,
         ),
         With<Nanobot>,
     >,
@@ -232,7 +233,7 @@ fn strategic_intent_system(
     let mut bot_states: Vec<_> = bots
         .iter()
         .map(
-            |(entity, owner, kind, transform, health, charge, cargo)| BotState {
+            |(entity, owner, kind, transform, health, charge, cargo, velocity)| BotState {
                 id: entity.to_bits(),
                 owner: owner.0,
                 kind: *kind,
@@ -242,6 +243,7 @@ fn strategic_intent_system(
                 charge: charge.map_or(1.0, |c| c.current),
                 max_charge: charge.map_or(1.0, |c| c.max),
                 cargo: cargo.map_or(0, |c| c.amount),
+                velocity: velocity.map_or(Vec2::ZERO, |v| v.value),
             },
         )
         .collect();

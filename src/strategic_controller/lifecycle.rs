@@ -178,7 +178,7 @@ impl PlannerState {
                 work_units: budget.call_work(),
             };
         };
-        let candidates = generate_candidates(tuning, owner, state, economy.expansion, &mut budget);
+        let candidates = generate_candidates(tuning, owner, state, &economy, &mut budget);
         if budget.exhausted {
             self.tuning_review_requested |= tuning_review;
             self.work_used = budget.used;
@@ -193,7 +193,12 @@ impl PlannerState {
         }
         let Some(best) = candidates
             .iter()
-            .max_by(|left, right| left.score.total_cmp(&right.score))
+            .max_by(|left, right| {
+                left.objective
+                    .priority()
+                    .cmp(&right.objective.priority())
+                    .then_with(|| left.score.total_cmp(&right.score))
+            })
             .cloned()
         else {
             self.work_used = budget.used;
@@ -213,6 +218,7 @@ impl PlannerState {
                 .find(|candidate| candidate.objective == current.objective)
         });
         let (mut selected, mut explanation) = if let Some(refreshed) = refreshed
+            && refreshed.objective.priority() == best.objective.priority()
             && (progressing_attack
                 || invalidation.is_none()
                     && (stall_grace
@@ -277,10 +283,12 @@ impl PlannerState {
         }
         if let Some(front) = staging.as_ref() {
             explanation.push_str(&format!(
-                "; staging point {} toward {}",
+                ", staging point {} toward {}",
                 front.point(),
                 selected.attack_target.unwrap()
             ));
+        } else {
+            explanation.push_str(", no active staging point");
         }
         if let Some(id) = lost_deposit {
             explanation.push_str(&format!(
@@ -288,7 +296,7 @@ impl PlannerState {
             ));
         }
         explanation.push_str(&format!(
-            "; owned Resource Deposits {:?}",
+            ", owned Resource Deposits {:?}",
             economy
                 .owned_deposits
                 .iter()

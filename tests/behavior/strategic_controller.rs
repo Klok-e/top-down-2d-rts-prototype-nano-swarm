@@ -458,6 +458,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
         charge: 1.0,
         max_charge: 1.0,
         cargo: 0,
+        velocity: Vec2::ZERO,
     };
     let charger = StructureState {
         id: 42,
@@ -529,6 +530,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
             charge: 1.0,
             max_charge: 1.0,
             cargo: 0,
+            velocity: Vec2::ZERO,
         })
         .collect::<Vec<_>>();
     crowded_bots.push(moved);

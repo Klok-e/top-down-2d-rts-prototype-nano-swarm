@@ -145,18 +145,7 @@ tuning_schema! {
         strategy_expansion_travel_cost: f32 = 2.0 => ("Expansion travel cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_expansion_haul_cost: f32 = 3.0 => ("Expansion hauling cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_expansion_exposure_cost: f32 = 10.0 => ("Expansion exposure cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_hold_base: f32 = 25.0 => ("hold base", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_hold_supply_cap: f32 = 100.0 => ("hold supply cap", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_hold_supply_weight: f32 = 0.1 => ("hold supply weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_hold_force_weight: f32 = 0.02 => ("hold force weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_pressure_base: f32 = 160.0 => ("pressure base", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_pressure_supply_cap: f32 = 120.0 => ("pressure supply cap", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_pressure_supply_weight: f32 = 0.7 => ("pressure supply weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_pressure_force_weight: f32 = 0.04 => ("pressure force weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_pressure_enemy_weight: f32 = 0.035 => ("pressure enemy weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_pressure_low_charge_penalty: f32 = 18.0 => ("pressure low charge penalty", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_pressure_distance_cost: f32 = 2.0 => ("pressure distance cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_pressure_exposure_cost: f32 = 12.0 => ("pressure exposure cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
+        strategy_home_income_lead: f32 = 5.0 => ("Income lead for home push", "minerals/s", 1.0, 0.1, 0.0, 1_000_000.0);
         strategy_raid_charger_value: f32 = 95.0 => ("raid charger value", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_raid_stockpile_value: f32 = 80.0 => ("raid stockpile value", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_raid_facility_value: f32 = 60.0 => ("raid facility value", "", 1.0, 0.05, 0.0, 1_000_000.0);
@@ -173,7 +162,6 @@ tuning_schema! {
         strategy_hunt_hauler_value: f32 = 25.0 => ("hunt hauler value", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_hunt_worker_value: f32 = 15.0 => ("hunt worker value", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_hunt_vulnerability_weight: f32 = 0.5 => ("hunt vulnerability weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_hunt_supported_base: f32 = 140.0 => ("hunt supported base", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_hunt_remnant_base: f32 = 500.0 => ("hunt remnant base", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_hunt_force_weight: f32 = 0.04 => ("hunt force weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_hunt_distance_cost: f32 = 2.0 => ("hunt distance cost", "", 1.0, 0.05, 0.0, 1_000_000.0);

@@ -47,6 +47,7 @@ pub struct BotState {
     pub charge: f32,
     pub max_charge: f32,
     pub cargo: u32,
+    pub velocity: Vec2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,18 +185,38 @@ struct AttackObligation {
 enum Objective {
     HoldHome,
     SecureDeposit(u64),
-    ForwardPressure(IVec2),
-    RaidLogistics(u64),
+    DefendDeposit(u64),
+    ContestDeposit(u64),
+    RaidDeposit { deposit: u64, target: u64 },
+    PushHome(SwarmId),
+    FinishStructure(u64),
     HuntRemnant(u64),
 }
 
 impl Objective {
+    fn priority(self) -> u8 {
+        match self {
+            Self::DefendDeposit(_) => 6,
+            Self::ContestDeposit(_) => 5,
+            Self::SecureDeposit(_) => 4,
+            Self::RaidDeposit { .. } => 3,
+            Self::PushHome(_) => 2,
+            Self::FinishStructure(_) | Self::HuntRemnant(_) => 1,
+            Self::HoldHome => 0,
+        }
+    }
+
     fn label(self) -> String {
         match self {
             Self::HoldHome => "hold the home economy".to_string(),
             Self::SecureDeposit(id) => format!("secure Resource Deposit {id}"),
-            Self::ForwardPressure(cell) => format!("establish a supplied front at {cell}"),
-            Self::RaidLogistics(id) => format!("attack enemy logistics structure {id}"),
+            Self::DefendDeposit(id) => format!("defend owned Resource Deposit {id}"),
+            Self::ContestDeposit(id) => format!("contest neutral Resource Deposit {id}"),
+            Self::RaidDeposit { deposit, target } => {
+                format!("raid enemy Resource Deposit {deposit} at target {target}")
+            }
+            Self::PushHome(swarm) => format!("push enemy home of Swarm {}", swarm.0),
+            Self::FinishStructure(id) => format!("finish remaining structure {id}"),
             Self::HuntRemnant(id) => format!("hunt remaining Nanobot {id}"),
         }
     }
@@ -225,7 +246,6 @@ struct ForceEstimate {
     friendly_defenders: usize,
     friendly_strength: f32,
     enemy_strength: f32,
-    low_charge_defenders: usize,
 }
 
 mod economy;
