@@ -24,22 +24,20 @@ pub(super) fn validate_plan(
     state: &GameState<'_>,
     budget: &mut WorkBudget,
 ) -> Result<PlanValidation, ()> {
-    if plan
-        .desired
-        .iter()
-        .any(|intent| !is_reachable(owner, state, intent.cell))
-    {
+    let validation = PlanValidation {
+        lost_deposit: validate_owned_deposits(&plan.owned_deposits, owner, state, budget)?,
+        ..PlanValidation::default()
+    };
+    if plan.desired.iter().any(|intent| {
+        !is_reachable(owner, state, intent.cell)
+            && !plan
+                .owned_deposits
+                .iter()
+                .any(|mine| mine.desired.contains(intent))
+    }) {
         return Ok(PlanValidation {
             invalidation: Some("existing Intent Plan left the swarm-reachable map".to_string()),
-            ..PlanValidation::default()
-        });
-    }
-    if let Some(id) = validate_owned_deposits(&plan.owned_deposits, owner, state, budget)? {
-        return Ok(PlanValidation {
-            invalidation: Some(format!(
-                "owned Resource Deposit {id} was exhausted, lost, or unreachable"
-            )),
-            ..PlanValidation::default()
+            ..validation
         });
     }
     if let Some(id) = plan.key_charger {
@@ -60,12 +58,12 @@ pub(super) fn validate_plan(
         if !operational {
             return Ok(PlanValidation {
                 invalidation: Some(format!("key Charger {id} was lost")),
-                ..PlanValidation::default()
+                ..validation
             });
         }
     }
     let Some(target) = plan.attack else {
-        return Ok(PlanValidation::default());
+        return Ok(validation);
     };
     let Some(observed) = observe_attack_target(target, owner, state, budget)? else {
         return Ok(PlanValidation {
@@ -74,7 +72,7 @@ pub(super) fn validate_plan(
                 target.label(),
                 target.id
             )),
-            ..PlanValidation::default()
+            ..validation
         });
     };
     let moved = observed.cell != target.cell;
@@ -99,6 +97,7 @@ pub(super) fn validate_plan(
         attack_progressed: observed.health < target.health,
         covered_attack: covered,
         covered_attack_movement: moved && covered,
+        ..validation
     })
 }
 

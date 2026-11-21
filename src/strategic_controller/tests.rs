@@ -256,7 +256,7 @@ fn expansion_rejects_a_deposit_whose_corridor_exceeds_paint_capacity() {
 
     for (cell, kind) in [
         (IVec2::ZERO, IntentKind::Build),
-        (deposit_cell, IntentKind::Defend),
+        (IVec2::ZERO, IntentKind::Defend),
     ] {
         assert!(decision.edits.contains(&IntentEdit {
             cell,
@@ -996,7 +996,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
 }
 
 #[test]
-fn progressing_structure_attack_retains_the_only_front() {
+fn losing_a_mine_keeps_a_progressing_attack_front() {
     let mut grid = IntentGrid::new(32, 32);
     let owner = SwarmId(4);
     let enemy = SwarmId(9);
@@ -1043,6 +1043,14 @@ fn progressing_structure_attack_retains_the_only_front() {
         max_health: 100,
         minerals: 0,
     };
+    let mine_cell = IVec2::new(-4, 0);
+    let mine = DepositState {
+        id: 21,
+        owner: Some(owner),
+        position: world(mine_cell),
+        amount: 72_000,
+        radius: 80.0,
+    };
     let mut controller = Controller::new(owner);
     let initial = controller.decide(
         &direct_attack_tuning(),
@@ -1051,7 +1059,7 @@ fn progressing_structure_attack_retains_the_only_front() {
             swarms: &swarms,
             bots: &bots,
             structures: &[friendly_charger, incumbent],
-            deposits: &[],
+            deposits: &[mine],
             terrain: &[],
             reachability: None,
             route_query: None,
@@ -1060,6 +1068,12 @@ fn progressing_structure_attack_retains_the_only_front() {
         },
     );
     apply(&mut grid, owner, &initial);
+
+    assert!(
+        grid.cell(mine_cell)
+            .unwrap()
+            .has_owned(IntentKind::Gather, owner)
+    );
 
     let progressing_incumbent = StructureState {
         health: 20,
@@ -1081,11 +1095,11 @@ fn progressing_structure_attack_retains_the_only_front() {
             swarms: &swarms,
             bots: &bots,
             structures: &[friendly_charger, progressing_incumbent, new_forward_target],
-            deposits: &[],
+            deposits: &[DepositState { amount: 0, ..mine }],
             terrain: &[],
             reachability: None,
             route_query: None,
-            tick: WORK_WINDOW_TICKS,
+            tick: 1,
             finished: false,
         },
     );
@@ -1098,7 +1112,13 @@ fn progressing_structure_attack_retains_the_only_front() {
         "{}",
         revised.explanation
     );
-    assert!(!revised.explanation.contains("structure 31"));
+    assert!(revised.reviewed);
+    assert!(
+        !grid
+            .cell(mine_cell)
+            .unwrap()
+            .has_owned(IntentKind::Gather, owner)
+    );
     assert!(
         grid.cell(IVec2::new(12, 0))
             .is_some_and(|intent| { intent.has_owned(IntentKind::Defend, owner) })

@@ -127,6 +127,7 @@ impl PlannerState {
             }
         };
         let PlanValidation {
+            lost_deposit,
             invalidation,
             attack_progressed,
             covered_attack,
@@ -146,7 +147,7 @@ impl PlannerState {
             && tracked_movement
             && !attack_progressed
             && !self.covered_stall_grace_used;
-        if !regular_review && invalidation.is_none() {
+        if !regular_review && invalidation.is_none() && lost_deposit.is_none() {
             self.retained_covered_movement = tracked_movement;
             self.work_used = budget.used;
             return Decision {
@@ -279,6 +280,11 @@ impl PlannerState {
                 "; staging point {} toward {}",
                 front.point(),
                 selected.attack_target.unwrap()
+            ));
+        }
+        if let Some(id) = lost_deposit {
+            explanation.push_str(&format!(
+                "; owned Resource Deposit {id} was exhausted, lost, or unreachable"
             ));
         }
         explanation.push_str(&format!(

@@ -147,6 +147,7 @@ struct IntentPlan {
 
 #[derive(Debug, Default)]
 struct PlanValidation {
+    lost_deposit: Option<u64>,
     invalidation: Option<String>,
     attack_progressed: bool,
     covered_attack: bool,

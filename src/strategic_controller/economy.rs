@@ -15,7 +15,7 @@ pub(super) struct OwnedDeposit {
     position: Vec2,
     pub(super) gather_cell: IVec2,
     build_cell: IVec2,
-    desired: Vec<DesiredIntent>,
+    pub(super) desired: Vec<DesiredIntent>,
 }
 
 #[derive(Default)]
@@ -61,7 +61,12 @@ pub(super) fn validate_owned_deposits(
     for mine in owned {
         let valid = find_deposit(mine.id, state, budget)?
             .is_some_and(|deposit| available(deposit, owner) && deposit.position == mine.position);
-        if !valid {
+        let support_reachable = state.reachability.is_none_or(|map| {
+            mine.desired
+                .iter()
+                .all(|intent| map.contains(owner, intent.cell, state.grid))
+        });
+        if !valid || !support_reachable {
             return Ok(Some(mine.id));
         }
     }
@@ -177,7 +182,14 @@ pub(super) fn plan_economy(
     for (deposit, value) in opportunities {
         let travel = home.distance(deposit.position);
         let value = value - travel / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_travel_cost;
+        // Navigation can move an obstructed origin to clear ground in its tile.
+        let origin_offset = if state.route_query.is_some() {
+            Vec2::splat(crate::ZONE_BLOCK_SIZE).length()
+        } else {
+            (home - intent_cell_center(world_to_intent_cell(home))).length()
+        };
         let min_route = (travel
+            - origin_offset
             - deposit.radius
             - crate::navigation::BODY_RADIUS
             - 2.0 * crate::nanobot::STOP_THRESHOLD)
