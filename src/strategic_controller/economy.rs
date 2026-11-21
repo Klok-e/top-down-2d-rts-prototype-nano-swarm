@@ -67,14 +67,20 @@ impl EconomyPlan {
         true
     }
 
-    fn claim(&mut self, mut mine: OwnedDeposit, amount: u32, tick: u64, budget: &mut WorkBudget) {
+    fn claim(
+        &mut self,
+        mut mine: OwnedDeposit,
+        amount: u32,
+        tick: u64,
+        budget: &mut WorkBudget,
+    ) -> Option<()> {
         if self.owned_deposits.is_empty() {
             mine.startup = Some(MineStartup {
                 initial_amount: amount,
                 deadline: tick.saturating_add(MINE_STARTUP_TICKS),
             });
         }
-        self.add(mine, budget);
+        self.add(mine, budget).then_some(())
     }
 
     fn add(&mut self, mine: OwnedDeposit, budget: &mut WorkBudget) -> bool {
@@ -222,7 +228,7 @@ pub(super) fn plan_economy(
             if let Ok(Some((mine, _))) = mine_support(owner, deposit, state, home, budget)
                 && economy.can_fit(&mine, ECONOMY_EXPANSION_PAINT_LIMIT, budget)
             {
-                economy.claim(mine, deposit.amount, state.tick, budget);
+                economy.claim(mine, deposit.amount, state.tick, budget)?;
             }
             if budget.exhausted {
                 return None;
@@ -259,9 +265,7 @@ pub(super) fn plan_economy(
             if bot.owner != owner
                 && bot.health > 0
                 && approaches(bot, deposit)
-                && state
-                    .reachability
-                    .is_none_or(|map| map.position_is_reachable(owner, bot.position, state.grid))
+                && reachable_position(owner, bot.position, state, budget)?
             {
                 approached = true;
                 break;
@@ -370,8 +374,9 @@ pub(super) fn plan_economy(
         }
     }
     if let Some((mine, deposit, _)) = best {
-        economy.expansion = Some(mine.id);
-        economy.claim(mine, deposit.amount, state.tick, budget);
+        let id = mine.id;
+        economy.claim(mine, deposit.amount, state.tick, budget)?;
+        economy.expansion = Some(id);
     }
     (!budget.exhausted).then_some(economy)
 }
@@ -422,9 +427,10 @@ fn opening_can_staff_both_mines(
         let reachable = if state.route_query.is_some() {
             query_route(state, home, RouteGoal::Point(position), budget).is_some()
         } else {
-            state
-                .reachability
-                .is_none_or(|map| map.position_is_reachable(owner, position, state.grid))
+            let Some(reachable) = reachable_position(owner, position, state, budget) else {
+                return false;
+            };
+            reachable
         };
         if budget.exhausted {
             return false;
@@ -437,6 +443,18 @@ fn opening_can_staff_both_mines(
         }
     }
     false
+}
+
+fn reachable_position(
+    owner: SwarmId,
+    position: Vec2,
+    state: &GameState<'_>,
+    budget: &mut WorkBudget,
+) -> Option<bool> {
+    state.reachability.map_or(Some(true), |map| {
+        map.position_is_reachable_with_budget(owner, position, state.grid, &mut || budget.spend(1))
+            .ok()
+    })
 }
 
 fn approaches(bot: &BotState, deposit: &DepositState) -> bool {
@@ -510,9 +528,17 @@ fn deposit_access(
         if let Some(intent) = state.grid.cell(cell)
             && cell_overlaps_circle(cell, deposit.position, deposit.radius)
         {
-            reachable |= state
-                .reachability
-                .is_none_or(|map| map.contains(owner, cell, state.grid));
+            if !reachable {
+                reachable = match state.reachability {
+                    Some(map) => map
+                        .reachable_point_with_budget(owner, cell, state.grid, &mut || {
+                            budget.spend(1)
+                        })
+                        .ok()?
+                        .is_some(),
+                    None => true,
+                };
+            }
             if intent.has(IntentKind::Gather) {
                 for other in intent.owners(IntentKind::Gather) {
                     if !budget.spend(1) {

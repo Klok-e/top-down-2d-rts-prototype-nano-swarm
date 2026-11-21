@@ -16,19 +16,19 @@ impl Navigation {
         min: Vec2,
         max: Vec2,
         tile_center: Vec2,
-    ) -> Option<Vec2> {
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<Vec2>, ()> {
         let corners = [min, max, Vec2::new(min.x, max.y), Vec2::new(max.x, min.y)];
-        if self
-            .obstacle_index
-            .candidates(min, max)
-            .into_iter()
-            .any(|id| {
-                corners
-                    .iter()
-                    .all(|&point| !self.obstacles[id].admits_body(point))
-            })
-        {
-            return None;
+        for id in self.obstacle_index.candidates(min, max) {
+            if !allow_work() {
+                return Err(());
+            }
+            if corners
+                .iter()
+                .all(|&point| !self.obstacles[id].admits_body(point))
+            {
+                return Ok(None);
+            }
         }
 
         let first = Self::cell(min);
@@ -41,15 +41,21 @@ impl Navigation {
             a.distance_squared(tile_center)
                 .total_cmp(&b.distance_squared(tile_center))
         });
-        if let Some(point) = self.connected_point(home, centers) {
-            return Some(point);
+        if let Some(point) =
+            self.connected_point_with_budget(home, centers.into_iter().map(Some), allow_work)?
+        {
+            return Ok(Some(point));
+        }
+        if !allow_work() {
+            return Err(());
         }
         if let Some(point) = self.visible_region_point(home, min, max, None, |_| true) {
-            return Some(point);
+            return Ok(Some(point));
         }
-        self.connected_point(
+        self.connected_point_with_budget(
             home,
-            self.connector_probes(min, max, None, |_| true).flatten(),
+            self.connector_probes(min, max, None, |_| true),
+            allow_work,
         )
     }
 
