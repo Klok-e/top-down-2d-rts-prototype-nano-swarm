@@ -3469,6 +3469,12 @@ fn military_priorities_protect_expansion_before_attacking_home() {
         max_health: 100,
         minerals: 40,
     };
+    let own_source = StructureState {
+        id: 11,
+        owner,
+        position: world(mine),
+        ..raid_target
+    };
     let home_facility = StructureState {
         id: 25,
         position: world(enemy_home),
@@ -3515,7 +3521,7 @@ fn military_priorities_protect_expansion_before_attacking_home() {
         )
     };
     let deposits = [main_deposit, enemy_deposit, contested_deposit];
-    let structures = [home_facility, raid_target];
+    let structures = [own_source, home_facility, raid_target];
 
     let defense = decide(&deposits, &structures, &[intruder, approaching]);
     assert!(
@@ -3596,7 +3602,7 @@ fn military_priorities_protect_expansion_before_attacking_home() {
             .any(|edit| { edit.kind == IntentKind::Defend && edit.cell == enemy_mine + IVec2::Y })
     );
 
-    let home = decide(&deposits[..2], &[home_facility], &[]);
+    let home = decide(&deposits[..2], &[own_source, home_facility], &[]);
     assert!(home.explanation.contains("push enemy home"), "{home:?}");
     assert!(
         home.edits
@@ -3656,7 +3662,7 @@ fn military_priorities_protect_expansion_before_attacking_home() {
         &GameState {
             swarms: &swarms,
             deposits: &deposits[..2],
-            structures: &[home_facility, damaged_mine],
+            structures: &[own_source, home_facility, damaged_mine],
             bots: &[intruder],
             ..empty_state(&grid, WORK_WINDOW_TICKS)
         },
