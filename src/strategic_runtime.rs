@@ -157,6 +157,12 @@ impl MineralIncomeHistory {
     }
 }
 
+#[derive(Default)]
+struct StrategicObservations {
+    routes: StrategicRouteCache,
+    previous_positions: HashMap<Entity, Vec2>,
+}
+
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn strategic_intent_system(
     tuning: Res<crate::tuning::Tuning>,
@@ -203,8 +209,7 @@ fn strategic_intent_system(
     time: Res<Time<Fixed>>,
     outcome: Option<Res<MatchOutcome>>,
     mut telemetry: ResMut<ControllerTelemetry>,
-    mut routes: Local<StrategicRouteCache>,
-    mut previous_positions: Local<HashMap<Entity, Vec2>>,
+    mut observations: Local<StrategicObservations>,
     mut income_history: Local<BTreeMap<SwarmId, MineralIncomeHistory>>,
 ) {
     if controllers.is_empty()
@@ -214,6 +219,10 @@ fn strategic_intent_system(
     {
         return;
     }
+    let StrategicObservations {
+        routes,
+        previous_positions,
+    } = &mut *observations;
     let owners: BTreeMap<_, _> = swarms.iter().map(|(entity, id, _)| (entity, *id)).collect();
     let tick = (time.elapsed_secs_f64() * crate::SIMULATION_HZ).round() as u64;
     income_history.retain(|id, _| owners.values().any(|owner| owner == id));
@@ -313,7 +322,7 @@ fn strategic_intent_system(
         routes.revision = navigation.revision();
         routes.results.clear();
     }
-    let routes = RefCell::new(&mut *routes);
+    let routes = RefCell::new(routes);
     let route_query = |start, goal, allow_work: &mut dyn FnMut() -> bool| {
         routes
             .borrow_mut()

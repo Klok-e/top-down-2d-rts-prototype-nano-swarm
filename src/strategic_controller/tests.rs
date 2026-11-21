@@ -3345,7 +3345,26 @@ fn military_priorities_protect_expansion_before_attacking_home() {
             .any(|edit| { edit.kind == IntentKind::Gather && edit.cell == neutral })
     );
 
-    let contest = decide(&deposits, &structures, &[approaching]);
+    let mine_approaches = |_, goal, _: &mut dyn FnMut() -> bool| {
+        Some(match goal {
+            RouteGoal::Range { .. } => RouteOutcome::Unreachable,
+            _ => RouteOutcome::Found(crate::navigation::Route {
+                waypoints: vec![world(neutral)],
+                cost: world(neutral).distance(swarms[0].home),
+            }),
+        })
+    };
+    let contest = Controller::new(owner).decide(
+        &direct_attack_tuning(),
+        &GameState {
+            swarms: &swarms,
+            deposits: &deposits,
+            structures: &structures,
+            bots: &[approaching],
+            route_query: Some(&mine_approaches),
+            ..empty_state(&grid, 0)
+        },
+    );
     assert!(
         contest
             .explanation
@@ -3521,4 +3540,35 @@ fn healthy_enemy_home_requires_a_live_tuned_income_lead() {
             && edit.kind == IntentKind::Defend
             && edit.cell == enemy_home
     }));
+
+    let survivor = BotState {
+        id: 2,
+        owner: enemy,
+        kind: NanobotType::Worker,
+        position: world(enemy_home + IVec2::Y * 6),
+        health: 100,
+        max_health: 100,
+        charge: 1.0,
+        max_charge: 1.0,
+        cargo: 0,
+        displacement: Vec2::ZERO,
+    };
+    let cleanup = Controller::new(owner).decide(
+        &tuning,
+        &GameState {
+            swarms: &[
+                swarms[0],
+                SwarmState {
+                    mineral_income_per_second: 0.0,
+                    ..swarms[1]
+                },
+            ],
+            bots: &[survivor],
+            ..empty_state(&grid, 0)
+        },
+    );
+    assert!(
+        cleanup.explanation.contains("hunt remaining Nanobot 2"),
+        "{cleanup:?}"
+    );
 }

@@ -188,6 +188,7 @@ pub(super) fn generate_candidates(
         attack: None,
         anchor: home_cell,
         attack_target: None,
+        approach: None,
         key_charger,
         defend_target,
         score: 0.0,
@@ -203,11 +204,12 @@ pub(super) fn generate_candidates(
         return candidates;
     }
 
-    for deposit in &economy.contested_deposits {
+    for &(deposit, cell, approach) in &economy.contested_deposits {
         candidates.push(PlanCandidate {
-            objective: Objective::ContestDeposit(deposit.id),
-            attack_target: Some(world_to_intent_cell(deposit.position)),
-            score: -home.distance(deposit.position) / crate::ZONE_BLOCK_SIZE,
+            objective: Objective::ContestDeposit(deposit),
+            attack_target: Some(cell),
+            approach: Some(approach),
+            score: -home_cell.as_vec2().distance(cell.as_vec2()),
             ..base
         });
     }
@@ -218,14 +220,12 @@ pub(super) fn generate_candidates(
     let own_income = owner_state.map_or(0.0, |swarm| swarm.mineral_income_per_second);
     let mut hostile_bots = BTreeSet::new();
     let mut recoverable = BTreeSet::new();
-    let mut surviving = BTreeSet::new();
     for bot in state.bots.iter().take(MAX_BOTS) {
         if !budget.spend(1) {
             return candidates;
         }
         if bot.owner != owner && bot.health > 0 {
             hostile_bots.insert(bot.owner);
-            surviving.insert(bot.owner);
         }
     }
     let mut supply = owner_state.map_or(0.0, |swarm| {
@@ -239,7 +239,6 @@ pub(super) fn generate_candidates(
             continue;
         }
         if structure.owner != owner {
-            surviving.insert(structure.owner);
             if structure.kind == StructureKind::Facility
                 && (structure.minerals > 0 || hostile_bots.contains(&structure.owner))
             {
@@ -256,13 +255,14 @@ pub(super) fn generate_candidates(
         if !budget.spend(1) {
             return candidates;
         }
-        if swarm.id == owner || !surviving.contains(&swarm.id) {
+        if swarm.id == owner {
             continue;
         }
         if swarm.mineral_income_per_second > 0.0 {
             recoverable.insert(swarm.id);
         }
         if own_income - swarm.mineral_income_per_second > tuning.strategy_home_income_lead
+            && home_has_targets(swarm, state, budget)
             && is_target_reachable(owner, state, swarm.home)
         {
             candidates.push(PlanCandidate {
@@ -387,6 +387,25 @@ pub(super) fn generate_candidates(
         });
     }
     candidates
+}
+
+fn home_has_targets(swarm: &SwarmState, state: &GameState<'_>, budget: &mut WorkBudget) -> bool {
+    let near_home =
+        |position: Vec2| position.distance_squared(swarm.home) <= crate::ZONE_BLOCK_SIZE.powi(2);
+    state
+        .structures
+        .iter()
+        .take(MAX_STRUCTURES)
+        .any(|structure| {
+            budget.spend(1)
+                && structure.owner == swarm.id
+                && structure.health > 0
+                && structure.kind != StructureKind::Planned
+                && near_home(structure.position)
+        })
+        || state.bots.iter().take(MAX_BOTS).any(|bot| {
+            budget.spend(1) && bot.owner == swarm.id && bot.health > 0 && near_home(bot.position)
+        })
 }
 
 fn mine_target(

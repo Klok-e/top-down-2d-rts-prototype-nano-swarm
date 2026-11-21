@@ -30,7 +30,7 @@ pub(super) struct EconomyPlan {
     pub(super) expansion: Option<u64>,
     pub(super) threatened: Option<(u64, IVec2)>,
     pub(super) free_deposit_exists: bool,
-    pub(super) contested_deposits: Vec<DepositState>,
+    pub(super) contested_deposits: Vec<(u64, IVec2, RouteGoal)>,
     pub(super) enemy_deposits: Vec<(DepositState, SwarmId)>,
     paint_set: HashSet<DesiredIntent>,
 }
@@ -189,11 +189,26 @@ pub(super) fn plan_economy(
     let mut unchecked = Vec::new();
     for deposit in opportunities {
         let approached = state.bots.iter().take(MAX_BOTS).any(|bot| {
-            budget.spend(1) && bot.owner != owner && bot.health > 0 && approaches(bot, deposit)
+            budget.spend(1)
+                && bot.owner != owner
+                && bot.health > 0
+                && approaches(bot, deposit)
+                && state
+                    .reachability
+                    .is_none_or(|map| map.position_is_reachable(owner, bot.position, state.grid))
         });
         if approached {
             match mine_support(owner, deposit, state, home, budget) {
-                Ok(Some(_)) | Err(_) => economy.contested_deposits.push(*deposit),
+                Ok(Some((mine, _))) => {
+                    economy.contested_deposits.push((
+                        deposit.id,
+                        mine.gather_cell,
+                        RouteGoal::Interaction(
+                            deposit_region(deposit).within_cell(mine.gather_cell),
+                        ),
+                    ));
+                }
+                Err(_) => economy.free_deposit_exists = true,
                 Ok(None) => {}
             }
         } else {
@@ -361,6 +376,13 @@ fn deposit_cells(deposit: &DepositState, grid: &IntentGrid) -> impl Iterator<Ite
     (min.y..=max.y).flat_map(move |y| (min.x..=max.x).map(move |x| IVec2::new(x, y)))
 }
 
+fn deposit_region(deposit: &DepositState) -> InteractionRegion {
+    InteractionRegion::deposit(
+        &Transform::from_translation(deposit.position.extend(0.0)),
+        deposit.radius,
+    )
+}
+
 fn mine_support(
     owner: SwarmId,
     deposit: &DepositState,
@@ -369,10 +391,7 @@ fn mine_support(
     budget: &mut WorkBudget,
 ) -> Result<Option<(OwnedDeposit, f32)>, CorridorPaintLimit> {
     let center = world_to_intent_cell(deposit.position);
-    let region = InteractionRegion::deposit(
-        &Transform::from_translation(deposit.position.extend(0.0)),
-        deposit.radius,
-    );
+    let region = deposit_region(deposit);
     let cells = std::iter::once(center)
         .chain(deposit_cells(deposit, state.grid).filter(|cell| *cell != center));
     let mut exceeds_paint_limit = false;

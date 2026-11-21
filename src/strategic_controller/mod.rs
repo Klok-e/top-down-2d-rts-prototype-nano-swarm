@@ -163,6 +163,7 @@ struct PlanCandidate {
     attack: Option<AttackObligation>,
     anchor: IVec2,
     attack_target: Option<IVec2>,
+    approach: Option<RouteGoal>,
     key_charger: Option<StructureState>,
     defend_target: usize,
     score: f32,

@@ -91,7 +91,10 @@ impl PlannerState {
         let Some(plan) = &self.current else {
             return reason.to_string();
         };
-        let mut explanation = format!("{reason}, active objective: {}", plan.objective.label());
+        let mut explanation = format!(
+            "{reason}, the active objective is to {}",
+            plan.objective.label()
+        );
         plan.append_context(&mut explanation);
         explanation
     }

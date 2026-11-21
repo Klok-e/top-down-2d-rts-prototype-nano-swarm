@@ -20,6 +20,7 @@ pub(super) fn materialize_plan(
         attack,
         anchor,
         attack_target: _,
+        approach: _,
         key_charger,
         defend_target,
         score: _,

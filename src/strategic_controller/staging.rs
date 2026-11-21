@@ -182,31 +182,29 @@ pub(super) fn plan_staging(
         return Some(retained);
     }
 
-    let start = previous.map_or_else(
-        || {
-            state
-                .swarms
-                .iter()
-                .find(|swarm| budget.spend(1) && swarm.id == owner)
-                .map_or(Vec2::ZERO, |swarm| swarm.home)
-        },
-        |previous| {
-            let cell = previous.point();
-            ground(owner, state, cell).unwrap_or_else(|| intent_cell_center(cell))
-        },
-    );
+    let home = state
+        .swarms
+        .iter()
+        .find(|swarm| budget.spend(1) && swarm.id == owner)
+        .map_or(Vec2::ZERO, |swarm| swarm.home);
+    let mut start = previous.map_or(home, |previous| {
+        let cell = previous.point();
+        ground(owner, state, cell).unwrap_or_else(|| intent_cell_center(cell))
+    });
     let destination = ground(owner, state, target)?;
     let waypoints = if state.route_query.is_some() {
-        query_route(
-            state,
-            start,
-            RouteGoal::Range {
-                center: destination,
-                radius: crate::ZONE_BLOCK_SIZE / 4.0,
-            },
-            budget,
-        )?
-        .waypoints
+        let goal = candidate.approach.unwrap_or(RouteGoal::Range {
+            center: destination,
+            radius: crate::ZONE_BLOCK_SIZE / 4.0,
+        });
+        let route = query_route(state, start, goal, budget).or_else(|| {
+            if start == home || budget.exhausted {
+                return None;
+            }
+            start = home;
+            query_route(state, start, goal, budget)
+        })?;
+        route.waypoints
     } else {
         vec![destination]
     };
