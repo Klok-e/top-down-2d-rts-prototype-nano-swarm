@@ -471,15 +471,10 @@ pub(super) fn generate_candidates(
             }
             let interaction = region.within_cell(cell);
             if let Some(map) = state.reachability {
-                let Ok(ground) =
-                    map.reachable_point_with_budget(owner, cell, state.grid, &mut || {
-                        budget.spend(1)
-                    })
-                else {
-                    return candidates;
-                };
-                if ground.is_none() {
-                    continue;
+                match cell_is_reachable(owner, state, cell, budget) {
+                    Some(true) => {}
+                    Some(false) => continue,
+                    None => return candidates,
                 }
                 if state.route_query.is_none() {
                     match map.interaction_is_reachable_with_budget(owner, interaction, &mut || {
@@ -583,9 +578,6 @@ fn deposit_is_reachable(
     state: &GameState<'_>,
     budget: &mut WorkBudget,
 ) -> Option<bool> {
-    if state.reachability.is_none() {
-        return Some(true);
-    }
     for cell in deposit_candidate_cells(state.grid, deposit.position, deposit.radius) {
         if !budget.spend(1) {
             return None;
