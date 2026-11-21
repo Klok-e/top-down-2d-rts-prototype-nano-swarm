@@ -2754,10 +2754,14 @@ fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
         cargo: 0,
     };
     let mut controller = Controller::new(owner);
-    let tuning = AutonomyTuning::default();
-    let review = |controller: &mut Controller, grid: &mut IntentGrid, defender, tick| {
+    let mut tuning = AutonomyTuning::default();
+    let review = |controller: &mut Controller,
+                  grid: &mut IntentGrid,
+                  tuning: &AutonomyTuning,
+                  defender,
+                  tick| {
         let decision = controller.decide(
-            &tuning,
+            tuning,
             &GameState {
                 swarms: &swarms,
                 bots: &[defender],
@@ -2770,7 +2774,7 @@ fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
         apply(grid, owner, &decision);
     };
 
-    review(&mut controller, &mut grid, defender, 0);
+    review(&mut controller, &mut grid, &tuning, defender, 0);
     let first = owned_defend_cells(&grid, owner);
     assert!(
         first.contains(&(0, -4)),
@@ -2781,6 +2785,7 @@ fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
     review(
         &mut controller,
         &mut grid,
+        &tuning,
         BotState {
             position: world(IVec2::new(1, 2)),
             ..defender
@@ -2792,6 +2797,7 @@ fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
     review(
         &mut controller,
         &mut grid,
+        &tuning,
         BotState {
             position: world(IVec2::new(0, -4)),
             ..defender
@@ -2802,5 +2808,36 @@ fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
     assert!(
         next.contains(&(2, -6)) && !next.contains(&(0, -4)),
         "{next:?}"
+    );
+
+    tuning.strategy_staging_spacing_cells = 64;
+    controller.request_tuning_review();
+    review(
+        &mut controller,
+        &mut grid,
+        &tuning,
+        defender,
+        2 * WORK_WINDOW_TICKS + 1,
+    );
+    assert_eq!(
+        owned_defend_cells(&grid, owner),
+        next,
+        "tuning must keep the active block"
+    );
+
+    review(
+        &mut controller,
+        &mut grid,
+        &tuning,
+        BotState {
+            position: world(IVec2::new(2, -6)),
+            ..defender
+        },
+        3 * WORK_WINDOW_TICKS + 1,
+    );
+    let final_block = owned_defend_cells(&grid, owner);
+    assert!(
+        final_block.contains(&(12, 0)),
+        "the new spacing must apply to the remaining route: {final_block:?}"
     );
 }

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::{
     lifecycle::WorkBudget,
     materialize::{intent_cell_center, query_route, world_to_intent_cell},
@@ -11,14 +13,22 @@ const PURSUIT_AREA_CELLS: usize = 9;
 
 #[derive(Debug, Clone)]
 pub(super) struct StagingFront {
-    points: Vec<IVec2>,
+    route: Arc<[Vec2]>,
+    points: Vec<StagingPoint>,
     active: usize,
+    spacing_cells: u32,
     pub(super) block: DefendBlock,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StagingPoint {
+    cell: IVec2,
+    distance: f32,
 }
 
 impl StagingFront {
     pub(super) fn point(&self) -> IVec2 {
-        self.points[self.active]
+        self.points[self.active].cell
     }
 
     pub(super) fn covers(&self, target: IVec2, owner: SwarmId, state: &GameState<'_>) -> bool {
@@ -35,16 +45,20 @@ impl StagingFront {
         owner: SwarmId,
         state: &GameState<'_>,
     ) -> bool {
-        let destination = *self
-            .points
-            .last()
-            .expect("a staging front has a destination");
+        let destination = self.destination();
         target == destination
             || if self.active + 1 == self.points.len() {
                 self.covers(target, owner, state)
             } else {
                 DefendBlock::new(destination, PURSUIT_AREA_CELLS).contains(target)
             }
+    }
+
+    fn destination(&self) -> IVec2 {
+        self.points
+            .last()
+            .expect("a staging front has a destination")
+            .cell
     }
 
     fn advance_if_arrived(
@@ -59,7 +73,7 @@ impl StagingFront {
         }
         let mut arrived = 0;
         let mut living = 0;
-        for bot in state.bots.iter().take(MAX_BOTS) {
+        for bot in state.bots {
             if !budget.spend(1) {
                 return;
             }
@@ -118,20 +132,32 @@ pub(super) fn plan_staging(
 ) -> Option<StagingFront> {
     let target = candidate.attack_target?;
     let previous = current.and_then(|plan| plan.staging.as_ref());
+    let same_objective = current.is_some_and(|plan| plan.objective == candidate.objective);
+    let spacing = tuning.strategy_staging_spacing_cells;
+    let arrival_fraction = tuning.strategy_staging_arrival_fraction;
     if let Some(previous) = previous
-        && current.is_some_and(|plan| plan.objective == candidate.objective)
+        && same_objective
         && previous.destination_contains(target, owner, state)
         && previous.points[previous.active..]
             .iter()
-            .all(|&point| ground(owner, state, point).is_some())
+            .all(|point| ground(owner, state, point.cell).is_some())
     {
         let mut retained = previous.clone();
-        retained.advance_if_arrived(
-            owner,
-            state,
-            tuning.strategy_staging_arrival_fraction,
-            budget,
-        );
+        if previous.spacing_cells != spacing && previous.active + 1 < previous.points.len() {
+            retained.points = staging_points(
+                &previous.route,
+                Some(previous.points[previous.active]),
+                previous.destination(),
+                spacing,
+                budget,
+            )?;
+            retained
+                .points
+                .retain(|point| ground(owner, state, point.cell).is_some());
+            retained.active = 0;
+        }
+        retained.spacing_cells = spacing;
+        retained.advance_if_arrived(owner, state, arrival_fraction, budget);
         return Some(retained);
     }
 
@@ -148,7 +174,6 @@ pub(super) fn plan_staging(
             ground(owner, state, cell).unwrap_or_else(|| intent_cell_center(cell))
         },
     );
-    let start_cell = world_to_intent_cell(start);
     let destination = ground(owner, state, target)?;
     let waypoints = if state.route_query.is_some() {
         query_route(
@@ -164,36 +189,27 @@ pub(super) fn plan_staging(
     } else {
         vec![destination]
     };
-    let mut points = staging_points(
-        start,
-        &waypoints,
-        tuning.strategy_staging_spacing_cells,
-        budget,
-    )?;
-    points.retain(|&cell| {
-        cell != start_cell && cell != target && ground(owner, state, cell).is_some()
+    let route = Arc::from(std::iter::once(start).chain(waypoints).collect::<Vec<_>>());
+    let held_stage = previous.filter(|previous| {
+        same_objective
+            && previous.active + 1 < previous.points.len()
+            && ground(owner, state, previous.point()).is_some()
     });
-    points.push(target);
+    let first = held_stage.map(|stage| StagingPoint {
+        cell: stage.point(),
+        distance: 0.0,
+    });
+    let mut points = staging_points(&route, first, target, spacing, budget)?;
+    points.retain(|point| ground(owner, state, point.cell).is_some());
     let mut staging = StagingFront {
+        route,
         points,
         active: 0,
-        block: DefendBlock::new(target, 1),
+        spacing_cells: spacing,
+        block: held_stage.map_or_else(|| DefendBlock::new(target, 1), |stage| stage.block),
     };
-    if let Some(previous) = previous
-        && current.is_some_and(|plan| plan.objective == candidate.objective)
-        && !previous.destination_contains(target, owner, state)
-        && budget.spend(1)
-        && ground(owner, state, start_cell).is_some()
-        && previous.active + 1 != previous.points.len()
-    {
-        staging.points.insert(0, start_cell);
-        staging.block = previous.block;
-        staging.advance_if_arrived(
-            owner,
-            state,
-            tuning.strategy_staging_arrival_fraction,
-            budget,
-        );
+    if held_stage.is_some() {
+        staging.advance_if_arrived(owner, state, arrival_fraction, budget);
     }
     Some(staging)
 }
@@ -206,33 +222,56 @@ fn ground(owner: SwarmId, state: &GameState<'_>, cell: IVec2) -> Option<Vec2> {
 }
 
 fn staging_points(
-    start: Vec2,
-    waypoints: &[Vec2],
+    route: &[Vec2],
+    first: Option<StagingPoint>,
+    target: IVec2,
     spacing_cells: u32,
     budget: &mut WorkBudget,
-) -> Option<Vec<IVec2>> {
-    if !budget.spend(waypoints.len()) {
+) -> Option<Vec<StagingPoint>> {
+    if !budget.spend(route.len().saturating_mul(2)) {
         return None;
     }
-    let segments = std::iter::once(start)
-        .chain(waypoints.iter().copied())
-        .zip(waypoints.iter().copied());
-    let length = segments.clone().map(|(a, b)| a.distance(b)).sum::<f32>();
+    let segments = route.windows(2);
+    let length = segments
+        .clone()
+        .map(|segment| segment[0].distance(segment[1]))
+        .sum::<f32>();
+    let already_traveled = first.map_or(0.0, |point| point.distance);
     let spacing = spacing_cells.max(1) as f32 * crate::ZONE_BLOCK_SIZE;
-    let count = ((length / spacing).ceil() as usize).clamp(1, MAX_STAGING_POINTS);
-    let step = length / count as f32;
-    let mut points = Vec::with_capacity(count);
+    let limit = MAX_STAGING_POINTS - usize::from(first.is_some());
+    let count = (((length - already_traveled) / spacing).ceil() as usize).clamp(1, limit);
+    let step = (length - already_traveled) / count as f32;
+    let origin = first.map_or_else(|| world_to_intent_cell(route[0]), |point| point.cell);
+    let mut points = Vec::with_capacity(count + usize::from(first.is_some()));
+    points.extend(first);
     let mut traveled = 0.0;
-    for (from, to) in segments {
+    let mut sample = 1;
+    for segment in segments {
+        let [from, to] = [segment[0], segment[1]];
         let segment_length = from.distance(to);
-        let mut next = (points.len() + 1) as f32 * step;
-        while points.len() + 1 < count && next <= traveled + segment_length {
+        while sample < count {
+            let next = already_traveled + sample as f32 * step;
+            if next > traveled + segment_length {
+                break;
+            }
             let fraction = (next - traveled) / segment_length;
-            points.push(world_to_intent_cell(from.lerp(to, fraction)));
-            next += step;
+            let cell = world_to_intent_cell(from.lerp(to, fraction));
+            if cell != origin
+                && cell != target
+                && points.last().is_none_or(|point| point.cell != cell)
+            {
+                points.push(StagingPoint {
+                    cell,
+                    distance: next,
+                });
+            }
+            sample += 1;
         }
         traveled += segment_length;
     }
-    points.dedup();
+    points.push(StagingPoint {
+        cell: target,
+        distance: length,
+    });
     Some(points)
 }

@@ -186,57 +186,40 @@ impl PlannerState {
         };
 
         let progressing_attack = attack_progressed && best.attack.is_some() && !tuning_review;
-        let (mut selected, mut explanation) = if let Some(reason) = invalidation {
-            let label = best.objective.label();
-            (
-                best,
-                format!("{reason}; selected {label} after urgent review"),
-            )
-        } else if let Some(current) = self.current.as_ref() {
-            let refreshed = candidates
+        let refreshed = self.current.as_ref().and_then(|current| {
+            candidates
                 .iter()
-                .find(|candidate| candidate.objective == current.objective);
-            if let Some(refreshed) = refreshed
-                && (progressing_attack
-                    || stall_grace
-                    || best.score
-                        <= refreshed.score
-                            + (refreshed.score - refreshed.economy.value).abs()
-                                * (tuning.controller_switch_margin - 1.0)
-                            + tuning.controller_switch_bias)
-            {
-                (
-                    refreshed.clone(),
-                    if progressing_attack {
-                        format!(
-                            "retained {}; attack is progressing",
-                            refreshed.objective.label()
-                        )
-                    } else if stall_grace {
-                        format!(
-                            "retained {}; covered attack is in its stall grace review",
-                            refreshed.objective.label()
-                        )
-                    } else {
-                        format!(
-                            "retained viable {}; no alternative was clearly better",
-                            refreshed.objective.label()
-                        )
-                    },
-                )
+                .find(|candidate| candidate.objective == current.objective)
+        });
+        let (mut selected, mut explanation) = if let Some(refreshed) = refreshed
+            && (progressing_attack
+                || invalidation.is_none()
+                    && (stall_grace
+                        || best.score
+                            <= refreshed.score
+                                + (refreshed.score - refreshed.economy.value).abs()
+                                    * (tuning.controller_switch_margin - 1.0)
+                                + tuning.controller_switch_bias))
+        {
+            let label = refreshed.objective.label();
+            let explanation = if progressing_attack {
+                format!("retained {label}; attack is progressing")
+            } else if stall_grace {
+                format!("retained {label}; covered attack is in its stall grace review")
             } else {
-                let label = best.objective.label();
-                (
-                    best,
-                    format!("selected {label} because it is clearly better than the current plan"),
-                )
-            }
+                format!("retained viable {label}; no alternative was clearly better")
+            };
+            (refreshed.clone(), explanation)
         } else {
             let label = best.objective.label();
-            (
-                best,
-                format!("selected {label} from economic, support, and combat alternatives"),
-            )
+            let explanation = if let Some(reason) = invalidation {
+                format!("{reason}; selected {label} after urgent review")
+            } else if self.current.is_some() {
+                format!("selected {label} because it is clearly better than the current plan")
+            } else {
+                format!("selected {label} from economic, support, and combat alternatives")
+            };
+            (best, explanation)
         };
         let staging = plan_staging(
             tuning,
