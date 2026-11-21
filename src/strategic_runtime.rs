@@ -50,6 +50,7 @@ impl Plugin for StrategicControllerPlugin {
             .add_systems(
                 FixedUpdate,
                 strategic_intent_system
+                    .after(crate::nanobot::NanobotSimulationSet::Movement)
                     .before(RegionalAllocationSet::Project)
                     .run_if(resource_exists::<SwarmReachabilityMap>),
             );
