@@ -56,6 +56,10 @@ _Avoid_: Mining zone, resource zone
 A physical map object containing extractable resources for gather work, distinct from the resource kind it contains. It blocks Nanobot movement while the object exists, including when depleted; gathering happens from reachable space outside its footprint.
 _Avoid_: Mineral node, mineral patch, resource pile
 
+**Owned Resource Deposit**:
+A Resource Deposit a Strategic Controller commits to mining and supporting across reviews. Ownership describes its swarm’s economic intent, and neutral deposits remain open to any swarm that can reach them.
+_Avoid_: Captured territory, exclusive mining rights
+
 **Rock Formation**:
 Permanent, impassable terrain that shapes base entrances, travel routes, and mineral pockets. Rock Formations cannot be destroyed or harvested and enclose the default map's playable area.
 _Avoid_: Destructible rock, Resource Deposit

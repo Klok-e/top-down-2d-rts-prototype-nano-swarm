@@ -1,10 +1,9 @@
+use super::economy::validate_owned_deposits;
 use super::{
     lifecycle::WorkBudget,
     materialize::{route_exposure, world_to_intent_cell},
     *,
 };
-use crate::nanobot::{InteractionRegion, cell_overlaps_circle};
-use bevy::prelude::Transform;
 
 fn is_reachable(owner: SwarmId, state: &GameState<'_>, cell: IVec2) -> bool {
     state
@@ -25,24 +24,20 @@ pub(super) fn validate_plan(
     state: &GameState<'_>,
     budget: &mut WorkBudget,
 ) -> Result<PlanValidation, ()> {
-    if plan
-        .desired
-        .iter()
-        .any(|intent| !is_reachable(owner, state, intent.cell))
-    {
+    let validation = PlanValidation {
+        lost_deposit: validate_owned_deposits(&plan.owned_deposits, owner, state, budget)?,
+        ..PlanValidation::default()
+    };
+    if plan.desired.iter().any(|intent| {
+        !is_reachable(owner, state, intent.cell)
+            && !plan
+                .owned_deposits
+                .iter()
+                .any(|mine| mine.desired.contains(intent))
+    }) {
         return Ok(PlanValidation {
             invalidation: Some("existing Intent Plan left the swarm-reachable map".to_string()),
-            ..PlanValidation::default()
-        });
-    }
-    if let Some(id) = plan.primary_deposit
-        && !deposit_is_available(id, state, budget)?
-    {
-        return Ok(PlanValidation {
-            invalidation: Some(format!(
-                "primary Resource Deposit {id} was exhausted or lost"
-            )),
-            ..PlanValidation::default()
+            ..validation
         });
     }
     if let Some(id) = plan.key_charger {
@@ -63,12 +58,12 @@ pub(super) fn validate_plan(
         if !operational {
             return Ok(PlanValidation {
                 invalidation: Some(format!("key Charger {id} was lost")),
-                ..PlanValidation::default()
+                ..validation
             });
         }
     }
     let Some(target) = plan.attack else {
-        return Ok(PlanValidation::default());
+        return Ok(validation);
     };
     let Some(observed) = observe_attack_target(target, owner, state, budget)? else {
         return Ok(PlanValidation {
@@ -77,7 +72,7 @@ pub(super) fn validate_plan(
                 target.label(),
                 target.id
             )),
-            ..PlanValidation::default()
+            ..validation
         });
     };
     let moved = observed.cell != target.cell;
@@ -102,6 +97,7 @@ pub(super) fn validate_plan(
         attack_progressed: observed.health < target.health,
         covered_attack: covered,
         covered_attack_movement: moved && covered,
+        ..validation
     })
 }
 
@@ -162,59 +158,11 @@ pub(super) fn observe_attack_target(
     Ok(None)
 }
 
-pub(super) fn deposit_is_available(
-    id: u64,
-    state: &GameState<'_>,
-    budget: &mut WorkBudget,
-) -> Result<bool, ()> {
-    for deposit in state.deposits {
-        if !budget.spend(1) {
-            return Err(());
-        }
-        if deposit.id == id {
-            return Ok(deposit.amount > 0);
-        }
-    }
-    Ok(false)
-}
-
-fn gather_cell(
-    owner: SwarmId,
-    deposit: &DepositState,
-    state: &GameState<'_>,
-    budget: &mut WorkBudget,
-) -> Option<IVec2> {
-    let center = world_to_intent_cell(deposit.position);
-    let Some(map) = state.reachability else {
-        return Some(center);
-    };
-    let region = InteractionRegion::deposit(
-        &Transform::from_translation(deposit.position.extend(0.0)),
-        deposit.radius,
-    );
-    let radius = Vec2::splat(deposit.radius);
-    let min = world_to_intent_cell(deposit.position - radius);
-    let max = world_to_intent_cell(deposit.position + radius);
-    let other_cells = (min.y..=max.y).flat_map(|y| (min.x..=max.x).map(move |x| IVec2::new(x, y)));
-    for cell in std::iter::once(center).chain(other_cells.filter(|cell| *cell != center)) {
-        if !budget.spend(1) {
-            return None;
-        }
-        if cell_overlaps_circle(cell, deposit.position, deposit.radius)
-            && map.contains(owner, cell, state.grid)
-            && map.interaction_is_reachable(owner, region.within_cell(cell))
-        {
-            return Some(cell);
-        }
-    }
-    None
-}
-
 pub(super) fn generate_candidates(
     tuning: &AutonomyTuning,
     owner: SwarmId,
     state: &GameState<'_>,
-    current: Option<&IntentPlan>,
+    expansion: Option<u64>,
     budget: &mut WorkBudget,
 ) -> Vec<PlanCandidate> {
     let owner_state = state.swarms.iter().find(|swarm| {
@@ -235,36 +183,6 @@ pub(super) fn generate_candidates(
     let home_cell = world_to_intent_cell(home);
     let forces = estimate_forces(tuning, owner, state, budget);
     let defend_target = (forces.friendly_defenders * 2 + 4).clamp(9, 20);
-    let mut available = Vec::new();
-    for deposit in state.deposits.iter().take(MAX_DEPOSITS) {
-        if !budget.spend(1) {
-            break;
-        }
-        if deposit.amount > 0
-            && let Some(cell) = gather_cell(owner, deposit, state, budget)
-        {
-            let value = deposit_value(tuning, deposit, home, state, budget);
-            available.push(((*deposit, cell), value));
-        }
-    }
-    let current_primary = current.and_then(|plan| plan.primary_deposit);
-    let primary = current_primary
-        .and_then(|id| {
-            available
-                .iter()
-                .find(|((deposit, _), _)| deposit.id == id)
-                .copied()
-        })
-        .or_else(|| {
-            available
-                .iter()
-                .max_by(|left, right| left.1.total_cmp(&right.1))
-                .copied()
-        });
-    let economy = EconomySelection {
-        primary: primary.map(|(deposit, _)| deposit),
-        value: primary.map_or(0.0, |(_, value)| value),
-    };
     let supply = owner_state.map_or(0.0, |swarm| {
         swarm.minerals as f32 * tuning.strategy_ledger_supply_weight
     }) + state
@@ -297,43 +215,19 @@ pub(super) fn generate_candidates(
 
     let mut candidates = Vec::new();
     candidates.push(PlanCandidate {
-        objective: Objective::HoldHome,
-        economy,
+        objective: expansion.map_or(Objective::HoldHome, Objective::SecureDeposit),
         attack: None,
         anchor: home_cell,
         attack_target: None,
         key_charger,
         defend_target,
-        score: economy.value
-            + tuning.strategy_hold_base
+        score: tuning.strategy_hold_base
             + supply.min(tuning.strategy_hold_supply_cap) * tuning.strategy_hold_supply_weight
             + forces.friendly_strength * tuning.strategy_hold_force_weight,
     });
 
-    for &((deposit, target), value) in &available {
-        if !budget.spend(1) {
-            break;
-        }
-        let scarcity = (tuning.strategy_scarcity_supply_target - supply).max(0.0)
-            * tuning.strategy_scarcity_weight;
-        let score = tuning.strategy_secure_base
-            + value
-            + scarcity
-            + forces.friendly_strength * tuning.strategy_secure_force_weight
-            - forces.enemy_strength * tuning.strategy_secure_enemy_weight;
-        candidates.push(PlanCandidate {
-            objective: Objective::SecureDeposit(deposit.id),
-            economy: EconomySelection {
-                primary: Some((deposit, target)),
-                value,
-            },
-            attack: None,
-            anchor: target,
-            attack_target: None,
-            key_charger,
-            defend_target,
-            score,
-        });
+    if expansion.is_some() {
+        return candidates;
     }
 
     let enemy_home = state
@@ -349,8 +243,7 @@ pub(super) fn generate_candidates(
         let target = world_to_intent_cell(enemy_home);
         if is_target_reachable(owner, state, enemy_home) {
             let distance = home.distance(enemy_home) / crate::ZONE_BLOCK_SIZE;
-            let score = economy.value
-                + tuning.strategy_pressure_base
+            let score = tuning.strategy_pressure_base
                 + supply.min(tuning.strategy_pressure_supply_cap)
                     * tuning.strategy_pressure_supply_weight
                 + forces.friendly_strength * tuning.strategy_pressure_force_weight
@@ -362,7 +255,6 @@ pub(super) fn generate_candidates(
                     * tuning.strategy_pressure_exposure_cost;
             candidates.push(PlanCandidate {
                 objective: Objective::ForwardPressure(target),
-                economy,
                 attack: None,
                 anchor: home_cell,
                 attack_target: Some(target),
@@ -405,8 +297,7 @@ pub(super) fn generate_candidates(
         let distance = home.distance(structure.position) / crate::ZONE_BLOCK_SIZE;
         let vulnerability = health_deficit(structure.health, structure.max_health)
             * tuning.strategy_raid_vulnerability_weight;
-        let score = economy.value
-            + tuning.strategy_raid_base
+        let score = tuning.strategy_raid_base
             + strategic_value
             + vulnerability
             + supply.min(tuning.strategy_raid_supply_cap) * tuning.strategy_raid_supply_weight
@@ -419,7 +310,6 @@ pub(super) fn generate_candidates(
                 * tuning.strategy_raid_exposure_cost;
         candidates.push(PlanCandidate {
             objective: Objective::RaidLogistics(structure.id),
-            economy,
             attack: Some(AttackObligation {
                 kind: AttackTargetKind::Structure,
                 id: structure.id,
@@ -482,8 +372,7 @@ pub(super) fn generate_candidates(
             } else {
                 (tuning.strategy_hunt_remnant_base, 0.0)
             };
-        let score = economy.value
-            + cleanup_priority
+        let score = cleanup_priority
             + danger
             + vulnerability
             + forces.friendly_strength * tuning.strategy_hunt_force_weight
@@ -493,7 +382,6 @@ pub(super) fn generate_candidates(
                 * tuning.strategy_hunt_exposure_cost;
         candidates.push(PlanCandidate {
             objective: Objective::HuntRemnant(bot.id),
-            economy,
             attack: Some(AttackObligation {
                 kind: AttackTargetKind::Nanobot,
                 id: bot.id,
@@ -540,20 +428,6 @@ pub(super) fn estimate_forces(
         }
     }
     estimate
-}
-
-pub(super) fn deposit_value(
-    tuning: &AutonomyTuning,
-    deposit: &DepositState,
-    home: Vec2,
-    state: &GameState<'_>,
-    budget: &mut WorkBudget,
-) -> f32 {
-    let travel = home.distance(deposit.position) / crate::ZONE_BLOCK_SIZE;
-    let exposure = route_exposure(home, deposit.position, state.terrain, budget);
-    (deposit.amount as f32 + 1.0).ln() * tuning.strategy_deposit_amount_weight
-        - travel * tuning.strategy_deposit_distance_cost
-        - exposure * tuning.strategy_deposit_exposure_cost
 }
 
 fn health_deficit(health: u32, max_health: u32) -> f32 {

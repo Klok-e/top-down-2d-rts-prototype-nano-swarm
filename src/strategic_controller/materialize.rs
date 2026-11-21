@@ -1,13 +1,14 @@
 use super::{
+    economy::EconomyPlan,
     lifecycle::WorkBudget,
     staging::{DefendBlock, StagingFront},
     *,
 };
-use crate::{nanobot::InteractionRegion, navigation::Route};
-use bevy::prelude::Transform;
+use crate::navigation::Route;
 
 pub(super) fn materialize_plan(
     candidate: PlanCandidate,
+    economy: EconomyPlan,
     mut staging: Option<StagingFront>,
     owner: SwarmId,
     state: &GameState<'_>,
@@ -15,7 +16,6 @@ pub(super) fn materialize_plan(
 ) -> IntentPlan {
     let PlanCandidate {
         objective,
-        economy,
         attack,
         anchor,
         attack_target: _,
@@ -31,7 +31,11 @@ pub(super) fn materialize_plan(
         .map(|swarm| swarm.home)
         .unwrap_or(Vec2::ZERO);
     let home_cell = world_to_intent_cell(home);
-    let mut desired = Vec::new();
+    let EconomyPlan {
+        owned_deposits,
+        mut desired,
+        ..
+    } = economy;
 
     push_desired(
         &mut desired,
@@ -44,20 +48,6 @@ pub(super) fn materialize_plan(
         true,
         budget,
     );
-    if let Some((_, deposit_cell)) = economy.primary {
-        push_desired(
-            &mut desired,
-            owner,
-            DesiredIntent {
-                cell: deposit_cell,
-                kind: IntentKind::Gather,
-            },
-            state,
-            false,
-            budget,
-        );
-    }
-
     if let Some(charger) = key_charger {
         let charger_cell = world_to_intent_cell(charger.position);
         for kind in [IntentKind::Defend, IntentKind::Corridor] {
@@ -102,7 +92,7 @@ pub(super) fn materialize_plan(
         }
     }
 
-    let block = DefendBlock::new(anchor, defend_target);
+    let block = DefendBlock::new(anchor, defend_target.min(MAX_PLAN_CELLS - desired.len()));
     if let Some(front) = staging.as_mut() {
         front.block = block;
     }
@@ -120,23 +110,7 @@ pub(super) fn materialize_plan(
         );
     }
 
-    if let Some((deposit, deposit_cell)) = economy.primary {
-        let destination = InteractionRegion::deposit(
-            &Transform::from_translation(deposit.position.extend(0.0)),
-            deposit.radius,
-        )
-        .within_cell(deposit_cell);
-        paint_corridor(
-            &mut desired,
-            owner,
-            state,
-            budget,
-            home,
-            deposit_cell,
-            RouteGoal::Interaction(destination),
-        );
-    }
-    if anchor != home_cell && economy.primary.is_none_or(|(_, cell)| cell != anchor) {
+    if anchor != home_cell && owned_deposits.iter().all(|mine| mine.gather_cell != anchor) {
         paint_corridor(
             &mut desired,
             owner,
@@ -151,7 +125,7 @@ pub(super) fn materialize_plan(
 
     IntentPlan {
         objective,
-        primary_deposit: economy.primary.map(|(deposit, _)| deposit.id),
+        owned_deposits,
         attack,
         staging,
         key_charger: key_charger.map(|charger| charger.id),

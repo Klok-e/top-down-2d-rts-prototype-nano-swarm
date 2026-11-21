@@ -1,4 +1,5 @@
 use super::{
+    economy::plan_economy,
     materialize::{intent_edits, materialize_plan},
     staging::plan_staging,
     strategy::{generate_candidates, validate_plan},
@@ -126,6 +127,7 @@ impl PlannerState {
             }
         };
         let PlanValidation {
+            lost_deposit,
             invalidation,
             attack_progressed,
             covered_attack,
@@ -145,7 +147,7 @@ impl PlannerState {
             && tracked_movement
             && !attack_progressed
             && !self.covered_stall_grace_used;
-        if !regular_review && invalidation.is_none() {
+        if !regular_review && invalidation.is_none() && lost_deposit.is_none() {
             self.retained_covered_movement = tracked_movement;
             self.work_used = budget.used;
             return Decision {
@@ -156,8 +158,27 @@ impl PlannerState {
             };
         }
 
-        let candidates =
-            generate_candidates(tuning, owner, state, self.current.as_ref(), &mut budget);
+        let previous_deposits = self
+            .current
+            .as_ref()
+            .map_or(&[][..], |plan| plan.owned_deposits.as_slice());
+        let Some(economy) = plan_economy(tuning, owner, state, previous_deposits, &mut budget)
+        else {
+            self.tuning_review_requested |= tuning_review;
+            self.work_used = budget.used;
+            return Decision {
+                edits: Vec::new(),
+                explanation: if budget.exhausted {
+                    "planning allowance exhausted while reviewing owned Resource Deposits"
+                } else {
+                    "owned Resource Deposit support would exceed available paint"
+                }
+                .to_string(),
+                reviewed: true,
+                work_units: budget.call_work(),
+            };
+        };
+        let candidates = generate_candidates(tuning, owner, state, economy.expansion, &mut budget);
         if budget.exhausted {
             self.tuning_review_requested |= tuning_review;
             self.work_used = budget.used;
@@ -197,8 +218,7 @@ impl PlannerState {
                     && (stall_grace
                         || best.score
                             <= refreshed.score
-                                + (refreshed.score - refreshed.economy.value).abs()
-                                    * (tuning.controller_switch_margin - 1.0)
+                                + refreshed.score.abs() * (tuning.controller_switch_margin - 1.0)
                                 + tuning.controller_switch_bias))
         {
             let label = refreshed.objective.label();
@@ -262,11 +282,24 @@ impl PlannerState {
                 selected.attack_target.unwrap()
             ));
         }
+        if let Some(id) = lost_deposit {
+            explanation.push_str(&format!(
+                "; owned Resource Deposit {id} was exhausted, lost, or unreachable"
+            ));
+        }
+        explanation.push_str(&format!(
+            "; owned Resource Deposits {:?}",
+            economy
+                .owned_deposits
+                .iter()
+                .map(|mine| mine.id)
+                .collect::<Vec<_>>()
+        ));
         let keeps_objective = self
             .current
             .as_ref()
             .is_some_and(|current| current.objective == selected.objective);
-        let selected = materialize_plan(selected, staging, owner, state, &mut budget);
+        let selected = materialize_plan(selected, economy, staging, owner, state, &mut budget);
         if budget.exhausted || !selected.is_coordinated() {
             self.tuning_review_requested |= tuning_review && budget.exhausted;
             self.work_used = budget.used;

@@ -2,7 +2,10 @@
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, VecDeque},
+};
 
 use crate::{
     intent::IntentGrid,
@@ -11,7 +14,7 @@ use crate::{
         PlannedStructure, ProductionFacility, RegionalAllocationSet, Structure, Swarm, SwarmId,
         SwarmMember,
     },
-    navigation::Navigation,
+    navigation::{Navigation, RouteGoal, RouteOutcome},
     reachability::{IntentWriteAction, SwarmReachabilityMap, apply_reachable_intent},
     resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole},
     strategic_controller::{
@@ -86,6 +89,38 @@ impl ControllerTelemetry {
     }
 }
 
+#[derive(Default)]
+struct StrategicRouteCache {
+    revision: u64,
+    results: VecDeque<(Vec2, RouteGoal, RouteOutcome)>,
+}
+
+impl StrategicRouteCache {
+    fn query(
+        &mut self,
+        navigation: &Navigation,
+        start: Vec2,
+        goal: RouteGoal,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Option<RouteOutcome> {
+        const CACHE_LIMIT: usize = 64;
+        for (cached_start, cached_goal, outcome) in &self.results {
+            if !allow_work() {
+                return None;
+            }
+            if *cached_start == start && *cached_goal == goal {
+                return Some(outcome.clone());
+            }
+        }
+        let outcome = navigation.route_without_paint(start, goal, allow_work)?;
+        if self.results.len() == CACHE_LIMIT {
+            self.results.pop_front();
+        }
+        self.results.push_back((start, goal, outcome.clone()));
+        Some(outcome)
+    }
+}
+
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn strategic_intent_system(
     tuning: Res<crate::tuning::Tuning>,
@@ -123,7 +158,7 @@ fn strategic_intent_system(
             With<PlannedStructure>,
         )>,
     >,
-    deposits: Query<(Entity, &Transform, &ResourceDeposit)>,
+    deposits: Query<(Entity, &Transform, &ResourceDeposit, Option<&OwnerSwarm>)>,
     rocks: Query<(&RockFormation, &Transform)>,
     ledger: Res<ResourceLedger>,
     mut grid: ResMut<IntentGrid>,
@@ -132,6 +167,7 @@ fn strategic_intent_system(
     time: Res<Time<Fixed>>,
     outcome: Option<Res<MatchOutcome>>,
     mut telemetry: ResMut<ControllerTelemetry>,
+    mut routes: Local<StrategicRouteCache>,
 ) {
     if controllers.is_empty()
         || outcome
@@ -204,11 +240,18 @@ fn strategic_intent_system(
     structure_states.sort_by_key(|structure| structure.id);
     let mut deposit_states: Vec<_> = deposits
         .iter()
-        .map(|(entity, transform, deposit)| DepositState {
-            id: entity.to_bits(),
-            position: transform.translation.truncate(),
-            amount: deposit.amount,
-            radius: deposit.radius,
+        .filter_map(|(entity, transform, deposit, owner)| {
+            let owner = match owner {
+                Some(owner) => Some(*owners.get(&owner.0)?),
+                None => None,
+            };
+            Some(DepositState {
+                id: entity.to_bits(),
+                owner,
+                position: transform.translation.truncate(),
+                amount: deposit.amount,
+                radius: deposit.radius,
+            })
         })
         .collect();
     deposit_states.sort_by_key(|deposit| deposit.id);
@@ -216,8 +259,15 @@ fn strategic_intent_system(
         .iter()
         .map(|(rock, transform)| rock.obstacle(transform))
         .collect();
+    if routes.revision != navigation.revision() || reachability.is_changed() {
+        routes.revision = navigation.revision();
+        routes.results.clear();
+    }
+    let routes = RefCell::new(&mut *routes);
     let route_query = |start, goal, allow_work: &mut dyn FnMut() -> bool| {
-        navigation.route_without_paint(start, goal, allow_work)
+        routes
+            .borrow_mut()
+            .query(&navigation, start, goal, allow_work)
     };
     let state = GameState {
         grid: &grid,

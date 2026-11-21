@@ -521,7 +521,7 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
     );
     app.world_mut().entity_mut(support).insert(OwnerSwarm(own));
     let gather_cell = IVec2::new(-1, -1);
-    common::spawn_deposit(
+    let deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
             world_pos: common::cell_world_center(gather_cell),
@@ -530,6 +530,7 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
             radius: 64.0,
         },
     );
+    app.world_mut().entity_mut(deposit).insert(OwnerSwarm(own));
     let target_cell = IVec2::new(9, 0);
     let target_position = common::cell_world_center(target_cell);
     let enemy = common::spawn_opponent_swarm_with_nanobots(&mut app, target_position, &[]);

@@ -251,7 +251,7 @@ fn controller_eventually_erases_stale_owned_intent_after_large_foreign_prefix() 
 }
 
 #[test]
-fn controller_retargets_when_its_primary_resource_is_exhausted() {
+fn controller_reviews_immediately_when_an_owned_deposit_is_exhausted() {
     use top_down_2d_rts_prototype_nano_swarm::strategic_controller::{
         Controller, DepositState, GameState, SwarmState,
     };
@@ -269,12 +269,14 @@ fn controller_retargets_when_its_primary_resource_is_exhausted() {
     let deposits = [
         DepositState {
             id: 20,
+            owner: None,
             position: world(IVec2::new(2, 0)),
             amount: 1_000,
             radius: 100.0,
         },
         DepositState {
             id: 21,
+            owner: None,
             position: world(IVec2::new(4, 0)),
             amount: 50,
             radius: 100.0,
@@ -353,6 +355,7 @@ fn controller_urgently_replans_when_key_support_is_lost() {
     }];
     let deposits = [DepositState {
         id: 20,
+        owner: None,
         position: world(IVec2::new(2, 0)),
         amount: 500,
         radius: 100.0,
@@ -435,6 +438,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
     ];
     let deposit = [DepositState {
         id: 20,
+        owner: None,
         position: world(IVec2::new(-1, 0)),
         amount: 500,
         radius: 100.0,
@@ -549,129 +553,10 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
 }
 
 #[test]
-fn mature_economy_keeps_one_active_resource_site() {
+fn controller_keeps_several_deposits_extracting_and_hauling() {
     use top_down_2d_rts_prototype_nano_swarm::{
-        nanobot::NanobotType,
-        strategic_controller::{
-            BotState, Controller, DepositState, GameState, StructureKind, StructureState,
-            SwarmState,
-        },
-    };
-
-    let mut grid = IntentGrid::new(32, 32);
-    let owner = SwarmId(4);
-    let world = |cell: IVec2| {
-        (cell.as_vec2() + Vec2::splat(0.5)) * top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE
-    };
-    let home = world(IVec2::ZERO);
-    grid.paint(IVec2::new(0, 7), IntentKind::Gather, owner);
-    let swarms = [SwarmState {
-        id: owner,
-        home,
-        minerals: 100,
-    }];
-    let bots = (0..4)
-        .map(|id| BotState {
-            id,
-            owner,
-            kind: NanobotType::Worker,
-            position: home,
-            health: 100,
-            max_health: 100,
-            charge: 1.0,
-            max_charge: 1.0,
-            cargo: 0,
-        })
-        .chain((4..8).map(|id| BotState {
-            id,
-            owner,
-            kind: NanobotType::Hauler,
-            position: home,
-            health: 100,
-            max_health: 100,
-            charge: 1.0,
-            max_charge: 1.0,
-            cargo: 0,
-        }))
-        .collect::<Vec<_>>();
-    let deposits = [
-        DepositState {
-            id: 20,
-            position: world(IVec2::new(-1, 0)),
-            amount: 72_000,
-            radius: 64.0,
-        },
-        DepositState {
-            id: 21,
-            position: world(IVec2::new(4, 0)),
-            amount: 72_000,
-            radius: 64.0,
-        },
-        DepositState {
-            id: 22,
-            position: world(IVec2::new(0, 7)),
-            amount: 72_000,
-            radius: 64.0,
-        },
-    ];
-    let structures = [
-        StructureState {
-            id: 30,
-            owner,
-            position: deposits[0].position + Vec2::new(96.0, 0.0),
-            kind: StructureKind::Source,
-            health: 100,
-            max_health: 100,
-            minerals: 40,
-        },
-        StructureState {
-            id: 31,
-            owner,
-            position: home,
-            kind: StructureKind::Facility,
-            health: 100,
-            max_health: 100,
-            minerals: 20,
-        },
-    ];
-
-    let decision = Controller::new(owner).decide(
-        &top_down_2d_rts_prototype_nano_swarm::tuning::AutonomyTuning::default(),
-        &GameState {
-            grid: &grid,
-            swarms: &swarms,
-            bots: &bots,
-            structures: &structures,
-            deposits: &deposits,
-            terrain: &[],
-            reachability: None,
-            route_query: None,
-            tick: 0,
-            finished: false,
-        },
-    );
-    let mut painted_gather = decision
-        .edits
-        .iter()
-        .filter(|edit| edit.action == IntentEditAction::Paint && edit.kind == IntentKind::Gather)
-        .map(|edit| edit.cell)
-        .collect::<Vec<_>>();
-    painted_gather.sort_by_key(|cell| (cell.y, cell.x));
-
-    assert_eq!(painted_gather, vec![IVec2::new(-1, 0)]);
-    assert!(decision.edits.iter().any(|edit| {
-        edit.action == IntentEditAction::Erase
-            && edit.kind == IntentKind::Gather
-            && edit.cell == IVec2::new(0, 7)
-    }));
-}
-
-#[test]
-fn controller_primary_site_extracts_and_hauls_under_normal_pacing() {
-    use top_down_2d_rts_prototype_nano_swarm::{
-        nanobot::{Cargo, HaulerAssignment, NanobotType, OwnerSwarm, world_to_cell},
+        nanobot::{Cargo, HaulerAssignment, NanobotType, OwnerSwarm},
         resources::ResourceDeposit,
-        tuning::Tuning,
     };
 
     let mut app = common::sim_app_with_gather_haul();
@@ -680,76 +565,66 @@ fn controller_primary_site_extracts_and_hauls_under_normal_pacing() {
     let own = common::spawn_swarm_with_nanobots(
         &mut app,
         home,
-        &[(NanobotType::Worker, 4), (NanobotType::Hauler, 2)],
+        &[(NanobotType::Worker, 9), (NanobotType::Hauler, 4)],
     );
     app.world_mut()
         .entity_mut(own)
         .insert(StrategicController::new(SwarmId::PLAYER));
     install_empty_reachability(&mut app, [SwarmId::PLAYER]);
-    let positions =
-        [IVec2::new(-1, 0), IVec2::new(4, 0), IVec2::new(0, 7)].map(common::cell_world_center);
-    let deposits = positions.map(|world_pos| {
-        common::spawn_deposit(
+
+    let cells = [IVec2::new(-1, 0), IVec2::new(1, 0), IVec2::new(0, 1)];
+    let sites = cells.map(|cell| {
+        let position = common::cell_world_center(cell);
+        let deposit = common::spawn_deposit(
             &mut app,
             common::DepositFixture {
-                world_pos,
+                world_pos: position,
                 amount: 72_000,
                 capacity: 72_000,
                 radius: 80.0,
             },
-        )
+        );
+        let source = common::spawn_stockpile(
+            &mut app,
+            position + (home - position).normalize() * 140.0,
+            0,
+            200,
+        );
+        app.world_mut().entity_mut(source).insert(OwnerSwarm(own));
+        (deposit, source)
     });
-    let source = common::spawn_stockpile(&mut app, positions[0] - Vec2::X * 100.0, 0, 200);
-    let sink = common::spawn_sink_stockpile(&mut app, home + Vec2::X * 180.0, 0, 200);
-    for entity in [source, sink] {
-        app.world_mut().entity_mut(entity).insert(OwnerSwarm(own));
-    }
+    let sink = common::spawn_sink_stockpile(&mut app, home - Vec2::Y * 180.0, 0, 2_000);
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(own));
 
-    let mut observed_loaded_primary_haul = false;
-    for _ in 0..1800 {
+    let mut loaded_from_site = [false; 3];
+    for _ in 0..3600 {
         app.update();
-        assert_eq!(
-            *app.world().resource::<Tuning>(),
-            Tuning::default(),
-            "the flow must run with normal gameplay pacing"
-        );
-        let grid = app.world().resource::<IntentGrid>();
-        let active = deposits
-            .iter()
-            .copied()
-            .zip(positions)
-            .filter(|(_, position)| {
-                grid.cell(world_to_cell(*position))
-                    .is_some_and(|cell| cell.has_owned(IntentKind::Gather, SwarmId::PLAYER))
-            })
-            .map(|(deposit, _)| deposit)
-            .collect::<Vec<_>>();
-        assert!(
-            active.len() <= 1,
-            "the novice policy must keep at most one active resource site"
-        );
-        if active == vec![deposits[0]] {
-            let world = app.world_mut();
-            observed_loaded_primary_haul |= world
-                .query::<(&HaulerAssignment, &Cargo)>()
-                .iter(world)
-                .any(|(assignment, cargo)| assignment.source == source && cargo.amount > 0);
-            if observed_loaded_primary_haul
-                && world.get::<ResourceDeposit>(deposits[0]).unwrap().amount < 72_000
-            {
-                assert_eq!(
-                    world.get::<ResourceDeposit>(deposits[1]).unwrap().amount,
-                    72_000
-                );
-                assert_eq!(
-                    world.get::<ResourceDeposit>(deposits[2]).unwrap().amount,
-                    72_000
-                );
-                return;
+        let world = app.world_mut();
+        for (assignment, cargo) in world.query::<(&HaulerAssignment, &Cargo)>().iter(world) {
+            for (index, (_, source)) in sites.iter().enumerate() {
+                loaded_from_site[index] |= assignment.source == *source && cargo.amount > 0;
             }
         }
+        if loaded_from_site.iter().all(|loaded| *loaded) {
+            break;
+        }
     }
-    panic!("the single primary site did not produce extraction and a loaded physical haul");
+    let world = app.world();
+    let grid = world.resource::<IntentGrid>();
+    for (index, (deposit, _)) in sites.into_iter().enumerate() {
+        assert!(
+            grid.cell(cells[index])
+                .is_some_and(|cell| cell.has_owned(IntentKind::Gather, SwarmId::PLAYER)),
+            "site {} lost Gather paint",
+            cells[index]
+        );
+        assert!(world.get::<ResourceDeposit>(deposit).unwrap().amount < 72_000);
+        assert!(
+            loaded_from_site[index],
+            "site {} never filled a hauler",
+            cells[index]
+        );
+    }
 }
 
 #[test]
