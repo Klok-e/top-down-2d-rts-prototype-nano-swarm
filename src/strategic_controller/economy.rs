@@ -254,9 +254,12 @@ pub(super) fn plan_economy(
             .total_cmp(&home.distance_squared(b.position))
             .then_with(|| a.id.cmp(&b.id))
     });
-    if economy.owned_deposits.first().is_some_and(|mine| {
-        mine.startup.is_some() && !opening_can_staff_both_mines(owner, home, mine, state, budget)
-    }) {
+    if !unchecked.is_empty()
+        && economy.owned_deposits.first().is_some_and(|mine| {
+            mine.startup.is_some()
+                && !opening_can_staff_both_mines(owner, home, mine, state, budget)
+        })
+    {
         economy.free_deposit_exists |= unchecked.into_iter().any(|deposit| {
             !budget.exhausted
                 && !matches!(mine_support(owner, deposit, state, home, budget), Ok(None))
