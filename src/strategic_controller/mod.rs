@@ -4,7 +4,7 @@
 //! return edits which the runtime applies only for [`Controller::owner`]. The
 //! module never writes ECS state or chooses work for individual nanobots.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use crate::tuning::{AutonomyTuning, ChargeTuning};
 
@@ -24,7 +24,6 @@ const WORK_WINDOW_TICKS: u64 = crate::SIMULATION_HZ as u64 / 2;
 const EDIT_WORK_RESERVE: usize = 4_096;
 const MAX_BOTS: usize = 256;
 const MAX_STRUCTURES: usize = 128;
-const MAX_DEPOSITS: usize = 24;
 const MAX_ACTIVE_CELLS: usize = 256;
 const EXPANSION_PLAN_CELLS: usize = 96;
 const MAX_PLAN_CELLS: usize = EDIT_WORK_RESERVE / 2;
@@ -149,7 +148,9 @@ struct IntentPlan {
     attack: Option<AttackObligation>,
     staging: Option<staging::StagingFront>,
     key_charger: Option<u64>,
-    desired: Vec<DesiredIntent>,
+    desired: HashSet<DesiredIntent>,
+    reachability: Option<SwarmReachabilityMap>,
+    grid_size: IVec2,
 }
 
 #[derive(Debug, Default)]
@@ -244,14 +245,14 @@ impl IntentPlan {
     }
 
     fn is_coordinated(&self) -> bool {
-        [IntentKind::Build, IntentKind::Defend, IntentKind::Corridor]
-            .into_iter()
-            .all(|kind| self.desired.iter().any(|intent| intent.kind == kind))
-            && (self.owned_deposits.is_empty()
-                || self
-                    .desired
-                    .iter()
-                    .any(|intent| intent.kind == IntentKind::Gather))
+        let mut kinds = [false; IntentKind::COUNT];
+        for intent in &self.desired {
+            kinds[intent.kind.index()] = true;
+        }
+        kinds[IntentKind::Build.index()]
+            && kinds[IntentKind::Defend.index()]
+            && kinds[IntentKind::Corridor.index()]
+            && (self.owned_deposits.is_empty() || kinds[IntentKind::Gather.index()])
     }
 }
 
