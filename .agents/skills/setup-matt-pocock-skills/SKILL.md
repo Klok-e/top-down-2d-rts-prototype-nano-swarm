@@ -1,7 +1,6 @@
 ---
 name: setup-matt-pocock-skills
 description: "Configure this repo for the engineering skills: set up its issue tracker, triage label vocabulary, and domain doc layout. Run once before first use of the other engineering skills."
-disable-model-invocation: true
 ---
 
 # Setup Matt Pocock's Skills
@@ -66,7 +65,7 @@ Offer **multi-context** (a root `GLOSSARY-MAP.md` pointing to per-context `GLOSS
 
 Show the user a draft of:
 
-- The `## Agent skills` block to add to whichever of `CLAUDE.md` / `AGENTS.md` is being edited (see step 4 for selection rules)
+- The `## Agent skills` block and the instruction files that will carry it (see step 4)
 - The contents of `docs/agents/issue-tracker.md`, `docs/agents/domain.md`, and `docs/agents/triage-labels.md` (the last only when `triage` is installed)
 
 Let them edit before writing.
@@ -75,11 +74,8 @@ Let them edit before writing.
 
 **Pick the file to edit:**
 
-- If `CLAUDE.md` exists, edit it.
-- Else if `AGENTS.md` exists, edit it.
-- If neither exists, ask the user which one to create; don't pick for them.
-
-Never create `AGENTS.md` when `CLAUDE.md` already exists (or vice versa); always edit the one that's already there.
+- For Codex, write the block in `AGENTS.md`. For Claude Code, use `CLAUDE.md`.
+- For a repository supporting both, keep a single block in `AGENTS.md`. Incorporate any existing Claude block into that draft and replace the separate block in `CLAUDE.md` with a single import of `AGENTS.md` using the repository’s existing import convention or `@AGENTS.md`. Preserve unrelated Claude instructions.
 
 If an `## Agent skills` block already exists in the chosen file, update its contents in-place rather than appending a duplicate. Don't overwrite user edits to the surrounding sections.
 
@@ -103,7 +99,7 @@ The block:
 
 Include the `### Triage labels` sub-block, and write `docs/agents/triage-labels.md`, only when `triage` is installed and Section B ran. When it isn't, both are omitted.
 
-When Section B ran on GitHub or GitLab, create each configured label the tracker lacks (`gh label create` / `glab label create`).
+When Section B ran and the user authorized remote label creation, create each configured label the tracker lacks (`gh label create` / `glab label create`).
 
 Then write the docs files using the seed templates in this skill folder as a starting point:
 
