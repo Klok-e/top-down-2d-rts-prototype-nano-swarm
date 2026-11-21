@@ -229,7 +229,7 @@ pub fn hauler_load_system(
                 .min(can_still_carry);
             cargo.amount += actual;
             deposit.amount -= actual;
-            ledger.add_for(swarm.0, deposit.kind, actual);
+            ledger.extract_for(swarm.0, deposit.kind, actual);
             if let Some(counters) = counters.as_deref_mut() {
                 let painted_deposit = super::gather::painted_gather_regions(
                     &grid,

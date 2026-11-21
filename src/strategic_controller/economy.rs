@@ -20,7 +20,7 @@ pub(super) struct OwnedDeposit {
     pub(super) id: u64,
     position: Vec2,
     pub(super) gather_cell: IVec2,
-    build_cell: IVec2,
+    pub(super) build_cell: IVec2,
     pub(super) desired: Vec<DesiredIntent>,
 }
 
