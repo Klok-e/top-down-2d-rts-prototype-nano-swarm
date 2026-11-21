@@ -9,7 +9,7 @@ use super::{
 use crate::navigation::RouteGoal;
 
 const MAX_STAGING_POINTS: usize = 6;
-const PURSUIT_AREA_CELLS: usize = 9;
+pub(super) const MINIMUM_STAGING_BLOCK_CELLS: usize = 9;
 
 #[derive(Debug, Clone)]
 pub(super) struct StagingFront {
@@ -50,7 +50,7 @@ impl StagingFront {
             || if self.active + 1 == self.points.len() {
                 self.covers(target, owner, state)
             } else {
-                DefendBlock::new(destination, PURSUIT_AREA_CELLS).contains(target)
+                DefendBlock::new(destination, MINIMUM_STAGING_BLOCK_CELLS).contains(target)
             }
     }
 

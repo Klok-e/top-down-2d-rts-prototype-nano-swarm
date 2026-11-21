@@ -216,6 +216,16 @@ fn strategic_intent_system(
     let owners: BTreeMap<_, _> = swarms.iter().map(|(entity, id, _)| (entity, *id)).collect();
     let tick = (time.elapsed_secs_f64() * crate::SIMULATION_HZ).round() as u64;
     income_history.retain(|id, _| owners.values().any(|owner| owner == id));
+    let mut production_saturated = BTreeMap::new();
+    for (_, _, owner, condition, facility, ..) in &structures {
+        if let Some(owner) = owner.and_then(|owner| owners.get(&owner.0))
+            && let Some(facility) = facility
+            && condition.is_none_or(Structure::is_operational)
+        {
+            let busy = facility.is_busy(tuning.production.ticks_per_bot);
+            *production_saturated.entry(*owner).or_insert(true) &= busy;
+        }
+    }
     let mut swarm_states: Vec<_> = swarms
         .iter()
         .map(|(_, id, position)| SwarmState {
@@ -226,6 +236,7 @@ fn strategic_intent_system(
                 .entry(*id)
                 .or_default()
                 .per_second(tick, ledger.extracted_minerals_for(*id)),
+            production_saturated: production_saturated.get(id).copied().unwrap_or(false),
         })
         .collect();
     swarm_states.sort_by_key(|swarm| swarm.id);
@@ -319,6 +330,7 @@ fn strategic_intent_system(
         structures: &structure_states,
         deposits: &deposit_states,
         terrain: &terrain,
+        charge: &tuning.charge,
         reachability: Some(&reachability),
         route_query: Some(&route_query),
         tick,

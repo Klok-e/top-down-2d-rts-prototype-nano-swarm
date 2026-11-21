@@ -145,6 +145,13 @@ tuning_schema! {
         strategy_expansion_travel_cost: f32 = 2.0 => ("Expansion travel cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_expansion_haul_cost: f32 = 3.0 => ("Expansion hauling cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_expansion_exposure_cost: f32 = 10.0 => ("Expansion exposure cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
+        strategy_mineral_reserve: u32 = 24 => ("Defender mineral reserve", "minerals", 1.0, 1.0, 0.0, 1_000_000.0);
+        strategy_charger_reserve: u32 = 12 => ("Charger mineral reserve", "minerals", 1.0, 1.0, 1.0, 1_000_000.0);
+        strategy_defender_baseline: u32 = 4 => ("Baseline Defender demand", "Defenders", 1.0, 1.0, 1.0, 48.0);
+        strategy_income_spending_weight: f32 = 0.8 => ("Income available for upkeep", "%", 100.0, 5.0, 0.0, 1.0);
+        strategy_bank_spending_seconds: f32 = 45.0 => ("Reserve surplus spending horizon", "s", 1.0, 1.0, 1.0, 1_000.0);
+        strategy_production_mineral_threshold: u32 = 90 => ("Production expansion threshold", "minerals", 1.0, 1.0, 0.0, 1_000_000.0);
+        strategy_production_room_cells: u32 = 2 => ("Production expansion room", "cells", 1.0, 1.0, 0.0, 4.0);
         strategy_hold_base: f32 = 25.0 => ("hold base", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_hold_supply_cap: f32 = 100.0 => ("hold supply cap", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_hold_supply_weight: f32 = 0.1 => ("hold supply weight", "", 1.0, 0.05, 0.0, 1_000_000.0);

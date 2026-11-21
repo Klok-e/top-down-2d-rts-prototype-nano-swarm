@@ -182,7 +182,6 @@ pub(super) fn generate_candidates(
         .unwrap_or(Vec2::ZERO);
     let home_cell = world_to_intent_cell(home);
     let forces = estimate_forces(tuning, owner, state, budget);
-    let defend_target = (forces.friendly_defenders * 2 + 4).clamp(9, 20);
     let supply = owner_state.map_or(0.0, |swarm| {
         swarm.minerals as f32 * tuning.strategy_ledger_supply_weight
     }) + state
@@ -198,18 +197,6 @@ pub(super) fn generate_candidates(
         })
         .map(|structure| structure.minerals as f32 * tuning.strategy_buffer_supply_weight)
         .sum::<f32>();
-    let key_charger = state
-        .structures
-        .iter()
-        .take(MAX_STRUCTURES)
-        .find(|structure| {
-            budget.spend(1)
-                && structure.owner == owner
-                && structure.kind == StructureKind::Charger
-                && structure.health > 0
-                && is_target_reachable(owner, state, structure.position)
-        })
-        .copied();
     let pressure_readiness_penalty = (tuning.strategy_readiness_supply_target - supply).max(0.0)
         * tuning.strategy_readiness_penalty_weight;
 
@@ -219,8 +206,6 @@ pub(super) fn generate_candidates(
         attack: None,
         anchor: home_cell,
         attack_target: None,
-        key_charger,
-        defend_target,
         score: tuning.strategy_hold_base
             + supply.min(tuning.strategy_hold_supply_cap) * tuning.strategy_hold_supply_weight
             + forces.friendly_strength * tuning.strategy_hold_force_weight,
@@ -258,8 +243,6 @@ pub(super) fn generate_candidates(
                 attack: None,
                 anchor: home_cell,
                 attack_target: Some(target),
-                key_charger,
-                defend_target,
                 score,
             });
         }
@@ -318,8 +301,6 @@ pub(super) fn generate_candidates(
             }),
             anchor: home_cell,
             attack_target: Some(target),
-            key_charger,
-            defend_target,
             score,
         });
     }
@@ -390,8 +371,6 @@ pub(super) fn generate_candidates(
             }),
             anchor: home_cell,
             attack_target: Some(target),
-            key_charger,
-            defend_target,
             score,
         });
     }

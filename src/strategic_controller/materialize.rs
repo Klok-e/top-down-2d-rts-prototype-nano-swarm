@@ -1,6 +1,7 @@
 use super::{
     economy::EconomyPlan,
     lifecycle::WorkBudget,
+    spending::{add_production_room, affordable_defend_tiles},
     staging::{DefendBlock, StagingFront},
     *,
 };
@@ -12,6 +13,7 @@ pub(super) fn materialize_plan(
     mut staging: Option<StagingFront>,
     owner: SwarmId,
     state: &GameState<'_>,
+    tuning: &AutonomyTuning,
     budget: &mut WorkBudget,
 ) -> IntentPlan {
     let PlanCandidate {
@@ -19,17 +21,11 @@ pub(super) fn materialize_plan(
         attack,
         anchor,
         attack_target: _,
-        key_charger,
-        defend_target,
         score: _,
     } = candidate;
     let anchor = staging.as_ref().map_or(anchor, StagingFront::point);
-    let home = state
-        .swarms
-        .iter()
-        .find(|swarm| swarm.id == owner)
-        .map(|swarm| swarm.home)
-        .unwrap_or(Vec2::ZERO);
+    let swarm = state.swarms.iter().find(|swarm| swarm.id == owner);
+    let home = swarm.map_or(Vec2::ZERO, |swarm| swarm.home);
     let home_cell = world_to_intent_cell(home);
     let EconomyPlan {
         owned_deposits,
@@ -48,23 +44,6 @@ pub(super) fn materialize_plan(
         true,
         budget,
     );
-    if let Some(charger) = key_charger {
-        let charger_cell = world_to_intent_cell(charger.position);
-        for kind in [IntentKind::Defend, IntentKind::Corridor] {
-            push_desired(
-                &mut desired,
-                owner,
-                DesiredIntent {
-                    cell: charger_cell,
-                    kind,
-                },
-                state,
-                true,
-                budget,
-            );
-        }
-    }
-
     push_desired(
         &mut desired,
         owner,
@@ -76,27 +55,27 @@ pub(super) fn materialize_plan(
         true,
         budget,
     );
-    for cell in [anchor, anchor + IVec2::new(0, 1), anchor + IVec2::X] {
-        if push_desired(
-            &mut desired,
-            owner,
-            DesiredIntent {
+    if anchor != home_cell {
+        for cell in [anchor, anchor + IVec2::Y, anchor + IVec2::X] {
+            let build = DesiredIntent {
                 cell,
                 kind: IntentKind::Build,
-            },
-            state,
-            true,
-            budget,
-        ) {
-            break;
+            };
+            if desired.contains(&build)
+                || push_desired(&mut desired, owner, build, state, true, budget)
+            {
+                break;
+            }
         }
     }
 
-    let block = DefendBlock::new(anchor, defend_target.min(MAX_PLAN_CELLS - desired.len()));
-    if let Some(front) = staging.as_mut() {
-        front.block = block;
-    }
-    for cell in block.cells() {
+    let minimum_cells = if staging.is_some() {
+        super::staging::MINIMUM_STAGING_BLOCK_CELLS
+    } else {
+        1
+    };
+    let minimum = DefendBlock::new(anchor, minimum_cells);
+    for cell in minimum.cells() {
         push_desired(
             &mut desired,
             owner,
@@ -121,6 +100,44 @@ pub(super) fn materialize_plan(
             RouteGoal::Point(intent_cell_center(anchor)),
         );
     }
+    let (key_charger, affordable_tiles) =
+        affordable_defend_tiles(tuning, owner, swarm, state, &mut desired, budget);
+    if let Some(swarm) = swarm {
+        add_production_room(
+            tuning,
+            swarm,
+            home_cell,
+            &owned_deposits,
+            state,
+            &mut desired,
+            budget,
+        );
+    }
+
+    let block = fit_defend_block(
+        anchor,
+        minimum,
+        minimum_cells,
+        affordable_tiles,
+        &desired,
+        budget,
+    );
+    if let Some(front) = staging.as_mut() {
+        front.block = block;
+    }
+    for cell in block.cells() {
+        push_desired(
+            &mut desired,
+            owner,
+            DesiredIntent {
+                cell,
+                kind: IntentKind::Defend,
+            },
+            state,
+            true,
+            budget,
+        );
+    }
     desired.sort_by_key(|intent| (intent.cell.y, intent.cell.x, intent.kind.index()));
 
     IntentPlan {
@@ -128,9 +145,57 @@ pub(super) fn materialize_plan(
         owned_deposits,
         attack,
         staging,
-        key_charger: key_charger.map(|charger| charger.id),
+        key_charger,
         desired,
     }
+}
+
+fn fit_defend_block(
+    anchor: IVec2,
+    minimum: DefendBlock,
+    minimum_cells: usize,
+    affordable_tiles: usize,
+    desired: &[DesiredIntent],
+    budget: &mut WorkBudget,
+) -> DefendBlock {
+    if affordable_tiles <= minimum_cells || !budget.spend(desired.len()) {
+        return minimum;
+    }
+    let occupied_tiles: BTreeSet<_> = desired
+        .iter()
+        .map(|intent| (intent.cell.x, intent.cell.y))
+        .collect();
+    let extra_tiles = affordable_tiles.saturating_sub(occupied_tiles.len());
+    let layer_room = MAX_PLAN_CELLS - desired.len();
+    for count in (minimum_cells + 1..=affordable_tiles).rev() {
+        let block = DefendBlock::new(anchor, count);
+        if !minimum.cells().all(|cell| block.contains(cell)) {
+            continue;
+        }
+        let mut new_tiles = 0;
+        let mut new_layers = 0;
+        for cell in block.cells() {
+            if !budget.spend(1) {
+                return minimum;
+            }
+            if !occupied_tiles.contains(&(cell.x, cell.y)) {
+                new_tiles += 1;
+            }
+            if !desired.contains(&DesiredIntent {
+                cell,
+                kind: IntentKind::Defend,
+            }) {
+                new_layers += 1;
+            }
+            if new_tiles > extra_tiles || new_layers > layer_room {
+                break;
+            }
+        }
+        if new_tiles <= extra_tiles && new_layers <= layer_room {
+            return block;
+        }
+    }
+    minimum
 }
 
 pub(super) fn push_desired(
