@@ -20,17 +20,35 @@ pub(super) fn validate_plan(
     state: &GameState<'_>,
     budget: &mut WorkBudget,
 ) -> Result<PlanValidation, ()> {
+    let mut unreachable = HashSet::new();
+    if let Some(map) = state.reachability
+        && (plan.grid_size != IVec2::new(state.grid.width(), state.grid.height())
+            || plan
+                .reachability
+                .as_ref()
+                .is_none_or(|previous| !map.same_boundary(previous)))
+    {
+        if !budget.spend(plan.desired.len()) {
+            return Err(());
+        }
+        unreachable.extend(
+            plan.desired
+                .iter()
+                .copied()
+                .filter(|intent| !is_reachable(owner, state, intent.cell)),
+        );
+    }
     let validation = PlanValidation {
-        lost_deposit: validate_owned_deposits(&plan.owned_deposits, owner, state, budget)?,
+        lost_deposit: validate_owned_deposits(
+            &plan.owned_deposits,
+            owner,
+            state,
+            &mut unreachable,
+            budget,
+        )?,
         ..PlanValidation::default()
     };
-    if plan.desired.iter().any(|intent| {
-        !is_reachable(owner, state, intent.cell)
-            && !plan
-                .owned_deposits
-                .iter()
-                .any(|mine| mine.desired.contains(intent))
-    }) {
+    if !unreachable.is_empty() {
         return Ok(PlanValidation {
             invalidation: Some("existing Intent Plan left the swarm-reachable map".to_string()),
             ..validation

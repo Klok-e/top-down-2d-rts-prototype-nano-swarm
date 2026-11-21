@@ -1539,11 +1539,11 @@ fn depleted_and_unreachable_deposits_are_removed_without_abandoning_the_others()
 }
 
 #[test]
-fn an_owned_mine_can_take_a_longer_corridor_when_another_depletes() {
+fn distant_enemies_do_not_block_rerouting_an_owned_mines_long_corridor() {
     use crate::navigation::Route;
 
     let owner = SwarmId::PLAYER;
-    let mut grid = IntentGrid::new(128, 128);
+    let mut grid = IntentGrid::new(32, 1_024);
     let home = world(IVec2::ZERO);
     let swarms = [SwarmState {
         id: owner,
@@ -1583,8 +1583,8 @@ fn an_owned_mine_can_take_a_longer_corridor_when_another_depletes() {
             return Some(RouteOutcome::Unreachable);
         };
         let waypoints = vec![
-            world(IVec2::new(0, 60)),
-            world(IVec2::new(4, 60)),
+            world(IVec2::new(0, 510)),
+            world(IVec2::new(4, 510)),
             region.approach(start),
         ];
         let cost = std::iter::once(&start)
@@ -1594,19 +1594,37 @@ fn an_owned_mine_can_take_a_longer_corridor_when_another_depletes() {
             .sum();
         Some(RouteOutcome::Found(Route { waypoints, cost }))
     };
+    let distant_enemies: Vec<_> = (0..160)
+        .map(|id| BotState {
+            id,
+            owner: SwarmId(2),
+            kind: NanobotType::Worker,
+            position: world(IVec2::new(-8, 0)),
+            health: 100,
+            max_health: 100,
+            charge: 1.0,
+            max_charge: 1.0,
+            cargo: 0,
+            displacement: Vec2::ZERO,
+        })
+        .collect();
     let revised = controller.decide(
         &tuning,
         &GameState {
             swarms: &swarms,
             deposits: &deposits,
             route_query: Some(&detour),
+            bots: &distant_enemies,
             ..empty_state(&grid, WORK_WINDOW_TICKS)
         },
     );
     apply(&mut grid, owner, &revised);
-    assert!(!owns(&grid, west, IntentKind::Gather));
+    assert!(
+        !owns(&grid, west, IntentKind::Gather),
+        "depleted mine retained stale paint: {revised:?}"
+    );
     assert!(owns(&grid, east, IntentKind::Gather));
-    assert!(owns(&grid, IVec2::new(0, 50), IntentKind::Corridor));
+    assert!(owns(&grid, IVec2::new(0, 500), IntentKind::Corridor));
     assert!(!owns(&grid, IVec2::new(2, 0), IntentKind::Corridor));
 }
 
@@ -3517,7 +3535,17 @@ fn military_priorities_protect_expansion_before_attacking_home() {
     let deposits = [main_deposit, enemy_deposit, contested_deposit];
     let structures = [home_facility, raid_target];
 
-    let defense = decide(&deposits, &structures, &[intruder, approaching]);
+    let friendly_bots = (0..256).map(|id| BotState {
+        id: id + 100,
+        owner,
+        position: world(IVec2::ZERO),
+        ..intruder
+    });
+    let defense_bots: Vec<_> = friendly_bots
+        .clone()
+        .chain([intruder, approaching])
+        .collect();
+    let defense = decide(&deposits, &structures, &defense_bots);
     assert!(
         defense
             .explanation
@@ -3548,13 +3576,14 @@ fn military_priorities_protect_expansion_before_attacking_home() {
             }),
         })
     };
+    let contest_bots: Vec<_> = friendly_bots.chain([approaching]).collect();
     let contest = Controller::new(owner).decide(
         &tuning,
         &GameState {
             swarms: &swarms,
             deposits: &deposits,
             structures: &structures,
-            bots: &[approaching],
+            bots: &contest_bots,
             route_query: Some(&mine_approaches),
             ..empty_state(&grid, 0)
         },
