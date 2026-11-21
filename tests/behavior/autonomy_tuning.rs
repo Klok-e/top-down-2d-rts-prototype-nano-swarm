@@ -78,7 +78,7 @@ fn live_controller_tuning_reviews_both_swarms_between_regular_reviews() {
     let before = app.world().resource::<ControllerTelemetry>().profiles();
     let old = app.world().resource::<Tuning>().clone();
     let mut new = old.clone();
-    new.autonomy.strategy_hold_base = 300.0;
+    new.autonomy.strategy_home_income_lead = 10.0;
     reconcile_controller_tuning(app.world_mut(), &old, &new);
     app.insert_resource(new);
     app.update();

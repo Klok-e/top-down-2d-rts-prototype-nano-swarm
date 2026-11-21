@@ -62,6 +62,7 @@ struct ReachabilityInner {
     navigation: Navigation,
     homes: BTreeMap<SwarmId, Vec2>,
     cells: Mutex<HashMap<(SwarmId, IVec2), Option<Vec2>>>,
+    ground_witnesses: Mutex<HashMap<(SwarmId, IVec2), Vec2>>,
 }
 
 impl SwarmReachabilityMap {
@@ -83,43 +84,190 @@ impl SwarmReachabilityMap {
                 navigation,
                 homes,
                 cells: Mutex::new(HashMap::new()),
+                ground_witnesses: Mutex::new(HashMap::new()),
             }),
         })
     }
 
+    pub(crate) fn same_boundary(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     /// Whether the cell contains ground accessible from the swarm's scenario home.
     pub fn contains(&self, owner: SwarmId, cell: IVec2, grid: &IntentGrid) -> bool {
-        self.reachable_point(owner, cell, grid).is_some()
+        self.contains_with_budget(owner, cell, grid, &mut || true)
+            .expect("unlimited cell reachability query")
+    }
+
+    pub(crate) fn contains_with_budget(
+        &self,
+        owner: SwarmId,
+        cell: IVec2,
+        grid: &IntentGrid,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, ()> {
+        if !grid.in_bounds(cell) {
+            return Ok(false);
+        }
+        // A certified point proves membership without choosing the movement representative.
+        let witnesses = self.nearby_ground(owner, cell);
+        if witnesses[0].is_some() {
+            return Ok(true);
+        }
+        let center = (cell.as_vec2() + Vec2::splat(0.5)) * ZONE_BLOCK_SIZE;
+        for witness in witnesses.into_iter().flatten() {
+            if self
+                .inner
+                .navigation
+                .segment_clear_with_budget(witness, center, allow_work)?
+            {
+                self.inner
+                    .ground_witnesses
+                    .lock()
+                    .unwrap()
+                    .insert((owner, cell), center);
+                return Ok(true);
+            }
+        }
+        Ok(self
+            .reachable_point_with_budget(owner, cell, grid, allow_work)?
+            .is_some())
+    }
+
+    fn nearby_ground(&self, owner: SwarmId, cell: IVec2) -> [Option<Vec2>; 5] {
+        let ground = self.inner.ground_witnesses.lock().unwrap();
+        [IVec2::ZERO, IVec2::X, -IVec2::X, IVec2::Y, -IVec2::Y]
+            .map(|offset| ground.get(&(owner, cell + offset)).copied())
+    }
+
+    /// Starting at verified ground, find and remember ground in a nearby tile.
+    pub(crate) fn visible_ground_from(
+        &self,
+        owner: SwarmId,
+        verified_origin: Vec2,
+        cell: IVec2,
+        grid: &IntentGrid,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<Vec2>, ()> {
+        if !grid.in_bounds(cell) {
+            return Ok(None);
+        }
+        let (min, max) = tile_bounds(cell);
+        let point =
+            self.inner
+                .navigation
+                .visible_tile_point(verified_origin, min, max, allow_work)?;
+        if let Some(point) = point {
+            self.inner
+                .ground_witnesses
+                .lock()
+                .unwrap()
+                .entry((owner, cell))
+                .or_insert(point);
+        }
+        Ok(point)
+    }
+
+    /// The returned route is checked against permanent terrain before its cells can be painted.
+    pub(crate) fn remember_route_ground(
+        &self,
+        owner: SwarmId,
+        start: Vec2,
+        waypoints: &[Vec2],
+        samples: &[Vec2],
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<(), ()> {
+        let Some(&home) = self.inner.homes.get(&owner) else {
+            return Ok(());
+        };
+        let navigation = &self.inner.navigation;
+        let mut from = home;
+        for to in std::iter::once(start).chain(waypoints.iter().copied()) {
+            if !navigation.segment_clear_with_budget(from, to, allow_work)? {
+                return Ok(());
+            }
+            from = to;
+        }
+        let mut ground = self.inner.ground_witnesses.lock().unwrap();
+        for &point in samples {
+            if !allow_work() {
+                return Err(());
+            }
+            ground.entry((owner, world_to_cell(point))).or_insert(point);
+        }
+        Ok(())
     }
 
     /// A representative point in the cell, preferring its center when accessible.
     pub fn reachable_point(&self, owner: SwarmId, cell: IVec2, grid: &IntentGrid) -> Option<Vec2> {
+        self.reachable_point_with_budget(owner, cell, grid, &mut || true)
+            .expect("unlimited cell reachability query")
+    }
+
+    pub(crate) fn reachable_point_with_budget(
+        &self,
+        owner: SwarmId,
+        cell: IVec2,
+        grid: &IntentGrid,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<Vec2>, ()> {
         if !grid.in_bounds(cell) {
-            return None;
+            return Ok(None);
         }
-        let &home = self.inner.homes.get(&owner)?;
+        let Some(&home) = self.inner.homes.get(&owner) else {
+            return Ok(None);
+        };
         if let Some(&point) = self.inner.cells.lock().unwrap().get(&(owner, cell)) {
-            return point;
+            return Ok(point);
         }
         let min = cell.as_vec2() * ZONE_BLOCK_SIZE;
         let center = min + Vec2::splat(ZONE_BLOCK_SIZE / 2.0);
         let navigation = &self.inner.navigation;
-        let point = navigation.connected_point(home, [center]).or_else(|| {
+        let mut point = navigation.connected_point_with_budget(home, [Some(center)], allow_work)?;
+        if point.is_none() {
             if world_to_cell(home) == cell {
-                return Some(home);
+                point = Some(home);
+            } else {
+                let (_, max) = tile_bounds(cell);
+                point = navigation.tile_ground_point(home, min, max, center, allow_work)?;
             }
-            let upper = (cell + IVec2::ONE).as_vec2();
-            // Step inside in cell coordinates so dividing a negative coordinate by
-            // ZONE_BLOCK_SIZE cannot round across the origin into the next cell.
-            let max = Vec2::new(upper.x.next_down(), upper.y.next_down()) * ZONE_BLOCK_SIZE;
-            navigation.tile_ground_point(home, min, max, center)
-        });
+        }
         self.inner
             .cells
             .lock()
             .unwrap()
             .insert((owner, cell), point);
-        point
+        Ok(point)
+    }
+
+    pub(crate) fn planning_point_with_budget(
+        &self,
+        owner: SwarmId,
+        cell: IVec2,
+        grid: &IntentGrid,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<Vec2>, ()> {
+        if !grid.in_bounds(cell) {
+            return Ok(None);
+        }
+        let Some(&home) = self.inner.homes.get(&owner) else {
+            return Ok(None);
+        };
+        let (min, max) = tile_bounds(cell);
+        if let Some(point) = self
+            .inner
+            .navigation
+            .visible_tile_point(home, min, max, allow_work)?
+        {
+            self.inner
+                .ground_witnesses
+                .lock()
+                .unwrap()
+                .entry((owner, cell))
+                .or_insert(point);
+            return Ok(Some(point));
+        }
+        self.reachable_point_with_budget(owner, cell, grid, allow_work)
     }
 
     /// Whether a specific point is accessible with normal body clearance.
@@ -134,7 +282,60 @@ impl SwarmReachabilityMap {
         };
         self.reachable_point(owner, cell, grid)
             .is_some_and(|ground| navigation.segment_clear(ground, position))
-            || navigation.connected_point(home, [position]).is_some()
+            || navigation
+                .connected_point_with_budget(home, [Some(position)], &mut || true)
+                .expect("unlimited connectivity query")
+                .is_some()
+    }
+
+    pub(crate) fn position_is_reachable_with_budget(
+        &self,
+        owner: SwarmId,
+        position: Vec2,
+        grid: &IntentGrid,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, ()> {
+        let navigation = &self.inner.navigation;
+        let cell = world_to_cell(position);
+        let Some(&home) = self.inner.homes.get(&owner) else {
+            return Ok(false);
+        };
+        if !grid.in_bounds(cell) {
+            return Ok(false);
+        }
+        if !navigation.point_clear_with_budget(position, allow_work)? {
+            return Ok(false);
+        }
+        let witness = self.nearby_ground(owner, cell)[0];
+        let from_witness = match witness {
+            Some(ground) => navigation.segment_clear_with_budget(ground, position, allow_work)?,
+            None => false,
+        };
+        let reachable =
+            if from_witness || navigation.segment_clear_with_budget(home, position, allow_work)? {
+                true
+            } else {
+                let ground = self.reachable_point_with_budget(owner, cell, grid, allow_work)?;
+                let from_ground = match ground {
+                    Some(ground) if Some(ground) != witness => {
+                        navigation.segment_clear_with_budget(ground, position, allow_work)?
+                    }
+                    _ => false,
+                };
+                from_ground
+                    || navigation
+                        .connected_point_with_budget(home, [Some(position)], allow_work)?
+                        .is_some()
+            };
+        if reachable {
+            self.inner
+                .ground_witnesses
+                .lock()
+                .unwrap()
+                .entry((owner, cell))
+                .or_insert(position);
+        }
+        Ok(reachable)
     }
 }
 
@@ -145,15 +346,33 @@ impl SwarmReachabilityMap {
         owner: SwarmId,
         region: crate::nanobot::InteractionRegion,
     ) -> bool {
+        self.interaction_is_reachable_with_budget(owner, region, &mut || true)
+            .expect("unlimited interaction reachability query")
+    }
+
+    pub(crate) fn interaction_is_reachable_with_budget(
+        &self,
+        owner: SwarmId,
+        region: crate::nanobot::InteractionRegion,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, ()> {
         let Some(&home) = self.inner.homes.get(&owner) else {
-            return false;
+            return Ok(false);
         };
         let navigation = &self.inner.navigation;
-        region.contains(home)
+        Ok(region.contains(home)
             || navigation
-                .connected_point(home, navigation.interaction_probes(home, region).flatten())
-                .is_some()
+                .connected_interaction_with_budget(home, region, allow_work)?
+                .is_some())
     }
+}
+
+fn tile_bounds(cell: IVec2) -> (Vec2, Vec2) {
+    let min = cell.as_vec2() * ZONE_BLOCK_SIZE;
+    let upper = (cell + IVec2::ONE).as_vec2();
+    // Step inside in cell coordinates so rounding cannot cross the origin into the next tile.
+    let max = Vec2::new(upper.x.next_down(), upper.y.next_down()) * ZONE_BLOCK_SIZE;
+    (min, max)
 }
 
 /// Apply an owner-scoped gameplay intent edit through the scenario boundary.
@@ -230,6 +449,15 @@ mod tests {
             assert_eq!(world_to_cell(point), tile);
             assert!(map.position_is_reachable(owner, accessible, &grid));
             assert!(!map.position_is_reachable(owner, isolated, &grid));
+            let mut remaining = 16_usize;
+            assert_eq!(
+                map.position_is_reachable_with_budget(owner, isolated, &grid, &mut || {
+                    let allowed = remaining > 0;
+                    remaining = remaining.saturating_sub(1);
+                    allowed
+                }),
+                Err(())
+            );
             assert_eq!(
                 apply_reachable_intent(
                     &mut grid,
@@ -245,6 +473,55 @@ mod tests {
         let paint = grid.cell(tile).unwrap();
         assert!(paint.has_owned(IntentKind::Defend, left));
         assert!(paint.has_owned(IntentKind::Defend, right));
+    }
+
+    #[test]
+    fn asking_about_an_accessible_position_keeps_the_same_blocked_center_representative() {
+        let owner = SwarmId::PLAYER;
+        let grid = IntentGrid::new(8, 8);
+        let obstacle = Obstacle::Rectangle {
+            center: Vec2::new(256.0, 256.0),
+            half: Vec2::splat(36.0),
+        };
+        let ground = Vec2::new(100.0, 100.0);
+        let map = || {
+            SwarmReachabilityMap::new(&grid, [obstacle], [(owner, Vec2::new(-252.0, 36.0))])
+                .unwrap()
+        };
+
+        let cold = map().reachable_point(owner, IVec2::ZERO, &grid).unwrap();
+        let warm = map();
+        assert_eq!(
+            warm.position_is_reachable_with_budget(owner, ground, &grid, &mut || true),
+            Ok(true)
+        );
+        assert_eq!(warm.reachable_point(owner, IVec2::ZERO, &grid), Some(cold));
+    }
+
+    #[test]
+    fn a_route_through_a_subcell_gap_preserves_the_canonical_tile_representative() {
+        let owner = SwarmId::PLAYER;
+        let grid = IntentGrid::new(8, 8);
+        let home = Vec2::new(-252.0, 36.0);
+        let terrain = [
+            Obstacle::Rectangle {
+                center: Vec2::new(256.0, 100.0),
+                half: Vec2::new(110.0, 120.0),
+            },
+            Obstacle::Rectangle {
+                center: Vec2::new(256.0, 400.0),
+                half: Vec2::new(110.0, 108.0),
+            },
+        ];
+        let map = || SwarmReachabilityMap::new(&grid, terrain, [(owner, home)]).unwrap();
+        let cell = IVec2::ZERO;
+        let cold = map().reachable_point(owner, cell, &grid).unwrap();
+        let warm = map();
+        let waypoints = [Vec2::new(100.0, 256.0), Vec2::splat(256.0)];
+        warm.remember_route_ground(owner, home, &waypoints, &waypoints[..1], &mut || true)
+            .unwrap();
+        assert!(warm.contains(owner, cell, &grid));
+        assert_eq!(warm.reachable_point(owner, cell, &grid), Some(cold));
     }
 
     #[test]

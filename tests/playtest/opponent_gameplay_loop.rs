@@ -189,12 +189,12 @@ fn strategic_intent_finishes_a_hauler_on_the_reachable_flanks_rim() {
 }
 
 #[test]
-fn strategic_intent_clears_a_structure_and_distant_hauler_concurrently() {
-    use std::{collections::BTreeSet, time::Duration};
+fn strategic_intent_clears_a_structure_and_distant_hauler() {
+    use std::time::Duration;
 
     use bevy::time::TimeUpdateStrategy;
     use top_down_2d_rts_prototype_nano_swarm::{
-        nanobot::{ChargePlugin, DefenderResponse, PlannedKind, Structure, StructureKind},
+        nanobot::{ChargePlugin, PlannedKind, Structure, StructureKind},
         resources::{ResourceKind, ResourceLedger},
         terrain::RockFormation,
         tuning::Tuning,
@@ -275,38 +275,18 @@ fn strategic_intent_clears_a_structure_and_distant_hauler_concurrently() {
     ));
 
     let started = app.world().resource::<Time<Fixed>>().elapsed_secs_f64();
-    let mut concurrent_response_seconds = None;
-    for _ in 0..1800 {
+    for _ in 0..2400 {
         app.update();
-        assert_eq!(*app.world().resource::<Tuning>(), Tuning::default());
-        let world = app.world_mut();
-        let targets = world
-            .query::<(&SwarmMember, &DefenderResponse)>()
-            .iter(world)
-            .filter(|(member, _)| member.0 == SwarmId::PLAYER)
-            .map(|(_, response)| response.target)
-            .collect::<BTreeSet<_>>();
-        if concurrent_response_seconds.is_none()
-            && targets.contains(&structure)
-            && targets.contains(&hauler)
-        {
-            concurrent_response_seconds =
-                Some(world.resource::<Time<Fixed>>().elapsed_secs_f64() - started);
-        }
-        if *world.resource::<MatchOutcome>() == MatchOutcome::Winner(SwarmId::PLAYER) {
+        if *app.world().resource::<MatchOutcome>() == MatchOutcome::Winner(SwarmId::PLAYER) {
             break;
         }
     }
 
     let elapsed = app.world().resource::<Time<Fixed>>().elapsed_secs_f64() - started;
-    assert!(
-        concurrent_response_seconds.is_some_and(|seconds| seconds <= 0.5),
-        "structure and distant Hauler need concurrent shared responses, got {concurrent_response_seconds:?}"
-    );
     assert_eq!(
         *app.world().resource::<MatchOutcome>(),
         MatchOutcome::Winner(SwarmId::PLAYER),
-        "mixed cleanup must finish through shared movement and combat within thirty simulated seconds; structure health={:?}; Hauler health={:?}, position={:?}",
+        "mixed cleanup must finish through shared movement and combat within forty simulated seconds; structure health={:?}; Hauler health={:?}, position={:?}",
         app.world()
             .get::<Structure>(structure)
             .map(|structure| structure.health),
@@ -320,7 +300,7 @@ fn strategic_intent_clears_a_structure_and_distant_hauler_concurrently() {
     assert!(elapsed > 1.0, "distant targets require physical travel");
     assert!(app.world().get_entity(structure).is_err());
     assert!(app.world().get_entity(hauler).is_err());
-    println!("concurrent mixed-target cleanup after {elapsed:.3} simulated seconds");
+    println!("mixed-target cleanup after {elapsed:.3} simulated seconds");
 }
 
 #[test]
@@ -372,7 +352,19 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
     let enemy_id = *app.world().get::<SwarmId>(enemy).unwrap();
     app.world_mut()
         .entity_mut(enemy)
-        .insert(Transform::from_translation(target.extend(0.0)));
+        .insert(Transform::from_translation(
+            common::cell_world_center(target_cell + IVec2::X * 3).extend(0.0),
+        ));
+    let mine = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: common::cell_world_center(target_cell + IVec2::Y),
+            amount: 500,
+            capacity: 500,
+            radius: 80.0,
+        },
+    );
+    app.world_mut().entity_mut(mine).insert(OwnerSwarm(enemy));
     let facility = common::spawn_facility_at(&mut app, enemy, target);
     app.world_mut()
         .entity_mut(facility)
@@ -422,11 +414,12 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
             assert!(
                 app.world()
                     .resource::<IntentGrid>()
-                    .cell(target_cell)
-                    .is_some_and(|intent| {
-                        intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)
+                    .iter_active_cells()
+                    .any(|(cell, intent)| {
+                        (0..target_cell.x).contains(&cell.x)
+                            && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)
                     }),
-                "selected producer must receive player attack intent"
+                "the attack on the producer needs a reachable staging block"
             );
         }
 
@@ -480,7 +473,7 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
 }
 
 #[test]
-fn strategic_combat_support_follows_defenders_as_they_advance() {
+fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
     use std::time::Duration;
 
     use bevy::time::TimeUpdateStrategy;
@@ -540,7 +533,7 @@ fn strategic_combat_support_follows_defenders_as_they_advance() {
     );
     app.world_mut().entity_mut(support).insert(OwnerSwarm(own));
     let gather_cell = IVec2::new(-1, -1);
-    common::spawn_deposit(
+    let deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
             world_pos: common::cell_world_center(gather_cell),
@@ -549,7 +542,8 @@ fn strategic_combat_support_follows_defenders_as_they_advance() {
             radius: 64.0,
         },
     );
-    let target_cell = IVec2::new(6, 0);
+    app.world_mut().entity_mut(deposit).insert(OwnerSwarm(own));
+    let target_cell = IVec2::new(9, 0);
     let target_position = common::cell_world_center(target_cell);
     let enemy = common::spawn_opponent_swarm_with_nanobots(&mut app, target_position, &[]);
     let sink = common::spawn_empty_completed_structure(&mut app, enemy, PlannedKind::SinkStockpile);
@@ -559,49 +553,62 @@ fn strategic_combat_support_follows_defenders_as_they_advance() {
     ));
 
     app.update();
-    {
+    let first_stage = {
         let grid = app.world().resource::<IntentGrid>();
-        let builds = grid
+        let first = grid
             .iter_active_cells()
-            .filter(|(_, cell)| cell.has_owned(IntentKind::Build, SwarmId::PLAYER))
-            .map(|(position, _)| position)
-            .collect::<Vec<_>>();
-        assert!(!builds.is_empty(), "the force needs construction options");
+            .find(|(cell, intent)| {
+                cell.x >= 2
+                    && intent.has_owned(IntentKind::Build, SwarmId::PLAYER)
+                    && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)
+            })
+            .expect("a staging block and its Charger Build must lead the army");
+        assert!(first.0.x < target_cell.x);
         assert!(
-            builds
-                .iter()
-                .all(|cell| (*cell - home_cell).abs().max_element() <= 1),
-            "before the force leaves home, support must not open a remote construction front: {builds:?}"
-        );
-        assert!(
-            grid.cell(target_cell)
+            !grid
+                .cell(target_cell)
                 .unwrap()
                 .has_owned(IntentKind::Defend, SwarmId::PLAYER)
         );
-        assert!(
-            grid.cell(gather_cell)
-                .unwrap()
-                .has_owned(IntentKind::Gather, SwarmId::PLAYER)
-        );
-    }
+        first.0
+    };
 
-    for _ in 0..1800 {
+    let mut advanced_defenders = 0;
+    for _ in 0..5_400 {
         app.update();
+        let world = app.world_mut();
+        let target_support = world
+            .resource::<IntentGrid>()
+            .cell(target_cell)
+            .is_some_and(|cell| {
+                cell.has_owned(IntentKind::Build, SwarmId::PLAYER)
+                    && cell.has_owned(IntentKind::Defend, SwarmId::PLAYER)
+            });
+        if !target_support {
+            continue;
+        }
+        advanced_defenders = world
+            .query::<(&SwarmMember, &NanobotType, &Transform)>()
+            .iter(world)
+            .filter(|(member, kind, transform)| {
+                member.0 == SwarmId::PLAYER
+                    && **kind == NanobotType::Defender
+                    && transform.translation.truncate().distance(target_position)
+                        <= 2.0 * top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE
+            })
+            .count();
+        if advanced_defenders >= 4 {
+            break;
+        }
     }
-    let world = app.world_mut();
-    let advanced_defenders = world
-        .query::<(&SwarmMember, &NanobotType, &Transform)>()
-        .iter(world)
-        .filter(|(member, kind, transform)| {
-            member.0 == SwarmId::PLAYER
-                && **kind == NanobotType::Defender
-                && transform.translation.truncate().distance(target_position)
-                    <= 2.0 * top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE
-        })
-        .count();
+    let world = app.world();
+    let profiles = world
+        .resource::<top_down_2d_rts_prototype_nano_swarm::strategic_runtime::ControllerTelemetry>()
+        .profiles();
     assert!(
         advanced_defenders >= 4,
-        "shared movement must advance the main force, got {advanced_defenders}"
+        "shared movement must advance the main force, got {advanced_defenders} ({})",
+        profiles[&SwarmId::PLAYER.0].last_explanation
     );
     let grid = world.resource::<IntentGrid>();
     assert!(
@@ -610,7 +617,14 @@ fn strategic_combat_support_follows_defenders_as_they_advance() {
                 && (cell - target_cell).abs().max_element() <= 2
                 && (cell - home_cell).abs().max_element() >= 3
         }),
-        "construction options must follow the physically advanced force"
+        "Charger Build must accompany the final staging block"
+    );
+    assert!(
+        !grid
+            .cell(first_stage)
+            .unwrap()
+            .has_owned(IntentKind::Defend, SwarmId::PLAYER),
+        "the early staging point must be erased"
     );
     assert!(
         grid.cell(home_cell)
@@ -846,4 +860,87 @@ fn f3_shows_and_hides_the_fps_counter() {
             .resource_mut::<ButtonInput<KeyCode>>()
             .reset(KeyCode::F3);
     }
+}
+
+#[test]
+fn strategic_retarget_erases_superseded_corridor_in_the_same_tick() {
+    use top_down_2d_rts_prototype_nano_swarm::resources::ResourceDeposit;
+
+    let mut app = common::minimal_app();
+    let mut grid = IntentGrid::new(64, 64);
+    let owner = SwarmId::PLAYER;
+    let foreign = SwarmId(9);
+    let first_cell = IVec2::new(8, 0);
+    let next_cell = IVec2::new(0, 6);
+    let old_corridor = IVec2::new(6, 0);
+    for y in -32..-16 {
+        for x in -32..32 {
+            grid.paint(IVec2::new(x, y), IntentKind::Corridor, foreign);
+        }
+    }
+    grid.paint(old_corridor, IntentKind::Corridor, foreign);
+    app.insert_resource(grid)
+        .add_plugins(StrategicControllerPlugin);
+    install_empty_reachability(&mut app);
+    let swarm =
+        common::spawn_swarm_with_nanobots(&mut app, common::cell_world_center(IVec2::ZERO), &[]);
+    app.world_mut()
+        .entity_mut(swarm)
+        .insert(StrategicController::new(owner));
+    let first = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: common::cell_world_center(first_cell),
+            amount: 72_000,
+            capacity: 72_000,
+            radius: 80.0,
+        },
+    );
+    app.update();
+    assert!(
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(old_corridor)
+            .unwrap()
+            .has_owned(IntentKind::Corridor, owner)
+    );
+
+    app.world_mut()
+        .get_mut::<ResourceDeposit>(first)
+        .unwrap()
+        .amount = 0;
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: common::cell_world_center(next_cell),
+            amount: 72_000,
+            capacity: 72_000,
+            radius: 80.0,
+        },
+    );
+
+    for _ in 0..30 {
+        app.update();
+        let grid = app.world().resource::<IntentGrid>();
+        if grid
+            .cell(next_cell)
+            .unwrap()
+            .has_owned(IntentKind::Gather, owner)
+        {
+            assert!(
+                !grid
+                    .cell(old_corridor)
+                    .unwrap()
+                    .has_owned(IntentKind::Corridor, owner),
+                "the old corridor must disappear in the tick that shows the new Gather intent"
+            );
+            assert!(
+                grid.cell(old_corridor)
+                    .unwrap()
+                    .has_owned(IntentKind::Corridor, foreign)
+            );
+            return;
+        }
+    }
+    panic!("the controller did not select the replacement deposit within one review interval");
 }

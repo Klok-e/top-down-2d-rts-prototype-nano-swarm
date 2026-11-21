@@ -137,6 +137,20 @@ pub(super) fn painted_gather_regions(
 ) -> impl Iterator<Item = (IVec2, InteractionRegion)> + '_ {
     let center = transform.translation.truncate();
     let region = InteractionRegion::deposit(&transform, radius);
+    deposit_candidate_cells(grid, center, radius)
+        .filter(move |cell| {
+            grid.cell(*cell)
+                .is_some_and(|intent| intent.has_owned(IntentKind::Gather, owner))
+                && cell_overlaps_circle(*cell, center, radius)
+        })
+        .map(move |cell| (cell, region.within_cell(cell)))
+}
+
+pub(crate) fn deposit_candidate_cells(
+    grid: &IntentGrid,
+    center: Vec2,
+    radius: f32,
+) -> impl Iterator<Item = IVec2> + use<> {
     let size = IVec2::new(grid.width(), grid.height());
     let map_min = -(size / 2);
     let extent = Vec2::splat(radius.max(0.0));
@@ -144,14 +158,7 @@ pub(super) fn painted_gather_regions(
         .as_ivec2()
         .max(map_min);
     let max = world_to_cell(center + extent).min(map_min + size - IVec2::ONE);
-    (min.y..=max.y)
-        .flat_map(move |y| (min.x..=max.x).map(move |x| IVec2::new(x, y)))
-        .filter(move |cell| {
-            grid.cell(*cell)
-                .is_some_and(|intent| intent.has_owned(IntentKind::Gather, owner))
-                && cell_overlaps_circle(*cell, center, radius)
-        })
-        .map(move |cell| (cell, region.within_cell(cell)))
+    (min.y..=max.y).flat_map(move |y| (min.x..=max.x).map(move |x| IVec2::new(x, y)))
 }
 
 /// True when the circle (`circle_center`, `circle_radius`) visually
@@ -1062,9 +1069,20 @@ pub fn worker_gather_extract_system(
         progress.collected = cargo.amount;
         deposit.amount -= actual;
         reservation.source_remaining -= actual;
-        ledger.add_for(swarm.0, deposit.kind, actual);
+        ledger.extract_for(swarm.0, deposit.kind, actual);
         if let Some(counters) = counters.as_deref_mut() {
-            counters.record(swarm.0, BattleEvent::Gathered(actual));
+            let painted_deposit = (assignment.painted
+                || painted_gather_regions(&grid, swarm.0, *deposit_transform, deposit.radius)
+                    .next()
+                    .is_some())
+            .then_some(assignment.deposit);
+            counters.record(
+                swarm.0,
+                BattleEvent::Gathered {
+                    amount: actual,
+                    painted_deposit,
+                },
+            );
         }
     }
 }

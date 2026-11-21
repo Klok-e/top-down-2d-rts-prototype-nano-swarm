@@ -3,9 +3,11 @@
 use crate::{
     ai_battle::AiBattleConfig,
     nanobot::{
-        MatchOutcome, Nanobot, NanobotType, Swarm, SwarmEliminationSet, SwarmEliminationState,
-        SwarmId, SwarmMember,
+        Cargo, Charge, Charger, Health, MatchOutcome, Nanobot, NanobotType, OwnerSwarm,
+        PlannedStructure, ProductionFacility, Structure, Swarm, SwarmEliminationSet,
+        SwarmEliminationState, SwarmId, SwarmMember,
     },
+    resources::{ResourceKind, Stockpile, buffered_minerals},
     session::SessionRules,
     strategic_runtime::{ControllerProfile, ControllerTelemetry},
     tuning::{Tuning, TuningEdit, TuningJournal},
@@ -13,7 +15,7 @@ use crate::{
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::{self, BufWriter, Write},
     path::PathBuf,
@@ -55,7 +57,11 @@ pub struct BattleTotals {
 pub enum BattleEvent {
     Birth,
     Death,
-    Gathered(u32),
+    Gathered {
+        amount: u32,
+        painted_deposit: Option<Entity>,
+    },
+    MineralStarvedFacilityTick,
     Consumed(u32),
     StructureBuilt,
     StructureLost,
@@ -63,9 +69,16 @@ pub enum BattleEvent {
     EffectiveStructureDamage(u32),
 }
 
+#[derive(Debug, Default)]
+struct EconomyWindow {
+    extracted_deposits: BTreeSet<Entity>,
+    mineral_starved_facility_ticks: u64,
+}
+
 #[derive(Resource, Debug, Default)]
 pub struct BattleCounters {
     totals: BTreeMap<u32, BattleTotals>,
+    economy_windows: BTreeMap<u32, EconomyWindow>,
     frozen: bool,
 }
 
@@ -78,7 +91,27 @@ impl BattleCounters {
         match event {
             BattleEvent::Birth => total.births += 1,
             BattleEvent::Death => total.deaths += 1,
-            BattleEvent::Gathered(amount) => total.minerals_gathered += u64::from(amount),
+            BattleEvent::Gathered {
+                amount,
+                painted_deposit,
+            } => {
+                total.minerals_gathered += u64::from(amount);
+                if let Some(deposit) = painted_deposit
+                    && amount > 0
+                {
+                    self.economy_windows
+                        .entry(swarm.0)
+                        .or_default()
+                        .extracted_deposits
+                        .insert(deposit);
+                }
+            }
+            BattleEvent::MineralStarvedFacilityTick => {
+                self.economy_windows
+                    .entry(swarm.0)
+                    .or_default()
+                    .mineral_starved_facility_ticks += 1;
+            }
             BattleEvent::Consumed(amount) => total.minerals_consumed += u64::from(amount),
             BattleEvent::StructureBuilt => total.structures_built += 1,
             BattleEvent::StructureLost => total.structures_lost += 1,
@@ -165,6 +198,11 @@ pub struct SwarmSample {
     pub workers: u64,
     pub haulers: u64,
     pub defenders: u64,
+    pub owned_deposits: usize,
+    pub mineral_income: u64,
+    pub mineral_starved_facility_seconds: f64,
+    pub unspent_minerals: u32,
+    pub empty_charge_defenders: u64,
     pub elimination_seconds: Option<f64>,
     #[serde(flatten)]
     pub totals: BattleTotals,
@@ -335,10 +373,10 @@ fn create_run(
     let mut csv = BufWriter::new(file);
     writeln!(
         csv,
-        "simulation_seconds,fixed_tick,swarm,population,workers,haulers,defenders,births,deaths,minerals_gathered,minerals_consumed,structures_built,structures_lost,effective_damage_total,effective_damage_nanobots,effective_damage_structures,elimination_seconds,tick_count,tick_mean_ms,tick_p50_ms,tick_p95_ms,tick_p99_ms,tick_max_ms,frame_count,frame_mean_ms,frame_p95_ms,frame_max_ms,controller_reviews,controller_intent_edits,controller_work_units,controller_last_explanation"
+        "simulation_seconds,fixed_tick,swarm,population,workers,haulers,defenders,births,deaths,minerals_gathered,minerals_consumed,structures_built,structures_lost,effective_damage_total,effective_damage_nanobots,effective_damage_structures,elimination_seconds,tick_count,tick_mean_ms,tick_p50_ms,tick_p95_ms,tick_p99_ms,tick_max_ms,frame_count,frame_mean_ms,frame_p95_ms,frame_max_ms,controller_reviews,controller_intent_edits,controller_work_units,owned_deposits,mineral_income,mineral_starved_facility_seconds,unspent_minerals,empty_charge_defenders,controller_last_explanation"
     )?;
     let summary = BattleSummary {
-        schema_version: 6,
+        schema_version: 7,
         scenario: scenario_name.into(),
         seed: config.seed,
         timestep_seconds,
@@ -413,7 +451,7 @@ impl BattleRun {
             let explanation = csv_field(&controller.last_explanation);
             writeln!(
                 self.csv,
-                "{},{},{swarm},{},{},{},{},{},{},{},{},{},{},{},{},{},{elimination},{},{},{},{},{},{},{frame_count},{frame_mean},{frame_p95},{frame_max},{},{},{},{explanation}",
+                "{},{},{swarm},{},{},{},{},{},{},{},{},{},{},{},{},{},{elimination},{},{},{},{},{},{},{frame_count},{frame_mean},{frame_p95},{frame_max},{},{},{},{},{},{},{},{},{explanation}",
                 sample.simulation_seconds,
                 sample.fixed_tick,
                 s.population,
@@ -438,6 +476,11 @@ impl BattleRun {
                 controller.reviews,
                 controller.intent_edits,
                 controller.work_units,
+                s.owned_deposits,
+                s.mineral_income,
+                s.mineral_starved_facility_seconds,
+                s.unspent_minerals,
+                s.empty_charge_defenders,
             )?;
         }
         self.summary.samples += 1;
@@ -477,29 +520,77 @@ fn snapshot(world: &mut World, run: &mut BattleRun) -> BattleSample {
         run.tuning_journal_offset = journal.entries.len();
     }
     let mut swarms = BTreeMap::new();
-    for id in world.query_filtered::<&SwarmId, With<Swarm>>().iter(world) {
-        swarms.insert(
-            id.0,
-            SwarmSample {
-                totals: world.resource::<BattleCounters>().totals_for(*id),
-                ..default()
-            },
-        );
+    let mut owners = world.query_filtered::<&SwarmId, With<Swarm>>();
+    for id in owners.iter(world) {
+        swarms.insert(id.0, SwarmSample::default());
     }
-    for (owner, kind) in world
-        .query_filtered::<(&SwarmMember, &NanobotType), With<Nanobot>>()
+    for (owner, kind, charge, cargo, health) in world
+        .query_filtered::<(
+            &SwarmMember,
+            &NanobotType,
+            Option<&Charge>,
+            Option<&Cargo>,
+            Option<&Health>,
+        ), With<Nanobot>>()
         .iter(world)
     {
         let s = swarms.entry(owner.0.0).or_default();
+        if let Some(cargo) = cargo
+            && cargo.kind == ResourceKind::Minerals
+            && health.is_none_or(|health| health.current > 0)
+        {
+            s.unspent_minerals = s.unspent_minerals.saturating_add(cargo.amount);
+        }
         s.population += 1;
         match kind {
             NanobotType::Worker => s.workers += 1,
             NanobotType::Hauler => s.haulers += 1,
-            NanobotType::Defender => s.defenders += 1,
+            NanobotType::Defender => {
+                s.defenders += 1;
+                s.empty_charge_defenders += u64::from(charge.is_some_and(Charge::is_empty));
+            }
+        }
+    }
+    for (owner, condition, facility, stockpile, charger) in world
+        .query_filtered::<(
+            &OwnerSwarm,
+            Option<&Structure>,
+            Option<&ProductionFacility>,
+            Option<&Stockpile>,
+            Option<&Charger>,
+        ), (
+            Without<PlannedStructure>,
+            Or<(With<ProductionFacility>, With<Stockpile>, With<Charger>)>,
+        )>()
+        .iter(world)
+    {
+        if condition.is_none_or(Structure::is_operational)
+            && let Ok(id) = owners.get(world, owner.0)
+        {
+            let swarm = swarms.entry(id.0).or_default();
+            swarm.unspent_minerals = swarm
+                .unspent_minerals
+                .saturating_add(buffered_minerals(facility, stockpile, charger));
         }
     }
     let simulation_seconds = run.ticks as f64 * run.summary.timestep_seconds;
+    let economy_windows =
+        std::mem::take(&mut world.resource_mut::<BattleCounters>().economy_windows);
+    let counters = world.resource::<BattleCounters>();
     for (id, swarm) in &mut swarms {
+        swarm.totals = counters.totals_for(SwarmId(*id));
+        let previously_gathered = run
+            .summary
+            .latest
+            .swarms
+            .get(id)
+            .map_or(0, |previous| previous.totals.minerals_gathered);
+        swarm.mineral_income = swarm.totals.minerals_gathered - previously_gathered;
+        if let Some(window) = economy_windows.get(id) {
+            swarm.owned_deposits = window.extracted_deposits.len();
+            swarm.mineral_starved_facility_seconds =
+                window.mineral_starved_facility_ticks as f64 * run.summary.timestep_seconds;
+        }
         swarm.elimination_seconds = run
             .elimination_ticks
             .get(&SwarmId(*id))
