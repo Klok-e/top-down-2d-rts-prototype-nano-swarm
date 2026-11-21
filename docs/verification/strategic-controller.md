@@ -6,11 +6,24 @@ Standard's opponent and both AI Battle swarms use the same Strategic Controller.
 | --- | --- |
 | Each swarm edits only its own paint. Cleanup eventually reaches stale owned intent even behind a long prefix of foreign cells. | [Owner isolation and cleanup regressions](../../tests/behavior/strategic_controller.rs) |
 | Once the match finishes, the controller skips its review and emits no edits. | [Controller test for a finished match](../../src/strategic_controller/tests.rs) |
-| Depleting the primary Resource Deposit or losing a key Charger triggers replanning. Urgent and regular reviews draw on the same work allowance. | [Resource, support, and budget regressions](../../tests/behavior/strategic_controller.rs) |
-| A primary resource site supports extraction and hauling. Starting a second front can preserve a Defender response already making progress. | [Economy and front-continuity tests](../../tests/behavior/strategic_controller.rs) |
-| Combat support follows advancing Defenders. Shared combat can destroy a Production Facility that is still producing reinforcements and reach a survivor away from its former home. | [Opponent gameplay playtests](../../tests/playtest/opponent_gameplay_loop.rs) |
+| Depleting one Owned Deposit triggers a review while the other mines keep their Gather, Build, Defend, and Corridor paint. Route searches and urgent reviews use the same bounded allowance as regular reviews. | [Controller decisions on snapshots](../../src/strategic_controller/tests.rs) |
+| Workers extract and Haulers move minerals from several supported deposits. On an obstructed map, the Logistics Corridor connects a deposit to home around the rock. | [Economy and navigation behavior tests](../../tests/behavior/strategic_controller.rs) |
+| The military front holds its Staging Point until enough living Defenders arrive. When the plan changes, the controller erases superseded paint in the same review. | [Staging and retargeting playtests](../../tests/playtest/opponent_gameplay_loop.rs) |
 
 ## Observed self-play
+
+The economy comparison uses seed 11, the tracked balance configuration, unbounded headless simulation, and one-second samples. Each opening covers the same first 7,200 fixed ticks. An active mine in the tables means a distinct deposit that yielded minerals under the swarm's Gather paint during that sample. A mine can keep its paint between extraction pulses. Starvation is summed across facilities, so two waiting facilities can accumulate two facility-seconds in one second of simulation. [AI Battle recording guide](../ai-battle.md)
+
+The telemetry baseline used commit `4a7c7e5`, which still used the single-deposit controller. Both layouts ran for 120 simulated seconds without recording combat damage. The peak active mine count was one for each swarm on each layout.
+
+| Layout | Swarm | Minerals extracted | Mean unspent | Starved facility-seconds | Peak empty-Charge Defenders |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Standard | 0 | 277 | 123.4 | 217.5 | 0 |
+| Standard | 1 | 301 | 119.3 | 202.1 | 0 |
+| Flanks | 0 | 236 | 115.7 | 167.6 | 0 |
+| Flanks | 1 | 274 | 119.4 | 90.3 | 0 |
+
+## Earlier self-play
 
 The September 2026 single-policy verification recorded two natural eliminations with seed 11. Swarm 1 won on Standard after 27,165 fixed ticks (452.75 simulated seconds) and on Flanks after 17,665 ticks (294.42 seconds). These runs show that both layouts could reach an outcome with that revision and tuning. Their times and winners are historical observations.
 
