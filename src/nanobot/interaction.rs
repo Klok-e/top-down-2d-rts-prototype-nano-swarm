@@ -89,16 +89,7 @@ impl InteractionRegion {
     /// Include the closest point without requiring a work position to coincide
     /// with a cell center in the thin interaction band.
     pub(crate) fn candidates(self, start: Vec2) -> Vec<Vec2> {
-        let half = match self.shape {
-            Obstacle::Circle { radius, .. } => Vec2::splat(radius),
-            Obstacle::Rectangle { half, .. } => {
-                let x = (self.rotation * Vec3::X).truncate().abs();
-                let y = (self.rotation * Vec3::Y).truncate().abs();
-                x * half.x + y * half.y
-            }
-        } + Vec2::splat(BODY_RADIUS + CELL_WIDTH);
-        let min = ((self.center - half) / CELL_WIDTH).floor().as_ivec2();
-        let max = ((self.center + half) / CELL_WIDTH).ceil().as_ivec2();
+        let (min, max) = self.candidate_cell_bounds();
         let mut candidates = Vec::new();
         candidates.extend(self.in_cell(self.approach(start)));
         if let Some(cell) = self.cell {
@@ -125,6 +116,20 @@ impl InteractionRegion {
                 .total_cmp(&b.distance_squared(start))
         });
         candidates
+    }
+
+    pub(crate) fn candidate_cell_bounds(self) -> (IVec2, IVec2) {
+        let half = match self.shape {
+            Obstacle::Circle { radius, .. } => Vec2::splat(radius),
+            Obstacle::Rectangle { half, .. } => {
+                let x = (self.rotation * Vec3::X).truncate().abs();
+                let y = (self.rotation * Vec3::Y).truncate().abs();
+                x * half.x + y * half.y
+            }
+        } + Vec2::splat(BODY_RADIUS + CELL_WIDTH);
+        let min = ((self.center - half) / CELL_WIDTH).floor().as_ivec2();
+        let max = ((self.center + half) / CELL_WIDTH).ceil().as_ivec2();
+        (min, max)
     }
 
     /// Closely spaced perimeter probes for finding gaps between physical working bodies.

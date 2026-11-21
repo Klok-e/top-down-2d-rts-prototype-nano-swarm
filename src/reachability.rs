@@ -362,11 +362,7 @@ impl SwarmReachabilityMap {
         let navigation = &self.inner.navigation;
         Ok(region.contains(home)
             || navigation
-                .connected_point_with_budget(
-                    home,
-                    navigation.interaction_probes(home, region),
-                    allow_work,
-                )?
+                .connected_interaction_with_budget(home, region, allow_work)?
                 .is_some())
     }
 }
