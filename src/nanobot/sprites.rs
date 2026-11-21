@@ -67,7 +67,6 @@ impl Plugin for NanobotPresentationPlugin {
 fn attach_nanobot_visual(
     added: On<Add, Nanobot>,
     mut commands: Commands,
-    asset_server: Option<Res<AssetServer>>,
     nanobots: Query<(&NanobotType, &SwarmMember, Option<&Visibility>), With<Nanobot>>,
     swarms: Query<(&SwarmId, Has<OpponentSwarm>), With<Swarm>>,
     sprites: Res<NanobotSprites>,
@@ -83,27 +82,9 @@ fn attach_nanobot_visual(
     if visibility.is_none() {
         root.insert(Visibility::default());
     }
-    root.with_children(|parent| {
-        let mut visual = parent.spawn((
-            NanobotVisual,
-            Sprite::from_image(sprites.handle(*kind, is_opponent)),
-            Transform::IDENTITY,
-        ));
-        if let Some(asset_server) = asset_server {
-            let x = match kind {
-                NanobotType::Worker => 0.0,
-                NanobotType::Hauler => 64.0,
-                NanobotType::Defender => 128.0,
-            };
-            visual.with_child((
-                Sprite {
-                    image: asset_server.load("nanobot_type_markers.png"),
-                    rect: Some(Rect::new(x, 0.0, x + 64.0, 64.0)),
-                    custom_size: Some(Vec2::splat(25.0)),
-                    ..default()
-                },
-                Transform::from_xyz(0.0, 0.0, 0.1),
-            ));
-        }
-    });
+    root.with_child((
+        NanobotVisual,
+        Sprite::from_image(sprites.handle(*kind, is_opponent)),
+        Transform::IDENTITY,
+    ));
 }

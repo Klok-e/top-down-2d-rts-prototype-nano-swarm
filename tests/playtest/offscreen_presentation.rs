@@ -73,7 +73,6 @@ fn offscreen_presentation_starts_full_scene_without_a_window() {
         .map(|(entity, kind, member)| (entity, *kind, member.0))
         .collect::<Vec<_>>();
     assert!(!nanobots.is_empty(), "full startup must spawn nanobots");
-    let mut type_icons = HashMap::new();
     for (root, kind, member) in nanobots {
         assert!(
             app.world().get::<ChildOf>(root).is_none(),
@@ -91,26 +90,15 @@ fn offscreen_presentation_starts_full_scene_without_a_window() {
                 .image,
             sprites.handle(kind, member == opponent)
         );
-        let type_icon = app
-            .world()
-            .get::<Children>(visual)
-            .and_then(|children| {
+        let world = app.world();
+        assert!(
+            world.get::<Children>(visual).is_none_or(|children| {
                 children
                     .iter()
-                    .find_map(|child| app.world().get::<Sprite>(child)?.rect)
-            })
-            .expect("every nanobot needs a visible type insignia");
-        if let Some(other_icon) = type_icons.insert(kind, type_icon) {
-            assert_eq!(
-                type_icon, other_icon,
-                "both swarms use the same type symbols"
-            );
-        }
-    }
-    for (index, kind) in NanobotType::ALL.iter().enumerate() {
-        for other in &NanobotType::ALL[..index] {
-            assert_ne!(type_icons[kind], type_icons[other]);
-        }
+                    .all(|child| world.get::<Sprite>(child).is_none())
+            }),
+            "the idle {kind:?} sprite should display its artwork without an overlaid icon"
+        );
     }
 
     let deposit_fill = app
