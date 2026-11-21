@@ -21,11 +21,12 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Cargo, Charge, Charger, ChargerAssignment, ChargerProgress, ChargerPulseProgress,
-        DefenderResponse, DirectMovementComponent, Health, LogisticsReservation, Nanobot,
-        NanobotBundle, NanobotPlugin, NanobotType, OwnerSwarm, PlannedKind, PlannedStructure,
-        SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, Swarm, SwarmBundle,
-        SwarmId, SwarmMember, defender_charger_arrive_system, defender_charger_work_system,
-        defender_rotation_to_charger_system, nanobot_death_cleanup_system,
+        CombatIdentityPlugin, DefenderResponse, DirectMovementComponent, Health,
+        LogisticsReservation, Nanobot, NanobotBundle, NanobotPlugin, NanobotType, OwnerSwarm,
+        PlannedKind, PlannedStructure, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure,
+        StructureKind, Swarm, SwarmBundle, SwarmId, SwarmMember, defender_charger_arrive_system,
+        defender_charger_work_system, defender_rotation_to_charger_system,
+        nanobot_death_cleanup_system,
     },
     resources::{ResourceKind, ResourceLedger},
 };
@@ -630,77 +631,62 @@ fn material_is_not_overdrawn_under_charger_contention() {
 }
 
 #[test]
-fn charger_pulse_recipient_is_stable_across_spawn_order() {
-    fn charged_entity_rank(reverse_spawn_order: bool) -> usize {
-        let mut app = App::new();
-        app.init_resource::<Tuning>();
-        app.insert_resource(IntentGrid::new(4, 4))
-            .init_resource::<ResourceLedger>()
-            .add_systems(Update, defender_charger_work_system);
-        let cell = IVec2::ZERO;
-        app.world_mut().resource_mut::<IntentGrid>().paint(
-            cell,
-            IntentKind::Defend,
-            SwarmId::PLAYER,
-        );
-        let swarm = app.world_mut().spawn(SwarmBundle::default()).id();
-        let mut charger_state = Charger::new(cell);
-        charger_state.amount = Tuning::default().charge.material_per_pulse;
-        let charger = app
-            .world_mut()
+fn scarce_charger_pulse_prefers_earlier_combat_identity() {
+    let mut app = App::new();
+    app.add_plugins(CombatIdentityPlugin)
+        .init_resource::<Tuning>()
+        .insert_resource(IntentGrid::new(4, 4))
+        .init_resource::<ResourceLedger>()
+        .add_systems(Update, defender_charger_work_system);
+    let cell = IVec2::ZERO;
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Defend, SwarmId::PLAYER);
+    let swarm = app.world_mut().spawn(SwarmBundle::default()).id();
+    let mut charger_state = Charger::new(cell);
+    charger_state.amount = Tuning::default().charge.material_per_pulse;
+    let charger = app
+        .world_mut()
+        .spawn((
+            charger_state,
+            OwnerSwarm(swarm),
+            Structure::new(StructureKind::Basic),
+            Transform::default(),
+        ))
+        .id();
+    app.world_mut().resource_mut::<ResourceLedger>().add_for(
+        SwarmId::PLAYER,
+        ResourceKind::Minerals,
+        Tuning::default().charge.material_per_pulse,
+    );
+
+    let recycled = app.world_mut().spawn_empty().id();
+    app.world_mut().despawn(recycled);
+    let [first, second] = std::array::from_fn(|_| {
+        app.world_mut()
             .spawn((
-                charger_state,
-                OwnerSwarm(swarm),
-                Structure::new(StructureKind::Basic),
-                Transform::default(),
+                Nanobot {},
+                Transform::from_xyz(68.0, 0.0, 0.0),
+                NanobotType::Defender,
+                SwarmMember::new(SwarmId::PLAYER),
+                Charge {
+                    current: 0.5,
+                    max: 1.0,
+                },
+                ChargerAssignment { charger },
+                ChargerProgress { charger },
+                ChargerPulseProgress {
+                    ticks_elapsed: Tuning::default().charge.pulse_interval_ticks - 1,
+                },
             ))
-            .id();
-        app.world_mut().resource_mut::<ResourceLedger>().add_for(
-            SwarmId::PLAYER,
-            ResourceKind::Minerals,
-            Tuning::default().charge.material_per_pulse,
-        );
+            .id()
+    });
+    assert!(first.to_bits() > second.to_bits());
 
-        let spawn_order = if reverse_spawn_order { [1, 0] } else { [0, 1] };
-        let mut defenders_by_label = [Entity::PLACEHOLDER; 2];
-        for label in spawn_order {
-            defenders_by_label[label] = app
-                .world_mut()
-                .spawn((
-                    Nanobot {},
-                    Transform::from_xyz(68.0, 0.0, 0.0),
-                    NanobotType::Defender,
-                    SwarmMember::new(SwarmId::PLAYER),
-                    Charge {
-                        current: 0.5,
-                        max: Tuning::default().charge.max_charge,
-                    },
-                    ChargerAssignment { charger },
-                    ChargerProgress { charger },
-                    ChargerPulseProgress {
-                        ticks_elapsed: Tuning::default().charge.pulse_interval_ticks - 1,
-                    },
-                ))
-                .id();
-        }
+    app.update();
 
-        app.update();
-
-        let mut ordered = defenders_by_label.to_vec();
-        ordered.sort_by_key(|entity| entity.to_bits());
-        ordered
-            .iter()
-            .position(|entity| {
-                app.world()
-                    .entity(*entity)
-                    .get::<Charge>()
-                    .is_some_and(|charge| charge.current > 0.5)
-            })
-            .expect("one ordered Defender must receive the only supplied pulse")
-    }
-
-    assert_eq!(charged_entity_rank(false), 0);
-    assert_eq!(charged_entity_rank(true), 0);
+    assert!(read_charge(&app, first).unwrap() > 0.5);
+    assert_eq!(read_charge(&app, second), Some(0.5));
 }
 
 #[test]

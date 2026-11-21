@@ -38,6 +38,7 @@ use bevy::{
     app::TerminalCtrlCHandlerPlugin,
     camera::{ClearColorConfig, RenderTarget},
     log::LogPlugin,
+    post_process::bloom::{Bloom, BloomCompositeMode, BloomPrefilter},
     prelude::*,
     render::{
         RenderPlugin,
@@ -267,7 +268,8 @@ pub fn build_app_with_tuning(
         .add_plugins(TacticalOverlayPlugin)
         .add_plugins(AiPlugin)
         .add_plugins(Camera2dFlyPlugin)
-        .add_systems(Startup, setup_things_startup.pipe(error_handler));
+        .add_systems(Startup, setup_things_startup.pipe(error_handler))
+        .add_systems(PostUpdate, update_main_camera_bloom);
     Ok(app)
 }
 
@@ -321,6 +323,17 @@ pub fn zone_overlay_transform(width: f32, height: f32) -> Transform {
         .with_scale(Vec3::new(width, height, 1.0))
 }
 
+fn update_main_camera_bloom(
+    tuning: Res<tuning::Tuning>,
+    mut cameras: Query<&mut Bloom, With<MainCamera>>,
+) {
+    if tuning.is_changed() {
+        for mut bloom in &mut cameras {
+            bloom.intensity = tuning.presentation.bloom_intensity;
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn setup_things_startup(
     mut commands: Commands,
@@ -342,6 +355,16 @@ fn setup_things_startup(
     let mut camera = commands.spawn((
         MainCamera,
         Camera2d,
+        Bloom {
+            intensity: tuning.presentation.bloom_intensity,
+            low_frequency_boost: 0.0,
+            prefilter: BloomPrefilter {
+                threshold: 1.0,
+                threshold_softness: 0.0,
+            },
+            composite_mode: BloomCompositeMode::Additive,
+            ..default()
+        },
         Camera {
             clear_color: ClearColorConfig::Custom(Color::srgb(0.025, 0.032, 0.04)),
             ..default()

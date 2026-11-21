@@ -5,9 +5,9 @@ use bevy::ui::{AlignItems, BorderRadius, FlexDirection, RelativeCursorPosition, 
 
 use crate::{
     nanobot::{
-        MatchOutcome, Nanobot, NanobotType, OpponentSwarm, OwnerSwarm, PopulationDemand,
-        ProductionFacility, ResolvedCombatFact, SupportCondition, Swarm, SwarmId, SwarmMember,
-        TerritorySnapshot, swarm_presentation_color,
+        MatchOutcome, Nanobot, NanobotSprites, NanobotType, OpponentSwarm, OwnerSwarm,
+        PopulationDemand, ProductionFacility, ResolvedCombatFact, SupportCondition, Swarm, SwarmId,
+        SwarmMember, TerritorySnapshot, swarm_presentation_color,
     },
     resources::{ResourceDeposit, ResourceKind, ResourceLedger},
     session::SessionRules,
@@ -21,9 +21,12 @@ const ATTACK_NOTICE_DURATION: Duration = Duration::from_secs(4);
 #[derive(Debug, Component)]
 pub(super) enum StatusPanelText {
     Player,
-    Warning,
+    NoNanobots,
     Spectator { opponent: bool },
 }
+
+#[derive(Component)]
+pub(super) struct CombatAlert;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct PlayerHudState {
@@ -96,7 +99,11 @@ fn format_production(state: PlayerHudState) -> String {
     }
 }
 
-pub(super) fn setup_status_panel(mut commands: Commands, fonts: Res<FontsResource>) {
+pub(super) fn setup_status_panel(
+    mut commands: Commands,
+    fonts: Res<FontsResource>,
+    sprites: Option<Res<NanobotSprites>>,
+) {
     let font = TextFont {
         font: fonts.font.clone(),
         font_size: 16.0,
@@ -121,11 +128,39 @@ pub(super) fn setup_status_panel(mut commands: Commands, fonts: Res<FontsResourc
             RelativeCursorPosition::default(),
         ))
         .with_children(|parent| {
+            parent
+                .spawn((
+                    Name::new("Combat alert"),
+                    CombatAlert,
+                    Node {
+                        display: Display::None,
+                        width: Val::Px(34.0),
+                        height: Val::Px(34.0),
+                        align_self: AlignSelf::Start,
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        border: UiRect::all(Val::Px(2.0)),
+                        border_radius: BorderRadius::all(Val::Px(6.0)),
+                        ..default()
+                    },
+                    BackgroundColor::default(),
+                    BorderColor::default(),
+                ))
+                .with_child((
+                    ImageNode::new(sprites.as_ref().map_or_else(Handle::default, |sprites| {
+                        sprites.handle(NanobotType::Defender, true)
+                    })),
+                    Node {
+                        width: Val::Px(26.0),
+                        height: Val::Px(26.0),
+                        ..default()
+                    },
+                ));
             parent.spawn((
                 Text::default(),
                 font.clone(),
                 TextColor(Color::srgb(1.0, 0.68, 0.40)),
-                StatusPanelText::Warning,
+                StatusPanelText::NoNanobots,
             ));
             parent.spawn((
                 Text::default(),
@@ -160,13 +195,17 @@ pub(super) fn update_status_panel_system(
     time: Option<Res<Time<Virtual>>>,
     mut combat: Option<MessageReader<ResolvedCombatFact>>,
     mut recent_attack: Local<RecentAttack>,
-    mut panel: Query<(
-        &StatusPanelText,
-        &mut Node,
-        &mut Text,
-        &mut TextColor,
-        Option<&Children>,
-    )>,
+    mut panel: Query<
+        (
+            &StatusPanelText,
+            &mut Node,
+            &mut Text,
+            &mut TextColor,
+            Option<&Children>,
+        ),
+        Without<CombatAlert>,
+    >,
+    mut alerts: Query<(&mut Node, &mut BackgroundColor, &mut BorderColor), With<CombatAlert>>,
     mut details: Query<&mut TextSpan>,
 ) {
     let now = time.map_or(Duration::ZERO, |time| time.elapsed());
@@ -205,7 +244,8 @@ pub(super) fn update_status_panel_system(
     };
 
     let mut state = PlayerHudState::default();
-    let mut warning = "";
+    let mut no_nanobots = false;
+    let mut alert_colors = None;
     if let Some((player, &id, _)) = player {
         let (workers, haulers, defenders) = counts(id);
         let demand = |kind| {
@@ -267,22 +307,36 @@ pub(super) fn update_status_panel_system(
         };
 
         if outcome.as_deref().copied().unwrap_or_default() == MatchOutcome::InProgress {
-            warning = if workers + haulers + defenders == 0 {
-                "No nanobots remaining"
-            } else if now < recent_attack.until {
-                "Swarm under attack"
-            } else if territory.is_some_and(|territory| territory.threat_count(id) > 0) {
-                "Hostiles in your territory"
-            } else {
-                ""
-            };
+            no_nanobots = workers + haulers + defenders == 0;
+            if !no_nanobots {
+                alert_colors = if now < recent_attack.until {
+                    Some((Color::srgb_u8(110, 43, 17), Color::srgb_u8(255, 140, 65)))
+                } else if territory.is_some_and(|territory| territory.threat_count(id) > 0) {
+                    Some((Color::NONE, swarm_presentation_color(SwarmId(1))))
+                } else {
+                    None
+                };
+            }
+        }
+    }
+
+    for (mut node, mut background, mut border) in &mut alerts {
+        let display = if let Some((fill, outline)) = alert_colors {
+            background.set_if_neq(BackgroundColor(fill));
+            border.set_if_neq(BorderColor::all(outline));
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if node.display != display {
+            node.display = display;
         }
     }
 
     for (kind, mut node, mut text, mut color, children) in &mut panel {
         let next = match kind {
             StatusPanelText::Player if !rules.spectator() => Some(format_status_panel(state)),
-            StatusPanelText::Warning if !warning.is_empty() => Some(warning.into()),
+            StatusPanelText::NoNanobots if no_nanobots => Some("No nanobots remaining".into()),
             StatusPanelText::Spectator { opponent } if rules.spectator() => {
                 swarms.iter().find(|(_, _, side)| side == opponent).map(|(swarm, id, _)| {
                     let (workers, haulers, defenders) = counts(*id);

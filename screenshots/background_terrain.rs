@@ -1,6 +1,6 @@
 //! Offscreen proof of subdued mineral ground and input-only cell guides.
 
-use crate::harness::{TestContext, TestFlow};
+use crate::harness::{TestContext, TestFlow, clear_nanobots_and_sprite_entities};
 use bevy::prelude::*;
 use std::path::Path;
 use top_down_2d_rts_prototype_nano_swarm::{BACKGROUND_OVERLAY_Z, fly_camera::CameraZoom2d};
@@ -117,13 +117,7 @@ fn focus_camera(world: &mut World, position: Vec2) {
 }
 
 fn hide_non_background_scene(world: &mut World) {
-    let sprites = world
-        .query_filtered::<Entity, With<Sprite>>()
-        .iter(world)
-        .collect::<Vec<_>>();
-    for entity in sprites {
-        world.entity_mut(entity).remove::<Sprite>();
-    }
+    clear_nanobots_and_sprite_entities(world);
     let meshes = world
         .query_filtered::<(Entity, &Transform), With<Mesh2d>>()
         .iter(world)

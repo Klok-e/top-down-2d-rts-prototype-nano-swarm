@@ -1,7 +1,12 @@
 use bevy::{ecs::system::SystemParam, prelude::*};
 
-use super::{DirectMovementComponent, Nanobot, SwarmId, SwarmMember, VelocityComponent};
+use super::{
+    CombatIdentity, DefenderEngagements, DirectMovementComponent, Nanobot, SwarmId, SwarmMember,
+    VelocityComponent, combat_key, route_following::WAYPOINT_REACHED_DISTANCE,
+};
 use crate::{nanobot::consts::BOT_SEPARATION_FORCE, spatial::FixedSpatialBuckets, tuning::Tuning};
+
+pub(super) const BODY_DIAMETER: f32 = crate::navigation::BODY_RADIUS * 2.0;
 
 /// A stalled traveller may temporarily pass through friendly bodies, never world geometry.
 #[derive(Component, Debug)]
@@ -22,6 +27,7 @@ pub struct LocalMotion {
     goal: Option<(Vec2, Option<super::InteractionRegion>)>,
     velocity: Vec2,
     departure: Option<Vec2>,
+    separation_remainder: Vec2,
 }
 
 type ActiveWork = Or<(
@@ -47,54 +53,51 @@ type AssignedWork = Or<(
 struct SeparationEntry {
     entity: Entity,
     position: Vec2,
+    key: u64,
 }
 
-fn coincident_pair_direction(first: Entity, second: Entity) -> Vec2 {
-    let mixed =
-        first.to_bits().wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ second.to_bits().rotate_left(32);
+pub(super) fn coincident_pair_direction(first: u64, second: u64) -> Vec2 {
+    let mixed = first.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ second.rotate_left(32);
     let angle = (mixed as f64 / u64::MAX as f64 * std::f64::consts::TAU) as f32;
     Vec2::new(angle.cos(), angle.sin())
 }
 
 fn separation_deltas(entries: &[SeparationEntry]) -> Vec<(Entity, Vec2)> {
     let mut sorted = entries.to_vec();
-    sorted.sort_by_key(|entry| entry.entity.to_bits());
+    sorted.sort_by_key(|entry| (entry.key, entry.entity.to_bits()));
 
-    let mut buckets = FixedSpatialBuckets::new(crate::navigation::BODY_RADIUS * 2.0);
-    for entry in &sorted {
-        buckets.insert(entry.position, *entry);
+    let mut buckets = FixedSpatialBuckets::new(BODY_DIAMETER);
+    for (index, entry) in sorted.iter().enumerate() {
+        buckets.insert(entry.position, index);
     }
-    buckets.sort_entries_by(|left, right| left.entity.to_bits().cmp(&right.entity.to_bits()));
 
     let mut deltas: Vec<(Entity, Vec2)> = sorted
         .iter()
         .map(|entry| (entry.entity, Vec2::ZERO))
         .collect();
-    for entry in &sorted {
+    for (index, entry) in sorted.iter().enumerate() {
         let bucket = buckets.bucket_for_position(entry.position);
         for (_, neighbours) in buckets.neighbourhood(bucket, 1) {
-            for other in neighbours {
-                if other.entity.to_bits() <= entry.entity.to_bits() {
+            for &other_index in neighbours {
+                if other_index <= index {
                     continue;
                 }
+                let other = sorted[other_index];
                 let offset = entry.position - other.position;
-                if offset.length_squared() >= (crate::navigation::BODY_RADIUS * 2.0).powi(2) {
+                let squared = offset.length_squared();
+                if squared >= BODY_DIAMETER.powi(2) {
                     continue;
                 }
-                let direction = if offset.length_squared() < 1e-6 {
-                    coincident_pair_direction(entry.entity, other.entity)
+                let distance = squared.sqrt();
+                let direction = if squared < 1e-6 {
+                    coincident_pair_direction(entry.key, other.key)
                 } else {
-                    offset.normalize()
+                    offset / distance
                 };
-                let force = direction * BOT_SEPARATION_FORCE;
-                let first = deltas
-                    .binary_search_by_key(&entry.entity.to_bits(), |(entity, _)| entity.to_bits())
-                    .expect("snapshot entity must have a delta");
-                let second = deltas
-                    .binary_search_by_key(&other.entity.to_bits(), |(entity, _)| entity.to_bits())
-                    .expect("neighbour entity must have a delta");
-                deltas[first].1 += force;
-                deltas[second].1 -= force;
+                let force = direction
+                    * (BOT_SEPARATION_FORCE * 2.0 * (BODY_DIAMETER - distance) / BODY_DIAMETER);
+                deltas[index].1 += force;
+                deltas[other_index].1 -= force;
             }
         }
     }
@@ -103,7 +106,8 @@ fn separation_deltas(entries: &[SeparationEntry]) -> Vec<(Entity, Vec2)> {
 
 #[allow(clippy::type_complexity)]
 pub fn separation_system(
-    snapshots: Query<(Entity, &Transform), With<Nanobot>>,
+    snapshots: Query<(Entity, &Transform, Option<&CombatIdentity>), With<Nanobot>>,
+    engagements: Option<Res<DefenderEngagements>>,
     mut velocities: Query<
         (
             &mut VelocityComponent,
@@ -116,18 +120,28 @@ pub fn separation_system(
 ) {
     let entries: Vec<_> = snapshots
         .iter()
-        .map(|(entity, transform)| SeparationEntry {
+        .map(|(entity, transform, identity)| SeparationEntry {
             entity,
             position: transform.translation.truncate(),
+            key: combat_key(entity, identity),
         })
         .collect();
 
     for (entity, delta) in separation_deltas(&entries) {
-        if let Ok((mut velocity, recovering, travelling, queued)) = velocities.get_mut(entity)
-            && (!recovering || !travelling || queued)
-        {
-            velocity.value += delta;
-        }
+        let Ok((mut velocity, recovering, travelling, queued)) = velocities.get_mut(entity) else {
+            continue;
+        };
+        let engaged = engagements
+            .as_ref()
+            .is_some_and(|state| state.is_engaged(entity));
+        let push = if recovering && travelling && !queued && !engaged {
+            Vec2::ZERO
+        } else {
+            delta
+        };
+        velocity.value = engagements.as_ref().map_or(velocity.value + push, |state| {
+            state.velocity_with_separation(entity, velocity.value, push)
+        });
     }
 }
 
@@ -161,6 +175,7 @@ struct TrafficBody {
     entity: Entity,
     start: Vec2,
     delta: Vec2,
+    key: u64,
 }
 
 #[derive(Component, Debug)]
@@ -198,7 +213,7 @@ fn continuous_velocity(
     speed_limit: f32,
     safe: impl Fn(Vec2) -> bool,
 ) -> Vec2 {
-    if requested.length_squared() < 1e-8 || acceleration <= 0.0 {
+    if requested.length_squared() == 0.0 || acceleration <= 0.0 {
         return Vec2::ZERO;
     }
     let preferred = clamp_velocity(
@@ -251,6 +266,7 @@ pub struct TrafficContext<'w, 's> {
     commitments: Query<'w, 's, &'static super::Commitment>,
     approaches: Query<'w, 's, (Entity, &'static super::WorkApproach)>,
     queued: Query<'w, 's, (), With<super::WaitingForWork>>,
+    engagements: Option<Res<'w, DefenderEngagements>>,
 }
 
 #[allow(clippy::type_complexity)]
@@ -266,6 +282,7 @@ pub fn velocity_system(
             Option<&TrafficYield>,
             Option<&DirectMovementComponent>,
             Option<&mut super::RegionalLease>,
+            Option<&CombatIdentity>,
         )>,
     )>,
     mut yielding: Local<std::collections::HashMap<Entity, Yielding>>,
@@ -287,6 +304,7 @@ pub fn velocity_system(
         commitments,
         queued,
         approaches,
+        engagements,
     } = traffic;
     if let Some(generation) = generation.as_deref().map(|generation| generation.0)
         && *previous_generation != Some(generation)
@@ -298,22 +316,37 @@ pub fn velocity_system(
     }
     let physical = world.p0().snapshot();
     let mut query = world.p1();
-    let diameter = crate::navigation::BODY_RADIUS * 2.0;
+    let diameter = BODY_DIAMETER;
+    let is_engaged = |entity| {
+        engagements
+            .as_ref()
+            .is_some_and(|value| value.controls_movement(entity))
+    };
+    let holds_engagement = |entity| {
+        engagements
+            .as_ref()
+            .is_some_and(|value| value.is_engaged(entity))
+    };
+    let move_order = |entity| {
+        let (_, _, _, _, _, order, ..) = query.get(entity).ok()?;
+        order
+    };
     let mut bodies: Vec<_> = query
         .iter()
         .filter(|(_, _, _, bot, ..)| bot.is_some())
-        .map(|(entity, velocity, transform, ..)| {
+        .map(|(entity, velocity, transform, .., identity)| {
             (
                 TrafficBody {
                     entity,
                     start: transform.translation.truncate(),
                     delta: Vec2::ZERO,
+                    key: combat_key(entity, identity),
                 },
                 clamp_velocity(velocity.value, tuning.logistics.bot_speed),
             )
         })
         .collect();
-    bodies.sort_by_key(|(body, _)| body.entity.to_bits());
+    bodies.sort_by_key(|(body, _)| (body.key, body.entity.to_bits()));
     let mut lookup = FixedSpatialBuckets::new(diameter * 2.0 + tuning.logistics.bot_speed * 2.0);
     let indices: std::collections::HashMap<_, _> = bodies
         .iter()
@@ -342,24 +375,35 @@ pub fn velocity_system(
     let pinned: std::collections::HashSet<_> = bodies
         .iter()
         .filter_map(|(body, _)| {
-            ((active_work.contains(body.entity)
-                || assigned_work.contains(body.entity)
-                || cargo.get(body.entity).is_ok_and(|cargo| cargo.amount > 0)
-                || commitments
-                    .get(body.entity)
-                    .is_ok_and(|value| *value == super::Commitment::Working))
-                && query.get(body.entity).unwrap().5.is_none()
+            (!is_engaged(body.entity)
+                && (active_work.contains(body.entity)
+                    || assigned_work.contains(body.entity)
+                    || cargo.get(body.entity).is_ok_and(|cargo| cargo.amount > 0)
+                    || commitments
+                        .get(body.entity)
+                        .is_ok_and(|value| *value == super::Commitment::Working))
+                && move_order(body.entity).is_none()
                 && !queued.contains(body.entity))
             .then_some(body.entity)
         })
         .collect();
     for i in 0..bodies.len() {
         let (body, _) = bodies[i];
-        let movement = query
-            .get(body.entity)
-            .unwrap()
-            .5
-            .map(|movement| movement.xy);
+        if is_engaged(body.entity) {
+            let state = motion.entry(body.entity).or_default();
+            state.goal = None;
+            state.departure = None;
+            state.separation_remainder = Vec2::ZERO;
+            if yielding.remove(&body.entity).is_some() {
+                commands.entity(body.entity).remove::<TrafficYield>();
+            }
+            if progress.remove(&body.entity).is_some() {
+                commands.entity(body.entity).remove::<CongestionRecovery>();
+            }
+            continue;
+        }
+        let order = move_order(body.entity);
+        let movement = order.map(|order| order.xy);
         if pinned.contains(&body.entity) {
             bodies[i].1 = Vec2::ZERO;
             motion.entry(body.entity).or_default().departure = None;
@@ -372,7 +416,7 @@ pub fn velocity_system(
                 .filter(|j| friendly(body.entity, bodies[*j].0.entity))
                 .find(|j| {
                     let (other, wanted) = bodies[*j];
-                    query.get(other.entity).unwrap().5.is_some()
+                    move_order(other.entity).is_some()
                         && !queued.contains(other.entity)
                         && wanted.dot(body.start - other.start) > 0.0
                         && swept_separation(
@@ -445,7 +489,6 @@ pub fn velocity_system(
         } else {
             motion.entry(body.entity).or_default().departure = None;
         }
-        let order = query.get(body.entity).unwrap().5;
         let region = order.and_then(|order| order.interaction);
         let preference = motion.entry(body.entity).or_default();
         let goal = order.map(|order| (order.xy, order.interaction));
@@ -522,6 +565,11 @@ pub fn velocity_system(
         }
         retain
     });
+    let speed = tuning.logistics.bot_speed;
+    // Either body can spend a full step closing, with room for the solver's tolerance and rounding.
+    let sweep_reach_squared = (diameter + 2.0 * speed + 0.01 + 1e-5 * speed).powi(2);
+    let mut nearby = Vec::new();
+    let mut sweep_constraints = Vec::new();
     // Earlier bodies reserve swept motion; later bodies remain stationary until resolved.
     for i in 0..bodies.len() {
         let (body, desired) = bodies[i];
@@ -531,11 +579,57 @@ pub fn velocity_system(
             motion.entry(body.entity).or_default().velocity = Vec2::ZERO;
             continue;
         }
-        let nearby: Vec<_> = lookup
-            .neighbourhood(lookup.bucket_for_position(body.start), 1)
-            .flat_map(|(_, entries)| entries.iter().copied())
-            .filter(|j| *j != i)
-            .collect();
+        nearby.clear();
+        nearby.extend(
+            lookup
+                .neighbourhood(lookup.bucket_for_position(body.start), 1)
+                .flat_map(|(_, entries)| entries.iter().copied())
+                .filter(|j| *j != i),
+        );
+        let prepare_sweep =
+            |bodies: &[(TrafficBody, Vec2)],
+             progress: &std::collections::HashMap<Entity, TravelProgress>,
+             recovering: bool,
+             constraints: &mut Vec<(TrafficBody, f32)>| {
+                constraints.clear();
+                for &j in &nearby {
+                    let other = bodies[j].0;
+                    let distance_squared = body.start.distance_squared(other.start);
+                    if distance_squared > sweep_reach_squared {
+                        continue;
+                    }
+                    let passing_friend = (recovering
+                        || progress
+                            .get(&other.entity)
+                            .is_some_and(|state| state.recovering))
+                        && friendly(body.entity, other.entity)
+                        && !holds_engagement(body.entity)
+                        && !holds_engagement(other.entity);
+                    // Invalid initial overlaps may separate, but cannot deepen.
+                    let required = if passing_friend {
+                        0.0
+                    } else {
+                        diameter.min(distance_squared.sqrt())
+                    };
+                    constraints.push((other, required));
+                }
+            };
+        let safe_motion = |constraints: &[(TrafficBody, f32)], delta: Vec2| {
+            physical.movement_clear(body.start, body.start + delta)
+                && constraints.iter().all(|&(other, required)| {
+                    swept_separation(body.start, delta, other) + 0.001 >= required
+                })
+        };
+        if is_engaged(body.entity) {
+            let speed = desired.length();
+            prepare_sweep(&bodies, &progress, false, &mut sweep_constraints);
+            let applied = continuous_velocity(Vec2::ZERO, desired, speed, speed, |delta| {
+                safe_motion(&sweep_constraints, delta)
+            });
+            motion.get_mut(&body.entity).unwrap().velocity = applied;
+            bodies[i].0.delta = applied;
+            continue;
+        }
         if let Some(state) = progress.get_mut(&body.entity) {
             // A returning yield follows its recorded trail, which can be obstructed even when the original route direction is clear or pending.
             let recovery_intent = yielding
@@ -624,7 +718,7 @@ pub fn velocity_system(
         if !recovering
             && !yielding.contains_key(&body.entity)
             && desired.length_squared() > 0.01
-            && query.get(body.entity).unwrap().5.is_some()
+            && move_order(body.entity).is_some()
         {
             let conflict = nearby.iter().copied().find(|j| {
                 let (other, wanted) = bodies[*j];
@@ -635,10 +729,11 @@ pub fn velocity_system(
                     .x
                     .total_cmp(&heading.x)
                     .then_with(|| other_heading.y.total_cmp(&heading.y))
+                    .then_with(|| body.key.cmp(&other.key))
                     .then_with(|| body.entity.to_bits().cmp(&other.entity.to_bits()))
                     .is_gt();
                 other_precedes
-                    && query.get(other.entity).unwrap().5.is_some()
+                    && move_order(other.entity).is_some()
                     && toward.length() >= diameter - 0.01
                     && toward.length() < diameter + tuning.logistics.bot_speed * 4.0
                     && desired.dot(wanted) < 0.0
@@ -708,25 +803,6 @@ pub fn velocity_system(
             yielding.remove(&body.entity);
             commands.entity(body.entity).remove::<TrafficYield>();
         }
-        let safe = |delta: Vec2| {
-            physical.movement_clear(body.start, body.start + delta)
-                && nearby.iter().all(|j| {
-                    let other = bodies[*j].0;
-                    // Invalid initial overlaps may separate, but cannot deepen.
-                    let passing_friend = friendly(body.entity, other.entity)
-                        && (recovering
-                            || progress
-                                .get(&other.entity)
-                                .is_some_and(|state| state.recovering));
-                    let required = if passing_friend {
-                        0.0
-                    } else {
-                        diameter.min(body.start.distance(other.start))
-                    };
-                    swept_separation(body.start, delta, other) + 0.001 >= required
-                })
-        };
-        let speed = tuning.logistics.bot_speed;
         let requested = if let Some(state) = yielding.get_mut(&body.entity) {
             while state.returning
                 && state
@@ -789,17 +865,41 @@ pub fn velocity_system(
             speed
         };
         let target = if braking {
-            remaining.map_or(requested, |distance| {
-                clamp_velocity(
-                    requested,
-                    (acceleration * acceleration + 2.0 * acceleration * distance.max(0.0)).sqrt()
-                        - acceleration,
-                )
-            })
+            remaining
+                .filter(|distance| *distance >= WAYPOINT_REACHED_DISTANCE)
+                .map_or(requested, |distance| {
+                    clamp_velocity(
+                        requested,
+                        (acceleration * acceleration + 2.0 * acceleration * distance.max(0.0))
+                            .sqrt()
+                            - acceleration,
+                    )
+                })
         } else {
             requested
         };
-        let applied = continuous_velocity(state.velocity, target, acceleration, limit, safe);
+        prepare_sweep(&bodies, &progress, recovering, &mut sweep_constraints);
+        let mut applied =
+            continuous_velocity(state.velocity, target, acceleration, limit, |delta| {
+                safe_motion(&sweep_constraints, delta)
+            });
+        if recovering
+            && queued.contains(body.entity)
+            && applied != Vec2::ZERO
+            && (state.separation_remainder != Vec2::ZERO || body.start + applied == body.start)
+        {
+            // Preserve shallow separation until it can move the world-space position.
+            let intended = applied + state.separation_remainder;
+            let step = (body.start + intended) - body.start;
+            if step.length_squared() <= limit * limit && safe_motion(&sweep_constraints, step) {
+                applied = step;
+                state.separation_remainder = intended - step;
+            } else {
+                state.separation_remainder = Vec2::ZERO;
+            }
+        } else {
+            state.separation_remainder = Vec2::ZERO;
+        }
         state.velocity = applied;
         if let Some(state) = yielding.get_mut(&body.entity) {
             if !state.returning && applied.length_squared() > 0.0 {
@@ -825,7 +925,7 @@ pub fn velocity_system(
         }
         bodies[i].0.delta = applied;
     }
-    for (entity, mut velocity, mut transform, bot, _, _, lease) in &mut query {
+    for (entity, mut velocity, mut transform, bot, _, _, lease, _) in &mut query {
         let start = transform.translation.truncate();
         let applied_velocity = if bot.is_some() {
             bodies[indices[&entity]].0.delta
@@ -910,34 +1010,39 @@ mod tests {
     }
 
     #[test]
-    fn separation_only_pushes_nearby_pairs_once() {
+    fn separation_scales_with_overlap_and_only_pushes_nearby_pairs() {
         let first = entity(1);
         let second = entity(2);
         let distant = entity(3);
-        let deltas = separation_deltas(&[
-            SeparationEntry {
-                entity: first,
-                position: Vec2::ZERO,
-            },
-            SeparationEntry {
-                entity: second,
-                position: Vec2::X,
-            },
-            SeparationEntry {
-                entity: distant,
-                position: Vec2::splat(crate::nanobot::consts::BOT_RADIUS * 10.0),
-            },
-        ]);
+        for (distance, expected_force) in [(34.0, BOT_SEPARATION_FORCE), (51.0, 0.75)] {
+            let deltas = separation_deltas(&[
+                SeparationEntry {
+                    entity: first,
+                    position: Vec2::ZERO,
+                    key: first.to_bits(),
+                },
+                SeparationEntry {
+                    entity: second,
+                    position: Vec2::X * distance,
+                    key: second.to_bits(),
+                },
+                SeparationEntry {
+                    entity: distant,
+                    position: Vec2::splat(crate::nanobot::consts::BOT_RADIUS * 10.0),
+                    key: distant.to_bits(),
+                },
+            ]);
 
-        let first_delta = deltas.iter().find(|(id, _)| *id == first).unwrap().1;
-        let second_delta = deltas.iter().find(|(id, _)| *id == second).unwrap().1;
-        let distant_delta = deltas.iter().find(|(id, _)| *id == distant).unwrap().1;
-        assert_abs_diff_eq!(first_delta.x, -BOT_SEPARATION_FORCE, epsilon = 1e-5);
-        assert_abs_diff_eq!(first_delta.y, 0.0, epsilon = 1e-5);
-        assert_abs_diff_eq!(second_delta.x, BOT_SEPARATION_FORCE, epsilon = 1e-5);
-        assert_abs_diff_eq!(second_delta.y, 0.0, epsilon = 1e-5);
-        assert_abs_diff_eq!(distant_delta.x, 0.0, epsilon = 1e-5);
-        assert_abs_diff_eq!(distant_delta.y, 0.0, epsilon = 1e-5);
+            let first_delta = deltas.iter().find(|(id, _)| *id == first).unwrap().1;
+            let second_delta = deltas.iter().find(|(id, _)| *id == second).unwrap().1;
+            let distant_delta = deltas.iter().find(|(id, _)| *id == distant).unwrap().1;
+            assert_abs_diff_eq!(first_delta.x, -expected_force, epsilon = 1e-5);
+            assert_abs_diff_eq!(first_delta.y, 0.0, epsilon = 1e-5);
+            assert_abs_diff_eq!(second_delta.x, expected_force, epsilon = 1e-5);
+            assert_abs_diff_eq!(second_delta.y, 0.0, epsilon = 1e-5);
+            assert_abs_diff_eq!(distant_delta.x, 0.0, epsilon = 1e-5);
+            assert_abs_diff_eq!(distant_delta.y, 0.0, epsilon = 1e-5);
+        }
     }
 
     #[test]
@@ -946,10 +1051,12 @@ mod tests {
             SeparationEntry {
                 entity: entity(1),
                 position: Vec2::ZERO,
+                key: 1,
             },
             SeparationEntry {
                 entity: entity(2),
                 position: Vec2::ZERO,
+                key: 2,
             },
         ];
         let first = separation_deltas(&entries);

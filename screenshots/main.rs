@@ -19,6 +19,8 @@
 //! cargo test --test screenshots -- --list              # list all
 //! ```
 
+#![recursion_limit = "256"]
+
 use std::path::Path;
 
 use libtest_mimic::{Arguments, Conclusion, Failed, Trial};
@@ -28,6 +30,7 @@ mod background_terrain;
 mod brush_feedback;
 mod build_zone_placement;
 mod combat_presentation;
+mod combat_scenes;
 mod congested_work;
 mod construction_access;
 mod construction_lifecycle;
@@ -188,12 +191,15 @@ fn main() -> std::process::ExitCode {
             run(combat_presentation::support_structure_combat_presentation)
         })
         .with_ignored_flag(true),
-        Trial::test("combat_presentation_density_and_zoom", || {
-            run(combat_presentation::combat_presentation_density_and_zoom)
+        Trial::test("combat_scene_battle", || run(combat_scenes::battle)).with_ignored_flag(true),
+        Trial::test("combat_scene_battle_reduced", || {
+            run(combat_scenes::battle_reduced)
         })
         .with_ignored_flag(true),
-        Trial::test("integrated_combat_presentation", || {
-            run(combat_presentation::integrated_combat_presentation)
+        Trial::test("combat_scene_skirmish", || run(combat_scenes::skirmish))
+            .with_ignored_flag(true),
+        Trial::test("combat_motion_144_hz", || {
+            run(combat_scenes::rendered_motion)
         })
         .with_ignored_flag(true),
         Trial::test("construction_access", || {

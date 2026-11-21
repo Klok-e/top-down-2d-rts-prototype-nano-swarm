@@ -80,10 +80,7 @@ pub fn hauler_arrive_source_system(
 ) {
     for (entity, transform, assignment, reservation) in &haulers {
         if !endpoint_is_operational(assignment.source, &conditions) {
-            commands
-                .entity(entity)
-                .remove::<HaulerAssignment>()
-                .remove::<LogisticsReservation>();
+            release_hauler_trip(&mut commands, entity);
             continue;
         }
         let region = if let Ok((d, t)) = deposits.get(assignment.source) {
@@ -95,10 +92,7 @@ pub fn hauler_arrive_source_system(
         } else {
             // Source entity disappeared; drop the assignment and
             // let a later tick reassign.
-            commands
-                .entity(entity)
-                .remove::<HaulerAssignment>()
-                .remove::<LogisticsReservation>();
+            release_hauler_trip(&mut commands, entity);
             continue;
         };
         if region.contains(transform.translation.truncate()) {
@@ -281,17 +275,24 @@ pub fn hauler_load_system(
 }
 
 fn transition_to_carrying(commands: &mut Commands, entity: Entity, amount: u32) {
-    commands
-        .entity(entity)
-        .remove::<HaulerLoading>()
-        .remove::<super::MaterialWorkProgress>();
     if amount == 0 {
+        release_hauler_trip(commands, entity);
+    } else {
         commands
             .entity(entity)
-            .remove::<Cargo>()
-            .remove::<HaulerAssignment>()
-            .remove::<LogisticsReservation>();
+            .remove::<(HaulerLoading, super::MaterialWorkProgress)>();
     }
+}
+
+pub(super) fn release_hauler_trip(commands: &mut Commands, entity: Entity) {
+    commands.entity(entity).remove::<(
+        HaulerAssignment,
+        HaulerLoading,
+        ReturningCargo,
+        LogisticsReservation,
+        super::MaterialWorkProgress,
+        Cargo,
+    )>();
 }
 
 /// A loaded Hauler returning minerals to a compatible Stockpile.
@@ -434,14 +435,25 @@ pub fn hauler_reroute_system(
     swarms: Query<&SwarmId, With<Swarm>>,
     reservations: Query<(Entity, &LogisticsReservation)>,
     navigation: Res<Navigation>,
+    identities: Query<&super::CombatIdentity>,
+    mut ordered: Local<Vec<(u64, Entity)>>,
 ) {
     let mut same_tick_claims = std::collections::HashMap::<Entity, u32>::new();
-    for (entity, transform, cargo, mut assignment, swarm_member, reservation, returning) in
-        &mut haulers
-    {
-        if cargo.amount == 0 {
+    let identity = |entity: Entity| super::combat_key(entity, identities.get(entity).ok());
+    ordered.clear();
+    ordered.extend(
+        haulers
+            .iter()
+            .filter(|(_, _, cargo, ..)| cargo.amount > 0)
+            .map(|(entity, ..)| (identity(entity), entity)),
+    );
+    ordered.sort_unstable();
+    for &(_, entity) in &*ordered {
+        let Ok((_, transform, cargo, mut assignment, swarm_member, reservation, returning)) =
+            haulers.get_mut(entity)
+        else {
             continue;
-        }
+        };
         let role = assignment.pickup_role;
         let position = transform.translation.truncate();
         let endpoint = |candidate, is_return, amount| {
@@ -511,8 +523,13 @@ pub fn hauler_reroute_system(
             if best
                 .as_ref()
                 .is_none_or(|(old_return, old_cost, old_entity, _)| {
-                    (is_return, cost, candidate.to_bits())
-                        < (*old_return, *old_cost, old_entity.to_bits())
+                    (is_return, cost, identity(candidate), candidate.to_bits())
+                        < (
+                            *old_return,
+                            *old_cost,
+                            identity(*old_entity),
+                            old_entity.to_bits(),
+                        )
                 })
             {
                 best = Some((is_return, cost, candidate, target));
@@ -795,13 +812,7 @@ pub fn hauler_delivery_system(
             *total = total.saturating_sub(released);
         }
         if load.amount == 0 {
-            commands
-                .entity(entity)
-                .remove::<HaulerAssignment>()
-                .remove::<Cargo>()
-                .remove::<ReturningCargo>()
-                .remove::<LogisticsReservation>()
-                .remove::<super::MaterialWorkProgress>();
+            release_hauler_trip(&mut commands, entity);
         } else if let Some(reservation) = reservation {
             let mut updated = *reservation;
             updated.destination_remaining = updated.destination_remaining.saturating_sub(actual);
@@ -840,6 +851,7 @@ impl Plugin for HaulPlugin {
                 hauler_delivery_system,
             )
                 .chain()
+                .after(super::gather::worker_gather_delivery_system)
                 .after(crate::nanobot::RegionalAllocationSet::Acquire)
                 .after(crate::nanobot::NanobotSimulationSet::Movement),
         );

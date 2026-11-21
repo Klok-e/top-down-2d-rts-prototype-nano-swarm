@@ -3,7 +3,7 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
-    nanobot::{Cargo, OwnerSwarm, ProductionFacility},
+    nanobot::{Cargo, OwnerSwarm, ProductionFacility, SwarmId},
     resources::{ResourceDeposit, Stockpile, StockpileRole},
 };
 
@@ -11,12 +11,12 @@ use top_down_2d_rts_prototype_nano_swarm::{
 mod common;
 
 #[test]
-fn exterior_gather_trip_extracts_and_delivers_at_scaled_target_surfaces() {
+fn worker_extracts_and_delivers_at_scaled_surfaces_near_a_hostile_defender() {
     let mut app = common::sim_app_with_gather();
     app.world_mut().resource_mut::<IntentGrid>().paint(
         IVec2::ZERO,
         IntentKind::Gather,
-        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId::PLAYER,
+        SwarmId::PLAYER,
     );
     let deposit = common::spawn_deposit(
         &mut app,
@@ -37,6 +37,7 @@ fn exterior_gather_trip_extracts_and_delivers_at_scaled_target_surfaces() {
         .unwrap()
         .scale = Vec3::new(2.0, 1.0, 1.0);
     let worker = common::spawn_worker_at(&mut app, Vec2::new(30.0, 140.0));
+    common::spawn_stationary_defender_at(&mut app, Vec2::new(240.0, 50.0), SwarmId(1));
     let mut remaining = 8;
     let mut delivered = 0;
     for _ in 0..2_000 {
@@ -74,12 +75,15 @@ fn exterior_gather_trip_extracts_and_delivers_at_scaled_target_surfaces() {
         remaining, 0,
         "both loads must be extracted by real movement"
     );
-    assert_eq!(delivered, 8, "both loads must reach the scaled stockpile");
+    assert_eq!(
+        delivered, 8,
+        "both loads must reach the scaled stockpile with the hostile Defender nearby"
+    );
     assert!(app.world().get::<Cargo>(worker).is_none());
 }
 
 #[test]
-fn exterior_hauler_trip_loads_and_unloads_without_center_teleports() {
+fn hauler_loads_and_unloads_at_exterior_surfaces_near_a_hostile_defender() {
     let mut app = common::sim_app_with_gather_haul();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let source = common::spawn_sink_stockpile(&mut app, Vec2::new(150.0, 0.0), 20, 100);
@@ -94,6 +98,7 @@ fn exterior_hauler_trip_loads_and_unloads_without_center_teleports() {
         ))
         .id();
     let hauler = common::spawn_hauler_at(&mut app, Vec2::ZERO);
+    common::spawn_stationary_defender_at(&mut app, Vec2::new(260.0, -90.0), SwarmId(1));
     let mut source_amount = 20;
     let mut terminal_amount = 0;
     for _ in 0..5_000 {
@@ -138,7 +143,7 @@ fn exterior_hauler_trip_loads_and_unloads_without_center_teleports() {
     assert_eq!(source_amount, 0);
     assert_eq!(
         terminal_amount, 20,
-        "real transit must deliver the complete load"
+        "real transit must deliver the complete load with the hostile Defender nearby"
     );
     assert!(app.world().get::<Cargo>(hauler).is_none());
 }

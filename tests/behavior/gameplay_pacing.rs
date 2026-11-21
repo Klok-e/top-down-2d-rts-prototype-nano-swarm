@@ -5,9 +5,9 @@ use approx::assert_abs_diff_eq;
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
-        Charge, ChargerAssignment, CombatPlugin, DefenderResponse, Health, LogisticsReservation,
+        Charge, ChargerAssignment, CombatPlugin, Health, LogisticsReservation,
         NanobotSimulationSet, OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructureProgress,
-        Swarm, SwarmId, SwarmMember,
+        ResolvedCombatFact, Structure, StructureKind, Swarm, SwarmId, SwarmMember,
     },
     scenario_selection::{Scenario, ScenarioSelection},
     tuning::Tuning,
@@ -93,8 +93,8 @@ fn shipped_construction_pacing_uses_one_real_budget_for_both_swarms() {
 }
 
 #[test]
-fn shipped_attack_interval_is_shared_by_both_swarms() {
-    let mut app = common::sim_app_with_movement();
+fn both_swarms_attack_within_the_shipped_cadence_window() {
+    let mut app = common::minimal_app();
     app.add_plugins(CombatPlugin);
     let pacing = Tuning::default();
     app.update();
@@ -107,26 +107,15 @@ fn shipped_attack_interval_is_shared_by_both_swarms() {
     let opponent_cell = IVec2::new(3, 0);
     let player_center = common::cell_world_center(player_cell);
     let opponent_center = common::cell_world_center(opponent_cell);
-    let player_attacker = common::spawn_defender_at(&mut app, player_center - Vec2::X * 16.0);
-    let player_target = common::spawn_worker_at(&mut app, player_center + Vec2::X * 16.0);
-    let opponent_attacker = common::spawn_defender_at(&mut app, opponent_center - Vec2::X * 16.0);
-    let opponent_target = common::spawn_worker_at(&mut app, opponent_center + Vec2::X * 16.0);
+    common::spawn_defender_at(&mut app, player_center - Vec2::X * 40.0);
+    let player_target = common::spawn_worker_at(&mut app, player_center + Vec2::X * 40.0);
+    let opponent_attacker = common::spawn_defender_at(&mut app, opponent_center - Vec2::X * 40.0);
+    let opponent_target = common::spawn_worker_at(&mut app, opponent_center + Vec2::X * 40.0);
     for entity in [opponent_attacker, player_target] {
         app.world_mut()
             .entity_mut(entity)
             .insert(SwarmMember::new(opponent_id));
     }
-    app.world_mut()
-        .entity_mut(player_attacker)
-        .insert(DefenderResponse {
-            target: player_target,
-        });
-    app.world_mut()
-        .entity_mut(opponent_attacker)
-        .insert(DefenderResponse {
-            target: opponent_target,
-        });
-
     app.insert_resource(AttackObservations {
         tick: 0,
         targets: [player_target, opponent_target],
@@ -138,7 +127,9 @@ fn shipped_attack_interval_is_shared_by_both_swarms() {
         observe_attack_ticks.after(NanobotSimulationSet::Combat),
     );
 
-    for _ in 0..40 {
+    let interval = u32::from(pacing.combat.attack_interval_ticks);
+    let max_jitter = (interval as f32 * pacing.combat.cadence_jitter).round() as u32;
+    for _ in 0..2 * interval + max_jitter {
         app.update();
         if app
             .world()
@@ -153,11 +144,75 @@ fn shipped_attack_interval_is_shared_by_both_swarms() {
     let observations = app.world().resource::<AttackObservations>();
     for hit_ticks in &observations.hit_ticks {
         assert!(hit_ticks.len() >= 2, "both swarms must deliver two attacks");
-        assert_eq!(
-            hit_ticks[1] - hit_ticks[0],
-            u32::from(pacing.combat.attack_interval_ticks),
+        assert!(hit_ticks[0] <= interval, "first shot took too long");
+        assert!(
+            (interval - max_jitter..=interval + max_jitter)
+                .contains(&(hit_ticks[1] - hit_ticks[0])),
+            "successive shots should use the shipped interval and jitter",
         );
     }
+}
+
+fn ticks_from_first_hit_to_destruction(app: &mut App, tick_limit: u32) -> Option<u32> {
+    let mut cursor = app
+        .world()
+        .resource::<Messages<ResolvedCombatFact>>()
+        .get_cursor();
+    let mut first_hit = None;
+    for tick in 1..=tick_limit {
+        app.update();
+        let facts = app.world().resource::<Messages<ResolvedCombatFact>>();
+        for fact in cursor.read(facts) {
+            match fact {
+                ResolvedCombatFact::Hit(_) => {
+                    first_hit.get_or_insert(tick);
+                }
+                ResolvedCombatFact::Death(_) => return first_hit.map(|first| tick - first),
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn full_charge_defender_duel_reaches_first_death_about_five_seconds_after_first_hit() {
+    let mut app = common::minimal_app();
+    app.add_plugins(CombatPlugin);
+    common::spawn_defender_at(&mut app, Vec2::ZERO);
+    let opponent = common::spawn_defender_at(&mut app, Vec2::X * 100.0);
+    app.world_mut()
+        .entity_mut(opponent)
+        .insert(SwarmMember::new(SwarmId(11)));
+
+    let elapsed = ticks_from_first_hit_to_destruction(&mut app, 400)
+        .expect("in-range Defenders must fight until one is killed");
+    assert!(
+        (250..=320).contains(&elapsed),
+        "duel lasted {elapsed} ticks"
+    );
+}
+
+#[test]
+fn single_full_charge_defender_takes_about_nine_seconds_to_destroy_a_structure() {
+    let mut app = common::minimal_app();
+    app.add_plugins(CombatPlugin);
+    common::spawn_defender_at(&mut app, Vec2::ZERO);
+    let owner = app.world_mut().spawn((Swarm {}, SwarmId(11))).id();
+    app.world_mut().spawn((
+        Structure {
+            health: 100,
+            ..Structure::new(StructureKind::Basic)
+        },
+        OwnerSwarm(owner),
+        Transform::from_xyz(80.0, 0.0, 0.0),
+    ));
+
+    let elapsed = ticks_from_first_hit_to_destruction(&mut app, 700)
+        .expect("a Defender must eventually destroy an undefended structure");
+    assert!(
+        (500..=620).contains(&elapsed),
+        "structure lasted {elapsed} ticks"
+    );
 }
 
 #[test]
@@ -237,7 +292,7 @@ fn gameplay_plugins_install_the_shipped_pacing() {
             .resource::<Tuning>()
             .combat
             .attack_interval_ticks,
-        30,
+        40,
     );
     let charge = common::sim_app_with_charge();
     assert_abs_diff_eq!(

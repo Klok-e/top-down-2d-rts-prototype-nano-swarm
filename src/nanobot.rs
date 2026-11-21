@@ -7,23 +7,27 @@ mod build;
 mod cargo;
 mod charge;
 mod combat;
+mod combat_identity;
 mod combat_presentation;
 mod components;
 pub mod construction_access;
 mod consts;
 mod debug;
 mod elimination;
+mod engagement;
 mod gather;
 mod haul;
 mod interaction;
 mod logistics_leg;
 mod maintenance;
+mod motion_presentation;
 mod move_system;
 mod opponent;
 mod placement;
 mod planned;
 mod population;
 mod production;
+mod retreat;
 mod spread;
 mod sprites;
 mod work_access;
@@ -35,21 +39,27 @@ pub use build::*;
 pub use cargo::*;
 pub use charge::*;
 pub use combat::*;
+pub(crate) use combat_identity::combat_key;
+pub use combat_identity::{CombatIdentity, CombatIdentityPlugin};
 pub use combat_presentation::*;
 pub use components::*;
 pub use consts::*;
 pub use debug::*;
 pub use elimination::*;
+pub use engagement::*;
 pub use gather::*;
 pub use haul::*;
 pub use interaction::*;
 pub use maintenance::*;
+pub use motion_presentation::PresentedNanobot;
+pub(crate) use motion_presentation::UpdateNanobotPresentation;
 pub use move_system::*;
 pub use opponent::*;
 pub use placement::*;
 pub use planned::*;
 pub use population::*;
 pub use production::*;
+pub use retreat::*;
 pub use spread::*;
 pub use sprites::*;
 
@@ -141,7 +151,11 @@ impl Plugin for NanobotPlugin {
         if !app.is_plugin_added::<crate::navigation_runtime::NavigationPlugin>() {
             app.add_plugins(crate::navigation_runtime::NavigationPlugin);
         }
-        app.add_observer(initialize_nanobot_type_components)
+        if !app.is_plugin_added::<CombatIdentityPlugin>() {
+            app.add_plugins(CombatIdentityPlugin);
+        }
+        app.init_resource::<DefenderEngagements>()
+            .add_observer(initialize_nanobot_type_components)
             .configure_sets(
                 FixedUpdate,
                 (
@@ -155,6 +169,8 @@ impl Plugin for NanobotPlugin {
             .add_systems(
                 FixedUpdate,
                 (
+                    defender_engagement_system,
+                    defender_retreat_system,
                     move_velocity_system,
                     separation_system,
                     idle_spread_system,
@@ -179,6 +195,8 @@ fn reset_resource<T: Resource + Default>(world: &mut World) {
 
 /// Clear simulation state retained outside session-owned entities.
 pub(crate) fn reset_session(world: &mut World) {
+    reset_resource::<combat_identity::NextCombatIdentity>(world);
+    reset_resource::<DefenderEngagements>(world);
     reset_resource::<SoftWorkSlots>(world);
     reset_resource::<OpponentSwarmIdAlloc>(world);
     reset_resource::<PopulationDemand>(world);

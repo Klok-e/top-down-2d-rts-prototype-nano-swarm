@@ -2456,10 +2456,11 @@ mod tests {
     }
 
     #[test]
-    fn map_command_adds_independent_player_defend_over_enemy() {
+    fn map_command_adds_player_defend_to_a_partially_reachable_enemy_tile() {
         use crate::{
             intent::{IntentGrid, IntentKind},
             nanobot::{MatchOutcome, SwarmId},
+            navigation::Obstacle,
             reachability::SwarmReachabilityMap,
         };
         use bevy::prelude::*;
@@ -2468,8 +2469,15 @@ mod tests {
         let opponent = SwarmId(4);
         let mut grid = IntentGrid::new(11, 11);
         grid.paint(cell, IntentKind::Defend, opponent);
-        let reachability =
-            SwarmReachabilityMap::new(&grid, [], [(SwarmId::PLAYER, Vec2::ZERO)]).unwrap();
+        let reachability = SwarmReachabilityMap::new(
+            &grid,
+            [Obstacle::Rectangle {
+                center: Vec2::new(1280.0, 0.0),
+                half: Vec2::new(36.0, 8_000.0),
+            }],
+            [(SwarmId::PLAYER, Vec2::ZERO)],
+        )
+        .unwrap();
         let mut app = App::new();
         app.insert_resource(grid)
             .insert_resource(reachability)

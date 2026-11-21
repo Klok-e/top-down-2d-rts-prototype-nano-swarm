@@ -119,9 +119,13 @@ pub fn default_path() -> PathBuf {
 }
 
 pub fn fixed_tick(world: &World) -> u64 {
-    world.get_resource::<Time<Fixed>>().map_or(0, |time| {
-        (time.elapsed().as_nanos() / time.timestep().as_nanos()) as u64
-    })
+    world
+        .get_resource::<Time<Fixed>>()
+        .map_or(0, elapsed_fixed_ticks)
+}
+
+pub(crate) fn elapsed_fixed_ticks(time: &Time<Fixed>) -> u64 {
+    (time.elapsed().as_nanos() / time.timestep().as_nanos()) as u64
 }
 
 pub fn set_value(world: &mut World, key: &str, value: f64) -> Result<u64, String> {
@@ -196,6 +200,9 @@ impl Tuning {
         }
         if self.charge.material_per_pulse > self.charge.charger_capacity {
             return Err("Charger capacity must cover one charging pulse".into());
+        }
+        if self.presentation.effects_far_zoom < self.presentation.effects_mid_zoom {
+            return Err("Far combat effects zoom must be at or above mid zoom".into());
         }
         if self.presentation.tactical_far_merge_zoom < self.presentation.overlay_zoom_threshold {
             return Err("Far merge zoom must not be below overlay zoom".into());

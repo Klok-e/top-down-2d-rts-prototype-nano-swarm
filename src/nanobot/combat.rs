@@ -6,12 +6,13 @@ use crate::battle_statistics::{BattleCounters, BattleEvent};
 use bevy::prelude::*;
 
 use crate::nanobot::{
-    Charge, DefenderResponse, Health, Nanobot, NanobotType, OwnerSwarm, Structure, StructureKind,
-    Swarm, SwarmId, SwarmMember, effective_attack, effective_defense,
+    Charge, CombatIdentity, CombatIdentityPlugin, Health, Nanobot, NanobotType, OwnerSwarm,
+    Structure, StructureKind, Swarm, SwarmId, SwarmMember, combat_key, effective_attack,
+    effective_defense,
 };
 use crate::spatial::FixedSpatialBuckets;
 use crate::structure_sprites::StructureVisual;
-use crate::tuning::{Tuning, rescale_ticks};
+use crate::tuning::{Tuning, elapsed_fixed_ticks, rescale_ticks};
 
 /// Stable support-structure identity retained after gameplay destruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +48,7 @@ pub struct ResolvedCombatHit {
     pub target_destroyed: bool,
 }
 
-/// Stable victim state for one nanobot destroyed by resolved combat.
+/// Stable victim state for one nanobot or structure destroyed by resolved combat.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ResolvedCombatDeath {
     pub victim: CombatVisualSnapshot,
@@ -60,21 +61,32 @@ pub enum ResolvedCombatFact {
     Death(ResolvedCombatDeath),
 }
 
-/// Per-Defender cooldown after a delivered attack.
-#[derive(Debug, Component, Clone, Copy, PartialEq, Eq)]
+/// Fixed-tick progress toward acquiring a shot and recovering from the previous one.
+#[derive(Debug, Component, Default, Clone, Copy, PartialEq, Eq)]
 pub struct DefenderAttackCooldown {
-    pub ticks_remaining: u16,
+    pub ticks_remaining: u32,
+    acquisition_ticks_remaining: Option<u16>,
+}
+
+impl DefenderAttackCooldown {
+    /// Cooldown for a Defender that has already acquired a target.
+    pub fn new(ticks_remaining: u32) -> Self {
+        Self {
+            ticks_remaining,
+            acquisition_ticks_remaining: Some(0),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
 struct Combatant {
     entity: Entity,
+    key: u64,
     position: Vec2,
     swarm: SwarmId,
     kind: NanobotType,
     charge: Option<f32>,
-    responding: bool,
-    cooldown: Option<u16>,
+    cooldown: Option<DefenderAttackCooldown>,
 }
 
 impl Combatant {
@@ -91,6 +103,7 @@ impl Combatant {
 #[derive(Clone, Copy)]
 struct StructureTarget {
     entity: Entity,
+    key: u64,
     position: Vec2,
     swarm: SwarmId,
     kind: StructureKind,
@@ -118,10 +131,18 @@ enum CombatTarget {
 }
 
 impl CombatTarget {
-    fn entity(self) -> Entity {
+    fn priority(self) -> u8 {
         match self {
-            Self::Nanobot(target) => target.entity,
-            Self::Structure(target) => target.entity,
+            Self::Nanobot(target) if target.kind == NanobotType::Defender => 0,
+            Self::Nanobot(_) => 1,
+            Self::Structure(_) => 2,
+        }
+    }
+
+    fn key(self) -> u64 {
+        match self {
+            Self::Nanobot(target) => target.key,
+            Self::Structure(target) => target.key,
         }
     }
 
@@ -138,6 +159,20 @@ impl CombatTarget {
             Self::Structure(target) => target.swarm,
         }
     }
+}
+
+pub(super) fn combat_hash(key: u64, tick: u64) -> u64 {
+    let seed = key.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ tick.rotate_left(32);
+    let mixed = (seed ^ (seed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    mixed ^ (mixed >> 31)
+}
+
+fn hit_interval(key: u64, tick: u64, tuning: &Tuning) -> u32 {
+    let interval = i32::from(tuning.combat.attack_interval_ticks);
+    let sample = 2.0 * combat_hash(key, tick) as f64 / u64::MAX as f64 - 1.0;
+    let jitter = (f64::from(interval) * f64::from(tuning.combat.cadence_jitter) * sample).round();
+    (interval + jitter as i32).max(1) as u32
 }
 
 fn damage_after_defense(attack: f32, defense: f32) -> u32 {
@@ -195,12 +230,13 @@ fn record_combat_damage(
     }
 }
 
-/// Resolve one simultaneous attack snapshot. Every responding Defender chooses
-/// the nearest hostile in range independently of its pursuit claim; damage is
-/// applied after target selection so entity iteration order cannot change the exchange.
+/// Resolve one simultaneous attack snapshot. Living Defenders prioritize in-range
+/// hostile Defenders, other nanobots, then structures. Damage is applied after
+/// target selection so entity iteration order cannot change the exchange.
 #[allow(clippy::type_complexity)]
 pub fn defender_combat_system(
     tuning: Res<Tuning>,
+    fixed_time: Option<Res<Time<Fixed>>>,
     mut combatants: ParamSet<(
         Query<
             (
@@ -210,8 +246,8 @@ pub fn defender_combat_system(
                 &NanobotType,
                 &Health,
                 Option<&Charge>,
-                Option<&DefenderResponse>,
-                Option<&DefenderAttackCooldown>,
+                Option<&mut DefenderAttackCooldown>,
+                Option<&CombatIdentity>,
             ),
             With<Nanobot>,
         >,
@@ -221,6 +257,7 @@ pub fn defender_combat_system(
             &OwnerSwarm,
             &Structure,
             Option<&StructureVisual>,
+            Option<&CombatIdentity>,
         )>,
         Query<&mut Health, With<Nanobot>>,
         Query<&mut Structure>,
@@ -230,31 +267,33 @@ pub fn defender_combat_system(
     mut facts: MessageWriter<ResolvedCombatFact>,
     mut counters: Option<ResMut<BattleCounters>>,
 ) {
+    let tick = fixed_time.as_deref().map_or(0, elapsed_fixed_ticks);
     let snapshot = combatants
         .p0()
         .iter()
-        .filter(|(_, _, _, _, health, _, _, _)| health.current > 0)
+        .filter(|(_, _, _, _, health, ..)| health.current > 0)
         .map(
-            |(entity, transform, member, kind, _, charge, response, cooldown)| Combatant {
+            |(entity, transform, member, kind, _, charge, cooldown, identity)| Combatant {
                 entity,
+                key: combat_key(entity, identity),
                 position: transform.translation.truncate(),
                 swarm: member.0,
                 kind: *kind,
                 charge: charge.map(|charge| charge.current),
-                responding: response.is_some(),
-                cooldown: cooldown.map(|cooldown| cooldown.ticks_remaining),
+                cooldown: cooldown.copied(),
             },
         )
         .collect::<Vec<_>>();
     let structures = combatants
         .p1()
         .iter()
-        .filter_map(|(entity, transform, owner, structure, visual)| {
+        .filter_map(|(entity, transform, owner, structure, visual, identity)| {
             if !structure.is_operational() {
                 return None;
             }
             Some(StructureTarget {
                 entity,
+                key: combat_key(entity, identity),
                 position: transform.translation.truncate(),
                 swarm: swarms.get(owner.0).ok().copied()?,
                 kind: structure.kind,
@@ -262,104 +301,114 @@ pub fn defender_combat_system(
             })
         })
         .collect::<Vec<_>>();
-    let mut nanobot_buckets = FixedSpatialBuckets::new(tuning.combat.attack_range);
+    let mut target_buckets = FixedSpatialBuckets::new(tuning.combat.attack_range);
     for target in snapshot.iter().copied() {
-        nanobot_buckets.insert(target.position, target);
+        target_buckets.insert(target.position, CombatTarget::Nanobot(target));
     }
-    let mut structure_buckets = FixedSpatialBuckets::new(tuning.combat.attack_range);
     for target in structures.iter().copied() {
-        structure_buckets.insert(target.position, target);
+        target_buckets.insert(target.position, CombatTarget::Structure(target));
     }
 
-    let mut nanobot_damage = HashMap::<Entity, BTreeMap<SwarmId, u32>>::new();
-    let mut structure_damage = HashMap::<Entity, BTreeMap<SwarmId, u32>>::new();
-    let mut resolved_hits = Vec::<ResolvedCombatHit>::new();
+    let mut nanobot_damage = BTreeMap::<(u64, Entity), BTreeMap<SwarmId, u32>>::new();
+    let mut structure_damage = BTreeMap::<(u64, Entity), BTreeMap<SwarmId, u32>>::new();
+    let mut resolved_hits = Vec::<(u64, ResolvedCombatHit)>::new();
+    let mut cooldown_updates = Vec::new();
+    let range_squared = tuning.combat.attack_range.powi(2);
     for attacker in snapshot
         .iter()
-        .filter(|combatant| combatant.kind == NanobotType::Defender && combatant.responding)
+        .filter(|combatant| combatant.kind == NanobotType::Defender)
     {
-        let attack = effective_attack(attacker.charge.unwrap_or_default(), &tuning);
-        let cooldown_ready = attacker.cooldown.is_none_or(|ticks| ticks == 0);
-        let mut delivered_attack = false;
-        let attacker_bucket = nanobot_buckets.bucket_for_position(attacker.position);
-        let nearest_target = nanobot_buckets
+        let previous = attacker.cooldown.unwrap_or_default();
+        let acquisition_delay = previous.acquisition_ticks_remaining.unwrap_or_else(|| {
+            (combat_hash(attacker.key, 0) % u64::from(tuning.combat.attack_interval_ticks)) as u16
+        });
+        let ready = previous.ticks_remaining == 0 && acquisition_delay == 0;
+        let attacker_bucket = target_buckets.bucket_for_position(attacker.position);
+        let mut targets_in_range = target_buckets
             .neighbourhood(attacker_bucket, 1)
             .flat_map(|(_, targets)| targets)
-            .map(|target| CombatTarget::Nanobot(*target))
-            .chain(
-                structure_buckets
-                    .neighbourhood(attacker_bucket, 1)
-                    .flat_map(|(_, targets)| targets)
-                    .map(|target| CombatTarget::Structure(*target)),
-            )
+            .copied()
             .filter(|target| target.swarm() != attacker.swarm)
             .filter_map(|target| {
-                let distance = attacker.position.distance(target.position());
-                (distance <= tuning.combat.attack_range).then_some((distance, target))
+                let distance = attacker.position.distance_squared(target.position());
+                (distance <= range_squared).then_some((distance, target))
+            });
+        let target = if ready {
+            targets_in_range.min_by(|(left_distance, left), (right_distance, right)| {
+                left.priority()
+                    .cmp(&right.priority())
+                    .then_with(|| left_distance.total_cmp(right_distance))
+                    .then_with(|| left.key().cmp(&right.key()))
             })
-            .min_by(|(left_distance, left), (right_distance, right)| {
-                left_distance
-                    .total_cmp(right_distance)
-                    .then_with(|| left.entity().to_bits().cmp(&right.entity().to_bits()))
-            })
-            .map(|(_, target)| target);
+        } else {
+            targets_in_range.next()
+        };
+        // Losing every target cancels acquisition, while recovery from a hit
+        // continues. After reacquisition, both clocks must finish before firing.
+        let mut cooldown = DefenderAttackCooldown {
+            ticks_remaining: previous.ticks_remaining.saturating_sub(1),
+            acquisition_ticks_remaining: target.map(|_| acquisition_delay.saturating_sub(1)),
+        };
 
-        if cooldown_ready {
-            match nearest_target {
-                Some(CombatTarget::Nanobot(target)) => {
+        if ready && let Some((_, target)) = target {
+            let attack = effective_attack(attacker.charge.unwrap_or_default(), &tuning);
+            let (damage, target_snapshot, target_damage) = match target {
+                CombatTarget::Nanobot(target) => {
                     let defense = if target.kind == NanobotType::Defender {
                         effective_defense(target.charge.unwrap_or_default(), &tuning)
                     } else {
                         0.0
                     };
-                    let damage = damage_after_defense(attack, defense);
-                    if damage > 0 {
-                        *nanobot_damage
-                            .entry(target.entity)
-                            .or_default()
-                            .entry(attacker.swarm)
-                            .or_default() += damage;
-                        resolved_hits.push(ResolvedCombatHit {
-                            attacker: attacker.presentation_snapshot(),
-                            target: target.presentation_snapshot(),
-                            damage,
-                            target_destroyed: false,
-                        });
-                        delivered_attack = true;
-                    }
+                    (
+                        damage_after_defense(attack, defense),
+                        target.presentation_snapshot(),
+                        &mut nanobot_damage,
+                    )
                 }
-                Some(CombatTarget::Structure(target)) => {
-                    let damage = structure_hit_damage(attack, &tuning);
-                    if damage > 0 {
-                        *structure_damage
-                            .entry(target.entity)
-                            .or_default()
-                            .entry(attacker.swarm)
-                            .or_default() += damage;
-                        resolved_hits.push(ResolvedCombatHit {
-                            attacker: attacker.presentation_snapshot(),
-                            target: target.presentation_snapshot(),
-                            damage,
-                            target_destroyed: false,
-                        });
-                        delivered_attack = true;
-                    }
-                }
-                None => {}
+                CombatTarget::Structure(target) => (
+                    structure_hit_damage(attack, &tuning),
+                    target.presentation_snapshot(),
+                    &mut structure_damage,
+                ),
+            };
+            if damage > 0 {
+                let contribution = target_damage
+                    .entry((target.key(), target_snapshot.entity))
+                    .or_default()
+                    .entry(attacker.swarm)
+                    .or_default();
+                *contribution = contribution.saturating_add(damage);
+                resolved_hits.push((
+                    attacker.key,
+                    ResolvedCombatHit {
+                        attacker: attacker.presentation_snapshot(),
+                        target: target_snapshot,
+                        damage,
+                        target_destroyed: false,
+                    },
+                ));
+                cooldown.ticks_remaining =
+                    hit_interval(attacker.key, tick, &tuning).saturating_sub(1);
             }
         }
 
-        if delivered_attack || attacker.cooldown.is_some() {
-            commands
-                .entity(attacker.entity)
-                .insert(DefenderAttackCooldown {
-                    ticks_remaining: if delivered_attack {
-                        tuning.combat.attack_interval_ticks.saturating_sub(1)
-                    } else {
-                        attacker.cooldown.unwrap_or_default().saturating_sub(1)
-                    },
-                });
+        if cooldown != previous {
+            cooldown_updates.push((attacker.key, attacker.entity, cooldown));
         }
+    }
+    {
+        let mut attackers = combatants.p0();
+        cooldown_updates.sort_unstable_by_key(|(key, ..)| *key);
+        for (_, entity, cooldown) in cooldown_updates {
+            if let Ok((.., Some(mut current), _)) = attackers.get_mut(entity) {
+                *current = cooldown;
+            } else {
+                commands.entity(entity).insert(cooldown);
+            }
+        }
+    }
+    if resolved_hits.is_empty() {
+        return;
     }
 
     let nanobot_snapshots = snapshot
@@ -375,7 +424,7 @@ pub fn defender_combat_system(
     let mut combat_deaths = Vec::new();
     {
         let mut health = combatants.p2();
-        for (entity, contributions) in nanobot_damage {
+        for ((key, entity), contributions) in nanobot_damage {
             if let Ok(mut target) = health.get_mut(entity) {
                 let was_alive = target.current > 0;
                 let previous_health = target.current;
@@ -401,13 +450,13 @@ pub fn defender_combat_system(
                     && target.current == 0
                     && let Some(victim) = nanobot_snapshots.get(&entity).copied()
                 {
-                    combat_deaths.push(ResolvedCombatDeath { victim });
+                    combat_deaths.push((key, ResolvedCombatDeath { victim }));
                 }
             }
         }
     }
     let mut conditions = combatants.p3();
-    for (entity, contributions) in structure_damage {
+    for ((key, entity), contributions) in structure_damage {
         if let Ok(mut target) = conditions.get_mut(entity) {
             let was_alive = target.health > 0;
             let previous_health = target.health;
@@ -427,7 +476,7 @@ pub fn defender_combat_system(
             if target.health == 0 {
                 destroyed_targets.insert(entity);
                 if was_alive && let Some(victim) = structure_snapshots.get(&entity).copied() {
-                    combat_deaths.push(ResolvedCombatDeath { victim });
+                    combat_deaths.push((key, ResolvedCombatDeath { victim }));
                     if let Some(counters) = counters.as_deref_mut() {
                         counters.record(victim.swarm, BattleEvent::StructureLost);
                     }
@@ -436,30 +485,34 @@ pub fn defender_combat_system(
             }
         }
     }
-    for mut hit in resolved_hits {
+    resolved_hits.sort_unstable_by_key(|(key, _)| *key);
+    for (_, mut hit) in resolved_hits {
         if !resolved_targets.contains(&hit.target.entity) {
             continue;
         }
         hit.target_destroyed = destroyed_targets.contains(&hit.target.entity);
         facts.write(ResolvedCombatFact::Hit(hit));
     }
-    combat_deaths.sort_by_key(|death| death.victim.entity.to_bits());
-    for death in combat_deaths {
+    combat_deaths.sort_unstable_by_key(|(key, _)| *key);
+    for (_, death) in combat_deaths {
         facts.write(ResolvedCombatFact::Death(death));
     }
 }
 
 pub fn reconcile_combat_tuning(world: &mut World, old: &Tuning, new: &Tuning) {
     if old.combat.attack_interval_ticks != new.combat.attack_interval_ticks {
+        let old_interval = u32::from(old.combat.attack_interval_ticks);
+        let new_interval = u32::from(new.combat.attack_interval_ticks);
+        let max_jitter = (f64::from(new_interval) * f64::from(old.combat.cadence_jitter)).round();
+        let max_cooldown = (new_interval + max_jitter as u32).saturating_sub(1);
         for mut cooldown in world.query::<&mut DefenderAttackCooldown>().iter_mut(world) {
-            cooldown.ticks_remaining = rescale_ticks(
-                u32::from(cooldown.ticks_remaining),
-                u32::from(old.combat.attack_interval_ticks),
-                u32::from(new.combat.attack_interval_ticks),
-            )
-            .min(u32::from(
-                new.combat.attack_interval_ticks.saturating_sub(1),
-            )) as u16;
+            cooldown.ticks_remaining =
+                rescale_ticks(cooldown.ticks_remaining, old_interval, new_interval)
+                    .min(max_cooldown);
+            if let Some(remaining) = cooldown.acquisition_ticks_remaining.as_mut() {
+                *remaining = rescale_ticks(u32::from(*remaining), old_interval, new_interval)
+                    .min(new_interval - 1) as u16;
+            }
         }
     }
     if old.combat.nanobot_max_health != new.combat.nanobot_max_health {
@@ -483,6 +536,9 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
+        if !app.is_plugin_added::<CombatIdentityPlugin>() {
+            app.add_plugins(CombatIdentityPlugin);
+        }
         app.init_resource::<Tuning>()
             .add_message::<ResolvedCombatFact>()
             .add_systems(

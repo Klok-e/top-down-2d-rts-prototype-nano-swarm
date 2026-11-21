@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Charge, Commitment, DefenderResponse, Health, MatchOutcome, Nanobot, NanobotType,
+        Charge, Commitment, DefenderAttackCooldown, Health, MatchOutcome, Nanobot, NanobotType,
         OpponentSwarm, SwarmId, SwarmMember, world_to_cell,
     },
     ui::match_banner::{MatchBannerRoot, MatchBannerText},
@@ -69,13 +69,13 @@ fn banner(ctx: &mut TestContext, outcome: MatchOutcome, text: &str, name: &str) 
 pub fn hud_attack_and_wipeout(ctx: &mut TestContext) -> TestFlow {
     match ctx.frame {
         0 => {
-            let (target, position) = ctx
+            let position = ctx
                 .world
-                .query_filtered::<(Entity, &SwarmMember, &NanobotType, &Transform), With<Nanobot>>()
+                .query_filtered::<(&SwarmMember, &NanobotType, &Transform), With<Nanobot>>()
                 .iter(ctx.world)
-                .find_map(|(entity, member, kind, transform)| {
+                .find_map(|(member, kind, transform)| {
                     (member.0 == SwarmId::PLAYER && *kind == NanobotType::Worker)
-                        .then_some((entity, transform.translation))
+                        .then_some(transform.translation)
                 })
                 .expect("Standard starts with a player Worker");
             let opponent = *ctx
@@ -96,11 +96,13 @@ pub fn hud_attack_and_wipeout(ctx: &mut TestContext) -> TestFlow {
                 Charge::default(),
                 SwarmMember::new(opponent),
                 Transform::from_translation(position + Vec3::X * 65.0),
-                DefenderResponse { target },
+                DefenderAttackCooldown::new(0),
             ));
         }
         4 => {
-            assert_hud_text(ctx.world, "Swarm under attack");
+            assert!(visible_combat_alert(ctx.world).is_some_and(|fill| fill.0 != Color::NONE));
+            assert!(!hud_shows_text(ctx.world, "Swarm under attack"));
+            assert!(!hud_shows_text(ctx.world, "Hostiles in your territory"));
             return TestFlow::Screenshot("hud_under_attack".into());
         }
         5 => {
@@ -119,8 +121,12 @@ pub fn hud_attack_and_wipeout(ctx: &mut TestContext) -> TestFlow {
                 *ctx.world.resource::<MatchOutcome>(),
                 MatchOutcome::InProgress
             );
-            assert_hud_text(ctx.world, "No nanobots remaining");
-            assert_hud_text(ctx.world, "Production: no Haulers to deliver");
+            assert!(visible_combat_alert(ctx.world).is_none());
+            assert!(hud_shows_text(ctx.world, "No nanobots remaining"));
+            assert!(hud_shows_text(
+                ctx.world,
+                "Production: no Haulers to deliver"
+            ));
             return TestFlow::Screenshot("hud_wipeout".into());
         }
         7 => return TestFlow::Exit,
@@ -129,12 +135,18 @@ pub fn hud_attack_and_wipeout(ctx: &mut TestContext) -> TestFlow {
     TestFlow::Continue
 }
 
-fn assert_hud_text(world: &mut World, message: &str) {
-    assert!(
-        world
-            .query::<(&Text, &Node)>()
-            .iter(world)
-            .any(|(text, node)| node.display != Display::None && text.0.contains(message)),
-        "HUD must display {message}"
-    );
+fn visible_combat_alert(world: &mut World) -> Option<BackgroundColor> {
+    world
+        .query::<(&Name, &Node, &BackgroundColor)>()
+        .iter(world)
+        .find_map(|(name, node, fill)| {
+            (name.as_str() == "Combat alert" && node.display != Display::None).then_some(*fill)
+        })
+}
+
+fn hud_shows_text(world: &mut World, message: &str) -> bool {
+    world
+        .query::<(&Text, &Node)>()
+        .iter(world)
+        .any(|(text, node)| node.display != Display::None && text.0.contains(message))
 }

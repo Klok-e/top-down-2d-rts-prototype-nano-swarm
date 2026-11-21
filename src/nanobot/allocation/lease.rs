@@ -8,9 +8,10 @@ use super::{
     ActionableProjection, AllocationClock, AllocationRegion, OpportunityCategory, OpportunityTarget,
 };
 use crate::nanobot::{
-    DirectMovementComponent, ExtractProgress, GatherAssignment, HaulerAssignment, HaulerLoading,
-    LogisticsReservation, MaintenanceAssignment, MaintenanceProgress, MaterialWorkProgress,
-    PlannedStructureClaim, PlannedStructureProgress, SwarmId,
+    Commitment, DirectMovementComponent, GatherAssignment, HaulerAssignment, LogisticsReservation,
+    MaintenanceAssignment, PlannedStructureClaim, SwarmId, gather::transition_worker_to_carrying,
+    haul::release_hauler_trip, maintenance::release_maintenance_worker,
+    structure_lifecycle::release_planned_worker,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -162,27 +163,34 @@ pub fn maintain_regional_leases_system(
     tuning: Res<crate::tuning::Tuning>,
     projection: Res<ActionableProjection>,
     access: WorkAccess,
-    bodies: Query<&Transform, (With<SwarmMember>, With<NanobotType>)>,
+    bodies: Query<(&Transform, &SwarmMember), With<NanobotType>>,
     mut leases: Query<(
         Entity,
         &mut RegionalLease,
         Option<&Cargo>,
         Option<&LogisticsReservation>,
+        Option<&GatherAssignment>,
     )>,
 ) {
-    for (entity, mut lease, cargo, reservation) in &mut leases {
+    for (entity, mut lease, cargo, reservation, gather) in &mut leases {
         // Physical loads outlive task leases; their delivery systems retain custody.
         if cargo.is_some_and(|cargo| cargo.amount > 0) {
             continue;
         }
-        let reachability = bodies.get(entity).ok().map(|transform| {
+        let reachability = bodies.get(entity).ok().map(|(transform, member)| {
             let target = match lease.target {
                 OpportunityTarget::Gather { deposit, .. } => deposit,
                 OpportunityTarget::PlannedBuild { structure, .. }
                 | OpportunityTarget::Maintenance { structure } => structure,
                 OpportunityTarget::Haul { source, .. } => source,
             };
-            let Some(region) = access.region(target) else {
+            let region = match gather {
+                Some(assignment) if lease.category == OpportunityCategory::Gather => {
+                    access.assigned_gather_region(*assignment, member.0)
+                }
+                _ => access.region(target),
+            };
+            let Some(region) = region else {
                 return WorkReachability::Unreachable;
             };
             let approach = access.reachability_from(transform.translation.truncate(), region);
@@ -213,36 +221,19 @@ pub fn maintain_regional_leases_system(
         );
         if decision != LeaseDecision::Keep {
             let category = lease.category;
-            let mut entity_commands = commands.entity(entity);
-            entity_commands
-                .remove::<RegionalLease>()
-                .remove::<DirectMovementComponent>()
-                .insert(crate::nanobot::Commitment::Idle);
+            commands
+                .entity(entity)
+                .remove::<(RegionalLease, DirectMovementComponent)>()
+                .insert(Commitment::Idle);
             match category {
                 OpportunityCategory::Gather => {
-                    entity_commands
-                        .remove::<GatherAssignment>()
-                        .remove::<ExtractProgress>()
-                        .remove::<LogisticsReservation>()
-                        .remove::<(Cargo, MaterialWorkProgress)>();
+                    transition_worker_to_carrying(&mut commands, entity, 0)
                 }
-                OpportunityCategory::PlannedBuild => {
-                    entity_commands
-                        .remove::<PlannedStructureClaim>()
-                        .remove::<PlannedStructureProgress>();
-                }
+                OpportunityCategory::PlannedBuild => release_planned_worker(&mut commands, entity),
                 OpportunityCategory::Maintenance => {
-                    entity_commands
-                        .remove::<MaintenanceAssignment>()
-                        .remove::<MaintenanceProgress>();
+                    release_maintenance_worker(&mut commands, entity)
                 }
-                OpportunityCategory::Haul => {
-                    entity_commands
-                        .remove::<HaulerAssignment>()
-                        .remove::<HaulerLoading>()
-                        .remove::<LogisticsReservation>()
-                        .remove::<(Cargo, MaterialWorkProgress)>();
-                }
+                OpportunityCategory::Haul => release_hauler_trip(&mut commands, entity),
             }
         }
     }

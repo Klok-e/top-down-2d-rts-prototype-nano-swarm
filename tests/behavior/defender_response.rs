@@ -13,7 +13,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
 mod common;
 
 #[test]
-fn distinct_threats_receive_one_response_before_surplus_defenders() {
+fn worker_and_structure_threats_each_accept_one_response() {
     let mut app = common::sim_app();
     let opponent = SwarmId(9);
     app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
@@ -65,7 +65,7 @@ fn distinct_threats_receive_one_response_before_surplus_defenders() {
     assert_eq!(
         responses.len(),
         2,
-        "one Defender should remain unengaged after both Threats are covered",
+        "one Defender should remain without a response after both Threats are covered",
     );
     assert_eq!(
         responses
@@ -83,6 +83,36 @@ fn distinct_threats_receive_one_response_before_surplus_defenders() {
         1,
         "the hostile structure should accept exactly one response",
     );
+}
+
+#[test]
+fn hostile_defender_accepts_only_its_two_best_responders() {
+    let mut app = common::sim_app();
+    let opponent = SwarmId(9);
+    app.world_mut().spawn((Swarm {}, SwarmId::PLAYER));
+    app.world_mut().spawn((Swarm {}, opponent));
+    let cell = IVec2::new(2, 2);
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Gather, SwarmId::PLAYER);
+    let center = common::cell_world_center(cell);
+    let hostile = common::spawn_defender_at(&mut app, center);
+    app.world_mut()
+        .entity_mut(hostile)
+        .insert(SwarmMember::new(opponent));
+    let [farthest, nearer, nearest] = [-1_000.0, -850.0, -700.0]
+        .map(|offset| common::spawn_defender_at(&mut app, center + Vec2::X * offset));
+
+    app.update();
+
+    let target = |entity: Entity| {
+        app.world()
+            .entity(entity)
+            .get::<DefenderResponse>()
+            .map(|response| response.target)
+    };
+    assert_eq!([target(nearest), target(nearer)], [Some(hostile); 2]);
+    assert_eq!(target(farthest), None);
 }
 
 #[test]

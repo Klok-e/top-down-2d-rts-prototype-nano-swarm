@@ -37,7 +37,7 @@ A cell containing at least one intent layer owned by a swarm. Independent paint 
 _Avoid_: Visible intent cell, occupied cell, shared intent cell
 
 **Threat**:
-A hostile nanobot or structure physically present on a Swarm Tile. Each Threat attracts at most one pursuit response; danger and proximity prioritize scarce responders, while attacks may target the nearest hostile in range.
+A hostile nanobot or structure physically present on a Swarm Tile. A hostile Defender can attract multiple responders. Other Threats attract one. Danger and proximity determine pursuit priority.
 _Avoid_: Defend-zone intruder, recent attacker, hostile nanobot only
 
 **Pursuit Halo**:
@@ -57,11 +57,11 @@ Permanent, impassable terrain that shapes base entrances, travel routes, and min
 _Avoid_: Destructible rock, Resource Deposit
 
 **Swarm-Reachable Map**:
-The connected, traversable area that a swarm can access from its home through permanent Rock Formation geometry. It is fixed when the Scenario starts; an Intent Grid cell belongs to it only when a nanobot can reach its center with normal clearance, excluding obstacle-covered and disconnected exterior pockets even when they lie inside the Intent Grid.
+The connected, traversable area that a swarm can access from its home through permanent Rock Formation geometry. It is fixed when the Scenario starts. An Intent Grid cell belongs to it if any ground inside the cell is reachable with normal body clearance. Within a partially reachable cell, work still requires a reachable position where the nanobot can perform its task.
 _Avoid_: Available map, grid bounds, map edge
 
 **Unreachable Target**:
-A resource or hostile outside a swarm's Swarm-Reachable Map. It is not a strategic objective and does not receive intent or staging paint from that swarm.
+A resource or hostile for which the swarm has no suitable approach on its Swarm-Reachable Map. The Strategic Controller excludes it from objectives, including when another part of its cell is reachable.
 _Avoid_: Deferred target, exterior objective, blocked target
 
 **Build Zone**:
@@ -69,7 +69,7 @@ A swarm's intent marking space where automatic construction may place support st
 _Avoid_: Construction group, builder assignment, manual building placement
 
 **Defend Zone**:
-An intent zone that distributes unengaged Defenders at equal density and supports continuous density-driven, procedural roaming within and between its cells. It positions rather than bounds defense or creates population demand: Threats override staging, paint changes rebalance the cohort, and fallback staging uses Swarm Tiles or current cells.
+An intent zone that distributes available Defenders at equal density and supports continuous density-driven, procedural roaming within and between its cells. It positions rather than bounds defense or creates population demand: Threats override staging, paint changes rebalance the cohort, and fallback staging uses Swarm Tiles or current cells.
 _Avoid_: Fighter group, combat squad, attack zone
 
 **Stockpile**:
@@ -97,7 +97,7 @@ A carrying nanobot's temporary claim on source minerals and destination capacity
 _Avoid_: Resource transfer, inventory deduction, delivery
 
 **Charge**:
-A Defender sustain resource restored by the nearest valid supplied Charger in owned Defend paint. New rotations are capacity-limited and release any Threat response; accepted rotations may finish travel and charging after casualties reduce the cap, unsupported Defenders continue duty while weakening, and recharged Defenders re-enter current allocation without reclaiming prior work.
+A Defender sustain resource restored by the nearest valid supplied Charger in owned Defend paint. New rotations are capacity-limited and release any Threat response; accepted rotations may finish travel and charging after casualties reduce the cap, weakened engaged Defenders disengage and hold outside the front while awaiting admission. Recharged Defenders re-enter current allocation.
 _Avoid_: Ammo, mana, stamina
 
 **Charger**:
@@ -189,8 +189,12 @@ A player-painted movement intent for haulers that encourages resource transport 
 _Avoid_: Road, waypoint chain, manual route
 
 **Defender**:
-A nanobot type that stages and roams in Defend Zones, responds to Threats throughout its swarm's Swarm Tiles, and may briefly pursue them through the Pursuit Halo.
+A nanobot that protects its swarm by firing on nearby hostiles and pursuing Threats across Swarm Tiles and their Pursuit Halo. It holds a fighting distance from nearby hostile Defenders and otherwise stages and roams in Defend Zones when free.
 _Avoid_: Fighter, soldier, combat unit
+
+**Rout**:
+A Defender's sustained retreat from a locally stronger hostile force to a safe Defend cell or Swarm Tile. It releases its pursuit response and rejoins defense once its minimum retreat time and clearance conditions are met.
+_Avoid_: Charger rotation, elimination
 
 **Population Demand**:
 The per-Nanobot-Type capacity justified by actionable workload: gathering, construction, and maintenance require Workers, physical transport requires Haulers, and Defender demand is the greater of half the swarm's unique Swarm Tile count rounded up and its active Threat count. Every swarm serves its greatest relative shortage, breaking equal ratios by the larger missing count and then stable type order; existing and committed capacity counts only for its own type, excess nanobots remain, and a pending Production Facility may increase Worker demand but never justifies another facility.

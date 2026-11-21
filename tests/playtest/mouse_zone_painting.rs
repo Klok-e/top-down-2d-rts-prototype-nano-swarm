@@ -15,8 +15,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
         BrushSelection, IntentGrid, IntentKind, brush_key_for_kind, brush_selection_keyboard_system,
     },
     materials::{BackgroundMaterial, update_paint_grid},
-    nanobot::{MatchOutcome, SwarmId},
-    navigation::Obstacle,
+    nanobot::{MatchOutcome, SwarmId, world_to_cell},
+    navigation::{Navigation, Obstacle, RouteOutcome},
     reachability::SwarmReachabilityMap,
     session::SessionRules,
     ui::{UiHandling, check_ui_interaction},
@@ -66,7 +66,7 @@ fn install_dividing_rock_wall(app: &mut App) {
     let reachability = SwarmReachabilityMap::new(
         grid,
         [Obstacle::Rectangle {
-            center: Vec2::ZERO,
+            center: Vec2::new(ZONE_BLOCK_SIZE / 2.0, 0.0),
             half: Vec2::new(36.0, 8_000.0),
         }],
         [(SwarmId::PLAYER, Vec2::new(-252.0, 36.0))],
@@ -268,14 +268,14 @@ fn scripted_mouse_paint_off_world_does_not_touch_zone_overlay() {
 }
 
 #[test]
-fn scripted_mouse_paint_skips_cells_behind_permanent_rock() {
+fn scripted_mouse_paint_accepts_partial_ground_and_skips_isolated_cells() {
     let mut app = build_app();
     app.insert_resource(IntentGrid::new(8, 8));
     install_dividing_rock_wall(&mut app);
     let target = IVec2::new(1, 0);
     let window = spawn_window(&mut app);
     set_cursor(&mut app, window, Vec2::new(640.0, 360.0));
-    spawn_camera(&mut app, cell_world_center(target));
+    let camera = spawn_camera(&mut app, cell_world_center(target));
 
     assert!(
         !app.world().resource::<SwarmReachabilityMap>().contains(
@@ -313,6 +313,121 @@ fn scripted_mouse_paint_skips_cells_behind_permanent_rock() {
         "the brush must not create intent behind an impassable rock wall"
     );
     assert_eq!(app.world().resource::<IntentGrid>().revision(), 0);
+
+    app.world_mut()
+        .resource_mut::<ButtonInput<MouseButton>>()
+        .release(MouseButton::Left);
+    app.world_mut()
+        .get_mut::<Transform>(camera)
+        .unwrap()
+        .translation = cell_world_center(IVec2::ZERO).extend(0.0);
+    app.update();
+    assert_eq!(
+        app.world().resource::<BrushFeedback>().hover,
+        Some(BrushHover {
+            cell: IVec2::ZERO,
+            accepts_action: true,
+        })
+    );
+    press_mouse(&mut app, MouseButton::Left);
+    app.update();
+
+    let selected = app.world().resource::<BrushSelection>().kind;
+    assert!(
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(IVec2::ZERO)
+            .unwrap()
+            .has_owned(selected, SwarmId::PLAYER)
+    );
+}
+
+#[test]
+fn scripted_mouse_paint_accepts_ground_through_narrow_rock_openings() {
+    let cases = [
+        (
+            Vec2::new(-252.0, 36.0),
+            vec![Obstacle::Rectangle {
+                center: Vec2::new(534.25, 0.0),
+                half: Vec2::new(500.0, 8_000.0),
+            }],
+        ),
+        (
+            Vec2::new(-400.0, 60.0),
+            vec![
+                Obstacle::Rectangle {
+                    center: Vec2::new(512.0, -1_033.0),
+                    half: Vec2::new(512.0, 1_015.0),
+                },
+                Obstacle::Rectangle {
+                    center: Vec2::new(512.0, 1_051.0),
+                    half: Vec2::new(512.0, 997.0),
+                },
+            ],
+        ),
+        (
+            Vec2::new(-800.0, -20.0),
+            vec![
+                rock_rectangle(Vec2::new(-161.0, -5_000.0), Vec2::new(-159.0, -26.4)),
+                rock_rectangle(Vec2::new(-161.0, 42.4), Vec2::new(-159.0, 5_000.0)),
+                rock_rectangle(Vec2::new(0.0, -5_000.0), Vec2::new(1_024.0, -24.0)),
+                rock_rectangle(Vec2::new(0.0, 56.0), Vec2::new(1_024.0, 5_000.0)),
+            ],
+        ),
+        (
+            Vec2::new(-500.0, 500.0),
+            vec![
+                rock_rectangle(Vec2::new(-18.1, -5_000.0), Vec2::new(-17.9, -0.27)),
+                rock_rectangle(Vec2::new(-18.1, 68.27), Vec2::new(-17.9, 5_000.0)),
+                rock_rectangle(Vec2::new(0.0, -5_000.0), Vec2::new(1_024.0, -9.0)),
+                rock_rectangle(Vec2::new(0.0, 67.0), Vec2::new(1_024.0, 5_000.0)),
+            ],
+        ),
+    ];
+    let painted = cases.map(|(home, obstacles)| {
+        let mut app = build_app();
+        let grid = IntentGrid::new(8, 8);
+        let navigation = Navigation::new(&grid, obstacles.clone());
+        let reachability = SwarmReachabilityMap::new(&grid, obstacles, [(SwarmId::PLAYER, home)])
+            .expect("the home is clear outside the rock formations");
+        app.insert_resource(grid).insert_resource(reachability);
+        let window = spawn_window(&mut app);
+        set_cursor(&mut app, window, Vec2::new(640.0, 360.0));
+        spawn_camera(&mut app, cell_world_center(IVec2::ZERO));
+
+        press_mouse(&mut app, MouseButton::Left);
+        app.update();
+
+        let grid = app.world().resource::<IntentGrid>();
+        let painted = grid
+            .cell(IVec2::ZERO)
+            .unwrap()
+            .has_owned(IntentKind::Gather, SwarmId::PLAYER);
+        let witness = app
+            .world()
+            .resource::<SwarmReachabilityMap>()
+            .reachable_point(SwarmId::PLAYER, IVec2::ZERO, grid);
+        let can_route = witness.is_some_and(|point| {
+            world_to_cell(point) == IVec2::ZERO
+                && matches!(
+                    navigation.route(home, point, grid, SwarmId::PLAYER, false),
+                    RouteOutcome::Found(_)
+                )
+        });
+        (painted, can_route)
+    });
+    assert_eq!(
+        painted,
+        [(true, true); 4],
+        "the brush paints each tile and the reported ground has a body-clear route"
+    );
+}
+
+fn rock_rectangle(min: Vec2, max: Vec2) -> Obstacle {
+    Obstacle::Rectangle {
+        center: (min + max) / 2.0,
+        half: (max - min) / 2.0,
+    }
 }
 
 #[test]

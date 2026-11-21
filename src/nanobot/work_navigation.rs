@@ -1,5 +1,7 @@
+use super::route_following::WAYPOINT_REACHED_DISTANCE;
 use super::{
-    DirectMovementComponent, ProgressChecker, STOP_THRESHOLD, TrafficYield, VelocityComponent,
+    DefenderEngagements, DirectMovementComponent, ProgressChecker, STOP_THRESHOLD, TrafficYield,
+    VelocityComponent,
 };
 use crate::spatial::FixedSpatialBuckets;
 use crate::tuning::Tuning;
@@ -80,6 +82,7 @@ struct ApproachEntry {
     region: super::InteractionRegion,
     since: f64,
     selected: Option<Vec2>,
+    connection_origin: Option<Vec2>,
     nearby: bool,
     rejected: Vec<Vec2>,
     revision: u64,
@@ -157,8 +160,14 @@ pub fn move_velocity_system(
     tuning: Res<Tuning>,
     navigation: Res<crate::navigation::Navigation>,
     time: Res<Time<Fixed>>,
+    engagements: Option<Res<DefenderEngagements>>,
 ) {
-    use crate::navigation::{RouteGoal, RoutePriority, RouteStatus};
+    use crate::navigation::{ConnectivityStatus, RouteGoal, RoutePriority, RouteStatus};
+    let is_engaged = |entity| {
+        engagements
+            .as_ref()
+            .is_some_and(|value| value.controls_movement(entity))
+    };
     if let Some(generation) = generation.as_deref().map(|generation| generation.0)
         && *previous_generation != Some(generation)
     {
@@ -176,7 +185,7 @@ pub fn move_velocity_system(
         *previous_corridor_multiplier = Some(tuning.logistics.corridor_cost_multiplier);
     }
     routes.retain(|entity, route| {
-        if bots.contains(*entity) {
+        if bots.contains(*entity) && !is_engaged(*entity) {
             true
         } else {
             if let Some(id) = route.pending {
@@ -193,14 +202,18 @@ pub fn move_velocity_system(
     let now = time.elapsed_secs_f64();
     approaches
         .entries
-        .retain(|entity, _| bots.contains(*entity));
+        .retain(|entity, _| bots.contains(*entity) && !is_engaged(*entity));
 
     for (entity, destination, ..) in &bots {
+        if is_engaged(entity) {
+            continue;
+        }
         if let Some(region) = destination.interaction {
             let entry = approaches.entries.entry(entity).or_insert(ApproachEntry {
                 region,
                 since: now,
                 selected: None,
+                connection_origin: None,
                 nearby: false,
                 rejected: Vec::new(),
                 revision: navigation.revision(),
@@ -210,6 +223,7 @@ pub fn move_velocity_system(
                     region,
                     since: now,
                     selected: None,
+                    connection_origin: None,
                     nearby: false,
                     rejected: Vec::new(),
                     revision: navigation.revision(),
@@ -220,7 +234,10 @@ pub fn move_velocity_system(
             commands.entity(entity).remove::<WorkApproach>();
         }
     }
-    let mut ordered: Vec<_> = bots.iter().map(|(entity, ..)| entity).collect();
+    let mut ordered: Vec<_> = bots
+        .iter()
+        .filter_map(|(entity, ..)| (!is_engaged(entity)).then_some(entity))
+        .collect();
     ordered.sort_by_key(|entity| {
         (
             approaches
@@ -272,10 +289,12 @@ pub fn move_velocity_system(
         };
         let position = transform.translation.truncate();
         let mut work_ready = true;
+        let mut connection_origin = None;
         if let Some(region) = selected_destination.interaction {
             let entry = approaches.entries.get_mut(&entity).unwrap();
             if entry.revision != navigation.revision() {
                 entry.rejected.clear();
+                entry.connection_origin = None;
                 entry.revision = navigation.revision();
             }
             let distance = position.distance(region.approach(position));
@@ -311,10 +330,29 @@ pub fn move_velocity_system(
                 candidates.insert(0, position);
             }
             let entry = approaches.entries.get(&entity).unwrap();
-            let candidates: Vec<_> = candidates
+            let mut candidates: Vec<_> = candidates
                 .into_iter()
                 .filter(|point| free(*point) && !entry.rejected.contains(point))
                 .collect();
+            if candidates.is_empty() && region.deposit_tile_band().is_some() {
+                let (status, origin) = navigation
+                    .query_connectivity_with_origin(position, RouteGoal::Interaction(region));
+                match status {
+                    ConnectivityStatus::Connected { endpoint } if free(endpoint) => {
+                        let can_reattach = !navigation.movement_clear(position, endpoint)
+                            && navigation.movement_clear(position, origin)
+                            && navigation.movement_clear(origin, endpoint);
+                        if can_reattach || !entry.rejected.contains(&endpoint) {
+                            candidates.push(endpoint);
+                        }
+                        if can_reattach {
+                            connection_origin = Some(origin);
+                        }
+                    }
+                    ConnectivityStatus::Pending => continue,
+                    _ => {}
+                }
+            }
             // Retain a usable commitment, otherwise prefer an immediately clear approach.
             let retained = entry
                 .selected
@@ -338,7 +376,14 @@ pub fn move_velocity_system(
                 if nearby {
                     claims.insert(point, (entity, point));
                 }
-                approaches.entries.get_mut(&entity).unwrap().selected = Some(point);
+                let entry = approaches.entries.get_mut(&entity).unwrap();
+                if entry.selected != Some(point) {
+                    entry.connection_origin = None;
+                }
+                entry.selected = Some(point);
+                if connection_origin.is_some() {
+                    entry.connection_origin = connection_origin;
+                }
                 selected_destination.xy = point;
                 // Route to the selected perimeter position, never the occupied nearest face.
                 selected_destination.interaction = None;
@@ -427,8 +472,53 @@ pub fn move_velocity_system(
             }
             continue;
         }
+        // A waypoint can be within travel tolerance while the bot is still outside the work tile.
+        let last_step = destination.xy - position;
+        if last_step.length_squared() < WAYPOINT_REACHED_DISTANCE.powi(2)
+            && original
+                .interaction
+                .is_some_and(|region| !region.contains(position) && region.contains(destination.xy))
+            && navigation.movement_clear(position, destination.xy)
+        {
+            commands
+                .entity(entity)
+                .insert(RemainingTravel(last_step.length()));
+            velocity.value += last_step;
+            continue;
+        }
+        if original.interaction.is_some()
+            && let Some(entry) = approaches.entries.get_mut(&entity)
+            && let Some(origin) = entry.connection_origin
+        {
+            if navigation.movement_clear(position, origin)
+                && navigation.movement_clear(origin, destination.xy)
+            {
+                // Stop precisely at the start of the proven leg before turning into the work site.
+                let step = origin - position;
+                if step == Vec2::ZERO {
+                    entry.connection_origin = None;
+                } else if let Some(mut lease) = lease {
+                    lease.begin_travel_step(position, origin);
+                }
+                if let Some(route) = routes.remove(&entity)
+                    && let Some(id) = route.pending
+                {
+                    navigation.cancel(id);
+                }
+                commands
+                    .entity(entity)
+                    .insert(RemainingTravel(step.length()));
+                velocity.value += super::clamp_velocity(
+                    step,
+                    destination.speed.unwrap_or(tuning.logistics.bot_speed),
+                );
+                continue;
+            }
+            entry.connection_origin = None;
+        }
+        let hauler = kind == Some(&super::NanobotType::Hauler);
         let direct = navigation.movement_clear(position, destination.xy)
-            && (kind != Some(&super::NanobotType::Hauler)
+            && (!hauler
                 || original.interaction.is_some_and(|region| {
                     position.distance(region.approach(position))
                         <= 2.0 * crate::navigation::CELL_WIDTH
@@ -494,7 +584,6 @@ pub fn move_velocity_system(
             });
         if needs_route {
             let swarm = member.map_or(super::SwarmId::PLAYER, |member| member.0);
-            let hauler = kind == Some(&super::NanobotType::Hauler);
             let priority = if evacuation.is_some() {
                 RoutePriority::Clearing
             } else if routes.contains_key(&entity) {
@@ -590,7 +679,7 @@ pub fn move_velocity_system(
             &route.waypoints,
             &mut route.current,
             speed,
-            kind == Some(&super::NanobotType::Hauler),
+            hauler,
             &navigation,
         );
         let next_index = route.follower.target_index(route.current);

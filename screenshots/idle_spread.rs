@@ -47,6 +47,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         Commitment, DirectMovementComponent, Health, Nanobot, NanobotType, StrategicController,
         SwarmId, SwarmMember, VelocityComponent, world_to_cell,
     },
+    reachability::SwarmReachabilityMap,
 };
 
 use crate::harness::{
@@ -115,6 +116,14 @@ pub fn idle_spread(ctx: &mut TestContext) -> TestFlow {
     pin_camera(world);
 
     if ctx.frame == 0 {
+        clear_nanobots_and_sprite_entities(world);
+        let reachability = SwarmReachabilityMap::new(
+            world.resource::<IntentGrid>(),
+            [],
+            [(IDLE_SWARM, cell_center(START_CELL))],
+        )
+        .expect("the isolated haulers start on open ground");
+        world.insert_resource(reachability);
         // Give the isolated haulers their own Corridor intent.
         {
             let mut grid = world.resource_mut::<IntentGrid>();

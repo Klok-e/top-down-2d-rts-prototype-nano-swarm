@@ -1,7 +1,8 @@
 use bevy::prelude::*;
 
 use crate::nanobot::{
-    CombatPresentationPlugin, Nanobot, NanobotType, OpponentSwarm, Swarm, SwarmId, SwarmMember,
+    CombatPresentationPlugin, Nanobot, NanobotType, OpponentSwarm, PresentedNanobot, Swarm,
+    SwarmId, SwarmMember,
 };
 
 /// The single render-time visual owned by a nanobot gameplay root.
@@ -64,14 +65,23 @@ impl Plugin for NanobotPresentationPlugin {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn attach_nanobot_visual(
     added: On<Add, Nanobot>,
     mut commands: Commands,
-    nanobots: Query<(&NanobotType, &SwarmMember, Option<&Visibility>), With<Nanobot>>,
+    nanobots: Query<
+        (
+            &NanobotType,
+            &SwarmMember,
+            Option<&Visibility>,
+            Option<&Transform>,
+        ),
+        With<Nanobot>,
+    >,
     swarms: Query<(&SwarmId, Has<OpponentSwarm>), With<Swarm>>,
     sprites: Res<NanobotSprites>,
 ) {
-    let Ok((kind, member, visibility)) = nanobots.get(added.entity) else {
+    let Ok((kind, member, visibility, transform)) = nanobots.get(added.entity) else {
         return;
     };
     let is_opponent = swarms
@@ -82,7 +92,7 @@ fn attach_nanobot_visual(
     if visibility.is_none() {
         root.insert(Visibility::default());
     }
-    root.with_child((
+    root.insert(PresentedNanobot::new(transform)).with_child((
         NanobotVisual,
         Sprite::from_image(sprites.handle(*kind, is_opponent)),
         Transform::IDENTITY,

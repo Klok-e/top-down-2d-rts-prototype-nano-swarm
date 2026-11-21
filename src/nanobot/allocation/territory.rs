@@ -9,9 +9,10 @@ use crate::{
     ZONE_BLOCK_SIZE,
     intent::IntentGrid,
     nanobot::{
-        Health, Nanobot, NanobotType, OwnerSwarm, Structure, Swarm, SwarmId, SwarmMember,
-        world_to_cell,
+        CombatIdentity, Health, Nanobot, NanobotType, OwnerSwarm, Structure, Swarm, SwarmId,
+        SwarmMember, combat_key, world_to_cell,
     },
+    reachability::SwarmReachabilityMap,
     spatial::FixedSpatialBuckets,
 };
 
@@ -57,6 +58,7 @@ pub fn pursuit_claim_is_spatially_valid(target: IVec2, territory_tiles: &[IVec2]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThreatSnapshot {
     pub entity: Entity,
+    pub(crate) combat_key: u64,
     pub cell: IVec2,
     pub position: Vec2,
     pub kind: ThreatKind,
@@ -101,7 +103,7 @@ impl TerritorySnapshot {
             .unwrap_or_default()
     }
 
-    /// Number of active Threats physically occupying `swarm`'s tiles.
+    /// Number of active Threats on `swarm`'s reachable ground.
     pub fn threat_count(&self, swarm: SwarmId) -> u32 {
         self.by_swarm
             .get(&swarm)
@@ -125,8 +127,8 @@ impl TerritorySnapshot {
             .map_or(&[], |region| region.tiles.as_slice())
     }
 
-    /// Threats on `swarm`'s tiles in one allocation region, ordered by tile and
-    /// stable entity identity.
+    /// Threats on `swarm`'s reachable ground in one allocation region, ordered by tile and
+    /// combat identity.
     pub fn threats_in_region(&self, swarm: SwarmId, region: AllocationRegion) -> &[ThreatSnapshot] {
         self.by_swarm
             .get(&swarm)
@@ -169,6 +171,7 @@ pub(crate) fn defender_population_demand(tile_count: u32, threat_count: u32) -> 
 #[allow(clippy::type_complexity)]
 pub fn project_territory_snapshot_system(
     grid: Res<IntentGrid>,
+    reachability: Option<Res<SwarmReachabilityMap>>,
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,
     nanobots: Query<
         (
@@ -177,10 +180,17 @@ pub fn project_territory_snapshot_system(
             &SwarmMember,
             &NanobotType,
             Option<&Health>,
+            Option<&CombatIdentity>,
         ),
         With<Nanobot>,
     >,
-    structures: Query<(Entity, &Transform, &OwnerSwarm, &Structure)>,
+    structures: Query<(
+        Entity,
+        &Transform,
+        &OwnerSwarm,
+        &Structure,
+        Option<&CombatIdentity>,
+    )>,
     mut snapshot: ResMut<TerritorySnapshot>,
 ) {
     snapshot.by_swarm.clear();
@@ -193,7 +203,7 @@ pub fn project_territory_snapshot_system(
     }
 
     let mut threats = FixedSpatialBuckets::new(ZONE_BLOCK_SIZE);
-    for (entity, transform, member, kind, health) in &nanobots {
+    for (entity, transform, member, kind, health, identity) in &nanobots {
         if health.is_some_and(|health| health.current == 0) {
             continue;
         }
@@ -204,6 +214,7 @@ pub fn project_territory_snapshot_system(
                 swarm: member.0,
                 snapshot: ThreatSnapshot {
                     entity,
+                    combat_key: combat_key(entity, identity),
                     cell: world_to_cell(position),
                     position,
                     kind: if *kind == NanobotType::Defender {
@@ -215,7 +226,7 @@ pub fn project_territory_snapshot_system(
             },
         );
     }
-    for (entity, transform, owner, structure) in &structures {
+    for (entity, transform, owner, structure, identity) in &structures {
         if !structure.is_operational() {
             continue;
         }
@@ -229,6 +240,7 @@ pub fn project_territory_snapshot_system(
                 swarm: *swarm,
                 snapshot: ThreatSnapshot {
                     entity,
+                    combat_key: combat_key(entity, identity),
                     cell: world_to_cell(position),
                     position,
                     kind: ThreatKind::Structure,
@@ -236,12 +248,7 @@ pub fn project_territory_snapshot_system(
             },
         );
     }
-    threats.sort_entries_by(|left, right| {
-        left.snapshot
-            .entity
-            .to_bits()
-            .cmp(&right.snapshot.entity.to_bits())
-    });
+    threats.sort_entries_by(|left, right| left.snapshot.combat_key.cmp(&right.snapshot.combat_key));
 
     for swarm in live_swarms {
         let tiles = grid.swarm_tiles(swarm);
@@ -264,7 +271,16 @@ pub fn project_territory_snapshot_system(
                     threats
                         .entries(*tile)
                         .iter()
-                        .filter(|candidate| candidate.swarm != swarm)
+                        .filter(|candidate| {
+                            candidate.swarm != swarm
+                                && reachability.as_ref().is_none_or(|map| {
+                                    map.position_is_reachable(
+                                        swarm,
+                                        candidate.snapshot.position,
+                                        &grid,
+                                    )
+                                })
+                        })
                         .map(|candidate| candidate.snapshot),
                 );
             }
