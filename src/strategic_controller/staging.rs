@@ -181,7 +181,8 @@ pub(super) fn plan_staging(
             start,
             RouteGoal::Range {
                 center: destination,
-                radius: crate::ZONE_BLOCK_SIZE / 4.0,
+                // Leave room to route beside a structure at the tile center.
+                radius: crate::ZONE_BLOCK_SIZE / 2.0,
             },
             budget,
         )?
