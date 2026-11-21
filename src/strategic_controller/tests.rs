@@ -35,6 +35,7 @@ fn empty_state<'a>(grid: &'a IntentGrid, tick: u64) -> GameState<'a> {
         charge: &DEFAULT_CHARGE,
         reachability: None,
         route_query: None,
+        source_query: None,
         tick,
         finished: false,
     }
@@ -413,6 +414,7 @@ fn controller_erases_legacy_intent_and_never_paints_across_permanent_terrain() {
         charge: &DEFAULT_CHARGE,
         reachability: Some(&reachability),
         route_query: None,
+        source_query: None,
         tick: 0,
         finished: false,
     };
@@ -649,6 +651,7 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
         charge: &DEFAULT_CHARGE,
         reachability: None,
         route_query: None,
+        source_query: None,
         tick: 0,
         finished: false,
     };
@@ -738,6 +741,7 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 0,
             finished: false,
         },
@@ -819,6 +823,7 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -914,6 +919,7 @@ fn advantaged_raid_paints_enemy_logistics_and_keeps_home_economy() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 0,
             finished: false,
         },
@@ -1013,6 +1019,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 0,
             finished: false,
         },
@@ -1047,6 +1054,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -1148,6 +1156,7 @@ fn losing_a_mine_keeps_a_progressing_attack_front() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 0,
             finished: false,
         },
@@ -1185,6 +1194,7 @@ fn losing_a_mine_keeps_a_progressing_attack_front() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 1,
             finished: false,
         },
@@ -1247,6 +1257,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 0,
             finished: false,
         },
@@ -1265,6 +1276,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: WORK_WINDOW_TICKS - 1,
             finished: false,
         },
@@ -1284,6 +1296,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -1386,27 +1399,49 @@ fn expansion_waits_for_extraction_and_keeps_existing_mine_supported() {
         }
     }
 
-    let mature = controller.decide(
-        &tuning,
-        &GameState {
-            swarms: &swarms,
-            deposits: &deposits,
-            ..empty_state(&grid, 3 * WORK_WINDOW_TICKS)
-        },
-    );
-    apply(&mut grid, owner, &mature);
-    assert!(
-        grid.cell(IVec2::new(-8, 0))
-            .unwrap()
-            .has_owned(IntentKind::Gather, owner),
-        "a mature economy can expand while a newer mine is still getting started"
-    );
-    assert!(
-        grid.cell(IVec2::new(0, 6))
-            .unwrap()
-            .has_owned(IntentKind::Gather, owner),
-        "expanding further should retain the existing mine"
-    );
+    let crew = mature_economy_bots(owner, swarms[0].home);
+    for (tick, ready_sites, should_expand) in [
+        (3 * WORK_WINDOW_TICKS, &deposits[..2], false),
+        (4 * WORK_WINDOW_TICKS, &deposits[..], true),
+    ] {
+        let source_query = |_: SwarmId, position, allow_work: &mut dyn FnMut() -> bool| {
+            for site in ready_sites {
+                if !allow_work() {
+                    return None;
+                }
+                if position == site.position {
+                    return Some(true);
+                }
+            }
+            Some(false)
+        };
+        let decision = controller.decide(
+            &tuning,
+            &GameState {
+                swarms: &swarms,
+                bots: &crew,
+                deposits: &deposits,
+                source_query: Some(&source_query),
+                ..empty_state(&grid, tick)
+            },
+        );
+        apply(&mut grid, owner, &decision);
+        assert_eq!(
+            grid.cell(IVec2::new(-8, 0))
+                .unwrap()
+                .has_owned(IntentKind::Gather, owner),
+            should_expand,
+            "the third mine must leave both operating mines staffed",
+        );
+        for cell in [IVec2::new(4, 0), IVec2::new(0, 6)] {
+            assert!(
+                grid.cell(cell)
+                    .unwrap()
+                    .has_owned(IntentKind::Gather, owner),
+                "existing mines must stay marked"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1742,6 +1777,7 @@ fn income_lead_adds_a_home_push_without_abandoning_the_mine() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 0,
             finished: false,
         },
@@ -1768,6 +1804,7 @@ fn income_lead_adds_a_home_push_without_abandoning_the_mine() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -1949,6 +1986,7 @@ fn authored_terrain_leaves_budget_for_a_coordinated_plan() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 0,
             finished: false,
         },
@@ -2055,6 +2093,7 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 0,
             finished: false,
         },
@@ -2142,6 +2181,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 0,
             finished: false,
         },
@@ -2172,6 +2212,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 1,
             finished: false,
         },
@@ -2191,6 +2232,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -2278,6 +2320,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 0,
             finished: false,
         },
@@ -2304,6 +2347,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 1,
             finished: false,
         },
@@ -2322,6 +2366,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -2340,6 +2385,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: WORK_WINDOW_TICKS * 2,
             finished: false,
         },
@@ -2413,6 +2459,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 0,
             finished: false,
         },
@@ -2446,6 +2493,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 1,
             finished: false,
         },
@@ -2479,6 +2527,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 2,
             finished: false,
         },
@@ -2569,6 +2618,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 0,
             finished: false,
         },
@@ -2596,6 +2646,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 1,
             finished: false,
         },
@@ -2614,6 +2665,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -2631,6 +2683,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: WORK_WINDOW_TICKS * 2,
             finished: false,
         },
@@ -2650,6 +2703,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: WORK_WINDOW_TICKS * 3,
             finished: false,
         },
@@ -2668,6 +2722,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: WORK_WINDOW_TICKS * 4,
             finished: false,
         },
@@ -2686,6 +2741,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: WORK_WINDOW_TICKS * 5,
             finished: false,
         },
@@ -2750,6 +2806,7 @@ fn hunt_paint_holds_until_the_target_leaves_its_block() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 0,
             finished: false,
         },
@@ -2899,6 +2956,7 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
+            source_query: None,
             tick: 0,
             finished: false,
         },
@@ -2962,6 +3020,7 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
                 charge: &DEFAULT_CHARGE,
                 reachability: None,
                 route_query: None,
+                source_query: None,
                 tick: review * WORK_WINDOW_TICKS,
                 finished: false,
             },

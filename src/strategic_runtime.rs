@@ -16,7 +16,9 @@ use crate::{
     },
     navigation::{Navigation, RouteGoal, RouteOutcome},
     reachability::{IntentWriteAction, SwarmReachabilityMap, apply_reachable_intent},
-    resources::{ResourceDeposit, ResourceLedger, Stockpile, StockpileRole, buffered_minerals},
+    resources::{
+        ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole, buffered_minerals,
+    },
     strategic_controller::{
         BotState, Controller, DepositState, GameState, IntentEditAction, StructureKind,
         StructureState, SwarmState,
@@ -257,6 +259,7 @@ fn strategic_intent_system(
         .collect();
     bot_states.sort_by_key(|bot| bot.id);
     let mut economies = BTreeMap::<SwarmId, EconomyObservation>::new();
+    let mut usable_sources = Vec::new();
     let mut structure_states: Vec<_> = structures
         .iter()
         .filter_map(
@@ -283,6 +286,17 @@ fn strategic_intent_system(
                     economy.banked_minerals = economy.banked_minerals.saturating_add(minerals);
                     economy.has_idle_facility |= facility
                         .is_some_and(|facility| !facility.is_busy(tuning.production.ticks_per_bot));
+                    if kind == StructureKind::Source
+                        && stockpile.is_some_and(|stockpile| {
+                            stockpile.kind == ResourceKind::Minerals && stockpile.free_space() > 0
+                        })
+                    {
+                        usable_sources.push((
+                            entity.to_bits(),
+                            owner,
+                            transform.translation.truncate(),
+                        ));
+                    }
                 }
                 Some(StructureState {
                     id: entity.to_bits(),
@@ -297,6 +311,7 @@ fn strategic_intent_system(
         )
         .collect();
     structure_states.sort_by_key(|structure| structure.id);
+    usable_sources.sort_by_key(|&(id, _, _)| id);
     let mut swarm_states: Vec<_> = swarms
         .iter()
         .map(|(entity, id, position)| {
@@ -345,6 +360,23 @@ fn strategic_intent_system(
             .borrow_mut()
             .query(&navigation, start, goal, allow_work)
     };
+    let source_query = |owner: SwarmId, position: Vec2, allow_work: &mut dyn FnMut() -> bool| {
+        for &(_, source_owner, source_position) in &usable_sources {
+            if !allow_work() {
+                return None;
+            }
+            if owner == source_owner
+                && position.distance_squared(source_position)
+                    <= tuning.logistics.source_proximity_radius.powi(2)
+                && reachability
+                    .position_is_reachable_with_budget(owner, source_position, &grid, allow_work)
+                    .ok()?
+            {
+                return Some(true);
+            }
+        }
+        Some(false)
+    };
     let state = GameState {
         grid: &grid,
         swarms: &swarm_states,
@@ -355,6 +387,7 @@ fn strategic_intent_system(
         charge: &tuning.charge,
         reachability: Some(&reachability),
         route_query: Some(&route_query),
+        source_query: Some(&source_query),
         tick,
         finished: false,
     };

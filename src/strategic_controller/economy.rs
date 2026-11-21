@@ -28,6 +28,7 @@ struct MineStartup {
 pub(super) struct OwnedDeposit {
     pub(super) id: u64,
     position: Vec2,
+    haul_distance: f32,
     startup: Option<MineStartup>,
     pub(super) gather_cell: IVec2,
     pub(super) build_cell: IVec2,
@@ -313,11 +314,18 @@ pub(super) fn plan_economy(
             .total_cmp(&home.distance_squared(b.position))
             .then_with(|| a.id.cmp(&b.id))
     });
+    let (spare_workers, haul_overhead) =
+        if !unchecked.is_empty() && economy.owned_deposits.len() > 1 {
+            expansion_capacity(owner, state, &economy.owned_deposits, budget)?
+        } else {
+            (usize::MAX, 0.0)
+        };
     if !unchecked.is_empty()
-        && economy.owned_deposits.first().is_some_and(|mine| {
-            mine.startup.is_some()
-                && !opening_can_staff_both_mines(owner, home, mine, state, budget)
-        })
+        && (spare_workers == 0
+            || economy.owned_deposits.first().is_some_and(|mine| {
+                mine.startup.is_some()
+                    && !opening_can_staff_both_mines(owner, home, mine, state, budget)
+            }))
     {
         economy.free_deposit_exists |= unchecked.into_iter().any(|deposit| {
             !budget.exhausted
@@ -340,7 +348,9 @@ pub(super) fn plan_economy(
         let value = (deposit.amount as f32 + 1.0).ln() * tuning.strategy_expansion_income_weight
             - (terrain_exposure + enemy_exposure) * tuning.strategy_expansion_exposure_cost;
         let travel = home.distance(deposit.position);
-        let value = value - travel / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_travel_cost;
+        let value = value
+            - travel / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_travel_cost
+            - haul_overhead / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_haul_cost;
         // Navigation can move an obstructed origin to clear ground in its tile.
         let origin_offset = if state.route_query.is_some() {
             Vec2::splat(crate::ZONE_BLOCK_SIZE).length()
@@ -371,6 +381,7 @@ pub(super) fn plan_economy(
         economy.free_deposit_exists = true;
         let score = value - distance / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_haul_cost;
         if score > best.as_ref().map_or(0.0, |(_, _, score)| *score)
+            && (spare_workers > 1 || usable_source(owner, mine.position, state, budget)?)
             && economy.can_fit(&mine, ECONOMY_EXPANSION_PAINT_LIMIT, budget)
         {
             best = Some((mine, deposit, score));
@@ -457,6 +468,65 @@ fn reachable_position(
     state.reachability.map_or(Some(true), |map| {
         map.position_is_reachable_with_budget(owner, position, state.grid, &mut || budget.spend(1))
             .ok()
+    })
+}
+
+fn expansion_capacity(
+    owner: SwarmId,
+    state: &GameState<'_>,
+    mines: &[OwnedDeposit],
+    budget: &mut WorkBudget,
+) -> Option<(usize, f32)> {
+    let mut workers = 0usize;
+    let mut haulers = 0usize;
+    for bot in state.bots {
+        if !budget.spend(1) {
+            return None;
+        }
+        if bot.owner != owner
+            || bot.health == 0
+            || bot.kind == NanobotType::Defender
+            || !bot.position.is_finite()
+            || !state.grid.in_bounds(world_to_intent_cell(bot.position))
+            || !reachable_position(owner, bot.position, state, budget)?
+        {
+            continue;
+        }
+        match bot.kind {
+            NanobotType::Worker => workers += 1,
+            NanobotType::Hauler => haulers += 1,
+            NanobotType::Defender => {}
+        }
+    }
+    if haulers == 0 {
+        return Some((0, 0.0));
+    }
+
+    // Reserve one Worker for shared upkeep, then keep an extractor and any
+    // needed Source Stockpile builder at each existing mine.
+    let mut assigned_workers = 1;
+    let mut haul_distance = 0.0;
+    for mine in mines {
+        if !budget.spend(1) {
+            return None;
+        }
+        assigned_workers += 1 + usize::from(!usable_source(owner, mine.position, state, budget)?);
+        haul_distance += mine.haul_distance;
+    }
+    Some((
+        workers.saturating_sub(assigned_workers),
+        haul_distance / haulers as f32,
+    ))
+}
+
+fn usable_source(
+    owner: SwarmId,
+    position: Vec2,
+    state: &GameState<'_>,
+    budget: &mut WorkBudget,
+) -> Option<bool> {
+    state.source_query.map_or(Some(false), |query| {
+        query(owner, position, &mut || budget.spend(1))
     })
 }
 
@@ -656,6 +726,7 @@ fn mine_support(
             OwnedDeposit {
                 id: deposit.id,
                 position: deposit.position,
+                haul_distance: distance,
                 startup: None,
                 gather_cell,
                 build_cell,

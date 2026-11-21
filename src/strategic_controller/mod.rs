@@ -86,6 +86,9 @@ pub struct DepositState {
 pub type RouteQuery<'a> =
     dyn Fn(Vec2, RouteGoal, &mut dyn FnMut() -> bool) -> Option<RouteOutcome> + 'a;
 
+/// A budgeted snapshot query for nearby usable Source Stockpiles.
+pub type SourceQuery<'a> = dyn Fn(SwarmId, Vec2, &mut dyn FnMut() -> bool) -> Option<bool> + 'a;
+
 pub struct GameState<'a> {
     pub grid: &'a IntentGrid,
     pub swarms: &'a [SwarmState],
@@ -97,6 +100,8 @@ pub struct GameState<'a> {
     /// Present for gameplay controllers; omitted by terrain-agnostic unit fixtures.
     pub reachability: Option<&'a SwarmReachabilityMap>,
     pub route_query: Option<&'a RouteQuery<'a>>,
+    /// Fixtures without this query assume prospective sites need new Sources.
+    pub source_query: Option<&'a SourceQuery<'a>>,
     pub tick: u64,
     pub finished: bool,
 }
