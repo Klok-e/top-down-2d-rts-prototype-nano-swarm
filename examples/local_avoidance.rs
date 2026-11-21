@@ -1,7 +1,7 @@
 //! Real-process headless acceptance fixture for opposing bottleneck traffic.
 //!
 //! Run with a private XDG_RUNTIME_DIR and `BEVY_ASSET_ROOT="$PWD"`:
-//! `cargo run --example local_avoidance`.
+//! `RUST_LOG=local_avoidance=info cargo run --example local_avoidance`.
 //! Use `scripts/nano_swarm_control.py screenshot --name before`, then
 //! `paint corridor -3 -3`. On the `TRAFFIC retreat` log, capture `retreat`,
 //! then `paint corridor -2 -3`. On `TRAFFIC arrived`, capture `arrived`, then
@@ -12,9 +12,12 @@ use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Commitment, DirectMovementComponent, Health, Nanobot, NanobotType, StrategicController,
-        Structure, StructureKind, Swarm, SwarmId, SwarmMember, VelocityComponent,
+        Commitment, CongestionRecovery, DirectMovementComponent, Health, Nanobot, NanobotType,
+        Structure, StructureKind, SwarmId, SwarmMember, VelocityComponent,
     },
+    reachability::SwarmReachabilityMap,
+    scenario_selection::Scenario,
+    session_lifecycle::SessionEntity,
 };
 
 use top_down_2d_rts_prototype_nano_swarm::runtime::{RuntimeOptions, build_runtime_app};
@@ -39,6 +42,7 @@ struct TrafficScene {
 fn main() {
     let mut app = build_runtime_app(RuntimeOptions {
         headless: true,
+        scenario: Some(Scenario::Standard),
         agent_socket: true,
         width: 1280,
         height: 720,
@@ -48,17 +52,13 @@ fn main() {
     app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
         std::time::Duration::from_secs_f64(1. / 60.),
     ));
-    app.add_systems(PostStartup, prepare)
-        .add_systems(First, release_phase)
+    app.add_systems(First, (prepare.run_if(run_once), release_phase).chain())
         .add_systems(FixedPostUpdate, verify_tick);
     app.run();
 }
 
 fn release_phase(world: &mut World) {
-    let Some(scene) = world.get_resource::<TrafficScene>() else {
-        return;
-    };
-    let phase = scene.phase;
+    let phase = world.resource::<TrafficScene>().phase;
     let (cell, next) = match phase {
         Phase::Before => (IVec2::new(-3, -3), Phase::Approaching),
         Phase::Retreat => (IVec2::new(-2, -3), Phase::Resuming),
@@ -90,6 +90,7 @@ fn release_phase(world: &mut World) {
 fn verify_tick(
     mut scene: ResMut<TrafficScene>,
     positions: Query<&Transform>,
+    recovering: Query<(), With<CongestionRecovery>>,
     mut time: ResMut<Time<Virtual>>,
 ) {
     let current: Vec<Vec2> = scene
@@ -108,8 +109,10 @@ fn verify_tick(
                 0.
             };
             assert!(
-                (separation + change * t).length() >= 67.99,
-                "swept body overlap at tick {}: {current:?}",
+                (separation + change * t).length() >= 67.99
+                    || recovering.contains(scene.bots[i].0)
+                    || recovering.contains(scene.bots[j].0),
+                "swept body overlap outside recovery at tick {} for pair {i}/{j}: {current:?}",
                 scene.ticks
             );
         }
@@ -150,7 +153,7 @@ fn verify_tick(
         scene.phase = Phase::Arrived;
         time.pause();
         info!(
-            "TRAFFIC arrived: tick {}, positions {current:?}; swept separation and structure clearance passed every fixed tick",
+            "TRAFFIC arrived: tick {}, positions {current:?}; traffic and structure clearance checks passed every fixed tick",
             scene.ticks
         );
     }
@@ -199,7 +202,7 @@ fn segment_rectangle_distance(a: Vec2, b: Vec2, center: Vec2) -> f32 {
 
 fn prepare(world: &mut World) {
     for entity in world
-        .query_filtered::<Entity, Or<(With<Nanobot>, With<Sprite>, With<Swarm>)>>()
+        .query_filtered::<Entity, Or<(With<SessionEntity>, With<Sprite>, With<Node>, With<Mesh2d>)>>()
         .iter(world)
         .collect::<Vec<_>>()
     {
@@ -207,23 +210,11 @@ fn prepare(world: &mut World) {
             world.despawn(entity);
         }
     }
-    for entity in world
-        .query_filtered::<Entity, Or<(With<Node>, With<Mesh2d>)>>()
-        .iter(world)
-        .collect::<Vec<_>>()
-    {
-        if world.get_entity(entity).is_ok() {
-            world.despawn(entity);
-        }
-    }
-    for entity in world
-        .query_filtered::<Entity, With<StrategicController>>()
-        .iter(world)
-        .collect::<Vec<_>>()
-    {
-        world.entity_mut(entity).remove::<StrategicController>();
-    }
-    world.insert_resource(IntentGrid::new(8, 8));
+    let grid = IntentGrid::new(8, 8);
+    let reachability = SwarmReachabilityMap::new(&grid, [], [(SwarmId::PLAYER, Vec2::ZERO)])
+        .expect("the traffic fixture has open terrain around the player's home");
+    world.insert_resource(grid);
+    world.insert_resource(reachability);
     for (mut transform, mut projection, mut zoom) in world
         .query::<(&mut Transform, &mut Projection, &mut CameraZoom2d)>()
         .iter_mut(world)

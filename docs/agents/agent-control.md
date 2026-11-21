@@ -22,6 +22,30 @@ Headless mode disables Winit and creates no desktop window. Rendering, UI layout
 
 Headless width and height are each capped at 8,192 pixels, with a total budget of 16,777,216 pixels, so invalid CLI input fails before allocating the render image.
 
+## Offscreen verifier setup
+
+From the repository root, prepare the debug binary and environment for the verification scripts. A short temporary path leaves room for the Unix socket name. The Cargo runner prints the library path for the matching Bevy build.
+
+```bash
+export CARGO_TARGET_DIR="$PWD/target" TMPDIR=/tmp
+cargo build &&
+  LD_LIBRARY_PATH="$(cargo run --config 'target."cfg(unix)".runner = ["sh", "-c", "printenv LD_LIBRARY_PATH"]')" &&
+  export LD_LIBRARY_PATH
+```
+
+## Verify scenario restarts and AI Battle recording
+
+After setup succeeds, use the same shell and give each verifier an artifact directory that does not already exist.
+
+```bash
+mkdir -p .tmp &&
+  run_dir=$(mktemp -d .tmp/live-checks.XXXXXX) &&
+  python3 scripts/verify_session_restart.py --artifacts "$run_dir/restart" &&
+  python3 scripts/verify_ai_battle.py --artifacts "$run_dir/battle"
+```
+
+The restart check verifies that switching scenarios and restarting Standard both open an in-progress match at the starting zoom within the same process. The battle check verifies that spectator painting is rejected and that Ctrl+C saves samples and an interrupted summary with no winner. Both check socket cleanup and save screenshots and a process log in their artifact directory.
+
 ## Client
 
 The client uses only Python's standard library:
@@ -119,7 +143,7 @@ python scripts/nano_swarm_control.py tuning-toggle
 
 `tuning.toggle` without a group toggles panel visibility; with a group it toggles that group's expansion and opens the panel. Unknown groups return `invalid_tuning`. Tuning commands remain available with the scenario menu open and after a match finishes. Tuning applies to both swarms and survives scenario replacement.
 
-For an isolated tuning experiment, copy the tracked `config/balance.ron` into a run-specific directory under `.tmp/` and launch with `--tuning-file` pointing to the copy. The runtime strictly loads this complete file before scenario creation, and all accepted edits write back to the selected path. The default is the project-root `config/balance.ron`, independent of the working directory.
+For an isolated tuning experiment, copy the tracked `config/balance.ron` and launch with `--tuning-file` pointing to the copy. The runtime strictly loads this complete file before scenario creation, and all accepted edits write back to the selected path. The default is the project-root `config/balance.ron`, independent of the working directory.
 
 ## State Snapshot
 
