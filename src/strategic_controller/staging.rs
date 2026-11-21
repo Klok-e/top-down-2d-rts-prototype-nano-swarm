@@ -9,7 +9,7 @@ use super::{
 use crate::navigation::RouteGoal;
 
 const MAX_STAGING_POINTS: usize = 6;
-const PURSUIT_AREA_CELLS: usize = 9;
+pub(super) const MINIMUM_STAGING_BLOCK_CELLS: usize = 9;
 
 #[derive(Debug, Clone)]
 pub(super) struct StagingFront {
@@ -50,7 +50,7 @@ impl StagingFront {
             || if self.active + 1 == self.points.len() {
                 self.covers(target, owner, state)
             } else {
-                DefendBlock::new(destination, PURSUIT_AREA_CELLS).contains(target)
+                DefendBlock::new(destination, MINIMUM_STAGING_BLOCK_CELLS).contains(target)
             }
     }
 
@@ -195,7 +195,8 @@ pub(super) fn plan_staging(
     let waypoints = if state.route_query.is_some() {
         let goal = candidate.approach.unwrap_or(RouteGoal::Range {
             center: destination,
-            radius: crate::ZONE_BLOCK_SIZE / 4.0,
+            // Leave room to route beside a structure at the tile center.
+            radius: crate::ZONE_BLOCK_SIZE / 2.0,
         });
         let route = query_route(state, start, goal, budget).or_else(|| {
             if start == home || budget.exhausted {

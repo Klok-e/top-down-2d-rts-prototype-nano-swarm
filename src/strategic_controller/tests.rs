@@ -1,3 +1,6 @@
+static DEFAULT_CHARGE: std::sync::LazyLock<ChargeTuning> =
+    std::sync::LazyLock::new(ChargeTuning::default);
+
 use super::*;
 
 fn direct_attack_tuning() -> AutonomyTuning {
@@ -29,6 +32,7 @@ fn empty_state<'a>(grid: &'a IntentGrid, tick: u64) -> GameState<'a> {
         structures: &[],
         deposits: &[],
         terrain: &[],
+        charge: &DEFAULT_CHARGE,
         reachability: None,
         route_query: None,
         tick,
@@ -54,6 +58,7 @@ fn corridor_paint_follows_the_supplied_deposit_route() {
         home: world(IVec2::ZERO),
         minerals: 1_000,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let deposits = [DepositState {
         id: 1,
@@ -109,6 +114,7 @@ fn corridor_paint_without_routing_follows_a_straight_cell_line() {
         home: world(IVec2::ZERO),
         minerals: 1_000,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let deposits = [DepositState {
         id: 1,
@@ -141,6 +147,7 @@ fn a_neutral_deposit_is_not_claimed_when_no_corridor_reaches_it() {
         home: world(IVec2::ZERO),
         minerals: 1_000,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let deposits = [DepositState {
         id: 1,
@@ -159,6 +166,7 @@ fn a_neutral_deposit_is_not_claimed_when_no_corridor_reaches_it() {
             swarms: &swarms,
             deposits: &deposits,
             terrain: &terrain,
+            charge: &DEFAULT_CHARGE,
             ..empty_state(&grid, 0)
         },
     );
@@ -180,6 +188,7 @@ fn corridor_search_spends_planning_work_and_keeps_existing_paint_on_exhaustion()
         home: world(IVec2::ZERO),
         minerals: 1_000,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let deposit = DepositState {
         id: 1,
@@ -236,6 +245,7 @@ fn expansion_rejects_a_deposit_whose_corridor_exceeds_paint_capacity() {
         home: world(IVec2::ZERO),
         minerals: 1_000,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let deposit_cell = IVec2::new(98, 0);
     let deposits = [DepositState {
@@ -293,6 +303,7 @@ fn changed_plan_erases_superseded_paint_beyond_the_cleanup_cursor() {
         home: world(IVec2::ZERO),
         minerals: 100,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let target = BotState {
         id: 42,
@@ -389,6 +400,7 @@ fn controller_erases_legacy_intent_and_never_paints_across_permanent_terrain() {
         home: Vec2::new(-252.0, 36.0),
         minerals: 0,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let terrain = [wall];
     let state = GameState {
@@ -398,6 +410,7 @@ fn controller_erases_legacy_intent_and_never_paints_across_permanent_terrain() {
         structures: &[],
         deposits: &[],
         terrain: &terrain,
+        charge: &DEFAULT_CHARGE,
         reachability: Some(&reachability),
         route_query: None,
         tick: 0,
@@ -431,6 +444,7 @@ fn controller_stops_hunting_a_target_on_the_isolated_side_of_a_painted_tile() {
         home,
         minerals: 0,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let target = BotState {
         id: 1,
@@ -452,6 +466,7 @@ fn controller_stops_hunting_a_target_on_the_isolated_side_of_a_painted_tile() {
             swarms: &swarms,
             bots: &[target],
             terrain: &terrain,
+            charge: &DEFAULT_CHARGE,
             reachability: Some(&reachability),
             route_query: None,
             ..empty_state(&grid, 0)
@@ -476,6 +491,7 @@ fn controller_stops_hunting_a_target_on_the_isolated_side_of_a_painted_tile() {
             swarms: &swarms,
             bots: &[moved],
             terrain: &terrain,
+            charge: &DEFAULT_CHARGE,
             reachability: Some(&reachability),
             route_query: None,
             ..empty_state(&grid, 1)
@@ -548,12 +564,14 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
             home: world(IVec2::ZERO),
             minerals: 40,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(8, 0)),
             minerals: 20,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
     ];
     let bots = [
@@ -628,6 +646,7 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
         structures: &structures,
         deposits: &deposits,
         terrain: &[],
+        charge: &DEFAULT_CHARGE,
         reachability: None,
         route_query: None,
         tick: 0,
@@ -679,6 +698,7 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
         home,
         minerals: 0,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let economy_bots = mature_economy_bots(owner, home);
     let deposits = [
@@ -715,6 +735,7 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
             structures: &primary_chain,
             deposits: &deposits,
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 0,
@@ -736,6 +757,7 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
         SwarmState {
             minerals: 2_000,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
             ..initial_swarms[0]
         },
         SwarmState {
@@ -743,6 +765,7 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
             home: world(IVec2::new(8, 0)),
             minerals: 0,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
     ];
     let defenders = (0..8).map(|id| BotState {
@@ -793,6 +816,7 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
             ],
             deposits: &deposits,
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: WORK_WINDOW_TICKS,
@@ -828,12 +852,14 @@ fn advantaged_raid_paints_enemy_logistics_and_keeps_home_economy() {
             home: world(IVec2::ZERO),
             minerals: 1_000,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(8, 0)),
             minerals: 0,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
     ];
     let bots = (0..8)
@@ -885,6 +911,7 @@ fn advantaged_raid_paints_enemy_logistics_and_keeps_home_economy() {
             structures: &structures,
             deposits: &deposits,
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 0,
@@ -925,12 +952,14 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
             home: world(IVec2::ZERO),
             minerals: 2_000,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(12, 0)),
             minerals: 0,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
     ];
     let friendly_defenders = (0..2)
@@ -981,6 +1010,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
             structures: &[],
             deposits: &[],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 0,
@@ -1014,6 +1044,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
             structures: &[rich_charger],
             deposits: &[],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: WORK_WINDOW_TICKS,
@@ -1054,12 +1085,14 @@ fn losing_a_mine_keeps_a_progressing_attack_front() {
             home: world(IVec2::ZERO),
             minerals: 2_000,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(12, 0)),
             minerals: 0,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
     ];
     let bots = (0..8)
@@ -1112,6 +1145,7 @@ fn losing_a_mine_keeps_a_progressing_attack_front() {
             structures: &[friendly_charger, incumbent],
             deposits: &[mine],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 0,
@@ -1148,6 +1182,7 @@ fn losing_a_mine_keeps_a_progressing_attack_front() {
             structures: &[friendly_charger, progressing_incumbent, new_forward_target],
             deposits: &[DepositState { amount: 0, ..mine }],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 1,
@@ -1190,6 +1225,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
         home: world(IVec2::ZERO),
         minerals: 20,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let deposits = [DepositState {
         id: 20,
@@ -1208,6 +1244,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
             structures: &[],
             deposits: &deposits,
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 0,
@@ -1225,6 +1262,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
             structures: &[],
             deposits: &deposits,
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: WORK_WINDOW_TICKS - 1,
@@ -1243,6 +1281,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
             structures: &[],
             deposits: &deposits,
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: WORK_WINDOW_TICKS,
@@ -1264,6 +1303,7 @@ fn new_neutral_deposit_keeps_the_existing_mine_supported() {
         home: world(IVec2::ZERO),
         minerals: 0,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let deposits = [
         DepositState {
@@ -1334,6 +1374,7 @@ fn depleted_and_unreachable_deposits_are_removed_without_abandoning_the_others()
         home,
         minerals: 0,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let cells = [IVec2::new(4, 0), IVec2::new(0, 4), IVec2::new(-4, 0)];
     let mut deposits = cells.map(|cell| DepositState {
@@ -1420,6 +1461,7 @@ fn an_owned_mine_can_take_a_longer_corridor_when_another_depletes() {
         home,
         minerals: 0,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let west = IVec2::new(-4, 0);
     let east = IVec2::new(4, 0);
@@ -1490,12 +1532,14 @@ fn income_lead_adds_a_home_push_without_abandoning_the_mine() {
             home: world(IVec2::ZERO),
             minerals: 0,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(24, 24)),
             minerals: 0,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
     ];
     let bots = [owner, enemy]
@@ -1545,6 +1589,7 @@ fn income_lead_adds_a_home_push_without_abandoning_the_mine() {
             structures: &[facility],
             deposits: &deposit,
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 0,
@@ -1570,6 +1615,7 @@ fn income_lead_adds_a_home_push_without_abandoning_the_mine() {
             structures: &[facility],
             deposits: &deposit,
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: WORK_WINDOW_TICKS,
@@ -1602,6 +1648,7 @@ fn expansion_prefers_income_after_hauling_and_exposure_costs() {
         home,
         minerals: 0,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let poor = IVec2::new(0, -2);
     let best = IVec2::new(0, 5);
@@ -1610,7 +1657,7 @@ fn expansion_prefers_income_after_hauling_and_exposure_costs() {
     let deposits = [
         (poor, 35),
         (best, 12_000),
-        (exposed, 12_000),
+        (exposed, 12_700),
         (costly, 40_000),
     ]
     .into_iter()
@@ -1649,24 +1696,33 @@ fn expansion_prefers_income_after_hauling_and_exposure_costs() {
             _ => RouteOutcome::Unreachable,
         })
     };
-    let decision = Controller::new(owner).decide(
-        &AutonomyTuning::default(),
-        &GameState {
-            swarms: &swarms,
-            deposits: &deposits,
-            terrain: &terrain,
-            route_query: Some(&route),
-            ..empty_state(&grid, 0)
-        },
-    );
+    let choose = |tuning: &AutonomyTuning| {
+        let decision = Controller::new(owner).decide(
+            tuning,
+            &GameState {
+                swarms: &swarms,
+                deposits: &deposits,
+                terrain: &terrain,
+                route_query: Some(&route),
+                ..empty_state(&grid, 0)
+            },
+        );
+        decision
+            .edits
+            .iter()
+            .filter(|edit| edit.kind == IntentKind::Gather)
+            .map(|edit| edit.cell)
+            .collect::<Vec<_>>()
+    };
 
-    let gather = decision
-        .edits
-        .iter()
-        .filter(|edit| edit.kind == IntentKind::Gather)
-        .map(|edit| edit.cell)
-        .collect::<Vec<_>>();
-    assert_eq!(gather, [best]);
+    assert_eq!(choose(&AutonomyTuning::default()), [best]);
+    assert_eq!(
+        choose(&AutonomyTuning {
+            strategy_expansion_exposure_cost: 0.0,
+            ..Default::default()
+        }),
+        [exposed],
+    );
 }
 
 #[test]
@@ -1680,12 +1736,14 @@ fn authored_terrain_leaves_budget_for_a_coordinated_plan() {
             home: crate::scenario::cell_origin(crate::scenario::PLAYER_CELL),
             minerals: 0,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
         SwarmState {
             id: enemy,
             home: crate::scenario::cell_origin(crate::scenario::OPPONENT_CELL),
             minerals: 0,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
     ];
     let bots = NanobotType::ALL
@@ -1738,6 +1796,7 @@ fn authored_terrain_leaves_budget_for_a_coordinated_plan() {
             structures: &[],
             deposits: &deposits,
             terrain: &terrain,
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 0,
@@ -1770,12 +1829,14 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
             home: crate::scenario::cell_origin(crate::scenario::PLAYER_CELL),
             minerals: 2_000,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
         SwarmState {
             id: enemy,
             home: crate::scenario::cell_origin(crate::scenario::OPPONENT_CELL),
             minerals: 0,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
     ];
     let bots = (0..10)
@@ -1841,6 +1902,7 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
             structures: &structures,
             deposits: &deposits,
             terrain: &terrain,
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 0,
@@ -1882,12 +1944,14 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
             home: world(IVec2::ZERO),
             minerals: 2_000,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(12, 0)),
             minerals: 0,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
     ];
     let friendly_defenders = (0..2).map(|id| BotState {
@@ -1925,6 +1989,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
             structures: &[],
             deposits: &[],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 0,
@@ -1954,6 +2019,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
             structures: &[],
             deposits: &[],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 1,
@@ -1972,6 +2038,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
             structures: &[],
             deposits: &[],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: WORK_WINDOW_TICKS,
@@ -2004,12 +2071,14 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             home: world(IVec2::ZERO),
             minerals: 2_000,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(12, 0)),
             minerals: 0,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
     ];
     let friendly_defenders = (0..2).map(|id| BotState {
@@ -2056,6 +2125,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             structures: &[],
             deposits: &[],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 0,
@@ -2081,6 +2151,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             structures: &[],
             deposits: &[],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 1,
@@ -2098,6 +2169,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             structures: &[alternative],
             deposits: &[],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: WORK_WINDOW_TICKS,
@@ -2115,6 +2187,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             structures: &[alternative],
             deposits: &[],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: WORK_WINDOW_TICKS * 2,
@@ -2142,12 +2215,14 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
             home: world(IVec2::ZERO),
             minerals: 2_000,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(12, 0)),
             minerals: 0,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
     ];
     let friendly_defenders = (0..2).map(|id| BotState {
@@ -2185,6 +2260,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
             structures: &[],
             deposits: &[],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 0,
@@ -2217,6 +2293,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
             structures: &[],
             deposits: &[],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 1,
@@ -2249,6 +2326,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
             structures: &[competing_charger],
             deposits: &[],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 2,
@@ -2284,12 +2362,14 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             home: world(IVec2::ZERO),
             minerals: 2_000,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(12, 0)),
             minerals: 0,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
     ];
     let friendly_defenders = (0..2).map(|id| BotState {
@@ -2336,6 +2416,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             structures: &[],
             deposits: &[],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 0,
@@ -2362,6 +2443,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             structures: &[],
             deposits: &[],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 1,
@@ -2379,6 +2461,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             structures: &[],
             deposits: &[],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: WORK_WINDOW_TICKS,
@@ -2395,6 +2478,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             structures: &[alternative],
             deposits: &[],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: WORK_WINDOW_TICKS * 2,
@@ -2413,6 +2497,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             structures: &[alternative],
             deposits: &[],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: WORK_WINDOW_TICKS * 3,
@@ -2430,6 +2515,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             structures: &[alternative],
             deposits: &[],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: WORK_WINDOW_TICKS * 4,
@@ -2447,6 +2533,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             structures: &[alternative],
             deposits: &[],
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: WORK_WINDOW_TICKS * 5,
@@ -2471,12 +2558,14 @@ fn hunt_paint_holds_until_the_target_leaves_its_block() {
             home: world(IVec2::ZERO),
             minerals: 100,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(20, 20)),
             minerals: 0,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
     ];
     let deposit = [DepositState {
@@ -2508,6 +2597,7 @@ fn hunt_paint_holds_until_the_target_leaves_its_block() {
             structures: &[],
             deposits: &deposit,
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 0,
@@ -2609,12 +2699,14 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
             home,
             minerals: 0,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
         SwarmState {
             id: enemy,
             home: enemy_home,
             minerals: 0,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
     ];
     let economy_bots = mature_economy_bots(owner, home);
@@ -2654,6 +2746,7 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
             structures: &[primary_chain[0], primary_chain[1], enemy_facility],
             deposits: &deposits,
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 0,
@@ -2716,6 +2809,7 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
                 structures: &[primary_chain[0], primary_chain[1], enemy_facility],
                 deposits: &deposits,
                 terrain: &[],
+                charge: &DEFAULT_CHARGE,
                 reachability: None,
                 route_query: None,
                 tick: review * WORK_WINDOW_TICKS,
@@ -2772,12 +2866,14 @@ fn live_scoring_review_changes_intent_without_refilling_the_planning_allowance()
             home: world(IVec2::ZERO),
             minerals: 0,
             mineral_income_per_second: 10.0,
+            production_saturated: false,
         },
         SwarmState {
             id: enemy.owner,
             home: world(target),
             minerals: 0,
             mineral_income_per_second: 2.0,
+            production_saturated: false,
         },
     ];
     let bots = [enemy];
@@ -2855,6 +2951,7 @@ fn wounded_target_priority_uses_the_edited_health_maximum() {
         home: world(IVec2::ZERO),
         minerals: 0,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let mut structure = StructureState {
         id: 9,
@@ -2951,6 +3048,7 @@ fn a_compact_front_leads_the_army_and_waits_for_most_defenders() {
         home: world(IVec2::ZERO),
         minerals: 2_000,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let target = StructureState {
         id: 10,
@@ -3100,6 +3198,7 @@ fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
         home: world(IVec2::ZERO),
         minerals: 2_000,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let target = StructureState {
         id: 10,
@@ -3242,12 +3341,14 @@ fn military_priorities_protect_expansion_before_attacking_home() {
             home: world(IVec2::ZERO),
             minerals: 100,
             mineral_income_per_second: 100.0,
+            production_saturated: false,
         },
         SwarmState {
             id: enemy,
             home: world(enemy_home),
             minerals: 100,
             mineral_income_per_second: 1.0,
+            production_saturated: false,
         },
     ];
     let main_deposit = DepositState {
@@ -3494,12 +3595,14 @@ fn healthy_enemy_home_requires_a_live_tuned_income_lead() {
             home: world(IVec2::ZERO),
             minerals: 10_000,
             mineral_income_per_second: 15.0,
+            production_saturated: false,
         },
         SwarmState {
             id: enemy,
             home: world(enemy_home),
             minerals: 0,
             mineral_income_per_second: 10.0,
+            production_saturated: false,
         },
     ];
     let structures = [StructureState {
@@ -3571,4 +3674,160 @@ fn healthy_enemy_home_requires_a_live_tuned_income_lead() {
         cleanup.explanation.contains("hunt remaining Nanobot 2"),
         "{cleanup:?}"
     );
+}
+
+#[test]
+fn defend_paint_follows_income_and_preserves_chargers_when_reserves_fall() {
+    let owner = SwarmId::PLAYER;
+    let home = IVec2::ZERO;
+    let charger_cell = IVec2::new(6, 4);
+    let mut grid = IntentGrid::new(24, 24);
+    let mut controller = Controller::new(owner);
+    let tuning = AutonomyTuning::default();
+    let mut swarms = [SwarmState {
+        id: owner,
+        home: world(home),
+        minerals: tuning.strategy_mineral_reserve,
+        mineral_income_per_second: 0.0,
+        production_saturated: false,
+    }];
+    let primary = StructureState {
+        id: 27,
+        owner,
+        position: world(charger_cell),
+        kind: StructureKind::Charger,
+        health: 100,
+        max_health: 100,
+        minerals: tuning.strategy_charger_reserve,
+    };
+    let mut chargers = [
+        primary,
+        StructureState {
+            id: primary.id + 1,
+            position: world(charger_cell + IVec2::X),
+            ..primary
+        },
+    ];
+    let mut review =
+        |grid: &mut IntentGrid, swarms: &[SwarmState], chargers: &[StructureState], tick| {
+            let decision = controller.decide(
+                &tuning,
+                &GameState {
+                    swarms,
+                    structures: chargers,
+                    ..empty_state(grid, tick)
+                },
+            );
+            apply(grid, owner, &decision);
+            assert!(
+                grid.cell(charger_cell)
+                    .is_some_and(|cell| cell.has_owned(IntentKind::Defend, owner)),
+                "the operational Charger remains accessible through the review"
+            );
+            grid.iter_active_cells()
+                .filter(|(_, cell)| cell.has_owned(IntentKind::Defend, owner))
+                .count()
+        };
+    let initial = review(&mut grid, &swarms, &chargers, 0);
+    swarms[0].mineral_income_per_second = 12.0;
+    let supplied = review(&mut grid, &swarms, &chargers, WORK_WINDOW_TICKS);
+    assert!(supplied > initial, "sustained income grows Defend paint");
+    swarms[0].minerals = tuning.strategy_mineral_reserve - 1;
+    assert!(
+        review(&mut grid, &swarms, &chargers, 2 * WORK_WINDOW_TICKS) < supplied,
+        "bank depletion shrinks Defend paint even while extraction continues"
+    );
+    swarms[0].minerals = tuning.strategy_mineral_reserve;
+    chargers.iter_mut().for_each(|charger| charger.minerals = 0);
+    assert!(
+        review(&mut grid, &swarms, &chargers, 3 * WORK_WINDOW_TICKS) < supplied,
+        "a depleted Charger shrinks Defend paint even with minerals banked elsewhere"
+    );
+}
+
+#[test]
+fn production_room_requires_saturation_and_mineral_surplus() {
+    let owner = SwarmId::PLAYER;
+    let home = IVec2::new(1, 2);
+    let grid = IntentGrid::new(16, 16);
+    let tuning = AutonomyTuning::default();
+    let builds = |production_saturated, minerals| {
+        let swarms = [SwarmState {
+            id: owner,
+            home: world(home),
+            minerals,
+            mineral_income_per_second: 0.0,
+            production_saturated: false,
+            production_saturated,
+        }];
+        let decision = Controller::new(owner).decide(
+            &tuning,
+            &GameState {
+                swarms: &swarms,
+                ..empty_state(&grid, 0)
+            },
+        );
+        decision
+            .edits
+            .into_iter()
+            .filter(|edit| edit.kind == IntentKind::Build && edit.action == IntentEditAction::Paint)
+            .map(|edit| edit.cell)
+            .collect::<Vec<_>>()
+    };
+    let threshold = tuning.strategy_production_mineral_threshold;
+    assert_eq!(builds(false, threshold + 1), [home]);
+    assert_eq!(builds(true, threshold), [home]);
+    let expanded = builds(true, threshold + 1);
+    assert!(
+        expanded.len() > 1,
+        "saturation with surplus minerals adds Build room"
+    );
+    assert!(
+        expanded
+            .iter()
+            .all(|&cell| (cell - home).abs().element_sum() <= 1)
+    );
+}
+
+#[test]
+fn empty_chargers_do_not_create_demand_for_an_unaffordable_army() {
+    let owner = SwarmId::PLAYER;
+    let mut grid = IntentGrid::new(24, 24);
+    let swarms = [SwarmState {
+        id: owner,
+        home: world(IVec2::ZERO),
+        minerals: 4_000,
+        mineral_income_per_second: 30.0,
+        production_saturated: false,
+    }];
+    let chargers = (-5..=5)
+        .map(|row| StructureState {
+            id: (row + 10) as u64,
+            owner,
+            position: world(IVec2::new(8, row)),
+            kind: StructureKind::Charger,
+            health: 100,
+            max_health: 100,
+            minerals: 0,
+        })
+        .collect::<Vec<_>>();
+    let tuning = AutonomyTuning::default();
+    let decision = Controller::new(owner).decide(
+        &tuning,
+        &GameState {
+            swarms: &swarms,
+            structures: &chargers,
+            ..empty_state(&grid, 0)
+        },
+    );
+    apply(&mut grid, owner, &decision);
+    let territory = grid
+        .iter_active_cells()
+        .filter(|(_, cell)| {
+            IntentKind::ALL
+                .iter()
+                .any(|&kind| cell.has_owned(kind, owner))
+        })
+        .count();
+    assert!(territory.div_ceil(2) <= tuning.strategy_defender_baseline as usize);
 }

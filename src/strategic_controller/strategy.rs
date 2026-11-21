@@ -168,19 +168,6 @@ pub(super) fn generate_candidates(
     let home = owner_state.map_or(Vec2::ZERO, |swarm| swarm.home);
     let home_cell = world_to_intent_cell(home);
     let forces = estimate_forces(tuning, owner, state, budget);
-    let defend_target = (forces.friendly_defenders * 2 + 4).clamp(9, 20);
-    let key_charger = state
-        .structures
-        .iter()
-        .take(MAX_STRUCTURES)
-        .find(|structure| {
-            budget.spend(1)
-                && structure.owner == owner
-                && structure.kind == StructureKind::Charger
-                && structure.health > 0
-                && is_target_reachable(owner, state, structure.position)
-        })
-        .copied();
     let base = PlanCandidate {
         objective: economy
             .expansion
@@ -189,8 +176,6 @@ pub(super) fn generate_candidates(
         anchor: home_cell,
         attack_target: None,
         approach: None,
-        key_charger,
-        defend_target,
         score: 0.0,
         protected_home: None,
     };
@@ -463,7 +448,6 @@ pub(super) fn estimate_forces(
         let strength = bot.health as f32
             * (tuning.strategy_force_base_weight + charge * tuning.strategy_force_charge_weight);
         if bot.owner == owner {
-            estimate.friendly_defenders += 1;
             estimate.friendly_strength += strength;
         } else {
             estimate.enemy_strength += strength;

@@ -126,6 +126,26 @@ pub enum StockpileRole {
     Sink,
 }
 
+pub(crate) fn buffered_minerals(
+    facility: Option<&crate::nanobot::ProductionFacility>,
+    stockpile: Option<&Stockpile>,
+    charger: Option<&crate::nanobot::Charger>,
+) -> u32 {
+    facility
+        .filter(|facility| facility.input_kind == ResourceKind::Minerals)
+        .map_or(0, |facility| facility.input_amount)
+        .saturating_add(
+            stockpile
+                .filter(|stockpile| stockpile.kind == ResourceKind::Minerals)
+                .map_or(0, |stockpile| stockpile.amount),
+        )
+        .saturating_add(
+            charger
+                .filter(|charger| charger.kind == ResourceKind::Minerals)
+                .map_or(0, |charger| charger.amount),
+        )
+}
+
 /// Resource totals partitioned by owning swarm.
 ///
 /// `total` and legacy `add`/`remove` expose aggregate/player-compatible

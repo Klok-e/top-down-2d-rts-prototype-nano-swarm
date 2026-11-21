@@ -1,3 +1,6 @@
+static DEFAULT_CHARGE: std::sync::LazyLock<
+    top_down_2d_rts_prototype_nano_swarm::tuning::ChargeTuning,
+> = std::sync::LazyLock::new(top_down_2d_rts_prototype_nano_swarm::tuning::ChargeTuning::default);
 #[path = "../common/mod.rs"]
 mod common;
 
@@ -273,6 +276,7 @@ fn controller_eventually_erases_stale_owned_intent_after_large_foreign_prefix() 
         home: Vec2::ZERO,
         minerals: 0,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let mut controller = Controller::new(owner);
     for review in 0..3 {
@@ -285,6 +289,7 @@ fn controller_eventually_erases_stale_owned_intent_after_large_foreign_prefix() 
                 structures: &[],
                 deposits: &[],
                 terrain: &[],
+                charge: &DEFAULT_CHARGE,
                 reachability: None,
                 route_query: None,
                 tick: review * 30,
@@ -325,6 +330,7 @@ fn controller_reviews_immediately_when_an_owned_deposit_is_exhausted() {
         home: world(IVec2::ZERO),
         minerals: 0,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let deposits = [
         DepositState {
@@ -352,6 +358,7 @@ fn controller_reviews_immediately_when_an_owned_deposit_is_exhausted() {
             structures: &[],
             deposits: &deposits,
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 0,
@@ -376,6 +383,7 @@ fn controller_reviews_immediately_when_an_owned_deposit_is_exhausted() {
             structures: &[],
             deposits: &depleted,
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 1,
@@ -413,6 +421,7 @@ fn controller_urgently_replans_when_key_support_is_lost() {
         home: world(IVec2::ZERO),
         minerals: 20,
         mineral_income_per_second: 0.0,
+        production_saturated: false,
     }];
     let deposits = [DepositState {
         id: 20,
@@ -440,6 +449,7 @@ fn controller_urgently_replans_when_key_support_is_lost() {
             structures: &charger,
             deposits: &deposits,
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 0,
@@ -457,6 +467,7 @@ fn controller_urgently_replans_when_key_support_is_lost() {
             structures: &[],
             deposits: &deposits,
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 1,
@@ -491,12 +502,14 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
             home: world(IVec2::ZERO),
             minerals: 100,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
         SwarmState {
             id: enemy,
             home: world(IVec2::new(24, 24)),
             minerals: 0,
             mineral_income_per_second: 0.0,
+            production_saturated: false,
         },
     ];
     let deposit = [DepositState {
@@ -537,6 +550,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
             structures: &[charger],
             deposits: &deposit,
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 0,
@@ -565,6 +579,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
             structures: &crowded_structures,
             deposits: &deposit,
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 1,
@@ -601,6 +616,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
             structures: &[],
             deposits: &deposit,
             terrain: &[],
+            charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
             tick: 2,
@@ -814,4 +830,201 @@ fn controller_retains_the_progressing_fronts_shared_defender_response() {
         Some(old_front),
         "the progressing attack must preserve its shared-autonomy response"
     );
+}
+
+#[test]
+fn economic_defend_paint_changes_real_defender_population_demand() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{NanobotType, PopulationDemand},
+        strategic_controller::{Controller, GameState, StructureKind, StructureState, SwarmState},
+        tuning::AutonomyTuning,
+    };
+
+    let mut app = common::sim_app_with_population_demand();
+    app.insert_resource(IntentGrid::new(24, 24));
+    let owner = SwarmId::PLAYER;
+    let home = common::cell_world_center(IVec2::ZERO);
+    app.world_mut().spawn((
+        Swarm {},
+        owner,
+        Transform::from_translation(home.extend(0.0)),
+    ));
+    let tuning = AutonomyTuning::default();
+    let mut controller = Controller::new(owner);
+    let mut swarms = [SwarmState {
+        id: owner,
+        home,
+        minerals: tuning.strategy_mineral_reserve,
+        mineral_income_per_second: 0.0,
+        production_saturated: false,
+    }];
+    let primary = StructureState {
+        id: 1,
+        owner,
+        position: home,
+        kind: StructureKind::Charger,
+        health: 100,
+        max_health: 100,
+        minerals: tuning.strategy_charger_reserve,
+    };
+    let chargers = [
+        primary,
+        StructureState {
+            id: primary.id + 1,
+            position: home + Vec2::Y * top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE,
+            ..primary
+        },
+    ];
+    let mut demand_after_review = |app: &mut App, swarms: &[SwarmState], tick| {
+        let decision = controller.decide(
+            &tuning,
+            &GameState {
+                grid: app.world().resource::<IntentGrid>(),
+                swarms,
+                bots: &[],
+                structures: &chargers,
+                deposits: &[],
+                terrain: &[],
+                charge: &DEFAULT_CHARGE,
+                reachability: None,
+                route_query: None,
+                tick,
+                finished: false,
+            },
+        );
+        apply_decision(
+            &mut app.world_mut().resource_mut::<IntentGrid>(),
+            owner,
+            &decision,
+        );
+        app.update();
+        app.world()
+            .resource::<PopulationDemand>()
+            .desired_for(owner, NanobotType::Defender)
+    };
+    let initial = demand_after_review(&mut app, &swarms, 0);
+    assert!(initial > 0, "initial paint creates real Defender demand");
+    swarms[0].mineral_income_per_second = 12.0;
+    let funded = demand_after_review(&mut app, &swarms, tuning.controller_review_period_ticks);
+    assert!(
+        funded > initial,
+        "expanded paint increased demand from {initial} to {funded}"
+    );
+    swarms[0].minerals = 0;
+    let depleted =
+        demand_after_review(&mut app, &swarms, tuning.controller_review_period_ticks * 2);
+    assert!(
+        depleted < funded,
+        "erasing unaffordable paint reduces real demand"
+    );
+}
+
+#[test]
+fn saturated_economy_supplies_build_room_for_real_production_pressure() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{NanobotType, OwnerSwarm, PlannedKind, PlannedStructure, ProductionFacility},
+        terrain::RockFormation,
+        tuning::Tuning,
+    };
+
+    for existing_facility in [true, false] {
+        let mut app = common::sim_app_with_production();
+        app.add_plugins(StrategicControllerPlugin);
+        let owner = SwarmId::PLAYER;
+        let home_cell = IVec2::ZERO;
+        // Home is in a narrow reachable strip; a new facility needs a neighboring tile.
+        let home = Vec2::new(496.0, 256.0);
+        let rock = RockFormation::Rectangle {
+            half: Vec2::new(236.0, 512.0),
+        };
+        let rock_transform = Transform::from_xyz(220.0, 512.0, 0.0);
+        let swarm = app
+            .world_mut()
+            .spawn((
+                Swarm {},
+                owner,
+                Transform::from_translation(home.extend(0.0)),
+                StrategicController::new(owner),
+            ))
+            .id();
+        app.world_mut().spawn((rock, rock_transform));
+        common::spawn_worker_at(&mut app, Vec2::new(600.0, 256.0));
+        let facility_site = common::cell_world_center(IVec2::new(2, 1));
+        if existing_facility {
+            let facility = common::spawn_facility_at(&mut app, swarm, facility_site);
+            app.world_mut()
+                .get_mut::<ProductionFacility>(facility)
+                .unwrap()
+                .current_target = Some(NanobotType::Defender);
+        }
+        app.world_mut()
+            .resource_mut::<Tuning>()
+            .production
+            .pressure_ticks = 1;
+        let threshold = app
+            .world()
+            .resource::<Tuning>()
+            .autonomy
+            .strategy_production_mineral_threshold;
+        let reachability = SwarmReachabilityMap::new(
+            app.world().resource::<IntentGrid>(),
+            [rock.obstacle(&rock_transform)],
+            [(owner, home)],
+        )
+        .unwrap();
+        app.insert_resource(reachability);
+
+        let reserve_site = common::cell_world_center(IVec2::new(2, 0));
+        let reserve = common::spawn_stockpile(&mut app, reserve_site, threshold + 1, threshold + 1);
+        app.world_mut()
+            .entity_mut(reserve)
+            .insert(OwnerSwarm(swarm));
+        app.world_mut().resource_mut::<ResourceLedger>().add_for(
+            owner,
+            ResourceKind::Minerals,
+            threshold + 1,
+        );
+        app.world_mut().despawn(reserve);
+
+        app.update();
+        let grid = app.world().resource::<IntentGrid>();
+        let builds = grid
+            .iter_active_cells()
+            .filter(|(_, cell)| cell.has_owned(IntentKind::Build, owner))
+            .map(|(cell, _)| cell)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            builds,
+            [home_cell],
+            "a destroyed reserve cannot fund extra Build room"
+        );
+
+        let reserve = common::spawn_stockpile(&mut app, reserve_site, threshold + 1, threshold + 1);
+        app.world_mut()
+            .entity_mut(reserve)
+            .insert(OwnerSwarm(swarm));
+        let mut planned_cell = None;
+        for _ in 0..90 {
+            app.update();
+            let world = app.world_mut();
+            planned_cell = world
+                .query::<&PlannedStructure>()
+                .iter(world)
+                .find(|plan| plan.kind == PlannedKind::ProductionFacility)
+                .map(|plan| plan.cell);
+            if planned_cell.is_some() {
+                break;
+            }
+        }
+        let cell =
+            planned_cell.expect("Production Pressure can use new room when busy or recovering");
+        assert_eq!((cell - home_cell).abs().element_sum(), 1);
+        assert!(
+            app.world()
+                .resource::<IntentGrid>()
+                .cell(cell)
+                .unwrap()
+                .has_owned(IntentKind::Build, owner)
+        );
+    }
 }

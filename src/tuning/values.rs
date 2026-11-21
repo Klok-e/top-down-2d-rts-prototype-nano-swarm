@@ -145,6 +145,13 @@ tuning_schema! {
         strategy_expansion_haul_cost: f32 = 3.0 => ("Expansion hauling cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_expansion_exposure_cost: f32 = 10.0 => ("Expansion exposure cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_home_income_lead: f32 = 5.0 => ("Income lead for home push", "minerals/s", 1.0, 0.1, 0.0, 1_000_000.0);
+        strategy_mineral_reserve: u32 = 24 => ("Defender mineral reserve", "minerals", 1.0, 1.0, 0.0, 1_000_000.0);
+        strategy_charger_reserve: u32 = 12 => ("Charger mineral reserve", "minerals", 1.0, 1.0, 1.0, 1_000_000.0);
+        strategy_defender_baseline: u32 = 4 => ("Baseline Defender demand", "Defenders", 1.0, 1.0, 1.0, 48.0);
+        strategy_income_spending_weight: f32 = 0.8 => ("Income available for upkeep", "%", 100.0, 5.0, 0.0, 1.0);
+        strategy_bank_spending_seconds: f32 = 45.0 => ("Reserve surplus spending horizon", "s", 1.0, 1.0, 1.0, 1_000.0);
+        strategy_production_mineral_threshold: u32 = 90 => ("Production expansion threshold", "minerals", 1.0, 1.0, 0.0, 1_000_000.0);
+        strategy_production_room_cells: u32 = 2 => ("Production expansion room", "cells", 1.0, 1.0, 0.0, 4.0);
         strategy_raid_charger_value: f32 = 95.0 => ("raid charger value", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_raid_stockpile_value: f32 = 80.0 => ("raid stockpile value", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_raid_facility_value: f32 = 60.0 => ("raid facility value", "", 1.0, 0.05, 0.0, 1_000_000.0);

@@ -306,7 +306,15 @@ impl PlannerState {
             .current
             .as_ref()
             .is_some_and(|current| current.objective == selected.objective);
-        let selected = materialize_plan(selected, economy, staging, owner, state, &mut budget);
+        let selected = materialize_plan(
+            selected,
+            economy,
+            staging,
+            owner,
+            state,
+            tuning,
+            &mut budget,
+        );
         if budget.exhausted || !selected.is_coordinated() {
             self.tuning_review_requested |= tuning_review && budget.exhausted;
             self.work_used = budget.used;

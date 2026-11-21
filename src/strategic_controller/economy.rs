@@ -20,6 +20,7 @@ pub(super) struct OwnedDeposit {
     pub(super) id: u64,
     position: Vec2,
     pub(super) gather_cell: IVec2,
+    pub(super) build_cell: IVec2,
     pub(super) desired: Vec<DesiredIntent>,
 }
 
@@ -476,6 +477,7 @@ fn mine_support(
                 id: deposit.id,
                 position: deposit.position,
                 gather_cell,
+                build_cell,
                 desired,
             },
             distance,

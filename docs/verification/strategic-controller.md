@@ -9,6 +9,10 @@ Standard's opponent and both AI Battle swarms use the same Strategic Controller.
 | Depleting one Owned Deposit triggers a review while the other mines keep their Gather, Build, Defend, and Corridor paint. Route searches and urgent reviews use the same bounded allowance as regular reviews. | [Controller decisions on snapshots](../../src/strategic_controller/tests.rs) |
 | Workers extract and Haulers move minerals from several supported deposits. On an obstructed map, the Logistics Corridor connects a deposit to home around the rock. | [Economy and navigation behavior tests](../../tests/behavior/strategic_controller.rs) |
 | The military front holds its Staging Point until enough living Defenders arrive. When the plan changes, the controller erases superseded paint in the same review. | [Staging and retargeting playtests](../../tests/playtest/opponent_gameplay_loop.rs) |
+| Defend paint grows with income and supplied Chargers. Depleted reserves reduce the area and real Defender Population Demand. | [Spending tests](../../src/strategic_controller/tests.rs) and [Population Demand behavior](../../tests/behavior/strategic_controller.rs) |
+| Busy production and sufficient physical reserves open more Build room near the economy. The same room supports recovery after the last facility is lost. | [Production Pressure behavior](../../tests/behavior/strategic_controller.rs) |
+
+The controller estimates upkeep from recent physical extraction, operational mineral buffers, and supported Charger capacity. Required paint for the economy and active staging point sets a lower bound on territory. Production Pressure considers zero operational facilities saturated for recovery, while an idle or output-blocked facility prevents saturation. Shared placement ranks feasible sites across all owned Build Zones, including Build paint that supports logistics at the front.
 
 ## Observed self-play
 

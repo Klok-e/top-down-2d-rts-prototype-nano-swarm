@@ -1,6 +1,7 @@
 use super::{
     economy::{EconomyPlan, SUPPORT_PAINT_RESERVE},
     lifecycle::WorkBudget,
+    spending::{DefenderBudget, add_production_room, keep_charger_support},
     staging::{DefendBlock, StagingFront},
     *,
 };
@@ -13,6 +14,7 @@ pub(super) fn materialize_plan(
     mut staging: Option<StagingFront>,
     owner: SwarmId,
     state: &GameState<'_>,
+    tuning: &AutonomyTuning,
     budget: &mut WorkBudget,
 ) -> IntentPlan {
     let PlanCandidate {
@@ -21,18 +23,12 @@ pub(super) fn materialize_plan(
         anchor,
         attack_target: _,
         approach: _,
-        key_charger,
-        defend_target,
         score: _,
         protected_home,
     } = candidate;
     let anchor = staging.as_ref().map_or(anchor, StagingFront::point);
-    let home = state
-        .swarms
-        .iter()
-        .find(|swarm| swarm.id == owner)
-        .map(|swarm| swarm.home)
-        .unwrap_or(Vec2::ZERO);
+    let swarm = state.swarms.iter().find(|swarm| swarm.id == owner);
+    let home = swarm.map_or(Vec2::ZERO, |swarm| swarm.home);
     let home_cell = world_to_intent_cell(home);
     let EconomyPlan {
         owned_deposits,
@@ -52,23 +48,6 @@ pub(super) fn materialize_plan(
         true,
         budget,
     );
-    if let Some(charger) = key_charger {
-        let charger_cell = world_to_intent_cell(charger.position);
-        for kind in [IntentKind::Defend, IntentKind::Corridor] {
-            push_desired(
-                &mut desired,
-                owner,
-                DesiredIntent {
-                    cell: charger_cell,
-                    kind,
-                },
-                state,
-                true,
-                budget,
-            );
-        }
-    }
-
     push_desired(
         &mut desired,
         owner,
@@ -80,31 +59,42 @@ pub(super) fn materialize_plan(
         true,
         budget,
     );
-    for cell in [anchor, anchor + IVec2::new(0, 1), anchor + IVec2::X] {
-        if Some(cell) == protected_home {
-            continue;
-        }
-        if push_desired(
-            &mut desired,
-            owner,
-            DesiredIntent {
+    if anchor != home_cell {
+        for cell in [anchor, anchor + IVec2::Y, anchor + IVec2::X] {
+            if Some(cell) == protected_home {
+                continue;
+            }
+            let build = DesiredIntent {
                 cell,
                 kind: IntentKind::Build,
-            },
-            state,
-            true,
-            budget,
-        ) {
-            break;
+            };
+            if desired.contains(&build)
+                || push_desired(&mut desired, owner, build, state, true, budget)
+            {
+                break;
+            }
         }
     }
 
-    let block = DefendBlock::new(anchor, defend_target.min(paint_capacity - desired.len()))
-        .avoiding(anchor, protected_home);
-    if let Some(front) = staging.as_mut() {
-        front.block = block;
+    let defense = DefenderBudget::estimate(tuning, owner, swarm, state, budget);
+    let (key_charger, supplied_slots) = keep_charger_support(
+        &defense,
+        tuning.strategy_charger_reserve,
+        owner,
+        state,
+        &mut desired,
+        paint_capacity.saturating_sub(1),
+        budget,
+    );
+    let minimum_cells = if staging.is_some() {
+        super::staging::MINIMUM_STAGING_BLOCK_CELLS
+    } else {
+        1
     }
-    for cell in block.cells() {
+    .min(paint_capacity.saturating_sub(desired.len()).max(1));
+    let block_at_anchor = |count| DefendBlock::new(anchor, count).avoiding(anchor, protected_home);
+    let minimum = block_at_anchor(minimum_cells);
+    for cell in minimum.cells() {
         push_desired(
             &mut desired,
             owner,
@@ -129,6 +119,43 @@ pub(super) fn materialize_plan(
             protected_home,
         );
     }
+    if let Some(swarm) = swarm {
+        add_production_room(
+            tuning,
+            swarm,
+            std::iter::once(home_cell).chain(owned_deposits.iter().map(|mine| mine.build_cell)),
+            state,
+            &mut desired,
+            paint_capacity,
+            budget,
+        );
+    }
+
+    let block = fit_defend_block(
+        block_at_anchor,
+        minimum,
+        minimum_cells,
+        defense.tiles_with_supply(supplied_slots),
+        &desired,
+        paint_capacity,
+        budget,
+    );
+    if let Some(front) = staging.as_mut() {
+        front.block = block;
+    }
+    for cell in block.cells() {
+        push_desired(
+            &mut desired,
+            owner,
+            DesiredIntent {
+                cell,
+                kind: IntentKind::Defend,
+            },
+            state,
+            true,
+            budget,
+        );
+    }
     desired.sort_by_key(|intent| (intent.cell.y, intent.cell.x, intent.kind.index()));
 
     IntentPlan {
@@ -136,9 +163,57 @@ pub(super) fn materialize_plan(
         owned_deposits,
         attack,
         staging,
-        key_charger: key_charger.map(|charger| charger.id),
+        key_charger,
         desired,
     }
+}
+
+fn fit_defend_block(
+    block_at_anchor: impl Fn(usize) -> DefendBlock,
+    minimum: DefendBlock,
+    minimum_cells: usize,
+    affordable_tiles: usize,
+    desired: &[DesiredIntent],
+    paint_capacity: usize,
+    budget: &mut WorkBudget,
+) -> DefendBlock {
+    if affordable_tiles <= minimum_cells || !budget.spend(desired.len()) {
+        return minimum;
+    }
+    let occupied_tiles: HashSet<_> = desired.iter().map(|intent| intent.cell).collect();
+    let defended_tiles: HashSet<_> = desired
+        .iter()
+        .filter(|intent| intent.kind == IntentKind::Defend)
+        .map(|intent| intent.cell)
+        .collect();
+    let extra_tiles = affordable_tiles.saturating_sub(occupied_tiles.len());
+    let layer_room = paint_capacity.saturating_sub(desired.len());
+    for count in (minimum_cells + 1..=affordable_tiles).rev() {
+        let block = block_at_anchor(count);
+        if !minimum.cells().all(|cell| block.contains(cell)) {
+            continue;
+        }
+        let mut new_tiles = 0;
+        let mut new_layers = 0;
+        for cell in block.cells() {
+            if !budget.spend(1) {
+                return minimum;
+            }
+            if !occupied_tiles.contains(&cell) {
+                new_tiles += 1;
+            }
+            if !defended_tiles.contains(&cell) {
+                new_layers += 1;
+            }
+            if new_tiles > extra_tiles || new_layers > layer_room {
+                break;
+            }
+        }
+        if new_tiles <= extra_tiles && new_layers <= layer_room {
+            return block;
+        }
+    }
+    minimum
 }
 
 pub(super) fn push_desired(
