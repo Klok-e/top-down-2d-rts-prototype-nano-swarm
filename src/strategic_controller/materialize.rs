@@ -1,10 +1,11 @@
 use super::{
-    economy::EconomyPlan,
+    economy::{EconomyPlan, SUPPORT_PAINT_RESERVE},
     lifecycle::WorkBudget,
     staging::{DefendBlock, StagingFront},
     *,
 };
 use crate::navigation::Route;
+use std::collections::HashSet;
 
 pub(super) fn materialize_plan(
     candidate: PlanCandidate,
@@ -37,6 +38,7 @@ pub(super) fn materialize_plan(
         ..
     } = economy;
 
+    let paint_capacity = EXPANSION_PLAN_CELLS.max(desired.len() + SUPPORT_PAINT_RESERVE);
     push_desired(
         &mut desired,
         owner,
@@ -92,7 +94,7 @@ pub(super) fn materialize_plan(
         }
     }
 
-    let block = DefendBlock::new(anchor, defend_target.min(MAX_PLAN_CELLS - desired.len()));
+    let block = DefendBlock::new(anchor, defend_target.min(paint_capacity - desired.len()));
     if let Some(front) = staging.as_mut() {
         front.block = block;
     }
@@ -176,9 +178,10 @@ pub(super) fn intent_edits(
     budget: &mut WorkBudget,
 ) -> Vec<IntentEdit> {
     let grid = state.grid;
+    let desired_set = desired.iter().copied().collect::<HashSet<_>>();
     let mut edits = Vec::new();
     for intent in previous {
-        if !desired.contains(intent)
+        if !desired_set.contains(intent)
             && grid
                 .cell(intent.cell)
                 .is_some_and(|cell| cell.has_owned(intent.kind, owner))
@@ -251,7 +254,9 @@ pub(super) fn intent_edits(
                 *cleanup_cursor = last_completed.or(previous_cursor);
                 break 'cleanup;
             }
-            if existing.has_owned(kind, owner) && !desired.contains(&DesiredIntent { cell, kind }) {
+            if existing.has_owned(kind, owner)
+                && !desired_set.contains(&DesiredIntent { cell, kind })
+            {
                 edits.push(IntentEdit {
                     cell,
                     kind,
@@ -339,7 +344,7 @@ fn paint_corridor(
     target: IVec2,
     goal: RouteGoal,
 ) {
-    let Some((cells, _)) = corridor_route(state, budget, start, target, goal) else {
+    let Ok(Some((cells, _))) = corridor_route(state, budget, start, target, goal) else {
         return;
     };
     let previous_len = desired.len();
@@ -348,7 +353,9 @@ fn paint_corridor(
             cell,
             kind: IntentKind::Corridor,
         };
-        if !desired.contains(&intent) && !push_desired(desired, owner, intent, state, false, budget)
+        if !desired.contains(&intent)
+            && (desired.len() >= EXPANSION_PLAN_CELLS
+                || !push_desired(desired, owner, intent, state, false, budget))
         {
             desired.truncate(previous_len);
             return;
@@ -356,21 +363,27 @@ fn paint_corridor(
     }
 }
 
+#[derive(Debug)]
+pub(super) struct CorridorPaintLimit;
+
 pub(super) fn corridor_route(
     state: &GameState<'_>,
     budget: &mut WorkBudget,
     mut start: Vec2,
     target: IVec2,
     goal: RouteGoal,
-) -> Option<(Vec<IVec2>, f32)> {
+) -> Result<Option<(Vec<IVec2>, f32)>, CorridorPaintLimit> {
     let Route { waypoints, cost } = if state.route_query.is_some() {
-        query_route(state, start, goal, budget)?
+        let Some(route) = query_route(state, start, goal, budget) else {
+            return Ok(None);
+        };
+        route
     } else {
         start = intent_cell_center(world_to_intent_cell(start));
         let end = intent_cell_center(target);
         for obstacle in state.terrain {
             if !budget.spend(1) || !obstacle.segment_clear(start, end) {
-                return None;
+                return Ok(None);
             }
         }
         Route {
@@ -379,24 +392,25 @@ pub(super) fn corridor_route(
         }
     };
     let mut cells = vec![world_to_intent_cell(start)];
+    let mut visited = HashSet::from([cells[0]]);
     for end in waypoints {
         let span = (end - start).abs().max_element() / crate::ZONE_BLOCK_SIZE;
         let steps = (span.ceil() as usize).max(1);
         for step in 1..=steps {
             if !budget.spend(1) {
-                return None;
+                return Ok(None);
             }
             let point = start.lerp(end, step as f32 / steps as f32);
             let cell = world_to_intent_cell(point);
-            if cells.contains(&cell) {
+            if !visited.insert(cell) {
                 continue;
             }
             if cells.len() >= MAX_PLAN_CELLS {
-                return None;
+                return Err(CorridorPaintLimit);
             }
             cells.push(cell);
         }
         start = end;
     }
-    Some((cells, cost))
+    Ok(Some((cells, cost)))
 }
