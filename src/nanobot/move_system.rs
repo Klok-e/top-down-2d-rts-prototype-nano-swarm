@@ -626,11 +626,28 @@ pub fn velocity_system(
                     constraints.push((other, required));
                 }
             };
+        // Successive candidates usually conflict with the same body, so it is checked first.
+        let last_conflict = std::cell::Cell::new(0);
         let safe_motion = |constraints: &[(TrafficBody, f32)], delta: Vec2| {
+            let separated = |&(other, required): &(TrafficBody, f32)| {
+                swept_separation(body.start, delta, other) + 0.001 >= required
+            };
+            let first = last_conflict.get();
+            if constraints
+                .get(first)
+                .is_some_and(|constraint| !separated(constraint))
+            {
+                return false;
+            }
+            if let Some(conflict) = constraints
+                .iter()
+                .enumerate()
+                .position(|(j, constraint)| j != first && !separated(constraint))
+            {
+                last_conflict.set(conflict);
+                return false;
+            }
             physical.movement_clear(body.start, body.start + delta)
-                && constraints.iter().all(|&(other, required)| {
-                    swept_separation(body.start, delta, other) + 0.001 >= required
-                })
         };
         if is_engaged(body.entity) {
             let speed = desired.length();
