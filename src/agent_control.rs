@@ -42,6 +42,7 @@ use crate::{
         Health, MatchOutcome, Nanobot, NanobotType, OpponentSwarm, OwnerSwarm, PopulationDemand,
         ProductionFacility, Swarm, SwarmEliminationState, SwarmId, SwarmMember,
     },
+    perf::RecordedHitches,
     reachability::SwarmReachabilityMap,
     resources::{ResourceKind, ResourceLedger},
     session::SessionRules,
@@ -60,9 +61,10 @@ const CONTROL_RESPONSE_POLL_DURATION: Duration = Duration::from_millis(10);
 #[cfg(unix)]
 const MAX_CONTROL_LINE_DURATION: Duration = Duration::from_secs(30);
 pub const AGENT_PROTOCOL_VERSION: u32 = 4;
-pub const SUPPORTED_METHODS: [&str; 14] = [
+pub const SUPPORTED_METHODS: [&str; 15] = [
     "session.hello",
     "state.get",
+    "perf.hitches",
     "button.press",
     "menu.toggle",
     "tuning.get",
@@ -127,6 +129,9 @@ pub enum ProtocolButton {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentCommand {
     SessionHello,
+    PerfHitches {
+        after_id: Option<u64>,
+    },
     StateGet {
         cell_offset: u32,
         cell_limit: u32,
@@ -330,6 +335,16 @@ struct ScreenshotSequence(u64);
 pub struct AgentControlClock {
     pub frame: u64,
     pub fixed_tick: u64,
+}
+
+pub(crate) struct AgentControlClockPlugin;
+
+impl Plugin for AgentControlClockPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<AgentControlClock>()
+            .add_systems(FixedLast, advance_agent_fixed_tick)
+            .add_systems(Last, advance_agent_frame);
+    }
 }
 
 pub struct AgentControlCorePlugin {
@@ -965,9 +980,11 @@ impl Plugin for AgentControlCorePlugin {
             .expect("agent control plugin inbox lock poisoned")
             .take()
             .expect("agent control core plugin can only be added once");
+        if !app.is_plugin_added::<AgentControlClockPlugin>() {
+            app.add_plugins(AgentControlClockPlugin);
+        }
         app.insert_resource(inbox)
             .insert_resource(SharedAgentControlClockResource(self.shared_clock.clone()))
-            .init_resource::<AgentControlClock>()
             .init_resource::<SessionRules>()
             .init_resource::<crate::tuning::Tuning>()
             .init_resource::<PendingButtonReleases>()
@@ -989,15 +1006,11 @@ impl Plugin for AgentControlCorePlugin {
                     .after(MenuInputSet::Keyboard)
                     .before(MenuInputSet::Actions),
             )
-            .add_systems(FixedLast, advance_agent_fixed_tick)
             .add_systems(
                 Last,
-                (
-                    advance_agent_frame,
-                    stamp_pending_screenshot_clocks,
-                    complete_agent_waits,
-                )
-                    .chain(),
+                (stamp_pending_screenshot_clocks, complete_agent_waits)
+                    .chain()
+                    .after(advance_agent_frame),
             );
     }
 }
@@ -1170,6 +1183,13 @@ fn execute_agent_command(
             "application": "nano-swarm",
             "methods": SUPPORTED_METHODS,
         }),
+        AgentCommand::PerfHitches { after_id } => match world.get_resource::<RecordedHitches>() {
+            Some(hitches) => serde_json::json!({
+                "episodes": hitches.0.episodes_after(after_id).collect::<Vec<_>>(),
+                "dropped": hitches.0.dropped(),
+            }),
+            None => serde_json::json!({"episodes": [], "dropped": 0}),
+        },
         AgentCommand::StateGet {
             cell_offset,
             cell_limit,
@@ -1940,21 +1960,25 @@ impl AgentResponse {
 
 fn advance_agent_frame(
     mut clock: ResMut<AgentControlClock>,
-    shared: Res<SharedAgentControlClockResource>,
+    shared: Option<Res<SharedAgentControlClockResource>>,
 ) {
     clock.frame = clock.frame.saturating_add(1);
-    shared.0.frame.store(clock.frame, Ordering::Release);
+    if let Some(shared) = shared {
+        shared.0.frame.store(clock.frame, Ordering::Release);
+    }
 }
 
 fn advance_agent_fixed_tick(
     mut clock: ResMut<AgentControlClock>,
-    shared: Res<SharedAgentControlClockResource>,
+    shared: Option<Res<SharedAgentControlClockResource>>,
 ) {
     clock.fixed_tick = clock.fixed_tick.saturating_add(1);
-    shared
-        .0
-        .fixed_tick
-        .store(clock.fixed_tick, Ordering::Release);
+    if let Some(shared) = shared {
+        shared
+            .0
+            .fixed_tick
+            .store(clock.fixed_tick, Ordering::Release);
+    }
 }
 
 fn complete_agent_waits(clock: Res<AgentControlClock>, mut pending: ResMut<PendingWaits>) {
@@ -2158,6 +2182,12 @@ struct ScreenshotCaptureParams {
     name: Option<String>,
 }
 
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PerfHitchesParams {
+    after_id: Option<u64>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EmptyParams {}
@@ -2182,6 +2212,17 @@ pub fn parse_request_line(line: &[u8]) -> Result<AgentRequest, ProtocolError> {
         "session.hello" => {
             require_empty_params(request.params)?;
             AgentCommand::SessionHello
+        }
+        "perf.hitches" => {
+            let params = if request.params.is_null() {
+                PerfHitchesParams::default()
+            } else {
+                serde_json::from_value::<PerfHitchesParams>(request.params)
+                    .map_err(ProtocolError::InvalidJson)?
+            };
+            AgentCommand::PerfHitches {
+                after_id: params.after_id,
+            }
         }
         "state.get" => {
             let params = if request.params.is_null() {
@@ -2862,6 +2903,14 @@ mod tests {
                 .iter()
                 .any(|method| method == "menu.toggle"),
             "hello must advertise menu.toggle"
+        );
+        assert!(
+            result["methods"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|method| method == "perf.hitches"),
+            "hello must advertise perf.hitches"
         );
         assert!(
             result["methods"]

@@ -12,6 +12,7 @@ pub mod materials;
 pub mod nanobot;
 pub mod navigation;
 pub mod navigation_runtime;
+pub mod perf;
 pub mod physical_world;
 pub mod reachability;
 pub mod resources;
@@ -269,6 +270,9 @@ pub fn build_app_with_tuning(
             .add_plugins(Camera2dFlyPlugin)
             .add_systems(Startup, setup_things_startup.pipe(error_handler))
             .add_systems(PostUpdate, update_main_camera_bloom);
+    }
+    if presentation == Presentation::Windowed {
+        app.add_plugins(perf::HitchRecorderPlugin);
     }
     Ok(app)
 }

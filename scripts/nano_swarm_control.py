@@ -65,6 +65,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="include bounded read-only execution facts on the first state page",
     )
 
+    perf_hitches = commands.add_parser("perf-hitches")
+    perf_hitches.add_argument("--after-id", type=int)
+
     button = commands.add_parser("button")
     button.add_argument(
         "button",
@@ -131,6 +134,12 @@ def command_request(args: argparse.Namespace) -> tuple[str, dict | None]:
         if args.details:
             params["details"] = True
         return "state.get", params
+    if args.command == "perf-hitches":
+        if args.after_id is None:
+            return "perf.hitches", None
+        if not 0 <= args.after_id < 2**64:
+            raise ValueError("episode ID must be an unsigned 64-bit integer")
+        return "perf.hitches", {"after_id": args.after_id}
     if args.command == "button":
         return "button.press", {"button": args.button}
     if args.command == "menu":

@@ -110,6 +110,7 @@ Screenshot capture is asynchronous. A request received before any render submiss
 | Method | Parameters | Result |
 | --- | --- | --- |
 | `session.hello` | none | Protocol version and supported methods |
+| `perf.hitches` | optional `after_id` | Closed hitch episodes with full frame detail and a count of evicted episodes |
 | `state.get` | optional `cell_offset`, optional `cell_limit`, optional `map_revision`, optional boolean `details` | Sparse game-state snapshot page |
 | `button.press` | `button` | Activates a stable real UI button |
 | `menu.toggle` | none | Opens or closes the scenario menu, like Escape |
@@ -127,6 +128,15 @@ Screenshot capture is asynchronous. A request received before any render submiss
 Valid intents are `gather`, `build`, `defend`, and `corridor`. Stable button IDs are `intent.gather`, `intent.build`, `intent.defend`, and `intent.corridor`.
 
 Player-action commands are rejected after Victory, Defeat, or Draw. State, camera, screenshot, wait, hello, and shutdown remain available for terminal-state inspection. With the scenario menu closed, `button match.dismiss` hides the visible result banner so you can inspect the completed match. It returns `button_unavailable` when the banner is hidden or the menu is open.
+
+## Hitch episodes
+
+```bash
+python scripts/nano_swarm_control.py perf-hitches
+python scripts/nano_swarm_control.py perf-hitches --after-id 27
+```
+
+`perf.hitches` responds immediately and returns a result with `episodes` in ascending ID order and `dropped`, the cumulative count of episodes evicted from memory. The optional unsigned `after_id` selects episodes with strictly greater IDs. Pass the largest ID from the previous response to fetch new episodes. With no cursor, the result includes all retained episodes. The [recorder reference](../performance/hitch-recorder.md) describes the per-frame fields, episode boundaries, and retention.
 
 ## Live tuning
 
