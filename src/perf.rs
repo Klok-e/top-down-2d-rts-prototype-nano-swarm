@@ -165,7 +165,6 @@ fn start_recording_frame(
     nanobots: Query<(), With<Nanobot>>,
     structures: Query<(), With<Structure>>,
     battle: Option<ResMut<BattleRun>>,
-    mut exit: MessageWriter<AppExit>,
 ) {
     // Bevy updates the render sub-app after the main schedule. The next frame
     // start is the first common boundary after that work in both runtime modes.
@@ -208,14 +207,8 @@ fn start_recording_frame(
             },
             detection,
         );
-        if !session_replaced
-            && let Some(mut battle) = battle
-            && let Err(error) =
-                battle.record_frame(frame_ns, paused, closed.map(HitchEpisode::summary))
-        {
-            error!("Cannot append to the battle hitch log: {error}");
-            battle.error = Some(error.to_string());
-            exit.write(AppExit::error());
+        if !session_replaced && let Some(mut battle) = battle {
+            battle.record_frame(frame_ns, paused, closed.map(HitchEpisode::summary));
         }
     }
     measurements.previous_fixed_tick = counters.fixed_tick;

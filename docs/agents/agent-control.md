@@ -18,7 +18,7 @@ cargo run -- --headless --agent-socket --width 1280 --height 720
 $XDG_RUNTIME_DIR/nano-swarm/control.sock
 ```
 
-Headless mode disables Winit and creates no desktop window. Rendering, UI layout, fixed simulation, and GPU screenshots remain active. The runner handles `AppExit` and Ctrl-C; its default pacing is 60 application frames per second. `--headless --unbounded` advances one fixed simulation tick per application update without frame sleeping for any scenario. See [AI Battle](../ai-battle.md) for launch options and saved statistics.
+Headless mode disables Winit and creates no desktop window. Rendering, UI layout, fixed simulation, and GPU screenshots remain active. The runner handles `AppExit` and Ctrl-C; its default pacing is 60 application frames per second. `--headless --unbounded` advances one fixed simulation tick per application update without frame sleeping for any scenario. See [AI Battle](../ai-battle.md) for launch options and statistics.
 
 Headless width and height are each capped at 8,192 pixels, with a total budget of 16,777,216 pixels, so invalid CLI input fails before allocating the render image.
 
@@ -33,7 +33,7 @@ cargo build &&
   export LD_LIBRARY_PATH
 ```
 
-## Verify scenario restarts and AI Battle recording
+## Verify scenario restarts and AI Battle statistics
 
 After setup succeeds, use the same shell and give each verifier an artifact directory that does not already exist.
 
@@ -44,7 +44,7 @@ mkdir -p .tmp &&
   python3 scripts/verify_ai_battle.py --artifacts "$run_dir/battle"
 ```
 
-The restart check verifies that switching scenarios and restarting Standard both open an in-progress match at the starting zoom within the same process. The battle check verifies that spectator painting is rejected and that Ctrl+C saves samples and an interrupted summary with no winner. Both check socket cleanup and save screenshots and a process log in their artifact directory.
+The restart check verifies that switching scenarios and restarting Standard both open an in-progress match at the starting zoom within the same process. The battle check verifies that spectator painting is rejected, that `battle.stats` serves an in-progress summary with no winner and at least two samples, and that Ctrl+C exits without writing files. Both check socket cleanup and save screenshots and a process log in their artifact directory.
 
 ## Client
 
@@ -111,6 +111,7 @@ Screenshot capture is asynchronous. A request received before any render submiss
 | --- | --- | --- |
 | `session.hello` | none | Protocol version and supported methods |
 | `perf.hitches` | optional `after_id` | Closed hitch episodes with full frame detail and a count of evicted episodes |
+| `battle.stats` | optional `after_sample`, optional `after_hitch` | AI Battle summary, per-second samples, and compact hitch summaries |
 | `state.get` | optional `cell_offset`, optional `cell_limit`, optional `map_revision`, optional boolean `details` | Sparse game-state snapshot page |
 | `button.press` | `button` | Activates a stable real UI button |
 | `menu.toggle` | none | Opens or closes the scenario menu, like Escape |
@@ -138,6 +139,20 @@ python scripts/nano_swarm_control.py perf-hitches --after-id 27
 
 `perf.hitches` responds immediately and returns a result with `episodes` in ascending ID order and `dropped`, the cumulative count of episodes evicted from memory. The optional unsigned `after_id` selects episodes with strictly greater IDs. Pass the largest ID from the previous response to fetch new episodes. With no cursor, the result includes all retained episodes. The [recorder reference](../performance/hitch-recorder.md) describes the per-frame fields, episode boundaries, and retention.
 
+## Battle statistics
+
+```bash
+python scripts/nano_swarm_control.py battle-stats
+python scripts/nano_swarm_control.py battle-stats --after-sample 41 --after-hitch 2
+```
+
+`battle.stats` serves the in-memory statistics of the running AI Battle. The result has `summary`, `samples`, `hitches`, `last_sample`, and `last_hitch`. It returns `battle_unavailable` outside an AI Battle recording.
+
+- `summary` holds the run's metadata, tuning, `status`, `outcome`, `termination_reason`, and `samples` (the sample count). `status` is `in_progress` with a null `termination_reason` while the run continues. Swarm Elimination gives `completed` with `swarm_elimination`. The tick limit gives `interrupted` with `tick_limit`. Statistics stop changing after the end. A headless or simulation-only battle then freezes its simulation and serves `battle.stats` until `process.shutdown`, with no idle timeout; a battle needs `--agent-socket` to run in those modes.
+- `samples` holds one sample per simulated second plus a final partial sample on the tick the run ends. Each sample is an object whose `swarms` array has one object per swarm, holding the sample's fields. Numbers are numbers, `deposit_extraction` is a nested array, `controller_last_explanation` is a string, and fields without a value, such as frame timing in unbounded runs, are null. Sample-level columns repeat in each swarm object.
+- `hitches` holds compact hitch summaries with `start_frame`, `end_frame`, `start_fixed_tick`, `hitch_count`, `worst_frame_ns`, `catch_up_ticks`, `top_phases`, and `nanobots`. The first 1,000 are kept; `summary.hitch_episodes_suppressed` counts later ones.
+- The optional unsigned cursors `after_sample` and `after_hitch` select entries whose zero-based recording-order indices are greater than the cursor. An omitted cursor returns the whole list, and a cursor at or above the highest index returns an empty list. `last_sample` and `last_hitch` are the highest index so far, or null while the list is empty, and `summary.samples` equals `last_sample` + 1. Pass the previous `last_*` values as cursors to poll for new entries.
+
 ## Live tuning
 
 Use `tuning.get` to discover exact field keys, groups, display units, steps, and bounds. Each field includes `key`, `group`, `label`, `unit`, `step`, `scale`, `min`, `max`, and `value`; `scale` is display units per native unit. The response also includes the process revision and editor `open`, `focused`, `expanded`, and per-field `errors` state.
@@ -157,7 +172,7 @@ For an isolated tuning experiment, copy the tracked `config/balance.ron` and lau
 
 ## State Snapshot
 
-`session.hello` reports protocol version 4.
+`session.hello` reports protocol version 5.
 
 `state.get` returns:
 
@@ -221,7 +236,7 @@ The socket worker polls a nonblocking listener and performs bounded blocking cli
 
 `screenshot_failed`: inspect GPU adapter diagnostics in the game log. Headless mode requires a working Bevy/wgpu adapter but never falls back to a desktop window.
 
-`spectator_only`: AI Battle rejects `map.apply` painting and erasing because both swarms own their control. Use camera, state, screenshots, and menu controls to observe the run. For headless self-play execution and saved results, read [AI Battle](../ai-battle.md).
+`spectator_only`: AI Battle rejects `map.apply` painting and erasing because both swarms own their control. Use camera, state, screenshots, and menu controls to observe the run. For headless self-play execution and its statistics, read [AI Battle](../ai-battle.md).
 
 `match_finished`: use `state`, `camera`, or `screenshot` to inspect the terminal state, or open the menu and start a fresh scenario.
 

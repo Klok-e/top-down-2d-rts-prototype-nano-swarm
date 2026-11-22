@@ -1,174 +1,163 @@
+//! Real-process AI Battle playtests: the process serves its final statistics over the agent
+//! socket after the tick limit, writes no files, and exits only on `shutdown`.
+
 use std::{
-    fs,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use bevy::{app::AppExit, prelude::*};
-use top_down_2d_rts_prototype_nano_swarm::{
-    nanobot::{Nanobot, OwnerSwarm, Swarm, SwarmId, SwarmMember},
-    runtime::{RuntimeOptions, build_runtime_app},
-};
+const MAX_TICKS: u64 = 120;
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 
-struct RunDirectory(PathBuf);
-
-impl Drop for RunDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
+/// A running battle process, its private runtime/config/working directories, and the control client.
+struct BattleProcess {
+    child: Child,
+    root: PathBuf,
+    socket: PathBuf,
 }
 
-#[test]
-#[ignore = "requires a GPU adapter; run with cargo test --test playtest accelerated_battle_runtime -- --ignored"]
-fn accelerated_battle_runtime_saves_terminal_results_before_requesting_exit() {
-    let directory = RunDirectory(std::env::temp_dir().join(format!(
-            "nano-battle-runtime-{}-{}",
+impl BattleProcess {
+    fn spawn(arguments: &[&str]) -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "nsb-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
-        )));
-    let mut app = build_runtime_app(
-        RuntimeOptions::parse([
-            "--headless",
-            "--unbounded",
-            "--scenario",
-            "ai-battle",
-            "--seed",
-            "42",
-            "--width",
-            "320",
-            "--height",
-            "180",
-            "--output-root",
-            directory.0.to_str().unwrap(),
-        ])
-        .unwrap(),
-    )
-    .unwrap();
-    while app.plugins_state() == bevy::app::PluginsState::Adding {
-        bevy::tasks::tick_global_task_pools_on_main_thread();
+                % 1_000_000
+        ));
+        for directory in ["run", "config", "cwd"] {
+            std::fs::create_dir_all(root.join(directory)).unwrap();
+        }
+        let child = Command::new(env!("CARGO_BIN_EXE_top-down-2d-rts-prototype-nano-swarm"))
+            .args(arguments)
+            .args(["--agent-socket", "--scenario", "ai-battle", "--seed", "42"])
+            .args(["--max-ticks", &MAX_TICKS.to_string()])
+            .current_dir(root.join("cwd"))
+            .env("XDG_RUNTIME_DIR", root.join("run"))
+            .env("XDG_CONFIG_HOME", root.join("config"))
+            .env("BEVY_ASSET_ROOT", env!("CARGO_MANIFEST_DIR"))
+            .env_remove("DISPLAY")
+            .env_remove("WAYLAND_DISPLAY")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("the battle binary starts");
+        let socket = root.join("run/nano-swarm/control.sock");
+        let mut process = Self {
+            child,
+            root,
+            socket,
+        };
+        let started = Instant::now();
+        while !process.socket.exists() {
+            assert!(
+                process.child.try_wait().unwrap().is_none(),
+                "the process exited during startup"
+            );
+            assert!(started.elapsed() < STARTUP_TIMEOUT, "startup timed out");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        process
     }
-    app.finish();
-    app.cleanup();
-    app.update();
-    let started = app.world().resource::<Time<Fixed>>().elapsed_secs_f64();
-    for _ in 0..60 {
-        app.update();
+
+    fn command(&self, arguments: &[&str]) -> serde_json::Value {
+        let output = Command::new("python3")
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/nano_swarm_control.py"))
+            .arg("--socket")
+            .arg(&self.socket)
+            .args(["--timeout", "60"])
+            .args(arguments)
+            .output()
+            .expect("python3 runs the control client");
+        let response: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|error| panic!("unreadable client reply ({error}): {output:?}"));
+        assert_eq!(response["ok"], true, "{arguments:?}: {response}");
+        response["result"].clone()
     }
-    let elapsed = app.world().resource::<Time<Fixed>>().elapsed_secs_f64() - started;
+
+    fn wait_for_exit(&mut self) -> std::process::ExitStatus {
+        let started = Instant::now();
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return status;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(60),
+                "the process ignored shutdown"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+impl Drop for BattleProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn final_statistics(process: &BattleProcess) -> serde_json::Value {
+    let started = Instant::now();
+    loop {
+        let stats = process.command(&["battle-stats"]);
+        if stats["summary"]["status"] != "in_progress" {
+            return stats;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(120),
+            "the battle never reached its tick limit"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn assert_serves_final_statistics_until_shutdown(arguments: &[&str]) {
+    let mut process = BattleProcess::spawn(arguments);
+    let stats = final_statistics(&process);
+    assert_eq!(stats["summary"]["status"], "interrupted");
+    assert_eq!(stats["summary"]["termination_reason"], "tick_limit");
+    assert_eq!(stats["summary"]["seed"], 42);
+    let last = stats["samples"].as_array().unwrap().last().unwrap();
+    for swarm in last["swarms"].as_array().unwrap() {
+        assert_eq!(swarm["fixed_tick"], MAX_TICKS);
+        assert!(swarm["controller_reviews"].as_u64().unwrap() > 0);
+    }
+
+    process.command(&["wait", "--frames", "30"]);
     assert!(
-        (elapsed - 1.0).abs() < 0.000_01,
-        "60 accelerated updates must advance one simulated second, got {elapsed}"
+        process.child.try_wait().unwrap().is_none(),
+        "a finished battle must wait for shutdown"
     );
-    assert!(
-        app.should_exit().is_none(),
-        "an ongoing battle must keep running"
-    );
+    assert_eq!(process.command(&["battle-stats"]), stats);
     assert_eq!(
-        app.world_mut().query::<&Window>().iter(app.world()).count(),
-        0
+        std::fs::read_dir(process.root.join("cwd")).unwrap().count(),
+        0,
+        "an AI Battle writes no files"
     );
 
-    let opponent = app
-        .world_mut()
-        .query_filtered::<(Entity, &SwarmId), With<Swarm>>()
-        .iter(app.world())
-        .find(|(_, id)| !id.is_player())
-        .map(|(entity, _)| entity)
-        .expect("AI Battle startup must spawn the second swarm");
-    let roots = app
-        .world_mut()
-        .query::<(Entity, Option<&SwarmMember>, Option<&OwnerSwarm>)>()
-        .iter(app.world())
-        .filter(|(entity, member, owner)| {
-            (app.world().get::<Nanobot>(*entity).is_some()
-                && member.is_some_and(|member| !member.0.is_player()))
-                || owner.is_some_and(|owner| owner.0 == opponent)
-        })
-        .map(|(entity, _, _)| entity)
-        .collect::<Vec<_>>();
-    assert!(!roots.is_empty());
-    for entity in roots {
-        app.world_mut().despawn(entity);
-    }
-    app.update();
-    assert_eq!(app.should_exit(), Some(AppExit::Success));
-    let runs = fs::read_dir(&directory.0)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect::<Vec<_>>();
-    assert_eq!(runs.len(), 1);
-    let summary: serde_json::Value =
-        serde_json::from_slice(&fs::read(runs[0].join("summary.json")).unwrap()).unwrap();
-    assert_eq!(summary["status"], "completed");
-    assert_eq!(summary["outcome"], "swarm_0_wins");
-    assert_eq!(summary["seed"], 42);
-    assert!(summary["latest"]["simulation_seconds"].as_f64().unwrap() > 1.0);
-    assert!(
-        fs::read_to_string(runs[0].join("samples.csv"))
-            .unwrap()
-            .lines()
-            .count()
-            >= 3
-    );
+    process.command(&["shutdown"]);
+    assert!(process.wait_for_exit().success());
 }
 
 #[test]
-fn simulation_only_battle_saves_at_tick_limit_without_rendering() {
-    let directory = RunDirectory(std::env::temp_dir().join(format!(
-        "nano-battle-simulation-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    )));
-    let mut app = build_runtime_app(
-        RuntimeOptions::parse([
-            "--simulation-only",
-            "--scenario",
-            "ai-battle",
-            "--max-ticks",
-            "63",
-            "--output-root",
-            directory.0.to_str().unwrap(),
-        ])
-        .unwrap(),
-    )
-    .unwrap();
-    assert!(app.get_sub_app(bevy::render::RenderApp).is_none());
-    assert!(!app.is_plugin_added::<bevy::asset::AssetPlugin>());
-    app.finish();
-    app.cleanup();
-    let exit = (0..=63).find_map(|_| {
-        app.update();
-        app.should_exit()
-    });
-    assert_eq!(exit, Some(AppExit::Success));
-    let fixed = app.world().resource::<Time<Fixed>>();
-    assert_eq!(fixed.elapsed(), fixed.timestep() * 63);
-    let directory = fs::read_dir(&directory.0)
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let summary: serde_json::Value =
-        serde_json::from_slice(&fs::read(directory.join("summary.json")).unwrap()).unwrap();
-    assert_eq!(summary["simulation_only"], true);
-    assert_eq!(summary["status"], "interrupted");
-    assert_eq!(summary["termination_reason"], "tick_limit");
-    assert_eq!(summary["outcome"], serde_json::Value::Null);
-    assert_eq!(summary["latest"]["fixed_tick"], 63);
-    assert_eq!(summary["samples"], 2);
-    for swarm in ["0", "1"] {
-        assert!(
-            summary["latest"]["controllers"][swarm]["reviews"]
-                .as_u64()
-                .unwrap()
-                > 0
-        );
-    }
+fn simulation_only_battle_serves_final_statistics_after_the_tick_limit_until_shutdown() {
+    assert_serves_final_statistics_until_shutdown(&["--simulation-only"]);
+}
+
+#[test]
+#[ignore = "requires a GPU adapter; run with cargo test --test playtest headless_battle_serves -- --ignored"]
+fn headless_battle_serves_final_statistics_after_the_tick_limit_until_shutdown() {
+    assert_serves_final_statistics_until_shutdown(&[
+        "--headless",
+        "--unbounded",
+        "--width",
+        "320",
+        "--height",
+        "180",
+    ]);
 }

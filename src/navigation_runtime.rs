@@ -9,6 +9,7 @@ impl Plugin for NavigationPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Tuning>()
             .init_resource::<Navigation>()
+            .init_resource::<crate::terrain::TerrainIndex>()
             .init_resource::<NavigationBudget>()
             .add_systems(FixedFirst, (refresh_navigation, advance_navigation).chain());
     }

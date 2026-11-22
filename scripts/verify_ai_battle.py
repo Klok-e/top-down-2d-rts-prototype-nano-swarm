@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Verify an actual offscreen AI Battle process and retain its artifacts."""
+"""Verify an actual offscreen AI Battle process through battle.stats and retain its artifacts."""
 
 import argparse
-import csv
 import fcntl
 import json
 import os
@@ -37,7 +36,7 @@ def main():
         with (artifacts / "process.log").open("w") as log:
             process = subprocess.Popen([
                 str(args.binary.resolve()), "--headless", "--agent-socket", "--scenario", "ai-battle",
-                "--seed", "42", "--output-root", str(artifacts / "runs"),
+                "--seed", "42",
                 "--width", "1280", "--height", "720",
             ], env=env, stdout=log, stderr=subprocess.STDOUT)
             try:
@@ -68,22 +67,21 @@ def main():
                 command("camera", "6400", "6400", "20")
                 capture = command("screenshot", "--name", "ai-battle")
                 shutil.copy2(capture["result"]["path"], artifacts / "ai-battle.png")
-                process.send_signal(signal.SIGINT)
-                assert process.wait(timeout=120) == 130, "Ctrl+C must use its conventional exit status"
-                summaries = list((artifacts / "runs").glob("*/summary.json"))
-                assert len(summaries) == 1, summaries
-                summary = json.loads(summaries[0].read_text())
-                assert summary["status"] == "interrupted", summary
+                stats = command("battle-stats")["result"]
+                summary = stats["summary"]
+                assert summary["status"] == "in_progress", summary
                 assert summary["seed"] == 42, summary
                 assert summary["outcome"] is None, summary
-                assert summary["latest"]["simulation_seconds"] >= 2.0, summary
-                with summaries[0].with_name("samples.csv").open(newline="") as source:
-                    samples = list(csv.DictReader(source))
+                samples = stats["samples"]
                 assert len(samples) >= 2, samples
+                assert samples[-1]["swarms"][0]["simulation_seconds"] >= 2.0, samples[-1]
+                process.send_signal(signal.SIGINT)
+                assert process.wait(timeout=120) == 130, "Ctrl+C must use its conventional exit status"
+                assert not (artifacts / "runs").exists(), "AI Battle writes no result files"
                 assert not socket.exists(), "graceful exit must remove the control socket"
                 with socket.with_name("control.sock.lock").open("rb") as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                print(json.dumps({"summary": str(summaries[0]), "sample_rows": len(samples), "screenshot": str(artifacts / "ai-battle.png")}, indent=2))
+                print(json.dumps({"sample_rows": len(samples), "screenshot": str(artifacts / "ai-battle.png")}, indent=2))
             finally:
                 if process.poll() is None:
                     process.send_signal(signal.SIGINT)

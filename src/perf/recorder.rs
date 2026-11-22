@@ -173,7 +173,7 @@ impl FrameRecord {
     }
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct HitchEpisodeSummary {
     start_frame: u64,
     end_frame: u64,

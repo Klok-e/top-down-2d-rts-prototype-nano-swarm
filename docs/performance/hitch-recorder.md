@@ -10,7 +10,7 @@ The recorder runs in the windowed and headless game, including runs launched wit
 - A hitch opens an episode with up to 120 preceding frames. A later hitch extends it until 30 consecutive hitch-free frames have passed. The episode includes those 30 recovery frames.
 - Long episodes retain the first and last 300 frames, for at most 600 detailed records. A gap in the frame numbers marks omitted detail.
 - Each new session starts with empty preceding-frame history and discards any still-open episode. The process keeps the latest 32 closed episodes across sessions. Episode IDs increase for the life of the process.
-- [AI Battle](../ai-battle.md#recorded-results) writes up to 1,000 compact episode summaries to its hitch log. Its `summary.json` counts subsequent episodes in `hitch_episodes_suppressed`.
+- [AI Battle](../ai-battle.md#recorded-results) keeps a compact summary of every episode in memory and serves them through `battle.stats`.
 
 ## Frame detail
 
@@ -54,8 +54,7 @@ Enable `perf-trace` for a short profiling run when the recorder's phase timings 
 mkdir -p .tmp
 trace_run=$(mktemp -d .tmp/perf-trace.XXXXXX)
 RUST_LOG=info,wgpu=error,naga=warn TRACE_CHROME="$PWD/$trace_run/trace.json" \
-  cargo run --features perf-trace -- --headless --agent-socket --scenario ai-battle \
-  --output-root "$trace_run/battle"
+  cargo run --features perf-trace -- --headless --agent-socket --scenario ai-battle
 ```
 
 While the game is running, fetch a closed episode with `python3 scripts/nano_swarm_control.py perf-hitches`. Use `python3 scripts/nano_swarm_control.py shutdown` to stop cleanly and flush the trace. Traces can grow quickly, and tracing overhead can affect frame times.

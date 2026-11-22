@@ -60,11 +60,12 @@ const MAX_CONTROL_RESPONSE_DURATION: Duration = Duration::from_secs(310);
 const CONTROL_RESPONSE_POLL_DURATION: Duration = Duration::from_millis(10);
 #[cfg(unix)]
 const MAX_CONTROL_LINE_DURATION: Duration = Duration::from_secs(30);
-pub const AGENT_PROTOCOL_VERSION: u32 = 4;
-pub const SUPPORTED_METHODS: [&str; 15] = [
+pub const AGENT_PROTOCOL_VERSION: u32 = 5;
+pub const SUPPORTED_METHODS: [&str; 16] = [
     "session.hello",
     "state.get",
     "perf.hitches",
+    "battle.stats",
     "button.press",
     "menu.toggle",
     "tuning.get",
@@ -131,6 +132,10 @@ pub enum AgentCommand {
     SessionHello,
     PerfHitches {
         after_id: Option<u64>,
+    },
+    BattleStats {
+        after_sample: Option<u64>,
+        after_hitch: Option<u64>,
     },
     StateGet {
         cell_offset: u32,
@@ -1190,6 +1195,20 @@ fn execute_agent_command(
             }),
             None => serde_json::json!({"episodes": [], "dropped": 0}),
         },
+        AgentCommand::BattleStats {
+            after_sample,
+            after_hitch,
+        } => match world.get_resource::<crate::battle_statistics::BattleRun>() {
+            Some(run) => run.stats_payload(after_sample, after_hitch),
+            None => {
+                return AgentResponse::failure(
+                    request.id,
+                    clock,
+                    "battle_unavailable",
+                    "no AI Battle is recording statistics",
+                );
+            }
+        },
         AgentCommand::StateGet {
             cell_offset,
             cell_limit,
@@ -2188,6 +2207,13 @@ struct PerfHitchesParams {
     after_id: Option<u64>,
 }
 
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BattleStatsParams {
+    after_sample: Option<u64>,
+    after_hitch: Option<u64>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EmptyParams {}
@@ -2222,6 +2248,18 @@ pub fn parse_request_line(line: &[u8]) -> Result<AgentRequest, ProtocolError> {
             };
             AgentCommand::PerfHitches {
                 after_id: params.after_id,
+            }
+        }
+        "battle.stats" => {
+            let params = if request.params.is_null() {
+                BattleStatsParams::default()
+            } else {
+                serde_json::from_value::<BattleStatsParams>(request.params)
+                    .map_err(ProtocolError::InvalidJson)?
+            };
+            AgentCommand::BattleStats {
+                after_sample: params.after_sample,
+                after_hitch: params.after_hitch,
             }
         }
         "state.get" => {
@@ -2887,7 +2925,7 @@ mod tests {
 
         assert!(response.ok);
         let result = response.result.unwrap();
-        assert_eq!(result["protocol_version"], 4);
+        assert_eq!(result["protocol_version"], 5);
         assert!(
             result["methods"]
                 .as_array()
@@ -2911,6 +2949,14 @@ mod tests {
                 .iter()
                 .any(|method| method == "perf.hitches"),
             "hello must advertise perf.hitches"
+        );
+        assert!(
+            result["methods"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|method| method == "battle.stats"),
+            "hello must advertise battle.stats"
         );
         assert!(
             result["methods"]
@@ -3564,7 +3610,7 @@ mod tests {
         assert_eq!(response["ok"], true);
         assert!(response["frame"].is_u64());
         assert!(response["fixed_tick"].is_u64());
-        assert_eq!(response["result"]["protocol_version"], 4);
+        assert_eq!(response["result"]["protocol_version"], 5);
 
         drop(app);
         remove_control_socket_test_directory(&directory);
