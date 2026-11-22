@@ -168,7 +168,7 @@ fn battle_without_the_agent_socket_is_rejected_at_startup_without_files() {
     for directory in ["run", "config", "cwd"] {
         std::fs::create_dir_all(root.join(directory)).unwrap();
     }
-    let output = Command::new(env!("CARGO_BIN_EXE_top-down-2d-rts-prototype-nano-swarm"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_top-down-2d-rts-prototype-nano-swarm"))
         .args(["--simulation-only", "--scenario", "ai-battle"])
         .current_dir(root.join("cwd"))
         .env("XDG_RUNTIME_DIR", root.join("run"))
@@ -176,16 +176,29 @@ fn battle_without_the_agent_socket_is_rejected_at_startup_without_files() {
         .env("BEVY_ASSET_ROOT", env!("CARGO_MANIFEST_DIR"))
         .env_remove("DISPLAY")
         .env_remove("WAYLAND_DISPLAY")
-        .output()
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .expect("the battle binary starts");
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > STARTUP_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_dir_all(&root);
+            panic!("a battle without the agent socket must exit at startup");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut stderr).unwrap();
     let files = |directory: &str| std::fs::read_dir(root.join(directory)).unwrap().count();
     let (run, config, cwd) = (files("run"), files("config"), files("cwd"));
     let _ = std::fs::remove_dir_all(&root);
-    assert!(!output.status.success(), "startup must be rejected");
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("agent-socket"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(!status.success(), "startup must be rejected");
+    assert!(stderr.contains("agent-socket"), "{stderr}");
     assert_eq!((run, config, cwd), (0, 0, 0), "no files are created");
 }
