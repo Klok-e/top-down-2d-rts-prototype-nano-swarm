@@ -1,4 +1,4 @@
-use std::{any::TypeId, collections::HashMap, time::Duration};
+use std::{collections::HashMap, time::Duration};
 
 use crate::{
     nanobot::{NanobotSimulationSet, RegionalAllocationSet},
@@ -172,28 +172,6 @@ fn fixed_segments(
             }
         }
     }
-    // Charge a generated flush to its named consumer phase when no other
-    // named phase depends directly on it. This avoids a separate timed span.
-    let flush_phases: Vec<_> = dependency
-        .nodes()
-        .filter(|&system| {
-            !graph
-                .hierarchy()
-                .graph()
-                .contains_node(NodeId::System(system))
-                && graph.systems[system].type_id() == TypeId::of::<ApplyDeferred>()
-        })
-        .filter_map(|system| {
-            let mut consumers = dependency
-                .neighbors(system)
-                .filter_map(|node| phases.get(&node).copied());
-            let phase = consumers.next()?;
-            consumers
-                .all(|other| other == phase)
-                .then_some((system, phase))
-        })
-        .collect();
-    phases.extend(flush_phases);
     let phase_of = |system: SystemKey| phases.get(&system).copied().unwrap_or_default();
 
     // Topologically group ready systems by phase. Work without a phase can run

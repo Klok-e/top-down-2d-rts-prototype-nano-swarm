@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use bevy::{
-    app::{AppLabel, RunFixedMainLoopSystems, SubApp},
+    app::{AppLabel, MainScheduleOrder, RunFixedMainLoopSystems, SubApp},
+    ecs::schedule::ScheduleLabel,
     prelude::*,
     time::{TimePlugin, TimeUpdateStrategy},
 };
@@ -23,6 +24,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
 struct FrameWork {
     update: Duration,
     post_update: Duration,
+    extra_main_schedule: Duration,
     fixed_update: Duration,
     fixed_loop: Duration,
     render: Duration,
@@ -30,6 +32,9 @@ struct FrameWork {
 
 #[derive(AppLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct TestRender;
+
+#[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ExtraMainSchedule;
 
 struct RecorderApp {
     app: App,
@@ -127,13 +132,29 @@ fn episodes(result: &Value) -> &[Value] {
 
 #[test]
 fn a_slow_frame_reports_full_context_and_attributes_only_main_schedule_time() {
-    let mut game = RecorderApp::new();
+    let mut app = App::new();
+    app.add_plugins(TimePlugin).add_systems(
+        ExtraMainSchedule,
+        |work: Res<FrameWork>, mut clock: ResMut<RecorderClock>| {
+            clock.advance(work.extra_main_schedule);
+        },
+    );
+    app.world_mut()
+        .resource_mut::<MainScheduleOrder>()
+        .insert_after(Update, ExtraMainSchedule);
+    let mut game = RecorderApp::with_app(app);
     game.app.world_mut().spawn(Nanobot {});
     game.app.world_mut().spawn(Nanobot {});
     game.app.world_mut().spawn(Structure::default());
     game.advance_frames(123);
     game.frame_with_work(0, 0, Duration::from_micros(33_300));
-    game.frame_with_work(7, 5, Duration::from_millis(23));
+    game.run_frame(FrameWork {
+        update: Duration::from_millis(7),
+        post_update: Duration::from_millis(5),
+        extra_main_schedule: Duration::from_millis(3),
+        render: Duration::from_millis(20),
+        ..default()
+    });
     game.advance_frames(29);
     assert!(episodes(&game.hitches().result.unwrap()).is_empty());
 
@@ -215,6 +236,37 @@ fn catch_up_reports_summed_fixed_phase_times_below_the_frame_threshold() {
     assert_eq!(largest, "movement");
     assert_eq!(slow["schedule_ns"]["RunFixedMainLoop"], 28_000_000);
     assert_eq!(slow["unmeasured_ns"], 4_000_000);
+}
+
+#[test]
+fn automatically_flushed_commands_from_an_unnamed_system_count_as_fixed_other() {
+    let mut game = RecorderApp::new();
+    game.app.add_systems(
+        FixedUpdate,
+        (
+            (|mut commands: Commands| {
+                commands.queue(|world: &mut World| {
+                    world
+                        .resource_mut::<RecorderClock>()
+                        .advance(Duration::from_millis(6));
+                });
+            })
+            .before(NanobotSimulationSet::Movement),
+            (|mut clock: ResMut<RecorderClock>| clock.advance(Duration::from_millis(3)))
+                .in_set(NanobotSimulationSet::Movement),
+        ),
+    );
+    game.advance_frames(60);
+    game.frame_with_work(0, 0, Duration::from_millis(30));
+    game.advance_frames(30);
+
+    let result = game.hitches().result.unwrap();
+    let [episode] = episodes(&result) else {
+        panic!("expected one hitch episode");
+    };
+    let hitch = &episode["frames"][60];
+    assert_eq!(hitch["fixed_phase_ns"]["movement"], 3_000_000);
+    assert_eq!(hitch["fixed_phase_ns"]["fixed_other"], 6_000_000);
 }
 
 #[test]

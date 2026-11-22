@@ -42,9 +42,9 @@ The next frame publishes the previous sample before agent requests run. Unmeasur
 | `strategic_controller` | `StrategicControllerSet` |
 | `fixed_other` | Other fixed systems and remaining time inside each fixed tick, including the other fixed schedules |
 
-Fixed phase boundaries make these intervals disjoint. They preserve existing dependencies and deferred command flushes, and systems within a span remain eligible to run concurrently. Systems in different spans wait for the preceding span to finish, which can reduce fixed-tick parallelism. Dependencies can split a phase across several spans. A generated command flush is timed with its consumer phase when only one named phase depends directly on it.
+Fixed phase boundaries make these intervals disjoint. They preserve existing dependencies and deferred command flushes, and systems within a span remain eligible to run concurrently. Systems in different spans wait for the preceding span to finish, which can reduce fixed-tick parallelism. Dependencies can split a phase across several spans. Automatically generated command flushes contribute to `fixed_other`.
 
-The overhead target is about 30 monotonic clock reads per frame. The runtime uses 17 for the outer frame and main schedules, two per fixed tick, and one per phase transition during `FixedUpdate`. Catch-up frames repeat the fixed measurements for each tick. Opening an episode copies the preceding detail. Closing it joins the retained start and end.
+The overhead target is about 30 monotonic clock reads per frame. The outer frame uses one read, adjacent measured main schedules share a boundary read, and each fixed tick uses two bounds plus one read per phase transition during `FixedUpdate`. Catch-up frames repeat the fixed measurements for each tick. Opening an episode copies the preceding detail. Closing it joins the retained start and end.
 
 ## Per-system trace
 

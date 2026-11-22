@@ -477,19 +477,21 @@ fn recording_uses_session_policy_without_a_scenario_selection() {
     for enabled in [false, true] {
         let output = Output::new();
         let mut app = App::new();
-        app.add_plugins(bevy::time::TimePlugin)
-            .insert_resource(top_down_2d_rts_prototype_nano_swarm::fixed_simulation_time())
-            .insert_resource(TimeUpdateStrategy::FixedTimesteps(1))
-            .insert_resource(SessionRules {
-                scenario_name: "observation",
-                record_statistics: enabled,
-                ..default()
-            })
-            .insert_resource(BattleStatisticsConfig {
-                output_root: output.0.clone(),
-                ..default()
-            })
-            .add_plugins(BattleStatisticsPlugin);
+        if enabled {
+            app.add_plugins(bevy::time::TimePlugin)
+                .insert_resource(top_down_2d_rts_prototype_nano_swarm::fixed_simulation_time())
+                .insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
+        }
+        app.insert_resource(SessionRules {
+            scenario_name: "observation",
+            record_statistics: enabled,
+            ..default()
+        })
+        .insert_resource(BattleStatisticsConfig {
+            output_root: output.0.clone(),
+            ..default()
+        })
+        .add_plugins(BattleStatisticsPlugin);
         for _ in 0..61 {
             app.update();
         }

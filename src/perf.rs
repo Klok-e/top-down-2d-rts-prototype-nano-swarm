@@ -83,10 +83,7 @@ struct FrameMeasurements {
 struct StartRecordingFrame;
 
 #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct ScheduleBoundary {
-    measured: InternedScheduleLabel,
-    end: bool,
-}
+struct ScheduleBoundary(usize);
 
 impl Plugin for HitchRecorderPlugin {
     fn build(&self, app: &mut App) {
@@ -117,30 +114,41 @@ impl Plugin for HitchRecorderPlugin {
             (PostUpdate.intern(), |times| &mut times.post_update),
             (Last.intern(), |times| &mut times.last),
         ];
-        for (schedule, time) in measured {
-            let mut order = app.world_mut().resource_mut::<MainScheduleOrder>();
-            let Some(index) = order.labels.iter().position(|label| *label == schedule) else {
-                continue;
-            };
-            let start = ScheduleBoundary {
-                measured: schedule,
-                end: false,
-            };
-            let end = ScheduleBoundary {
-                measured: schedule,
-                end: true,
-            };
-            order
-                .labels
-                .splice(index..=index, [start.intern(), schedule, end.intern()]);
-            app.add_systems(start, start_schedule).add_systems(
-                end,
-                move |clock: Res<RecorderClock>, mut measurements: ResMut<FrameMeasurements>| {
-                    let duration = elapsed_ns(measurements.schedule_start, clock.now());
-                    *time(&mut measurements.schedules) = duration;
-                },
-            );
+        let timing = |label: &InternedScheduleLabel| {
+            measured
+                .iter()
+                .find_map(|(schedule, time)| (schedule == label).then_some(*time))
+        };
+        let labels =
+            std::mem::take(&mut app.world_mut().resource_mut::<MainScheduleOrder>().labels);
+        let mut order = Vec::new();
+        let mut end: Option<ScheduleTiming> = None;
+        for (index, schedule) in labels.into_iter().map(Some).chain([None]).enumerate() {
+            let start = schedule.as_ref().and_then(timing);
+            let starts_next = start.is_some();
+            if starts_next || end.is_some() {
+                let boundary = ScheduleBoundary(index);
+                let ends_previous = end;
+                order.push(boundary.intern());
+                app.add_systems(
+                    boundary,
+                    move |clock: Res<RecorderClock>,
+                          mut measurements: ResMut<FrameMeasurements>| {
+                        let now = clock.now();
+                        if let Some(time) = ends_previous {
+                            let duration = elapsed_ns(measurements.schedule_start, now);
+                            *time(&mut measurements.schedules) = duration;
+                        }
+                        if starts_next {
+                            measurements.schedule_start = now;
+                        }
+                    },
+                );
+            }
+            order.extend(schedule);
+            end = start;
         }
+        app.world_mut().resource_mut::<MainScheduleOrder>().labels = order;
     }
 }
 
@@ -148,7 +156,7 @@ impl Plugin for HitchRecorderPlugin {
 fn start_recording_frame(
     clock: Res<RecorderClock>,
     counters: Res<AgentControlClock>,
-    time: Res<Time<Virtual>>,
+    time: Option<Res<Time<Virtual>>>,
     generation: Option<Res<SessionGeneration>>,
     pacing: Option<Res<HeadlessPacing>>,
     mut measurements: ResMut<FrameMeasurements>,
@@ -176,7 +184,7 @@ fn start_recording_frame(
         }
         let fixed_ticks_run = counters.fixed_tick - measurements.previous_fixed_tick;
         let session_frames = counters.frame - measurements.session_started_after_frame;
-        let paused = time.is_paused();
+        let paused = time.is_some_and(|time| time.is_paused());
         let detection = if paused || session_frames <= SESSION_WARMUP_FRAMES {
             HitchDetection::Excluded
         } else if pacing.is_some_and(|pacing| pacing.unbounded) {
@@ -211,10 +219,6 @@ fn start_recording_frame(
         }
     }
     measurements.previous_fixed_tick = counters.fixed_tick;
-}
-
-fn start_schedule(clock: Res<RecorderClock>, mut measurements: ResMut<FrameMeasurements>) {
-    measurements.schedule_start = clock.now();
 }
 
 fn elapsed_ns(start: Duration, end: Duration) -> u64 {
