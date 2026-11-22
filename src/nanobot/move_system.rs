@@ -208,19 +208,46 @@ fn swept_separation(start: Vec2, delta: Vec2, other: TrafficBody) -> f32 {
     (relative + travel * t).length()
 }
 
-/// Whether moving by `delta` keeps `required` clearance from `other`, within the
-/// solver's tolerance: `swept_separation(start, delta, other) + 0.001 >= required`.
-fn sweep_clears(start: Vec2, delta: Vec2, other: TrafficBody, required: f32) -> bool {
-    let relative = start - other.start;
-    let travel = delta - other.delta;
-    // Ending inside the clearance rules the sweep out without projecting onto it. The
-    // slack covers the tolerance and rounding, so the answer is the same either way.
-    let slack = 0.011 + 1e-4 * (relative.abs() + travel.abs()).element_sum();
-    let reject = required - slack;
-    if reject > 0.0 && (relative + travel).length_squared() < reject * reject {
-        return false;
+/// A body that a swept motion must keep `required` clearance from.
+#[derive(Clone, Copy)]
+struct SweepConstraint {
+    other: TrafficBody,
+    required: f32,
+    /// The answer whenever the closest approach is the starting separation.
+    clears_at_start: bool,
+}
+
+impl SweepConstraint {
+    fn new(start: Vec2, other: TrafficBody, required: f32) -> Self {
+        Self {
+            other,
+            required,
+            clears_at_start: (start - other.start).length() + 0.001 >= required,
+        }
     }
-    swept_separation(start, delta, other) + 0.001 >= required
+
+    /// Whether moving from `start` by `delta` keeps clearance within the solver's
+    /// tolerance: `swept_separation(start, delta, other) + 0.001 >= required`.
+    fn clears(&self, start: Vec2, delta: Vec2) -> bool {
+        let relative = start - self.other.start;
+        let travel = delta - self.other.delta;
+        // Without closing motion the sweep projects to its start, which is precomputed.
+        if travel.length_squared() <= 1e-8 || relative.dot(travel) >= 0.0 {
+            return self.clears_at_start;
+        }
+        !self.ends_inside(start, delta)
+            && swept_separation(start, delta, self.other) + 0.001 >= self.required
+    }
+
+    /// Whether the motion ends so deep inside the clearance that it cannot clear,
+    /// whatever its path. The slack covers the solver tolerance and rounding.
+    fn ends_inside(&self, start: Vec2, delta: Vec2) -> bool {
+        let relative = start - self.other.start;
+        let travel = delta - self.other.delta;
+        let slack = 0.011 + 1e-4 * (relative.abs() + travel.abs()).element_sum();
+        let reject = self.required - slack;
+        reject > 0.0 && (relative + travel).length_squared() < reject * reject
+    }
 }
 
 /// The previous velocity plus four rings of headings around it.
@@ -631,40 +658,37 @@ pub fn velocity_system(
         for run in lookup.neighbourhood_runs(lookup.bucket_for_position(body.start), 1) {
             nearby.extend(run.iter().copied().filter(|j| *j != i));
         }
-        let prepare_sweep =
-            |bodies: &[(TrafficBody, Vec2)],
-             progress: &std::collections::HashMap<Entity, TravelProgress>,
-             recovering: bool,
-             constraints: &mut Vec<(TrafficBody, f32)>| {
-                constraints.clear();
-                for &j in &nearby {
-                    let other = bodies[j].0;
-                    let distance_squared = body.start.distance_squared(other.start);
-                    if distance_squared > sweep_reach_squared {
-                        continue;
-                    }
-                    let passing_friend = (recovering
-                        || progress
-                            .get(&other.entity)
-                            .is_some_and(|state| state.recovering))
-                        && friendly(body.entity, other.entity)
-                        && !holds_engagement(body.entity)
-                        && !holds_engagement(other.entity);
-                    // Invalid initial overlaps may separate, but cannot deepen.
-                    let required = if passing_friend {
-                        0.0
-                    } else {
-                        diameter.min(distance_squared.sqrt())
-                    };
-                    constraints.push((other, required));
+        let prepare_sweep = |bodies: &[(TrafficBody, Vec2)],
+                             progress: &std::collections::HashMap<Entity, TravelProgress>,
+                             recovering: bool,
+                             constraints: &mut Vec<SweepConstraint>| {
+            constraints.clear();
+            for &j in &nearby {
+                let other = bodies[j].0;
+                let distance_squared = body.start.distance_squared(other.start);
+                if distance_squared > sweep_reach_squared {
+                    continue;
                 }
-            };
+                let passing_friend = (recovering
+                    || progress
+                        .get(&other.entity)
+                        .is_some_and(|state| state.recovering))
+                    && friendly(body.entity, other.entity)
+                    && !holds_engagement(body.entity)
+                    && !holds_engagement(other.entity);
+                // Invalid initial overlaps may separate, but cannot deepen.
+                let required = if passing_friend {
+                    0.0
+                } else {
+                    diameter.min(distance_squared.sqrt())
+                };
+                constraints.push(SweepConstraint::new(body.start, other, required));
+            }
+        };
         // Successive candidates usually conflict with the same body, so it is checked first.
         let last_conflict = std::cell::Cell::new(0);
-        let safe_motion = |constraints: &[(TrafficBody, f32)], delta: Vec2| {
-            let separated = |&(other, required): &(TrafficBody, f32)| {
-                sweep_clears(body.start, delta, other, required)
-            };
+        let safe_motion = |constraints: &[SweepConstraint], delta: Vec2| {
+            let separated = |constraint: &SweepConstraint| constraint.clears(body.start, delta);
             let first = last_conflict.get();
             if constraints
                 .get(first)
@@ -1121,7 +1145,7 @@ mod tests {
         use rand::{RngExt, SeedableRng, rngs::StdRng};
 
         let mut rng = StdRng::seed_from_u64(0x5EED_5EE9);
-        let mut rejected = 0;
+        let (mut rejected, mut ended_inside) = (0, 0);
         for case in 0..200_000 {
             let scale = [1.0, 10.0, 100.0, 1_000.0][case % 4];
             let mut vector = |scale: f32| {
@@ -1131,7 +1155,7 @@ mod tests {
                 )
             };
             let start = vector(1_000.0);
-            let delta = vector(scale * 0.1);
+            let mut delta = vector(scale * 0.1);
             let other = TrafficBody {
                 entity: entity(1),
                 start: start + vector(scale),
@@ -1142,14 +1166,24 @@ mod tests {
                 },
                 key: 1,
             };
-            let required = if case % 5 == 0 {
-                0.0
-            } else {
-                BODY_DIAMETER.min(start.distance(other.start))
+            // Matching motion leaves almost no relative travel.
+            if case % 7 == 0 {
+                delta = other.delta + Vec2::splat(1e-5);
+            }
+            let required = match case % 5 {
+                0 => 0.0,
+                1 => BODY_DIAMETER,
+                _ => BODY_DIAMETER.min(start.distance(other.start)),
             };
             let expected = swept_separation(start, delta, other) + 0.001 >= required;
+            let constraint = SweepConstraint::new(start, other, required);
+            // Ruling a motion out early must never contradict the full test.
+            if constraint.ends_inside(start, delta) {
+                assert!(!expected, "case {case} ends inside yet clears");
+                ended_inside += 1;
+            }
             assert_eq!(
-                sweep_clears(start, delta, other, required),
+                constraint.clears(start, delta),
                 expected,
                 "case {case}: start {start:?}, delta {delta:?}, other {:?} moving {:?}",
                 other.start,
@@ -1158,6 +1192,10 @@ mod tests {
             rejected += usize::from(!expected);
         }
         assert!(rejected > 10_000, "the cases must include blocked sweeps");
+        assert!(
+            ended_inside > 1_000,
+            "the cases must include motions ending inside"
+        );
     }
 
     #[test]
