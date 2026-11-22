@@ -73,6 +73,8 @@ struct ObstacleIndex {
     buckets: FastHashMap<IVec2, Vec<usize>>,
     global: Vec<usize>,
     count: usize,
+    /// Per obstacle, the box beyond which it cannot constrain a body, with rounding slack.
+    reach: Vec<(Vec2, Vec2)>,
 }
 impl ObstacleIndex {
     const MAX_BUCKETS: i64 = 64;
@@ -100,6 +102,7 @@ impl ObstacleIndex {
                 Obstacle::Rectangle { center, half } => (center, half),
                 Obstacle::Circle { center, radius } => (center, Vec2::splat(radius)),
             };
+            index.reach.push(shape.reach_box());
             let half = half + Vec2::splat(BODY_RADIUS);
             let (min, max) = Self::bounds(center - half, center + half);
             if !Self::small_span(min, max) {
@@ -114,22 +117,30 @@ impl ObstacleIndex {
         }
         index
     }
-    fn candidates(&self, a: Vec2, b: Vec2) -> Vec<usize> {
+    /// Whether every obstacle that could constrain the query box satisfies `accepts`.
+    /// Same answers as testing every candidate, without collecting them.
+    fn all_near(
+        &self,
+        obstacles: &[Obstacle],
+        a: Vec2,
+        b: Vec2,
+        accepts: impl Fn(Obstacle) -> bool,
+    ) -> bool {
+        let (low, high) = (a.min(b), a.max(b));
+        let near =
+            |&id: &usize| super::separated(low, high, self.reach[id]) || accepts(obstacles[id]);
         let (min, max) = Self::bounds(a, b);
         if !Self::small_span(min, max) {
-            return (0..self.count).collect();
+            return (0..self.count).all(|id| near(&id));
         }
-        let mut candidates = self.global.clone();
-        for y in min.y..=max.y {
-            for x in min.x..=max.x {
-                if let Some(ids) = self.buckets.get(&IVec2::new(x, y)) {
-                    candidates.extend(ids);
-                }
-            }
-        }
-        candidates.sort_unstable();
-        candidates.dedup();
-        candidates
+        self.global.iter().all(near)
+            && (min.y..=max.y).all(|y| {
+                (min.x..=max.x).all(|x| {
+                    self.buckets
+                        .get(&IVec2::new(x, y))
+                        .is_none_or(|ids| ids.iter().all(near))
+                })
+            })
     }
 }
 /// Chunks and edges of a geometry variant that equal the main hierarchy's.
@@ -359,9 +370,7 @@ impl Navigation {
             && p.cmplt(self.max).all()
             && self
                 .obstacle_index
-                .candidates(p, p)
-                .into_iter()
-                .all(|id| self.obstacles[id].admits_body(p))
+                .all_near(&self.obstacles, p, p, |shape| shape.admits_body(p))
     }
     pub(crate) fn point_clear_for_entry(&self, point: Vec2) -> bool {
         self.point_clear(point) && self.clearing.iter().all(|shape| shape.admits_body(point))
@@ -372,9 +381,7 @@ impl Navigation {
             && self.point_clear(b)
             && self
                 .obstacle_index
-                .candidates(a, b)
-                .into_iter()
-                .all(|id| self.obstacles[id].segment_clear(a, b))
+                .all_near(&self.obstacles, a, b, |shape| shape.segment_clear(a, b))
     }
     /// Swept travel respects clearing entry barriers while allowing existing occupants to leave.
     pub(crate) fn movement_clear(&self, start: Vec2, end: Vec2) -> bool {

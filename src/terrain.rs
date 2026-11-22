@@ -8,7 +8,7 @@ use bevy::{
     prelude::*,
 };
 
-use crate::navigation::{BODY_RADIUS, Obstacle};
+use crate::navigation::Obstacle;
 
 /// Impassable, unowned terrain. Dimensions are world units; translation locates the shape.
 #[derive(Component, Debug, Clone, Copy)]
@@ -68,23 +68,40 @@ fn unindex_rock(mut world: DeferredWorld, context: HookContext) {
 #[derive(Default, Clone)]
 pub(crate) struct RockIndex {
     rocks: BTreeMap<Entity, Obstacle>,
-    buckets: HashMap<IVec2, Vec<(Entity, Obstacle)>>,
-    global: Vec<(Entity, Obstacle)>,
+    buckets: HashMap<IVec2, Vec<IndexedRock>>,
+    global: Vec<IndexedRock>,
+}
+
+/// A rock with the box beyond which it cannot constrain a body.
+#[derive(Clone, Copy)]
+struct IndexedRock {
+    entity: Entity,
+    shape: Obstacle,
+    min: Vec2,
+    max: Vec2,
+}
+
+impl IndexedRock {
+    fn new(entity: Entity, shape: Obstacle) -> Self {
+        let (min, max) = shape.reach_box();
+        Self {
+            entity,
+            shape,
+            min,
+            max,
+        }
+    }
+
+    /// A query box wholly outside the reach box cannot touch this rock, so its answer
+    /// needs no exact test.
+    fn separated_from(&self, low: Vec2, high: Vec2) -> bool {
+        crate::navigation::separated(low, high, (self.min, self.max))
+    }
 }
 
 impl RockIndex {
     const BUCKET: f32 = 256.0;
     const MAX_BUCKETS: i64 = 64;
-
-    fn bounds(shape: Obstacle) -> (Vec2, Vec2) {
-        let (center, half) = match shape {
-            Obstacle::Rectangle { center, half } => (center, half),
-            Obstacle::Circle { center, radius } => (center, Vec2::splat(radius)),
-        };
-        // Reach of body clearance plus slack for rounding.
-        let half = half + Vec2::splat(BODY_RADIUS + 1.0);
-        (center - half, center + half)
-    }
 
     fn span(min: Vec2, max: Vec2) -> (IVec2, IVec2) {
         (
@@ -101,18 +118,15 @@ impl RockIndex {
     fn insert(&mut self, entity: Entity, shape: Obstacle) {
         self.remove(entity);
         self.rocks.insert(entity, shape);
-        let (low, high) = Self::bounds(shape);
-        let (min, max) = Self::span(low, high);
+        let rock = IndexedRock::new(entity, shape);
+        let (min, max) = Self::span(rock.min, rock.max);
         if !Self::small(min, max) {
-            self.global.push((entity, shape));
+            self.global.push(rock);
             return;
         }
         for y in min.y..=max.y {
             for x in min.x..=max.x {
-                self.buckets
-                    .entry(IVec2::new(x, y))
-                    .or_default()
-                    .push((entity, shape));
+                self.buckets.entry(IVec2::new(x, y)).or_default().push(rock);
             }
         }
     }
@@ -121,17 +135,17 @@ impl RockIndex {
         let Some(shape) = self.rocks.remove(&entity) else {
             return;
         };
-        let (low, high) = Self::bounds(shape);
+        let (low, high) = shape.reach_box();
         let (min, max) = Self::span(low, high);
         if !Self::small(min, max) {
-            self.global.retain(|(id, _)| *id != entity);
+            self.global.retain(|rock| rock.entity != entity);
             return;
         }
         for y in min.y..=max.y {
             for x in min.x..=max.x {
                 let key = IVec2::new(x, y);
                 if let Some(bucket) = self.buckets.get_mut(&key) {
-                    bucket.retain(|(id, _)| *id != entity);
+                    bucket.retain(|rock| rock.entity != entity);
                     if bucket.is_empty() {
                         self.buckets.remove(&key);
                     }
@@ -147,16 +161,21 @@ impl RockIndex {
 
     /// Whether every rock that could constrain the query box satisfies `accepts`.
     fn all_near(&self, a: Vec2, b: Vec2, accepts: impl Fn(Obstacle) -> bool) -> bool {
-        let (min, max) = Self::span(a.min(b), a.max(b));
+        if self.rocks.is_empty() {
+            return true;
+        }
+        let (low, high) = (a.min(b), a.max(b));
+        let (min, max) = Self::span(low, high);
         if !Self::small(min, max) {
             return self.rocks.values().all(|shape| accepts(*shape));
         }
-        self.global.iter().all(|(_, shape)| accepts(*shape))
+        let near = |rock: &IndexedRock| rock.separated_from(low, high) || accepts(rock.shape);
+        self.global.iter().all(near)
             && (min.y..=max.y).all(|y| {
                 (min.x..=max.x).all(|x| {
                     self.buckets
                         .get(&IVec2::new(x, y))
-                        .is_none_or(|bucket| bucket.iter().all(|(_, shape)| accepts(*shape)))
+                        .is_none_or(|bucket| bucket.iter().all(near))
                 })
             })
     }
