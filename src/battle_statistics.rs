@@ -1,4 +1,4 @@
-//! Per-battle measurements and durable run results.
+//! Per-battle measurements, kept in memory and served by `battle.stats`.
 
 use crate::{
     ai_battle::AiBattleConfig,
@@ -17,35 +17,16 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File, OpenOptions},
-    io::{self, BufWriter, Write},
-    path::PathBuf,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::Instant,
 };
 
-const HITCH_LOG_LIMIT: u64 = 1_000;
-
-#[derive(Resource, Debug, Clone)]
+#[derive(Resource, Debug, Clone, Default)]
 pub struct BattleStatisticsConfig {
-    pub output_root: PathBuf,
     pub seed: u64,
     pub headless: bool,
     pub unbounded: bool,
     pub simulation_only: bool,
     pub max_ticks: Option<std::num::NonZeroU64>,
-}
-
-impl Default for BattleStatisticsConfig {
-    fn default() -> Self {
-        Self {
-            output_root: PathBuf::from("target/battle-runs"),
-            seed: 0,
-            headless: false,
-            unbounded: false,
-            simulation_only: false,
-            max_ticks: None,
-        }
-    }
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
@@ -170,8 +151,7 @@ impl Plugin for BattleStatisticsPlugin {
                 collect_tick
                     .after(SwarmEliminationSet)
                     .run_if(resource_exists::<BattleRun>),
-            )
-            .add_systems(Last, finish_on_exit.run_if(resource_exists::<BattleRun>));
+            );
         if !app
             .world()
             .resource::<BattleStatisticsConfig>()
@@ -261,9 +241,10 @@ pub enum RunStatus {
 pub enum BattleTerminationReason {
     SwarmElimination,
     TickLimit,
-    SessionReplaced,
-    ProcessExit,
 }
+
+/// The most compact hitch summaries a run keeps; later ones are only counted.
+const HITCH_SUMMARY_LIMIT: usize = 1_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BattleSummary {
@@ -300,11 +281,7 @@ impl BattleSummary {
 
 #[derive(Resource)]
 pub struct BattleRun {
-    pub directory: PathBuf,
     pub summary: BattleSummary,
-    pub error: Option<String>,
-    csv: BufWriter<File>,
-    hitch_log: Option<File>,
     samples: Vec<serde_json::Value>,
     hitch_summaries: Vec<HitchEpisodeSummary>,
     tick_start: Instant,
@@ -321,6 +298,7 @@ fn start_run(world: &mut World) {
     start_session(world);
 }
 
+/// Begin recording the session just populated, replacing any earlier run.
 pub(crate) fn start_session(world: &mut World) {
     if !world.resource::<SessionRules>().record_statistics {
         world.remove_resource::<BattleRun>();
@@ -328,15 +306,13 @@ pub(crate) fn start_session(world: &mut World) {
         return;
     }
     let config = world.resource::<BattleStatisticsConfig>().clone();
-    let ai_battle = world
-        .get_resource::<AiBattleConfig>()
-        .cloned()
-        .unwrap_or_default();
-    let tuning = world.resource::<Tuning>().clone();
-    let result = create_run(
+    let run = BattleRun::new(
         &config,
-        ai_battle,
-        tuning,
+        world
+            .get_resource::<AiBattleConfig>()
+            .cloned()
+            .unwrap_or_default(),
+        world.resource::<Tuning>().clone(),
         world.resource::<Time<Fixed>>().timestep().as_secs_f64(),
         world.resource::<SessionRules>().scenario_name,
         world
@@ -344,180 +320,74 @@ pub(crate) fn start_session(world: &mut World) {
             .map_or(0, |journal| journal.entries.len()),
         crate::tuning::fixed_tick(world),
     );
-    match result {
-        Ok(run) => {
-            world.insert_resource(run);
-            world.insert_resource(BattleCounters::default());
-        }
-        Err(error) => {
-            error!("Cannot create battle results: {error}");
-            world.write_message(AppExit::error());
-        }
-    }
-}
-
-/// Finalize an active recording before its ECS session is replaced.
-///
-/// A failed durable write retains the run so the menu action can retry without
-/// tearing down the session it describes.
-pub(crate) fn finish_session(world: &mut World) -> bool {
-    let Some(mut run) = world.remove_resource::<BattleRun>() else {
-        world.remove_resource::<BattleCounters>();
-        return true;
-    };
-    if run.summary.status == RunStatus::InProgress {
-        run.summary.status = RunStatus::Interrupted;
-        run.summary.termination_reason = Some(BattleTerminationReason::SessionReplaced);
-        if let Some(mut counters) = world.get_resource_mut::<BattleCounters>() {
-            counters.frozen = true;
-        } else {
-            world.insert_resource(BattleCounters::default());
-        }
-        let result = if run.error.is_some() {
-            run.persist()
-        } else {
-            let sample = snapshot(world, &mut run);
-            run.write_sample(sample)
-        };
-        if let Err(error) = result {
-            error!("Cannot save interrupted battle: {error}");
-            run.error = Some(error.to_string());
-            world.insert_resource(run);
-            return false;
-        }
-    } else if run.error.is_some()
-        && let Err(error) = run.persist()
-    {
-        error!("Cannot finish battle results: {error}");
-        run.error = Some(error.to_string());
-        world.insert_resource(run);
-        return false;
-    }
-    run.error = None;
     world.insert_resource(run);
-    true
-}
-
-fn create_run(
-    config: &BattleStatisticsConfig,
-    ai_battle: AiBattleConfig,
-    tuning: Tuning,
-    timestep_seconds: f64,
-    scenario_name: &str,
-    tuning_journal_offset: usize,
-    tuning_start_tick: u64,
-) -> io::Result<BattleRun> {
-    fs::create_dir_all(&config.output_root)?;
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(io::Error::other)?
-        .as_nanos();
-    let directory = config
-        .output_root
-        .join(format!("battle-{stamp}-{}", std::process::id()));
-    fs::create_dir(&directory)?;
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(directory.join("samples.csv"))?;
-    let mut csv = BufWriter::new(file);
-    let hitch_log = (scenario_name
-        == crate::scenario_selection::Scenario::AiBattle
-            .definition()
-            .rules
-            .scenario_name)
-        .then(|| File::create_new(directory.join("hitches.jsonl")))
-        .transpose()?;
-    writeln!(
-        csv,
-        "simulation_seconds,fixed_tick,swarm,population,workers,haulers,defenders,births,deaths,minerals_gathered,minerals_consumed,structures_built,structures_lost,effective_damage_total,effective_damage_nanobots,effective_damage_structures,elimination_seconds,tick_count,tick_mean_ms,tick_p50_ms,tick_p95_ms,tick_p99_ms,tick_max_ms,frame_count,frame_mean_ms,frame_p95_ms,frame_max_ms,controller_reviews,controller_intent_edits,controller_work_units,owned_deposits,mineral_income,mineral_starved_facility_seconds,unspent_minerals,empty_charge_defenders,controller_last_explanation,deposit_extraction"
-    )?;
-    let summary = BattleSummary {
-        schema_version: 8,
-        scenario: scenario_name.into(),
-        seed: config.seed,
-        timestep_seconds,
-        headless: config.headless,
-        unbounded: config.unbounded,
-        simulation_only: config.simulation_only,
-        max_ticks: config.max_ticks,
-        code_revision: env!("NANO_SWARM_CODE_REVISION").into(),
-        dirty_worktree: env!("NANO_SWARM_DIRTY_WORKTREE") == "true",
-        ai_battle,
-        tuning,
-        tuning_edits: Vec::new(),
-        status: RunStatus::InProgress,
-        outcome: None,
-        termination_reason: None,
-        samples: 0,
-        hitch_episodes_suppressed: 0,
-        latest: BattleSample::default(),
-    };
-    let mut run = BattleRun {
-        directory,
-        summary,
-        error: None,
-        csv,
-        hitch_log,
-        samples: Vec::new(),
-        hitch_summaries: Vec::new(),
-        tick_start: Instant::now(),
-        ticks: 0,
-        tuning_journal_offset,
-        tuning_start_tick,
-        elimination_ticks: BTreeMap::new(),
-        next_sample_seconds: 1.,
-        tick_samples: Vec::with_capacity(64),
-        frame_samples: Vec::with_capacity(64),
-    };
-    run.persist()?;
-    info!("AI Battle results: {}", run.directory.display());
-    Ok(run)
+    world.insert_resource(BattleCounters::default());
 }
 
 impl BattleRun {
+    fn new(
+        config: &BattleStatisticsConfig,
+        ai_battle: AiBattleConfig,
+        tuning: Tuning,
+        timestep_seconds: f64,
+        scenario_name: &str,
+        tuning_journal_offset: usize,
+        tuning_start_tick: u64,
+    ) -> Self {
+        Self {
+            summary: BattleSummary {
+                schema_version: 9,
+                scenario: scenario_name.into(),
+                seed: config.seed,
+                timestep_seconds,
+                headless: config.headless,
+                unbounded: config.unbounded,
+                simulation_only: config.simulation_only,
+                max_ticks: config.max_ticks,
+                code_revision: env!("NANO_SWARM_CODE_REVISION").into(),
+                dirty_worktree: env!("NANO_SWARM_DIRTY_WORKTREE") == "true",
+                ai_battle,
+                tuning,
+                tuning_edits: Vec::new(),
+                status: RunStatus::InProgress,
+                outcome: None,
+                termination_reason: None,
+                samples: 0,
+                hitch_episodes_suppressed: 0,
+                latest: BattleSample::default(),
+            },
+            samples: Vec::new(),
+            hitch_summaries: Vec::new(),
+            tick_start: Instant::now(),
+            ticks: 0,
+            tuning_journal_offset,
+            tuning_start_tick,
+            elimination_ticks: BTreeMap::new(),
+            next_sample_seconds: 1.,
+            tick_samples: Vec::with_capacity(64),
+            frame_samples: Vec::with_capacity(64),
+        }
+    }
+
     pub(crate) fn record_frame(
         &mut self,
         frame_ns: u64,
         paused: bool,
         closed: Option<&HitchEpisodeSummary>,
-    ) -> io::Result<()> {
-        if self.summary.status != RunStatus::InProgress || self.error.is_some() {
-            return Ok(());
+    ) {
+        if self.summary.status != RunStatus::InProgress {
+            return;
         }
         if self.summary.records_frame_timing() && !paused {
             self.frame_samples.push(frame_ns as f64 / 1_000_000.);
         }
         if let Some(episode) = closed {
-            self.append_hitch(episode)?;
+            if self.hitch_summaries.len() < HITCH_SUMMARY_LIMIT {
+                self.hitch_summaries.push(episode.clone());
+            } else {
+                self.summary.hitch_episodes_suppressed += 1;
+            }
         }
-        Ok(())
-    }
-
-    fn append_hitch(&mut self, episode: &HitchEpisodeSummary) -> io::Result<()> {
-        let Some(hitch_log) = &mut self.hitch_log else {
-            return Ok(());
-        };
-        if self.hitch_summaries.len() as u64 >= HITCH_LOG_LIMIT {
-            self.summary.hitch_episodes_suppressed += 1;
-            return Ok(());
-        }
-        self.hitch_summaries.push(episode.clone());
-        let mut line = serde_json::to_vec(episode)?;
-        line.push(b'\n');
-        hitch_log.write_all(&line)?;
-        Ok(())
-    }
-
-    fn persist(&mut self) -> io::Result<()> {
-        self.csv.flush()?;
-        self.csv.get_ref().sync_data()?;
-        let temporary = self.directory.join("summary.json.tmp");
-        let mut file = File::create(&temporary)?;
-        serde_json::to_writer_pretty(&mut file, &self.summary)?;
-        file.write_all(b"\n")?;
-        file.sync_all()?;
-        fs::rename(temporary, self.directory.join("summary.json"))
     }
 
     /// The `battle.stats` result: summary plus the samples and hitch summaries
@@ -536,7 +406,6 @@ impl BattleRun {
         let mut summary = serde_json::to_value(&self.summary).expect("summary serializes");
         if let Some(object) = summary.as_object_mut() {
             object.remove("latest");
-            object.insert("schema_version".into(), 9.into());
         }
         serde_json::json!({
             "summary": summary,
@@ -547,75 +416,15 @@ impl BattleRun {
         })
     }
 
-    fn write_sample(&mut self, sample: BattleSample) -> io::Result<()> {
-        let t = &sample.tick_timing;
-        for (swarm, s) in &sample.swarms {
-            let c = s.totals;
-            let frame_count = sample
-                .frame_timing
-                .as_ref()
-                .map_or(String::new(), |t| t.count.to_string());
-            let frame_mean = sample
-                .frame_timing
-                .as_ref()
-                .map_or(String::new(), |t| t.mean_ms.to_string());
-            let frame_p95 = sample
-                .frame_timing
-                .as_ref()
-                .map_or(String::new(), |t| t.p95_ms.to_string());
-            let frame_max = sample
-                .frame_timing
-                .as_ref()
-                .map_or(String::new(), |t| t.max_ms.to_string());
-            let elimination = s
-                .elimination_seconds
-                .map_or(String::new(), |n| n.to_string());
-            let controller = sample.controllers.get(swarm).cloned().unwrap_or_default();
-            let explanation = csv_field(&controller.last_explanation);
-            let deposit_extraction = csv_field(&serde_json::to_string(&s.deposit_extraction)?);
-            writeln!(
-                self.csv,
-                "{},{},{swarm},{},{},{},{},{},{},{},{},{},{},{},{},{},{elimination},{},{},{},{},{},{},{frame_count},{frame_mean},{frame_p95},{frame_max},{},{},{},{},{},{},{},{},{explanation},{deposit_extraction}",
-                sample.simulation_seconds,
-                sample.fixed_tick,
-                s.population,
-                s.workers,
-                s.haulers,
-                s.defenders,
-                c.births,
-                c.deaths,
-                c.minerals_gathered,
-                c.minerals_consumed,
-                c.structures_built,
-                c.structures_lost,
-                c.effective_damage_total,
-                c.effective_damage_nanobots,
-                c.effective_damage_structures,
-                t.count,
-                t.mean_ms,
-                t.p50_ms,
-                t.p95_ms,
-                t.p99_ms,
-                t.max_ms,
-                controller.reviews,
-                controller.intent_edits,
-                controller.work_units,
-                s.owned_deposits,
-                s.mineral_income,
-                s.mineral_starved_facility_seconds,
-                s.unspent_minerals,
-                s.empty_charge_defenders,
-            )?;
-        }
+    fn record_sample(&mut self, sample: BattleSample) {
         self.samples.push(sample_json(&sample));
         self.summary.samples += 1;
         self.summary.latest = sample;
-        self.persist()
     }
 }
 
-/// One sample as typed JSON: a `swarms` array whose objects use the CSV column
-/// names, repeating the sample-level columns in each swarm.
+/// One sample as typed JSON: a `swarms` array with one object per swarm,
+/// repeating the sample-level fields in each swarm object.
 fn sample_json(sample: &BattleSample) -> serde_json::Value {
     let t = &sample.tick_timing;
     let frame = sample.frame_timing.as_ref();
@@ -667,17 +476,6 @@ fn sample_json(sample: &BattleSample) -> serde_json::Value {
         })
         .collect();
     serde_json::json!({ "swarms": swarms })
-}
-
-fn csv_field(value: &str) -> String {
-    if value
-        .chars()
-        .any(|character| matches!(character, ',' | '"' | '\n' | '\r'))
-    {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.into()
-    }
 }
 
 fn start_tick(mut run: ResMut<BattleRun>) {
@@ -821,7 +619,7 @@ fn snapshot(world: &mut World, run: &mut BattleRun) -> BattleSample {
 
 fn collect_tick(world: &mut World) {
     let mut run = world.remove_resource::<BattleRun>().unwrap();
-    if run.summary.status != RunStatus::InProgress || run.error.is_some() {
+    if run.summary.status != RunStatus::InProgress {
         world.insert_resource(run);
         return;
     }
@@ -859,39 +657,15 @@ fn collect_tick(world: &mut World) {
     }
     if terminal || run.ticks as f64 * run.summary.timestep_seconds >= run.next_sample_seconds {
         let sample = snapshot(world, &mut run);
-        if let Err(error) = run.write_sample(sample) {
-            error!("Cannot save battle results: {error}");
-            run.error = Some(error.to_string());
-            world.write_message(AppExit::error());
-        }
+        run.record_sample(sample);
         run.next_sample_seconds += 1.;
     }
-    if terminal && (run.summary.headless || run.summary.max_ticks.is_some()) {
+    if terminal && run.summary.headless {
+        // A non-windowed battle freezes its simulation and waits for `process.shutdown`.
+        world.resource_mut::<Time<Virtual>>().pause();
         let mut clock = world.resource_mut::<Time<Fixed>>();
         let overstep = clock.overstep();
         clock.discard_overstep(overstep);
-        if run.error.is_none() {
-            world.write_message(AppExit::Success);
-        }
-    }
-    world.insert_resource(run);
-}
-
-fn finish_on_exit(world: &mut World) {
-    if world.resource::<Messages<AppExit>>().is_empty() {
-        return;
-    }
-    let mut run = world.remove_resource::<BattleRun>().unwrap();
-    if run.summary.status == RunStatus::InProgress && run.error.is_none() {
-        run.summary.status = RunStatus::Interrupted;
-        run.summary.termination_reason = Some(BattleTerminationReason::ProcessExit);
-        world.resource_mut::<BattleCounters>().frozen = true;
-        let sample = snapshot(world, &mut run);
-        if let Err(error) = run.write_sample(sample) {
-            error!("Cannot save interrupted battle: {error}");
-            run.error = Some(error.to_string());
-            world.write_message(AppExit::error());
-        }
     }
     world.insert_resource(run);
 }
@@ -901,39 +675,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hitch_log_caps_written_lines_and_persists_the_suppressed_count() -> io::Result<()> {
-        let config = BattleStatisticsConfig {
-            output_root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join(".tmp")
-                .join(format!("battle-hitch-cap-{}", std::process::id())),
-            ..default()
-        };
-        let result = (|| -> io::Result<_> {
-            let mut run = create_run(
-                &config,
-                AiBattleConfig::default(),
-                Tuning::default(),
-                1. / 60.,
-                "ai_battle",
-                0,
-                0,
-            )?;
-            let episode = HitchEpisodeSummary::default();
-            for _ in 0..1_002 {
-                run.append_hitch(&episode)?;
-            }
-            run.persist()?;
-            let lines = fs::read_to_string(run.directory.join("hitches.jsonl"))?;
-            let summary: BattleSummary =
-                serde_json::from_slice(&fs::read(run.directory.join("summary.json"))?)?;
-            Ok((lines, summary))
-        })();
-        if config.output_root.exists() {
-            fs::remove_dir_all(config.output_root)?;
+    fn battle_stats_keep_the_first_thousand_hitch_summaries_and_count_the_rest() {
+        let mut run = BattleRun::new(
+            &BattleStatisticsConfig::default(),
+            AiBattleConfig::default(),
+            Tuning::default(),
+            1. / 60.,
+            "ai-battle",
+            0,
+            0,
+        );
+        let episode = HitchEpisodeSummary::default();
+        for _ in 0..HITCH_SUMMARY_LIMIT + 2 {
+            run.record_frame(0, false, Some(&episode));
         }
-        let (lines, summary) = result?;
-        assert_eq!(lines.lines().count(), 1_000);
-        assert_eq!(summary.hitch_episodes_suppressed, 2);
-        Ok(())
+
+        let stats = run.stats_payload(None, None);
+
+        assert_eq!(stats["hitches"].as_array().map(Vec::len), Some(1_000));
+        assert_eq!(stats["last_hitch"], 999);
+        assert_eq!(stats["summary"]["hitch_episodes_suppressed"], 2);
     }
 }
