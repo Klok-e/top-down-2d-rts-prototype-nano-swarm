@@ -6,7 +6,8 @@ import tempfile
 import unittest
 
 
-SCRIPT = Path(__file__).parents[1] / "scripts" / "summarize_perf_trace.py"
+REPO = Path(__file__).resolve().parents[1]
+SCRIPT = REPO / "scripts" / "summarize_perf_trace.py"
 
 
 class TraceSummaryTests(unittest.TestCase):
@@ -30,7 +31,9 @@ class TraceSummaryTests(unittest.TestCase):
         ]
         events.sort(key=lambda event: event["ts"])
 
-        with tempfile.TemporaryDirectory(prefix="ns-trace-") as directory:
+        scratch = REPO / ".tmp"
+        scratch.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="ns-trace-", dir=scratch) as directory:
             trace = Path(directory) / "trace.json"
             trace.write_text(json.dumps(events), encoding="utf-8")
             run = subprocess.run(

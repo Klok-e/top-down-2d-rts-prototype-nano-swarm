@@ -9,7 +9,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     battle_statistics::{BattleStatisticsConfig, BattleStatisticsPlugin},
     intent::{IntentGrid, IntentKind},
     nanobot::{NanobotType, SwarmId},
-    perf::{HitchRecorderPlugin, RecorderClock},
+    perf::RecorderClock,
     scenario_selection::{Scenario, ScenarioSelection},
 };
 #[path = "../common/mod.rs"]
@@ -77,7 +77,7 @@ fn record_battle(app: &mut App, output: &Output) {
         ..default()
     });
     app.insert_resource(AiBattleConfig::default());
-    app.add_plugins((BattleStatisticsPlugin, HitchRecorderPlugin));
+    app.add_plugins(BattleStatisticsPlugin);
 }
 
 #[derive(Resource)]
@@ -496,6 +496,7 @@ fn recording_uses_session_policy_without_a_scenario_selection() {
         if enabled {
             assert_eq!(output.summary()["scenario"], "observation");
             assert_eq!(output.summary()["samples"], 1);
+            assert!(!output.directory().join("hitches.jsonl").exists());
         } else {
             assert!(
                 !output.0.exists(),

@@ -194,6 +194,10 @@ fn build_app_with_logging(
         }
         Presentation::SimulationOnly => {
             app.add_plugins((TaskPoolPlugin::default(), bevy::time::TimePlugin))
+                .insert_resource(battle_statistics::BattleStatisticsConfig {
+                    simulation_only: true,
+                    ..default()
+                })
                 .insert_resource(StructureSprites::from_single_handle(Handle::default()));
             None
         }
@@ -281,9 +285,6 @@ fn build_app_with_logging(
             .add_plugins(Camera2dFlyPlugin)
             .add_systems(Startup, setup_things_startup.pipe(error_handler))
             .add_systems(PostUpdate, update_main_camera_bloom);
-    }
-    if presentation == Presentation::Windowed {
-        app.add_plugins(perf::HitchRecorderPlugin);
     }
     #[cfg(feature = "perf-trace")]
     if app.is_plugin_added::<LogPlugin>() {

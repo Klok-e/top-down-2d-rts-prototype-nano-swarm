@@ -1,8 +1,6 @@
 use std::collections::VecDeque;
 
-use serde::Serialize;
-
-use super::FixedPhaseTimes;
+use serde::{Serialize, Serializer, ser::SerializeMap};
 
 pub const HITCH_FRAME_THRESHOLD_NS: u64 = 33_300_000;
 pub const HITCH_FIXED_TICK_THRESHOLD: u64 = 1;
@@ -13,6 +11,79 @@ pub const EPISODE_RETENTION_LIMIT: usize = 32;
 const EPISODE_HEAD_LIMIT: usize = EPISODE_FRAME_LIMIT / 2;
 const EPISODE_TAIL_LIMIT: usize = EPISODE_FRAME_LIMIT - EPISODE_HEAD_LIMIT;
 const SUMMARY_PHASE_COUNT: usize = ScheduleTimes::COUNT + FixedPhaseTimes::COUNT + 1;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(super) enum FixedPhase {
+    Movement,
+    Threat,
+    Combat,
+    Maintenance,
+    AllocationProject,
+    AllocationInvalidate,
+    AllocationAcquire,
+    StrategicController,
+    #[default]
+    Other,
+}
+
+impl FixedPhase {
+    pub(super) const ALL: [Self; 9] = [
+        Self::Movement,
+        Self::Threat,
+        Self::Combat,
+        Self::Maintenance,
+        Self::AllocationProject,
+        Self::AllocationInvalidate,
+        Self::AllocationAcquire,
+        Self::StrategicController,
+        Self::Other,
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Movement => "movement",
+            Self::Threat => "threat",
+            Self::Combat => "combat",
+            Self::Maintenance => "maintenance",
+            Self::AllocationProject => "allocation_project",
+            Self::AllocationInvalidate => "allocation_invalidate",
+            Self::AllocationAcquire => "allocation_acquire",
+            Self::StrategicController => "strategic_controller",
+            Self::Other => "fixed_other",
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FixedPhaseTimes([u64; Self::COUNT]);
+
+impl FixedPhaseTimes {
+    const COUNT: usize = FixedPhase::ALL.len();
+
+    pub(super) fn add(&mut self, phase: FixedPhase, duration_ns: u64) {
+        self.0[phase as usize] += duration_ns;
+    }
+
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (&'static str, u64)> + '_ {
+        FixedPhase::ALL
+            .into_iter()
+            .map(|phase| (phase.name(), self.0[phase as usize]))
+    }
+
+    pub fn total(self) -> u64 {
+        self.0.into_iter().sum()
+    }
+}
+
+impl Serialize for FixedPhaseTimes {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(Self::COUNT))?;
+        for (phase, time) in self.iter() {
+            map.serialize_entry(phase, &time)?;
+        }
+        map.end()
+    }
+}
 
 #[derive(Debug, Default, Clone, Copy, Serialize)]
 #[serde(rename_all = "PascalCase")]
@@ -103,7 +174,7 @@ impl FrameRecord {
 }
 
 #[derive(Debug, Default, Serialize)]
-pub(crate) struct HitchEpisodeSummary {
+pub struct HitchEpisodeSummary {
     start_frame: u64,
     end_frame: u64,
     start_fixed_tick: u64,
@@ -127,7 +198,14 @@ pub struct HitchEpisode {
     pub last_hitch_frame: u64,
     pub frames: Vec<FrameRecord>,
     #[serde(skip)]
-    pub(crate) summary: HitchEpisodeSummary,
+    summary: HitchEpisodeSummary,
+}
+
+impl HitchEpisode {
+    /// Returns the compact summary of all hitch frames, including those omitted from detail.
+    pub fn summary(&self) -> &HitchEpisodeSummary {
+        &self.summary
+    }
 }
 
 struct OpenEpisode {
@@ -272,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn a_long_episode_keeps_the_first_and_last_300_frames() {
+    fn a_long_episode_keeps_the_first_and_last_300_frames_and_summarizes_every_hitch() {
         let mut recorder = FrameRecorder::default();
         record(&mut recorder, 1, 120, false);
         record(&mut recorder, 121, 730, true);
@@ -284,6 +362,8 @@ mod tests {
             .expect("closed episode");
         let retained = episode.frames.iter().map(|frame| frame.frame);
         assert!(retained.eq((1..=300).chain(461..=760)));
+        let summary = serde_json::to_value(episode.summary()).unwrap();
+        assert_eq!(summary["hitch_count"], 610);
     }
 
     #[test]

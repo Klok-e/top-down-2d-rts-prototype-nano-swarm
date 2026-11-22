@@ -1,5 +1,9 @@
-use std::{collections::HashMap, time::Duration};
+use std::{any::TypeId, collections::HashMap, time::Duration};
 
+use crate::{
+    nanobot::{NanobotSimulationSet, RegionalAllocationSet},
+    strategic_runtime::StrategicControllerSet,
+};
 use bevy::{
     app::FixedMainScheduleOrder,
     ecs::schedule::{
@@ -11,71 +15,28 @@ use bevy::{
     prelude::*,
 };
 use indexmap::IndexSet;
-use serde::{Serialize, Serializer, ser::SerializeMap};
 
-use crate::{
-    nanobot::{NanobotSimulationSet, RegionalAllocationSet},
-    strategic_runtime::StrategicControllerSet,
-};
+use super::{FixedPhaseTimes, RecorderClock, elapsed_ns, recorder::FixedPhase};
 
-use super::{RecorderClock, elapsed_ns};
-
-const PHASE_NAMES: [&str; 9] = [
-    "movement",
-    "threat",
-    "combat",
-    "maintenance",
-    "allocation_project",
-    "allocation_invalidate",
-    "allocation_acquire",
-    "strategic_controller",
-    "fixed_other",
-];
-const FIXED_OTHER: usize = PHASE_NAMES.len() - 1;
-
-fn named_phases() -> [InternedSystemSet; FIXED_OTHER] {
-    [
-        NanobotSimulationSet::Movement.intern(),
-        NanobotSimulationSet::Threat.intern(),
-        NanobotSimulationSet::Combat.intern(),
-        NanobotSimulationSet::Maintenance.intern(),
-        RegionalAllocationSet::Project.intern(),
-        RegionalAllocationSet::Invalidate.intern(),
-        RegionalAllocationSet::Acquire.intern(),
-        StrategicControllerSet.intern(),
-    ]
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct FixedPhaseTimes([u64; Self::COUNT]);
-
-impl FixedPhaseTimes {
-    pub(crate) const COUNT: usize = PHASE_NAMES.len();
-
-    pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = (&'static str, u64)> + '_ {
-        PHASE_NAMES.into_iter().zip(self.0.iter().copied())
-    }
-
-    pub fn total(self) -> u64 {
-        self.iter().map(|(_, time)| time).sum()
-    }
-}
-
-impl Serialize for FixedPhaseTimes {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(Some(Self::COUNT))?;
-        for (phase, time) in self.iter() {
-            map.serialize_entry(phase, &time)?;
-        }
-        map.end()
-    }
+fn measured_set(phase: FixedPhase) -> Option<InternedSystemSet> {
+    Some(match phase {
+        FixedPhase::Movement => NanobotSimulationSet::Movement.intern(),
+        FixedPhase::Threat => NanobotSimulationSet::Threat.intern(),
+        FixedPhase::Combat => NanobotSimulationSet::Combat.intern(),
+        FixedPhase::Maintenance => NanobotSimulationSet::Maintenance.intern(),
+        FixedPhase::AllocationProject => RegionalAllocationSet::Project.intern(),
+        FixedPhase::AllocationInvalidate => RegionalAllocationSet::Invalidate.intern(),
+        FixedPhase::AllocationAcquire => RegionalAllocationSet::Acquire.intern(),
+        FixedPhase::StrategicController => StrategicControllerSet.intern(),
+        FixedPhase::Other => return None,
+    })
 }
 
 #[derive(Resource, Default)]
 pub(super) struct FixedMeasurements {
     tick_start: Duration,
     segment_start: Duration,
-    phase: usize,
+    phase: FixedPhase,
     times: FixedPhaseTimes,
     longest_tick_ns: u64,
 }
@@ -88,8 +49,9 @@ impl FixedMeasurements {
         )
     }
 
-    fn transition(&mut self, next: usize, now: Duration) {
-        self.times.0[self.phase] += elapsed_ns(self.segment_start, now);
+    fn transition(&mut self, next: FixedPhase, now: Duration) {
+        self.times
+            .add(self.phase, elapsed_ns(self.segment_start, now));
         self.phase = next;
         self.segment_start = now;
     }
@@ -109,14 +71,14 @@ pub(super) fn install(app: &mut App) {
                 let now = clock.now();
                 fixed.tick_start = now;
                 fixed.segment_start = now;
-                fixed.phase = FIXED_OTHER;
+                fixed.phase = FixedPhase::Other;
             },
         )
         .add_systems(
             TickBoundary::End,
             |clock: Res<RecorderClock>, mut fixed: ResMut<FixedMeasurements>| {
                 let now = clock.now();
-                fixed.transition(FIXED_OTHER, now);
+                fixed.transition(FixedPhase::Other, now);
                 let tick_ns = elapsed_ns(fixed.tick_start, now);
                 fixed.longest_tick_ns = fixed.longest_tick_ns.max(tick_ns);
             },
@@ -131,7 +93,7 @@ pub(super) fn install(app: &mut App) {
 
 #[derive(Debug, Default)]
 struct PhaseBoundaries {
-    markers: HashMap<(usize, usize), SystemKey>,
+    markers: HashMap<(FixedPhase, usize), SystemKey>,
 }
 
 impl ScheduleBuildPass for PhaseBoundaries {
@@ -154,18 +116,18 @@ impl ScheduleBuildPass for PhaseBoundaries {
         graph: &mut ScheduleGraph,
         dependency: &mut Dag<SystemKey>,
     ) -> Result<(), ScheduleBuildError> {
-        // Keep the gameplay dependencies and Bevy's deferred command flushes.
-        // Adjacent systems in a span retain their existing ability to run in parallel.
         let segments = fixed_segments(graph, dependency);
-        let mut previous_phase = FIXED_OTHER;
+        let mut used = [0; FixedPhase::ALL.len()];
+        let mut previous_phase = FixedPhase::Other;
         let mut previous_systems = Vec::new();
-        for (index, (phase, systems)) in segments
+        for (phase, systems) in segments
             .into_iter()
-            .chain([(FIXED_OTHER, Vec::new())])
-            .enumerate()
+            .chain([(FixedPhase::Other, Vec::new())])
         {
             if phase != previous_phase {
-                let marker = *self.markers.entry((index, phase)).or_insert_with(|| {
+                // Reuse the phase's markers when the schedule is rebuilt with a different span order.
+                let used = &mut used[phase as usize];
+                let marker = *self.markers.entry((phase, *used)).or_insert_with(|| {
                     graph.systems.insert(
                         Box::new(IntoSystem::into_system(
                             move |clock: Res<RecorderClock>, mut fixed: ResMut<FixedMeasurements>| {
@@ -175,6 +137,7 @@ impl ScheduleBuildPass for PhaseBoundaries {
                         Vec::new(),
                     )
                 });
+                *used += 1;
                 for system in previous_systems {
                     dependency.add_edge(system, marker);
                 }
@@ -193,10 +156,10 @@ impl ScheduleBuildPass for PhaseBoundaries {
 fn fixed_segments(
     graph: &ScheduleGraph,
     dependency: &Dag<SystemKey>,
-) -> Vec<(usize, Vec<SystemKey>)> {
+) -> Vec<(FixedPhase, Vec<SystemKey>)> {
     let mut phases = HashMap::new();
-    for (phase, set) in named_phases().into_iter().enumerate() {
-        let Some(set) = graph.system_sets.get_key(set) else {
+    for phase in FixedPhase::ALL {
+        let Some(set) = measured_set(phase).and_then(|set| graph.system_sets.get_key(set)) else {
             continue;
         };
         let mut nodes = vec![NodeId::Set(set)];
@@ -209,7 +172,29 @@ fn fixed_segments(
             }
         }
     }
-    let phase_of = |system: SystemKey| phases.get(&system).copied().unwrap_or(FIXED_OTHER);
+    // Charge a generated flush to its named consumer phase when no other
+    // named phase depends directly on it. This avoids a separate timed span.
+    let flush_phases: Vec<_> = dependency
+        .nodes()
+        .filter(|&system| {
+            !graph
+                .hierarchy()
+                .graph()
+                .contains_node(NodeId::System(system))
+                && graph.systems[system].type_id() == TypeId::of::<ApplyDeferred>()
+        })
+        .filter_map(|system| {
+            let mut consumers = dependency
+                .neighbors(system)
+                .filter_map(|node| phases.get(&node).copied());
+            let phase = consumers.next()?;
+            consumers
+                .all(|other| other == phase)
+                .then_some((system, phase))
+        })
+        .collect();
+    phases.extend(flush_phases);
+    let phase_of = |system: SystemKey| phases.get(&system).copied().unwrap_or_default();
 
     // Topologically group ready systems by phase. Work without a phase can run
     // on either side of a boundary, subject to its existing prerequisites.
@@ -226,12 +211,19 @@ fn fixed_segments(
         .nodes()
         .filter(|system| waiting[system] == 0)
         .collect();
-    let mut segments: Vec<(usize, Vec<SystemKey>)> = Vec::new();
+    let mut segments: Vec<(FixedPhase, Vec<SystemKey>)> = Vec::new();
     while !ready.is_empty() {
-        let phase = segments.last().map_or(FIXED_OTHER, |(phase, _)| *phase);
+        let phase = segments
+            .last()
+            .map_or(FixedPhase::Other, |(phase, _)| *phase);
         let next = ready
             .iter()
             .position(|&system| phase_of(system) == phase)
+            .or_else(|| {
+                ready
+                    .iter()
+                    .position(|&system| phase_of(system) != FixedPhase::Other)
+            })
             .unwrap_or(0);
         let system = ready.remove(next);
         let phase = phase_of(system);

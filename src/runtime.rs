@@ -16,7 +16,6 @@ use crate::{
     ai_battle::{AiBattleConfig, AiBattleLayout},
     battle_statistics::BattleStatisticsConfig,
     build_app_with_logging,
-    perf::HitchRecorderPlugin,
     scenario_selection::{Scenario, ScenarioSelection},
 };
 
@@ -390,9 +389,6 @@ pub fn build_runtime_app(options: RuntimeOptions) -> Result<App, RuntimeBuildErr
         .map_err(RuntimeBuildError::Tuning)?;
     if headless {
         app.add_plugins((HeadlessRunnerPlugin, TerminalCtrlCHandlerPlugin));
-    }
-    if options.headless {
-        app.add_plugins(HitchRecorderPlugin);
     }
     app.insert_resource(selection);
     app.insert_resource(HeadlessPacing { unbounded });

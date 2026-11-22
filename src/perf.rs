@@ -23,9 +23,10 @@ use crate::{
     session_lifecycle::SessionGeneration,
 };
 
-pub use fixed_phases::FixedPhaseTimes;
-pub(crate) use recorder::HitchEpisodeSummary;
-pub use recorder::{FrameRecord, FrameRecorder, HitchDetection, HitchEpisode, ScheduleTimes};
+pub use recorder::{
+    FixedPhaseTimes, FrameRecord, FrameRecorder, HitchDetection, HitchEpisode, HitchEpisodeSummary,
+    ScheduleTimes,
+};
 
 const SESSION_WARMUP_FRAMES: u64 = 60;
 
@@ -202,7 +203,7 @@ fn start_recording_frame(
         if !session_replaced
             && let Some(mut battle) = battle
             && let Err(error) =
-                battle.record_frame(frame_ns, paused, closed.map(|episode| &episode.summary))
+                battle.record_frame(frame_ns, paused, closed.map(HitchEpisode::summary))
         {
             error!("Cannot append to the battle hitch log: {error}");
             battle.error = Some(error.to_string());

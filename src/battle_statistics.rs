@@ -7,7 +7,7 @@ use crate::{
         PlannedStructure, ProductionFacility, Structure, Swarm, SwarmEliminationSet,
         SwarmEliminationState, SwarmId, SwarmMember, world_to_cell,
     },
-    perf::HitchEpisodeSummary,
+    perf::{HitchEpisodeSummary, HitchRecorderPlugin},
     resources::{ResourceDeposit, ResourceKind, Stockpile, buffered_minerals},
     session::SessionRules,
     strategic_runtime::{ControllerProfile, ControllerTelemetry},
@@ -172,6 +172,14 @@ impl Plugin for BattleStatisticsPlugin {
                     .run_if(resource_exists::<BattleRun>),
             )
             .add_systems(Last, finish_on_exit.run_if(resource_exists::<BattleRun>));
+        if !app
+            .world()
+            .resource::<BattleStatisticsConfig>()
+            .simulation_only
+            && !app.is_plugin_added::<HitchRecorderPlugin>()
+        {
+            app.add_plugins(HitchRecorderPlugin);
+        }
     }
 }
 
@@ -296,7 +304,7 @@ pub struct BattleRun {
     pub summary: BattleSummary,
     pub error: Option<String>,
     csv: BufWriter<File>,
-    hitch_log: File,
+    hitch_log: Option<File>,
     hitch_episodes_written: u64,
     tick_start: Instant,
     ticks: u64,
@@ -412,7 +420,13 @@ fn create_run(
         .create_new(true)
         .open(directory.join("samples.csv"))?;
     let mut csv = BufWriter::new(file);
-    let hitch_log = File::create_new(directory.join("hitches.jsonl"))?;
+    let hitch_log = (scenario_name
+        == crate::scenario_selection::Scenario::AiBattle
+            .definition()
+            .rules
+            .scenario_name)
+        .then(|| File::create_new(directory.join("hitches.jsonl")))
+        .transpose()?;
     writeln!(
         csv,
         "simulation_seconds,fixed_tick,swarm,population,workers,haulers,defenders,births,deaths,minerals_gathered,minerals_consumed,structures_built,structures_lost,effective_damage_total,effective_damage_nanobots,effective_damage_structures,elimination_seconds,tick_count,tick_mean_ms,tick_p50_ms,tick_p95_ms,tick_p99_ms,tick_max_ms,frame_count,frame_mean_ms,frame_p95_ms,frame_max_ms,controller_reviews,controller_intent_edits,controller_work_units,owned_deposits,mineral_income,mineral_starved_facility_seconds,unspent_minerals,empty_charge_defenders,controller_last_explanation,deposit_extraction"
@@ -479,13 +493,16 @@ impl BattleRun {
     }
 
     fn append_hitch(&mut self, episode: &HitchEpisodeSummary) -> io::Result<()> {
+        let Some(hitch_log) = &mut self.hitch_log else {
+            return Ok(());
+        };
         if self.hitch_episodes_written >= HITCH_LOG_LIMIT {
             self.summary.hitch_episodes_suppressed += 1;
             return Ok(());
         }
         let mut line = serde_json::to_vec(episode)?;
         line.push(b'\n');
-        self.hitch_log.write_all(&line)?;
+        hitch_log.write_all(&line)?;
         self.hitch_episodes_written += 1;
         Ok(())
     }
