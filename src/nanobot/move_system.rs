@@ -285,16 +285,13 @@ fn continuous_velocity(
     // Every heading of the innermost ring is the previous velocity itself, so it
     // contributes one candidate. Scoring all candidates in one pass lets it vectorize.
     let mut candidates = [Vec2::ZERO; CANDIDATE_COUNT];
-    for (slot, candidate) in candidates.iter_mut().enumerate() {
-        let (ring, heading) = if slot == 0 {
-            (0, 0)
-        } else {
-            (
-                1 + (slot - 1) / CANDIDATE_HEADINGS.len(),
-                (slot - 1) % CANDIDATE_HEADINGS.len(),
-            )
-        };
-        *candidate = previous + CANDIDATE_HEADINGS[heading] * acceleration * ring as f32 / 4.0;
+    let scaled = CANDIDATE_HEADINGS.map(|heading| heading * acceleration);
+    candidates[0] = previous + scaled[0] * 0.0 / 4.0;
+    for (ring, candidates) in candidates[1..].chunks_exact_mut(scaled.len()).enumerate() {
+        let ring = (ring + 1) as f32;
+        for (candidate, scaled) in candidates.iter_mut().zip(&scaled) {
+            *candidate = previous + *scaled * ring / 4.0;
+        }
     }
     let mut scores = [0.0; CANDIDATE_COUNT];
     for (score, candidate) in scores.iter_mut().zip(&candidates) {
