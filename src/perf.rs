@@ -13,11 +13,14 @@ use crate::{
     agent_control::{AgentControlClock, AgentControlClockPlugin},
     battle_statistics::BattleRun,
     nanobot::{Nanobot, Structure},
+    runtime::HeadlessPacing,
     session_lifecycle::SessionGeneration,
 };
 
 pub(crate) use recorder::HitchEpisodeSummary;
-pub use recorder::{FrameRecord, FrameRecorder, HitchEpisode, ScheduleTimes};
+pub use recorder::{FrameRecord, FrameRecorder, HitchDetection, HitchEpisode, ScheduleTimes};
+
+const SESSION_WARMUP_FRAMES: u64 = 60;
 
 #[derive(Resource)]
 pub struct RecorderClock(ClockSource);
@@ -64,7 +67,8 @@ struct FrameMeasurements {
     schedule_start: Duration,
     schedules: ScheduleTimes,
     previous_fixed_tick: u64,
-    previous_generation: Option<SessionGeneration>,
+    session_generation: u64,
+    session_started_after_frame: u64,
 }
 
 #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -135,39 +139,63 @@ impl Plugin for HitchRecorderPlugin {
 fn start_recording_frame(
     clock: Res<RecorderClock>,
     counters: Res<AgentControlClock>,
+    time: Res<Time<Virtual>>,
+    generation: Option<Res<SessionGeneration>>,
+    pacing: Option<Res<HeadlessPacing>>,
     mut measurements: ResMut<FrameMeasurements>,
     mut hitches: ResMut<RecordedHitches>,
     nanobots: Query<(), With<Nanobot>>,
     structures: Query<(), With<Structure>>,
-    time: Res<Time<Virtual>>,
-    generation: Option<Res<SessionGeneration>>,
     battle: Option<ResMut<BattleRun>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     // Bevy updates the render sub-app after the main schedule. The next frame
     // start is the first common boundary after that work in both runtime modes.
     let now = clock.now();
-    let generation = generation.as_deref().copied();
     if let Some(start) = measurements.frame_start.replace(now) {
         let frame_ns = elapsed_ns(start, now);
         let schedule_ns = std::mem::take(&mut measurements.schedules);
-        let closed = hitches.0.record(FrameRecord {
-            frame: counters.frame,
-            fixed_tick: counters.fixed_tick,
-            frame_ns,
-            fixed_ticks_run: counters.fixed_tick - measurements.previous_fixed_tick,
-            unmeasured_ns: frame_ns - schedule_ns.total(),
-            schedule_ns,
-            nanobots: nanobots.iter().len(),
-            structures: structures.iter().len(),
-        });
-        if generation == measurements.previous_generation
-            && let Some(mut battle) = battle
-            && let Err(error) = battle.record_frame(
+        let generation = generation.map_or(0, |generation| generation.0);
+        let session_replaced = generation != measurements.session_generation;
+        if session_replaced {
+            // A replacement runs in PreUpdate, within the completed frame.
+            measurements.session_generation = generation;
+            measurements.session_started_after_frame = counters.frame - 1;
+            hitches.0.reset_session();
+        }
+        let fixed_ticks_run = counters.fixed_tick - measurements.previous_fixed_tick;
+        let session_frames = counters.frame - measurements.session_started_after_frame;
+        let paused = time.is_paused();
+        let detection = if paused || session_frames <= SESSION_WARMUP_FRAMES {
+            HitchDetection::Excluded
+        } else if pacing.is_some_and(|pacing| pacing.unbounded) {
+            HitchDetection::Unbounded {
+                fixed_tick_ns: if fixed_ticks_run > 0 {
+                    schedule_ns.run_fixed_main_loop
+                } else {
+                    0
+                },
+            }
+        } else {
+            HitchDetection::Paced
+        };
+        let closed = hitches.0.record(
+            FrameRecord {
+                frame: counters.frame,
+                fixed_tick: counters.fixed_tick,
                 frame_ns,
-                time.is_paused(),
-                closed.map(|episode| &episode.summary),
-            )
+                fixed_ticks_run,
+                unmeasured_ns: frame_ns - schedule_ns.total(),
+                schedule_ns,
+                nanobots: nanobots.iter().len(),
+                structures: structures.iter().len(),
+            },
+            detection,
+        );
+        if !session_replaced
+            && let Some(mut battle) = battle
+            && let Err(error) =
+                battle.record_frame(frame_ns, paused, closed.map(|episode| &episode.summary))
         {
             error!("Cannot append to the battle hitch log: {error}");
             battle.error = Some(error.to_string());
@@ -175,7 +203,6 @@ fn start_recording_frame(
         }
     }
     measurements.previous_fixed_tick = counters.fixed_tick;
-    measurements.previous_generation = generation;
 }
 
 fn start_schedule(clock: Res<RecorderClock>, mut measurements: ResMut<FrameMeasurements>) {

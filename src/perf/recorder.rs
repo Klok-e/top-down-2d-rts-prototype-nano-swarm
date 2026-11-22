@@ -64,12 +64,27 @@ pub struct FrameRecord {
     pub structures: usize,
 }
 
-impl FrameRecord {
-    pub fn is_hitch(self) -> bool {
-        self.frame_ns > HITCH_FRAME_THRESHOLD_NS
-            || self.fixed_ticks_run > HITCH_FIXED_TICK_THRESHOLD
-    }
+#[derive(Clone, Copy)]
+pub enum HitchDetection {
+    Excluded,
+    Paced,
+    Unbounded { fixed_tick_ns: u64 },
+}
 
+impl HitchDetection {
+    fn is_hitch(self, frame: FrameRecord) -> bool {
+        match self {
+            Self::Excluded => false,
+            Self::Paced => {
+                frame.frame_ns > HITCH_FRAME_THRESHOLD_NS
+                    || frame.fixed_ticks_run > HITCH_FIXED_TICK_THRESHOLD
+            }
+            Self::Unbounded { fixed_tick_ns } => fixed_tick_ns > HITCH_FRAME_THRESHOLD_NS,
+        }
+    }
+}
+
+impl FrameRecord {
     fn phases(self) -> impl Iterator<Item = (&'static str, u64)> {
         self.schedule_ns
             .entries()
@@ -169,9 +184,18 @@ pub struct FrameRecorder {
 }
 
 impl FrameRecorder {
+    pub(crate) fn reset_session(&mut self) {
+        self.history.clear();
+        self.open = None;
+    }
+
     /// Records the next consecutive frame and returns an episode if this frame closed one.
-    pub fn record(&mut self, frame: FrameRecord) -> Option<&HitchEpisode> {
-        let is_hitch = frame.is_hitch();
+    pub fn record(
+        &mut self,
+        frame: FrameRecord,
+        detection: HitchDetection,
+    ) -> Option<&HitchEpisode> {
+        let is_hitch = detection.is_hitch(frame);
         if is_hitch && self.open.is_none() {
             self.last_id += 1;
             let start = self.history.front().copied().unwrap_or(frame);
@@ -227,11 +251,14 @@ mod tests {
 
     fn record(recorder: &mut FrameRecorder, first: u64, last: u64, hitch: bool) {
         for frame in first..=last {
-            recorder.record(FrameRecord {
-                frame,
-                frame_ns: if hitch { 34_000_000 } else { 16_000_000 },
-                ..Default::default()
-            });
+            recorder.record(
+                FrameRecord {
+                    frame,
+                    frame_ns: if hitch { 34_000_000 } else { 16_000_000 },
+                    ..Default::default()
+                },
+                HitchDetection::Paced,
+            );
         }
     }
 
