@@ -4,7 +4,11 @@ use super::{
     CombatIdentity, DefenderEngagements, DirectMovementComponent, Nanobot, SwarmId, SwarmMember,
     VelocityComponent, combat_key, route_following::WAYPOINT_REACHED_DISTANCE,
 };
-use crate::{nanobot::consts::BOT_SEPARATION_FORCE, spatial::FixedSpatialBuckets, tuning::Tuning};
+use crate::{
+    nanobot::consts::BOT_SEPARATION_FORCE,
+    spatial::{FixedSpatialBuckets, PackedSpatialBuckets},
+    tuning::Tuning,
+};
 
 pub(super) const BODY_DIAMETER: f32 = crate::navigation::BODY_RADIUS * 2.0;
 
@@ -388,15 +392,18 @@ pub fn velocity_system(
         })
         .collect();
     bodies.sort_by_key(|(body, _)| (body.key, body.entity.to_bits()));
-    let mut lookup = FixedSpatialBuckets::new(diameter * 2.0 + tuning.logistics.bot_speed * 2.0);
     let indices: std::collections::HashMap<_, _> = bodies
         .iter()
         .enumerate()
         .map(|(i, (body, _))| (body.entity, i))
         .collect();
-    for (i, (body, _)) in bodies.iter().enumerate() {
-        lookup.insert(body.start, i);
-    }
+    let lookup = PackedSpatialBuckets::new(
+        diameter * 2.0 + tuning.logistics.bot_speed * 2.0,
+        bodies
+            .iter()
+            .enumerate()
+            .map(|(i, (body, _))| (body.start, i)),
+    );
     let now = time.elapsed_secs_f64();
     progress.retain(|entity, _| indices.contains_key(entity));
     motion.retain(|entity, _| indices.contains_key(entity));
@@ -621,12 +628,9 @@ pub fn velocity_system(
             continue;
         }
         nearby.clear();
-        nearby.extend(
-            lookup
-                .neighbourhood(lookup.bucket_for_position(body.start), 1)
-                .flat_map(|(_, entries)| entries.iter().copied())
-                .filter(|j| *j != i),
-        );
+        for run in lookup.neighbourhood_runs(lookup.bucket_for_position(body.start), 1) {
+            nearby.extend(run.iter().copied().filter(|j| *j != i));
+        }
         let prepare_sweep =
             |bodies: &[(TrafficBody, Vec2)],
              progress: &std::collections::HashMap<Entity, TravelProgress>,
