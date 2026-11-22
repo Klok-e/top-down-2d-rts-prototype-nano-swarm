@@ -502,10 +502,10 @@ impl BattleRun {
             self.summary.hitch_episodes_suppressed += 1;
             return Ok(());
         }
+        self.hitch_summaries.push(episode.clone());
         let mut line = serde_json::to_vec(episode)?;
         line.push(b'\n');
         hitch_log.write_all(&line)?;
-        self.hitch_summaries.push(episode.clone());
         Ok(())
     }
 
@@ -548,7 +548,6 @@ impl BattleRun {
     }
 
     fn write_sample(&mut self, sample: BattleSample) -> io::Result<()> {
-        self.samples.push(sample_json(&sample));
         let t = &sample.tick_timing;
         for (swarm, s) in &sample.swarms {
             let c = s.totals;
@@ -608,6 +607,7 @@ impl BattleRun {
                 s.empty_charge_defenders,
             )?;
         }
+        self.samples.push(sample_json(&sample));
         self.summary.samples += 1;
         self.summary.latest = sample;
         self.persist()
