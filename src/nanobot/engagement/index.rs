@@ -14,6 +14,10 @@ use crate::nanobot::SwarmId;
 
 /// Fine cell side in world units, before widening for spread-out layouts.
 const FINE_CELL_SIZE: f64 = 64.0;
+/// Fixed-point scale of the strength totals: exact integer sums of rounded strengths.
+const STRENGTH_SCALE: f64 = (1_u64 << 32) as f64;
+/// Largest strength the fixed-point totals hold without overflow.
+const MAX_TOTALED_STRENGTH: f64 = 256.0;
 /// Upper bound on fine cells, so spread-out layouts widen cells instead of allocating.
 const MAX_FINE_CELLS: f64 = (1 << 20) as f64;
 
@@ -45,6 +49,110 @@ pub(super) struct DefenderIndex {
     cells: Vec<Candidate>,
     /// Defenders whose position has no fine cell; every query tests them.
     unplaced: Vec<Candidate>,
+    /// Running strength totals over `cells`, when every strength fits the fixed-point scale.
+    totals: Option<StrengthTotals>,
+}
+
+/// Prefix sums over the fine cells, so a run of cells has exact totals in O(1).
+#[derive(Clone)]
+struct StrengthTotals {
+    swarms: Vec<SwarmId>,
+    /// Per position in `cells`: every swarm's strength, then per swarm its strength,
+    /// its non-routing strength, and its count of positive strengths.
+    all: Vec<i64>,
+    positive: Vec<u32>,
+    by_swarm: Vec<[i64; 2]>,
+    positive_by_swarm: Vec<u32>,
+}
+
+/// Fixed-point totals of one swarm against the rest, over some Defenders.
+#[derive(Clone, Copy, Default)]
+struct SideTotals {
+    friendly: i64,
+    hostile: i64,
+    hostile_positive: u64,
+    count: u64,
+}
+
+impl StrengthTotals {
+    fn new(cells: &[Candidate]) -> Self {
+        let mut swarms: Vec<_> = cells.iter().map(|candidate| candidate.swarm).collect();
+        swarms.sort_unstable();
+        swarms.dedup();
+        let stride = swarms.len();
+        let mut totals = Self {
+            all: vec![0; cells.len() + 1],
+            positive: vec![0; cells.len() + 1],
+            by_swarm: vec![[0; 2]; (cells.len() + 1) * stride],
+            positive_by_swarm: vec![0; (cells.len() + 1) * stride],
+            swarms,
+        };
+        for (position, candidate) in cells.iter().enumerate() {
+            let strength = fixed_strength(candidate.strength);
+            let positive = u32::from(candidate.strength > 0.0);
+            totals.all[position + 1] = totals.all[position] + strength;
+            totals.positive[position + 1] = totals.positive[position] + positive;
+            let swarm = totals.swarm_index(candidate.swarm).unwrap();
+            for index in 0..stride {
+                let [all, active] = totals.by_swarm[position * stride + index];
+                let count = totals.positive_by_swarm[position * stride + index];
+                let own = index == swarm;
+                totals.by_swarm[(position + 1) * stride + index] = [
+                    all + if own { strength } else { 0 },
+                    active
+                        + if own && !candidate.routing {
+                            strength
+                        } else {
+                            0
+                        },
+                ];
+                totals.positive_by_swarm[(position + 1) * stride + index] =
+                    count + if own { positive } else { 0 };
+            }
+        }
+        totals
+    }
+
+    fn swarm_index(&self, swarm: SwarmId) -> Option<usize> {
+        self.swarms.binary_search(&swarm).ok()
+    }
+
+    /// Totals over `cells[start..end]` for `swarm` (at `index`, when present).
+    fn side(&self, index: Option<usize>, start: usize, end: usize) -> SideTotals {
+        let all = self.all[end] - self.all[start];
+        let positive = u64::from(self.positive[end] - self.positive[start]);
+        let (own_all, own_active, own_positive) = index.map_or((0, 0, 0), |index| {
+            let stride = self.swarms.len();
+            let [end_all, end_active] = self.by_swarm[end * stride + index];
+            let [start_all, start_active] = self.by_swarm[start * stride + index];
+            let count = self.positive_by_swarm[end * stride + index]
+                - self.positive_by_swarm[start * stride + index];
+            (
+                end_all - start_all,
+                end_active - start_active,
+                u64::from(count),
+            )
+        });
+        SideTotals {
+            friendly: own_active,
+            hostile: all - own_all,
+            hostile_positive: positive - own_positive,
+            count: (end - start) as u64,
+        }
+    }
+}
+
+impl std::ops::AddAssign for SideTotals {
+    fn add_assign(&mut self, other: Self) {
+        self.friendly += other.friendly;
+        self.hostile += other.hostile;
+        self.hostile_positive += other.hostile_positive;
+        self.count += other.count;
+    }
+}
+
+fn fixed_strength(strength: f64) -> i64 {
+    (strength * STRENGTH_SCALE).round() as i64
 }
 
 impl DefenderIndex {
@@ -83,6 +191,7 @@ impl DefenderIndex {
             starts: vec![0; (width * height + 1) as usize],
             cells: Vec::new(),
             unplaced: Vec::new(),
+            totals: None,
         };
         let candidates = defenders
             .iter()
@@ -125,6 +234,13 @@ impl DefenderIndex {
             }
         }
         index.defenders = defenders;
+        let totaled = index.bounded_strengths
+            && index.cells.len() < 1 << 22
+            && index
+                .cells
+                .iter()
+                .all(|candidate| candidate.strength <= MAX_TOTALED_STRENGTH);
+        index.totals = totaled.then(|| StrengthTotals::new(&index.cells));
         index
     }
 
@@ -357,6 +473,11 @@ impl DefenderIndex {
             // Far from the origin, f32 rounding could exceed the reach's margin.
             let implied =
                 position.abs().max_element() < 1e6 && reach < 1e6 && held(low, -1) && held(high, 1);
+            if implied
+                && let Some(outnumbered) = self.bounded_by_totals(position, swarm, radius, ratio)
+            {
+                return outnumbered;
+            }
             let radius_squared = radius * radius;
             let (mut friendly, mut hostile, mut count) = (0.0_f64, 0.0_f64, 0_u64);
             for (slice_index, slice) in self.slices_near(position, radius).enumerate() {
@@ -405,6 +526,94 @@ impl DefenderIndex {
             }
         }
         hostile > 0.0 && ((friendly / hostile) as f32) < ratio
+    }
+
+    /// Decide [`Self::outnumbered`] from the strength totals of whole cells: those
+    /// inside the disk bound the sums from below, those it touches from above.
+    /// `None` when the bounds do not settle the answer.
+    fn bounded_by_totals(
+        &self,
+        position: Vec2,
+        swarm: SwarmId,
+        radius: f32,
+        ratio: f32,
+    ) -> Option<bool> {
+        let totals = self.totals.as_ref()?;
+        if !self.unplaced.is_empty() || self.width == 0 {
+            return None;
+        }
+        let own = totals.swarm_index(swarm);
+        let center = (position.as_dvec2() - self.origin) / self.cell_size;
+        let reach = (f64::from(radius.abs()) * (1.0 + 1e-5) + 1.0) / self.cell_size;
+        // Every point of a cell within this radius passes the f32 distance test.
+        let inside = (f64::from(radius.abs()) * (1.0 - 1e-5) - 1.0) / self.cell_size;
+        if !(center.is_finite() && reach.is_finite()) {
+            return None;
+        }
+        let first_row = (center.y - reach).floor().max(0.0) as i64;
+        let last_row = (center.y + reach).floor().min((self.height - 1) as f64) as i64;
+        let (mut inner, mut outer) = (SideTotals::default(), SideTotals::default());
+        for y in first_row..=last_row {
+            let row = (y * self.width) as usize;
+            let span = |first: i64, last: i64| {
+                totals.side(
+                    own,
+                    self.starts[row + first as usize] as usize,
+                    self.starts[row + last as usize + 1] as usize,
+                )
+            };
+            let near = (y as f64 - center.y)
+                .max(center.y - (y + 1) as f64)
+                .max(0.0);
+            let half_width = (reach * reach - near * near).max(0.0).sqrt();
+            let first = (center.x - half_width).floor().max(0.0) as i64;
+            let last = (center.x + half_width).floor().min((self.width - 1) as f64) as i64;
+            if first > last {
+                continue;
+            }
+            outer += span(first, last);
+            let far = (y as f64 - center.y)
+                .abs()
+                .max(((y + 1) as f64 - center.y).abs());
+            if far < inside {
+                let half_width = (inside * inside - far * far).sqrt();
+                let first_inside = ((center.x - half_width).ceil() as i64).max(first);
+                let last_inside = ((center.x + half_width).floor() as i64 - 1).min(last);
+                if first_inside <= last_inside {
+                    inner += span(first_inside, last_inside);
+                }
+            }
+        }
+        // A sum of non-negative terms is positive exactly when one term is.
+        if outer.hostile_positive == 0 {
+            return Some(false);
+        }
+        if inner.hostile_positive == 0 {
+            return None;
+        }
+        // Fixed-point sums are exact sums of strengths rounded by half a unit each, and
+        // a sum in the coarse scan's order is within `delta` of the exact sum.
+        let error = (outer.count + 1) as f64 / STRENGTH_SCALE;
+        let delta = 8.0 * (outer.count as f64 + 2.0) * f64::EPSILON;
+        if delta >= 0.5 {
+            return None;
+        }
+        let real = |total: i64| total as f64 / STRENGTH_SCALE;
+        let lowest =
+            (real(inner.friendly) - error).max(0.0) / (real(outer.hostile) + error) * (1.0 - delta);
+        let least_hostile = real(inner.hostile) - error;
+        let highest = if least_hostile > 0.0 {
+            (real(outer.friendly) + error) / least_hostile * (1.0 + delta)
+        } else {
+            f64::INFINITY
+        };
+        if (highest as f32) < ratio {
+            Some(true)
+        } else if (lowest as f32) >= ratio {
+            Some(false)
+        } else {
+            None
+        }
     }
 
     /// Other Defenders of `defender`'s swarm within `radius`, on the positive and
