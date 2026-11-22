@@ -5221,6 +5221,7 @@ dependencies = [
  "bevy_image_export",
  "criterion",
  "image",
+ "indexmap",
  "libc",
  "libtest-mimic",
  "log",

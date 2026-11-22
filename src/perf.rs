@@ -1,3 +1,4 @@
+mod fixed_phases;
 mod recorder;
 
 use std::time::{Duration, Instant};
@@ -14,6 +15,7 @@ use crate::{
     nanobot::{Nanobot, Structure},
 };
 
+pub use fixed_phases::FixedPhaseTimes;
 pub use recorder::{FrameRecord, FrameRecorder, HitchEpisode, ScheduleTimes};
 
 #[derive(Resource)]
@@ -81,6 +83,7 @@ impl Plugin for HitchRecorderPlugin {
             .init_resource::<FrameMeasurements>()
             .init_resource::<RecordedHitches>()
             .add_systems(StartRecordingFrame, start_recording_frame);
+        fixed_phases::install(app);
         app.world_mut()
             .resource_mut::<MainScheduleOrder>()
             .insert_before(First, StartRecordingFrame);
@@ -131,6 +134,7 @@ fn start_recording_frame(
     clock: Res<RecorderClock>,
     counters: Res<AgentControlClock>,
     mut measurements: ResMut<FrameMeasurements>,
+    mut fixed_phases: ResMut<fixed_phases::FixedMeasurements>,
     mut hitches: ResMut<RecordedHitches>,
     nanobots: Query<(), With<Nanobot>>,
     structures: Query<(), With<Structure>>,
@@ -148,6 +152,7 @@ fn start_recording_frame(
             fixed_ticks_run: counters.fixed_tick - measurements.previous_fixed_tick,
             unmeasured_ns: frame_ns - schedule_ns.total(),
             schedule_ns,
+            fixed_phase_ns: fixed_phases.take_times(),
             nanobots: nanobots.iter().len(),
             structures: structures.iter().len(),
         });

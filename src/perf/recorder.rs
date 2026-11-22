@@ -44,6 +44,7 @@ pub struct FrameRecord {
     pub frame_ns: u64,
     pub fixed_ticks_run: u64,
     pub schedule_ns: ScheduleTimes,
+    pub fixed_phase_ns: super::FixedPhaseTimes,
     pub unmeasured_ns: u64,
     pub nanobots: usize,
     pub structures: usize,
