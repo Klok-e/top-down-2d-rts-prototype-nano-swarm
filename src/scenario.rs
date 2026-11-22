@@ -453,7 +453,7 @@ pub(crate) fn scenario_layout(
 pub fn spawn_selected_scenario(
     scenario: crate::scenario_selection::Scenario,
     commands: &mut Commands<'_, '_>,
-    assets: &Res<'_, AssetServer>,
+    assets: Option<&AssetServer>,
     grid: &mut IntentGrid,
     mut ids: ResMut<crate::nanobot::OpponentSwarmIdAlloc>,
     layout: AiBattleLayout,
@@ -491,7 +491,9 @@ pub fn spawn_selected_scenario(
         );
     }
     map::spawn_terrain_geometry(commands, terrain);
-    let facility_texture = assets.load(PRODUCTION_FACILITY_TEXTURE);
+    let facility_texture = assets
+        .map(|assets| assets.load(PRODUCTION_FACILITY_TEXTURE))
+        .unwrap_or_default();
     spawn_player_scenario(
         commands,
         &facility_texture,

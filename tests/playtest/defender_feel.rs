@@ -48,7 +48,7 @@ fn spawn_default_scenario_startup(
     let reachability = spawn_selected_scenario(
         Scenario::Standard,
         &mut commands,
-        &asset_server,
+        Some(&asset_server),
         &mut grid,
         opponent_id_alloc,
         AiBattleLayout::Standard,
@@ -85,6 +85,7 @@ fn default_headless_app() -> App {
 
 #[test]
 fn authored_default_scenario_keeps_separated_economies_operational() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::ProductionFacility;
     use top_down_2d_rts_prototype_nano_swarm::scenario::{
         OPPONENT_DEFEND_CELL, OPPONENT_DEPOSIT_CELL, PLAYER_BUILD_FLANK_CELL, PLAYER_DEFEND_CELL,
         PLAYER_DEPOSIT_CELL, STARTING_DEPOSIT_AMOUNT,
@@ -191,16 +192,36 @@ fn authored_default_scenario_keeps_separated_economies_operational() {
     });
     // Allow startup work allocation and crowd movement to settle within thirty
     // simulated seconds while continuing to enforce movement safety each tick.
-    for _ in 0..1_200 {
+    for tick in 601..=1_800 {
         let rotations = RotationSnapshot::capture(app.world_mut());
         app.update();
         rotations.assert_admissions(app.world_mut());
         previous = assert_default_tick_state(app.world_mut(), &previous);
-        if home_deposits.iter().all(|&entity| {
-            app.world()
-                .get::<ResourceDeposit>(entity)
-                .is_some_and(|deposit| deposit.amount < STARTING_DEPOSIT_AMOUNT)
-        }) {
+        if tick == 900 {
+            let world = app.world_mut();
+            let facility = world
+                .query_filtered::<(&OwnerSwarm, &Transform, &Structure), With<ProductionFacility>>()
+                .iter(world)
+                .find(|(owner, transform, _)| {
+                    world.get::<SwarmId>(owner.0) == Some(&SwarmId::PLAYER)
+                        && transform
+                            .translation
+                            .truncate()
+                            .abs_diff_eq(Vec2::new(396.0, 252.0), 0.01)
+                })
+                .expect("the player starter facility must survive at its authored position");
+            assert_eq!(
+                facility.2.health,
+                world.resource::<Tuning>().construction.max_health
+            );
+        }
+        if tick >= 900
+            && home_deposits.iter().all(|&entity| {
+                app.world()
+                    .get::<ResourceDeposit>(entity)
+                    .is_some_and(|deposit| deposit.amount < STARTING_DEPOSIT_AMOUNT)
+            })
+        {
             return;
         }
     }

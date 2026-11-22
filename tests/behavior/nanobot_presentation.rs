@@ -33,7 +33,7 @@ fn spawn_authored_scenarios(
     let reachability = spawn_selected_scenario(
         Scenario::Standard,
         &mut commands,
-        &asset_server,
+        Some(&asset_server),
         &mut grid,
         opponent_id_alloc,
         AiBattleLayout::Standard,

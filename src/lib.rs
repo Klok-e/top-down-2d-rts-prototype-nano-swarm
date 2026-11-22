@@ -106,6 +106,7 @@ fn primary_window_config() -> Window {
 pub enum Presentation {
     Windowed,
     Offscreen { width: u32, height: u32 },
+    SimulationOnly,
 }
 
 #[derive(Debug, Component)]
@@ -179,25 +180,34 @@ pub fn build_app_with_tuning(
             image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
             Some(app.world_mut().resource_mut::<Assets<Image>>().add(image))
         }
+        Presentation::SimulationOnly => {
+            app.add_plugins((TaskPoolPlugin::default(), bevy::time::TimePlugin))
+                .insert_resource(StructureSprites::from_single_handle(Handle::default()));
+            None
+        }
     };
+    let renders = presentation != Presentation::SimulationOnly;
     app.insert_resource(fixed_simulation_time())
         .add_plugins(scenario::ScenarioPlugin)
         .insert_resource(virtual_simulation_time())
-        .insert_resource(PresentationTarget(target))
         .insert_resource(IntentGrid::new(MAP_WIDTH as i32, MAP_HEIGHT as i32))
         .init_resource::<ResourceLedger>()
-        .init_resource::<nanobot::OpponentSwarmIdAlloc>()
-        .add_plugins(Material2dPlugin::<BackgroundMaterial>::default())
-        .add_plugins(terrain_presentation::TerrainPresentationPlugin)
-        .add_plugins(deposit_presentation::DepositPresentationPlugin)
-        // must be before NanobotPlugin because otherwise it receives events with despawned entities
-        .add_plugins(NanoswarmUiSetupPlugin)
-        .add_plugins(ui::scenario_menu::ScenarioMenuPlugin)
-        .add_plugins(session_lifecycle::SessionLifecyclePlugin)
-        // must be before NanobotPlugin because otherwise it receives events with despawned entities
-        .add_plugins(ZonesPlugin::default())
-        .add_plugins(NanobotPlugin::default())
-        .add_plugins(NanobotPresentationPlugin)
+        .init_resource::<nanobot::OpponentSwarmIdAlloc>();
+    if renders {
+        app.insert_resource(PresentationTarget(target))
+            .add_plugins(Material2dPlugin::<BackgroundMaterial>::default())
+            .add_plugins(terrain_presentation::TerrainPresentationPlugin)
+            .add_plugins(deposit_presentation::DepositPresentationPlugin)
+            .add_plugins(NanoswarmUiSetupPlugin)
+            .add_plugins(ui::scenario_menu::ScenarioMenuPlugin)
+            .add_plugins(ZonesPlugin::default());
+    }
+    app.add_plugins(session_lifecycle::SessionLifecyclePlugin)
+        .add_plugins(NanobotPlugin::default());
+    if renders {
+        app.add_plugins(NanobotPresentationPlugin);
+    }
+    app
         // GatherPlugin must come after NanobotPlugin: the gather
         // chain orders itself behind `move_velocity_system`, which
         // only exists once NanobotPlugin is registered.
@@ -251,25 +261,15 @@ pub fn build_app_with_tuning(
         .add_plugins(RegionalAllocationPlugin)
         // Typed workload chooses required capacity and automatic production order.
         .add_plugins(PopulationDemandPlugin)
-        // StructureOverlayPlugin is a consumer of the
-        // simulation's per-structure state. It registers
-        // its spawn/update/visibility/cleanup systems on
-        // the `Update` schedule; nothing in the rest of
-        // the plugin graph needs to be ordered relative
-        // to it, so the placement near the end of the
-        // plugin list is purely cosmetic.
-        .add_plugins(StructureOverlayPlugin)
-        .add_observer(structure_sprites::attach_footprint_outline)
-        // TacticalOverlayPlugin is the zoomed-out companion
-        // to StructureOverlayPlugin. The two layers share
-        // the same show / hide threshold so the structure
-        // status labels fade out exactly as the tactical
-        // overlay fades in.
-        .add_plugins(TacticalOverlayPlugin)
-        .add_plugins(AiPlugin)
-        .add_plugins(Camera2dFlyPlugin)
-        .add_systems(Startup, setup_things_startup.pipe(error_handler))
-        .add_systems(PostUpdate, update_main_camera_bloom);
+        .add_plugins(AiPlugin);
+    if renders {
+        app.add_plugins(StructureOverlayPlugin)
+            .add_observer(structure_sprites::attach_footprint_outline)
+            .add_plugins(TacticalOverlayPlugin)
+            .add_plugins(Camera2dFlyPlugin)
+            .add_systems(Startup, setup_things_startup.pipe(error_handler))
+            .add_systems(PostUpdate, update_main_camera_bloom);
+    }
     Ok(app)
 }
 

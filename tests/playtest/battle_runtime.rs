@@ -114,3 +114,61 @@ fn accelerated_battle_runtime_saves_terminal_results_before_requesting_exit() {
             >= 3
     );
 }
+
+#[test]
+fn simulation_only_battle_saves_at_tick_limit_without_rendering() {
+    let directory = RunDirectory(std::env::temp_dir().join(format!(
+        "nano-battle-simulation-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )));
+    let mut app = build_runtime_app(
+        RuntimeOptions::parse([
+            "--simulation-only",
+            "--scenario",
+            "ai-battle",
+            "--max-ticks",
+            "63",
+            "--output-root",
+            directory.0.to_str().unwrap(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(app.get_sub_app(bevy::render::RenderApp).is_none());
+    assert!(!app.is_plugin_added::<bevy::asset::AssetPlugin>());
+    app.finish();
+    app.cleanup();
+    let exit = (0..=63).find_map(|_| {
+        app.update();
+        app.should_exit()
+    });
+    assert_eq!(exit, Some(AppExit::Success));
+    let fixed = app.world().resource::<Time<Fixed>>();
+    assert_eq!(fixed.elapsed(), fixed.timestep() * 63);
+    let directory = fs::read_dir(&directory.0)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let summary: serde_json::Value =
+        serde_json::from_slice(&fs::read(directory.join("summary.json")).unwrap()).unwrap();
+    assert_eq!(summary["simulation_only"], true);
+    assert_eq!(summary["status"], "interrupted");
+    assert_eq!(summary["termination_reason"], "tick_limit");
+    assert_eq!(summary["outcome"], serde_json::Value::Null);
+    assert_eq!(summary["latest"]["fixed_tick"], 63);
+    assert_eq!(summary["samples"], 2);
+    for swarm in ["0", "1"] {
+        assert!(
+            summary["latest"]["controllers"][swarm]["reviews"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+    }
+}

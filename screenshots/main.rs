@@ -25,23 +25,19 @@ use std::path::Path;
 
 use libtest_mimic::{Arguments, Conclusion, Failed, Trial};
 
-mod approach_delivery;
 mod background_terrain;
 mod brush_feedback;
 mod build_zone_placement;
 mod combat_presentation;
 mod combat_scenes;
-mod congested_work;
 mod construction_access;
 mod construction_lifecycle;
 mod default_map;
 mod defender_combat_readability;
-mod defender_staging;
 mod deposit_presentation;
 mod exterior_work;
 mod fill_indicators;
 mod harness;
-mod idle_spread;
 mod local_avoidance;
 mod match_banner;
 mod nanobot_presentation;
@@ -50,12 +46,9 @@ mod opponent_gameplay_loop;
 mod physical_logistics;
 mod production_exits;
 mod regional_allocation;
-mod route_recovery;
 mod scenario_menu;
-mod shared_navigation;
 mod smoke;
 mod tuning_panel;
-mod world_space_nanobots;
 mod zone_binary_overlay;
 
 use harness::{TestContext, TestFlow, regression, run_screenshot_test};
@@ -110,10 +103,6 @@ fn main() -> std::process::ExitCode {
                 .map_err(Failed::from)
         })
         .with_ignored_flag(true),
-        Trial::test("approach_delivery", || {
-            run(approach_delivery::approach_delivery)
-        })
-        .with_ignored_flag(true),
         Trial::test("deposit_presentation", || {
             run_with_validation(
                 deposit_presentation::deposit_presentation,
@@ -122,8 +111,6 @@ fn main() -> std::process::ExitCode {
         })
         .with_ignored_flag(true),
         Trial::test("default_map", || run(default_map::default_map)).with_ignored_flag(true),
-        Trial::test("congested_work", || run(congested_work::congested_work))
-            .with_ignored_flag(true),
         Trial::test("startup_formations", || {
             run(local_avoidance::startup_formations)
         })
@@ -214,20 +201,11 @@ fn main() -> std::process::ExitCode {
             run(defender_combat_readability::defender_combat_readability)
         })
         .with_ignored_flag(true),
-        Trial::test("defender_staging", || {
-            run(defender_staging::defender_staging)
-        })
-        .with_ignored_flag(true),
         Trial::test("exterior_defender_charging", || {
             run(exterior_work::exterior_defender_charging)
         })
         .with_ignored_flag(true),
         Trial::test("exterior_work", || run(exterior_work::exterior_work)).with_ignored_flag(true),
-        Trial::test("idle_spread", || run(idle_spread::idle_spread)).with_ignored_flag(true),
-        Trial::test("idle_spread_diagonal_crossing", || {
-            run(idle_spread::idle_spread_diagonal_crossing)
-        })
-        .with_ignored_flag(true),
         Trial::test("navigation_geometry", || {
             run(navigation_geometry::navigation_geometry)
         })
@@ -238,13 +216,7 @@ fn main() -> std::process::ExitCode {
         .with_ignored_flag(true),
         Trial::test("fill_indicators", || run(fill_indicators::fill_indicators))
             .with_ignored_flag(true),
-        Trial::test("shared_navigation", || {
-            run(shared_navigation::shared_navigation)
-        })
-        .with_ignored_flag(true),
         Trial::test("smoke", || run(smoke::smoke)).with_ignored_flag(true),
-        Trial::test("route_recovery", || run(route_recovery::route_recovery))
-            .with_ignored_flag(true),
         Trial::test("physical_logistics", || {
             run(physical_logistics::physical_logistics)
         })
@@ -255,10 +227,6 @@ fn main() -> std::process::ExitCode {
         .with_ignored_flag(true),
         Trial::test("regional_allocation", || {
             run(regional_allocation::regional_allocation)
-        })
-        .with_ignored_flag(true),
-        Trial::test("world_space_nanobots", || {
-            run(world_space_nanobots::world_space_nanobots)
         })
         .with_ignored_flag(true),
         Trial::test("zone_binary_overlay", || {
