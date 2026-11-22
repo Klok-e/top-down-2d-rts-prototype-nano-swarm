@@ -146,23 +146,6 @@ impl ObstacleIndex {
                 })
             })
     }
-    fn candidates(&self, a: Vec2, b: Vec2) -> Vec<usize> {
-        let (min, max) = Self::bounds(a, b);
-        if !Self::small_span(min, max) {
-            return (0..self.count).collect();
-        }
-        let mut candidates = self.global.clone();
-        for y in min.y..=max.y {
-            for x in min.x..=max.x {
-                if let Some(ids) = self.buckets.get(&IVec2::new(x, y)) {
-                    candidates.extend(ids);
-                }
-            }
-        }
-        candidates.sort_unstable();
-        candidates.dedup();
-        candidates
-    }
 }
 /// Chunks and edges of a geometry variant that equal the main hierarchy's.
 struct BaseHierarchy {
