@@ -520,6 +520,83 @@ fn connectivity_far_from_clearing_needs_the_same_work_as_without_clearing() {
         without,
         "an unrelated clearing footprint must not rebuild or bypass shared routing caches"
     );
+
+    // A clearing that starts after the main hierarchy is built reuses its chunks.
+    let chunks_after_warmup = |clearing: Vec<Obstacle>| {
+        let mut warmed = Navigation::new(&grid, vec![wall]);
+        finish_connectivity(&warmed, &grid, queries[0].0, queries[0].1);
+        warmed.refresh_clearing(clearing);
+        let (start, goal) = queries[1];
+        let mut chunks = 0;
+        while warmed.query_connectivity(start, goal) == ConnectivityStatus::Pending {
+            chunks += warmed.advance(&grid, 1_000).hierarchy_chunks;
+        }
+        chunks
+    };
+    assert_eq!(
+        chunks_after_warmup(vec![distant_clearing]),
+        chunks_after_warmup(vec![]),
+        "chunks the clearing footprint cannot reach must come from the built main hierarchy"
+    );
+}
+
+#[test]
+fn clearing_layer_routes_match_a_cold_build_after_main_geometry_changes() {
+    use top_down_2d_rts_prototype_nano_swarm::navigation::{
+        Obstacle, RouteGoal, RoutePriority, RouteStatus,
+    };
+    let grid = IntentGrid::new(4, 4);
+    let wall = Obstacle::Rectangle {
+        center: Vec2::new(0.0, -300.0),
+        half: Vec2::new(72.0, 444.0),
+    };
+    let footprint = Obstacle::Rectangle {
+        center: Vec2::new(0.0, 252.0),
+        half: Vec2::splat(36.0),
+    };
+    // Lowering the wall opens the direct line, so a stale layer would keep detouring.
+    let lowered_wall = Obstacle::Rectangle {
+        center: Vec2::new(0.0, -300.0),
+        half: Vec2::new(72.0, 300.0),
+    };
+    let (start, end) = (Vec2::new(-252.0, 36.0), Vec2::new(252.0, 36.0));
+    let route = |navigation: &Navigation| {
+        let id = navigation.request(
+            start,
+            RouteGoal::Point(end),
+            SwarmId::PLAYER,
+            false,
+            RoutePriority::Routine,
+        );
+        for _ in 0..1_000 {
+            navigation.advance(&grid, 1_000);
+            if let RouteStatus::Found(route) = navigation.poll(id) {
+                navigation.cancel(id);
+                return route;
+            }
+        }
+        panic!("a route around the wall must stay open");
+    };
+    let assert_matches_cold = |navigation: &Navigation, solids: Vec<Obstacle>| {
+        let cold = Navigation::new(&grid, solids);
+        let shared = route(navigation);
+        let mut previous = start;
+        for &point in &shared.waypoints {
+            assert!(
+                cold.segment_clear(previous, point),
+                "a shared-layer leg crosses solid geometry: {previous} -> {point}"
+            );
+            previous = point;
+        }
+        assert!((shared.cost - route(&cold).cost).abs() < 0.01);
+    };
+
+    let mut navigation = Navigation::new(&grid, vec![wall]);
+    route(&navigation);
+    navigation.refresh_clearing(vec![footprint]);
+    assert_matches_cold(&navigation, vec![wall, footprint]);
+    navigation.refresh(&grid, vec![lowered_wall]);
+    assert_matches_cold(&navigation, vec![lowered_wall, footprint]);
 }
 
 #[test]
