@@ -418,6 +418,7 @@ pub fn charger_auto_creation_system(
         (With<Nanobot>, With<Charge>),
     >,
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,
+    mut lattices: Local<HashMap<SwarmId, crate::nanobot::placement::DefendLattice>>,
 ) {
     let mut access_layout = access.snapshot();
     let swarm_by_id: HashMap<SwarmId, Entity> =
@@ -558,21 +559,39 @@ pub fn charger_auto_creation_system(
         let Some(owner) = swarm_by_id.get(&swarm).copied() else {
             continue;
         };
-        let defend_cells = grid
+        // A Pending access answer makes every further search this tick fail.
+        if access_layout.is_pending() {
+            continue;
+        }
+        let mut defend_cells = grid
             .iter_active_cells()
             .filter_map(|(cell, intent)| {
                 (intent.has_owned(IntentKind::Defend, swarm)).then_some(cell)
             })
             .collect::<Vec<_>>();
-        let Some((cell, placement_pos)) =
-            crate::nanobot::placement::find_nearest_defend_zone_placement_accepting(
-                &defend_cells,
-                &obstacles,
-                defender_pos,
-                |position| {
-                    access.accepts(&access_layout, &grid, swarm, PlannedKind::Charger, position)
-                },
-            )
+        defend_cells.sort_unstable_by_key(|cell| (cell.x, cell.y));
+        let lattice = match lattices.entry(swarm) {
+            std::collections::hash_map::Entry::Occupied(entry)
+                if entry.get().is_for(&defend_cells, &obstacles) =>
+            {
+                entry.into_mut()
+            }
+            entry => {
+                let built =
+                    crate::nanobot::placement::DefendLattice::build(&defend_cells, &obstacles);
+                match entry {
+                    std::collections::hash_map::Entry::Occupied(mut entry) => {
+                        entry.insert(built);
+                        entry.into_mut()
+                    }
+                    std::collections::hash_map::Entry::Vacant(entry) => entry.insert(built),
+                }
+            }
+        };
+        let Some((cell, placement_pos)) = lattice
+            .find_nearest_accepting(defender_pos, |position| {
+                access.accepts(&access_layout, &grid, swarm, PlannedKind::Charger, position)
+            })
         else {
             continue;
         };

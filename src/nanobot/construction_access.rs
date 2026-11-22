@@ -60,6 +60,11 @@ impl AccessLayout {
         panic!("access check did not finish within its deterministic work allowance");
     }
 
+    /// Whether an access check returned Pending since this snapshot was taken.
+    pub fn is_pending(&self) -> bool {
+        self.pending.get()
+    }
+
     pub fn check(
         &self,
         navigation: &Navigation,
