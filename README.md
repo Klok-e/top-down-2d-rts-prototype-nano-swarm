@@ -22,13 +22,13 @@ Press **F2** to open the live tuning panel. Expand a group and edit its numeric 
 
 The game loads the complete [balance configuration](config/balance.ron) before creating a scenario. Missing, malformed, or invalid configuration prevents startup. The default path is anchored to the project root; `--tuning-file PATH` selects another file for both loading and saving. Tuning survives scenario restarts and future launches.
 
-Run an accelerated headless AI Battle with saved statistics:
+Run an accelerated headless AI Battle. It keeps statistics in memory and serves them over the agent socket until you send `shutdown`:
 
 ```bash
-cargo run --release -- --scenario ai-battle --headless --unbounded --seed 42 --output-root target/battle-runs
+cargo run --release -- --scenario ai-battle --headless --unbounded --agent-socket --seed 42
 ```
 
-See [AI Battle](docs/ai-battle.md) for recording fields, termination behavior, and comparison guidance.
+See [AI Battle](docs/ai-battle.md) for statistics fields, end-of-battle behavior, and comparison guidance.
 
 Run with GPU-backed offscreen rendering and no desktop window:
 

@@ -16,9 +16,7 @@ use bevy::{
 use top_down_2d_rts_prototype_nano_swarm::{
     DEFAULT_CAMERA_ZOOM, MAP_HEIGHT, MAP_WIDTH, MainCamera, ZONE_BLOCK_SIZE,
     ai_battle::{AiBattleConfig, AiBattleLayout},
-    battle_statistics::{
-        BattleRun, BattleStatisticsConfig, BattleStatisticsPlugin, BattleSummary, RunStatus,
-    },
+    battle_statistics::{BattleRun, BattleStatisticsConfig, BattleStatisticsPlugin, RunStatus},
     building::ProcessingFacility,
     fly_camera::{CameraZoom2d, FlyCamera2d},
     intent::{BrushSelection, IntentGrid, IntentKind, brush_selection_keyboard_system},
@@ -85,10 +83,7 @@ fn session_app(statistics_root: &Path) -> (App, Entity) {
         .insert_resource(ScenarioSelection::load(
             statistics_root.join("scenario.json"),
         ))
-        .insert_resource(BattleStatisticsConfig {
-            output_root: statistics_root.to_path_buf(),
-            ..default()
-        })
+        .insert_resource(BattleStatisticsConfig::default())
         .init_resource::<OpponentSwarmIdAlloc>()
         .init_resource::<SimulatedTicks>()
         .init_resource::<BrushSelection>()
@@ -463,40 +458,24 @@ fn assert_home_visible(app: &App, camera: Entity, home: IVec2, deposit: IVec2) {
     }
 }
 
-fn persisted_summary(directory: &Path) -> BattleSummary {
-    let bytes = std::fs::read(directory.join("summary.json")).expect("battle summary is persisted");
-    serde_json::from_slice(&bytes).expect("battle summary uses its public JSON schema")
-}
-
 #[test]
-fn replacing_ai_battles_interrupts_active_runs_and_preserves_completed_runs() {
+fn replacing_an_ai_battle_starts_a_fresh_recording() {
     let output = TemporaryDirectory::new();
     let (mut app, _) = session_app(output.path());
     request_start(&mut app, Scenario::AiBattle);
-    let interrupted_directory = app.world().resource::<BattleRun>().directory.clone();
-
-    request_start(&mut app, Scenario::AiBattle);
-    let replacement_directory = app.world().resource::<BattleRun>().directory.clone();
-    assert_ne!(
-        replacement_directory, interrupted_directory,
-        "each AI battle must receive an independent recording"
-    );
-    assert_eq!(
-        persisted_summary(&interrupted_directory).status,
-        RunStatus::Interrupted
-    );
-
     *app.world_mut().resource_mut::<MatchOutcome>() = MatchOutcome::Winner(SwarmId::PLAYER);
     app.update();
     assert_eq!(
         app.world().resource::<BattleRun>().summary.status,
         RunStatus::Completed
     );
+
+    request_start(&mut app, Scenario::AiBattle);
+    let replacement = &app.world().resource::<BattleRun>().summary;
+    assert_eq!(replacement.status, RunStatus::InProgress);
+    assert!(replacement.outcome.is_none());
+
     request_start(&mut app, Scenario::Sandbox);
     assert!(!app.world().contains_resource::<BattleRun>());
-    assert_eq!(
-        persisted_summary(&replacement_directory).status,
-        RunStatus::Completed
-    );
     assert_scenario_shape(&mut app, Scenario::Sandbox);
 }

@@ -59,7 +59,7 @@ fn start_initial_session(world: &mut World) {
         world.resource_mut::<ScenarioSelection>().error = Some(error.to_string());
         if world
             .get_resource::<crate::battle_statistics::BattleStatisticsConfig>()
-            .is_some_and(|config| config.headless || config.max_ticks.is_some())
+            .is_some_and(|config| config.headless)
         {
             world.write_message(AppExit::error());
         }
@@ -75,11 +75,6 @@ fn process_start_requests(world: &mut World) {
         return;
     };
     world.flush();
-    if !crate::battle_statistics::finish_session(world) {
-        world.resource_mut::<ScenarioSelection>().error =
-            Some("Could not save battle results. Start the scenario again to retry.".into());
-        return;
-    }
     let entities: Vec<_> = world
         .query_filtered::<Entity, With<SessionEntity>>()
         .iter(world)

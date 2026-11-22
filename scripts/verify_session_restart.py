@@ -36,7 +36,7 @@ def main():
         with (artifacts / "process.log").open("w") as log:
             process = subprocess.Popen([
                 str(binary), "--headless", "--agent-socket", "--scenario", "standard",
-                "--output-root", str(artifacts / "runs"), "--width", "1280", "--height", "720",
+                "--width", "1280", "--height", "720",
             ], env=env, stdout=log, stderr=subprocess.STDOUT)
             try:
                 deadline = time.monotonic() + 120
@@ -76,6 +76,10 @@ def main():
                     assert len(state["swarms"]) == (1 if scenario == "sandbox" else 2), state
                     assert state["match"]["outcome"] == "in_progress", state
                     assert state["camera"]["zoom"] == 2.0, state
+                    if scenario == "ai_battle":
+                        stats = command("battle-stats")
+                        assert stats["summary"]["status"] == "in_progress", stats
+                        assert stats["summary"]["samples"] == 0, "a restart begins a fresh recording"
                     capture = command("screenshot", "--name", f"restart-{index}-{scenario}")
                     shutil.copy2(capture["path"], artifacts / f"{index}-{scenario}.png")
                     assert process.poll() is None, "restart must preserve the running process"
@@ -84,9 +88,7 @@ def main():
                 assert not socket.exists(), "shutdown must remove the control socket"
                 with socket.with_name("control.sock.lock").open("rb") as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                summaries = list((artifacts / "runs").glob("*/summary.json"))
-                assert len(summaries) == 1, summaries
-                assert json.loads(summaries[0].read_text())["status"] == "interrupted"
+                assert not (artifacts / "runs").exists(), "AI Battle writes no result files"
                 print(f"Verified four same-process restarts; artifacts: {artifacts}")
             finally:
                 if process.poll() is None:
