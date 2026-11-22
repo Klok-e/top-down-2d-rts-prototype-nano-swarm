@@ -214,6 +214,23 @@ fn swept_separation(start: Vec2, delta: Vec2, other: TrafficBody) -> f32 {
     (relative + travel * t).length()
 }
 
+/// Whether `swept_separation(start, delta, other)` certainly exceeds `distance`:
+/// the bodies start farther apart than the relative motion can close, with slack
+/// for rounding. A `false` answer decides nothing.
+fn sweep_stays_beyond(start: Vec2, delta: Vec2, other: TrafficBody, distance: f32) -> bool {
+    let relative = start - other.start;
+    let travel = (delta - other.delta).abs().element_sum();
+    let reach = distance + travel + 0.01 + 1e-4 * (relative.abs().element_sum() + travel);
+    reach >= 0.0 && relative.length_squared() > reach * reach
+}
+
+/// `swept_separation(start, delta, other) < distance`, skipping the sweep for
+/// bodies that stay beyond `distance`.
+fn sweep_comes_within(start: Vec2, delta: Vec2, other: TrafficBody, distance: f32) -> bool {
+    !sweep_stays_beyond(start, delta, other, distance)
+        && swept_separation(start, delta, other) < distance
+}
+
 /// A body that a swept motion must keep `required` clearance from.
 #[derive(Clone, Copy)]
 struct SweepConstraint {
@@ -502,14 +519,15 @@ pub fn velocity_system(
                     move_order(other.entity).is_some()
                         && !queued.contains(other.entity)
                         && wanted.dot(body.start - other.start) > 0.0
-                        && swept_separation(
+                        && sweep_comes_within(
                             body.start,
                             Vec2::ZERO,
                             TrafficBody {
                                 delta: wanted.normalize_or_zero() * diameter * 2.0,
                                 ..other
                             },
-                        ) < diameter + 2.0
+                            diameter + 2.0,
+                        )
                 });
             if let Some(j) = approaching {
                 let heading = bodies[j].1.normalize_or_zero();
@@ -750,7 +768,7 @@ pub fn velocity_system(
                     if !friendly(i, *j) {
                         return false;
                     }
-                    if swept_separation(body.start, recovery_intent, other) < diameter {
+                    if sweep_comes_within(body.start, recovery_intent, other, diameter) {
                         return true;
                     }
                     // Mutual yields can stop outside either body's individual sweep.
@@ -758,14 +776,15 @@ pub fn velocity_system(
                         && yielding
                             .get(&other.entity)
                             .is_some_and(|state| !state.returning && state.to == body.entity)
-                        && swept_separation(
+                        && sweep_comes_within(
                             body.start,
                             desired,
                             TrafficBody {
                                 delta: wanted,
                                 ..other
                             },
-                        ) < diameter
+                            diameter,
+                        )
                 });
             if !state.recovering && now - state.last_progress >= 1.0 && obstructed_by_friend {
                 state.recovering = true;
@@ -785,14 +804,12 @@ pub fn velocity_system(
             && physical.movement_clear(body.start, body.start + desired)
             && nearby.iter().all(|j| {
                 let (other, wanted) = bodies[*j];
-                swept_separation(
-                    body.start,
-                    desired,
-                    TrafficBody {
-                        delta: wanted,
-                        ..other
-                    },
-                ) >= diameter
+                let other = TrafficBody {
+                    delta: wanted,
+                    ..other
+                };
+                sweep_stays_beyond(body.start, desired, other, diameter)
+                    || swept_separation(body.start, desired, other) >= diameter
             });
         if can_resume_route {
             yielding.remove(&body.entity);
@@ -819,32 +836,36 @@ pub fn velocity_system(
             && desired.length_squared() > 0.01
             && move_order(body.entity).is_some()
         {
+            let heading = desired.normalize_or_zero();
+            // Cheap, selective tests come first; every test is pure, so the order is free.
             let conflict = nearby.iter().copied().find(|j| {
                 let (other, wanted) = bodies[*j];
                 let toward = other.start - body.start;
-                let heading = desired.normalize_or_zero();
-                let other_heading = wanted.normalize_or_zero();
-                let other_precedes = other_heading
-                    .x
-                    .total_cmp(&heading.x)
-                    .then_with(|| other_heading.y.total_cmp(&heading.y))
-                    .then_with(|| body.key.cmp(&other.key))
-                    .then_with(|| body.entity.to_bits().cmp(&other.entity.to_bits()))
-                    .is_gt();
-                other_precedes
-                    && move_order(other.entity).is_some()
+                let other_precedes = || {
+                    let other_heading = wanted.normalize_or_zero();
+                    other_heading
+                        .x
+                        .total_cmp(&heading.x)
+                        .then_with(|| other_heading.y.total_cmp(&heading.y))
+                        .then_with(|| body.key.cmp(&other.key))
+                        .then_with(|| body.entity.to_bits().cmp(&other.entity.to_bits()))
+                        .is_gt()
+                };
+                desired.dot(wanted) < 0.0
+                    && toward.dot(desired) > 0.0
                     && toward.length() >= diameter - 0.01
                     && toward.length() < diameter + tuning.logistics.bot_speed * 4.0
-                    && desired.dot(wanted) < 0.0
-                    && toward.dot(desired) > 0.0
-                    && swept_separation(
+                    && other_precedes()
+                    && move_order(other.entity).is_some()
+                    && sweep_comes_within(
                         body.start,
                         desired,
                         TrafficBody {
                             delta: wanted,
                             ..other
                         },
-                    ) < diameter
+                        diameter,
+                    )
             });
             if let Some(j) = conflict {
                 yielding.insert(
@@ -1151,6 +1172,46 @@ mod tests {
             }
         }
         best.unwrap_or(Vec2::ZERO)
+    }
+
+    #[test]
+    fn distant_sweeps_are_skipped_only_when_they_stay_beyond() {
+        use rand::{RngExt, SeedableRng, rngs::StdRng};
+
+        let mut rng = StdRng::seed_from_u64(0x5EED_BE70);
+        let mut skipped = 0;
+        for case in 0..200_000 {
+            let scale = [10.0, 100.0, 300.0][case % 3];
+            let mut vector = |scale: f32| {
+                Vec2::new(
+                    rng.random_range(-scale..scale),
+                    rng.random_range(-scale..scale),
+                )
+            };
+            let start = vector(2_000.0);
+            let delta = vector(10.0);
+            let other = TrafficBody {
+                entity: entity(1),
+                start: start + vector(scale),
+                delta: vector(10.0),
+                key: 1,
+            };
+            let distance = [BODY_DIAMETER, BODY_DIAMETER + 2.0][case % 2];
+            let swept = swept_separation(start, delta, other);
+            if sweep_stays_beyond(start, delta, other, distance) {
+                assert!(
+                    swept > distance,
+                    "case {case}: {swept} is within {distance}"
+                );
+                skipped += 1;
+            }
+            assert_eq!(
+                sweep_comes_within(start, delta, other, distance),
+                swept < distance,
+                "case {case}",
+            );
+        }
+        assert!(skipped > 50_000, "the cases must include distant sweeps");
     }
 
     #[test]
