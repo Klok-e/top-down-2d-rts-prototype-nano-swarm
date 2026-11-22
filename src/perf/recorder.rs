@@ -25,6 +25,21 @@ pub struct ScheduleTimes {
 }
 
 impl ScheduleTimes {
+    const COUNT: usize = 8;
+
+    fn entries(self) -> [(&'static str, u64); Self::COUNT] {
+        [
+            ("First", self.first),
+            ("PreUpdate", self.pre_update),
+            ("StateTransition", self.state_transition),
+            ("RunFixedMainLoop", self.run_fixed_main_loop),
+            ("Update", self.update),
+            ("SpawnScene", self.spawn_scene),
+            ("PostUpdate", self.post_update),
+            ("Last", self.last),
+        ]
+    }
+
     pub fn total(self) -> u64 {
         self.first
             + self.pre_update
@@ -54,6 +69,31 @@ impl FrameRecord {
         self.frame_ns > HITCH_FRAME_THRESHOLD_NS
             || self.fixed_ticks_run > HITCH_FIXED_TICK_THRESHOLD
     }
+
+    fn phases(self) -> impl Iterator<Item = (&'static str, u64)> {
+        self.schedule_ns
+            .entries()
+            .into_iter()
+            .chain([("unmeasured", self.unmeasured_ns)])
+    }
+}
+
+#[derive(Debug, Default, Serialize)]
+pub(crate) struct HitchEpisodeSummary {
+    start_frame: u64,
+    end_frame: u64,
+    start_fixed_tick: u64,
+    hitch_count: u64,
+    worst_frame_ns: u64,
+    catch_up_ticks: u64,
+    top_phases: [PhaseTotal; 3],
+    nanobots: usize,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize)]
+struct PhaseTotal {
+    phase: &'static str,
+    duration_ns: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -62,19 +102,34 @@ pub struct HitchEpisode {
     pub first_hitch_frame: u64,
     pub last_hitch_frame: u64,
     pub frames: Vec<FrameRecord>,
+    #[serde(skip)]
+    pub(crate) summary: HitchEpisodeSummary,
 }
 
 struct OpenEpisode {
     episode: HitchEpisode,
+    phase_totals: [PhaseTotal; ScheduleTimes::COUNT + 1],
     tail: VecDeque<FrameRecord>,
     frames_since_hitch: usize,
 }
 
 impl OpenEpisode {
     fn record(&mut self, frame: FrameRecord, is_hitch: bool) {
+        let summary = &mut self.episode.summary;
+        summary.end_frame = frame.frame;
         if is_hitch {
             self.episode.last_hitch_frame = frame.frame;
             self.frames_since_hitch = 0;
+            summary.hitch_count += 1;
+            summary.catch_up_ticks += frame.fixed_ticks_run.saturating_sub(1);
+            if summary.hitch_count == 1 || frame.frame_ns > summary.worst_frame_ns {
+                summary.worst_frame_ns = frame.frame_ns;
+                summary.nanobots = frame.nanobots;
+            }
+            for (total, (phase, duration_ns)) in self.phase_totals.iter_mut().zip(frame.phases()) {
+                total.phase = phase;
+                total.duration_ns = total.duration_ns.saturating_add(duration_ns);
+            }
         } else {
             self.frames_since_hitch += 1;
         }
@@ -90,6 +145,15 @@ impl OpenEpisode {
     }
 
     fn close(mut self) -> HitchEpisode {
+        self.phase_totals.sort_unstable_by(|a, b| {
+            b.duration_ns
+                .cmp(&a.duration_ns)
+                .then_with(|| a.phase.cmp(b.phase))
+        });
+        self.episode
+            .summary
+            .top_phases
+            .copy_from_slice(&self.phase_totals[..3]);
         self.episode.frames.extend(self.tail);
         self.episode
     }
@@ -110,13 +174,20 @@ impl FrameRecorder {
         let is_hitch = frame.is_hitch();
         if is_hitch && self.open.is_none() {
             self.last_id += 1;
+            let start = self.history.front().copied().unwrap_or(frame);
             self.open = Some(OpenEpisode {
                 episode: HitchEpisode {
                     id: self.last_id,
                     first_hitch_frame: frame.frame,
                     last_hitch_frame: frame.frame,
                     frames: self.history.iter().copied().collect(),
+                    summary: HitchEpisodeSummary {
+                        start_frame: start.frame,
+                        start_fixed_tick: start.fixed_tick.saturating_sub(start.fixed_ticks_run),
+                        ..Default::default()
+                    },
                 },
+                phase_totals: [PhaseTotal::default(); ScheduleTimes::COUNT + 1],
                 tail: VecDeque::new(),
                 frames_since_hitch: 0,
             });

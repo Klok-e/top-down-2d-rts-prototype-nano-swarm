@@ -2,12 +2,14 @@ use bevy::{prelude::*, time::TimeUpdateStrategy};
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 use top_down_2d_rts_prototype_nano_swarm::{
     ai_battle::{AiBattleConfig, AiBattleLayout},
     battle_statistics::{BattleStatisticsConfig, BattleStatisticsPlugin},
     intent::{IntentGrid, IntentKind},
     nanobot::{NanobotType, SwarmId},
+    perf::{HitchRecorderPlugin, RecorderClock},
     scenario_selection::{Scenario, ScenarioSelection},
 };
 #[path = "../common/mod.rs"]
@@ -27,24 +29,22 @@ impl Output {
                 )),
         )
     }
-    fn summary(&self) -> serde_json::Value {
-        let directory = std::fs::read_dir(&self.0)
+    fn directory(&self) -> PathBuf {
+        std::fs::read_dir(&self.0)
             .expect("battle must create a run directory")
             .find(|entry| entry.as_ref().is_ok_and(|entry| entry.path().is_dir()))
             .unwrap()
             .unwrap()
-            .path();
-        serde_json::from_slice(&std::fs::read(directory.join("summary.json")).unwrap()).unwrap()
+            .path()
+    }
+
+    fn summary(&self) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(self.directory().join("summary.json")).unwrap())
+            .unwrap()
     }
 
     fn samples_csv(&self) -> String {
-        let directory = std::fs::read_dir(&self.0)
-            .expect("battle must create a run directory")
-            .find(|entry| entry.as_ref().is_ok_and(|entry| entry.path().is_dir()))
-            .unwrap()
-            .unwrap()
-            .path();
-        std::fs::read_to_string(directory.join("samples.csv")).unwrap()
+        std::fs::read_to_string(self.directory().join("samples.csv")).unwrap()
     }
 }
 
@@ -77,7 +77,78 @@ fn record_battle(app: &mut App, output: &Output) {
         ..default()
     });
     app.insert_resource(AiBattleConfig::default());
-    app.add_plugins(BattleStatisticsPlugin);
+    app.add_plugins((BattleStatisticsPlugin, HitchRecorderPlugin));
+}
+
+#[derive(Resource)]
+struct FrameWork {
+    update_ms: u64,
+    post_update_ms: u64,
+}
+
+#[test]
+fn battle_writes_one_compact_summary_of_the_whole_hitch_episode() {
+    let output = Output::new();
+    let mut app = battle(&output);
+    app.insert_resource(RecorderClock::manual())
+        .insert_resource(FrameWork {
+            update_ms: 4,
+            post_update_ms: 1,
+        })
+        .add_systems(PreUpdate, |mut clock: ResMut<RecorderClock>| {
+            clock.advance(Duration::from_millis(2));
+        })
+        .add_systems(
+            Update,
+            |work: Res<FrameWork>, mut clock: ResMut<RecorderClock>| {
+                clock.advance(Duration::from_millis(work.update_ms));
+            },
+        )
+        .add_systems(
+            PostUpdate,
+            |work: Res<FrameWork>, mut clock: ResMut<RecorderClock>| {
+                clock.advance(Duration::from_millis(work.post_update_ms));
+            },
+        );
+    for frame in 1..=770 {
+        *app.world_mut().resource_mut::<FrameWork>() = FrameWork {
+            update_ms: if (121..=740).contains(&frame) { 34 } else { 4 },
+            // Frame 420 falls in the middle discarded by the frame-detail cap.
+            post_update_ms: if frame == 420 { 60_000 } else { 1 },
+        };
+        app.insert_resource(TimeUpdateStrategy::FixedTimesteps(if frame == 420 {
+            3
+        } else {
+            1
+        }));
+        app.update();
+    }
+    app.update();
+
+    let log = std::fs::read_to_string(output.directory().join("hitches.jsonl")).unwrap();
+    let lines: Vec<_> = log.lines().collect();
+    assert_eq!(lines.len(), 1);
+    let episode: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(
+        episode,
+        serde_json::json!({
+            "start_frame": 1,
+            "end_frame": 770,
+            "start_fixed_tick": 0,
+            "hitch_count": 620,
+            "worst_frame_ns": 60_036_000_000u64,
+            "catch_up_ticks": 2,
+            "top_phases": [
+                {"phase": "PostUpdate", "duration_ns": 60_619_000_000u64},
+                {"phase": "Update", "duration_ns": 21_080_000_000u64},
+                {"phase": "PreUpdate", "duration_ns": 1_240_000_000},
+            ],
+            "nanobots": 2,
+        })
+    );
+    let summary = output.summary();
+    assert_eq!(summary["schema_version"], 8);
+    assert_eq!(summary["hitch_episodes_suppressed"], 0);
 }
 
 #[test]
@@ -366,21 +437,35 @@ fn effective_damage_is_cumulative_in_json_and_csv_and_freezes_at_match_end() {
 }
 
 #[test]
-fn frame_statistics_include_frames_without_fixed_ticks() {
+fn frame_statistics_include_active_frames_without_fixed_ticks_and_omit_paused_frames() {
     let output = Output::new();
     let mut app = battle(&output);
-    app.insert_resource(TimeUpdateStrategy::ManualDuration(
-        std::time::Duration::from_nanos(8_333_334),
-    ));
-    for _ in 0..120 {
+    app.insert_resource(RecorderClock::manual());
+    app.add_systems(
+        Update,
+        |mut frame: Local<usize>,
+         mut time: ResMut<Time<Virtual>>,
+         mut clock: ResMut<RecorderClock>| {
+            *frame += 1;
+            match *frame {
+                30 => time.pause(),
+                36 => time.unpause(),
+                _ => {}
+            }
+            clock.advance(Duration::from_millis(if time.is_paused() { 40 } else { 4 }));
+        },
+    );
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_nanos(
+        8_333_334,
+    )));
+    for _ in 0..126 {
         app.update();
     }
     let summary = output.summary();
     assert_eq!(summary["latest"]["tick_timing"]["count"], 60);
-    assert!(
-        summary["latest"]["frame_timing"]["count"].as_u64().unwrap() > 100,
-        "120 application frames must not be reduced to the 60 frames containing fixed ticks"
-    );
+    let timing = &summary["latest"]["frame_timing"];
+    assert_eq!(timing["count"], 119);
+    assert_eq!(timing["max_ms"], 4.);
 }
 
 #[test]

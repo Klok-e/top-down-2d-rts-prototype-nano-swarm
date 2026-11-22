@@ -11,9 +11,12 @@ use bevy::{
 
 use crate::{
     agent_control::{AgentControlClock, AgentControlClockPlugin},
+    battle_statistics::BattleRun,
     nanobot::{Nanobot, Structure},
+    session_lifecycle::SessionGeneration,
 };
 
+pub(crate) use recorder::HitchEpisodeSummary;
 pub use recorder::{FrameRecord, FrameRecorder, HitchEpisode, ScheduleTimes};
 
 #[derive(Resource)]
@@ -61,6 +64,7 @@ struct FrameMeasurements {
     schedule_start: Duration,
     schedules: ScheduleTimes,
     previous_fixed_tick: u64,
+    previous_generation: Option<SessionGeneration>,
 }
 
 #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -127,6 +131,7 @@ impl Plugin for HitchRecorderPlugin {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_recording_frame(
     clock: Res<RecorderClock>,
     counters: Res<AgentControlClock>,
@@ -134,14 +139,19 @@ fn start_recording_frame(
     mut hitches: ResMut<RecordedHitches>,
     nanobots: Query<(), With<Nanobot>>,
     structures: Query<(), With<Structure>>,
+    time: Res<Time<Virtual>>,
+    generation: Option<Res<SessionGeneration>>,
+    battle: Option<ResMut<BattleRun>>,
+    mut exit: MessageWriter<AppExit>,
 ) {
     // Bevy updates the render sub-app after the main schedule. The next frame
     // start is the first common boundary after that work in both runtime modes.
     let now = clock.now();
+    let generation = generation.as_deref().copied();
     if let Some(start) = measurements.frame_start.replace(now) {
         let frame_ns = elapsed_ns(start, now);
         let schedule_ns = std::mem::take(&mut measurements.schedules);
-        hitches.0.record(FrameRecord {
+        let closed = hitches.0.record(FrameRecord {
             frame: counters.frame,
             fixed_tick: counters.fixed_tick,
             frame_ns,
@@ -151,8 +161,21 @@ fn start_recording_frame(
             nanobots: nanobots.iter().len(),
             structures: structures.iter().len(),
         });
+        if generation == measurements.previous_generation
+            && let Some(mut battle) = battle
+            && let Err(error) = battle.record_frame(
+                frame_ns,
+                time.is_paused(),
+                closed.map(|episode| &episode.summary),
+            )
+        {
+            error!("Cannot append to the battle hitch log: {error}");
+            battle.error = Some(error.to_string());
+            exit.write(AppExit::error());
+        }
     }
     measurements.previous_fixed_tick = counters.fixed_tick;
+    measurements.previous_generation = generation;
 }
 
 fn start_schedule(clock: Res<RecorderClock>, mut measurements: ResMut<FrameMeasurements>) {
