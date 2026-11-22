@@ -1336,6 +1336,24 @@ impl Navigation {
 }
 
 impl Navigation {
+    /// Adopt new clearing and geometry together, rebuilding the shared clearing layer once.
+    pub(crate) fn refresh_with_clearing(
+        &mut self,
+        grid: &IntentGrid,
+        obstacles: Vec<Obstacle>,
+        clearing: Vec<Obstacle>,
+    ) {
+        let clearing_changed = self.clearing != clearing;
+        if clearing_changed {
+            self.clearing = clearing;
+            self.revision = self.revision.wrapping_add(1);
+        }
+        let geometry_changed = self.refresh(grid, obstacles);
+        if clearing_changed && !geometry_changed {
+            self.rebuild_clearing_layer();
+        }
+    }
+
     pub fn refresh_clearing(&mut self, clearing: Vec<Obstacle>) {
         if self.clearing != clearing {
             self.clearing = clearing;

@@ -28,6 +28,17 @@ pub struct Route {
     pub waypoints: Vec<Vec2>,
     pub cost: f32,
 }
+impl Route {
+    /// Whether a body walking from `start` along every waypoint stays movement-clear.
+    pub(crate) fn still_clear(&self, navigation: &Navigation, start: Vec2) -> bool {
+        let mut from = start;
+        self.waypoints.iter().all(|&waypoint| {
+            let clear = navigation.movement_clear(from, waypoint);
+            from = waypoint;
+            clear
+        })
+    }
+}
 #[derive(Debug, Clone)]
 pub enum RouteOutcome {
     Found(Route),

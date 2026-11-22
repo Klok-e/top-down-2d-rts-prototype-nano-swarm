@@ -10,7 +10,7 @@ The recorder runs in the windowed and headless game, including runs launched wit
 - A hitch opens an episode with up to 120 preceding frames. A later hitch extends it until 30 consecutive hitch-free frames have passed. The episode includes those 30 recovery frames.
 - Long episodes retain the first and last 300 frames, for at most 600 detailed records. A gap in the frame numbers marks omitted detail.
 - Each new session starts with empty preceding-frame history and discards any still-open episode. The process keeps the latest 32 closed episodes across sessions. Episode IDs increase for the life of the process.
-- [AI Battle](../ai-battle.md#recorded-results) keeps a compact summary of every episode in memory and serves them through `battle.stats`.
+- [AI Battle](../ai-battle.md#recorded-results) keeps a compact summary of the first 1,000 episodes in memory, counts later ones in `summary.hitch_episodes_suppressed`, and serves them through `battle.stats`.
 
 ## Frame detail
 
