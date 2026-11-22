@@ -72,10 +72,7 @@ fn retreat_cells(
     }
     cells.retain(|&cell| {
         reachability.is_none_or(|map| map.contains(swarm, cell, grid))
-            && engagements
-                .hostiles_near(get_world_from_zone(cell), swarm, radius)
-                .next()
-                .is_none()
+            && !engagements.hostile_near(get_world_from_zone(cell), swarm, radius)
     });
     cells
 }
@@ -239,10 +236,7 @@ pub fn defender_retreat_system(
 
         if let Some(mut rout) = rout {
             if tick.saturating_sub(rout.started_tick) >= u64::from(tuning.combat.rout_min_ticks)
-                && engagements
-                    .hostiles_near(position, swarm, 2.0 * radius)
-                    .next()
-                    .is_none()
+                && !engagements.hostile_near(position, swarm, 2.0 * radius)
             {
                 commands
                     .entity(entity)
@@ -262,15 +256,7 @@ pub fn defender_retreat_system(
         }
 
         if engaged {
-            let (mut friendly, mut hostile) = (0.0, 0.0);
-            for nearby in engagements.defenders_near(position, radius) {
-                if nearby.swarm != swarm {
-                    hostile += nearby.strength;
-                } else if !nearby.routing {
-                    friendly += nearby.strength;
-                }
-            }
-            if hostile > 0.0 && ((friendly / hostile) as f32) < tuning.combat.rout_ratio {
+            if engagements.outnumbered(position, swarm, radius, tuning.combat.rout_ratio) {
                 let ticks = understrength_ticks.entry(entity).or_default();
                 *ticks = ticks.saturating_add(1);
                 if *ticks >= tuning.combat.rout_confirm_ticks {
@@ -313,14 +299,7 @@ pub fn defender_retreat_system(
             continue;
         }
 
-        let nearest = engagements
-            .hostiles_near(position, swarm, safe_distance)
-            .map(|hostile| (position.distance_squared(hostile.position), hostile))
-            .min_by(|(a_distance, a), (b_distance, b)| {
-                a_distance
-                    .total_cmp(b_distance)
-                    .then_with(|| a.key.cmp(&b.key))
-            });
+        let nearest = engagements.nearest_hostile(position, swarm, safe_distance);
         let velocity = nearest.map_or(Vec2::ZERO, |(squared, hostile)| {
             let distance = squared.sqrt();
             let step = (safe_distance - distance).clamp(0.0, speed);
