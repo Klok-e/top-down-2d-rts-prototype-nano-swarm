@@ -305,7 +305,8 @@ pub struct BattleRun {
     pub error: Option<String>,
     csv: BufWriter<File>,
     hitch_log: Option<File>,
-    hitch_episodes_written: u64,
+    samples: Vec<serde_json::Value>,
+    hitch_summaries: Vec<HitchEpisodeSummary>,
     tick_start: Instant,
     ticks: u64,
     tuning_journal_offset: usize,
@@ -458,7 +459,8 @@ fn create_run(
         error: None,
         csv,
         hitch_log,
-        hitch_episodes_written: 0,
+        samples: Vec::new(),
+        hitch_summaries: Vec::new(),
         tick_start: Instant::now(),
         ticks: 0,
         tuning_journal_offset,
@@ -496,14 +498,14 @@ impl BattleRun {
         let Some(hitch_log) = &mut self.hitch_log else {
             return Ok(());
         };
-        if self.hitch_episodes_written >= HITCH_LOG_LIMIT {
+        if self.hitch_summaries.len() as u64 >= HITCH_LOG_LIMIT {
             self.summary.hitch_episodes_suppressed += 1;
             return Ok(());
         }
+        self.hitch_summaries.push(episode.clone());
         let mut line = serde_json::to_vec(episode)?;
         line.push(b'\n');
         hitch_log.write_all(&line)?;
-        self.hitch_episodes_written += 1;
         Ok(())
     }
 
@@ -516,6 +518,33 @@ impl BattleRun {
         file.write_all(b"\n")?;
         file.sync_all()?;
         fs::rename(temporary, self.directory.join("summary.json"))
+    }
+
+    /// The `battle.stats` result: summary plus the samples and hitch summaries
+    /// whose indices exceed the optional cursors.
+    pub(crate) fn stats_payload(
+        &self,
+        after_sample: Option<u64>,
+        after_hitch: Option<u64>,
+    ) -> serde_json::Value {
+        fn newer<T>(list: &[T], after: Option<u64>) -> &[T] {
+            let start = after.map_or(0, |after| {
+                usize::try_from(after).map_or(list.len(), |n| n.saturating_add(1))
+            });
+            &list[start.min(list.len())..]
+        }
+        let mut summary = serde_json::to_value(&self.summary).expect("summary serializes");
+        if let Some(object) = summary.as_object_mut() {
+            object.remove("latest");
+            object.insert("schema_version".into(), 9.into());
+        }
+        serde_json::json!({
+            "summary": summary,
+            "samples": newer(&self.samples, after_sample),
+            "hitches": newer(&self.hitch_summaries, after_hitch),
+            "last_sample": self.samples.len().checked_sub(1),
+            "last_hitch": self.hitch_summaries.len().checked_sub(1),
+        })
     }
 
     fn write_sample(&mut self, sample: BattleSample) -> io::Result<()> {
@@ -578,10 +607,66 @@ impl BattleRun {
                 s.empty_charge_defenders,
             )?;
         }
+        self.samples.push(sample_json(&sample));
         self.summary.samples += 1;
         self.summary.latest = sample;
         self.persist()
     }
+}
+
+/// One sample as typed JSON: a `swarms` array whose objects use the CSV column
+/// names, repeating the sample-level columns in each swarm.
+fn sample_json(sample: &BattleSample) -> serde_json::Value {
+    let t = &sample.tick_timing;
+    let frame = sample.frame_timing.as_ref();
+    let swarms: Vec<_> = sample
+        .swarms
+        .iter()
+        .map(|(swarm, s)| {
+            let c = s.totals;
+            let controller = sample.controllers.get(swarm).cloned().unwrap_or_default();
+            serde_json::json!({
+                "simulation_seconds": sample.simulation_seconds,
+                "fixed_tick": sample.fixed_tick,
+                "swarm": swarm,
+                "population": s.population,
+                "workers": s.workers,
+                "haulers": s.haulers,
+                "defenders": s.defenders,
+                "births": c.births,
+                "deaths": c.deaths,
+                "minerals_gathered": c.minerals_gathered,
+                "minerals_consumed": c.minerals_consumed,
+                "structures_built": c.structures_built,
+                "structures_lost": c.structures_lost,
+                "effective_damage_total": c.effective_damage_total,
+                "effective_damage_nanobots": c.effective_damage_nanobots,
+                "effective_damage_structures": c.effective_damage_structures,
+                "elimination_seconds": s.elimination_seconds,
+                "tick_count": t.count,
+                "tick_mean_ms": t.mean_ms,
+                "tick_p50_ms": t.p50_ms,
+                "tick_p95_ms": t.p95_ms,
+                "tick_p99_ms": t.p99_ms,
+                "tick_max_ms": t.max_ms,
+                "frame_count": frame.map(|f| f.count),
+                "frame_mean_ms": frame.map(|f| f.mean_ms),
+                "frame_p95_ms": frame.map(|f| f.p95_ms),
+                "frame_max_ms": frame.map(|f| f.max_ms),
+                "controller_reviews": controller.reviews,
+                "controller_intent_edits": controller.intent_edits,
+                "controller_work_units": controller.work_units,
+                "owned_deposits": s.owned_deposits,
+                "mineral_income": s.mineral_income,
+                "mineral_starved_facility_seconds": s.mineral_starved_facility_seconds,
+                "unspent_minerals": s.unspent_minerals,
+                "empty_charge_defenders": s.empty_charge_defenders,
+                "controller_last_explanation": controller.last_explanation,
+                "deposit_extraction": s.deposit_extraction,
+            })
+        })
+        .collect();
+    serde_json::json!({ "swarms": swarms })
 }
 
 fn csv_field(value: &str) -> String {

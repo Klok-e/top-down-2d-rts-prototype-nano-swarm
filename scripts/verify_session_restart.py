@@ -58,7 +58,7 @@ def main():
                     assert response["ok"], response
                     return response["result"]
 
-                assert command("hello")["protocol_version"] == 4
+                assert command("hello")["protocol_version"] == 5
                 command("wait", "--frames", "3")
                 for index, scenario in enumerate(("sandbox", "ai_battle", "standard", "standard")):
                     command("camera", "0", "0", "17")

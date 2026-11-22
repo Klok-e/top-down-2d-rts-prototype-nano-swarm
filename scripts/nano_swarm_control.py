@@ -68,6 +68,10 @@ def build_parser() -> argparse.ArgumentParser:
     perf_hitches = commands.add_parser("perf-hitches")
     perf_hitches.add_argument("--after-id", type=int)
 
+    battle_stats = commands.add_parser("battle-stats")
+    battle_stats.add_argument("--after-sample", type=int)
+    battle_stats.add_argument("--after-hitch", type=int)
+
     button = commands.add_parser("button")
     button.add_argument(
         "button",
@@ -140,6 +144,16 @@ def command_request(args: argparse.Namespace) -> tuple[str, dict | None]:
         if not 0 <= args.after_id < 2**64:
             raise ValueError("episode ID must be an unsigned 64-bit integer")
         return "perf.hitches", {"after_id": args.after_id}
+    if args.command == "battle-stats":
+        params = {}
+        for name in ("after_sample", "after_hitch"):
+            value = getattr(args, name)
+            if value is None:
+                continue
+            if not 0 <= value < 2**64:
+                raise ValueError(f"{name} must be an unsigned 64-bit integer")
+            params[name] = value
+        return "battle.stats", params or None
     if args.command == "button":
         return "button.press", {"button": args.button}
     if args.command == "menu":

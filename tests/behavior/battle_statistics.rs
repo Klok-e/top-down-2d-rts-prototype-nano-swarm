@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 use top_down_2d_rts_prototype_nano_swarm::{
+    agent_control::{AgentControlCorePlugin, AgentControlHandle, parse_request_line},
     ai_battle::{AiBattleConfig, AiBattleLayout},
     battle_statistics::{BattleStatisticsConfig, BattleStatisticsPlugin},
     intent::{IntentGrid, IntentKind},
@@ -66,16 +67,73 @@ fn battle(output: &Output) -> App {
     app
 }
 
+#[derive(Resource, Clone)]
+struct StatsHandle(AgentControlHandle);
+
+/// Query `battle.stats` without advancing the fixed simulation.
+fn query_stats(
+    app: &mut App,
+    after_sample: Option<u64>,
+    after_hitch: Option<u64>,
+) -> top_down_2d_rts_prototype_nano_swarm::agent_control::AgentResponse {
+    let handle = app.world().resource::<StatsHandle>().0.clone();
+    let params = serde_json::json!({"after_sample": after_sample, "after_hitch": after_hitch});
+    let line = serde_json::json!({"id": 1, "method": "battle.stats", "params": params});
+    let reply = handle
+        .submit(parse_request_line(line.to_string().as_bytes()).unwrap())
+        .unwrap();
+    let strategy = std::mem::replace(
+        &mut *app.world_mut().resource_mut::<TimeUpdateStrategy>(),
+        TimeUpdateStrategy::ManualDuration(Duration::ZERO),
+    );
+    app.update();
+    app.insert_resource(strategy);
+    reply
+        .try_recv()
+        .expect("battle.stats replies in one update")
+}
+
+fn stats(app: &mut App) -> serde_json::Value {
+    let response = query_stats(app, None, None);
+    assert!(response.ok, "{response:?}");
+    response.result.unwrap()
+}
+
+fn swarm_row(sample: &serde_json::Value, swarm: u64) -> &serde_json::Value {
+    sample["swarms"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["swarm"] == swarm)
+        .unwrap_or_else(|| panic!("sample has no swarm {swarm}"))
+}
+
+/// The newest sample's row for one swarm.
+fn latest_row(app: &mut App, swarm: u64) -> serde_json::Value {
+    let stats = stats(app);
+    swarm_row(stats["samples"].as_array().unwrap().last().unwrap(), swarm).clone()
+}
+
 fn record_battle(app: &mut App, output: &Output) {
+    record_battle_with(
+        app,
+        BattleStatisticsConfig {
+            output_root: output.0.clone(),
+            ..default()
+        },
+    );
+}
+
+fn record_battle_with(app: &mut App, config: BattleStatisticsConfig) {
+    let (handle, channel) = AgentControlCorePlugin::channel(4);
+    app.insert_resource(StatsHandle(handle))
+        .add_plugins(channel);
     let mut selection = ScenarioSelection::default();
     selection.current = Scenario::AiBattle;
     app.insert_resource(selection);
     app.insert_resource(top_down_2d_rts_prototype_nano_swarm::fixed_simulation_time());
     app.insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
-    app.insert_resource(BattleStatisticsConfig {
-        output_root: output.0.clone(),
-        ..default()
-    });
+    app.insert_resource(config);
     app.insert_resource(AiBattleConfig::default());
     app.add_plugins(BattleStatisticsPlugin);
 }
@@ -168,6 +226,18 @@ fn battle_persists_per_second_samples_using_simulation_time() {
     assert_eq!(summary["status"], "in_progress");
     assert_eq!(summary["latest"]["swarms"]["0"]["workers"], 1);
     assert_eq!(summary["latest"]["swarms"]["1"]["defenders"], 1);
+    let payload = stats(&mut app);
+    assert_eq!(payload["samples"].as_array().unwrap().len(), 1);
+    assert_eq!(swarm_row(&payload["samples"][0], 0)["workers"], 1);
+    assert_eq!(swarm_row(&payload["samples"][0], 1)["defenders"], 1);
+    assert_eq!(payload["summary"]["ai_battle"]["layout"], "flanks");
+    assert_eq!(swarm_row(&payload["samples"][0], 0)["tick_count"], 60);
+    assert!(
+        swarm_row(&payload["samples"][0], 0)["frame_count"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
     assert_eq!(summary["ai_battle"]["layout"], "flanks");
     assert!((summary["latest"]["simulation_seconds"].as_f64().unwrap() - 1.).abs() < 0.001);
     assert_eq!(summary["latest"]["tick_timing"]["count"], 60);
@@ -321,6 +391,14 @@ fn samples_preserve_gross_events_and_stop_counters_after_draw() {
         );
     }
     assert_eq!(summary["latest"]["swarms"]["0"]["minerals_gathered"], 30);
+    let row = latest_row(&mut app, 0);
+    for field in ["births", "deaths", "structures_built", "structures_lost"] {
+        assert_eq!(row[field], 1, "payload gross {field}");
+    }
+    assert_eq!(row["minerals_gathered"], 30);
+    assert_eq!(row["minerals_consumed"], 30);
+    assert_eq!(row["effective_damage_total"], 0);
+    assert_eq!(latest_row(&mut app, 1)["births"], 0);
     assert_eq!(summary["latest"]["swarms"]["0"]["minerals_consumed"], 30);
     assert_eq!(summary["schema_version"], 8);
     assert_eq!(
@@ -403,6 +481,12 @@ fn effective_damage_is_cumulative_in_json_and_csv_and_freezes_at_match_end() {
     }
     app.update();
 
+    let payload = stats(&mut app);
+    let row = swarm_row(payload["samples"].as_array().unwrap().last().unwrap(), 0);
+    assert_eq!(payload["summary"]["schema_version"], 9);
+    assert_eq!(row["effective_damage_total"], 22);
+    assert_eq!(row["effective_damage_nanobots"], 17);
+    assert_eq!(row["effective_damage_structures"], 5);
     let terminal = output.summary();
     assert_eq!(terminal["schema_version"], 8);
     let swarm = &terminal["latest"]["swarms"]["0"];
@@ -469,6 +553,10 @@ fn frame_statistics_include_active_frames_without_fixed_ticks_and_omit_paused_fr
     let timing = &summary["latest"]["frame_timing"];
     assert_eq!(timing["count"], 119);
     assert_eq!(timing["max_ms"], 4.);
+    let row = latest_row(&mut app, 0);
+    assert_eq!(row["tick_count"], 60);
+    assert_eq!(row["frame_count"], 119);
+    assert_eq!(row["frame_max_ms"], 4.);
 }
 
 #[test]
@@ -572,6 +660,11 @@ fn recorded_outcomes_use_actual_swarm_ids_and_session_perspective() {
         app.update();
         let saved = output.summary();
         assert_eq!(saved["outcome"], expected);
+        let payload = stats(&mut app);
+        assert_eq!(payload["summary"]["outcome"], expected);
+        let last = payload["samples"].as_array().unwrap().last().unwrap();
+        assert!(swarm_row(last, 7)["elimination_seconds"].as_f64().unwrap() > 0.);
+        assert!(swarm_row(last, 42)["elimination_seconds"].is_null());
         assert!(
             saved["latest"]["swarms"]["7"]["elimination_seconds"]
                 .as_f64()
@@ -614,25 +707,19 @@ fn battle_records_initial_tuning_and_only_its_own_tick_stamped_edits() {
     assert_eq!(edits[0]["value"], 23.);
     assert_eq!(edits[0]["revision"], 2);
     assert_eq!(edits[0]["fixed_tick"], 7);
+    let payload = stats(&mut app);
+    assert_eq!(payload["summary"]["tuning"]["combat"]["base_attack"], 14.);
+    assert_eq!(payload["summary"]["tuning_edits"], summary["tuning_edits"]);
 }
 
-fn latest_csv_columns(output: &Output, swarm: &str, fields: &[&str]) -> Vec<f64> {
-    let csv = output.samples_csv();
-    let mut lines = csv.lines();
-    let headers: Vec<_> = lines.next().unwrap().split(',').collect();
-    let row = lines
-        .rev()
-        .map(|line| line.split(',').collect::<Vec<_>>())
-        .find(|columns| columns[2] == swarm)
-        .unwrap();
+fn latest_stat_columns(app: &mut App, swarm: u64, fields: &[&str]) -> Vec<f64> {
+    let row = latest_row(app, swarm);
     fields
         .iter()
         .map(|field| {
-            let column = headers
-                .iter()
-                .position(|header| header == field)
-                .unwrap_or_else(|| panic!("missing CSV column {field}"));
-            row[column].parse().unwrap()
+            row[field]
+                .as_f64()
+                .unwrap_or_else(|| panic!("missing {field}"))
         })
         .collect()
 }
@@ -708,7 +795,7 @@ fn battle_samples_distinguish_painted_deposits_that_yield_minerals() {
     );
     let fields = ["owned_deposits", "mineral_income", "unspent_minerals"];
     assert_eq!(
-        latest_csv_columns(&output, "0", &fields),
+        latest_stat_columns(&mut app, 0, &fields),
         [1.0, f64::from(income), f64::from(income)],
     );
 
@@ -726,15 +813,12 @@ fn battle_samples_distinguish_painted_deposits_that_yield_minerals() {
     app.world_mut().write_message(AppExit::Success);
     app.update();
     assert_eq!(
-        latest_csv_columns(&output, "0", &fields),
+        latest_stat_columns(&mut app, 0, &fields),
         [0.0, 0.0, f64::from(income)],
     );
+    assert_eq!(latest_row(&mut app, 0)["minerals_gathered"], income);
     assert_eq!(
-        output.summary()["latest"]["swarms"]["0"]["minerals_gathered"],
-        income
-    );
-    assert_eq!(
-        output.summary()["latest"]["swarms"]["0"]["deposit_extraction"],
+        latest_row(&mut app, 0)["deposit_extraction"],
         serde_json::json!([
             {"cell": [0, 0], "owner": null, "minerals_extracted": income},
             {"cell": [3, 0], "owner": null, "minerals_extracted": 0},
@@ -800,10 +884,10 @@ fn battle_samples_measure_unfunded_demand_and_empty_charge_per_swarm() {
         Some(NanobotType::Defender),
     );
     let fields = ["mineral_starved_facility_seconds", "empty_charge_defenders"];
-    let player_sample = latest_csv_columns(&output, "0", &fields);
+    let player_sample = latest_stat_columns(&mut app, 0, &fields);
     assert!((player_sample[0] - 1.0).abs() < 1e-6, "{player_sample:?}");
     assert_eq!(player_sample[1], 0.0);
-    assert_eq!(latest_csv_columns(&output, "1", &fields), [0.0, 1.0]);
+    assert_eq!(latest_stat_columns(&mut app, 1, &fields), [0.0, 1.0]);
 }
 
 #[test]
@@ -845,7 +929,7 @@ fn battle_unspent_minerals_drop_when_a_stockpile_collapses() {
     for _ in 0..60 {
         app.update();
     }
-    assert_eq!(latest_csv_columns(&output, "0", &columns), [62.0]);
+    assert_eq!(latest_stat_columns(&mut app, 0, &columns), [62.0]);
 
     let world = app.world_mut();
     let maintenance = &world.resource::<Tuning>().maintenance;
@@ -860,5 +944,212 @@ fn battle_unspent_minerals_drop_when_a_stockpile_collapses() {
         app.update();
     }
     assert!(app.world().get_entity(stockpile).is_err());
-    assert_eq!(latest_csv_columns(&output, "0", &columns), [22.0]);
+    assert_eq!(latest_stat_columns(&mut app, 0, &columns), [22.0]);
+}
+
+fn advance(app: &mut App, ticks: usize) {
+    for _ in 0..ticks {
+        app.update();
+    }
+}
+
+fn indices(samples: &serde_json::Value) -> Vec<u64> {
+    samples
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|sample| sample["swarms"][0]["fixed_tick"].as_u64().unwrap() / 60)
+        .collect()
+}
+
+#[test]
+fn battle_stats_sample_cursors_return_only_newer_samples() {
+    let output = Output::new();
+    let mut app = battle(&output);
+    advance(&mut app, 5);
+
+    let empty = stats(&mut app);
+    assert_eq!(empty["samples"], serde_json::json!([]));
+    assert_eq!(empty["hitches"], serde_json::json!([]));
+    assert!(empty["last_sample"].is_null());
+    assert!(empty["last_hitch"].is_null());
+    assert_eq!(empty["summary"]["samples"], 0);
+    assert_eq!(empty["summary"]["status"], "in_progress");
+    assert!(empty["summary"]["termination_reason"].is_null());
+    assert!(empty["summary"].get("latest").is_none());
+
+    advance(&mut app, 130);
+    let all = stats(&mut app);
+    assert_eq!(all["samples"].as_array().unwrap().len(), 2);
+    assert_eq!(all["last_sample"], 1);
+    assert_eq!(all["summary"]["samples"], 2);
+    assert_eq!(indices(&all["samples"]), [1, 2]);
+
+    let after_first = query_stats(&mut app, Some(0), None).result.unwrap();
+    assert_eq!(
+        after_first["samples"],
+        serde_json::json!([all["samples"][1]])
+    );
+    for cursor in [1, 2, 1_000_000] {
+        let none = query_stats(&mut app, Some(cursor), None).result.unwrap();
+        assert_eq!(none["samples"], serde_json::json!([]));
+        assert_eq!(none["last_sample"], 1);
+    }
+
+    advance(&mut app, 60);
+    let newer = query_stats(&mut app, Some(1), None).result.unwrap();
+    assert_eq!(newer["samples"].as_array().unwrap().len(), 1);
+    assert_eq!(newer["last_sample"], 2);
+    assert_eq!(indices(&newer["samples"]), [3]);
+}
+
+#[test]
+fn battle_stats_samples_use_typed_json_with_null_for_empty_cells() {
+    let output = Output::new();
+    let mut app = battle(&output);
+    advance(&mut app, 60);
+    let payload = stats(&mut app);
+    let row = swarm_row(&payload["samples"][0], 0);
+    assert!(row["swarm"].is_u64());
+    assert!(row["simulation_seconds"].is_f64());
+    assert!(row["deposit_extraction"].is_array());
+    assert!(row["controller_last_explanation"].is_string());
+    assert!(row["elimination_seconds"].is_null());
+    assert_eq!(
+        row["fixed_tick"],
+        swarm_row(&payload["samples"][0], 1)["fixed_tick"]
+    );
+    assert_eq!(payload["summary"]["schema_version"], 9);
+}
+
+#[test]
+fn battle_stats_hitch_cursors_return_only_newer_hitches() {
+    let output = Output::new();
+    let mut app = battle(&output);
+    app.insert_resource(RecorderClock::manual())
+        .insert_resource(FrameWork {
+            update_ms: 40,
+            post_update_ms: 0,
+        })
+        .add_systems(
+            Update,
+            |work: Res<FrameWork>, mut clock: ResMut<RecorderClock>| {
+                clock.advance(Duration::from_millis(work.update_ms));
+            },
+        );
+    let slow_frame = |app: &mut App, slow: bool| {
+        app.world_mut().resource_mut::<FrameWork>().update_ms = if slow { 40 } else { 4 };
+        app.update();
+    };
+    for _ in 0..61 {
+        slow_frame(&mut app, false);
+    }
+    // Each slow frame is its own episode: 30 calm frames close one.
+    for _ in 0..3 {
+        slow_frame(&mut app, true);
+        for _ in 0..40 {
+            slow_frame(&mut app, false);
+        }
+    }
+    let all = stats(&mut app);
+    let hitches = all["hitches"].as_array().unwrap();
+    assert_eq!(hitches.len(), 3);
+    assert_eq!(all["last_hitch"], 2);
+    assert_eq!(hitches[0]["hitch_count"], 1);
+    assert!(hitches[0]["end_frame"].as_u64() < hitches[1]["end_frame"].as_u64());
+    assert!(hitches[1]["end_frame"].as_u64() < hitches[2]["end_frame"].as_u64());
+
+    let newer = query_stats(&mut app, None, Some(0)).result.unwrap();
+    assert_eq!(
+        newer["hitches"],
+        serde_json::json!([hitches[1], hitches[2]])
+    );
+    for cursor in [2, 3] {
+        let none = query_stats(&mut app, None, Some(cursor)).result.unwrap();
+        assert_eq!(none["hitches"], serde_json::json!([]));
+        assert_eq!(none["last_hitch"], 2);
+    }
+}
+
+#[test]
+fn battle_stats_report_status_at_elimination_and_freeze_afterwards() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{Health, SwarmMember};
+    let output = Output::new();
+    let mut app = battle(&output);
+    advance(&mut app, 10);
+    let running = stats(&mut app);
+    assert_eq!(running["summary"]["status"], "in_progress");
+    assert!(running["summary"]["termination_reason"].is_null());
+
+    for (owner, mut health) in app
+        .world_mut()
+        .query::<(&SwarmMember, &mut Health)>()
+        .iter_mut(app.world_mut())
+    {
+        if !owner.0.is_player() {
+            health.current = 0;
+        }
+    }
+    app.update();
+    let terminal = stats(&mut app);
+    assert_eq!(terminal["summary"]["status"], "completed");
+    assert_eq!(
+        terminal["summary"]["termination_reason"],
+        "swarm_elimination"
+    );
+    assert_eq!(terminal["summary"]["outcome"], "swarm_0_wins");
+    assert_eq!(
+        terminal["last_sample"], 0,
+        "final partial sample is recorded"
+    );
+    assert_eq!(terminal["summary"]["samples"], 1);
+
+    advance(&mut app, 120);
+    assert_eq!(stats(&mut app), terminal);
+}
+
+#[test]
+fn battle_stats_report_interruption_at_the_tick_limit_and_freeze() {
+    let output = Output::new();
+    let mut app = common::sim_app_with_elimination();
+    record_battle_with(
+        &mut app,
+        BattleStatisticsConfig {
+            output_root: output.0.clone(),
+            max_ticks: std::num::NonZeroU64::new(90),
+            ..default()
+        },
+    );
+    common::spawn_swarm_with_nanobots(&mut app, Vec2::ZERO, &[(NanobotType::Worker, 1)]);
+    common::spawn_opponent_swarm_with_nanobots(
+        &mut app,
+        Vec2::X * 500.,
+        &[(NanobotType::Defender, 1)],
+    );
+    advance(&mut app, 89);
+    assert_eq!(stats(&mut app)["summary"]["status"], "in_progress");
+    advance(&mut app, 1);
+    let terminal = stats(&mut app);
+    assert_eq!(terminal["summary"]["status"], "interrupted");
+    assert_eq!(terminal["summary"]["termination_reason"], "tick_limit");
+    assert!(terminal["summary"]["outcome"].is_null());
+    assert_eq!(
+        terminal["last_sample"], 1,
+        "the partial sample follows tick 60"
+    );
+    assert_eq!(swarm_row(&terminal["samples"][1], 0)["fixed_tick"], 90);
+
+    advance(&mut app, 120);
+    assert_eq!(stats(&mut app), terminal);
+}
+
+#[test]
+fn battle_stats_are_unavailable_outside_an_ai_battle_recording() {
+    let mut app = common::minimal_app();
+    let (handle, channel) = AgentControlCorePlugin::channel(4);
+    app.insert_resource(StatsHandle(handle))
+        .add_plugins(channel);
+    let response = query_stats(&mut app, None, None);
+    assert!(!response.ok);
+    assert_eq!(response.error.unwrap().code, "battle_unavailable");
 }
