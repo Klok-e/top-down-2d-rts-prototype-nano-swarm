@@ -102,8 +102,7 @@ impl ObstacleIndex {
                 Obstacle::Rectangle { center, half } => (center, half),
                 Obstacle::Circle { center, radius } => (center, Vec2::splat(radius)),
             };
-            let reach = half + Vec2::splat(BODY_RADIUS + 1.0);
-            index.reach.push((center - reach, center + reach));
+            index.reach.push(shape.reach_box());
             let half = half + Vec2::splat(BODY_RADIUS);
             let (min, max) = Self::bounds(center - half, center + half);
             if !Self::small_span(min, max) {
@@ -128,11 +127,8 @@ impl ObstacleIndex {
         accepts: impl Fn(Obstacle) -> bool,
     ) -> bool {
         let (low, high) = (a.min(b), a.max(b));
-        let near = |&id: &usize| {
-            let (min, max) = self.reach[id];
-            // Non-finite boxes are never treated as separated.
-            low.cmpgt(max).any() || high.cmplt(min).any() || accepts(obstacles[id])
-        };
+        let near =
+            |&id: &usize| super::separated(low, high, self.reach[id]) || accepts(obstacles[id]);
         let (min, max) = Self::bounds(a, b);
         if !Self::small_span(min, max) {
             return (0..self.count).all(|id| near(&id));

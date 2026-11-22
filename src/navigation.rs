@@ -33,6 +33,12 @@ pub fn align_structure(mut transform: Transform) -> Transform {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct ShapeBits([u32; 5]);
 
+/// Whether a query box lies wholly outside a reach box, so no shape inside the reach
+/// box can affect the query. A box with a non-finite coordinate is never separated.
+pub(crate) fn separated(low: Vec2, high: Vec2, (min, max): (Vec2, Vec2)) -> bool {
+    low.is_finite() && high.is_finite() && (low.cmpgt(max).any() || high.cmplt(min).any())
+}
+
 /// Physical shapes retain their world geometry rather than occupying intent cells.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Obstacle {
@@ -65,6 +71,14 @@ impl Obstacle {
             Self::Rectangle { center, half } => (center, half),
             Self::Circle { center, radius } => (center, Vec2::splat(radius)),
         }
+    }
+
+    /// Box beyond which this shape cannot constrain a body: its bounds plus body
+    /// clearance and one unit of slack for rounding.
+    pub(crate) fn reach_box(self) -> (Vec2, Vec2) {
+        let (center, half) = self.bounds();
+        let reach = half + Vec2::splat(BODY_RADIUS + 1.0);
+        (center - reach, center + reach)
     }
 
     /// Exact bit identity, so caches compare shapes without formatting them.
