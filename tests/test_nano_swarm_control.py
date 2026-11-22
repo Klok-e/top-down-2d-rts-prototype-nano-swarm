@@ -11,8 +11,8 @@ from concurrent.futures import ThreadPoolExecutor
 SCRIPT = Path(__file__).parents[1] / "scripts" / "nano_swarm_control.py"
 
 
-class ExecutionSnapshotClientTests(unittest.TestCase):
-    def request_state(self, *flags):
+class ControlClientTests(unittest.TestCase):
+    def exchange(self, *command):
         with tempfile.TemporaryDirectory(prefix="ns-client-") as directory:
             path = Path(directory) / "control.sock"
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
@@ -34,7 +34,7 @@ class ExecutionSnapshotClientTests(unittest.TestCase):
                     received = executor.submit(exchange)
                     process = subprocess.run(
                         [sys.executable, str(SCRIPT), "--socket", str(path),
-                         "--timeout", "3", "state", "--cell-limit", "1", *flags],
+                         "--timeout", "3", *command],
                         capture_output=True, text=True, timeout=5,
                     )
                     self.assertEqual(process.returncode, 0, process.stderr)
@@ -42,16 +42,25 @@ class ExecutionSnapshotClientTests(unittest.TestCase):
                     return received.result(timeout=3)
 
     def test_details_flag_reaches_the_state_request(self):
-        request = self.request_state("--details")
+        request = self.exchange("state", "--cell-limit", "1", "--details")
         self.assertEqual(request["method"], "state.get")
         self.assertEqual(request["params"], {
             "cell_offset": 0, "cell_limit": 1, "details": True,
         })
 
     def test_default_state_does_not_request_execution_details(self):
-        request = self.request_state()
+        request = self.exchange("state", "--cell-limit", "1")
         self.assertEqual(request["method"], "state.get")
         self.assertNotIn("details", request["params"])
+
+    def test_perf_hitches_sends_an_optional_episode_cursor(self):
+        request = self.exchange("perf-hitches")
+        self.assertEqual(request["method"], "perf.hitches")
+        self.assertNotIn("params", request)
+
+        request = self.exchange("perf-hitches", "--after-id", "27")
+        self.assertEqual(request["method"], "perf.hitches")
+        self.assertEqual(request["params"], {"after_id": 27})
 
 
 if __name__ == "__main__":

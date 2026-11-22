@@ -5,7 +5,6 @@ use std::{
 
 use bevy::{
     app::{AppExit, PluginsState, TerminalCtrlCHandlerPlugin},
-    log::LogPlugin,
     prelude::*,
     time::TimeUpdateStrategy,
 };
@@ -16,7 +15,7 @@ use crate::{
     Presentation,
     ai_battle::{AiBattleConfig, AiBattleLayout},
     battle_statistics::BattleStatisticsConfig,
-    build_app_with_tuning,
+    build_app_with_logging,
     scenario_selection::{Scenario, ScenarioSelection},
 };
 
@@ -386,14 +385,10 @@ pub fn build_runtime_app(options: RuntimeOptions) -> Result<App, RuntimeBuildErr
     };
     let headless = options.simulation_only || options.headless;
     let unbounded = options.simulation_only || options.unbounded;
-    let mut app = build_app_with_tuning(presentation, &options.tuning_file)
+    let mut app = build_app_with_logging(presentation, &options.tuning_file, headless)
         .map_err(RuntimeBuildError::Tuning)?;
     if headless {
-        app.add_plugins((
-            LogPlugin::default(),
-            HeadlessRunnerPlugin,
-            TerminalCtrlCHandlerPlugin,
-        ));
+        app.add_plugins((HeadlessRunnerPlugin, TerminalCtrlCHandlerPlugin));
     }
     app.insert_resource(selection);
     app.insert_resource(HeadlessPacing { unbounded });

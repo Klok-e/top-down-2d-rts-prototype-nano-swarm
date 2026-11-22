@@ -161,3 +161,6 @@ mod live_logistics_tuning;
 mod presentation_tuning;
 #[path = "behavior/tuning_transaction.rs"]
 mod tuning_transaction;
+
+#[path = "behavior/hitch_recorder.rs"]
+mod hitch_recorder;

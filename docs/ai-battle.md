@@ -34,7 +34,13 @@ For verification, apply the [test duration and interactive socket guidance](agen
 
 ## Recorded results
 
-Each AI Battle writes `samples.csv` and `summary.json` below the output root. Samples use simulated time and include population, births, deaths, resources, structures, damage, controller telemetry, and timing. A completed elimination, an interruption, and an in-progress recording remain distinct states.
+Each AI Battle writes `samples.csv`, `summary.json`, and `hitches.jsonl` below the output root. Samples use simulated time and include population, births, deaths, resources, structures, damage, controller telemetry, and timing. A completed elimination, an interruption, and an in-progress recording remain distinct states.
+
+`hitches.jsonl` gets one compact JSON line for each [hitch episode](performance/hitch-recorder.md) that closes while the run is in progress. Its `start_frame` and `end_frame` include the pre-roll and recovery frames, and `start_fixed_tick` is the number of fixed ticks completed before the first frame in that range. `hitch_count`, `worst_frame_ns`, and `catch_up_ticks` describe the episode's hitch frames. Catch-up counts each fixed tick after the first in a hitch frame. `top_phases` ranks three phases by total nanoseconds across all hitch frames, including those omitted from retained detail. Fixed phases rank separately, and `RunFixedMainLoop` contributes its remaining time. `nanobots` is the Nanobot count at the end of the earliest worst frame.
+
+Each run writes at most 1,000 hitch lines. `summary.json` counts later episodes in `hitch_episodes_suppressed`. Fetch per-frame detail from the agent socket with [`perf.hitches`](agents/agent-control.md#hitch-episodes).
+
+Frame timing uses the hitch recorder's frame durations while the battle is in progress and virtual time is running. It is omitted in headless unbounded runs. Tick timing continues to measure each fixed tick.
 
 The economy columns are recorded separately for each swarm. Window totals cover the simulated ticks since the previous sample, including a partial window at the end of a run.
 

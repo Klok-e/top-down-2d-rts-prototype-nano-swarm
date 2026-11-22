@@ -12,6 +12,7 @@ pub mod materials;
 pub mod nanobot;
 pub mod navigation;
 pub mod navigation_runtime;
+pub mod perf;
 pub mod physical_world;
 pub mod reachability;
 pub mod resources;
@@ -134,6 +135,14 @@ pub fn build_app_with_tuning(
     presentation: Presentation,
     path: impl AsRef<std::path::Path>,
 ) -> Result<App, String> {
+    build_app_with_logging(presentation, path, false)
+}
+
+fn build_app_with_logging(
+    presentation: Presentation,
+    path: impl AsRef<std::path::Path>,
+    headless_logging: bool,
+) -> Result<App, String> {
     let (store, values) = tuning::TuningStore::load(path.as_ref().to_path_buf())?;
     let mut app = App::new();
     app.insert_resource(values)
@@ -150,6 +159,10 @@ pub fn build_app_with_tuning(
             nanobot::reconcile_combat_presentation_tuning,
             fly_camera::reconcile_camera_tuning,
         ]));
+    if headless_logging && presentation != Presentation::Windowed {
+        // Bevy creates system spans when systems are registered.
+        app.add_plugins(LogPlugin::default());
+    }
     let target = match presentation {
         Presentation::Windowed => {
             app.add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -167,8 +180,7 @@ pub fn build_app_with_tuning(
                         ..default()
                     })
                     .set(offscreen_render_plugin())
-                    // Both plugins install process-global handlers. Screenshot trials
-                    // construct multiple Apps in one process, so Offscreen omits them.
+                    // Process-global handlers are installed by the runtime.
                     .disable::<LogPlugin>()
                     .disable::<TerminalCtrlCHandlerPlugin>()
                     // Manual offscreen updates render in lockstep with readback.
@@ -182,6 +194,10 @@ pub fn build_app_with_tuning(
         }
         Presentation::SimulationOnly => {
             app.add_plugins((TaskPoolPlugin::default(), bevy::time::TimePlugin))
+                .insert_resource(battle_statistics::BattleStatisticsConfig {
+                    simulation_only: true,
+                    ..default()
+                })
                 .insert_resource(StructureSprites::from_single_handle(Handle::default()));
             None
         }
@@ -269,6 +285,10 @@ pub fn build_app_with_tuning(
             .add_plugins(Camera2dFlyPlugin)
             .add_systems(Startup, setup_things_startup.pipe(error_handler))
             .add_systems(PostUpdate, update_main_camera_bloom);
+    }
+    #[cfg(feature = "perf-trace")]
+    if app.is_plugin_added::<LogPlugin>() {
+        perf::trace_main_world_frames(&mut app);
     }
     Ok(app)
 }

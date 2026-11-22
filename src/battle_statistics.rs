@@ -7,6 +7,7 @@ use crate::{
         PlannedStructure, ProductionFacility, Structure, Swarm, SwarmEliminationSet,
         SwarmEliminationState, SwarmId, SwarmMember, world_to_cell,
     },
+    perf::{HitchEpisodeSummary, HitchRecorderPlugin},
     resources::{ResourceDeposit, ResourceKind, Stockpile, buffered_minerals},
     session::SessionRules,
     strategic_runtime::{ControllerProfile, ControllerTelemetry},
@@ -21,6 +22,8 @@ use std::{
     path::PathBuf,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
+
+const HITCH_LOG_LIMIT: u64 = 1_000;
 
 #[derive(Resource, Debug, Clone)]
 pub struct BattleStatisticsConfig {
@@ -168,8 +171,15 @@ impl Plugin for BattleStatisticsPlugin {
                     .after(SwarmEliminationSet)
                     .run_if(resource_exists::<BattleRun>),
             )
-            .add_systems(First, collect_frame.run_if(resource_exists::<BattleRun>))
             .add_systems(Last, finish_on_exit.run_if(resource_exists::<BattleRun>));
+        if !app
+            .world()
+            .resource::<BattleStatisticsConfig>()
+            .simulation_only
+            && !app.is_plugin_added::<HitchRecorderPlugin>()
+        {
+            app.add_plugins(HitchRecorderPlugin);
+        }
     }
 }
 
@@ -277,6 +287,8 @@ pub struct BattleSummary {
     #[serde(default)]
     pub termination_reason: Option<BattleTerminationReason>,
     pub samples: u64,
+    #[serde(default)]
+    pub hitch_episodes_suppressed: u64,
     pub latest: BattleSample,
 }
 
@@ -292,6 +304,8 @@ pub struct BattleRun {
     pub summary: BattleSummary,
     pub error: Option<String>,
     csv: BufWriter<File>,
+    hitch_log: Option<File>,
+    hitch_episodes_written: u64,
     tick_start: Instant,
     ticks: u64,
     tuning_journal_offset: usize,
@@ -300,7 +314,6 @@ pub struct BattleRun {
     next_sample_seconds: f64,
     tick_samples: Vec<f64>,
     frame_samples: Vec<f64>,
-    frame_start: Option<Instant>,
 }
 
 fn start_run(world: &mut World) {
@@ -407,6 +420,13 @@ fn create_run(
         .create_new(true)
         .open(directory.join("samples.csv"))?;
     let mut csv = BufWriter::new(file);
+    let hitch_log = (scenario_name
+        == crate::scenario_selection::Scenario::AiBattle
+            .definition()
+            .rules
+            .scenario_name)
+        .then(|| File::create_new(directory.join("hitches.jsonl")))
+        .transpose()?;
     writeln!(
         csv,
         "simulation_seconds,fixed_tick,swarm,population,workers,haulers,defenders,births,deaths,minerals_gathered,minerals_consumed,structures_built,structures_lost,effective_damage_total,effective_damage_nanobots,effective_damage_structures,elimination_seconds,tick_count,tick_mean_ms,tick_p50_ms,tick_p95_ms,tick_p99_ms,tick_max_ms,frame_count,frame_mean_ms,frame_p95_ms,frame_max_ms,controller_reviews,controller_intent_edits,controller_work_units,owned_deposits,mineral_income,mineral_starved_facility_seconds,unspent_minerals,empty_charge_defenders,controller_last_explanation,deposit_extraction"
@@ -429,6 +449,7 @@ fn create_run(
         outcome: None,
         termination_reason: None,
         samples: 0,
+        hitch_episodes_suppressed: 0,
         latest: BattleSample::default(),
     };
     let mut run = BattleRun {
@@ -436,6 +457,8 @@ fn create_run(
         summary,
         error: None,
         csv,
+        hitch_log,
+        hitch_episodes_written: 0,
         tick_start: Instant::now(),
         ticks: 0,
         tuning_journal_offset,
@@ -444,7 +467,6 @@ fn create_run(
         next_sample_seconds: 1.,
         tick_samples: Vec::with_capacity(64),
         frame_samples: Vec::with_capacity(64),
-        frame_start: None,
     };
     run.persist()?;
     info!("AI Battle results: {}", run.directory.display());
@@ -452,6 +474,39 @@ fn create_run(
 }
 
 impl BattleRun {
+    pub(crate) fn record_frame(
+        &mut self,
+        frame_ns: u64,
+        paused: bool,
+        closed: Option<&HitchEpisodeSummary>,
+    ) -> io::Result<()> {
+        if self.summary.status != RunStatus::InProgress || self.error.is_some() {
+            return Ok(());
+        }
+        if self.summary.records_frame_timing() && !paused {
+            self.frame_samples.push(frame_ns as f64 / 1_000_000.);
+        }
+        if let Some(episode) = closed {
+            self.append_hitch(episode)?;
+        }
+        Ok(())
+    }
+
+    fn append_hitch(&mut self, episode: &HitchEpisodeSummary) -> io::Result<()> {
+        let Some(hitch_log) = &mut self.hitch_log else {
+            return Ok(());
+        };
+        if self.hitch_episodes_written >= HITCH_LOG_LIMIT {
+            self.summary.hitch_episodes_suppressed += 1;
+            return Ok(());
+        }
+        let mut line = serde_json::to_vec(episode)?;
+        line.push(b'\n');
+        hitch_log.write_all(&line)?;
+        self.hitch_episodes_written += 1;
+        Ok(())
+    }
+
     fn persist(&mut self) -> io::Result<()> {
         self.csv.flush()?;
         self.csv.get_ref().sync_data()?;
@@ -756,15 +811,44 @@ fn finish_on_exit(world: &mut World) {
     world.insert_resource(run);
 }
 
-fn collect_frame(mut run: ResMut<BattleRun>, time: Res<Time<Virtual>>) {
-    let now = Instant::now();
-    if run.summary.records_frame_timing()
-        && run.summary.status == RunStatus::InProgress
-        && !time.is_paused()
-        && let Some(previous) = run.frame_start
-    {
-        run.frame_samples
-            .push(now.duration_since(previous).as_secs_f64() * 1000.);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hitch_log_caps_written_lines_and_persists_the_suppressed_count() -> io::Result<()> {
+        let config = BattleStatisticsConfig {
+            output_root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join(".tmp")
+                .join(format!("battle-hitch-cap-{}", std::process::id())),
+            ..default()
+        };
+        let result = (|| -> io::Result<_> {
+            let mut run = create_run(
+                &config,
+                AiBattleConfig::default(),
+                Tuning::default(),
+                1. / 60.,
+                "ai_battle",
+                0,
+                0,
+            )?;
+            let episode = HitchEpisodeSummary::default();
+            for _ in 0..1_002 {
+                run.append_hitch(&episode)?;
+            }
+            run.persist()?;
+            let lines = fs::read_to_string(run.directory.join("hitches.jsonl"))?;
+            let summary: BattleSummary =
+                serde_json::from_slice(&fs::read(run.directory.join("summary.json"))?)?;
+            Ok((lines, summary))
+        })();
+        if config.output_root.exists() {
+            fs::remove_dir_all(config.output_root)?;
+        }
+        let (lines, summary) = result?;
+        assert_eq!(lines.lines().count(), 1_000);
+        assert_eq!(summary.hitch_episodes_suppressed, 2);
+        Ok(())
     }
-    run.frame_start = Some(now);
 }
