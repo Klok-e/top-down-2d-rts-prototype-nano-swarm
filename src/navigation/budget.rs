@@ -70,6 +70,8 @@ impl Navigation {
             obstacles: self.obstacles.clone(),
             obstacle_index: self.obstacle_index.clone(),
             clearing: Vec::new(),
+            clearing_layer: None,
+            base: None,
             revision: self.revision,
             chunks: Arc::new(Mutex::new(FastHashMap::default())),
             connections: Default::default(),
@@ -80,6 +82,10 @@ impl Navigation {
     }
 
     async fn async_regions(&self, chunk: IVec2) -> Chunk {
+        self.region_owner(chunk).async_own_regions(chunk).await
+    }
+
+    async fn async_own_regions(&self, chunk: IVec2) -> Chunk {
         std::future::poll_fn(|context| {
             if let Some(cached) = self.chunks.lock().unwrap().get(&chunk).cloned() {
                 return Poll::Ready(cached);
@@ -145,7 +151,8 @@ impl Navigation {
 
     async fn async_region(&self, cell: IVec2) -> Option<IVec2> {
         let key = Self::chunk(cell);
-        if let Some(chunk) = self
+        let owner = self.region_owner(key);
+        if let Some(chunk) = owner
             .chunks
             .lock()
             .expect("navigation chunk cache poisoned")
@@ -153,9 +160,19 @@ impl Navigation {
         {
             return chunk.regions.get(&cell).copied();
         }
-        self.async_regions(key).await.regions.get(&cell).copied()
+        owner
+            .async_own_regions(key)
+            .await
+            .regions
+            .get(&cell)
+            .copied()
     }
     async fn async_connections(&self, node: IVec2) -> Vec<(IVec2, IVec2, IVec2)> {
+        self.edge_owner(Self::chunk(node))
+            .async_own_connections(node)
+            .await
+    }
+    async fn async_own_connections(&self, node: IVec2) -> Vec<(IVec2, IVec2, IVec2)> {
         if let Some(edges) = self.connections.lock().unwrap().get(&node).cloned() {
             return edges;
         }
@@ -711,7 +728,45 @@ pub(super) struct Scheduler {
     paint_revision: Option<u64>,
     corridor_cost_multiplier: Option<f32>,
     access_cached: HashMap<(u64, u64), (RouteRequestId, u64)>,
-    connectivity_cached: HashMap<String, (RouteRequestId, u64)>,
+    connectivity_cached: HashMap<ConnectivityKey, (RouteRequestId, u64)>,
+}
+/// A connectivity answer is shared by origins in one exact component, or else by one cell.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct ConnectivityKey {
+    revision: u64,
+    origin: ConnectivityOrigin,
+    goal: GoalKey,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum ConnectivityOrigin {
+    Region(IVec2),
+    Cell(IVec2),
+}
+/// Exact bit identity of a goal.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum GoalKey {
+    Point([u32; 2]),
+    Range([u32; 3]),
+    Interaction(crate::nanobot::InteractionBits),
+}
+impl From<RouteGoal> for GoalKey {
+    fn from(goal: RouteGoal) -> Self {
+        match goal {
+            RouteGoal::Point(point) => Self::Point(point.to_array().map(f32::to_bits)),
+            RouteGoal::Range { center, radius } => {
+                Self::Range([center.x.to_bits(), center.y.to_bits(), radius.to_bits()])
+            }
+            RouteGoal::Interaction(region) => Self::Interaction(region.bits()),
+        }
+    }
+}
+/// Untouched cache entries expire after this many ticks.
+const STALE_TICKS: u64 = 120;
+/// Expiring entries release their requests over several ticks, oldest first.
+const PRUNE_LIMIT: usize = 64;
+enum CacheEntry {
+    Access((u64, u64)),
+    Connectivity(ConnectivityKey),
 }
 #[derive(Default)]
 struct PaintCosts {
@@ -860,34 +915,7 @@ impl Navigation {
             });
             scheduler.paint_revision = Some(grid.revision());
         }
-        let stale_access: Vec<_> = scheduler
-            .access_cached
-            .iter()
-            .filter(|((_, revision), (_, touched))| {
-                *revision != self.revision || tick.saturating_sub(*touched) > 120
-            })
-            .map(|(key, (id, _))| (*key, *id))
-            .collect();
-        for (key, id) in stale_access {
-            scheduler.access_cached.remove(&key);
-            scheduler.requests.remove(&id);
-        }
-        let stale_connectivity: Vec<_> = scheduler
-            .connectivity_cached
-            .iter()
-            .filter(|(_, (id, touched))| {
-                tick.saturating_sub(*touched) > 120
-                    || scheduler
-                        .requests
-                        .get(id)
-                        .is_none_or(|r| r.revision != self.revision)
-            })
-            .map(|(key, (id, _))| (key.clone(), *id))
-            .collect();
-        for (key, id) in stale_connectivity {
-            scheduler.connectivity_cached.remove(&key);
-            scheduler.requests.remove(&id);
-        }
+        let expiring = self.prune_stale(&mut scheduler, tick);
         let before = self.expansions.snapshot();
         let mut work = NavigationWork {
             tick,
@@ -902,7 +930,7 @@ impl Navigation {
         }
         let mut lanes = [Vec::new(), Vec::new()];
         for (&id, request) in &scheduler.requests {
-            if !matches!(request.result, RouteStatus::Pending) {
+            if !matches!(request.result, RouteStatus::Pending) || expiring.contains(&id) {
                 continue;
             }
             let boost = match request.priority {
@@ -929,10 +957,11 @@ impl Navigation {
             let unused = budget - work.work;
             self.advance_lane(&mut scheduler, queue, unused, &mut work);
         }
-        for request in scheduler.requests.values() {
-            if !matches!(request.result, RouteStatus::Pending) {
+        for (id, request) in &scheduler.requests {
+            if !matches!(request.result, RouteStatus::Pending) || expiring.contains(id) {
                 continue;
             }
+            work.pending += 1;
             let age = tick.saturating_sub(request.submitted);
             match request.purpose {
                 RequestPurpose::Movement => {
@@ -950,11 +979,6 @@ impl Navigation {
                 }
             }
         }
-        work.pending = scheduler
-            .requests
-            .values()
-            .filter(|r| matches!(r.result, RouteStatus::Pending))
-            .count();
         let after = self.expansions.snapshot();
         work.hierarchy_cells = after.hierarchy_cells - before.hierarchy_cells;
         work.coarse_expansions = after.coarse_expansions - before.coarse_expansions;
@@ -962,6 +986,42 @@ impl Navigation {
         work.hierarchy_chunks = after.hierarchy_chunks - before.hierarchy_chunks;
         scheduler.work = work;
         work
+    }
+    /// Expire stale cache entries, at most `PRUNE_LIMIT` per tick and oldest first.
+    /// Returns requests still awaiting expiry, which receive no further work.
+    fn prune_stale(&self, scheduler: &mut Scheduler, tick: u64) -> HashSet<RouteRequestId> {
+        let stale_age = |touched: u64| tick.saturating_sub(touched) > STALE_TICKS;
+        let mut stale: Vec<_> = scheduler
+            .access_cached
+            .iter()
+            .filter(|&(&(_, revision), &(_, touched))| {
+                revision != self.revision || stale_age(touched)
+            })
+            .map(|(&key, &(id, touched))| (touched, id, CacheEntry::Access(key)))
+            .collect();
+        stale.extend(
+            scheduler
+                .connectivity_cached
+                .iter()
+                .filter(|&(key, &(id, touched))| {
+                    key.revision != self.revision
+                        || stale_age(touched)
+                        || !scheduler.requests.contains_key(&id)
+                })
+                .map(|(&key, &(id, touched))| (touched, id, CacheEntry::Connectivity(key))),
+        );
+        if stale.len() > PRUNE_LIMIT {
+            stale.select_nth_unstable_by_key(PRUNE_LIMIT, |&(touched, id, _)| (touched, id.0));
+        }
+        let waiting = stale.split_off(stale.len().min(PRUNE_LIMIT));
+        for (_, id, entry) in stale {
+            match entry {
+                CacheEntry::Access(key) => scheduler.access_cached.remove(&key),
+                CacheEntry::Connectivity(key) => scheduler.connectivity_cached.remove(&key),
+            };
+            scheduler.requests.remove(&id);
+        }
+        waiting.into_iter().map(|(_, id, _)| id).collect()
     }
     fn advance_lane(
         &self,
@@ -979,51 +1039,11 @@ impl Navigation {
             let paint = scheduler.paint.clone();
             let request = scheduler.requests.get_mut(&id).unwrap();
             if request.future.is_none() {
-                let obstacles = if self.clearing.is_empty() {
-                    self.obstacles.clone()
+                // Hypothetical construction geometry derives from the main hierarchy.
+                let snapshot = if request.access.is_some() {
+                    Arc::new(self.shared_snapshot())
                 } else {
-                    Arc::new(
-                        self.obstacles
-                            .iter()
-                            .copied()
-                            .chain(
-                                self.clearing
-                                    .iter()
-                                    .copied()
-                                    .filter(|shape| shape.admits_body(request.start)),
-                            )
-                            .collect(),
-                    )
-                };
-                let obstacle_index = if self.clearing.is_empty() {
-                    self.obstacle_index.clone()
-                } else {
-                    Arc::new(ObstacleIndex::new(&obstacles))
-                };
-                let snapshot = Navigation {
-                    min: self.min,
-                    max: self.max,
-                    obstacles,
-                    obstacle_index,
-                    clearing: Vec::new(),
-                    revision: self.revision,
-                    chunks: if self.clearing.is_empty() {
-                        self.chunks.clone()
-                    } else {
-                        Arc::new(Mutex::new(FastHashMap::default()))
-                    },
-                    connections: if self.clearing.is_empty() {
-                        self.connections.clone()
-                    } else {
-                        Default::default()
-                    },
-                    scheduler: Mutex::new(Scheduler::default()),
-                    expansions: self.expansions.clone(),
-                    chunk_builds: if self.clearing.is_empty() {
-                        self.chunk_builds.clone()
-                    } else {
-                        Default::default()
-                    },
+                    self.request_geometry(request.start)
                 };
                 let (start, goal, swarm, hauler) =
                     (request.start, request.goal, request.swarm, request.hauler);
@@ -1320,7 +1340,46 @@ impl Navigation {
         if self.clearing != clearing {
             self.clearing = clearing;
             self.revision = self.revision.wrapping_add(1);
+            self.rebuild_clearing_layer();
         }
+    }
+
+    /// The shared clearing layer, when the start lies outside every clearing footprint.
+    fn clearing_layer_for(&self, start: Vec2) -> Option<&Arc<Navigation>> {
+        self.clearing_layer
+            .as_ref()
+            .filter(|_| self.clearing.iter().all(|shape| shape.admits_body(start)))
+    }
+
+    /// Shared geometry for a start, or `None` when it needs a private variant.
+    fn start_layer(&self, start: Vec2) -> Option<&Navigation> {
+        if self.clearing.is_empty() {
+            return Some(self);
+        }
+        self.clearing_layer_for(start).map(|layer| &**layer)
+    }
+
+    /// Requests outside every clearing footprint share one layer. An occupant gets a
+    /// private variant without its own footprint so it can leave.
+    fn request_geometry(&self, start: Vec2) -> Arc<Navigation> {
+        if self.clearing.is_empty() {
+            return Arc::new(self.shared_snapshot());
+        }
+        if let Some(layer) = self.clearing_layer_for(start) {
+            return layer.clone();
+        }
+        let obstacles = self
+            .obstacles
+            .iter()
+            .copied()
+            .chain(
+                self.clearing
+                    .iter()
+                    .copied()
+                    .filter(|shape| shape.admits_body(start)),
+            )
+            .collect();
+        Arc::new(self.variant(obstacles))
     }
 }
 
@@ -1339,33 +1398,29 @@ impl Navigation {
         goal: RouteGoal,
     ) -> (ConnectivityStatus, Vec2) {
         let cell = Self::cell(start);
-        let region = if self.clearing.is_empty() && self.segment_clear(start, Self::center(cell)) {
-            self.chunks
-                .lock()
-                .unwrap()
-                .get(&Self::chunk(cell))
-                .and_then(|chunk| chunk.regions.get(&cell))
-                .copied()
-        } else {
-            None
+        let region = self
+            .start_layer(start)
+            .filter(|layer| layer.segment_clear(start, Self::center(cell)))
+            .and_then(|layer| layer.cached_region(cell));
+        let key = ConnectivityKey {
+            revision: self.revision,
+            origin: region.map_or(ConnectivityOrigin::Cell(cell), ConnectivityOrigin::Region),
+            goal: goal.into(),
         };
-        let key = format!(
-            "{region:?}:{cell_key:?}:{goal:?}",
-            cell_key = region.unwrap_or(cell)
-        );
         let mut scheduler = self.scheduler.lock().unwrap();
         let tick = scheduler.tick;
         if region.is_some() && !scheduler.connectivity_cached.contains_key(&key) {
-            let cold_key = format!("{none:?}:{cell:?}:{goal:?}", none = None::<IVec2>);
+            let cold_key = ConnectivityKey {
+                origin: ConnectivityOrigin::Cell(cell),
+                ..key
+            };
             if let Some(&(id, touched)) = scheduler.connectivity_cached.get(&cold_key)
                 && scheduler.requests.get(&id).is_some_and(|r| {
                     r.revision == self.revision && self.movement_clear(start, r.start)
                 })
             {
                 scheduler.connectivity_cached.remove(&cold_key);
-                scheduler
-                    .connectivity_cached
-                    .insert(key.clone(), (id, touched));
+                scheduler.connectivity_cached.insert(key, (id, touched));
             }
         }
         if let Some(&(id, _)) = scheduler.connectivity_cached.get(&key) {
@@ -1512,21 +1567,6 @@ impl Navigation {
         scheduler.access_cached.insert(cache_key, (id, tick));
         AccessStatus::Pending
     }
-    fn hypothetical(&self, obstacles: Vec<Obstacle>) -> Navigation {
-        Navigation {
-            min: self.min,
-            max: self.max,
-            obstacle_index: Arc::new(ObstacleIndex::new(&obstacles)),
-            obstacles: Arc::new(obstacles),
-            clearing: Vec::new(),
-            revision: self.revision,
-            chunks: Arc::new(Mutex::new(FastHashMap::default())),
-            connections: Default::default(),
-            scheduler: Mutex::new(Scheduler::default()),
-            expansions: self.expansions.clone(),
-            chunk_builds: Default::default(),
-        }
-    }
     async fn async_connected(
         &self,
         a: crate::nanobot::InteractionRegion,
@@ -1548,8 +1588,8 @@ impl Navigation {
     }
     async fn async_access(&self, check: &AccessCheck, paint: &PaintCosts) -> RouteOutcome {
         WorkUnit::new().await;
-        let baseline = self.hypothetical(check.baseline.clone());
-        let completed = self.hypothetical(check.completed.clone());
+        let baseline = self.variant(check.baseline.clone());
+        let completed = self.variant(check.completed.clone());
         let mut builder_reaches = false;
         for &builder in &check.builders {
             WorkUnit::new().await;
@@ -1644,6 +1684,52 @@ mod tests {
             ConnectivityStatus::Unreachable,
             "a full dividing wall separates exact components"
         );
+    }
+
+    #[test]
+    fn stale_entries_expire_oldest_first_and_at_most_sixty_four_per_tick() {
+        let grid = IntentGrid::new(4, 4);
+        let mut navigation = Navigation::new(&grid, vec![]);
+        let query = |index: usize| {
+            navigation
+                .query_connectivity(Vec2::ZERO, RouteGoal::Point(Vec2::new(index as f32, 100.0)))
+        };
+        let older = navigation.work().tick;
+        for index in 0..100 {
+            query(index);
+        }
+        navigation.advance(&grid, 100_000);
+        for index in 100..200 {
+            query(index);
+        }
+        navigation.advance(&grid, 100_000);
+        assert!(matches!(query(150), ConnectivityStatus::Connected { .. }));
+        navigation.refresh(&grid, vec![Obstacle::deposit(Vec2::splat(900.0), 10.0)]);
+
+        let retained = |navigation: &Navigation| {
+            let scheduler = navigation.scheduler.lock().unwrap();
+            let older_entries = scheduler
+                .connectivity_cached
+                .values()
+                .filter(|(_, touched)| *touched == older)
+                .count();
+            (
+                older_entries,
+                scheduler.connectivity_cached.len(),
+                scheduler.requests.len(),
+            )
+        };
+        let mut expected = 200;
+        for _ in 0..4 {
+            let work = navigation.advance(&grid, 100_000);
+            assert_eq!(work.work, 0, "expiring answers must not be solved again");
+            assert_eq!(work.pending, 0, "expiring answers are not pending work");
+            expected -= expected.min(64);
+            let (older_entries, entries, requests) = retained(&navigation);
+            assert_eq!((entries, requests), (expected, expected));
+            assert_eq!(older_entries, expected.saturating_sub(100));
+        }
+        assert_eq!(expected, 0);
     }
 
     #[test]

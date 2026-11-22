@@ -30,6 +30,9 @@ pub fn align_structure(mut transform: Transform) -> Transform {
     transform
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ShapeBits([u32; 5]);
+
 /// Physical shapes retain their world geometry rather than occupying intent cells.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Obstacle {
@@ -54,6 +57,34 @@ impl Obstacle {
 
     pub fn deposit(center: Vec2, radius: f32) -> Self {
         Self::Circle { center, radius }
+    }
+
+    /// Axis-aligned center and half extents.
+    pub(crate) fn bounds(self) -> (Vec2, Vec2) {
+        match self {
+            Self::Rectangle { center, half } => (center, half),
+            Self::Circle { center, radius } => (center, Vec2::splat(radius)),
+        }
+    }
+
+    /// Exact bit identity, so caches compare shapes without formatting them.
+    pub(crate) fn bits(self) -> ShapeBits {
+        ShapeBits(match self {
+            Self::Rectangle { center, half } => [
+                0,
+                center.x.to_bits(),
+                center.y.to_bits(),
+                half.x.to_bits(),
+                half.y.to_bits(),
+            ],
+            Self::Circle { center, radius } => [
+                1,
+                center.x.to_bits(),
+                center.y.to_bits(),
+                radius.to_bits(),
+                0,
+            ],
+        })
     }
 
     /// Signed distance to the visible boundary; negative inside the obstacle.

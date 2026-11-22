@@ -16,7 +16,25 @@ pub struct InteractionRegion {
     cell: Option<IVec2>,
 }
 
+/// Exact bit identity of an interaction region for hashed cache keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct InteractionBits {
+    center: [u32; 2],
+    rotation: [u32; 4],
+    shape: crate::navigation::ShapeBits,
+    cell: Option<IVec2>,
+}
+
 impl InteractionRegion {
+    pub(crate) fn bits(self) -> InteractionBits {
+        InteractionBits {
+            center: self.center.to_array().map(f32::to_bits),
+            rotation: self.rotation.to_array().map(f32::to_bits),
+            shape: self.shape.bits(),
+            cell: self.cell,
+        }
+    }
+
     /// Deposits declare their physical world-space radius independently of sprite scale.
     pub fn deposit(transform: &Transform, radius: f32) -> Self {
         Self {
