@@ -243,6 +243,9 @@ pub enum BattleTerminationReason {
     TickLimit,
 }
 
+/// The most compact hitch summaries a run keeps; later ones are only counted.
+const HITCH_SUMMARY_LIMIT: usize = 1_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BattleSummary {
     pub schema_version: u32,
@@ -265,6 +268,8 @@ pub struct BattleSummary {
     #[serde(default)]
     pub termination_reason: Option<BattleTerminationReason>,
     pub samples: u64,
+    #[serde(default)]
+    pub hitch_episodes_suppressed: u64,
     pub latest: BattleSample,
 }
 
@@ -348,6 +353,7 @@ impl BattleRun {
                 outcome: None,
                 termination_reason: None,
                 samples: 0,
+                hitch_episodes_suppressed: 0,
                 latest: BattleSample::default(),
             },
             samples: Vec::new(),
@@ -376,7 +382,11 @@ impl BattleRun {
             self.frame_samples.push(frame_ns as f64 / 1_000_000.);
         }
         if let Some(episode) = closed {
-            self.hitch_summaries.push(episode.clone());
+            if self.hitch_summaries.len() < HITCH_SUMMARY_LIMIT {
+                self.hitch_summaries.push(episode.clone());
+            } else {
+                self.summary.hitch_episodes_suppressed += 1;
+            }
         }
     }
 
@@ -658,4 +668,32 @@ fn collect_tick(world: &mut World) {
         clock.discard_overstep(overstep);
     }
     world.insert_resource(run);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn battle_stats_keep_the_first_thousand_hitch_summaries_and_count_the_rest() {
+        let mut run = BattleRun::new(
+            &BattleStatisticsConfig::default(),
+            AiBattleConfig::default(),
+            Tuning::default(),
+            1. / 60.,
+            "ai-battle",
+            0,
+            0,
+        );
+        let episode = HitchEpisodeSummary::default();
+        for _ in 0..HITCH_SUMMARY_LIMIT + 2 {
+            run.record_frame(0, false, Some(&episode));
+        }
+
+        let stats = run.stats_payload(None, None);
+
+        assert_eq!(stats["hitches"].as_array().map(Vec::len), Some(1_000));
+        assert_eq!(stats["last_hitch"], 999);
+        assert_eq!(stats["summary"]["hitch_episodes_suppressed"], 2);
+    }
 }
