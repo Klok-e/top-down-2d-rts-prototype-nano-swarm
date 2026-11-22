@@ -426,7 +426,7 @@ pub fn velocity_system(
         bodies
             .iter()
             .enumerate()
-            .map(|(i, (body, _))| (body.start, i)),
+            .map(|(i, (body, _))| (body.start, (i, body.start))),
     );
     let now = time.elapsed_secs_f64();
     progress.retain(|entity, _| indices.contains_key(entity));
@@ -483,7 +483,7 @@ pub fn velocity_system(
             // Step sideways before an approaching friendly reaches the waiting body's space.
             let approaching = lookup
                 .neighbourhood(lookup.bucket_for_position(body.start), 1)
-                .flat_map(|(_, entries)| entries.iter().copied())
+                .flat_map(|(_, entries)| entries.iter().map(|&(j, _)| j))
                 .filter(|j| *j != i)
                 .filter(|j| friendly(body.entity, bodies[*j].0.entity))
                 .find(|j| {
@@ -576,7 +576,7 @@ pub fn velocity_system(
         }
         let overlapping = lookup
             .neighbourhood(lookup.bucket_for_position(body.start), 1)
-            .flat_map(|(_, entries)| entries.iter().copied())
+            .flat_map(|(_, entries)| entries.iter().map(|&(j, _)| j))
             .any(|j| j != i && body.start.distance(bodies[j].0.start) < diameter - 0.001);
         let Some(movement) = movement.filter(|_| !queued.contains(body.entity)) else {
             let recovering_overlap = overlapping
@@ -652,8 +652,13 @@ pub fn velocity_system(
             continue;
         }
         nearby.clear();
+        // An engaged body only sweeps against neighbours, so it skips those out of reach.
+        let engaged = is_engaged(body.entity);
         for run in lookup.neighbourhood_runs(lookup.bucket_for_position(body.start), 1) {
-            nearby.extend(run.iter().copied().filter(|j| *j != i));
+            nearby.extend(run.iter().filter_map(|&(j, start)| {
+                (j != i && (!engaged || body.start.distance_squared(start) <= sweep_reach_squared))
+                    .then_some(j)
+            }));
         }
         let prepare_sweep = |bodies: &[(TrafficBody, Vec2)],
                              progress: &std::collections::HashMap<Entity, TravelProgress>,
@@ -703,7 +708,7 @@ pub fn velocity_system(
             }
             physical.movement_clear(body.start, body.start + delta)
         };
-        if is_engaged(body.entity) {
+        if engaged {
             let speed = desired.length();
             prepare_sweep(&bodies, &progress, false, &mut sweep_constraints);
             let applied = continuous_velocity(Vec2::ZERO, desired, speed, speed, |delta| {
