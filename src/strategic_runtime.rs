@@ -109,14 +109,7 @@ impl StrategicRouteCache {
     fn revalidate(&mut self, navigation: &Navigation) {
         self.revision = navigation.revision();
         self.results.retain(|(start, _, outcome)| match outcome {
-            RouteOutcome::Found(route) => {
-                let mut from = *start;
-                route.waypoints.iter().all(|&waypoint| {
-                    let clear = navigation.movement_clear(from, waypoint);
-                    from = waypoint;
-                    clear
-                })
-            }
+            RouteOutcome::Found(route) => route.still_clear(navigation, *start),
             RouteOutcome::Unreachable => false,
         });
     }

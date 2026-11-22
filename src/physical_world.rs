@@ -121,8 +121,7 @@ impl PhysicalGeometry {
     }
 
     pub(crate) fn refresh_navigation(self, navigation: &mut Navigation, grid: &IntentGrid) {
-        navigation.refresh_clearing(self.entry_barriers);
         let obstacles = self.rocks.all().chain(self.solids).collect();
-        navigation.refresh(grid, obstacles);
+        navigation.refresh_with_clearing(grid, obstacles, self.entry_barriers);
     }
 }

@@ -107,7 +107,7 @@ Options:\n\
     --tuning-file <PATH>  Override the tracked balance file\n\
     --seed <INTEGER>   Battle starting seed (default: 0)\n\
     --layout <NAME>   Select standard or flanks for AI Battle\n\
-    --unbounded       Run headless simulation without frame pacing\n\
+    --unbounded       Run headless simulation without frame pacing (a frozen battle is still throttled)\n\
     -h, --help         Print help\n\
 \n\
 `--unbounded` requires `--headless` and applies to every scenario.\n\
@@ -344,9 +344,9 @@ impl RuntimeOptions {
                 flag: "--unbounded".to_string(),
             });
         }
-        if (self.headless || self.simulation_only)
-            && self.scenario == Some(Scenario::AiBattle)
-            && !self.agent_socket
+        if self
+            .scenario
+            .is_some_and(|scenario| headless_battle_without_socket(&self, scenario))
         {
             return Err(RuntimeOptionsError::BattleRequiresAgentSocket);
         }
