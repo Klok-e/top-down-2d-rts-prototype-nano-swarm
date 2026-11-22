@@ -2,7 +2,7 @@ use bevy::{ecs::system::RunSystemOnce, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::IntentGrid,
     nanobot::{SwarmId, construction_access::ConstructionAccess},
-    navigation::{AccessStatus, Navigation, RouteOutcome},
+    navigation::{AccessStatus, BODY_RADIUS, Navigation, Obstacle, RouteOutcome},
     physical_world::{PhysicalGeometry, PhysicalWorld},
     terrain::RockFormation,
 };
@@ -116,17 +116,39 @@ fn samples(count: usize) -> Vec<Vec2> {
         .collect()
 }
 
-fn assert_matches_brute_force(physical: &PhysicalGeometry, rocks: &[(RockFormation, Transform)]) {
+/// Probes at, just inside, and just beyond body clearance around a rock, where a
+/// spatial index that skips too eagerly would disagree with the exact shape test.
+fn clearance_probes(shape: Obstacle) -> Vec<Vec2> {
+    let (center, half) = match shape {
+        Obstacle::Rectangle { center, half } => (center, half),
+        Obstacle::Circle { center, radius } => (center, Vec2::splat(radius)),
+    };
+    let mut probes = Vec::new();
+    for offset in [-0.01, 0.0, 0.01, 0.99, 1.01] {
+        let reach = half + Vec2::splat(BODY_RADIUS + offset);
+        for side in [Vec2::X, Vec2::NEG_X, Vec2::Y, Vec2::NEG_Y] {
+            probes.push(center + reach * side);
+        }
+    }
+    probes
+}
+
+fn assert_matches_brute_force(
+    can_occupy: impl Fn(Vec2) -> bool,
+    movement_clear: impl Fn(Vec2, Vec2) -> bool,
+    rocks: &[(RockFormation, Transform)],
+) {
     let shapes: Vec<_> = rocks
         .iter()
         .map(|(rock, transform)| rock.obstacle(transform))
         .collect();
-    let points = samples(4000);
+    let mut points = samples(4000);
+    points.extend(shapes.iter().flat_map(|&shape| clearance_probes(shape)));
     let mut blocked_points = 0;
     for point in &points {
         let expected = shapes.iter().all(|shape| shape.admits_body(*point));
         blocked_points += usize::from(!expected);
-        assert_eq!(physical.can_occupy(*point), expected, "point {point}");
+        assert_eq!(can_occupy(*point), expected, "point {point}");
     }
     assert!(blocked_points > 0, "samples must reach rock");
     let mut blocked_segments = 0;
@@ -141,7 +163,7 @@ fn assert_matches_brute_force(physical: &PhysicalGeometry, rocks: &[(RockFormati
         let expected = shapes.iter().all(|shape| shape.segment_clear(start, end));
         blocked_segments += usize::from(!expected);
         assert_eq!(
-            physical.movement_clear(start, end),
+            movement_clear(start, end),
             expected,
             "segment {start} -> {end}"
         );
@@ -155,7 +177,30 @@ fn default_map_answers_match_a_brute_force_scan_of_every_rock() {
     let rocks = spawn_default_rocks(&mut app);
     app.update();
     let physical = app.world_mut().run_system_once(geometry).unwrap();
-    assert_matches_brute_force(&physical, &rocks);
+    assert_matches_brute_force(
+        |point| physical.can_occupy(point),
+        |start, end| physical.movement_clear(start, end),
+        &rocks,
+    );
+}
+
+#[test]
+fn navigation_clearance_on_the_default_map_matches_a_brute_force_scan_of_every_rock() {
+    let mut app = common::minimal_app();
+    let rocks = spawn_default_rocks(&mut app);
+    let grid = app.world().resource::<IntentGrid>();
+    let navigation = Navigation::new(
+        grid,
+        rocks
+            .iter()
+            .map(|(rock, transform)| rock.obstacle(transform))
+            .collect(),
+    );
+    assert_matches_brute_force(
+        |point| navigation.point_clear(point),
+        |start, end| navigation.segment_clear(start, end),
+        &rocks,
+    );
 }
 
 #[test]
