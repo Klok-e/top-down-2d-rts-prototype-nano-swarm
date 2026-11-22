@@ -1,6 +1,11 @@
 mod fixed_phases;
 mod recorder;
 
+#[cfg(feature = "perf-trace")]
+mod trace;
+#[cfg(feature = "perf-trace")]
+pub(crate) use trace::trace_main_world_frames;
+
 use std::time::{Duration, Instant};
 
 use bevy::{
