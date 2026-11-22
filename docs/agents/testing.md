@@ -36,7 +36,13 @@ cargo test --test screenshots -- --ignored smoke     # filter by name
 cargo test --test screenshots -- --list             # list
 ```
 
-Before handoff, run:
+During gameplay iteration, run the affected behavior tests, playtests, and named screenshot cases. Use rendered self-play for acceptance that depends on combat or survival in the player runtime.
+
+Design each automated test or unattended verification scenario to finish within five minutes of wall-clock execution. If one takes longer, shorten its setup or scenario while preserving the behavior it checks. This applies to scripts that drive the socket unattended.
+
+For checks that need longer observation, [drive the game interactively over the socket](agent-control.md#client). Inspect state, counters, or screenshots between steps. The agent decides when it has enough evidence and sends `shutdown`.
+
+Once focused checks and gameplay review pass, run the following handoff checks on the reviewed gameplay revision:
 
 ```bash
 cargo fmt

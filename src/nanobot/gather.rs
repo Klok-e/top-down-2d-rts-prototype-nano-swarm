@@ -1071,16 +1071,16 @@ pub fn worker_gather_extract_system(
         reservation.source_remaining -= actual;
         ledger.extract_for(swarm.0, deposit.kind, actual);
         if let Some(counters) = counters.as_deref_mut() {
-            let painted_deposit = (assignment.painted
+            let painted = assignment.painted
                 || painted_gather_regions(&grid, swarm.0, *deposit_transform, deposit.radius)
                     .next()
-                    .is_some())
-            .then_some(assignment.deposit);
+                    .is_some();
             counters.record(
                 swarm.0,
                 BattleEvent::Gathered {
                     amount: actual,
-                    painted_deposit,
+                    deposit: assignment.deposit,
+                    painted,
                 },
             );
         }

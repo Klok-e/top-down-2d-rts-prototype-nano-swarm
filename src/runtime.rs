@@ -94,6 +94,8 @@ Usage: top-down-2d-rts-prototype-nano-swarm [OPTIONS]\n\
 Options:\n\
     --agent-socket     Enable the Unix agent control socket\n\
     --headless         Render offscreen without creating a desktop window\n\
+    --simulation-only Run AI Battle without graphics or frame pacing\n\
+    --max-ticks <COUNT>  Stop AI Battle after COUNT simulation ticks\n\
     --width <PIXELS>   Set headless width (default: 1280, max: 8192)\n\
     --height <PIXELS>  Set headless height (default: 720, max: 8192)\n\
     --scenario <NAME>  Select standard, sandbox, or ai-battle for this run\n\
@@ -104,12 +106,15 @@ Options:\n\
     --unbounded       Run headless simulation without frame pacing\n\
     -h, --help         Print help\n\
 \n\
-`--unbounded` requires `--headless` and applies to every scenario.\n";
+`--unbounded` requires `--headless` and applies to every scenario.\n\
+`--simulation-only` and `--max-ticks` require `--scenario ai-battle`.\n";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeOptions {
     pub headless: bool,
     pub unbounded: bool,
+    pub simulation_only: bool,
+    pub max_ticks: Option<std::num::NonZeroU64>,
     pub agent_socket: bool,
     pub width: u32,
     pub height: u32,
@@ -125,6 +130,8 @@ impl Default for RuntimeOptions {
         Self {
             headless: false,
             unbounded: false,
+            simulation_only: false,
+            max_ticks: None,
             agent_socket: false,
             width: DEFAULT_HEADLESS_WIDTH,
             height: DEFAULT_HEADLESS_HEIGHT,
@@ -159,6 +166,10 @@ pub enum RuntimeOptionsError {
     UnknownScenario(String),
     #[error("invalid unsigned integer for --seed: {0}")]
     InvalidSeed(String),
+    #[error("invalid positive integer for --max-ticks: {0}")]
+    InvalidMaxTicks(String),
+    #[error("--simulation-only cannot be combined with {flag}")]
+    ConflictingSimulationOption { flag: &'static str },
     #[error("unknown AI Battle layout: {0}; expected standard or flanks")]
     UnknownLayout(String),
     #[error("{flag} is valid only with --scenario ai-battle")]
@@ -218,15 +229,17 @@ impl RuntimeOptions {
         S: AsRef<str>,
     {
         let mut options = Self::default();
-        let mut ai_battle_option = None;
+        let mut layout_requested = false;
+        let mut dimensions_requested = false;
         let mut args = args.into_iter();
         while let Some(argument) = args.next() {
             match argument.as_ref() {
                 "--headless" => options.headless = true,
+                "--simulation-only" => options.simulation_only = true,
                 "--unbounded" => options.unbounded = true,
                 "--agent-socket" => options.agent_socket = true,
                 flag @ ("--scenario" | "--output-root" | "--seed" | "--layout"
-                | "--tuning-file") => {
+                | "--tuning-file" | "--max-ticks") => {
                     let value = args
                         .next()
                         .ok_or_else(|| RuntimeOptionsError::MissingValue(flag.to_string()))?;
@@ -251,8 +264,13 @@ impl RuntimeOptions {
                                 .parse()
                                 .map_err(|_| RuntimeOptionsError::InvalidSeed(value.to_string()))?
                         }
+                        "--max-ticks" => {
+                            options.max_ticks = Some(value.parse().map_err(|_| {
+                                RuntimeOptionsError::InvalidMaxTicks(value.to_string())
+                            })?);
+                        }
                         "--layout" => {
-                            ai_battle_option.get_or_insert_with(|| "--layout".to_string());
+                            layout_requested = true;
                             options.ai_battle.layout = value
                                 .parse::<AiBattleLayout>()
                                 .map_err(|_| RuntimeOptionsError::UnknownLayout(value.into()))?;
@@ -261,6 +279,7 @@ impl RuntimeOptions {
                     }
                 }
                 flag @ ("--width" | "--height") => {
+                    dimensions_requested = true;
                     let value = args
                         .next()
                         .ok_or_else(|| RuntimeOptionsError::MissingValue(flag.to_string()))?;
@@ -284,15 +303,42 @@ impl RuntimeOptions {
                 }
             }
         }
-        if let Some(flag) = ai_battle_option
-            && options.scenario != Some(Scenario::AiBattle)
-        {
-            return Err(RuntimeOptionsError::OptionRequiresAiBattle { flag });
+        if layout_requested && options.scenario != Some(Scenario::AiBattle) {
+            return Err(RuntimeOptionsError::OptionRequiresAiBattle {
+                flag: "--layout".to_string(),
+            });
         }
-        options.validate()
+        options.validate(dimensions_requested)
     }
 
-    fn validate(self) -> Result<Self, RuntimeOptionsError> {
+    fn validate(self, dimensions_requested: bool) -> Result<Self, RuntimeOptionsError> {
+        for (flag, present) in [
+            ("--simulation-only", self.simulation_only),
+            ("--max-ticks", self.max_ticks.is_some()),
+        ] {
+            if present && self.scenario != Some(Scenario::AiBattle) {
+                return Err(RuntimeOptionsError::OptionRequiresAiBattle {
+                    flag: flag.to_string(),
+                });
+            }
+        }
+        if self.simulation_only {
+            for (flag, present) in [
+                ("--headless", self.headless),
+                ("--agent-socket", self.agent_socket),
+                ("--unbounded", self.unbounded),
+                (
+                    "--width or --height",
+                    dimensions_requested
+                        || self.width != DEFAULT_HEADLESS_WIDTH
+                        || self.height != DEFAULT_HEADLESS_HEIGHT,
+                ),
+            ] {
+                if present {
+                    return Err(RuntimeOptionsError::ConflictingSimulationOption { flag });
+                }
+            }
+        }
         if self.unbounded && !self.headless {
             return Err(RuntimeOptionsError::OptionRequiresHeadless {
                 flag: "--unbounded".to_string(),
@@ -323,41 +369,43 @@ impl RuntimeOptions {
 }
 
 pub fn build_runtime_app(options: RuntimeOptions) -> Result<App, RuntimeBuildError> {
-    let options = options.validate()?;
+    let options = options.validate(false)?;
     let mut selection = ScenarioSelection::from_environment();
     if let Some(scenario) = options.scenario {
         selection.current = scenario;
     }
-    let mut app = if options.headless {
-        let mut app = build_app_with_tuning(
-            Presentation::Offscreen {
-                width: options.width,
-                height: options.height,
-            },
-            &options.tuning_file,
-        )
+    let presentation = if options.simulation_only {
+        Presentation::SimulationOnly
+    } else if options.headless {
+        Presentation::Offscreen {
+            width: options.width,
+            height: options.height,
+        }
+    } else {
+        Presentation::Windowed
+    };
+    let headless = options.simulation_only || options.headless;
+    let unbounded = options.simulation_only || options.unbounded;
+    let mut app = build_app_with_tuning(presentation, &options.tuning_file)
         .map_err(RuntimeBuildError::Tuning)?;
+    if headless {
         app.add_plugins((
             LogPlugin::default(),
             HeadlessRunnerPlugin,
             TerminalCtrlCHandlerPlugin,
         ));
-        app
-    } else {
-        build_app_with_tuning(Presentation::Windowed, &options.tuning_file)
-            .map_err(RuntimeBuildError::Tuning)?
-    };
+    }
     app.insert_resource(selection);
-    app.insert_resource(HeadlessPacing {
-        unbounded: options.unbounded,
-    });
+    app.insert_resource(HeadlessPacing { unbounded });
     app.insert_resource(crate::session::SimulationSeed(options.seed));
     app.insert_resource(options.ai_battle.clone());
     app.insert_resource(BattleStatisticsConfig {
         output_root: options.output_root,
         seed: options.seed,
-        headless: options.headless,
-        unbounded: options.unbounded,
+        headless,
+        unbounded,
+        simulation_only: options.simulation_only,
+        max_ticks: options.max_ticks,
     });
     #[cfg(unix)]
     if options.agent_socket {

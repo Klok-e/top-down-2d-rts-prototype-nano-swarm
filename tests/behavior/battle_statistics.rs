@@ -226,7 +226,8 @@ fn samples_preserve_gross_events_and_stop_counters_after_draw() {
             BattleEvent::Death,
             BattleEvent::Gathered {
                 amount: 30,
-                painted_deposit: None,
+                deposit: Entity::PLACEHOLDER,
+                painted: false,
             },
             BattleEvent::Consumed(30),
             BattleEvent::StructureBuilt,
@@ -247,7 +248,7 @@ fn samples_preserve_gross_events_and_stop_counters_after_draw() {
     }
     assert_eq!(summary["latest"]["swarms"]["0"]["minerals_gathered"], 30);
     assert_eq!(summary["latest"]["swarms"]["0"]["minerals_consumed"], 30);
-    assert_eq!(summary["schema_version"], 7);
+    assert_eq!(summary["schema_version"], 8);
     assert_eq!(
         summary["latest"]["swarms"]["0"]["effective_damage_total"],
         0
@@ -329,7 +330,7 @@ fn effective_damage_is_cumulative_in_json_and_csv_and_freezes_at_match_end() {
     app.update();
 
     let terminal = output.summary();
-    assert_eq!(terminal["schema_version"], 7);
+    assert_eq!(terminal["schema_version"], 8);
     let swarm = &terminal["latest"]["swarms"]["0"];
     assert_eq!(swarm["effective_damage_total"], 22);
     assert_eq!(swarm["effective_damage_nanobots"], 17);
@@ -640,6 +641,13 @@ fn battle_samples_distinguish_painted_deposits_that_yield_minerals() {
     assert_eq!(
         output.summary()["latest"]["swarms"]["0"]["minerals_gathered"],
         income
+    );
+    assert_eq!(
+        output.summary()["latest"]["swarms"]["0"]["deposit_extraction"],
+        serde_json::json!([
+            {"cell": [0, 0], "owner": null, "minerals_extracted": income},
+            {"cell": [3, 0], "owner": null, "minerals_extracted": 0},
+        ])
     );
 }
 

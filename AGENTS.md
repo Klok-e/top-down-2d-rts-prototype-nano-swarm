@@ -12,6 +12,10 @@ Constraints not explicitly confirmed by the user may be relaxed to simplify code
 
 Use the repository-root `.tmp/` directory for agent scratch files and temporary verification artifacts. Create it when needed, use a unique subdirectory per run, and remove only your run's artifacts.
 
+## Git worktrees
+
+When creating a worktree for Cargo builds on Btrfs, seed its private build cache before the first build. From the main checkout, with its `target/` idle and `$worktree` set to the new worktree's absolute path, run `cp -a --reflink=always -T -- target "$worktree/target"` while the destination is absent. Set `CARGO_TARGET_DIR="$worktree/target"` for Cargo commands in that worktree. If the source cache is unavailable, let Cargo create the directory. If the copy fails, remove any partial `$worktree/target` created by that attempt before building.
+
 ## Testing
 
 For coding-agent implementation work, follow `docs/agents/testing.md`.

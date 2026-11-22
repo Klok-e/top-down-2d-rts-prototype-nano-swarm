@@ -5,9 +5,9 @@ use crate::{
     nanobot::{
         Cargo, Charge, Charger, Health, MatchOutcome, Nanobot, NanobotType, OwnerSwarm,
         PlannedStructure, ProductionFacility, Structure, Swarm, SwarmEliminationSet,
-        SwarmEliminationState, SwarmId, SwarmMember,
+        SwarmEliminationState, SwarmId, SwarmMember, world_to_cell,
     },
-    resources::{ResourceKind, Stockpile, buffered_minerals},
+    resources::{ResourceDeposit, ResourceKind, Stockpile, buffered_minerals},
     session::SessionRules,
     strategic_runtime::{ControllerProfile, ControllerTelemetry},
     tuning::{Tuning, TuningEdit, TuningJournal},
@@ -28,6 +28,8 @@ pub struct BattleStatisticsConfig {
     pub seed: u64,
     pub headless: bool,
     pub unbounded: bool,
+    pub simulation_only: bool,
+    pub max_ticks: Option<std::num::NonZeroU64>,
 }
 
 impl Default for BattleStatisticsConfig {
@@ -37,6 +39,8 @@ impl Default for BattleStatisticsConfig {
             seed: 0,
             headless: false,
             unbounded: false,
+            simulation_only: false,
+            max_ticks: None,
         }
     }
 }
@@ -59,7 +63,8 @@ pub enum BattleEvent {
     Death,
     Gathered {
         amount: u32,
-        painted_deposit: Option<Entity>,
+        deposit: Entity,
+        painted: bool,
     },
     MineralStarvedFacilityTick,
     Consumed(u32),
@@ -78,6 +83,7 @@ struct EconomyWindow {
 #[derive(Resource, Debug, Default)]
 pub struct BattleCounters {
     totals: BTreeMap<u32, BattleTotals>,
+    minerals_by_deposit: BTreeMap<(SwarmId, Entity), u64>,
     economy_windows: BTreeMap<u32, EconomyWindow>,
     frozen: bool,
 }
@@ -93,17 +99,22 @@ impl BattleCounters {
             BattleEvent::Death => total.deaths += 1,
             BattleEvent::Gathered {
                 amount,
-                painted_deposit,
+                deposit,
+                painted,
             } => {
                 total.minerals_gathered += u64::from(amount);
-                if let Some(deposit) = painted_deposit
-                    && amount > 0
-                {
-                    self.economy_windows
-                        .entry(swarm.0)
-                        .or_default()
-                        .extracted_deposits
-                        .insert(deposit);
+                if amount > 0 {
+                    *self
+                        .minerals_by_deposit
+                        .entry((swarm, deposit))
+                        .or_default() += u64::from(amount);
+                    if painted {
+                        self.economy_windows
+                            .entry(swarm.0)
+                            .or_default()
+                            .extracted_deposits
+                            .insert(deposit);
+                    }
                 }
             }
             BattleEvent::MineralStarvedFacilityTick => {
@@ -204,8 +215,17 @@ pub struct SwarmSample {
     pub unspent_minerals: u32,
     pub empty_charge_defenders: u64,
     pub elimination_seconds: Option<f64>,
+    #[serde(default)]
+    pub deposit_extraction: Vec<DepositExtraction>,
     #[serde(flatten)]
     pub totals: BattleTotals,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DepositExtraction {
+    pub cell: [i32; 2],
+    pub owner: Option<u32>,
+    pub minerals_extracted: u64,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -226,6 +246,15 @@ pub enum RunStatus {
     Interrupted,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BattleTerminationReason {
+    SwarmElimination,
+    TickLimit,
+    SessionReplaced,
+    ProcessExit,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BattleSummary {
     pub schema_version: u32,
@@ -234,6 +263,10 @@ pub struct BattleSummary {
     pub timestep_seconds: f64,
     pub headless: bool,
     pub unbounded: bool,
+    #[serde(default)]
+    pub simulation_only: bool,
+    #[serde(default)]
+    pub max_ticks: Option<std::num::NonZeroU64>,
     pub code_revision: String,
     pub dirty_worktree: bool,
     pub ai_battle: AiBattleConfig,
@@ -241,6 +274,8 @@ pub struct BattleSummary {
     pub tuning_edits: Vec<TuningEdit>,
     pub status: RunStatus,
     pub outcome: Option<String>,
+    #[serde(default)]
+    pub termination_reason: Option<BattleTerminationReason>,
     pub samples: u64,
     pub latest: BattleSample,
 }
@@ -318,6 +353,7 @@ pub(crate) fn finish_session(world: &mut World) -> bool {
     };
     if run.summary.status == RunStatus::InProgress {
         run.summary.status = RunStatus::Interrupted;
+        run.summary.termination_reason = Some(BattleTerminationReason::SessionReplaced);
         if let Some(mut counters) = world.get_resource_mut::<BattleCounters>() {
             counters.frozen = true;
         } else {
@@ -373,15 +409,17 @@ fn create_run(
     let mut csv = BufWriter::new(file);
     writeln!(
         csv,
-        "simulation_seconds,fixed_tick,swarm,population,workers,haulers,defenders,births,deaths,minerals_gathered,minerals_consumed,structures_built,structures_lost,effective_damage_total,effective_damage_nanobots,effective_damage_structures,elimination_seconds,tick_count,tick_mean_ms,tick_p50_ms,tick_p95_ms,tick_p99_ms,tick_max_ms,frame_count,frame_mean_ms,frame_p95_ms,frame_max_ms,controller_reviews,controller_intent_edits,controller_work_units,owned_deposits,mineral_income,mineral_starved_facility_seconds,unspent_minerals,empty_charge_defenders,controller_last_explanation"
+        "simulation_seconds,fixed_tick,swarm,population,workers,haulers,defenders,births,deaths,minerals_gathered,minerals_consumed,structures_built,structures_lost,effective_damage_total,effective_damage_nanobots,effective_damage_structures,elimination_seconds,tick_count,tick_mean_ms,tick_p50_ms,tick_p95_ms,tick_p99_ms,tick_max_ms,frame_count,frame_mean_ms,frame_p95_ms,frame_max_ms,controller_reviews,controller_intent_edits,controller_work_units,owned_deposits,mineral_income,mineral_starved_facility_seconds,unspent_minerals,empty_charge_defenders,controller_last_explanation,deposit_extraction"
     )?;
     let summary = BattleSummary {
-        schema_version: 7,
+        schema_version: 8,
         scenario: scenario_name.into(),
         seed: config.seed,
         timestep_seconds,
         headless: config.headless,
         unbounded: config.unbounded,
+        simulation_only: config.simulation_only,
+        max_ticks: config.max_ticks,
         code_revision: env!("NANO_SWARM_CODE_REVISION").into(),
         dirty_worktree: env!("NANO_SWARM_DIRTY_WORKTREE") == "true",
         ai_battle,
@@ -389,6 +427,7 @@ fn create_run(
         tuning_edits: Vec::new(),
         status: RunStatus::InProgress,
         outcome: None,
+        termination_reason: None,
         samples: 0,
         latest: BattleSample::default(),
     };
@@ -449,9 +488,10 @@ impl BattleRun {
                 .map_or(String::new(), |n| n.to_string());
             let controller = sample.controllers.get(swarm).cloned().unwrap_or_default();
             let explanation = csv_field(&controller.last_explanation);
+            let deposit_extraction = csv_field(&serde_json::to_string(&s.deposit_extraction)?);
             writeln!(
                 self.csv,
-                "{},{},{swarm},{},{},{},{},{},{},{},{},{},{},{},{},{},{elimination},{},{},{},{},{},{},{frame_count},{frame_mean},{frame_p95},{frame_max},{},{},{},{},{},{},{},{},{explanation}",
+                "{},{},{swarm},{},{},{},{},{},{},{},{},{},{},{},{},{},{elimination},{},{},{},{},{},{},{frame_count},{frame_mean},{frame_p95},{frame_max},{},{},{},{},{},{},{},{},{explanation},{deposit_extraction}",
                 sample.simulation_seconds,
                 sample.fixed_tick,
                 s.population,
@@ -576,9 +616,31 @@ fn snapshot(world: &mut World, run: &mut BattleRun) -> BattleSample {
     let simulation_seconds = run.ticks as f64 * run.summary.timestep_seconds;
     let economy_windows =
         std::mem::take(&mut world.resource_mut::<BattleCounters>().economy_windows);
+    let mut deposits: Vec<_> = world
+        .query_filtered::<(Entity, &Transform, Option<&OwnerSwarm>), With<ResourceDeposit>>()
+        .iter(world)
+        .map(|(deposit, transform, owner)| {
+            let cell = world_to_cell(transform.translation.truncate()).to_array();
+            let owner = owner.and_then(|owner| owners.get(world, owner.0).ok());
+            (cell, owner.map(|id| id.0), deposit)
+        })
+        .collect();
+    deposits.sort_unstable();
     let counters = world.resource::<BattleCounters>();
     for (id, swarm) in &mut swarms {
         swarm.totals = counters.totals_for(SwarmId(*id));
+        swarm.deposit_extraction = deposits
+            .iter()
+            .map(|&(cell, owner, deposit)| DepositExtraction {
+                cell,
+                owner,
+                minerals_extracted: counters
+                    .minerals_by_deposit
+                    .get(&(SwarmId(*id), deposit))
+                    .copied()
+                    .unwrap_or_default(),
+            })
+            .collect();
         let previously_gathered = run
             .summary
             .latest
@@ -639,12 +701,22 @@ fn collect_tick(world: &mut World) {
         MatchOutcome::InProgress => None,
         terminal => Some(world.resource::<SessionRules>().outcome_name(terminal)),
     };
-    if let Some(ref outcome) = outcome {
+    if let Some(outcome) = outcome {
         run.summary.status = RunStatus::Completed;
-        run.summary.outcome = Some(outcome.clone());
-        world.resource_mut::<BattleCounters>().frozen = true;
+        run.summary.outcome = Some(outcome);
+        run.summary.termination_reason = Some(BattleTerminationReason::SwarmElimination);
+    } else if run
+        .summary
+        .max_ticks
+        .is_some_and(|limit| run.ticks >= limit.get())
+    {
+        run.summary.status = RunStatus::Interrupted;
+        run.summary.termination_reason = Some(BattleTerminationReason::TickLimit);
     }
     let terminal = run.summary.status != RunStatus::InProgress;
+    if terminal {
+        world.resource_mut::<BattleCounters>().frozen = true;
+    }
     if terminal || run.ticks as f64 * run.summary.timestep_seconds >= run.next_sample_seconds {
         let sample = snapshot(world, &mut run);
         if let Err(error) = run.write_sample(sample) {
@@ -654,8 +726,13 @@ fn collect_tick(world: &mut World) {
         }
         run.next_sample_seconds += 1.;
     }
-    if terminal && run.error.is_none() && run.summary.headless {
-        world.write_message(AppExit::Success);
+    if terminal && (run.summary.headless || run.summary.max_ticks.is_some()) {
+        let mut clock = world.resource_mut::<Time<Fixed>>();
+        let overstep = clock.overstep();
+        clock.discard_overstep(overstep);
+        if run.error.is_none() {
+            world.write_message(AppExit::Success);
+        }
     }
     world.insert_resource(run);
 }
@@ -667,6 +744,7 @@ fn finish_on_exit(world: &mut World) {
     let mut run = world.remove_resource::<BattleRun>().unwrap();
     if run.summary.status == RunStatus::InProgress && run.error.is_none() {
         run.summary.status = RunStatus::Interrupted;
+        run.summary.termination_reason = Some(BattleTerminationReason::ProcessExit);
         world.resource_mut::<BattleCounters>().frozen = true;
         let sample = snapshot(world, &mut run);
         if let Err(error) = run.write_sample(sample) {

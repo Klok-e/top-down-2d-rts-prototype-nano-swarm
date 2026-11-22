@@ -22,7 +22,15 @@ Choose one of the two balanced layouts with `--layout standard` or `--layout fla
 cargo run --release -- --headless --scenario ai-battle --layout flanks --seed 11 --output-root target/battle-runs
 ```
 
-`--layout` requires `--scenario ai-battle`; `--unbounded` requires `--headless`. A battle ends when Swarm Elimination resolves it. There is no automatic time cutoff; Ctrl+C records an interrupted result without inventing an outcome.
+`--layout` and `--max-ticks` require `--scenario ai-battle`. The `--unbounded` option requires `--headless`. A battle ends when Swarm Elimination resolves it. Use `--max-ticks N` to stop after N fixed ticks. The recorder distinguishes a tick limit from elimination and from a process interruption.
+
+For fast gameplay diagnostics, run AI Battle without graphics or frame pacing. For example, this runs Standard for up to 7,200 fixed ticks (120 simulated seconds):
+
+```bash
+cargo run --release -- --simulation-only --scenario ai-battle --layout standard --seed 11 --max-ticks 7200
+```
+
+For verification, apply the [test duration and interactive socket guidance](agents/testing.md#commands). Use rendered self-play to verify outcomes in the player runtime. Runs with the same seed can follow different trajectories across modes.
 
 ## Recorded results
 
@@ -33,11 +41,12 @@ The economy columns are recorded separately for each swarm. Window totals cover 
 | Column | Measurement |
 | --- | --- |
 | `owned_deposits` | Distinct Resource Deposits that yielded minerals to the swarm while covered by its Gather paint during the window. |
+| `deposit_extraction` | JSON array of minerals actually extracted by the swarm from each deposit since battle start, including zeroes. Each entry contains the grid `cell`, deposit `owner` (`null` for neutral deposits), and `minerals_extracted`. |
 | `mineral_income` | Minerals the swarm extracted during the window. |
 | `mineral_starved_facility_seconds` | Simulated seconds summed across operational Production Facilities that had unmet Population Demand and too few minerals in their input buffer to start production. Two such facilities idle for one second contribute two facility-seconds. |
 | `unspent_minerals` | Minerals held by the swarm at sample time in surviving Stockpiles, Production Facilities, Chargers, and Nanobot cargo. |
 | `empty_charge_defenders` | Defenders at zero Charge at sample time. |
 
-`summary.json` uses schema version 7. `tuning` contains the full native-unit configuration at battle start. `tuning_edits` records accepted changes with `revision`, `key`, `old_value`, `value`, and `fixed_tick`. Edit values use the editor's display units; ticks are relative to the current battle's start. Earlier-session edits are excluded, and a fresh battle snapshots the current configuration. Unchanged assignments and rejected edits add no revision.
+`summary.json` uses schema version 8. `tuning` contains the full native-unit configuration at battle start. `tuning_edits` records accepted changes with `revision`, `key`, `old_value`, `value`, and `fixed_tick`. Edit values use the editor's display units; ticks are relative to the current battle's start. Earlier-session edits are excluded, and a fresh battle snapshots the current configuration. Unchanged assignments and rejected edits add no revision.
 
 Compare the initial configuration and edit history as well as the seed when comparing runs. The seed improves repeatability but does not guarantee identical outcomes. Inspect economy, sustained attacks, recovery, and finishing behavior when evaluating a run.

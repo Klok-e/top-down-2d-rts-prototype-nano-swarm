@@ -55,7 +55,14 @@ impl Plugin for SessionLifecyclePlugin {
 fn start_initial_session(world: &mut World) {
     let scenario = world.resource::<ScenarioSelection>().current;
     if let Err(error) = populate_session(world, scenario) {
+        error!("Cannot start scenario: {error}");
         world.resource_mut::<ScenarioSelection>().error = Some(error.to_string());
+        if world
+            .get_resource::<crate::battle_statistics::BattleStatisticsConfig>()
+            .is_some_and(|config| config.headless || config.max_ticks.is_some())
+        {
+            world.write_message(AppExit::error());
+        }
     }
 }
 
@@ -131,7 +138,7 @@ fn populate_session(
     world.insert_resource(crate::strategic_runtime::ControllerTelemetry::default());
     let mut state = SystemState::<(
         Commands,
-        Res<AssetServer>,
+        Option<Res<AssetServer>>,
         ResMut<IntentGrid>,
         ResMut<OpponentSwarmIdAlloc>,
         Res<crate::tuning::Tuning>,
@@ -140,7 +147,7 @@ fn populate_session(
     let reachability = crate::scenario::spawn_selected_scenario(
         scenario,
         &mut commands,
-        &assets,
+        assets.as_deref(),
         &mut grid,
         ids,
         ai_battle.layout,
