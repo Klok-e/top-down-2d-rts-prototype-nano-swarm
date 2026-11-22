@@ -68,8 +68,35 @@ fn unindex_rock(mut world: DeferredWorld, context: HookContext) {
 #[derive(Default, Clone)]
 pub(crate) struct RockIndex {
     rocks: BTreeMap<Entity, Obstacle>,
-    buckets: HashMap<IVec2, Vec<(Entity, Obstacle)>>,
-    global: Vec<(Entity, Obstacle)>,
+    buckets: HashMap<IVec2, Vec<IndexedRock>>,
+    global: Vec<IndexedRock>,
+}
+
+/// A rock with the box beyond which it cannot constrain a body.
+#[derive(Clone, Copy)]
+struct IndexedRock {
+    entity: Entity,
+    shape: Obstacle,
+    min: Vec2,
+    max: Vec2,
+}
+
+impl IndexedRock {
+    fn new(entity: Entity, shape: Obstacle) -> Self {
+        let (min, max) = RockIndex::bounds(shape);
+        Self {
+            entity,
+            shape,
+            min,
+            max,
+        }
+    }
+
+    /// A query box wholly outside the reach box cannot touch this rock, so its answer
+    /// needs no exact test. Non-finite boxes are never treated as separated.
+    fn separated_from(&self, low: Vec2, high: Vec2) -> bool {
+        low.cmpgt(self.max).any() || high.cmplt(self.min).any()
+    }
 }
 
 impl RockIndex {
@@ -101,18 +128,15 @@ impl RockIndex {
     fn insert(&mut self, entity: Entity, shape: Obstacle) {
         self.remove(entity);
         self.rocks.insert(entity, shape);
-        let (low, high) = Self::bounds(shape);
-        let (min, max) = Self::span(low, high);
+        let rock = IndexedRock::new(entity, shape);
+        let (min, max) = Self::span(rock.min, rock.max);
         if !Self::small(min, max) {
-            self.global.push((entity, shape));
+            self.global.push(rock);
             return;
         }
         for y in min.y..=max.y {
             for x in min.x..=max.x {
-                self.buckets
-                    .entry(IVec2::new(x, y))
-                    .or_default()
-                    .push((entity, shape));
+                self.buckets.entry(IVec2::new(x, y)).or_default().push(rock);
             }
         }
     }
@@ -124,14 +148,14 @@ impl RockIndex {
         let (low, high) = Self::bounds(shape);
         let (min, max) = Self::span(low, high);
         if !Self::small(min, max) {
-            self.global.retain(|(id, _)| *id != entity);
+            self.global.retain(|rock| rock.entity != entity);
             return;
         }
         for y in min.y..=max.y {
             for x in min.x..=max.x {
                 let key = IVec2::new(x, y);
                 if let Some(bucket) = self.buckets.get_mut(&key) {
-                    bucket.retain(|(id, _)| *id != entity);
+                    bucket.retain(|rock| rock.entity != entity);
                     if bucket.is_empty() {
                         self.buckets.remove(&key);
                     }
@@ -147,16 +171,21 @@ impl RockIndex {
 
     /// Whether every rock that could constrain the query box satisfies `accepts`.
     fn all_near(&self, a: Vec2, b: Vec2, accepts: impl Fn(Obstacle) -> bool) -> bool {
-        let (min, max) = Self::span(a.min(b), a.max(b));
+        if self.rocks.is_empty() {
+            return true;
+        }
+        let (low, high) = (a.min(b), a.max(b));
+        let (min, max) = Self::span(low, high);
         if !Self::small(min, max) {
             return self.rocks.values().all(|shape| accepts(*shape));
         }
-        self.global.iter().all(|(_, shape)| accepts(*shape))
+        let near = |rock: &IndexedRock| rock.separated_from(low, high) || accepts(rock.shape);
+        self.global.iter().all(near)
             && (min.y..=max.y).all(|y| {
                 (min.x..=max.x).all(|x| {
                     self.buckets
                         .get(&IVec2::new(x, y))
-                        .is_none_or(|bucket| bucket.iter().all(|(_, shape)| accepts(*shape)))
+                        .is_none_or(|bucket| bucket.iter().all(near))
                 })
             })
     }
@@ -167,5 +196,86 @@ impl RockIndex {
 
     pub(crate) fn segment_clear(&self, start: Vec2, end: Vec2) -> bool {
         self.all_near(start, end, |shape| shape.segment_clear(start, end))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn index(shapes: &[Obstacle]) -> RockIndex {
+        let mut world = World::new();
+        let mut index = RockIndex::default();
+        for &shape in shapes {
+            index.insert(world.spawn_empty().id(), shape);
+        }
+        index
+    }
+
+    /// Probes at, just inside, and just beyond body clearance from each rock's surface.
+    fn clearance_probes(shape: Obstacle) -> Vec<Vec2> {
+        let offsets = [-1.0, -0.01, 0.0, 0.01, 0.5, 1.0, 1.01, 2.0];
+        let directions =
+            (0..16).map(|step| Vec2::from_angle(step as f32 * std::f32::consts::TAU / 16.0));
+        let mut probes = Vec::new();
+        for direction in directions {
+            for offset in offsets {
+                let reach = BODY_RADIUS + offset;
+                probes.push(match shape {
+                    Obstacle::Circle { center, radius } => center + direction * (radius + reach),
+                    Obstacle::Rectangle { center, half } => {
+                        // Edge midpoints for axis directions, corners otherwise.
+                        let corner = center + half * direction.signum();
+                        if direction.x.abs() < 1e-3 || direction.y.abs() < 1e-3 {
+                            center + (half + Vec2::splat(reach)) * direction.round()
+                        } else {
+                            corner + direction * reach
+                        }
+                    }
+                });
+            }
+        }
+        probes
+    }
+
+    #[test]
+    fn answers_at_the_edge_of_body_clearance_match_every_rock() {
+        let shapes = [
+            Obstacle::Rectangle {
+                center: Vec2::new(300.0, 40.0),
+                half: Vec2::new(100.0, 60.0),
+            },
+            Obstacle::Circle {
+                center: Vec2::new(-500.0, -200.0),
+                radius: 80.0,
+            },
+        ];
+        let rocks = index(&shapes);
+        let mut blocked = 0;
+        for &shape in &shapes {
+            for probe in clearance_probes(shape) {
+                let expected = shapes.iter().all(|rock| rock.admits_body(probe));
+                blocked += usize::from(!expected);
+                assert_eq!(rocks.admits_body(probe), expected, "point {probe}");
+                for delta in [Vec2::X, Vec2::Y, Vec2::ONE].map(|step| step * 150.0) {
+                    for (start, end) in [(probe - delta, probe + delta), (probe, probe + delta)] {
+                        let expected = shapes.iter().all(|rock| rock.segment_clear(start, end));
+                        assert_eq!(
+                            rocks.segment_clear(start, end),
+                            expected,
+                            "segment {start} -> {end}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(blocked > 0, "probes must reach inside body clearance");
+    }
+
+    #[test]
+    fn an_empty_index_admits_everything() {
+        let rocks = RockIndex::default();
+        assert!(rocks.admits_body(Vec2::ZERO));
+        assert!(rocks.segment_clear(Vec2::splat(-1.0e5), Vec2::splat(1.0e5)));
     }
 }
