@@ -1,4 +1,10 @@
-use bevy::{ecs::system::SystemParam, prelude::*};
+use bevy::{
+    ecs::{
+        entity::{EntityHashMap, EntityHashSet},
+        system::SystemParam,
+    },
+    prelude::*,
+};
 
 use super::{
     CombatIdentity, DefenderEngagements, DirectMovementComponent, Nanobot, SwarmId, SwarmMember,
@@ -323,7 +329,7 @@ fn continuous_velocity(
 
 #[derive(SystemParam)]
 pub struct TrafficContext<'w, 's> {
-    motion: Local<'s, std::collections::HashMap<Entity, LocalMotion>>,
+    motion: Local<'s, EntityHashMap<LocalMotion>>,
     previous_generation: Local<'s, Option<u64>>,
     generation: Option<Res<'w, crate::session_lifecycle::SessionGeneration>>,
     time: Res<'w, Time<Fixed>>,
@@ -354,8 +360,8 @@ pub fn velocity_system(
             Option<&CombatIdentity>,
         )>,
     )>,
-    mut yielding: Local<std::collections::HashMap<Entity, Yielding>>,
-    mut progress: Local<std::collections::HashMap<Entity, TravelProgress>>,
+    mut yielding: Local<EntityHashMap<Yielding>>,
+    mut progress: Local<EntityHashMap<TravelProgress>>,
     traffic: TrafficContext,
     tuning: Res<Tuning>,
     navigation: Res<crate::navigation::Navigation>,
@@ -416,7 +422,7 @@ pub fn velocity_system(
         })
         .collect();
     bodies.sort_by_key(|(body, _)| (body.key, body.entity.to_bits()));
-    let indices: std::collections::HashMap<_, _> = bodies
+    let indices: EntityHashMap<_> = bodies
         .iter()
         .enumerate()
         .map(|(i, (body, _))| (body.entity, i))
@@ -431,10 +437,15 @@ pub fn velocity_system(
     let now = time.elapsed_secs_f64();
     progress.retain(|entity, _| indices.contains_key(entity));
     motion.retain(|entity, _| indices.contains_key(entity));
-    let friendly = |a: Entity, b: Entity| {
-        members.get(a).map_or(SwarmId::PLAYER, |member| member.0)
-            == members.get(b).map_or(SwarmId::PLAYER, |member| member.0)
-    };
+    let swarms: Vec<_> = bodies
+        .iter()
+        .map(|(body, _)| {
+            members
+                .get(body.entity)
+                .map_or(SwarmId::PLAYER, |member| member.0)
+        })
+        .collect();
+    let friendly = |i: usize, j: usize| swarms[i] == swarms[j];
     let mut demanded_regions = Vec::new();
     for (entity, approach) in &approaches {
         let owner = members
@@ -444,7 +455,7 @@ pub fn velocity_system(
             demanded_regions.push((owner, approach.region));
         }
     }
-    let pinned: std::collections::HashSet<_> = bodies
+    let pinned: EntityHashSet = bodies
         .iter()
         .filter_map(|(body, _)| {
             (!is_engaged(body.entity)
@@ -485,7 +496,7 @@ pub fn velocity_system(
                 .neighbourhood(lookup.bucket_for_position(body.start), 1)
                 .flat_map(|(_, entries)| entries.iter().map(|&(j, _)| j))
                 .filter(|j| *j != i)
-                .filter(|j| friendly(body.entity, bodies[*j].0.entity))
+                .filter(|j| friendly(i, *j))
                 .find(|j| {
                     let (other, wanted) = bodies[*j];
                     move_order(other.entity).is_some()
@@ -661,7 +672,7 @@ pub fn velocity_system(
             }));
         }
         let prepare_sweep = |bodies: &[(TrafficBody, Vec2)],
-                             progress: &std::collections::HashMap<Entity, TravelProgress>,
+                             progress: &EntityHashMap<TravelProgress>,
                              recovering: bool,
                              constraints: &mut Vec<SweepConstraint>| {
             constraints.clear();
@@ -675,7 +686,7 @@ pub fn velocity_system(
                     || progress
                         .get(&other.entity)
                         .is_some_and(|state| state.recovering))
-                    && friendly(body.entity, other.entity)
+                    && friendly(i, j)
                     && !holds_engagement(body.entity)
                     && !holds_engagement(other.entity);
                 // Invalid initial overlaps may separate, but cannot deepen.
@@ -736,7 +747,7 @@ pub fn velocity_system(
                 .is_ok_and(|remaining| remaining.0 > 0.01)
                 && nearby.iter().any(|j| {
                     let (other, wanted) = bodies[*j];
-                    if !friendly(body.entity, other.entity) {
+                    if !friendly(i, *j) {
                         return false;
                     }
                     if swept_separation(body.start, recovery_intent, other) < diameter {
