@@ -1,4 +1,10 @@
+mod fixed_phases;
 mod recorder;
+
+#[cfg(feature = "perf-trace")]
+mod trace;
+#[cfg(feature = "perf-trace")]
+pub(crate) use trace::trace_main_world_frames;
 
 use std::time::{Duration, Instant};
 
@@ -17,6 +23,7 @@ use crate::{
     session_lifecycle::SessionGeneration,
 };
 
+pub use fixed_phases::FixedPhaseTimes;
 pub(crate) use recorder::HitchEpisodeSummary;
 pub use recorder::{FrameRecord, FrameRecorder, HitchDetection, HitchEpisode, ScheduleTimes};
 
@@ -89,6 +96,7 @@ impl Plugin for HitchRecorderPlugin {
             .init_resource::<FrameMeasurements>()
             .init_resource::<RecordedHitches>()
             .add_systems(StartRecordingFrame, start_recording_frame);
+        fixed_phases::install(app);
         app.world_mut()
             .resource_mut::<MainScheduleOrder>()
             .insert_before(First, StartRecordingFrame);
@@ -143,6 +151,7 @@ fn start_recording_frame(
     generation: Option<Res<SessionGeneration>>,
     pacing: Option<Res<HeadlessPacing>>,
     mut measurements: ResMut<FrameMeasurements>,
+    mut fixed_phases: ResMut<fixed_phases::FixedMeasurements>,
     mut hitches: ResMut<RecordedHitches>,
     nanobots: Query<(), With<Nanobot>>,
     structures: Query<(), With<Structure>>,
@@ -155,6 +164,7 @@ fn start_recording_frame(
     if let Some(start) = measurements.frame_start.replace(now) {
         let frame_ns = elapsed_ns(start, now);
         let schedule_ns = std::mem::take(&mut measurements.schedules);
+        let (fixed_phase_ns, longest_tick_ns) = fixed_phases.take_frame();
         let generation = generation.map_or(0, |generation| generation.0);
         let session_replaced = generation != measurements.session_generation;
         if session_replaced {
@@ -170,11 +180,7 @@ fn start_recording_frame(
             HitchDetection::Excluded
         } else if pacing.is_some_and(|pacing| pacing.unbounded) {
             HitchDetection::Unbounded {
-                fixed_tick_ns: if fixed_ticks_run > 0 {
-                    schedule_ns.run_fixed_main_loop
-                } else {
-                    0
-                },
+                fixed_tick_ns: longest_tick_ns,
             }
         } else {
             HitchDetection::Paced
@@ -187,6 +193,7 @@ fn start_recording_frame(
                 fixed_ticks_run,
                 unmeasured_ns: frame_ns - schedule_ns.total(),
                 schedule_ns,
+                fixed_phase_ns,
                 nanobots: nanobots.iter().len(),
                 structures: structures.iter().len(),
             },

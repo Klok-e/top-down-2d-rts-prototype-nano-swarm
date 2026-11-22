@@ -98,6 +98,9 @@ fn battle_writes_one_compact_summary_of_the_whole_hitch_episode() {
         .add_systems(PreUpdate, |mut clock: ResMut<RecorderClock>| {
             clock.advance(Duration::from_millis(2));
         })
+        .add_systems(FixedUpdate, |mut clock: ResMut<RecorderClock>| {
+            clock.advance(Duration::from_millis(3));
+        })
         .add_systems(
             Update,
             |work: Res<FrameWork>, mut clock: ResMut<RecorderClock>| {
@@ -136,12 +139,12 @@ fn battle_writes_one_compact_summary_of_the_whole_hitch_episode() {
             "end_frame": 770,
             "start_fixed_tick": 0,
             "hitch_count": 620,
-            "worst_frame_ns": 60_036_000_000u64,
+            "worst_frame_ns": 60_045_000_000u64,
             "catch_up_ticks": 2,
             "top_phases": [
                 {"phase": "PostUpdate", "duration_ns": 60_619_000_000u64},
                 {"phase": "Update", "duration_ns": 21_080_000_000u64},
-                {"phase": "PreUpdate", "duration_ns": 1_240_000_000},
+                {"phase": "fixed_other", "duration_ns": 1_866_000_000},
             ],
             "nanobots": 2,
         })

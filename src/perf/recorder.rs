@@ -2,6 +2,8 @@ use std::collections::VecDeque;
 
 use serde::Serialize;
 
+use super::FixedPhaseTimes;
+
 pub const HITCH_FRAME_THRESHOLD_NS: u64 = 33_300_000;
 pub const HITCH_FIXED_TICK_THRESHOLD: u64 = 1;
 pub const PRE_HITCH_FRAMES: usize = 120;
@@ -10,6 +12,7 @@ pub const EPISODE_FRAME_LIMIT: usize = 600;
 pub const EPISODE_RETENTION_LIMIT: usize = 32;
 const EPISODE_HEAD_LIMIT: usize = EPISODE_FRAME_LIMIT / 2;
 const EPISODE_TAIL_LIMIT: usize = EPISODE_FRAME_LIMIT - EPISODE_HEAD_LIMIT;
+const SUMMARY_PHASE_COUNT: usize = ScheduleTimes::COUNT + FixedPhaseTimes::COUNT + 1;
 
 #[derive(Debug, Default, Clone, Copy, Serialize)]
 #[serde(rename_all = "PascalCase")]
@@ -59,6 +62,7 @@ pub struct FrameRecord {
     pub frame_ns: u64,
     pub fixed_ticks_run: u64,
     pub schedule_ns: ScheduleTimes,
+    pub fixed_phase_ns: FixedPhaseTimes,
     pub unmeasured_ns: u64,
     pub nanobots: usize,
     pub structures: usize,
@@ -85,10 +89,15 @@ impl HitchDetection {
 }
 
 impl FrameRecord {
-    fn phases(self) -> impl Iterator<Item = (&'static str, u64)> {
-        self.schedule_ns
+    fn phases(&self) -> impl Iterator<Item = (&'static str, u64)> {
+        let mut schedules = self.schedule_ns;
+        schedules.run_fixed_main_loop = schedules
+            .run_fixed_main_loop
+            .saturating_sub(self.fixed_phase_ns.total());
+        schedules
             .entries()
             .into_iter()
+            .chain(self.fixed_phase_ns.iter())
             .chain([("unmeasured", self.unmeasured_ns)])
     }
 }
@@ -123,7 +132,7 @@ pub struct HitchEpisode {
 
 struct OpenEpisode {
     episode: HitchEpisode,
-    phase_totals: [PhaseTotal; ScheduleTimes::COUNT + 1],
+    phase_totals: [PhaseTotal; SUMMARY_PHASE_COUNT],
     tail: VecDeque<FrameRecord>,
     frames_since_hitch: usize,
 }
@@ -211,7 +220,7 @@ impl FrameRecorder {
                         ..Default::default()
                     },
                 },
-                phase_totals: [PhaseTotal::default(); ScheduleTimes::COUNT + 1],
+                phase_totals: [PhaseTotal::default(); SUMMARY_PHASE_COUNT],
                 tail: VecDeque::new(),
                 frames_since_hitch: 0,
             });

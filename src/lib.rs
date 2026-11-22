@@ -135,6 +135,14 @@ pub fn build_app_with_tuning(
     presentation: Presentation,
     path: impl AsRef<std::path::Path>,
 ) -> Result<App, String> {
+    build_app_with_logging(presentation, path, false)
+}
+
+fn build_app_with_logging(
+    presentation: Presentation,
+    path: impl AsRef<std::path::Path>,
+    headless_logging: bool,
+) -> Result<App, String> {
     let (store, values) = tuning::TuningStore::load(path.as_ref().to_path_buf())?;
     let mut app = App::new();
     app.insert_resource(values)
@@ -151,6 +159,10 @@ pub fn build_app_with_tuning(
             nanobot::reconcile_combat_presentation_tuning,
             fly_camera::reconcile_camera_tuning,
         ]));
+    if headless_logging && presentation != Presentation::Windowed {
+        // Bevy creates system spans when systems are registered.
+        app.add_plugins(LogPlugin::default());
+    }
     let target = match presentation {
         Presentation::Windowed => {
             app.add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -168,8 +180,7 @@ pub fn build_app_with_tuning(
                         ..default()
                     })
                     .set(offscreen_render_plugin())
-                    // Both plugins install process-global handlers. Screenshot trials
-                    // construct multiple Apps in one process, so Offscreen omits them.
+                    // Process-global handlers are installed by the runtime.
                     .disable::<LogPlugin>()
                     .disable::<TerminalCtrlCHandlerPlugin>()
                     // Manual offscreen updates render in lockstep with readback.
@@ -273,6 +284,10 @@ pub fn build_app_with_tuning(
     }
     if presentation == Presentation::Windowed {
         app.add_plugins(perf::HitchRecorderPlugin);
+    }
+    #[cfg(feature = "perf-trace")]
+    if app.is_plugin_added::<LogPlugin>() {
+        perf::trace_main_world_frames(&mut app);
     }
     Ok(app)
 }

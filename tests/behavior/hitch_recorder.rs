@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bevy::{
-    app::{AppLabel, SubApp},
+    app::{AppLabel, RunFixedMainLoopSystems, SubApp},
     prelude::*,
     time::{TimePlugin, TimeUpdateStrategy},
 };
@@ -12,7 +12,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         AgentControlCorePlugin, AgentControlHandle, AgentResponse, parse_request_line,
     },
     build_app_with_presentation, fixed_simulation_time,
-    nanobot::{Nanobot, Structure},
+    nanobot::{Nanobot, NanobotSimulationSet, RegionalAllocationSet, Structure},
     perf::{HitchRecorderPlugin, RecorderClock},
     runtime::HeadlessPacing,
     scenario_selection::{Scenario, ScenarioSelection},
@@ -24,6 +24,7 @@ struct FrameWork {
     update: Duration,
     post_update: Duration,
     fixed_update: Duration,
+    fixed_loop: Duration,
     render: Duration,
 }
 
@@ -49,6 +50,13 @@ impl RecorderApp {
             .insert_resource(RecorderClock::manual())
             .init_resource::<FrameWork>()
             .add_plugins((HitchRecorderPlugin, channel))
+            .add_systems(
+                RunFixedMainLoop,
+                (|work: Res<FrameWork>, mut clock: ResMut<RecorderClock>| {
+                    clock.advance(work.fixed_loop);
+                })
+                .in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
+            )
             .add_systems(
                 FixedUpdate,
                 |work: Res<FrameWork>, mut clock: ResMut<RecorderClock>| {
@@ -156,13 +164,29 @@ fn a_slow_frame_reports_full_context_and_attributes_only_main_schedule_time() {
 }
 
 #[test]
-fn actual_bevy_catch_up_is_a_hitch_below_the_frame_time_threshold() {
+fn catch_up_reports_summed_fixed_phase_times_below_the_frame_threshold() {
     let mut game = RecorderApp::new();
+    game.app.add_systems(
+        FixedUpdate,
+        (
+            (|mut clock: ResMut<RecorderClock>| clock.advance(Duration::from_millis(10)))
+                .in_set(NanobotSimulationSet::Movement),
+            (|mut clock: ResMut<RecorderClock>| clock.advance(Duration::from_millis(1)))
+                .in_set(RegionalAllocationSet::Project)
+                .after(NanobotSimulationSet::Movement),
+            (|mut clock: ResMut<RecorderClock>| clock.advance(Duration::from_millis(3)))
+                .after(NanobotSimulationSet::Movement)
+                .before(RegionalAllocationSet::Project),
+        )
+            .run_if(|strategy: Res<TimeUpdateStrategy>| {
+                matches!(*strategy, TimeUpdateStrategy::ManualDuration(_))
+            }),
+    );
     game.advance_frames(61);
     let timestep = fixed_simulation_time().timestep();
     game.app
         .insert_resource(TimeUpdateStrategy::ManualDuration(timestep * 2));
-    game.frame_with_work(0, 0, Duration::from_millis(20));
+    game.frame_with_work(0, 0, Duration::from_millis(4));
     game.app
         .insert_resource(TimeUpdateStrategy::FixedTimesteps(1));
     game.advance_frames(30);
@@ -173,12 +197,24 @@ fn actual_bevy_catch_up_is_a_hitch_below_the_frame_time_threshold() {
     };
     assert_eq!(episode["first_hitch_frame"], 62);
     let frames = episode["frames"].as_array().unwrap();
-    assert_eq!(frames[61]["frame_ns"], 20_000_000);
-    assert_eq!(frames[61]["fixed_ticks_run"], 2);
+    let slow = &frames[61];
+    assert_eq!(slow["frame_ns"], 32_000_000);
+    assert_eq!(slow["fixed_ticks_run"], 2);
     assert_eq!(
-        frames[61]["fixed_tick"].as_u64().unwrap(),
+        slow["fixed_tick"].as_u64().unwrap(),
         frames[60]["fixed_tick"].as_u64().unwrap() + 2,
     );
+    let phases = slow["fixed_phase_ns"].as_object().unwrap();
+    assert_eq!(phases["movement"], 20_000_000);
+    assert_eq!(phases["allocation_project"], 2_000_000);
+    assert_eq!(phases["fixed_other"], 6_000_000);
+    let (largest, _) = phases
+        .iter()
+        .max_by_key(|(_, time)| time.as_u64().unwrap())
+        .unwrap();
+    assert_eq!(largest, "movement");
+    assert_eq!(slow["schedule_ns"]["RunFixedMainLoop"], 28_000_000);
+    assert_eq!(slow["unmeasured_ns"], 4_000_000);
 }
 
 #[test]
@@ -301,11 +337,15 @@ fn restarting_standard_and_switching_scenarios_each_restart_the_warmup() {
 }
 
 #[test]
-fn unbounded_mode_classifies_fixed_tick_cost_instead_of_render_time() {
+fn unbounded_mode_ignores_work_outside_the_fixed_tick() {
     let mut game = RecorderApp::new();
     game.app.insert_resource(HeadlessPacing { unbounded: true });
     game.advance_frames(60);
-    game.frame_with_work(0, 0, Duration::from_millis(40));
+    game.run_frame(FrameWork {
+        fixed_loop: Duration::from_millis(40),
+        render: Duration::from_millis(40),
+        ..default()
+    });
     game.run_frame(FrameWork {
         fixed_update: Duration::from_nanos(33_300_000),
         ..default()

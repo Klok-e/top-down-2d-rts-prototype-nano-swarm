@@ -45,6 +45,9 @@ impl StrategicController {
 
 pub struct StrategicControllerPlugin;
 
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct StrategicControllerSet;
+
 impl Plugin for StrategicControllerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<crate::tuning::Tuning>()
@@ -52,6 +55,7 @@ impl Plugin for StrategicControllerPlugin {
             .add_systems(
                 FixedUpdate,
                 strategic_intent_system
+                    .in_set(StrategicControllerSet)
                     .after(crate::nanobot::NanobotSimulationSet::Movement)
                     .before(RegionalAllocationSet::Project)
                     .run_if(resource_exists::<SwarmReachabilityMap>),
