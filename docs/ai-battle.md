@@ -26,7 +26,7 @@ cargo run --release -- --headless --scenario ai-battle --layout flanks --seed 11
 
 `--layout` and `--max-ticks` require `--scenario ai-battle`. The `--unbounded` option requires `--headless`. A battle ends when Swarm Elimination resolves it. Use `--max-ticks N` to end it after N fixed ticks; without it, only Swarm Elimination ends a battle.
 
-At the end, a headless or simulation-only battle freezes its simulation. Statistics stop changing, and the process keeps serving the socket until `shutdown`, with no idle timeout. A windowed battle keeps its world running with statistics frozen, and stays open until the player quits or `shutdown` arrives. The statistics distinguish a tick limit from elimination.
+At the end, a headless or simulation-only battle freezes its simulation. Statistics stop changing, and the process keeps serving the socket until `shutdown`, with no idle timeout. The frozen loop runs at about 60 iterations per second, even when simulation-only, so it does not occupy a core. A windowed battle keeps its world running with statistics frozen, and stays open until the player quits or `shutdown` arrives. The statistics distinguish a tick limit from elimination.
 
 For fast gameplay diagnostics, run AI Battle without graphics or frame pacing. For example, this runs Standard for up to 7,200 fixed ticks (120 simulated seconds):
 

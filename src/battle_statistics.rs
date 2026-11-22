@@ -73,6 +73,11 @@ pub struct BattleCounters {
 }
 
 impl BattleCounters {
+    /// Whether the battle has ended and its statistics no longer change.
+    pub fn is_frozen(&self) -> bool {
+        self.frozen
+    }
+
     pub fn record(&mut self, swarm: SwarmId, event: BattleEvent) {
         if self.frozen {
             return;
