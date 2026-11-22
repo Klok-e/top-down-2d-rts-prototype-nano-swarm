@@ -1249,7 +1249,6 @@ mod route_reuse {
         let first = Controller::new(OWNER).decide(&tuning, &state);
         let second = Controller::new(OWNER).decide(&tuning, &state);
         assert!(first.reviewed && second.reviewed);
-        eprintln!("W {} {}", first.work_units, second.work_units);
         assert!(second.work_units < first.work_units);
     }
 }
