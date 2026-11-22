@@ -396,7 +396,7 @@ pub fn build_runtime_app(options: RuntimeOptions) -> Result<App, RuntimeBuildErr
             TerminalCtrlCHandlerPlugin,
         ));
     }
-    if options.headless && !unbounded {
+    if options.headless {
         app.add_plugins(HitchRecorderPlugin);
     }
     app.insert_resource(selection);
