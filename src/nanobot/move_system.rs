@@ -204,6 +204,14 @@ fn swept_separation(start: Vec2, delta: Vec2, other: TrafficBody) -> f32 {
     (relative + travel * t).length()
 }
 
+/// Unit headings of the velocity candidates, evaluated once so every call shares them.
+static CANDIDATE_HEADINGS: std::sync::LazyLock<[Vec2; 24]> = std::sync::LazyLock::new(|| {
+    std::array::from_fn(|heading| {
+        let angle = heading as f32 * std::f32::consts::TAU / 24.0;
+        Vec2::new(angle.cos(), angle.sin())
+    })
+});
+
 /// Choose a safe velocity in the acceleration-reachable disk, closest to the requested motion.
 /// A blocked disk permits an immediate stop; collision clearance is authoritative.
 fn continuous_velocity(
@@ -228,10 +236,14 @@ fn continuous_velocity(
     let mut best = None;
     let mut best_score = f32::INFINITY;
     for ring in 0..=4 {
-        for heading in 0..24 {
-            let angle = heading as f32 * std::f32::consts::TAU / 24.0;
-            let candidate =
-                previous + Vec2::new(angle.cos(), angle.sin()) * acceleration * ring as f32 / 4.0;
+        // Every heading of the innermost ring is the previous velocity itself.
+        let headings = if ring == 0 {
+            1
+        } else {
+            CANDIDATE_HEADINGS.len()
+        };
+        for direction in &CANDIDATE_HEADINGS[..headings] {
+            let candidate = previous + *direction * acceleration * ring as f32 / 4.0;
             if candidate.length_squared() > speed_limit * speed_limit + 1e-6 {
                 continue;
             }
@@ -1007,6 +1019,104 @@ mod tests {
 
     fn entity(bits: u64) -> Entity {
         Entity::from_bits(bits)
+    }
+
+    /// The full scan that velocity selection must match: the first safe candidate with the lowest score.
+    fn full_scan_velocity(
+        previous: Vec2,
+        requested: Vec2,
+        acceleration: f32,
+        speed_limit: f32,
+        safe: impl Fn(Vec2) -> bool,
+    ) -> Vec2 {
+        if requested.length_squared() == 0.0 || acceleration <= 0.0 {
+            return Vec2::ZERO;
+        }
+        let preferred = clamp_velocity(
+            previous + clamp_velocity(requested - previous, acceleration),
+            speed_limit,
+        );
+        if safe(preferred) {
+            return preferred;
+        }
+        let requested_speed = requested.length();
+        let requested_direction = requested / requested_speed;
+        let mut best = None;
+        let mut best_score = f32::INFINITY;
+        for ring in 0..=4 {
+            for heading in 0..24 {
+                let angle = heading as f32 * std::f32::consts::TAU / 24.0;
+                let candidate = previous
+                    + Vec2::new(angle.cos(), angle.sin()) * acceleration * ring as f32 / 4.0;
+                if candidate.length_squared() > speed_limit * speed_limit + 1e-6 {
+                    continue;
+                }
+                let lateral = candidate.perp_dot(requested_direction);
+                let lost_speed = requested_speed - candidate.length();
+                let score = candidate.distance_squared(requested)
+                    + lateral * lateral
+                    + 2.0 * lost_speed * lost_speed
+                    + 0.5 * candidate.distance_squared(previous);
+                if score < best_score && safe(candidate) {
+                    best = Some(candidate);
+                    best_score = score;
+                }
+            }
+        }
+        best.unwrap_or(Vec2::ZERO)
+    }
+
+    #[test]
+    fn velocity_choice_matches_a_full_scan_of_candidates() {
+        use rand::{RngExt, SeedableRng, rngs::StdRng};
+
+        let mut rng = StdRng::seed_from_u64(0x5EED_0089);
+        let vector = |rng: &mut StdRng, scale: f32| {
+            Vec2::new(
+                rng.random_range(-scale..scale),
+                rng.random_range(-scale..scale),
+            )
+        };
+        let mut stopped = 0;
+        for case in 0..20_000 {
+            // Axis-aligned requests from rest score mirrored candidates equally.
+            let axis_aligned = case % 4 == 1;
+            let previous = if axis_aligned || case % 3 == 0 {
+                Vec2::ZERO
+            } else {
+                vector(&mut rng, 5.0)
+            };
+            let requested = if axis_aligned {
+                [Vec2::X, Vec2::Y, Vec2::NEG_X, Vec2::NEG_Y][rng.random_range(0..4)]
+                    * rng.random_range(1..6) as f32
+            } else {
+                vector(&mut rng, 6.0)
+            };
+            let acceleration = if case % 2 == 0 {
+                5.0
+            } else {
+                rng.random_range(0.1..5.0)
+            };
+            let speed_limit = rng.random_range(0.0..6.0);
+            // Bodies around the mover block the motions that come too close to them.
+            let blockers: Vec<_> = (0..rng.random_range(0..6))
+                .map(|_| (vector(&mut rng, 8.0), rng.random_range(0.5..6.0)))
+                .collect();
+            let safe = |delta: Vec2| {
+                blockers
+                    .iter()
+                    .all(|&(center, radius)| delta.distance(center) >= radius)
+            };
+            let expected = full_scan_velocity(previous, requested, acceleration, speed_limit, safe);
+            let actual = continuous_velocity(previous, requested, acceleration, speed_limit, safe);
+            assert_eq!(
+                actual.to_array().map(f32::to_bits),
+                expected.to_array().map(f32::to_bits),
+                "case {case}: previous {previous:?}, requested {requested:?}",
+            );
+            stopped += usize::from(expected == Vec2::ZERO);
+        }
+        assert!(stopped > 100, "the cases must include fully blocked motion");
     }
 
     #[test]
