@@ -14,7 +14,7 @@ use crate::agent_control::{AgentControlConfig, AgentControlPlugin, AgentControlS
 use crate::{
     Presentation,
     ai_battle::{AiBattleConfig, AiBattleLayout},
-    battle_statistics::BattleStatisticsConfig,
+    battle_statistics::{BattleCounters, BattleStatisticsConfig},
     build_app_with_logging,
     scenario_selection::{Scenario, ScenarioSelection},
 };
@@ -54,8 +54,9 @@ fn configure_headless_time_strategy(
     };
 }
 
-fn headless_frame_delay(unbounded: bool, elapsed: Duration) -> Duration {
-    if unbounded {
+/// A frozen battle has nothing left to simulate, so even an unbounded loop paces itself.
+fn headless_frame_delay(unbounded: bool, frozen: bool, elapsed: Duration) -> Duration {
+    if unbounded && !frozen {
         Duration::ZERO
     } else {
         HEADLESS_FRAME_DURATION.saturating_sub(elapsed)
@@ -77,8 +78,13 @@ fn run_dynamic_headless(mut app: App) -> AppExit {
         if let Some(exit) = app.should_exit() {
             return exit;
         }
+        let frozen = app
+            .world()
+            .get_resource::<BattleCounters>()
+            .is_some_and(BattleCounters::is_frozen);
         let delay = headless_frame_delay(
             app.world().resource::<HeadlessPacing>().unbounded,
+            frozen,
             started.elapsed(),
         );
         if !delay.is_zero() {
@@ -601,14 +607,21 @@ mod tests {
     #[test]
     fn headless_delay_accounts_for_the_complete_app_update() {
         assert_eq!(
-            headless_frame_delay(false, Duration::from_millis(10)),
+            headless_frame_delay(false, false, Duration::from_millis(10)),
             HEADLESS_FRAME_DURATION - Duration::from_millis(10),
         );
         assert_eq!(
-            headless_frame_delay(false, Duration::from_millis(20)),
+            headless_frame_delay(false, false, Duration::from_millis(20)),
             Duration::ZERO,
         );
-        assert_eq!(headless_frame_delay(true, Duration::ZERO), Duration::ZERO,);
+        assert_eq!(
+            headless_frame_delay(true, false, Duration::ZERO),
+            Duration::ZERO
+        );
+        assert_eq!(
+            headless_frame_delay(true, true, Duration::from_millis(1)),
+            HEADLESS_FRAME_DURATION - Duration::from_millis(1),
+        );
     }
 
     #[test]
