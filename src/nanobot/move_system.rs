@@ -670,6 +670,7 @@ pub fn velocity_system(
     // Either body can spend a full step closing, with room for the solver's tolerance and rounding.
     let sweep_reach_squared = (diameter + 2.0 * speed + 0.01 + 1e-5 * speed).powi(2);
     let mut nearby = Vec::new();
+    let mut reachable = Vec::new();
     let mut sweep_constraints = Vec::new();
     // Earlier bodies reserve swept motion; later bodies remain stationary until resolved.
     for i in 0..bodies.len() {
@@ -681,20 +682,28 @@ pub fn velocity_system(
             continue;
         }
         nearby.clear();
-        // An engaged body only sweeps against neighbours, so it skips those out of reach.
+        reachable.clear();
+        // Sweeps only involve neighbours within reach; an engaged body needs no others.
         let engaged = is_engaged(body.entity);
         for run in lookup.neighbourhood_runs(lookup.bucket_for_position(body.start), 1) {
-            nearby.extend(run.iter().filter_map(|&(j, start)| {
-                (j != i && (!engaged || body.start.distance_squared(start) <= sweep_reach_squared))
-                    .then_some(j)
-            }));
+            for &(j, start) in run {
+                if j == i {
+                    continue;
+                }
+                if !engaged {
+                    nearby.push(j);
+                }
+                if body.start.distance_squared(start) <= sweep_reach_squared {
+                    reachable.push(j);
+                }
+            }
         }
         let prepare_sweep = |bodies: &[(TrafficBody, Vec2)],
                              progress: &EntityHashMap<TravelProgress>,
                              recovering: bool,
                              constraints: &mut Vec<SweepConstraint>| {
             constraints.clear();
-            for &j in &nearby {
+            for &j in &reachable {
                 let other = bodies[j].0;
                 let distance_squared = body.start.distance_squared(other.start);
                 if distance_squared > sweep_reach_squared {
