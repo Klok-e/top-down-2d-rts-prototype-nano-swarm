@@ -1,24 +1,30 @@
 use std::time::Duration;
 
 use bevy::{
-    app::{AppLabel, SubApp},
+    app::{AppLabel, RunFixedMainLoopSystems, SubApp},
     prelude::*,
     time::{TimePlugin, TimeUpdateStrategy},
 };
 use serde_json::Value;
 use top_down_2d_rts_prototype_nano_swarm::{
+    Presentation,
     agent_control::{
         AgentControlCorePlugin, AgentControlHandle, AgentResponse, parse_request_line,
     },
-    fixed_simulation_time,
+    build_app_with_presentation, fixed_simulation_time,
     nanobot::{Nanobot, NanobotSimulationSet, RegionalAllocationSet, Structure},
     perf::{HitchRecorderPlugin, RecorderClock},
+    runtime::HeadlessPacing,
+    scenario_selection::{Scenario, ScenarioSelection},
+    session_lifecycle::StartScenario,
 };
 
 #[derive(Resource, Default)]
 struct FrameWork {
     update: Duration,
     post_update: Duration,
+    fixed_update: Duration,
+    fixed_loop: Duration,
     render: Duration,
 }
 
@@ -32,13 +38,31 @@ struct RecorderApp {
 
 impl RecorderApp {
     fn new() -> Self {
-        let (control, channel) = AgentControlCorePlugin::channel(4);
         let mut app = App::new();
+        app.add_plugins(TimePlugin);
+        Self::with_app(app)
+    }
+
+    fn with_app(mut app: App) -> Self {
+        let (control, channel) = AgentControlCorePlugin::channel(4);
         app.insert_resource(fixed_simulation_time())
             .insert_resource(TimeUpdateStrategy::FixedTimesteps(1))
             .insert_resource(RecorderClock::manual())
             .init_resource::<FrameWork>()
-            .add_plugins((TimePlugin, HitchRecorderPlugin, channel))
+            .add_plugins((HitchRecorderPlugin, channel))
+            .add_systems(
+                RunFixedMainLoop,
+                (|work: Res<FrameWork>, mut clock: ResMut<RecorderClock>| {
+                    clock.advance(work.fixed_loop);
+                })
+                .in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
+            )
+            .add_systems(
+                FixedUpdate,
+                |work: Res<FrameWork>, mut clock: ResMut<RecorderClock>| {
+                    clock.advance(work.fixed_update);
+                },
+            )
             .add_systems(
                 Update,
                 |work: Res<FrameWork>, mut clock: ResMut<RecorderClock>| {
@@ -67,11 +91,16 @@ impl RecorderApp {
     }
 
     fn frame_with_work(&mut self, update_ms: u64, post_update_ms: u64, render: Duration) {
-        self.app.insert_resource(FrameWork {
+        self.run_frame(FrameWork {
             update: Duration::from_millis(update_ms),
             post_update: Duration::from_millis(post_update_ms),
             render,
+            ..default()
         });
+    }
+
+    fn run_frame(&mut self, work: FrameWork) {
+        self.app.insert_resource(work);
         self.app.update();
         self.app.insert_resource(FrameWork::default());
     }
@@ -153,7 +182,7 @@ fn catch_up_reports_summed_fixed_phase_times_below_the_frame_threshold() {
                 matches!(*strategy, TimeUpdateStrategy::ManualDuration(_))
             }),
     );
-    game.advance_frames(1);
+    game.advance_frames(61);
     let timestep = fixed_simulation_time().timestep();
     game.app
         .insert_resource(TimeUpdateStrategy::ManualDuration(timestep * 2));
@@ -166,15 +195,16 @@ fn catch_up_reports_summed_fixed_phase_times_below_the_frame_threshold() {
     let [episode] = episodes(&result) else {
         panic!("expected one catch-up episode");
     };
-    assert_eq!(episode["first_hitch_frame"], 2);
+    assert_eq!(episode["first_hitch_frame"], 62);
     let frames = episode["frames"].as_array().unwrap();
-    assert_eq!(frames[1]["frame_ns"], 32_000_000);
-    assert_eq!(frames[1]["fixed_ticks_run"], 2);
+    let slow = &frames[61];
+    assert_eq!(slow["frame_ns"], 32_000_000);
+    assert_eq!(slow["fixed_ticks_run"], 2);
     assert_eq!(
-        frames[1]["fixed_tick"].as_u64().unwrap(),
-        frames[0]["fixed_tick"].as_u64().unwrap() + 2,
+        slow["fixed_tick"].as_u64().unwrap(),
+        frames[60]["fixed_tick"].as_u64().unwrap() + 2,
     );
-    let phases = frames[1]["fixed_phase_ns"].as_object().unwrap();
+    let phases = slow["fixed_phase_ns"].as_object().unwrap();
     assert_eq!(phases["movement"], 20_000_000);
     assert_eq!(phases["allocation_project"], 2_000_000);
     assert_eq!(phases["fixed_other"], 6_000_000);
@@ -183,14 +213,15 @@ fn catch_up_reports_summed_fixed_phase_times_below_the_frame_threshold() {
         .max_by_key(|(_, time)| time.as_u64().unwrap())
         .unwrap();
     assert_eq!(largest, "movement");
-    assert_eq!(frames[1]["schedule_ns"]["RunFixedMainLoop"], 28_000_000);
-    assert_eq!(frames[1]["unmeasured_ns"], 4_000_000);
+    assert_eq!(slow["schedule_ns"]["RunFixedMainLoop"], 28_000_000);
+    assert_eq!(slow["unmeasured_ns"], 4_000_000);
 }
 
 #[test]
 fn nearby_hitches_share_an_episode_and_the_cursor_skips_episodes_already_read() {
     let mut game = RecorderApp::new();
     let hitch = Duration::from_millis(34);
+    game.advance_frames(60);
     game.frame_with_work(0, 0, hitch);
     game.advance_frames(27);
     game.frame_with_work(0, 0, hitch);
@@ -200,8 +231,8 @@ fn nearby_hitches_share_an_episode_and_the_cursor_skips_episodes_already_read() 
     let [first] = episodes(&result) else {
         panic!("expected the nearby hitches to share an episode");
     };
-    assert_eq!(first["first_hitch_frame"], 1);
-    assert_eq!(first["last_hitch_frame"], 29);
+    assert_eq!(first["first_hitch_frame"], 61);
+    assert_eq!(first["last_hitch_frame"], 89);
     let first_id = first["id"].as_u64().unwrap();
 
     game.frame_with_work(0, 0, hitch);
@@ -215,7 +246,7 @@ fn nearby_hitches_share_an_episode_and_the_cursor_skips_episodes_already_read() 
     let [second] = episodes(&result) else {
         panic!("expected only the episode after the cursor");
     };
-    assert_eq!(second["first_hitch_frame"], 61);
+    assert_eq!(second["first_hitch_frame"], 121);
     let second_id = second["id"].as_u64().unwrap();
     assert!(second_id > first_id);
     let result = game
@@ -225,4 +256,110 @@ fn nearby_hitches_share_an_episode_and_the_cursor_skips_episodes_already_read() 
         .result
         .unwrap();
     assert!(episodes(&result).is_empty());
+}
+
+#[test]
+fn startup_warmup_excludes_frame_60_and_does_not_exclude_frame_61() {
+    let mut game = RecorderApp::new();
+    let hitch = Duration::from_millis(34);
+    game.advance_frames(59);
+    game.frame_with_work(0, 0, hitch);
+    game.frame_with_work(0, 0, hitch);
+    game.advance_frames(30);
+
+    let result = game.hitches().result.unwrap();
+    let [episode] = episodes(&result) else {
+        panic!("expected one episode after startup warm-up");
+    };
+    assert_eq!(episode["first_hitch_frame"], 61);
+    assert_eq!(episode["last_hitch_frame"], 61);
+}
+
+#[test]
+fn paused_frames_do_not_start_an_episode() {
+    let mut game = RecorderApp::new();
+    let hitch = Duration::from_millis(34);
+    game.advance_frames(60);
+    game.app.world_mut().resource_mut::<Time<Virtual>>().pause();
+    game.frame_with_work(0, 0, hitch);
+    game.advance_frames(31);
+    assert!(episodes(&game.hitches().result.unwrap()).is_empty());
+
+    game.app
+        .world_mut()
+        .resource_mut::<Time<Virtual>>()
+        .unpause();
+    game.frame_with_work(0, 0, hitch);
+    game.advance_frames(30);
+    let result = game.hitches().result.unwrap();
+    let [episode] = episodes(&result) else {
+        panic!("expected one hitch after unpausing");
+    };
+    assert_eq!(episode["first_hitch_frame"], 94);
+    assert_eq!(episode["last_hitch_frame"], 94);
+}
+
+#[test]
+fn restarting_standard_and_switching_scenarios_each_restart_the_warmup() {
+    let mut game = RecorderApp::with_app(build_app_with_presentation(Presentation::SimulationOnly));
+    let hitch = Duration::from_millis(34);
+    game.advance_frames(90);
+
+    let mut after_id = 0;
+    for scenario in [Scenario::Standard, Scenario::Sandbox] {
+        let frame_before_start = game.hitches().frame;
+        game.app.world_mut().write_message(StartScenario(scenario));
+        game.frame_with_work(0, 0, hitch);
+        assert_eq!(
+            game.app.world().resource::<ScenarioSelection>().current,
+            scenario
+        );
+        game.advance_frames(58);
+        game.frame_with_work(0, 0, hitch);
+        game.frame_with_work(0, 0, hitch);
+        game.advance_frames(30);
+
+        let result = game
+            .request(&format!(
+                r#"{{"id":1,"method":"perf.hitches","params":{{"after_id":{after_id}}}}}"#
+            ))
+            .result
+            .unwrap();
+        let [episode] = episodes(&result) else {
+            panic!("expected only the episode after the {scenario:?} warm-up");
+        };
+        let first_frame = frame_before_start + 2;
+        assert_eq!(episode["frames"][0]["frame"], first_frame);
+        assert_eq!(episode["first_hitch_frame"], first_frame + 60);
+        assert_eq!(episode["last_hitch_frame"], first_frame + 60);
+        after_id = episode["id"].as_u64().unwrap();
+    }
+}
+
+#[test]
+fn unbounded_mode_ignores_work_outside_the_fixed_tick() {
+    let mut game = RecorderApp::new();
+    game.app.insert_resource(HeadlessPacing { unbounded: true });
+    game.advance_frames(60);
+    game.run_frame(FrameWork {
+        fixed_loop: Duration::from_millis(40),
+        render: Duration::from_millis(40),
+        ..default()
+    });
+    game.run_frame(FrameWork {
+        fixed_update: Duration::from_nanos(33_300_000),
+        ..default()
+    });
+    game.run_frame(FrameWork {
+        fixed_update: Duration::from_nanos(33_300_001),
+        ..default()
+    });
+    game.advance_frames(30);
+
+    let result = game.hitches().result.unwrap();
+    let [episode] = episodes(&result) else {
+        panic!("expected one fixed-tick hitch");
+    };
+    assert_eq!(episode["first_hitch_frame"], 63);
+    assert_eq!(episode["last_hitch_frame"], 63);
 }

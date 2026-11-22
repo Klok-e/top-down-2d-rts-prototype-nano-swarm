@@ -1,13 +1,15 @@
 # Hitch recorder
 
-The recorder runs in the windowed and paced headless game, including runs launched without the agent socket. Fetch closed episodes with [`perf.hitches`](../agents/agent-control.md#hitch-episodes).
+The recorder runs in the windowed and headless game, including runs launched without the agent socket. Fetch closed episodes with [`perf.hitches`](../agents/agent-control.md#hitch-episodes).
 
 ## Detection and retention
 
-- A frame is a hitch when it takes **more than 33.3 ms** or runs **more than one fixed tick**.
+- In paced runs, a frame is a hitch when it takes **more than 33.3 ms** or runs **more than one fixed tick**.
+- With `--headless --unbounded`, a fixed tick taking **more than 33.3 ms** is a hitch.
+- Frames while virtual time is paused and the first 60 frames of each session are excluded from hitch detection. The exclusions apply to the start of the process, same-scenario restarts, and scenario switches. These frames can still provide context and count toward recovery.
 - A hitch opens an episode with up to 120 preceding frames. A later hitch extends it until 30 consecutive hitch-free frames have passed. The episode includes those 30 recovery frames.
 - Long episodes retain the first and last 300 frames, for at most 600 detailed records. A gap in the frame numbers marks omitted detail.
-- The process keeps the latest 32 closed episodes. Episode IDs increase for the life of the process.
+- Each new session starts with empty preceding-frame history and discards any still-open episode. The process keeps the latest 32 closed episodes across sessions. Episode IDs increase for the life of the process.
 
 ## Frame detail
 

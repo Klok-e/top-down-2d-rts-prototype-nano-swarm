@@ -74,25 +74,24 @@ impl Serialize for FixedPhaseTimes {
 #[derive(Resource, Default)]
 pub(super) struct FixedMeasurements {
     tick_start: Duration,
-    tick_named_ns: u64,
-    segment: Option<(usize, Duration)>,
+    segment_start: Duration,
+    phase: usize,
     times: FixedPhaseTimes,
+    longest_tick_ns: u64,
 }
 
 impl FixedMeasurements {
-    pub(super) fn take_times(&mut self) -> FixedPhaseTimes {
-        std::mem::take(&mut self.times)
+    pub(super) fn take_frame(&mut self) -> (FixedPhaseTimes, u64) {
+        (
+            std::mem::take(&mut self.times),
+            std::mem::take(&mut self.longest_tick_ns),
+        )
     }
 
     fn transition(&mut self, next: usize, now: Duration) {
-        if let Some((phase, start)) = self.segment.take() {
-            let duration = elapsed_ns(start, now);
-            self.times.0[phase] += duration;
-            self.tick_named_ns += duration;
-        }
-        if next != FIXED_OTHER {
-            self.segment = Some((next, now));
-        }
+        self.times.0[self.phase] += elapsed_ns(self.segment_start, now);
+        self.phase = next;
+        self.segment_start = now;
     }
 }
 
@@ -107,16 +106,19 @@ pub(super) fn install(app: &mut App) {
         .add_systems(
             TickBoundary::Start,
             |clock: Res<RecorderClock>, mut fixed: ResMut<FixedMeasurements>| {
-                fixed.tick_start = clock.now();
-                fixed.tick_named_ns = 0;
+                let now = clock.now();
+                fixed.tick_start = now;
+                fixed.segment_start = now;
+                fixed.phase = FIXED_OTHER;
             },
         )
         .add_systems(
             TickBoundary::End,
             |clock: Res<RecorderClock>, mut fixed: ResMut<FixedMeasurements>| {
-                let tick_ns = elapsed_ns(fixed.tick_start, clock.now());
-                let other_ns = tick_ns - fixed.tick_named_ns;
-                fixed.times.0[FIXED_OTHER] += other_ns;
+                let now = clock.now();
+                fixed.transition(FIXED_OTHER, now);
+                let tick_ns = elapsed_ns(fixed.tick_start, now);
+                fixed.longest_tick_ns = fixed.longest_tick_ns.max(tick_ns);
             },
         )
         .edit_schedule(FixedUpdate, |schedule| {

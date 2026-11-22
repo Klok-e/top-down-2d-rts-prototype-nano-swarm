@@ -13,10 +13,14 @@ use bevy::{
 use crate::{
     agent_control::{AgentControlClock, AgentControlClockPlugin},
     nanobot::{Nanobot, Structure},
+    runtime::HeadlessPacing,
+    session_lifecycle::SessionGeneration,
 };
 
 pub use fixed_phases::FixedPhaseTimes;
-pub use recorder::{FrameRecord, FrameRecorder, HitchEpisode, ScheduleTimes};
+pub use recorder::{FrameRecord, FrameRecorder, HitchDetection, HitchEpisode, ScheduleTimes};
+
+const SESSION_WARMUP_FRAMES: u64 = 60;
 
 #[derive(Resource)]
 pub struct RecorderClock(ClockSource);
@@ -63,6 +67,8 @@ struct FrameMeasurements {
     schedule_start: Duration,
     schedules: ScheduleTimes,
     previous_fixed_tick: u64,
+    session_generation: u64,
+    session_started_after_frame: u64,
 }
 
 #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -130,9 +136,13 @@ impl Plugin for HitchRecorderPlugin {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_recording_frame(
     clock: Res<RecorderClock>,
     counters: Res<AgentControlClock>,
+    time: Res<Time<Virtual>>,
+    generation: Option<Res<SessionGeneration>>,
+    pacing: Option<Res<HeadlessPacing>>,
     mut measurements: ResMut<FrameMeasurements>,
     mut fixed_phases: ResMut<fixed_phases::FixedMeasurements>,
     mut hitches: ResMut<RecordedHitches>,
@@ -145,17 +155,39 @@ fn start_recording_frame(
     if let Some(start) = measurements.frame_start.replace(now) {
         let frame_ns = elapsed_ns(start, now);
         let schedule_ns = std::mem::take(&mut measurements.schedules);
-        hitches.0.record(FrameRecord {
-            frame: counters.frame,
-            fixed_tick: counters.fixed_tick,
-            frame_ns,
-            fixed_ticks_run: counters.fixed_tick - measurements.previous_fixed_tick,
-            unmeasured_ns: frame_ns - schedule_ns.total(),
-            schedule_ns,
-            fixed_phase_ns: fixed_phases.take_times(),
-            nanobots: nanobots.iter().len(),
-            structures: structures.iter().len(),
-        });
+        let (fixed_phase_ns, longest_tick_ns) = fixed_phases.take_frame();
+        let generation = generation.map_or(0, |generation| generation.0);
+        if generation != measurements.session_generation {
+            // A replacement runs in PreUpdate, within the completed frame.
+            measurements.session_generation = generation;
+            measurements.session_started_after_frame = counters.frame - 1;
+            hitches.0.reset_session();
+        }
+        let fixed_ticks_run = counters.fixed_tick - measurements.previous_fixed_tick;
+        let session_frames = counters.frame - measurements.session_started_after_frame;
+        let detection = if time.is_paused() || session_frames <= SESSION_WARMUP_FRAMES {
+            HitchDetection::Excluded
+        } else if pacing.is_some_and(|pacing| pacing.unbounded) {
+            HitchDetection::Unbounded {
+                fixed_tick_ns: longest_tick_ns,
+            }
+        } else {
+            HitchDetection::Paced
+        };
+        hitches.0.record(
+            FrameRecord {
+                frame: counters.frame,
+                fixed_tick: counters.fixed_tick,
+                frame_ns,
+                fixed_ticks_run,
+                unmeasured_ns: frame_ns - schedule_ns.total(),
+                schedule_ns,
+                fixed_phase_ns,
+                nanobots: nanobots.iter().len(),
+                structures: structures.iter().len(),
+            },
+            detection,
+        );
     }
     measurements.previous_fixed_tick = counters.fixed_tick;
 }
