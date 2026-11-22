@@ -204,6 +204,9 @@ fn swept_separation(start: Vec2, delta: Vec2, other: TrafficBody) -> f32 {
     (relative + travel * t).length()
 }
 
+/// The previous velocity plus four rings of headings around it.
+const CANDIDATE_COUNT: usize = 1 + 4 * 24;
+
 /// Unit headings of the velocity candidates, evaluated once so every call shares them.
 static CANDIDATE_HEADINGS: std::sync::LazyLock<[Vec2; 24]> = std::sync::LazyLock::new(|| {
     std::array::from_fn(|heading| {
@@ -233,32 +236,43 @@ fn continuous_velocity(
     }
     let requested_speed = requested.length();
     let requested_direction = requested / requested_speed;
+    // Every heading of the innermost ring is the previous velocity itself, so it
+    // contributes one candidate. Scoring all candidates in one pass lets it vectorize.
+    let mut candidates = [Vec2::ZERO; CANDIDATE_COUNT];
+    for (slot, candidate) in candidates.iter_mut().enumerate() {
+        let (ring, heading) = if slot == 0 {
+            (0, 0)
+        } else {
+            (
+                1 + (slot - 1) / CANDIDATE_HEADINGS.len(),
+                (slot - 1) % CANDIDATE_HEADINGS.len(),
+            )
+        };
+        *candidate = previous + CANDIDATE_HEADINGS[heading] * acceleration * ring as f32 / 4.0;
+    }
+    let mut scores = [0.0; CANDIDATE_COUNT];
+    for (score, candidate) in scores.iter_mut().zip(&candidates) {
+        let candidate = *candidate;
+        let lateral = candidate.perp_dot(requested_direction);
+        let lost_speed = requested_speed - candidate.length();
+        // Retained momentum carries a passing body around contact instead of alternating tangents.
+        let value = candidate.distance_squared(requested)
+            + lateral * lateral
+            + 2.0 * lost_speed * lost_speed
+            + 0.5 * candidate.distance_squared(previous);
+        // Candidates beyond the speed limit can never win.
+        *score = if candidate.length_squared() > speed_limit * speed_limit + 1e-6 {
+            f32::INFINITY
+        } else {
+            value
+        };
+    }
     let mut best = None;
     let mut best_score = f32::INFINITY;
-    for ring in 0..=4 {
-        // Every heading of the innermost ring is the previous velocity itself.
-        let headings = if ring == 0 {
-            1
-        } else {
-            CANDIDATE_HEADINGS.len()
-        };
-        for direction in &CANDIDATE_HEADINGS[..headings] {
-            let candidate = previous + *direction * acceleration * ring as f32 / 4.0;
-            if candidate.length_squared() > speed_limit * speed_limit + 1e-6 {
-                continue;
-            }
-            let lateral = candidate.perp_dot(requested_direction);
-            let lost_speed = requested_speed - candidate.length();
-            // Retained momentum carries a passing body around contact instead of alternating tangents.
-
-            let score = candidate.distance_squared(requested)
-                + lateral * lateral
-                + 2.0 * lost_speed * lost_speed
-                + 0.5 * candidate.distance_squared(previous);
-            if score < best_score && safe(candidate) {
-                best = Some(candidate);
-                best_score = score;
-            }
+    for (&candidate, &score) in candidates.iter().zip(&scores) {
+        if score < best_score && safe(candidate) {
+            best = Some(candidate);
+            best_score = score;
         }
     }
     best.unwrap_or(Vec2::ZERO)
