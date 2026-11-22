@@ -62,6 +62,20 @@ class ControlClientTests(unittest.TestCase):
         self.assertEqual(request["method"], "perf.hitches")
         self.assertEqual(request["params"], {"after_id": 27})
 
+    def test_battle_stats_sends_optional_sample_and_hitch_cursors(self):
+        request = self.exchange("battle-stats")
+        self.assertEqual(request["method"], "battle.stats")
+        self.assertNotIn("params", request)
+
+        request = self.exchange(
+            "battle-stats", "--after-sample", "12", "--after-hitch", "0"
+        )
+        self.assertEqual(request["method"], "battle.stats")
+        self.assertEqual(request["params"], {"after_sample": 12, "after_hitch": 0})
+
+        request = self.exchange("battle-stats", "--after-hitch", "3")
+        self.assertEqual(request["params"], {"after_hitch": 3})
+
 
 if __name__ == "__main__":
     unittest.main()
