@@ -204,6 +204,21 @@ fn swept_separation(start: Vec2, delta: Vec2, other: TrafficBody) -> f32 {
     (relative + travel * t).length()
 }
 
+/// Whether moving by `delta` keeps `required` clearance from `other`, within the
+/// solver's tolerance: `swept_separation(start, delta, other) + 0.001 >= required`.
+fn sweep_clears(start: Vec2, delta: Vec2, other: TrafficBody, required: f32) -> bool {
+    let relative = start - other.start;
+    let travel = delta - other.delta;
+    // Ending inside the clearance rules the sweep out without projecting onto it. The
+    // slack covers the tolerance and rounding, so the answer is the same either way.
+    let slack = 0.011 + 1e-4 * (relative.abs() + travel.abs()).element_sum();
+    let reject = required - slack;
+    if reject > 0.0 && (relative + travel).length_squared() < reject * reject {
+        return false;
+    }
+    swept_separation(start, delta, other) + 0.001 >= required
+}
+
 /// The previous velocity plus four rings of headings around it.
 const CANDIDATE_COUNT: usize = 1 + 4 * 24;
 
@@ -644,7 +659,7 @@ pub fn velocity_system(
         let last_conflict = std::cell::Cell::new(0);
         let safe_motion = |constraints: &[(TrafficBody, f32)], delta: Vec2| {
             let separated = |&(other, required): &(TrafficBody, f32)| {
-                swept_separation(body.start, delta, other) + 0.001 >= required
+                sweep_clears(body.start, delta, other, required)
             };
             let first = last_conflict.get();
             if constraints
@@ -1095,6 +1110,50 @@ mod tests {
             }
         }
         best.unwrap_or(Vec2::ZERO)
+    }
+
+    #[test]
+    fn sweep_clearance_matches_the_swept_separation_test() {
+        use rand::{RngExt, SeedableRng, rngs::StdRng};
+
+        let mut rng = StdRng::seed_from_u64(0x5EED_5EE9);
+        let mut rejected = 0;
+        for case in 0..200_000 {
+            let scale = [1.0, 10.0, 100.0, 1_000.0][case % 4];
+            let mut vector = |scale: f32| {
+                Vec2::new(
+                    rng.random_range(-scale..scale),
+                    rng.random_range(-scale..scale),
+                )
+            };
+            let start = vector(1_000.0);
+            let delta = vector(scale * 0.1);
+            let other = TrafficBody {
+                entity: entity(1),
+                start: start + vector(scale),
+                delta: if case % 3 == 0 {
+                    Vec2::ZERO
+                } else {
+                    vector(scale * 0.1)
+                },
+                key: 1,
+            };
+            let required = if case % 5 == 0 {
+                0.0
+            } else {
+                BODY_DIAMETER.min(start.distance(other.start))
+            };
+            let expected = swept_separation(start, delta, other) + 0.001 >= required;
+            assert_eq!(
+                sweep_clears(start, delta, other, required),
+                expected,
+                "case {case}: start {start:?}, delta {delta:?}, other {:?} moving {:?}",
+                other.start,
+                other.delta,
+            );
+            rejected += usize::from(!expected);
+        }
+        assert!(rejected > 10_000, "the cases must include blocked sweeps");
     }
 
     #[test]
