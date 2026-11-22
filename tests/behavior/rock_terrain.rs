@@ -90,3 +90,102 @@ fn construction_rejects_overlap_with_circular_rock_but_allows_clear_adjacent_gro
     assert_eq!(overlap, AccessStatus::Rejected);
     assert_eq!(exterior, AccessStatus::Accepted);
 }
+
+fn spawn_default_rocks(app: &mut App) -> Vec<(RockFormation, Transform)> {
+    app.insert_resource(IntentGrid::new(
+        top_down_2d_rts_prototype_nano_swarm::MAP_WIDTH as i32,
+        top_down_2d_rts_prototype_nano_swarm::MAP_HEIGHT as i32,
+    ));
+    let rocks = top_down_2d_rts_prototype_nano_swarm::scenario::default_rock_geometry();
+    assert_eq!(rocks.len(), 347);
+    for (rock, transform) in &rocks {
+        app.world_mut().spawn((*rock, *transform));
+    }
+    rocks
+}
+
+/// Deterministic scatter over the middle of the map, dense enough to cross many rocks.
+fn samples(count: usize) -> Vec<Vec2> {
+    let mut state = 0x2545_f491_u32;
+    let mut next = move || {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (state >> 8) as f32 / (1u32 << 24) as f32
+    };
+    (0..count)
+        .map(|_| Vec2::new(next() - 0.5, next() - 0.5) * 40_000.0)
+        .collect()
+}
+
+fn assert_matches_brute_force(physical: &PhysicalGeometry, rocks: &[(RockFormation, Transform)]) {
+    let shapes: Vec<_> = rocks
+        .iter()
+        .map(|(rock, transform)| rock.obstacle(transform))
+        .collect();
+    let points = samples(4000);
+    let mut blocked_points = 0;
+    for point in &points {
+        let expected = shapes.iter().all(|shape| shape.admits_body(*point));
+        blocked_points += usize::from(!expected);
+        assert_eq!(physical.can_occupy(*point), expected, "point {point}");
+    }
+    assert!(blocked_points > 0, "samples must reach rock");
+    let mut blocked_segments = 0;
+    for (index, pair) in points.windows(2).enumerate() {
+        let start = pair[0];
+        // Mix short movement steps with long sweeps.
+        let end = if index % 2 == 0 {
+            start + (pair[1] - start).normalize_or_zero() * 40.0
+        } else {
+            pair[1]
+        };
+        let expected = shapes.iter().all(|shape| shape.segment_clear(start, end));
+        blocked_segments += usize::from(!expected);
+        assert_eq!(
+            physical.movement_clear(start, end),
+            expected,
+            "segment {start} -> {end}"
+        );
+    }
+    assert!(blocked_segments > 0, "segments must reach rock");
+}
+
+#[test]
+fn default_map_answers_match_a_brute_force_scan_of_every_rock() {
+    let mut app = common::minimal_app();
+    let rocks = spawn_default_rocks(&mut app);
+    app.update();
+    let physical = app.world_mut().run_system_once(geometry).unwrap();
+    assert_matches_brute_force(&physical, &rocks);
+}
+
+#[test]
+fn answers_follow_the_rocks_of_the_current_session_after_a_restart() {
+    let mut app = common::minimal_app();
+    let default_rocks = spawn_default_rocks(&mut app);
+    let old_center = default_rocks[0].1.translation.truncate();
+    app.update();
+    let before = app.world_mut().run_system_once(geometry).unwrap();
+    assert!(!before.can_occupy(old_center));
+    let old_rocks: Vec<Entity> = app
+        .world_mut()
+        .query_filtered::<Entity, With<RockFormation>>()
+        .iter(app.world())
+        .collect();
+    for rock in old_rocks {
+        app.world_mut().despawn(rock);
+    }
+    let replacement = vec![(
+        RockFormation::Rectangle {
+            half: Vec2::new(36.0, 600.0),
+        },
+        Transform::from_xyz(0.0, 0.0, 0.0),
+    )];
+    for (rock, transform) in &replacement {
+        app.world_mut().spawn((*rock, *transform));
+    }
+    app.update();
+    let physical = app.world_mut().run_system_once(geometry).unwrap();
+    assert!(!physical.can_occupy(Vec2::ZERO));
+    assert!(physical.can_occupy(old_center));
+    assert!(!physical.movement_clear(Vec2::new(-500.0, 0.0), Vec2::new(500.0, 0.0)));
+}
