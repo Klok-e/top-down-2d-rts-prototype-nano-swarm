@@ -1102,3 +1102,154 @@ fn saturated_economy_supplies_build_room_for_real_production_pressure() {
         );
     }
 }
+
+mod route_reuse {
+    use super::*;
+    use top_down_2d_rts_prototype_nano_swarm::{
+        strategic_runtime::{ControllerTelemetry, reconcile_controller_tuning},
+        terrain::RockFormation,
+        tuning::Tuning,
+    };
+
+    const OWNER: SwarmId = SwarmId::PLAYER;
+
+    /// A home and a deposit separated by a rock, so every review needs a route around it.
+    fn rock_fixture() -> App {
+        let mut app = common::minimal_app();
+        app.insert_resource(IntentGrid::new(16, 16));
+        app.add_plugins(StrategicControllerPlugin);
+        let home = common::cell_world_center(IVec2::new(-3, 0));
+        let rock = RockFormation::Rectangle {
+            half: Vec2::new(256.0, 650.0),
+        };
+        let rock_transform =
+            Transform::from_translation(common::cell_world_center(IVec2::ZERO).extend(0.0));
+        app.world_mut().spawn((
+            Swarm {},
+            OWNER,
+            Transform::from_translation(home.extend(0.0)),
+            StrategicController::new(OWNER),
+        ));
+        app.world_mut().spawn((rock, rock_transform));
+        common::spawn_deposit(
+            &mut app,
+            common::DepositFixture {
+                world_pos: common::cell_world_center(IVec2::new(3, 0)),
+                amount: 72_000,
+                capacity: 72_000,
+                radius: 80.0,
+            },
+        );
+        let reachability = SwarmReachabilityMap::new(
+            app.world().resource::<IntentGrid>(),
+            [rock.obstacle(&rock_transform)],
+            [(OWNER, home)],
+        )
+        .unwrap();
+        app.insert_resource(reachability);
+        app.update();
+        app
+    }
+
+    fn work(app: &App) -> u64 {
+        app.world().resource::<ControllerTelemetry>().profiles()[&OWNER.0].work_units
+    }
+
+    /// Force one review through a tuning edit and return the work units it spent.
+    fn forced_review_work(app: &mut App) -> u64 {
+        let before = work(app);
+        let old = app.world().resource::<Tuning>().clone();
+        let mut new = old.clone();
+        new.autonomy.strategy_home_income_lead += 1.0;
+        reconcile_controller_tuning(app.world_mut(), &old, &new);
+        app.insert_resource(new);
+        app.update();
+        work(app) - before
+    }
+
+    #[test]
+    fn revision_bump_from_a_structure_off_the_route_costs_no_extra_search() {
+        let mut app = rock_fixture();
+        let steady = forced_review_work(&mut app);
+        common::spawn_structure_at(&mut app, Vec2::new(256.0, 1000.0));
+        assert_eq!(forced_review_work(&mut app), steady);
+    }
+
+    #[test]
+    fn structure_across_the_cached_route_forces_a_new_search() {
+        let mut app = rock_fixture();
+        let steady = forced_review_work(&mut app);
+        common::spawn_structure_at(&mut app, Vec2::new(256.0, -450.0));
+        assert!(forced_review_work(&mut app) > steady);
+    }
+
+    #[test]
+    fn repeated_review_of_the_same_tiles_spends_less_once_planning_points_are_cached() {
+        use top_down_2d_rts_prototype_nano_swarm::{
+            nanobot::NanobotType,
+            strategic_controller::{BotState, Controller, GameState, SwarmState},
+            tuning::AutonomyTuning,
+        };
+        let grid = IntentGrid::new(64, 64);
+        let enemy = SwarmId(9);
+        let world = |cell: IVec2| common::cell_world_center(cell);
+        let swarm = |id, cell| SwarmState {
+            id,
+            home: world(cell),
+            minerals: 100,
+            mineral_income_per_second: 0.0,
+            production_saturated: false,
+        };
+        let swarms = [swarm(OWNER, IVec2::ZERO), swarm(enemy, IVec2::new(24, 24))];
+        let remnant = BotState {
+            id: 50,
+            owner: enemy,
+            kind: NanobotType::Worker,
+            position: world(IVec2::new(12, 3)),
+            health: 20,
+            max_health: 100,
+            charge: 1.0,
+            max_charge: 1.0,
+            cargo: 0,
+            displacement: Vec2::ZERO,
+        };
+        let rock = RockFormation::Rectangle {
+            half: Vec2::new(256.0, 650.0),
+        };
+        let rock_transform = Transform::from_translation(world(IVec2::new(2, 0)).extend(0.0));
+        let terrain = [rock.obstacle(&rock_transform)];
+        let homes = [
+            (OWNER, world(IVec2::ZERO)),
+            (enemy, world(IVec2::new(24, 24))),
+        ];
+        let map = SwarmReachabilityMap::new(&grid, terrain, homes).unwrap();
+        // Warm the cell reachability memo so the first review's cost is geometry only.
+        for owner in [OWNER, enemy] {
+            for y in -32..32 {
+                for x in -32..32 {
+                    map.reachable_point(owner, IVec2::new(x, y), &grid);
+                }
+            }
+        }
+        let tuning = AutonomyTuning::default();
+        let state = GameState {
+            reachability: Some(&map),
+            terrain: &terrain,
+            grid: &grid,
+            swarms: &swarms,
+            bots: &[remnant],
+            structures: &[],
+            deposits: &[],
+            charge: &DEFAULT_CHARGE,
+            route_query: None,
+            source_query: None,
+            tick: 0,
+            finished: false,
+        };
+        let first = Controller::new(OWNER).decide(&tuning, &state);
+        let second = Controller::new(OWNER).decide(&tuning, &state);
+        assert!(first.reviewed && second.reviewed);
+        eprintln!("W {} {}", first.work_units, second.work_units);
+        assert!(second.work_units < first.work_units);
+    }
+}
