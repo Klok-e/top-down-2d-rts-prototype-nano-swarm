@@ -4,10 +4,12 @@
 //! Small cohorts then minimize total travel exactly; large cohorts assign the
 //! remaining travel through deterministic bounded-nearest matching.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use bevy::{
     ecs::entity::{EntityHashMap, EntityHashSet},
+    // Only looked up, never iterated, so the faster hasher cannot reorder anything.
+    platform::collections::{HashMap, HashSet},
     prelude::*,
 };
 
