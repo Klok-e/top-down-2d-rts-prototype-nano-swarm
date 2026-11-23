@@ -1650,6 +1650,76 @@ mod tests {
     use super::*;
 
     #[test]
+    fn clearance_identity_changes_exactly_when_clearance_inputs_change() {
+        let grid = IntentGrid::new(8, 8);
+        let rock = Obstacle::Circle {
+            center: Vec2::new(100.0, 0.0),
+            radius: 40.0,
+        };
+        let footprint = Obstacle::Rectangle {
+            center: Vec2::new(-200.0, 0.0),
+            half: Vec2::splat(30.0),
+        };
+        let mut navigation = Navigation::new(&grid, vec![rock]);
+        let other = Navigation::new(&grid, vec![rock]);
+        assert_ne!(
+            navigation.clearance_identity(),
+            other.clearance_identity(),
+            "separate hierarchies never share an identity",
+        );
+
+        // Each step: whether it changes bounds, obstacles or clearing.
+        type Change = fn(&mut Navigation, &IntentGrid, Obstacle, Obstacle);
+        let steps: [(&str, bool, Change); 8] = [
+            ("same obstacles", false, |navigation, grid, rock, _| {
+                navigation.refresh(grid, vec![rock]);
+            }),
+            ("new obstacle", true, |navigation, grid, rock, footprint| {
+                navigation.refresh(grid, vec![rock, footprint]);
+            }),
+            ("larger bounds", true, |navigation, _, rock, footprint| {
+                navigation.refresh(&IntentGrid::new(10, 10), vec![rock, footprint]);
+            }),
+            ("same clearing", false, |navigation, _, _, _| {
+                navigation.refresh_clearing(Vec::new());
+            }),
+            ("new clearing", true, |navigation, _, _, footprint| {
+                navigation.refresh_clearing(vec![footprint]);
+            }),
+            (
+                "same geometry and clearing",
+                false,
+                |navigation, _, rock, footprint| {
+                    navigation.refresh_with_clearing(
+                        &IntentGrid::new(10, 10),
+                        vec![rock, footprint],
+                        vec![footprint],
+                    );
+                },
+            ),
+            (
+                "cleared clearing",
+                true,
+                |navigation, _, rock, footprint| {
+                    navigation.refresh_with_clearing(
+                        &IntentGrid::new(10, 10),
+                        vec![rock, footprint],
+                        Vec::new(),
+                    );
+                },
+            ),
+            ("fewer obstacles", true, |navigation, _, rock, _| {
+                navigation.refresh_with_clearing(&IntentGrid::new(10, 10), vec![rock], Vec::new());
+            }),
+        ];
+        for (step, changes, apply) in steps {
+            let before = navigation.clearance_identity();
+            apply(&mut navigation, &grid, rock, footprint);
+            assert_eq!(navigation.clearance_identity() != before, changes, "{step}");
+        }
+    }
+
+    #[test]
     fn connectivity_uses_exact_components_without_refining_routes() {
         let grid = IntentGrid::new(8, 8);
         let mut navigation = Navigation::new(
