@@ -703,12 +703,10 @@ pub fn velocity_system(
                              recovering: bool,
                              constraints: &mut Vec<SweepConstraint>| {
             constraints.clear();
+            // `reachable` holds only neighbours within sweep reach.
             for &j in &reachable {
                 let other = bodies[j].0;
                 let distance_squared = body.start.distance_squared(other.start);
-                if distance_squared > sweep_reach_squared {
-                    continue;
-                }
                 let passing_friend = (recovering
                     || progress
                         .get(&other.entity)

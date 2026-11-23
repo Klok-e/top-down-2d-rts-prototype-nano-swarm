@@ -629,13 +629,12 @@ fn clear_roaming_waypoint(
     (None, misses.unwrap_or(fixed))
 }
 
-/// Leading roaming candidates known to fail the geometry test for one Defender's search.
+/// Everything a roaming search's geometry test depends on, besides the Defender.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) struct RoamingMisses {
+pub(super) struct RoamingSearch {
     cell: IVec2,
     index: u64,
     clearance: u64,
-    misses: u64,
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
@@ -646,7 +645,8 @@ pub(super) fn reconcile_defender_staging_system(
     territory: Res<TerritorySnapshot>,
     reachability: Option<Res<SwarmReachabilityMap>>,
     mut layouts: ResMut<DefenderStagingLayouts>,
-    mut roaming_misses: Local<EntityHashMap<RoamingMisses>>,
+    // Per Defender, its last search and how many leading candidates failed the geometry test.
+    mut roaming_misses: Local<EntityHashMap<(RoamingSearch, u64)>>,
     mut defenders: Query<
         (
             Entity,
@@ -793,21 +793,15 @@ pub(super) fn reconcile_defender_staging_system(
                 .and_then(|map| map.reachable_point(member.0, target_cell, &grid));
             let index = index.wrapping_add(u64::from(arrived));
             // A search repeated against the same geometry skips the candidates it rejected.
-            let search = RoamingMisses {
+            let search = RoamingSearch {
                 cell: target_cell,
                 index,
                 clearance: navigation.clearance_identity(),
-                misses: 0,
             };
             let known_misses = roaming_misses
                 .get(&entity)
-                .filter(|known| {
-                    RoamingMisses {
-                        misses: 0,
-                        ..**known
-                    } == search
-                })
-                .map_or(0, |known| known.misses);
+                .filter(|(known, _)| *known == search)
+                .map_or(0, |&(_, misses)| misses);
             let (selected, misses) = clear_roaming_waypoint(
                 entity,
                 target_cell,
@@ -822,7 +816,7 @@ pub(super) fn reconcile_defender_staging_system(
                 },
                 known_misses,
             );
-            roaming_misses.insert(entity, RoamingMisses { misses, ..search });
+            roaming_misses.insert(entity, (search, misses));
             selected
         };
         let Some((waypoint_index, waypoint)) = selected else {

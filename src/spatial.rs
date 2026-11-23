@@ -377,8 +377,11 @@ mod tests {
             IVec2::new(-40, 7),
         ] {
             assert!(packed.entries(center).is_empty());
-            assert_eq!(packed.neighbourhood(IVec2::ZERO, 1).count(), 0);
             assert_eq!(packed.neighbourhood_runs(center, 1).count(), 0);
+        }
+        // Like the incremental buckets, `neighbourhood` offsets in i32, so stay in range.
+        for center in [IVec2::ZERO, IVec2::new(-40, 7)] {
+            assert_eq!(packed.neighbourhood(center, 1).count(), 0);
         }
     }
 
