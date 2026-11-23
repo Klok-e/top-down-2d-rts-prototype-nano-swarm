@@ -1577,10 +1577,7 @@ impl Navigation {
                                 && a.cmplt(self.max).all()
                                 && b.cmpge(self.min).all()
                                 && b.cmplt(self.max).all()
-                                && check
-                                    .completed
-                                    .iter()
-                                    .all(|shape| shape.segment_clear(a, b)))
+                                && super::super::segment_clears_all(&check.completed, a, b))
                     };
                     check.builders.len() == builders.len()
                         && check
