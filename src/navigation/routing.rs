@@ -4,11 +4,13 @@ use crate::{
     intent::{IntentGrid, IntentKind},
     nanobot::{SwarmId, world_to_cell},
 };
-use bevy::platform::collections::{HashMap as FastHashMap, HashSet as FastHashSet};
+use bevy::platform::collections::{
+    HashMap, HashMap as FastHashMap, HashSet, HashSet as FastHashSet,
+};
 use bevy::prelude::*;
 use std::{
     cmp::Ordering,
-    collections::{BinaryHeap, HashMap, HashSet, VecDeque},
+    collections::{BinaryHeap, VecDeque},
     sync::Mutex,
 };
 
