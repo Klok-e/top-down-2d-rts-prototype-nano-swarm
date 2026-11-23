@@ -23,6 +23,10 @@ const STRENGTH_SCALE: f64 = (1_u64 << 32) as f64;
 const MAX_TOTALED_STRENGTH: f64 = 256.0;
 /// Upper bound on fine cells, so spread-out layouts widen cells instead of allocating.
 const MAX_FINE_CELLS: f64 = (1 << 20) as f64;
+/// Fine cells allowed per Defender, so a few far-apart Defenders get a small grid.
+const FINE_CELLS_PER_DEFENDER: f64 = 16.0;
+/// Fine cells always allowed, however few Defenders there are.
+const MIN_FINE_CELL_BUDGET: f64 = (1 << 16) as f64;
 
 #[derive(Clone, Copy)]
 struct Candidate {
@@ -172,13 +176,16 @@ impl DefenderIndex {
                 (DVec2::INFINITY, DVec2::NEG_INFINITY),
                 |(min, max), position| (min.min(position), max.max(position)),
             );
+        // Cell size never changes answers, only how much each query reads.
+        let cell_budget = (defenders.len() as f64 * FINE_CELLS_PER_DEFENDER)
+            .clamp(MIN_FINE_CELL_BUDGET, MAX_FINE_CELLS);
         let mut cell_size = FINE_CELL_SIZE;
         let (width, height) = loop {
             if min.x > max.x {
                 break (0, 0);
             }
             let cells = ((max - min) / cell_size).floor() + 1.0;
-            if cells.x * cells.y <= MAX_FINE_CELLS {
+            if cells.x * cells.y <= cell_budget {
                 break (cells.x as i64, cells.y as i64);
             }
             cell_size *= 2.0;
@@ -831,11 +838,20 @@ mod tests {
     #[test]
     fn queries_match_a_coarse_bucket_scan() {
         let mut rng = StdRng::seed_from_u64(0x0089_1DE5);
-        for layout in 0..60 {
-            let spread = [200.0, 900.0, 3_000.0][layout % 3];
-            let size = [240.0, 136.0, 1_000.0][layout / 3 % 3];
+        for layout in 0..80 {
+            // The widest spread outgrows the fine-cell budget, so cells widen.
+            let spread = [200.0, 900.0, 3_000.0, 40_000.0][layout % 4];
+            let size = [240.0, 136.0, 1_000.0][layout / 4 % 3];
             let count = rng.random_range(1..400);
-            let defenders = random_defenders(&mut rng, count, spread);
+            let mut defenders = random_defenders(&mut rng, count, spread);
+            // Some layouts hold Defenders no cell can place, or strengths the
+            // fixed-point totals cannot hold, which disable the faster tiers.
+            match layout / 12 % 4 {
+                1 => defenders[0].position = Vec2::NAN,
+                2 => defenders[0].strength = 300.0,
+                3 => defenders[0].strength = -0.5,
+                _ => {}
+            }
             let scan = CoarseScan::new(&defenders, size);
             let index = DefenderIndex::new(defenders.clone(), size);
             for _ in 0..200 {
