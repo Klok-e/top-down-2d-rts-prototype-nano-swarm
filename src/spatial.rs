@@ -150,10 +150,11 @@ impl<T> PackedSpatialBuckets<T> {
                 ((low.0.min(x), low.1.min(y)), (high.0.max(x), high.1.max(y)))
             },
         );
-        let (width, height) = if placed.is_empty() {
-            (0, 0)
+        // An empty layout keeps a small origin, so coordinate offsets cannot overflow.
+        let (low, width, height) = if placed.is_empty() {
+            ((0, 0), 0, 0)
         } else {
-            (high.0 - low.0 + 1, high.1 - low.1 + 1)
+            (low, high.0 - low.0 + 1, high.1 - low.1 + 1)
         };
         let dense_limit = (4 * placed.len() as i64).max(4096);
         if width
@@ -364,6 +365,21 @@ mod tests {
             buckets.bucket_for_position(Vec2::new(-32.1, 0.0)),
             IVec2::new(-2, 0)
         );
+    }
+
+    #[test]
+    fn empty_packed_buckets_answer_nothing_anywhere() {
+        let packed = PackedSpatialBuckets::<u32>::new(16.0, []);
+        for center in [
+            IVec2::ZERO,
+            IVec2::splat(i32::MIN),
+            IVec2::splat(i32::MAX),
+            IVec2::new(-40, 7),
+        ] {
+            assert!(packed.entries(center).is_empty());
+            assert_eq!(packed.neighbourhood(IVec2::ZERO, 1).count(), 0);
+            assert_eq!(packed.neighbourhood_runs(center, 1).count(), 0);
+        }
     }
 
     #[test]
