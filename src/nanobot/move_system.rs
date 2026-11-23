@@ -10,11 +10,7 @@ use super::{
     CombatIdentity, DefenderEngagements, DirectMovementComponent, Nanobot, SwarmId, SwarmMember,
     VelocityComponent, combat_key, route_following::WAYPOINT_REACHED_DISTANCE,
 };
-use crate::{
-    nanobot::consts::BOT_SEPARATION_FORCE,
-    spatial::{FixedSpatialBuckets, PackedSpatialBuckets},
-    tuning::Tuning,
-};
+use crate::{nanobot::consts::BOT_SEPARATION_FORCE, spatial::PackedSpatialBuckets, tuning::Tuning};
 
 pub(super) const BODY_DIAMETER: f32 = crate::navigation::BODY_RADIUS * 2.0;
 
@@ -76,10 +72,14 @@ fn separation_deltas(entries: &[SeparationEntry]) -> Vec<(Entity, Vec2)> {
     let mut sorted = entries.to_vec();
     sorted.sort_by_key(|entry| (entry.key, entry.entity.to_bits()));
 
-    let mut buckets = FixedSpatialBuckets::new(BODY_DIAMETER);
-    for (index, entry) in sorted.iter().enumerate() {
-        buckets.insert(entry.position, index);
-    }
+    // Packed buckets visit neighbours in the same order as incremental ones.
+    let buckets = PackedSpatialBuckets::new(
+        BODY_DIAMETER,
+        sorted
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (entry.position, index)),
+    );
 
     let mut deltas: Vec<(Entity, Vec2)> = sorted
         .iter()
@@ -87,7 +87,7 @@ fn separation_deltas(entries: &[SeparationEntry]) -> Vec<(Entity, Vec2)> {
         .collect();
     for (index, entry) in sorted.iter().enumerate() {
         let bucket = buckets.bucket_for_position(entry.position);
-        for (_, neighbours) in buckets.neighbourhood(bucket, 1) {
+        for neighbours in buckets.neighbourhood_runs(bucket, 1) {
             for &other_index in neighbours {
                 if other_index <= index {
                     continue;
