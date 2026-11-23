@@ -3,7 +3,7 @@ use super::{
     DefenderEngagements, DirectMovementComponent, ProgressChecker, STOP_THRESHOLD, TrafficYield,
     VelocityComponent,
 };
-use crate::spatial::FixedSpatialBuckets;
+use crate::spatial::{FixedSpatialBuckets, PackedSpatialBuckets};
 use crate::tuning::Tuning;
 use bevy::prelude::*;
 
@@ -45,7 +45,15 @@ pub struct RejectedWorkGoal {
 #[allow(clippy::type_complexity)]
 pub fn work_standing_system(
     mut commands: Commands,
-    bots: Query<(Entity, &Transform, Has<super::CongestionRecovery>), With<super::Nanobot>>,
+    bots: Query<
+        (
+            Entity,
+            &Transform,
+            Has<super::CongestionRecovery>,
+            Has<WorkBlocked>,
+        ),
+        With<super::Nanobot>,
+    >,
     mut rejected: Query<(Entity, &mut RejectedWorkGoal)>,
     time: Res<Time<Fixed>>,
 ) {
@@ -55,19 +63,16 @@ pub fn work_standing_system(
             commands.entity(entity).remove::<RejectedWorkGoal>();
         }
     }
-    let mut occupancy = FixedSpatialBuckets::new(2.0 * crate::navigation::BODY_RADIUS);
-    for (entity, transform, _) in &bots {
-        occupancy.insert(
-            transform.translation.truncate(),
-            (entity, transform.translation.truncate()),
-        );
-    }
-    for (entity, transform, recovering) in &bots {
-        let blocked =
-            recovering || !space_free(entity, transform.translation.truncate(), &occupancy);
-        if blocked {
+    let occupancy = Occupancy::new(
+        bots.iter()
+            .map(|(entity, transform, ..)| (entity, transform.translation.truncate())),
+    );
+    for (entity, transform, recovering, was_blocked) in &bots {
+        let blocked = recovering || !occupancy.space_free(entity, transform.translation.truncate());
+        // Only presence matters to readers, so unchanged markers need no command.
+        if blocked && !was_blocked {
             commands.entity(entity).insert(WorkBlocked);
-        } else {
+        } else if !blocked && was_blocked {
             commands.entity(entity).remove::<WorkBlocked>();
         }
     }
@@ -247,13 +252,11 @@ pub fn move_velocity_system(
             entity.to_bits(),
         )
     });
-    let mut occupancy = FixedSpatialBuckets::new(2.0 * crate::navigation::BODY_RADIUS);
-    for (entity, transform, _) in &bodies {
-        occupancy.insert(
-            transform.translation.truncate(),
-            (entity, transform.translation.truncate()),
-        );
-    }
+    let occupancy = Occupancy::new(
+        bodies
+            .iter()
+            .map(|(entity, transform, _)| (entity, transform.translation.truncate())),
+    );
     let mut claims = FixedSpatialBuckets::new(2.0 * crate::navigation::BODY_RADIUS);
     for entity in ordered {
         let Ok((
@@ -314,7 +317,7 @@ pub fn move_velocity_system(
             let free = |point: Vec2| {
                 navigation.point_clear(point)
                     && (!nearby
-                        || (space_free(entity, point, &occupancy)
+                        || (occupancy.space_free(entity, point)
                             && space_free(entity, point, &claims)))
             };
             let mut candidates = region.work_candidates(position);
@@ -389,7 +392,7 @@ pub fn move_velocity_system(
                 selected_destination.interaction = None;
                 work_ready = nearby
                     && region.contains(position)
-                    && space_free(entity, position, &occupancy)
+                    && occupancy.space_free(entity, position)
                     && !bodies
                         .get(entity)
                         .is_ok_and(|(_, _, recovering)| recovering)
@@ -711,12 +714,47 @@ fn space_free(
     position: Vec2,
     occupancy: &FixedSpatialBuckets<(Entity, Vec2)>,
 ) -> bool {
-    occupancy
-        .neighbourhood(occupancy.bucket_for_position(position), 1)
-        .flat_map(|(_, entries)| entries)
-        .all(|(other, other_position)| {
-            *other == entity
-                || position.distance_squared(*other_position)
-                    >= (2.0 * crate::navigation::BODY_RADIUS - 0.001).powi(2)
-        })
+    clear_of(
+        entity,
+        position,
+        occupancy
+            .neighbourhood(occupancy.bucket_for_position(position), 1)
+            .flat_map(|(_, entries)| entries),
+    )
+}
+
+/// Whether no body other than `entity` among `nearby` overlaps `position`.
+fn clear_of<'a>(
+    entity: Entity,
+    position: Vec2,
+    nearby: impl IntoIterator<Item = &'a (Entity, Vec2)>,
+) -> bool {
+    nearby.into_iter().all(|(other, other_position)| {
+        *other == entity
+            || position.distance_squared(*other_position)
+                >= (2.0 * crate::navigation::BODY_RADIUS - 0.001).powi(2)
+    })
+}
+
+/// Every body's position, built once per pass.
+struct Occupancy(PackedSpatialBuckets<(Entity, Vec2)>);
+
+impl Occupancy {
+    fn new(bodies: impl IntoIterator<Item = (Entity, Vec2)>) -> Self {
+        Self(PackedSpatialBuckets::new(
+            2.0 * crate::navigation::BODY_RADIUS,
+            bodies.into_iter().map(|body| (body.1, body)),
+        ))
+    }
+
+    /// [`space_free`] against every body.
+    fn space_free(&self, entity: Entity, position: Vec2) -> bool {
+        clear_of(
+            entity,
+            position,
+            self.0
+                .neighbourhood_runs(self.0.bucket_for_position(position), 1)
+                .flatten(),
+        )
+    }
 }
