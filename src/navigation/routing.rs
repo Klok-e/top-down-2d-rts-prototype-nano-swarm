@@ -60,6 +60,8 @@ pub struct Navigation {
     /// Main-hierarchy caches this geometry variant reuses where its changed shapes cannot reach.
     base: Option<std::sync::Arc<BaseHierarchy>>,
     revision: u64,
+    /// Distinct for every bounds, obstacle set and clearing a hierarchy has held.
+    clearance: u64,
     chunks: std::sync::Arc<Mutex<FastHashMap<IVec2, Chunk>>>,
     connections: std::sync::Arc<Mutex<ComponentEdges>>,
     scheduler: Mutex<budget::Scheduler>,
@@ -218,6 +220,11 @@ impl PartialOrd for Visit {
         Some(self.cmp(other))
     }
 }
+/// A process-wide unique clearance identity.
+fn next_clearance() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
 impl Default for Navigation {
     fn default() -> Self {
         Self::new(&IntentGrid::new(0, 0), vec![])
@@ -235,6 +242,7 @@ impl Navigation {
             clearing_layer: None,
             base: None,
             revision: 1,
+            clearance: next_clearance(),
             chunks: std::sync::Arc::new(Mutex::new(FastHashMap::default())),
             connections: Default::default(),
             scheduler: Mutex::new(budget::Scheduler::default()),
@@ -268,6 +276,7 @@ impl Navigation {
         self.obstacles = replacement.obstacles;
         self.obstacle_index = replacement.obstacle_index;
         self.revision = self.revision.wrapping_add(1);
+        self.clearance = next_clearance();
         self.rebuild_clearing_layer();
         true
     }
@@ -291,6 +300,7 @@ impl Navigation {
             clearing_layer: None,
             base: self.base.clone(),
             revision: self.revision,
+            clearance: next_clearance(),
             chunks: self.chunks.clone(),
             connections: self.connections.clone(),
             scheduler: Mutex::new(budget::Scheduler::default()),
@@ -318,6 +328,7 @@ impl Navigation {
                 &changed,
             ))),
             revision: self.revision,
+            clearance: next_clearance(),
             chunks: Default::default(),
             connections: Default::default(),
             scheduler: Mutex::new(budget::Scheduler::default()),
@@ -363,6 +374,11 @@ impl Navigation {
     }
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+    /// Equal for two hierarchies, or one hierarchy at two times, only when bounds,
+    /// obstacles and clearing are the same, so every clearance query answers the same.
+    pub(crate) fn clearance_identity(&self) -> u64 {
+        self.clearance
     }
     pub fn point_clear(&self, p: Vec2) -> bool {
         p.is_finite()

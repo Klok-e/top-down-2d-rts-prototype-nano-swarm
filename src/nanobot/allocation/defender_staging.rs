@@ -538,6 +538,14 @@ fn procedural_waypoint(entity: Entity, cell: IVec2, index: u64) -> Vec2 {
     get_world_from_zone(cell) + offset
 }
 
+/// The first clear roaming waypoint for `entity` in `cell`, trying procedural points
+/// from `index`, then the cell's lattice, then `anchor`.
+///
+/// The procedural and lattice candidates depend only on the entity, cell and index, and
+/// whether they lie in the cell and are clear for entry only on the navigation geometry.
+/// `known_misses` of them are already known to fail that test and are skipped. Also
+/// returns how many leading procedural and lattice candidates fail it.
+#[allow(clippy::too_many_arguments)]
 fn clear_roaming_waypoint(
     entity: Entity,
     cell: IVec2,
@@ -546,7 +554,9 @@ fn clear_roaming_waypoint(
     navigation: &Navigation,
     anchor: Option<Vec2>,
     reachable: impl Fn(Vec2) -> bool,
-) -> Option<(u64, Vec2)> {
+    known_misses: u64,
+) -> (Option<(u64, Vec2)>, u64) {
+    const PROCEDURAL: u64 = 64;
     let lower = cell.as_vec2() * ZONE_BLOCK_SIZE;
     let min = (lower / CELL_WIDTH).floor().as_ivec2();
     let max = ((lower + Vec2::splat(ZONE_BLOCK_SIZE)) / CELL_WIDTH)
@@ -554,35 +564,49 @@ fn clear_roaming_waypoint(
         .as_ivec2();
     let size = max - min;
     let count = (size.x * size.y) as u64;
-    let procedural = (0..64).map(|offset| {
+    let fixed = PROCEDURAL + count;
+    let known_misses = known_misses.min(fixed);
+    let procedural = (known_misses.min(PROCEDURAL)..PROCEDURAL).map(|offset| {
         let index = index.wrapping_add(offset);
         (index, procedural_waypoint(entity, cell, index))
     });
-    let lattice = (0..count).map(|offset| {
+    let lattice = (known_misses.saturating_sub(PROCEDURAL)..count).map(|offset| {
         let candidate = index.wrapping_add(offset) % count;
         let tile = min + IVec2::new(candidate as i32 % size.x, candidate as i32 / size.x);
         (index, (tile.as_vec2() + Vec2::splat(0.5)) * CELL_WIDTH)
     });
-    for (index, waypoint) in procedural
-        .chain(lattice)
-        .chain(anchor.map(|point| (index, point)))
-    {
-        if world_to_cell(waypoint) != cell
-            || !navigation.point_clear_for_entry(waypoint)
-            || !reachable(waypoint)
-        {
+    let mut misses = None;
+    for (offset, (index, waypoint)) in (known_misses..).zip(
+        procedural
+            .chain(lattice)
+            .chain(anchor.map(|point| (index, point))),
+    ) {
+        if world_to_cell(waypoint) != cell || !navigation.point_clear_for_entry(waypoint) {
+            continue;
+        }
+        let misses = *misses.get_or_insert(offset.min(fixed));
+        if !reachable(waypoint) {
             continue;
         }
         if navigation.movement_clear(position, waypoint) {
-            return Some((index, waypoint));
+            return (Some((index, waypoint)), misses);
         }
         match navigation.query_connectivity(position, RouteGoal::Point(waypoint)) {
-            ConnectivityStatus::Connected { .. } => return Some((index, waypoint)),
-            ConnectivityStatus::Pending => return None,
+            ConnectivityStatus::Connected { .. } => return (Some((index, waypoint)), misses),
+            ConnectivityStatus::Pending => return (None, misses),
             ConnectivityStatus::Unreachable => {}
         }
     }
-    None
+    (None, misses.unwrap_or(fixed))
+}
+
+/// Leading roaming candidates known to fail the geometry test for one Defender's search.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct RoamingMisses {
+    cell: IVec2,
+    index: u64,
+    clearance: u64,
+    misses: u64,
 }
 
 #[allow(clippy::type_complexity)]
@@ -593,6 +617,7 @@ pub(super) fn reconcile_defender_staging_system(
     territory: Res<TerritorySnapshot>,
     reachability: Option<Res<SwarmReachabilityMap>>,
     mut layouts: ResMut<DefenderStagingLayouts>,
+    mut roaming_misses: Local<EntityHashMap<RoamingMisses>>,
     mut defenders: Query<
         (
             Entity,
@@ -715,6 +740,7 @@ pub(super) fn reconcile_defender_staging_system(
         .retain(|swarm, _| seen_swarms.contains(swarm));
 
     let navigation_revision = navigation.revision();
+    roaming_misses.retain(|entity, _| assignments.contains_key(entity));
     for (entity, transform, _, member, _, _, _, _, _, staging, movement, ..) in &mut defenders {
         let Some(&target_cell) = assignments.get(&entity) else {
             continue;
@@ -736,10 +762,27 @@ pub(super) fn reconcile_defender_staging_system(
             let anchor = reachability
                 .as_ref()
                 .and_then(|map| map.reachable_point(member.0, target_cell, &grid));
-            clear_roaming_waypoint(
+            let index = index.wrapping_add(u64::from(arrived));
+            // A search repeated against the same geometry skips the candidates it rejected.
+            let search = RoamingMisses {
+                cell: target_cell,
+                index,
+                clearance: navigation.clearance_identity(),
+                misses: 0,
+            };
+            let known_misses = roaming_misses
+                .get(&entity)
+                .filter(|known| {
+                    RoamingMisses {
+                        misses: 0,
+                        ..**known
+                    } == search
+                })
+                .map_or(0, |known| known.misses);
+            let (selected, misses) = clear_roaming_waypoint(
                 entity,
                 target_cell,
-                index.wrapping_add(u64::from(arrived)),
+                index,
                 position,
                 &navigation,
                 anchor,
@@ -748,7 +791,10 @@ pub(super) fn reconcile_defender_staging_system(
                         .as_ref()
                         .is_none_or(|map| map.position_is_reachable(member.0, point, &grid))
                 },
-            )
+                known_misses,
+            );
+            roaming_misses.insert(entity, RoamingMisses { misses, ..search });
+            selected
         };
         let Some((waypoint_index, waypoint)) = selected else {
             if staging.is_some_and(|staging| staging.cell != target_cell) {
@@ -795,6 +841,63 @@ mod tests {
                 navigation_revision: 0,
             }),
         }
+    }
+
+    #[test]
+    fn skipping_known_roaming_misses_finds_the_same_waypoint() {
+        use rand::{RngExt, SeedableRng, rngs::StdRng};
+
+        use crate::navigation::Obstacle;
+
+        let mut rng = StdRng::seed_from_u64(0x0A11_5EED);
+        let grid = IntentGrid::new(8, 8);
+        let mut skipped = 0;
+        for layout in 0..20 {
+            // Dense rocks leave few clear points, so many searches begin with misses.
+            let obstacles = (0..rng.random_range(20..400))
+                .map(|_| Obstacle::Circle {
+                    center: Vec2::new(
+                        rng.random_range(-1_100.0..1_100.0),
+                        rng.random_range(-1_100.0..1_100.0),
+                    ),
+                    radius: rng.random_range(20.0..160.0),
+                })
+                .collect();
+            let navigation = Navigation::new(&grid, obstacles);
+            for search in 0..40 {
+                let entity = Entity::from_bits(1 + layout * 100 + search);
+                let cell = IVec2::new(rng.random_range(-2..2), rng.random_range(-2..2));
+                let index = rng.random_range(0..200);
+                let position = Vec2::new(
+                    rng.random_range(-1_000.0..1_000.0),
+                    rng.random_range(-1_000.0..1_000.0),
+                );
+                let anchor = rng.random_bool(0.5).then(|| get_world_from_zone(cell));
+                let unreachable = Vec2::new(rng.random_range(-1_000.0..1_000.0), 0.0);
+                let reachable = |point: Vec2| point.x < unreachable.x;
+                let search = |known_misses| {
+                    clear_roaming_waypoint(
+                        entity,
+                        cell,
+                        index,
+                        position,
+                        &navigation,
+                        anchor,
+                        reachable,
+                        known_misses,
+                    )
+                };
+                let (expected, misses) = search(0);
+                for known_misses in [misses, rng.random_range(0..=misses)] {
+                    assert_eq!(search(known_misses), (expected, misses));
+                }
+                skipped += misses;
+            }
+        }
+        assert!(
+            skipped > 1_000,
+            "the searches must skip rejected candidates"
+        );
     }
 
     #[test]

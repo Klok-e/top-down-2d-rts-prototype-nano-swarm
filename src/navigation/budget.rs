@@ -73,6 +73,7 @@ impl Navigation {
             clearing_layer: None,
             base: None,
             revision: self.revision,
+            clearance: super::next_clearance(),
             chunks: Arc::new(Mutex::new(FastHashMap::default())),
             connections: Default::default(),
             scheduler: Mutex::new(Scheduler::default()),
@@ -1347,6 +1348,7 @@ impl Navigation {
         if clearing_changed {
             self.clearing = clearing;
             self.revision = self.revision.wrapping_add(1);
+            self.clearance = super::next_clearance();
         }
         let geometry_changed = self.refresh(grid, obstacles);
         if clearing_changed && !geometry_changed {
@@ -1358,6 +1360,7 @@ impl Navigation {
         if self.clearing != clearing {
             self.clearing = clearing;
             self.revision = self.revision.wrapping_add(1);
+            self.clearance = super::next_clearance();
             self.rebuild_clearing_layer();
         }
     }
