@@ -49,6 +49,18 @@ struct StagingLayoutInput {
     cells: Vec<IVec2>,
 }
 
+impl DefenderStaging {
+    /// Exact identity, so a stored staging is replaced unless it is bit for bit the same.
+    fn bits(&self) -> (IVec2, u64, [u32; 2], u64) {
+        (
+            self.cell,
+            self.waypoint_index,
+            [self.waypoint.x.to_bits(), self.waypoint.y.to_bits()],
+            self.navigation_revision,
+        )
+    }
+}
+
 /// Cache of the current owner-scoped Defender staging layout.
 #[derive(Debug, Default, Resource)]
 pub(super) struct DefenderStagingLayouts {
@@ -832,12 +844,16 @@ pub(super) fn reconcile_defender_staging_system(
                 speed,
             });
         }
-        commands.entity(entity).insert(DefenderStaging {
+        let selected = DefenderStaging {
             cell: target_cell,
             waypoint_index,
             waypoint,
             navigation_revision,
-        });
+        };
+        // Nothing reads when staging changed, so an identical staging needs no command.
+        if staging.is_none_or(|staging| staging.bits() != selected.bits()) {
+            commands.entity(entity).insert(selected);
+        }
     }
 }
 
