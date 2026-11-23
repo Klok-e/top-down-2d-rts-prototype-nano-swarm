@@ -81,8 +81,8 @@ impl ObstacleIndex {
     fn bounds(a: Vec2, b: Vec2) -> (IVec2, IVec2) {
         let width = CELL_WIDTH * CHUNK as f32;
         (
-            (a.min(b) / width).floor().as_ivec2(),
-            (a.max(b) / width).floor().as_ivec2(),
+            crate::spatial::floor_to_ivec2(a.min(b) / width),
+            crate::spatial::floor_to_ivec2(a.max(b) / width),
         )
     }
     fn small_span(min: IVec2, max: IVec2) -> bool {
@@ -396,7 +396,7 @@ impl Navigation {
         (cell.as_vec2() + Vec2::splat(0.5)) * CELL_WIDTH
     }
     fn cell(p: Vec2) -> IVec2 {
-        (p / CELL_WIDTH).floor().as_ivec2()
+        crate::spatial::floor_to_ivec2(p / CELL_WIDTH)
     }
     fn chunk(cell: IVec2) -> IVec2 {
         IVec2::new(cell.x.div_euclid(CHUNK), cell.y.div_euclid(CHUNK))

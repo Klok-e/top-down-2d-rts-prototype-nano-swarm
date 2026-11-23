@@ -215,10 +215,7 @@ impl FitCellIndex {
 
     fn bucket_for_position(position: Vec2) -> IVec2 {
         let size = Self::bucket_size();
-        IVec2::new(
-            (position.x / size).floor() as i32,
-            (position.y / size).floor() as i32,
-        )
+        crate::spatial::floor_to_ivec2(position / size)
     }
 
     fn insert(&mut self, cell: IVec2) {

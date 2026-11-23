@@ -3,6 +3,46 @@ use bevy::{
     prelude::{IVec2, Vec2},
 };
 
+// Baseline x86-64 has no rounding instruction, so `floor` and `ceil` compile to library
+// calls. These give the same results from a truncating conversion and stay inline.
+
+/// `value.floor() as i32`, saturating the same way.
+#[inline]
+pub fn floor_to_i32(value: f32) -> i32 {
+    let truncated = value as i32;
+    // Values beyond the i32 range saturate; within it, `truncated` is exact as an f32.
+    truncated.saturating_sub(i32::from(truncated as f32 > value))
+}
+
+/// `value.floor().as_ivec2()`.
+#[inline]
+pub fn floor_to_ivec2(value: Vec2) -> IVec2 {
+    IVec2::new(floor_to_i32(value.x), floor_to_i32(value.y))
+}
+
+/// `value.floor()`, bit for bit.
+#[inline]
+pub fn floor_f64(value: f64) -> f64 {
+    // At and beyond 2^52 every f64 is an integer; NaN fails the test and is returned.
+    if !(value.abs() < 4_503_599_627_370_496.0) {
+        return value;
+    }
+    let truncated = value as i64 as f64;
+    // The sign restores -0.0 and is already right for every other result.
+    (truncated - f64::from(u8::from(truncated > value))).copysign(value)
+}
+
+/// `value.ceil()`, bit for bit.
+#[inline]
+pub fn ceil_f64(value: f64) -> f64 {
+    if !(value.abs() < 4_503_599_627_370_496.0) {
+        return value;
+    }
+    let truncated = value as i64 as f64;
+    // The sign gives -0.0 for values in (-1, 0], as `ceil` does.
+    (truncated + f64::from(u8::from(truncated < value))).copysign(value)
+}
+
 /// Deterministic fixed-size spatial buckets.
 ///
 /// Consumers own separate instances and choose bucket sizes suited to their
@@ -25,8 +65,8 @@ impl<T> FixedSpatialBuckets<T> {
 
     pub fn bucket_for_position(&self, position: Vec2) -> IVec2 {
         IVec2::new(
-            (position.x / self.bucket_size).floor() as i32,
-            (position.y / self.bucket_size).floor() as i32,
+            floor_to_i32(position.x / self.bucket_size),
+            floor_to_i32(position.y / self.bucket_size),
         )
     }
 
@@ -169,8 +209,8 @@ impl<T> PackedSpatialBuckets<T> {
 
     pub fn bucket_for_position(&self, position: Vec2) -> IVec2 {
         IVec2::new(
-            (position.x / self.bucket_size).floor() as i32,
-            (position.y / self.bucket_size).floor() as i32,
+            floor_to_i32(position.x / self.bucket_size),
+            floor_to_i32(position.y / self.bucket_size),
         )
     }
 
@@ -246,6 +286,63 @@ impl<T> PackedSpatialBuckets<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_rounding_matches_the_library_functions() {
+        use rand::{RngExt, SeedableRng, rngs::StdRng};
+
+        let mut special = vec![
+            0.0_f64,
+            -0.0,
+            0.5,
+            -0.5,
+            1.0,
+            -1.0,
+            0.999_999_999_999_999_9,
+            -0.999_999_999_999_999_9,
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+            4_503_599_627_370_495.5,
+            -4_503_599_627_370_495.5,
+            4_503_599_627_370_496.0,
+            9_007_199_254_740_993.0,
+            2_147_483_647.5,
+            -2_147_483_648.5,
+            2_147_483_648.0,
+            -2_147_483_649.0,
+            f64::MAX,
+            f64::MIN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        let mut rng = StdRng::seed_from_u64(0xF100_0C33);
+        for _ in 0..200_000 {
+            let magnitude = 10_f64.powi(rng.random_range(-3..12));
+            special.push(rng.random_range(-magnitude..magnitude));
+            special.push(f64::from_bits(rng.random::<u64>()));
+        }
+        for value in special {
+            assert_eq!(
+                floor_f64(value).to_bits(),
+                value.floor().to_bits(),
+                "{value:e}"
+            );
+            assert_eq!(
+                ceil_f64(value).to_bits(),
+                value.ceil().to_bits(),
+                "{value:e}"
+            );
+            let single = value as f32;
+            assert_eq!(floor_to_i32(single), single.floor() as i32, "{single:e}");
+            let pair = Vec2::new(single, -single);
+            assert_eq!(floor_to_ivec2(pair), pair.floor().as_ivec2(), "{single:e}");
+        }
+        for bits in (0..=u32::MAX).step_by(9_973) {
+            let single = f32::from_bits(bits);
+            assert_eq!(floor_to_i32(single), single.floor() as i32, "{single:e}");
+        }
+    }
 
     #[test]
     fn bucket_coordinates_floor_negative_world_positions() {

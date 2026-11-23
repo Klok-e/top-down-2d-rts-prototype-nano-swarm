@@ -10,7 +10,10 @@ use std::{cmp::Ordering, ops::ControlFlow};
 use bevy::{math::DVec2, prelude::*};
 
 use super::EngagementDefender;
-use crate::nanobot::SwarmId;
+use crate::{
+    nanobot::SwarmId,
+    spatial::{ceil_f64, floor_f64},
+};
 
 /// Fine cell side in world units, before widening for spread-out layouts.
 const FINE_CELL_SIZE: f64 = 64.0;
@@ -262,7 +265,8 @@ impl DefenderIndex {
     }
 
     fn cell_coordinates(&self, position: Vec2) -> Option<[i64; 2]> {
-        let cell = ((position.as_dvec2() - self.origin) / self.cell_size).floor();
+        let cell = (position.as_dvec2() - self.origin) / self.cell_size;
+        let cell = DVec2::new(floor_f64(cell.x), floor_f64(cell.y));
         (cell.is_finite() && (0.0..self.width as f64).contains(&cell.x))
             .then_some(cell)
             .filter(|cell| (0.0..self.height as f64).contains(&cell.y))
@@ -292,8 +296,8 @@ impl DefenderIndex {
         let last_row = self.height - 1;
         let (first_row, last_row) = if bounded {
             (
-                (center.y - reach_cells).floor().max(0.0) as i64,
-                (center.y + reach_cells).floor().min(last_row as f64) as i64,
+                floor_f64(center.y - reach_cells).max(0.0) as i64,
+                floor_f64(center.y + reach_cells).min(last_row as f64) as i64,
             )
         } else {
             (0, last_row)
@@ -305,8 +309,8 @@ impl DefenderIndex {
                     .max(0.0);
                 let half_width = (reach_cells * reach_cells - gap * gap).max(0.0).sqrt();
                 (
-                    (center.x - half_width).floor().max(0.0) as i64,
-                    (center.x + half_width).floor().min((self.width - 1) as f64) as i64,
+                    floor_f64(center.x - half_width).max(0.0) as i64,
+                    floor_f64(center.x + half_width).min((self.width - 1) as f64) as i64,
                 )
             } else {
                 (0, self.width - 1)
@@ -550,8 +554,8 @@ impl DefenderIndex {
         if !(center.is_finite() && reach.is_finite()) {
             return None;
         }
-        let first_row = (center.y - reach).floor().max(0.0) as i64;
-        let last_row = (center.y + reach).floor().min((self.height - 1) as f64) as i64;
+        let first_row = floor_f64(center.y - reach).max(0.0) as i64;
+        let last_row = floor_f64(center.y + reach).min((self.height - 1) as f64) as i64;
         let (mut inner, mut outer) = (SideTotals::default(), SideTotals::default());
         for y in first_row..=last_row {
             let row = (y * self.width) as usize;
@@ -566,8 +570,8 @@ impl DefenderIndex {
                 .max(center.y - (y + 1) as f64)
                 .max(0.0);
             let half_width = (reach * reach - near * near).max(0.0).sqrt();
-            let first = (center.x - half_width).floor().max(0.0) as i64;
-            let last = (center.x + half_width).floor().min((self.width - 1) as f64) as i64;
+            let first = floor_f64(center.x - half_width).max(0.0) as i64;
+            let last = floor_f64(center.x + half_width).min((self.width - 1) as f64) as i64;
             if first > last {
                 continue;
             }
@@ -577,8 +581,8 @@ impl DefenderIndex {
                 .max(((y + 1) as f64 - center.y).abs());
             if far < inside {
                 let half_width = (inside * inside - far * far).sqrt();
-                let first_inside = ((center.x - half_width).ceil() as i64).max(first);
-                let last_inside = ((center.x + half_width).floor() as i64 - 1).min(last);
+                let first_inside = (ceil_f64(center.x - half_width) as i64).max(first);
+                let last_inside = (floor_f64(center.x + half_width) as i64 - 1).min(last);
                 if first_inside <= last_inside {
                     inner += span(first_inside, last_inside);
                 }
@@ -642,10 +646,7 @@ impl DefenderIndex {
 }
 
 fn coarse_bucket(position: Vec2, size: f32) -> IVec2 {
-    IVec2::new(
-        (position.x / size).floor() as i32,
-        (position.y / size).floor() as i32,
-    )
+    crate::spatial::floor_to_ivec2(position / size)
 }
 
 /// The coarse scan visits buckets row by row, then Defenders in insertion order.

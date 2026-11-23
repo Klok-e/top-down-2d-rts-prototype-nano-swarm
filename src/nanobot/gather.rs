@@ -123,10 +123,7 @@ pub struct ReturningToStockpile {
 }
 
 pub fn world_to_cell(world: Vec2) -> IVec2 {
-    IVec2::new(
-        (world.x / ZONE_BLOCK_SIZE).floor() as i32,
-        (world.y / ZONE_BLOCK_SIZE).floor() as i32,
-    )
+    crate::spatial::floor_to_ivec2(world / ZONE_BLOCK_SIZE)
 }
 
 pub(super) fn painted_gather_regions(
