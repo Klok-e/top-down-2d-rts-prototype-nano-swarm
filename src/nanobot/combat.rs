@@ -10,7 +10,7 @@ use crate::nanobot::{
     Structure, StructureKind, Swarm, SwarmId, SwarmMember, combat_key, effective_attack,
     effective_defense,
 };
-use crate::spatial::FixedSpatialBuckets;
+use crate::spatial::PackedSpatialBuckets;
 use crate::structure_sprites::StructureVisual;
 use crate::tuning::{Tuning, elapsed_fixed_ticks, rescale_ticks};
 
@@ -301,13 +301,18 @@ pub fn defender_combat_system(
             })
         })
         .collect::<Vec<_>>();
-    let mut target_buckets = FixedSpatialBuckets::new(tuning.combat.attack_range);
-    for target in snapshot.iter().copied() {
-        target_buckets.insert(target.position, CombatTarget::Nanobot(target));
-    }
-    for target in structures.iter().copied() {
-        target_buckets.insert(target.position, CombatTarget::Structure(target));
-    }
+    // Packed buckets visit targets in the same order as buckets filled one by one.
+    let target_buckets = PackedSpatialBuckets::new(
+        tuning.combat.attack_range,
+        snapshot
+            .iter()
+            .map(|&target| (target.position, CombatTarget::Nanobot(target)))
+            .chain(
+                structures
+                    .iter()
+                    .map(|&target| (target.position, CombatTarget::Structure(target))),
+            ),
+    );
 
     let mut nanobot_damage = BTreeMap::<(u64, Entity), BTreeMap<SwarmId, u32>>::new();
     let mut structure_damage = BTreeMap::<(u64, Entity), BTreeMap<SwarmId, u32>>::new();
@@ -325,8 +330,8 @@ pub fn defender_combat_system(
         let ready = previous.ticks_remaining == 0 && acquisition_delay == 0;
         let attacker_bucket = target_buckets.bucket_for_position(attacker.position);
         let mut targets_in_range = target_buckets
-            .neighbourhood(attacker_bucket, 1)
-            .flat_map(|(_, targets)| targets)
+            .neighbourhood_runs(attacker_bucket, 1)
+            .flatten()
             .copied()
             .filter(|target| target.swarm() != attacker.swarm)
             .filter_map(|target| {

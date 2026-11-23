@@ -105,8 +105,8 @@ impl RockIndex {
 
     fn span(min: Vec2, max: Vec2) -> (IVec2, IVec2) {
         (
-            (min / Self::BUCKET).floor().as_ivec2(),
-            (max / Self::BUCKET).floor().as_ivec2(),
+            crate::spatial::floor_to_ivec2(min / Self::BUCKET),
+            crate::spatial::floor_to_ivec2(max / Self::BUCKET),
         )
     }
 
