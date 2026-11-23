@@ -6,7 +6,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use bevy::{ecs::entity::EntityHashMap, prelude::*};
+use bevy::{
+    ecs::entity::{EntityHashMap, EntityHashSet},
+    prelude::*,
+};
 
 mod flow;
 
@@ -122,6 +125,37 @@ impl BoundedStagingTargets {
         self.by_x.remove(&(cell.x, cell.y, index));
         self.by_y.remove(&(cell.y, cell.x, index));
     }
+}
+
+/// The `count` Defenders nearest `cell`'s center, nearest first, ties by entity: the
+/// first `count` of a stable sort by that comparison.
+fn nearest_first<'a>(
+    defenders: &[&'a DefenderSnapshot],
+    cell: IVec2,
+    count: usize,
+) -> Vec<&'a DefenderSnapshot> {
+    let center = get_world_from_zone(cell);
+    // Entity bits make the order total, so unstable selection and sorting agree with it.
+    let order = |left: &(f32, u64, usize), right: &(f32, u64, usize)| {
+        left.0.total_cmp(&right.0).then(left.1.cmp(&right.1))
+    };
+    let mut keyed = defenders
+        .iter()
+        .enumerate()
+        .map(|(index, defender)| {
+            (
+                defender.position.distance_squared(center),
+                defender.entity.to_bits(),
+                index,
+            )
+        })
+        .collect::<Vec<_>>();
+    if count < keyed.len() {
+        keyed.select_nth_unstable_by(count, order);
+        keyed.truncate(count);
+    }
+    keyed.sort_unstable_by(order);
+    keyed.iter().map(|&(.., index)| defenders[index]).collect()
 }
 
 fn owned_defend_cells(grid: &IntentGrid, swarm: SwarmId) -> Vec<IVec2> {
@@ -304,7 +338,7 @@ fn bounded_balanced_assignments(
     );
 
     let mut assignments = EntityHashMap::default();
-    let mut assigned = HashSet::new();
+    let mut assigned = EntityHashSet::default();
     let mut incumbents_by_cell = vec![Vec::new(); cells.len()];
     for defender in defenders {
         if let Some(index) = defender
@@ -314,18 +348,8 @@ fn bounded_balanced_assignments(
             incumbents_by_cell[index].push(defender);
         }
     }
-    for (cell_index, incumbents) in incumbents_by_cell.iter_mut().enumerate() {
-        incumbents.sort_by(|left, right| {
-            left.position
-                .distance_squared(get_world_from_zone(cells[cell_index]))
-                .total_cmp(
-                    &right
-                        .position
-                        .distance_squared(get_world_from_zone(cells[cell_index])),
-                )
-                .then_with(|| left.entity.to_bits().cmp(&right.entity.to_bits()))
-        });
-        for defender in incumbents.iter().take(capacities[cell_index]) {
+    for (cell_index, incumbents) in incumbents_by_cell.iter().enumerate() {
+        for defender in nearest_first(incumbents, cells[cell_index], capacities[cell_index]) {
             assignments.insert(defender.entity, cells[cell_index]);
             assigned.insert(defender.entity);
             capacities[cell_index] -= 1;
@@ -339,18 +363,8 @@ fn bounded_balanced_assignments(
             returners_by_cell[index].push(defender);
         }
     }
-    for (cell_index, returners) in returners_by_cell.iter_mut().enumerate() {
-        returners.sort_by(|left, right| {
-            left.position
-                .distance_squared(get_world_from_zone(cells[cell_index]))
-                .total_cmp(
-                    &right
-                        .position
-                        .distance_squared(get_world_from_zone(cells[cell_index])),
-                )
-                .then_with(|| left.entity.to_bits().cmp(&right.entity.to_bits()))
-        });
-        for defender in returners.iter().take(capacities[cell_index]) {
+    for (cell_index, returners) in returners_by_cell.iter().enumerate() {
+        for defender in nearest_first(returners, cells[cell_index], capacities[cell_index]) {
             assignments.insert(defender.entity, cells[cell_index]);
             assigned.insert(defender.entity);
             capacities[cell_index] -= 1;
@@ -361,7 +375,8 @@ fn bounded_balanced_assignments(
         .iter()
         .filter(|defender| !assigned.contains(&defender.entity))
         .collect::<Vec<_>>();
-    remaining_defenders.sort_by(|left, right| {
+    // Entity bits make the order total, so an unstable sort gives the same order.
+    remaining_defenders.sort_unstable_by(|left, right| {
         left.current_cell
             .y
             .cmp(&right.current_cell.y)
@@ -840,6 +855,47 @@ mod tests {
                 waypoint: Vec2::ZERO,
                 navigation_revision: 0,
             }),
+        }
+    }
+
+    #[test]
+    fn nearest_first_takes_the_front_of_the_stable_distance_sort() {
+        use rand::{RngExt, SeedableRng, rngs::StdRng};
+
+        let mut rng = StdRng::seed_from_u64(0x0005_7A6E);
+        for _ in 0..300 {
+            let cell = IVec2::new(rng.random_range(-3..3), rng.random_range(-3..3));
+            let center = get_world_from_zone(cell);
+            let defenders = (0..rng.random_range(0..200))
+                .map(|_| {
+                    // Mirrored offsets give equal distances, so ties must break by entity.
+                    let offset = Vec2::new(
+                        rng.random_range(0..8) as f32 * 64.0,
+                        rng.random_range(0..8) as f32 * 64.0,
+                    ) * if rng.random_bool(0.5) { 1.0 } else { -1.0 };
+                    snapshot(rng.random_range(1..10_000), center + offset, None)
+                })
+                .collect::<Vec<_>>();
+            let references = defenders.iter().collect::<Vec<_>>();
+            let mut expected = references.clone();
+            expected.sort_by(|left, right| {
+                left.position
+                    .distance_squared(center)
+                    .total_cmp(&right.position.distance_squared(center))
+                    .then_with(|| left.entity.to_bits().cmp(&right.entity.to_bits()))
+            });
+            let count = rng.random_range(0..=defenders.len() + 2);
+            expected.truncate(count);
+            let entities = |defenders: Vec<&DefenderSnapshot>| {
+                defenders
+                    .iter()
+                    .map(|defender| defender.entity)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                entities(nearest_first(&references, cell, count)),
+                entities(expected)
+            );
         }
     }
 
