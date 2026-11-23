@@ -23,6 +23,7 @@ impl ExpansionCounters {
     }
 }
 use std::{
+    cell::Cell,
     future::Future,
     pin::Pin,
     task::{Context, Poll, Waker},
@@ -39,7 +40,7 @@ impl WorkUnit {
 impl Future for WorkUnit {
     type Output = ();
     fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
-        if self.0 {
+        if self.0 || take_allowance() {
             Poll::Ready(())
         } else {
             self.0 = true;
@@ -48,10 +49,55 @@ impl Future for WorkUnit {
     }
 }
 
+thread_local! {
+    /// Further work units the current [`poll_units`] call may run without yielding.
+    static ALLOWANCE: Cell<usize> = const { Cell::new(0) };
+}
+
+fn take_allowance() -> bool {
+    ALLOWANCE.with(|allowance| {
+        let left = allowance.get();
+        allowance.set(left.saturating_sub(1));
+        left > 0
+    })
+}
+
+/// Restores the enclosing allowance when a poll scope ends.
+struct AllowanceScope(usize);
+impl AllowanceScope {
+    fn enter(allowance: usize) -> Self {
+        Self(ALLOWANCE.replace(allowance))
+    }
+}
+impl Drop for AllowanceScope {
+    fn drop(&mut self) {
+        ALLOWANCE.set(self.0);
+    }
+}
+
+/// Polls `future` for at most `units` work units in one call, with the same
+/// result as polling it once per unit and stopping at the first ready poll.
+/// Returns the poll result and the units used.
+pub(super) fn poll_units<F: Future + ?Sized>(
+    future: Pin<&mut F>,
+    units: usize,
+) -> (Poll<F::Output>, usize) {
+    debug_assert!(units > 0);
+    let scope = AllowanceScope::enter(units - 1);
+    let poll = future.poll(&mut Context::from_waker(Waker::noop()));
+    let used = units - ALLOWANCE.get();
+    drop(scope);
+    debug_assert!(poll.is_ready() || used == units);
+    (poll, used)
+}
+
+/// Polls until ready, one work unit per poll while `allow_work` permits.
 pub(super) fn poll_with_budget<F: Future>(
     future: F,
     allow_work: &mut dyn FnMut() -> bool,
 ) -> Result<F::Output, ()> {
+    // A nested synchronous poll meters its own units, not the enclosing request's.
+    let _scope = AllowanceScope::enter(0);
     let mut future = std::pin::pin!(future);
     let mut context = Context::from_waker(Waker::noop());
     while allow_work() {
@@ -1063,28 +1109,26 @@ impl Navigation {
                 }));
             }
             request.last_served = scheduler.tick;
-            let mut context = Context::from_waker(Waker::noop());
-            for _ in 0..QUANTUM.min(stop - work.work) {
-                work.work += 1;
-                if request.purpose == RequestPurpose::Movement {
-                    work.movement_work += 1;
-                } else {
-                    work.background_work += 1;
-                }
-                if let Poll::Ready(result) =
-                    request.future.as_mut().unwrap().as_mut().poll(&mut context)
-                {
-                    request.result = match result {
-                        RouteOutcome::Found(route) => RouteStatus::Found(route),
-                        RouteOutcome::Unreachable => RouteStatus::Unreachable,
-                    };
-                    request.future = None;
-                    work.completed += 1;
-                    work.max_latency_ticks = work
-                        .max_latency_ticks
-                        .max(scheduler.tick - request.submitted);
-                    break;
-                }
+            let (poll, used) = poll_units(
+                request.future.as_mut().unwrap().as_mut(),
+                QUANTUM.min(stop - work.work),
+            );
+            work.work += used;
+            if request.purpose == RequestPurpose::Movement {
+                work.movement_work += used;
+            } else {
+                work.background_work += used;
+            }
+            if let Poll::Ready(result) = poll {
+                request.result = match result {
+                    RouteOutcome::Found(route) => RouteStatus::Found(route),
+                    RouteOutcome::Unreachable => RouteStatus::Unreachable,
+                };
+                request.future = None;
+                work.completed += 1;
+                work.max_latency_ticks = work
+                    .max_latency_ticks
+                    .max(scheduler.tick - request.submitted);
             }
             if matches!(request.result, RouteStatus::Pending) {
                 queue.push_back(id);
@@ -1242,14 +1286,7 @@ impl Navigation {
             }
             RouteOutcome::Unreachable
         };
-        let mut future = std::pin::pin!(future);
-        let mut context = Context::from_waker(Waker::noop());
-        while allow_work() {
-            if let Poll::Ready(result) = future.as_mut().poll(&mut context) {
-                return Some(result);
-            }
-        }
-        None
+        poll_with_budget(future, &mut allow_work).ok()
     }
 
     async fn clear_origins_in_tile(&self, origin: Vec2) -> Vec<Vec2> {
@@ -1305,13 +1342,7 @@ impl Navigation {
                 .collect(),
         };
         let future = self.async_solve(start, goal, &paint, swarm, hauler, false);
-        let mut future = std::pin::pin!(future);
-        let mut context = Context::from_waker(Waker::noop());
-        loop {
-            if let Poll::Ready(result) = future.as_mut().poll(&mut context) {
-                return result;
-            }
-        }
+        poll_with_budget(future, &mut || true).expect("unlimited route search")
     }
     async fn async_solve(
         &self,
@@ -1648,6 +1679,73 @@ impl Navigation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A metered search: `units` work units, with an unmetered nested search
+    /// after every third unit. Returns the units it ran.
+    async fn metered_search(units: usize, log: &std::cell::RefCell<Vec<usize>>) -> usize {
+        for unit in 0..units {
+            log.borrow_mut().push(unit);
+            if unit % 3 == 2 {
+                let nested = async {
+                    for _ in 0..4 {
+                        WorkUnit::new().await;
+                    }
+                };
+                let mut nested_units = 0;
+                poll_with_budget(nested, &mut || {
+                    nested_units += 1;
+                    true
+                })
+                .unwrap();
+                assert_eq!(nested_units, 5, "nested searches poll once per unit");
+            }
+            WorkUnit::new().await;
+        }
+        units
+    }
+
+    #[test]
+    fn polling_several_units_at_once_matches_polling_one_unit_at_a_time() {
+        for (units, quantum) in [(0, 1), (1, 1), (7, 1), (7, 3), (7, 8), (12, 4), (40, 128)] {
+            let one_log = Default::default();
+            let mut one = std::pin::pin!(metered_search(units, &one_log));
+            let mut one_polls = Vec::new();
+            loop {
+                let mut used = 0;
+                let mut ready = None;
+                for _ in 0..quantum {
+                    used += 1;
+                    if let Poll::Ready(result) =
+                        one.as_mut().poll(&mut Context::from_waker(Waker::noop()))
+                    {
+                        ready = Some(result);
+                        break;
+                    }
+                }
+                one_polls.push((used, one_log.borrow().len()));
+                if ready.is_some() {
+                    break;
+                }
+            }
+
+            let many_log = Default::default();
+            let mut many = std::pin::pin!(metered_search(units, &many_log));
+            let mut many_polls = Vec::new();
+            loop {
+                let (poll, used) = poll_units(many.as_mut(), quantum);
+                many_polls.push((used, many_log.borrow().len()));
+                if poll.is_ready() {
+                    break;
+                }
+            }
+
+            assert_eq!(
+                many_polls, one_polls,
+                "{units} units in quanta of {quantum}"
+            );
+            assert_eq!(ALLOWANCE.get(), 0);
+        }
+    }
 
     #[test]
     fn clearance_identity_changes_exactly_when_clearance_inputs_change() {
