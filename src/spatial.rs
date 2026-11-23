@@ -23,8 +23,8 @@ pub fn floor_to_ivec2(value: Vec2) -> IVec2 {
 /// `value.floor()`, bit for bit.
 #[inline]
 pub fn floor_f64(value: f64) -> f64 {
-    // At and beyond 2^52 every f64 is an integer; NaN fails the test and is returned.
-    if !(value.abs() < 4_503_599_627_370_496.0) {
+    // At and beyond 2^52 every f64 is an integer, so it and NaN are their own floor.
+    if value.is_nan() || value.abs() >= 4_503_599_627_370_496.0 {
         return value;
     }
     let truncated = value as i64 as f64;
@@ -35,7 +35,7 @@ pub fn floor_f64(value: f64) -> f64 {
 /// `value.ceil()`, bit for bit.
 #[inline]
 pub fn ceil_f64(value: f64) -> f64 {
-    if !(value.abs() < 4_503_599_627_370_496.0) {
+    if value.is_nan() || value.abs() >= 4_503_599_627_370_496.0 {
         return value;
     }
     let truncated = value as i64 as f64;

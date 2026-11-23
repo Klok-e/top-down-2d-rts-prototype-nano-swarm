@@ -638,7 +638,7 @@ pub(super) struct RoamingMisses {
     misses: u64,
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(super) fn reconcile_defender_staging_system(
     mut commands: Commands,
     grid: Res<IntentGrid>,

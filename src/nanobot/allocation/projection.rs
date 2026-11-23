@@ -72,11 +72,14 @@ struct SinkSnapshot {
     destination: Destination,
 }
 
+/// A Defender's swarm, cell and active charger, which decide the chargers it serves.
+type MaintenanceState = (SwarmId, IVec2, Option<Entity>);
+
 /// Each live Defender's charger-relevant state as of the previous projection.
 #[derive(Default)]
 pub struct TrackedMaintenanceDefenders {
     /// The state, and the pass parity it was last seen in.
-    by_entity: EntityHashMap<((SwarmId, IVec2, Option<Entity>), bool)>,
+    by_entity: EntityHashMap<(MaintenanceState, bool)>,
     parity: bool,
 }
 
