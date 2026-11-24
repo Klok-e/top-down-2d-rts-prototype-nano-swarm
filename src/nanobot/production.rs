@@ -124,6 +124,10 @@ pub struct ProductionFacility {
     /// reports zero free space, so the hauler sink matcher skips
     /// it until production drains some.
     pub input_capacity: u32,
+    /// The owner swarm had unmet Population Demand when targets were last
+    /// picked, so the next funded cycle starts as soon as the hopper holds its
+    /// cost. Lets haulers claim a queued cycle even while the facility idles.
+    pub demand_waiting: bool,
 }
 
 impl ProductionFacility {
@@ -143,6 +147,7 @@ impl ProductionFacility {
             input_kind: ResourceKind::Minerals,
             input_amount: 0,
             input_capacity: tuning.production.input_capacity,
+            demand_waiting: false,
         }
     }
 
@@ -162,12 +167,12 @@ impl ProductionFacility {
         self.input_capacity.saturating_sub(self.input_amount)
     }
 
-    /// Hopper capacity haulers may claim. While the facility is producing,
-    /// one queued cycle of space is added: the next cycle start drains that
-    /// much, so a delivery can wait at the facility instead of arriving only
-    /// after the hopper empties.
+    /// Hopper capacity haulers may claim. While the facility is producing or
+    /// its swarm still wants nanobots, one queued cycle of space is added: the
+    /// next cycle start drains that much, so a delivery can wait at the
+    /// facility instead of arriving only after the hopper empties.
     pub fn claimable_capacity(&self, cost_per_bot: u32) -> u32 {
-        let queued = if self.current_target.is_some() {
+        let queued = if self.current_target.is_some() || self.demand_waiting {
             cost_per_bot
         } else {
             0
@@ -462,7 +467,12 @@ pub fn production_facility_pick_target_system(
         let counts = available_by_swarm
             .entry(owner_id)
             .or_insert_with(|| count_swarm_nanobots_by_type(owner_id, &nanobots));
-        let Some(kind) = population_demand.most_underfilled_type(owner_id, counts) else {
+        let target = population_demand.most_underfilled_type(owner_id, counts);
+        // Write only on change so haul projection is not invalidated every tick.
+        if facility.demand_waiting != target.is_some() {
+            facility.demand_waiting = target.is_some();
+        }
+        let Some(kind) = target else {
             continue;
         };
         if facility.input_amount < tuning.production.cost_per_bot {
@@ -715,6 +725,18 @@ mod tests {
         assert!(!f.is_busy(Tuning::default().production.ticks_per_bot));
         assert_eq!(f.progress, 0);
         assert_eq!(f.current_target, None);
+    }
+
+    #[test]
+    fn claimable_capacity_queues_one_cycle_only_when_a_cycle_will_start() {
+        let mut f = ProductionFacility::new();
+        let cost = 7;
+        assert_eq!(f.claimable_capacity(cost), f.input_capacity);
+        f.demand_waiting = true;
+        assert_eq!(f.claimable_capacity(cost), f.input_capacity + cost);
+        f.demand_waiting = false;
+        f.current_target = Some(NanobotType::Worker);
+        assert_eq!(f.claimable_capacity(cost), f.input_capacity + cost);
     }
 
     #[test]

@@ -245,3 +245,42 @@ fn empty_hopper_retries_after_delivery_without_block_state() {
         Some(NanobotType::Worker),
     );
 }
+
+#[test]
+fn starved_facility_with_unmet_demand_offers_a_queued_cycle_to_haulers() {
+    let mut app = common::sim_app_with_production();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    add_gather_work(&mut app, IVec2::ZERO);
+    let facility = app
+        .world_mut()
+        .spawn((ProductionFacility::new(), OwnerSwarm(swarm)))
+        .id();
+    let cost = app.world().resource::<Tuning>().production.cost_per_bot;
+
+    app.update();
+
+    let state = app.world().get::<ProductionFacility>(facility).unwrap();
+    assert_eq!(
+        state.current_target, None,
+        "an empty hopper cannot fund a cycle"
+    );
+    assert_eq!(
+        state.claimable_space(cost),
+        state.input_capacity + cost,
+        "unmet demand lets haulers queue the cycle after the one being funded",
+    );
+
+    app.world_mut().resource_mut::<IntentGrid>().erase(
+        IVec2::ZERO,
+        IntentKind::Gather,
+        SwarmId::PLAYER,
+    );
+    app.update();
+
+    let state = app.world().get::<ProductionFacility>(facility).unwrap();
+    assert_eq!(
+        state.claimable_space(cost),
+        state.input_capacity,
+        "covered demand withdraws the queued cycle",
+    );
+}
