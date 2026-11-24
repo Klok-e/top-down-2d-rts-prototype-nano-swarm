@@ -91,9 +91,6 @@ struct ApproachEntry {
     nearby: bool,
     rejected: Vec<Vec2>,
     revision: u64,
-    /// `region.work_candidates(start)` for the last start, which a stationary
-    /// bot asks for again every tick.
-    work_candidates: Option<(Vec2, Vec<Vec2>)>,
 }
 
 pub struct ActiveRoute {
@@ -145,10 +142,24 @@ impl ActiveRoute {
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
+/// Regions whose start-independent work candidates stay cached; geometry is
+/// static, so the cache only bounds memory.
+const MAX_CACHED_CANDIDATE_REGIONS: usize = 4096;
+
+/// Start-independent work candidates by region.
+#[derive(Default)]
+pub struct CandidatePartsCache(
+    bevy::platform::collections::HashMap<
+        super::interaction::InteractionBits,
+        super::interaction::CandidateParts,
+    >,
+);
+
 pub fn move_velocity_system(
     mut commands: Commands,
     mut approaches: Local<WorkApproaches>,
     mut routes: Local<std::collections::HashMap<Entity, ActiveRoute>>,
+    mut candidate_parts: Local<CandidatePartsCache>,
     generation: Option<Res<crate::session_lifecycle::SessionGeneration>>,
     mut previous_generation: Local<Option<u64>>,
     mut previous_corridor_multiplier: Local<Option<f32>>,
@@ -225,7 +236,6 @@ pub fn move_velocity_system(
                 nearby: false,
                 rejected: Vec::new(),
                 revision: navigation.revision(),
-                work_candidates: None,
             });
             if entry.region != region {
                 *entry = ApproachEntry {
@@ -236,7 +246,6 @@ pub fn move_velocity_system(
                     nearby: false,
                     rejected: Vec::new(),
                     revision: navigation.revision(),
-                    work_candidates: None,
                 };
             }
         } else {
@@ -325,18 +334,15 @@ pub fn move_velocity_system(
                         || (occupancy.space_free(entity, point)
                             && space_free(entity, point, &claims)))
             };
-            let entry = approaches.entries.get_mut(&entity).unwrap();
-            let same_start = |start: Vec2| {
-                start.to_array().map(f32::to_bits) == position.to_array().map(f32::to_bits)
-            };
-            let mut candidates = match &entry.work_candidates {
-                Some((start, candidates)) if same_start(*start) => candidates.clone(),
-                _ => {
-                    let candidates = region.work_candidates(position);
-                    entry.work_candidates = Some((position, candidates.clone()));
-                    candidates
-                }
-            };
+            if candidate_parts.0.len() > MAX_CACHED_CANDIDATE_REGIONS {
+                candidate_parts.0.clear();
+            }
+            let parts = candidate_parts
+                .0
+                .entry(region.bits())
+                .or_insert_with(|| region.candidate_parts());
+            let mut candidates = region.work_candidates_from(parts, position);
+            let entry = approaches.entries.get(&entity).unwrap();
             if let Some(old) = entry.selected {
                 candidates.insert(0, old);
             }
