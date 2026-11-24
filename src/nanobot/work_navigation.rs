@@ -91,6 +91,9 @@ struct ApproachEntry {
     nearby: bool,
     rejected: Vec<Vec2>,
     revision: u64,
+    /// `region.work_candidates(start)` for the last start, which a stationary
+    /// bot asks for again every tick.
+    work_candidates: Option<(Vec2, Vec<Vec2>)>,
 }
 
 pub struct ActiveRoute {
@@ -222,6 +225,7 @@ pub fn move_velocity_system(
                 nearby: false,
                 rejected: Vec::new(),
                 revision: navigation.revision(),
+                work_candidates: None,
             });
             if entry.region != region {
                 *entry = ApproachEntry {
@@ -232,6 +236,7 @@ pub fn move_velocity_system(
                     nearby: false,
                     rejected: Vec::new(),
                     revision: navigation.revision(),
+                    work_candidates: None,
                 };
             }
         } else {
@@ -320,12 +325,19 @@ pub fn move_velocity_system(
                         || (occupancy.space_free(entity, point)
                             && space_free(entity, point, &claims)))
             };
-            let mut candidates = region.work_candidates(position);
-            if let Some(old) = approaches
-                .entries
-                .get(&entity)
-                .and_then(|entry| entry.selected)
-            {
+            let entry = approaches.entries.get_mut(&entity).unwrap();
+            let same_start = |start: Vec2| {
+                start.to_array().map(f32::to_bits) == position.to_array().map(f32::to_bits)
+            };
+            let mut candidates = match &entry.work_candidates {
+                Some((start, candidates)) if same_start(*start) => candidates.clone(),
+                _ => {
+                    let candidates = region.work_candidates(position);
+                    entry.work_candidates = Some((position, candidates.clone()));
+                    candidates
+                }
+            };
+            if let Some(old) = entry.selected {
                 candidates.insert(0, old);
             }
             // A separate position already in reach is useful immediately, even after yielding away from the intended approach.
@@ -333,11 +345,13 @@ pub fn move_velocity_system(
                 candidates.insert(0, position);
             }
             let entry = approaches.entries.get(&entity).unwrap();
-            let mut candidates: Vec<_> = candidates
-                .into_iter()
-                .filter(|point| free(*point) && !entry.rejected.contains(point))
-                .collect();
-            if candidates.is_empty() && region.deposit_tile_band().is_some() {
+            // Usable candidates are evaluated lazily: selection reads only the
+            // retained point, the first clear one and the first one.
+            let usable = |point: &Vec2| free(*point) && !entry.rejected.contains(point);
+            let mut usable_candidates = candidates.iter().copied().filter(usable).peekable();
+            let first_usable = usable_candidates.peek().copied();
+            let mut connected = Vec::new();
+            if first_usable.is_none() && region.deposit_tile_band().is_some() {
                 let (status, origin) = navigation
                     .query_connectivity_with_origin(position, RouteGoal::Interaction(region));
                 match status {
@@ -346,7 +360,7 @@ pub fn move_velocity_system(
                             && navigation.movement_clear(position, origin)
                             && navigation.movement_clear(origin, endpoint);
                         if can_reattach || !entry.rejected.contains(&endpoint) {
-                            candidates.push(endpoint);
+                            connected.push(endpoint);
                         }
                         if can_reattach {
                             connection_origin = Some(origin);
@@ -359,7 +373,13 @@ pub fn move_velocity_system(
             // Retain a usable commitment, otherwise prefer an immediately clear approach.
             let retained = entry
                 .selected
-                .filter(|point| candidates.contains(point))
+                .filter(|point| {
+                    if first_usable.is_some() {
+                        candidates.contains(point) && usable(point)
+                    } else {
+                        connected.contains(point)
+                    }
+                })
                 .filter(|point| {
                     navigation.movement_clear(position, *point)
                         || routes.get(&entity).is_some_and(|route| {
@@ -367,14 +387,18 @@ pub fn move_velocity_system(
                                 && (route.pending.is_some() || !route.waypoints.is_empty())
                         })
                 });
-            let selected = retained
-                .or_else(|| {
-                    candidates
+            let selected = retained.or_else(|| {
+                let clear = |point: &Vec2| navigation.movement_clear(position, *point);
+                if first_usable.is_some() {
+                    usable_candidates.find(clear).or(first_usable)
+                } else {
+                    connected
                         .iter()
                         .copied()
-                        .find(|point| navigation.movement_clear(position, *point))
-                })
-                .or_else(|| candidates.first().copied());
+                        .find(clear)
+                        .or(connected.first().copied())
+                }
+            });
             if let Some(point) = selected {
                 if nearby {
                     claims.insert(point, (entity, point));
