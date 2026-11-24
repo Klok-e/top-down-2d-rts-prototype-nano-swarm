@@ -315,14 +315,34 @@ pub fn regional_allocation_acquisition_system(
     }
 
     let mut active_terminals = BTreeMap::new();
+    let mut nearest_terminal_source = BTreeMap::<Entity, f32>::new();
     for (_, opportunities) in projection.iter_regions() {
         for opportunity in opportunities {
-            let OpportunityTarget::Haul { sink, .. } = opportunity.target else {
+            let OpportunityTarget::Haul { source, sink, .. } = opportunity.target else {
                 continue;
             };
-            if facilities.get(sink).is_ok() || chargers.get(sink).is_ok() {
-                active_terminals.insert(sink, ());
+            let Some(terminal_transform) = facilities
+                .get(sink)
+                .map(|(_, transform)| transform)
+                .or_else(|_| chargers.get(sink).map(|(_, transform)| transform))
+                .ok()
+            else {
+                continue;
+            };
+            active_terminals.insert(sink, ());
+            let Ok((stockpile, source_transform, _)) = stockpiles.get(source) else {
+                continue;
+            };
+            let reserved = reserved_source.get(&source).copied().unwrap_or_default();
+            if stockpile.amount <= reserved {
+                continue;
             }
+            let distance = source_transform
+                .translation
+                .truncate()
+                .distance(terminal_transform.translation.truncate());
+            let nearest = nearest_terminal_source.entry(sink).or_insert(f32::INFINITY);
+            *nearest = nearest.min(distance);
         }
     }
     terminal
@@ -529,6 +549,7 @@ pub fn regional_allocation_acquisition_system(
                 &reserved_destination,
                 &charger_demand,
                 &terminal.ages,
+                &nearest_terminal_source,
             ) else {
                 continue;
             };
@@ -653,11 +674,25 @@ pub fn regional_allocation_acquisition_system(
     }
 }
 
+/// Base urgency of a startable production cycle. Lower base urgencies are
+/// Charger emergencies that sustain committed Defenders.
+const STARTABLE_PRODUCTION_URGENCY: u8 = 3;
+
+/// How much farther than a terminal's nearest stocked Sink Stockpile another
+/// pickup may be: two cells, so near-equal Sinks share the load.
+const NEAREST_TERMINAL_SOURCE_SLACK: f32 = 2.0 * crate::navigation::CELL_WIDTH;
+
+/// Strict tier: urgency, waiting-age fairness, then proportional deficit.
+type StrictRank = (u8, u32, u64);
+
 #[derive(Clone, Copy)]
 struct TerminalLogisticsScore {
-    urgency: u8,
-    age_key: u32,
-    deficit_key: u64,
+    /// `Some` for Charger emergencies and fully aged terminals, which keep
+    /// strict ordering ahead of all other haul work.
+    strict: Option<StrictRank>,
+    /// Route cost per mineral moved plus a penalty per urgency level, so a
+    /// long trip carrying a few minerals loses to a short full refill.
+    weighted_cost: f32,
     estimated_cost: f32,
     terminal: u64,
     source: u64,
@@ -665,12 +700,15 @@ struct TerminalLogisticsScore {
 
 impl TerminalLogisticsScore {
     fn cmp(self, other: Self) -> Ordering {
-        self.urgency
-            .cmp(&other.urgency)
-            .then_with(|| self.age_key.cmp(&other.age_key))
-            .then_with(|| self.deficit_key.cmp(&other.deficit_key))
-            .then_with(|| self.estimated_cost.total_cmp(&other.estimated_cost))
-            .then_with(|| self.terminal.cmp(&other.terminal))
+        let rank = match (self.strict, other.strict) {
+            (Some(own), Some(theirs)) => own
+                .cmp(&theirs)
+                .then_with(|| self.estimated_cost.total_cmp(&other.estimated_cost)),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => self.weighted_cost.total_cmp(&other.weighted_cost),
+        };
+        rank.then_with(|| self.terminal.cmp(&other.terminal))
             .then_with(|| self.source.cmp(&other.source))
     }
 }
@@ -698,6 +736,7 @@ fn choose_terminal_logistics_work(
     reserved_destination: &BTreeMap<Entity, u32>,
     charger_demand: &BTreeMap<Entity, (u8, u32)>,
     ages: &TerminalDemandAges,
+    nearest_terminal_source: &BTreeMap<Entity, f32>,
 ) -> Option<SelectedHaul> {
     if pull.categories.get(OpportunityCategory::Haul) == 0 {
         return None;
@@ -753,6 +792,18 @@ fn choose_terminal_logistics_work(
             } else {
                 continue;
             };
+            // A terminal draws from its nearest stocked Sink Stockpiles. A far
+            // pickup would hold the terminal's claim for the whole long trip
+            // while haulers beside a nearer stocked Sink find nothing to claim.
+            if let Some(nearest) = nearest_terminal_source.get(&sink) {
+                let delivery = source_transform
+                    .translation
+                    .truncate()
+                    .distance(sink_transform.translation.truncate());
+                if delivery > nearest + NEAREST_TERMINAL_SOURCE_SLACK {
+                    continue;
+                }
+            }
             let quote = buffer.quote(
                 source_state.amount,
                 reserved_source.get(&source).copied().unwrap_or_default(),
@@ -786,10 +837,12 @@ fn choose_terminal_logistics_work(
             if !estimated_cost.is_finite() {
                 continue;
             }
+            let strict = (quote.base_urgency < STARTABLE_PRODUCTION_URGENCY || urgency == 0)
+                .then_some((urgency, u32::MAX - age, u64::MAX - deficit_ratio));
             let score = TerminalLogisticsScore {
-                urgency,
-                age_key: u32::MAX - age,
-                deficit_key: u64::MAX - deficit_ratio,
+                strict,
+                weighted_cost: estimated_cost / quote.amount as f32
+                    + f32::from(urgency) * tuning.logistics.haul_urgency_cost,
                 estimated_cost,
                 terminal: sink.to_bits(),
                 source: source.to_bits(),

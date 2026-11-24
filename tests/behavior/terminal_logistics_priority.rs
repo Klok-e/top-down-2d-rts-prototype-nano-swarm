@@ -347,20 +347,27 @@ fn startable_production_beats_nearer_ordinary_charger_refill() {
 }
 
 #[test]
-fn larger_proportional_terminal_deficit_beats_shorter_route() {
+fn short_full_sink_refill_beats_long_trip_carrying_few_minerals() {
     let mut app = common::sim_app_with_gather_haul();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    let source = common::spawn_sink_stockpile(&mut app, Vec2::new(-200.0, 0.0), 100, 100);
+    let source = common::spawn_stockpile(&mut app, Vec2::new(-200.0, 0.0), 100, 100);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
-    let near_half_empty = common::spawn_operational_charger_at(&mut app, IVec2::ZERO, 30);
+    let near_sink = common::spawn_sink_stockpile(&mut app, Vec2::new(0.0, 200.0), 0, 100);
     app.world_mut()
-        .entity_mut(near_half_empty)
+        .entity_mut(near_sink)
         .insert(OwnerSwarm(swarm));
-    let far_empty = common::spawn_operational_charger_at(&mut app, IVec2::new(1, 0), 0);
+    let far_sink = common::spawn_sink_stockpile(&mut app, Vec2::new(3000.0, 0.0), 100, 100);
     app.world_mut()
-        .entity_mut(far_empty)
+        .entity_mut(far_sink)
         .insert(OwnerSwarm(swarm));
-    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-600.0, -200.0));
+    let mut production = ProductionFacility::new();
+    production.input_amount = production.input_capacity - 2;
+    app.world_mut().spawn((
+        production,
+        OwnerSwarm(swarm),
+        Transform::from_xyz(3300.0, 0.0, 0.0),
+    ));
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-300.0, 0.0));
 
     wait_for_assignment(&mut app, hauler);
 
@@ -370,7 +377,8 @@ fn larger_proportional_terminal_deficit_beats_shorter_route() {
             .get::<HaulerAssignment>()
             .unwrap()
             .sink,
-        far_empty
+        near_sink,
+        "a startable cycle still loses when it costs far more per mineral",
     );
 }
 
