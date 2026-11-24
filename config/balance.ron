@@ -4,6 +4,8 @@
         ticks_per_bot: 120,
         input_capacity: 5,
         pressure_ticks: 60,
+        reserve_seconds: 10.0,
+        gather_rate_fallback: 0.3,
     ),
     construction: (
         work_ticks: 300,

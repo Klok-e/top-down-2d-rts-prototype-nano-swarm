@@ -16,13 +16,14 @@ use super::{
 };
 use crate::{
     nanobot::{
-        Commitment, DirectMovementComponent, ExtractProgress, GatherAssignment, HaulerAssignment,
-        HaulerLoad, HaulerLoading, Health, InteractionRegion, LogisticsReservation,
-        MaintenanceAssignment, MaintenanceProgress, Nanobot, NanobotType, PlannedStructure,
-        PlannedStructureClaim, PlannedStructureProgress, ProductionFacility, ReturningToStockpile,
-        SwarmId, SwarmMember, WorkerLoad,
+        Commitment, DirectMovementComponent, ExtractProgress, GatherAssignment, GatherQuotas,
+        HaulerAssignment, HaulerLoad, HaulerLoading, Health, InteractionRegion,
+        LogisticsReservation, MaintenanceAssignment, MaintenanceProgress, Nanobot, NanobotType,
+        PlannedStructure, PlannedStructureClaim, PlannedStructureProgress, ProductionFacility,
+        ReturningToStockpile, SwarmId, SwarmMember, WorkerLoad,
         charge::{Charge, Charger, ChargerAssignment, ChargerProgress, minerals_to_fully_charge},
         gather::painted_gather_regions,
+        gather_worker_slots,
         logistics_leg::{DestinationRole, PickupBuffer},
     },
     navigation::{ConnectivityStatus, Navigation, RouteGoal},
@@ -213,6 +214,7 @@ pub struct AllocationInputs<'w, 's> {
     >,
     ages: ResMut<'w, TerminalDemandAges>,
     travelling: TravellingWorkers<'w, 's>,
+    gather_quotas: Option<Res<'w, GatherQuotas>>,
 }
 
 /// Workers holding Maintenance or Planned Build work that have not reached it.
@@ -541,6 +543,25 @@ pub fn regional_allocation_acquisition_system(
         .iter()
         .map(|bot| bot.swarm)
         .collect::<std::collections::BTreeSet<_>>();
+    // Gather slots left under each swarm's Gather Quota. A swarm without a
+    // quota (no Population Demand in this app) gathers without a cap.
+    let mut gather_open = terminal
+        .gather_quotas
+        .as_deref()
+        .map(|quotas| {
+            quotas
+                .iter()
+                .map(|(swarm, economy)| {
+                    (
+                        swarm,
+                        economy
+                            .gather_quota
+                            .saturating_sub(economy.gathering_workers),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
     let mut work_by_swarm_kind = BTreeMap::new();
     for swarm in candidate_swarms.iter().copied() {
         for (kind, regional_work) in work_by_kind.iter().enumerate() {
@@ -551,6 +572,10 @@ pub fn regional_allocation_acquisition_system(
                         .iter()
                         .copied()
                         .filter(|work| work.owner.is_none_or(|owner| owner == swarm))
+                        .filter(|work| {
+                            work.category != OpportunityCategory::Gather
+                                || gather_open.get(&swarm) != Some(&0)
+                        })
                         .collect::<Vec<_>>();
                     (!compatible.is_empty()).then_some((*region, compatible))
                 })
@@ -596,13 +621,17 @@ pub fn regional_allocation_acquisition_system(
             .map(|(region, work)| {
                 let unclaimed = work
                     .iter()
-                    .map(|work| ActionableOpportunity {
-                        available_work: unclaimed_work(
-                            *work,
-                            claims_for(&claim_counts, *work),
-                            &tuning,
-                        ),
-                        ..*work
+                    .map(|work| {
+                        let claims = claims_for(&claim_counts, *work);
+                        let available_work = if gather_ring_full(*work, claims, &deposits) {
+                            0
+                        } else {
+                            unclaimed_work(*work, claims, &tuning)
+                        };
+                        ActionableOpportunity {
+                            available_work,
+                            ..*work
+                        }
                     })
                     .collect::<Vec<_>>();
                 (*region, unclaimed)
@@ -711,6 +740,11 @@ pub fn regional_allocation_acquisition_system(
                 ordered.iter().copied(),
                 bounds,
                 |work| {
+                    if work.category == OpportunityCategory::Gather
+                        && gather_open.get(&bot.swarm) == Some(&0)
+                    {
+                        return None;
+                    }
                     let claims = claims_for(&claim_counts, work);
                     if !target_available(
                         &tuning,
@@ -805,6 +839,11 @@ pub fn regional_allocation_acquisition_system(
         if let Some(pull) = pulls.get_mut(&bot_key) {
             let remaining = pull.categories.get(work.category).saturating_sub(1);
             pull.categories.set(work.category, remaining);
+        }
+        if work.category == OpportunityCategory::Gather
+            && let Some(open) = gather_open.get_mut(&bot.swarm)
+        {
+            *open = open.saturating_sub(1);
         }
     }
 }
@@ -1048,7 +1087,7 @@ fn target_available(
         return false;
     }
     match work.target {
-        OpportunityTarget::Gather { deposit, .. } => deposits.get(deposit).is_ok(),
+        OpportunityTarget::Gather { .. } => !gather_ring_full(work, claims, deposits),
         OpportunityTarget::PlannedBuild { structure, .. } => planned_workers
             .get(&structure.to_bits())
             .is_some_and(|worker| worker.is_none() || *worker == Some(bot.entity.to_bits())),
@@ -1057,6 +1096,22 @@ fn target_available(
             .get(source)
             .is_ok_and(|(stockpile, _, _)| stockpile.amount > 0 && work.available_work > 0),
     }
+}
+
+/// A deposit takes no more gatherers than fit around its work ring; a missing
+/// deposit has no room at all.
+fn gather_ring_full(
+    work: ActionableOpportunity,
+    claims: usize,
+    deposits: &Query<(&ResourceDeposit, &Transform)>,
+) -> bool {
+    let OpportunityTarget::Gather { deposit, .. } = work.target else {
+        return false;
+    };
+    deposits
+        .get(deposit)
+        .ok()
+        .is_none_or(|(state, _)| claims >= gather_worker_slots(state.radius) as usize)
 }
 
 /// Work one claimant takes on, or `None` when a single claimant takes it all.

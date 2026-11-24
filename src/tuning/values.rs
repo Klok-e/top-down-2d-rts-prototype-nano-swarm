@@ -68,6 +68,8 @@ tuning_schema! {
         ticks_per_bot: u32 = 600 => ("Production time", "s", 1.0 / 60.0, 1.0 / 60.0, 1.0, 1_000_000_000.0);
         input_capacity: u32 = 80 => ("Input capacity", "", 1.0, 1.0, 1.0, 1_000_000.0);
         pressure_ticks: u32 = 60 => ("Expansion delay", "s", 1.0 / 60.0, 1.0 / 60.0, 1.0, 1_000_000_000.0);
+        reserve_seconds: f32 = 10.0 => ("Reserve target", "s of spending", 1.0, 1.0, 0.0, 3600.0);
+        gather_rate_fallback: f32 = 0.3 => ("Gather rate per Worker before measurement", "/s", 1.0, 0.05, 0.01, 1_000.0);
     }
     construction: ConstructionTuning {
         work_ticks: u32 = 1500 => ("Work duration", "s", 1.0 / 60.0, 1.0 / 60.0, 1.0, 1_000_000_000.0);

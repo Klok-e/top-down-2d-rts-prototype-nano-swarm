@@ -4,13 +4,12 @@ use std::collections::{HashMap, HashSet};
 
 use super::work_access::{WorkAccess, WorkReachability};
 use crate::navigation::BODY_RADIUS;
-use crate::resources::ResourceDeposit;
 use bevy::prelude::*;
 
 use crate::nanobot::{
-    ActionableProjection, NanobotType, OpportunityCategory, OpportunityTarget,
+    ActionableProjection, GatherQuotas, NanobotType, OpportunityCategory, OpportunityTarget,
     RegionalAllocationSet, SwarmId, TerritorySnapshot, defender_population_demand,
-    production_facility_pick_target_system,
+    gather_quota_system, production_facility_pick_target_system,
 };
 
 /// Desired population by swarm and Nanobot Type, derived from discrete useful
@@ -81,16 +80,16 @@ pub fn gather_worker_slots(deposit_radius: f32) -> u32 {
     ((ring / (2.0 * BODY_RADIUS)).floor() as u32).max(1)
 }
 
-/// Convert actionable work into bounded nanobot slots. Resource quantities are
-/// never summed directly: a deposit's extraction slots come from its physical
-/// size, not from the minerals it holds.
+/// Convert actionable work into bounded nanobot slots. Gathering Workers come
+/// from the swarm's Gather Quota, which balances income against spending;
+/// construction and maintenance add one Worker each.
 pub fn population_demand_system(
     tuning: Res<crate::tuning::Tuning>,
     projection: Res<ActionableProjection>,
     territory: Res<TerritorySnapshot>,
     mut demand: ResMut<PopulationDemand>,
     access: WorkAccess,
-    deposits: Query<&ResourceDeposit>,
+    quotas: Res<GatherQuotas>,
 ) {
     demand.desired.clear();
     let mut haul_slots = HashMap::<(SwarmId, Entity), u32>::new();
@@ -106,15 +105,8 @@ pub fn population_demand_system(
                     continue;
                 }
                 let (kind, slots) = match opportunity.category {
-                    OpportunityCategory::Gather => {
-                        let OpportunityTarget::Gather { deposit, .. } = opportunity.target else {
-                            continue;
-                        };
-                        let Ok(deposit) = deposits.get(deposit) else {
-                            continue;
-                        };
-                        (NanobotType::Worker, gather_worker_slots(deposit.radius))
-                    }
+                    // Gathering is sized by the swarm's Gather Quota below.
+                    OpportunityCategory::Gather => continue,
                     OpportunityCategory::PlannedBuild | OpportunityCategory::Maintenance => {
                         (NanobotType::Worker, 1)
                     }
@@ -141,6 +133,10 @@ pub fn population_demand_system(
         demand.add(swarm, NanobotType::Hauler, slots);
     }
     for swarm in live_swarms {
+        let gather_quota = quotas
+            .economy(swarm)
+            .map_or(0, |economy| economy.gather_quota);
+        demand.add(swarm, NanobotType::Worker, gather_quota);
         demand.add(
             swarm,
             NanobotType::Defender,
@@ -155,10 +151,13 @@ impl Plugin for PopulationDemandPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<crate::tuning::Tuning>()
             .init_resource::<PopulationDemand>()
+            .init_resource::<GatherQuotas>()
             .add_systems(
                 FixedUpdate,
-                population_demand_system
+                (gather_quota_system, population_demand_system)
+                    .chain()
                     .after(RegionalAllocationSet::Project)
+                    .before(RegionalAllocationSet::Acquire)
                     .before(production_facility_pick_target_system),
             );
     }

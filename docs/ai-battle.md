@@ -56,7 +56,12 @@ The economy fields are recorded separately for each swarm. Window totals cover t
 | `mineral_starved_facility_seconds` | Simulated seconds summed across operational Production Facilities that had unmet Population Demand and too few minerals in their input buffer to start production. Two such facilities idle for one second contribute two facility-seconds. |
 | `unspent_minerals` | Minerals held by the swarm at sample time in surviving Stockpiles, Production Facilities, Chargers, and Nanobot cargo. |
 | `empty_charge_defenders` | Defenders at zero Charge at sample time. |
+| `spending_capacity` | Minerals per second the swarm would spend at sample time: Production Facilities that are producing or have unmet Population Demand, running continuously, plus charge upkeep for its Defenders. |
+| `reserve_target` | Reserve Target at sample time: `reserve_seconds` of Spending Capacity, in minerals. |
+| `reserve_stock` | Minerals in the swarm's operational Source and Sink Stockpiles at sample time. |
+| `gather_quota` | Gather Quota at sample time: Workers the swarm assigns to gathering. |
+| `gathering_workers` | Workers travelling to, working at, or returning from a deposit at sample time. |
 
-The `battle.stats` summary uses schema version 9. `tuning` contains the full native-unit configuration at battle start. `tuning_edits` records accepted changes with `revision`, `key`, `old_value`, `value`, and `fixed_tick`. Edit values use the editor's display units; ticks are relative to the current battle's start. Earlier-session edits are excluded, and a fresh battle snapshots the current configuration. Unchanged assignments and rejected edits add no revision.
+The `battle.stats` summary uses schema version 10. `tuning` contains the full native-unit configuration at battle start. `tuning_edits` records accepted changes with `revision`, `key`, `old_value`, `value`, and `fixed_tick`. Edit values use the editor's display units; ticks are relative to the current battle's start. Earlier-session edits are excluded, and a fresh battle snapshots the current configuration. Unchanged assignments and rejected edits add no revision.
 
 Compare the initial configuration and edit history as well as the seed when comparing runs. The seed improves repeatability but does not guarantee identical outcomes. Inspect economy, sustained attacks, recovery, and finishing behavior when evaluating a run.

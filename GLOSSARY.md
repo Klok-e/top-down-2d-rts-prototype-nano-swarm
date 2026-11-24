@@ -205,13 +205,25 @@ A Defender's sustained retreat from a locally stronger hostile force to a safe D
 _Avoid_: Charger rotation, elimination
 
 **Population Demand**:
-The per-Nanobot-Type capacity justified by actionable workload: gathering, construction, and maintenance require Workers, physical transport requires Haulers, and Defender demand is the greater of half the swarm's unique Swarm Tile count rounded up and its active Threat count. Every swarm serves its greatest relative shortage, breaking equal ratios by the larger missing count and then stable type order; existing and committed capacity counts only for its own type, excess nanobots remain, and a pending Production Facility may increase Worker demand but never justifies another facility.
+The per-Nanobot-Type capacity justified by actionable workload: the Gather Quota plus construction and maintenance require Workers, physical transport requires Haulers, and Defender demand is the greater of half the swarm's unique Swarm Tile count rounded up and its active Threat count. Every swarm serves its greatest relative shortage, breaking equal ratios by the larger missing count and then stable type order; existing and committed capacity counts only for its own type, excess nanobots remain, and a pending Production Facility may increase Worker demand but never justifies another facility.
 _Avoid_: Population cap, unit quota
+
+**Spending Capacity**:
+The mineral rate a swarm would spend if every Production Facility with unmet Population Demand produced continuously and every Defender's charge upkeep were paid. It measures what the swarm could use, not what supply currently allows.
+_Avoid_: Expenditure, consumption rate, burn rate
+
+**Reserve Target**:
+The stockpiled minerals a swarm aims to hold: a tuned number of seconds of its Spending Capacity. Only Source and Sink Stockpiles count toward it; minerals in Chargers, facility hoppers, or cargo are already committed.
+_Avoid_: Mineral reserve, bank, buffer target
+
+**Gather Quota**:
+The number of Workers a swarm assigns to gathering so its income covers its Spending Capacity and closes the gap to its Reserve Target. Every Gather-painted Resource Deposit keeps at least one gatherer; no deposit takes more gatherers than fit around it, and a swarm sends no more than one per full load its Source Stockpiles can still receive. Workers beyond the quota take other work or idle.
+_Avoid_: Gather demand, worker cap
 
 **Production Pressure**:
 Consecutive unmet Population Demand of any type while every operational Production Facility remains busy producing, or while no Production Facility is operational; waiting for exit space does not qualify as busy production. Resolved demand or idle operational capacity clears it, while brief demand spikes and a facility's internal cycle progress do not establish it.
 _Avoid_: Build-zone size, instantaneous deficit
 
 **Production Facility**:
-A swarm-owned terminal support structure that consumes delivered resources and automatically fills its swarm's typed Population Demand. Production Pressure may create one unfinished expansion commitment per swarm; capacity is reassessed after that commitment completes or is lost.
+A swarm-owned terminal support structure that consumes delivered resources and automatically fills its swarm's typed Population Demand. While producing or awaiting demand it accepts Logistics Reservations for one production cycle beyond its input buffer, and those Haulers wait for room to unload. Production Pressure may create one unfinished expansion commitment per swarm; capacity is reassessed after that commitment completes or is lost.
 _Avoid_: Barracks, factory queue, manual spawner

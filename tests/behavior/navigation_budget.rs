@@ -1,10 +1,7 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
-    nanobot::{
-        GatherAssignment, NanobotType, PopulationDemand, PopulationDemandPlugin, SwarmId,
-        gather_worker_slots,
-    },
+    nanobot::{GatherAssignment, NanobotType, PopulationDemand, PopulationDemandPlugin, SwarmId},
     navigation::Navigation,
     navigation_runtime::NavigationBudget,
     resources::ResourceDeposit,
@@ -45,7 +42,8 @@ fn pending_worker_access_preserves_population_demand_until_budget_allows_assignm
         app.world()
             .resource::<PopulationDemand>()
             .desired_for(SwarmId::PLAYER, NanobotType::Worker),
-        gather_worker_slots(48.0)
+        1,
+        "a swarm with no spending keeps one gatherer per Gather-painted deposit"
     );
     assert!(app.world().resource::<Navigation>().work().pending > 0);
     assert_eq!(app.world().resource::<Navigation>().work().work, 0);
