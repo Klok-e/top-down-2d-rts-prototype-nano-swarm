@@ -26,7 +26,7 @@ const MAX_FINE_CELLS: f64 = (1 << 20) as f64;
 /// Fine cells allowed per Defender, so a few far-apart Defenders get a small grid.
 const FINE_CELLS_PER_DEFENDER: f64 = 16.0;
 /// Fine cells always allowed, however few Defenders there are.
-const MIN_FINE_CELL_BUDGET: f64 = (1 << 16) as f64;
+const MIN_FINE_CELL_BUDGET: f64 = (1 << 12) as f64;
 
 #[derive(Clone, Copy)]
 struct Candidate {
