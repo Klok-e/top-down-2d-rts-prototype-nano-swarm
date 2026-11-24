@@ -81,6 +81,11 @@ pub fn work_standing_system(
 #[derive(Default)]
 pub struct WorkApproaches {
     entries: std::collections::HashMap<Entity, ApproachEntry>,
+    /// Start-independent work candidates by region.
+    candidate_parts: bevy::platform::collections::HashMap<
+        super::interaction::InteractionBits,
+        super::interaction::CandidateParts,
+    >,
 }
 
 struct ApproachEntry {
@@ -141,25 +146,15 @@ impl ActiveRoute {
     }
 }
 
-#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 /// Regions whose start-independent work candidates stay cached; geometry is
 /// static, so the cache only bounds memory.
 const MAX_CACHED_CANDIDATE_REGIONS: usize = 4096;
 
-/// Start-independent work candidates by region.
-#[derive(Default)]
-pub struct CandidatePartsCache(
-    bevy::platform::collections::HashMap<
-        super::interaction::InteractionBits,
-        super::interaction::CandidateParts,
-    >,
-);
-
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn move_velocity_system(
     mut commands: Commands,
     mut approaches: Local<WorkApproaches>,
     mut routes: Local<std::collections::HashMap<Entity, ActiveRoute>>,
-    mut candidate_parts: Local<CandidatePartsCache>,
     generation: Option<Res<crate::session_lifecycle::SessionGeneration>>,
     mut previous_generation: Local<Option<u64>>,
     mut previous_corridor_multiplier: Local<Option<f32>>,
@@ -334,11 +329,11 @@ pub fn move_velocity_system(
                         || (occupancy.space_free(entity, point)
                             && space_free(entity, point, &claims)))
             };
-            if candidate_parts.0.len() > MAX_CACHED_CANDIDATE_REGIONS {
-                candidate_parts.0.clear();
+            if approaches.candidate_parts.len() > MAX_CACHED_CANDIDATE_REGIONS {
+                approaches.candidate_parts.clear();
             }
-            let parts = candidate_parts
-                .0
+            let parts = approaches
+                .candidate_parts
                 .entry(region.bits())
                 .or_insert_with(|| region.candidate_parts());
             let mut candidates = region.work_candidates_from(parts, position);
