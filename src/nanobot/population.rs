@@ -101,11 +101,14 @@ pub fn population_demand_system(
                 .map(|owner| vec![owner])
                 .unwrap_or_else(|| live_swarms.iter().copied().collect());
             for swarm in owners {
-                if access.opportunity(swarm, opportunity.target) == WorkReachability::Unreachable {
+                if opportunity.category == OpportunityCategory::Gather
+                    || access.opportunity(swarm, opportunity.target)
+                        == WorkReachability::Unreachable
+                {
                     continue;
                 }
                 let (kind, slots) = match opportunity.category {
-                    // Gathering is sized by the swarm's Gather Quota below.
+                    // Skipped above: the swarm's Gather Quota sizes gathering.
                     OpportunityCategory::Gather => continue,
                     OpportunityCategory::PlannedBuild | OpportunityCategory::Maintenance => {
                         (NanobotType::Worker, 1)
@@ -156,7 +159,7 @@ impl Plugin for PopulationDemandPlugin {
                 FixedUpdate,
                 (gather_quota_system, population_demand_system)
                     .chain()
-                    .after(RegionalAllocationSet::Project)
+                    .after(RegionalAllocationSet::Invalidate)
                     .before(RegionalAllocationSet::Acquire)
                     .before(production_facility_pick_target_system),
             );

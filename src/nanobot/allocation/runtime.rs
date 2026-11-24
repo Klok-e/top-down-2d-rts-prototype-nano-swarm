@@ -572,10 +572,7 @@ pub fn regional_allocation_acquisition_system(
                         .iter()
                         .copied()
                         .filter(|work| work.owner.is_none_or(|owner| owner == swarm))
-                        .filter(|work| {
-                            work.category != OpportunityCategory::Gather
-                                || gather_open.get(&swarm) != Some(&0)
-                        })
+                        .filter(|work| !gather_closed(&gather_open, swarm, *work))
                         .collect::<Vec<_>>();
                     (!compatible.is_empty()).then_some((*region, compatible))
                 })
@@ -626,7 +623,13 @@ pub fn regional_allocation_acquisition_system(
                         let available_work = if gather_ring_full(*work, claims, &deposits) {
                             0
                         } else {
-                            unclaimed_work(*work, claims, &tuning)
+                            gather_quota_work(
+                                &gather_open,
+                                *swarm,
+                                *work,
+                                unclaimed_work(*work, claims, &tuning),
+                                &tuning,
+                            )
                         };
                         ActionableOpportunity {
                             available_work,
@@ -740,9 +743,7 @@ pub fn regional_allocation_acquisition_system(
                 ordered.iter().copied(),
                 bounds,
                 |work| {
-                    if work.category == OpportunityCategory::Gather
-                        && gather_open.get(&bot.swarm) == Some(&0)
-                    {
+                    if gather_closed(&gather_open, bot.swarm, work) {
                         return None;
                     }
                     let claims = claims_for(&claim_counts, work);
@@ -1095,6 +1096,33 @@ fn target_available(
         OpportunityTarget::Haul { source, .. } => stockpiles
             .get(source)
             .is_ok_and(|(stockpile, _, _)| stockpile.amount > 0 && work.available_work > 0),
+    }
+}
+
+/// Gather work once the swarm's gatherers have reached its Gather Quota.
+fn gather_closed(
+    gather_open: &BTreeMap<SwarmId, u32>,
+    swarm: SwarmId,
+    work: ActionableOpportunity,
+) -> bool {
+    work.category == OpportunityCategory::Gather && gather_open.get(&swarm) == Some(&0)
+}
+
+/// Gather pressure limited to the loads the open quota slots can carry. Raw
+/// deposit minerals would hand Gather nearly every pull slot, and Workers
+/// refused at the quota would then find no budget left for other work.
+fn gather_quota_work(
+    gather_open: &BTreeMap<SwarmId, u32>,
+    swarm: SwarmId,
+    work: ActionableOpportunity,
+    available_work: u32,
+    tuning: &crate::tuning::Tuning,
+) -> u32 {
+    match gather_open.get(&swarm) {
+        Some(open) if work.category == OpportunityCategory::Gather => {
+            available_work.min(open.saturating_mul(tuning.logistics.worker_carry_capacity.max(1)))
+        }
+        _ => available_work,
     }
 }
 

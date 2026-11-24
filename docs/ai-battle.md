@@ -60,7 +60,8 @@ The economy fields are recorded separately for each swarm. Window totals cover t
 | `reserve_target` | Reserve Target at sample time: `reserve_seconds` of Spending Capacity, in minerals. |
 | `reserve_stock` | Minerals in the swarm's operational Source and Sink Stockpiles at sample time. |
 | `gather_quota` | Gather Quota at sample time: Workers the swarm assigns to gathering. |
-| `gathering_workers` | Workers travelling to, working at, or returning from a deposit at sample time. |
+| `gathering_workers` | Workers travelling to, working at, or returning from a deposit, or holding gathered cargo, at sample time. |
+| `gather_rate` | Minerals per second one productive gatherer brought in over the trailing 20 s, or `gather_rate_fallback` when that window measured nothing. |
 
 The `battle.stats` summary uses schema version 10. `tuning` contains the full native-unit configuration at battle start. `tuning_edits` records accepted changes with `revision`, `key`, `old_value`, `value`, and `fixed_tick`. Edit values use the editor's display units; ticks are relative to the current battle's start. Earlier-session edits are excluded, and a fresh battle snapshots the current configuration. Unchanged assignments and rejected edits add no revision.
 

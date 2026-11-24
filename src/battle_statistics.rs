@@ -220,6 +220,8 @@ pub struct SwarmSample {
     pub gather_quota: u32,
     #[serde(default)]
     pub gathering_workers: u32,
+    #[serde(default)]
+    pub gather_rate: f32,
     pub elimination_seconds: Option<f64>,
     #[serde(default)]
     pub deposit_extraction: Vec<DepositExtraction>,
@@ -491,6 +493,7 @@ fn sample_json(sample: &BattleSample) -> serde_json::Value {
                 "reserve_stock": s.reserve_stock,
                 "gather_quota": s.gather_quota,
                 "gathering_workers": s.gathering_workers,
+                "gather_rate": s.gather_rate,
                 "controller_last_explanation": controller.last_explanation,
                 "deposit_extraction": s.deposit_extraction,
             })
@@ -593,6 +596,7 @@ fn snapshot(world: &mut World, run: &mut BattleRun) -> BattleSample {
                 swarm.reserve_stock = economy.reserve_stock;
                 swarm.gather_quota = economy.gather_quota;
                 swarm.gathering_workers = economy.gathering_workers;
+                swarm.gather_rate = economy.gather_rate;
             }
         }
     }

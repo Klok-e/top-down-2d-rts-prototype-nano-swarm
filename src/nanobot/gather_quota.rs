@@ -7,8 +7,8 @@ use bevy::prelude::*;
 
 use super::work_access::{WorkAccess, WorkReachability};
 use crate::nanobot::{
-    ActionableProjection, DirectMovementComponent, ExtractProgress, GatherAssignment, Nanobot,
-    NanobotType, OpportunityTarget, OwnerSwarm, PlannedStructure, ProductionFacility,
+    ActionableProjection, Cargo, DirectMovementComponent, ExtractProgress, GatherAssignment,
+    Nanobot, NanobotType, OpportunityTarget, OwnerSwarm, PlannedStructure, ProductionFacility,
     ReturningToStockpile, SupportCondition, Swarm, SwarmId, SwarmMember, TerritorySnapshot,
     gather_worker_slots,
 };
@@ -63,7 +63,14 @@ impl GatherQuotas {
 #[derive(Debug, Default)]
 struct GatherRateHistory {
     gatherer_ticks: u64,
-    samples: VecDeque<(u64, u64, u64)>,
+    samples: VecDeque<RateSample>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RateSample {
+    tick: u64,
+    extracted: u64,
+    gatherer_ticks: u64,
 }
 
 impl GatherRateHistory {
@@ -71,7 +78,7 @@ impl GatherRateHistory {
         if self
             .samples
             .back()
-            .is_some_and(|&(_, total, _)| extracted < total)
+            .is_some_and(|sample| extracted < sample.extracted)
         {
             *self = Self::default();
         }
@@ -79,19 +86,23 @@ impl GatherRateHistory {
         if self
             .samples
             .back()
-            .is_none_or(|&(previous, _, _)| tick.saturating_sub(previous) >= TICKS_PER_SECOND)
+            .is_none_or(|sample| tick.saturating_sub(sample.tick) >= TICKS_PER_SECOND)
         {
-            self.samples
-                .push_back((tick, extracted, self.gatherer_ticks));
+            self.samples.push_back(RateSample {
+                tick,
+                extracted,
+                gatherer_ticks: self.gatherer_ticks,
+            });
         }
-        while self.samples.len() > 1 && tick.saturating_sub(self.samples[1].0) >= RATE_WINDOW_TICKS
+        while self.samples.len() > 1
+            && tick.saturating_sub(self.samples[1].tick) >= RATE_WINDOW_TICKS
         {
             self.samples.pop_front();
         }
-        let &(start, start_extracted, start_gatherer_ticks) = self.samples.front()?;
-        let gatherer_ticks = self.gatherer_ticks - start_gatherer_ticks;
-        let minerals = extracted - start_extracted;
-        (tick.saturating_sub(start) >= RATE_WINDOW_TICKS && gatherer_ticks > 0 && minerals > 0)
+        let start = *self.samples.front()?;
+        let gatherer_ticks = self.gatherer_ticks - start.gatherer_ticks;
+        let minerals = extracted - start.extracted;
+        (tick.saturating_sub(start.tick) >= RATE_WINDOW_TICKS && gatherer_ticks > 0 && minerals > 0)
             .then_some(minerals as f32 * TICKS_PER_SECOND as f32 / gatherer_ticks.max(1) as f32)
     }
 }
@@ -154,6 +165,7 @@ pub fn gather_quota_system(
             &SwarmMember,
             Has<GatherAssignment>,
             Has<ReturningToStockpile>,
+            Has<Cargo>,
             Has<ExtractProgress>,
             Has<DirectMovementComponent>,
         ),
@@ -209,9 +221,11 @@ pub fn gather_quota_system(
     // quota exactly when more gatherers cannot help.
     let mut productive = BTreeMap::<SwarmId, u32>::new();
     let mut defenders = BTreeMap::<SwarmId, u32>::new();
-    for (kind, member, gather, returning, extracting, moving) in &bots {
+    for (kind, member, gather, returning, loaded, extracting, moving) in &bots {
         match kind {
-            NanobotType::Worker if gather || returning => {
+            // A Worker's cargo only ever comes from a deposit; one holding it
+            // between destinations is still on its gather trip.
+            NanobotType::Worker if gather || returning || loaded => {
                 *gathering.entry(member.0).or_default() += 1;
                 if returning || extracting || moving {
                     *productive.entry(member.0).or_default() += 1;

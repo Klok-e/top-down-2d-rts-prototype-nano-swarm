@@ -223,6 +223,7 @@ pub(crate) fn reset_session(world: &mut World) {
     reset_resource::<SoftWorkSlots>(world);
     reset_resource::<OpponentSwarmIdAlloc>(world);
     reset_resource::<PopulationDemand>(world);
+    reset_resource::<GatherQuotas>(world);
     reset_resource::<ProductionPressure>(world);
     reset_resource::<construction_access::CancelledSites>(world);
     allocation::reset_session(world);
