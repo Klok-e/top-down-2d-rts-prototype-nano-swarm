@@ -27,6 +27,11 @@ const MAX_FINE_CELLS: f64 = (1 << 20) as f64;
 const FINE_CELLS_PER_DEFENDER: f64 = 16.0;
 /// Fine cells always allowed, however few Defenders there are.
 const MIN_FINE_CELL_BUDGET: f64 = (1 << 12) as f64;
+/// Fine cells always allowed per Defender up to [`MAX_FLOOR_FINE_CELL_BUDGET`],
+/// so a mid-size spread layout keeps fine cells.
+const FLOOR_FINE_CELLS_PER_DEFENDER: f64 = 256.0;
+/// Largest guaranteed fine-cell budget, reached at 256 Defenders.
+const MAX_FLOOR_FINE_CELL_BUDGET: f64 = (1 << 16) as f64;
 
 #[derive(Clone, Copy)]
 struct Candidate {
@@ -177,8 +182,10 @@ impl DefenderIndex {
                 |(min, max), position| (min.min(position), max.max(position)),
             );
         // Cell size never changes answers, only how much each query reads.
-        let cell_budget = (defenders.len() as f64 * FINE_CELLS_PER_DEFENDER)
-            .clamp(MIN_FINE_CELL_BUDGET, MAX_FINE_CELLS);
+        let floor = (defenders.len() as f64 * FLOOR_FINE_CELLS_PER_DEFENDER)
+            .clamp(MIN_FINE_CELL_BUDGET, MAX_FLOOR_FINE_CELL_BUDGET);
+        let cell_budget =
+            (defenders.len() as f64 * FINE_CELLS_PER_DEFENDER).clamp(floor, MAX_FINE_CELLS);
         let mut cell_size = FINE_CELL_SIZE;
         let (width, height) = loop {
             if min.x > max.x {
