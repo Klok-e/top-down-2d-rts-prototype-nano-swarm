@@ -1579,14 +1579,18 @@ impl Navigation {
                                 && b.cmplt(self.max).all()
                                 && super::super::segment_clears_all(&check.completed, a, b))
                     };
+                    // An identical position links without a geometry test, so look for it first.
+                    let links = |point: Vec2, others: &[Vec2], linked: &dyn Fn(Vec2) -> bool| {
+                        others.contains(&point) || others.iter().any(|&other| linked(other))
+                    };
                     check.builders.len() == builders.len()
                         && check
                             .builders
                             .iter()
-                            .all(|&old| builders.iter().any(|&new| linked(old, new)))
+                            .all(|&old| links(old, builders, &|new| linked(old, new)))
                         && builders
                             .iter()
-                            .all(|&new| check.builders.iter().any(|&old| linked(old, new)))
+                            .all(|&new| links(new, &check.builders, &|old| linked(old, new)))
                 });
             if compatible {
                 scheduler.access_cached.get_mut(&cache_key).unwrap().1 = tick;

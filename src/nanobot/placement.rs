@@ -469,6 +469,16 @@ impl DefendLattice {
         origin: Vec2,
         mut accepts: impl FnMut(Vec2) -> bool,
     ) -> Option<(IVec2, Vec2)> {
+        self.find_nearest(origin, |position| Some(accepts(position)))
+    }
+
+    /// Like [`Self::find_nearest_accepting`], but `accepts` may answer `None` to
+    /// end the search without a site.
+    pub fn find_nearest(
+        &self,
+        origin: Vec2,
+        mut accepts: impl FnMut(Vec2) -> Option<bool>,
+    ) -> Option<(IVec2, Vec2)> {
         let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<SiteOrder>> = self
             .sites
             .iter()
@@ -481,7 +491,7 @@ impl DefendLattice {
             })
             .collect();
         while let Some(std::cmp::Reverse(site)) = heap.pop() {
-            if accepts(site.pos) {
+            if accepts(site.pos)? {
                 return Some((site.cell, site.pos));
             }
         }
