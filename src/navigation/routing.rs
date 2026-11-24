@@ -46,7 +46,9 @@ pub enum RouteOutcome {
     Found(Route),
     Unreachable,
 }
-type ComponentEdges = FastHashMap<IVec2, Vec<(IVec2, IVec2, IVec2)>>;
+/// A region's edges: (neighbouring region, own cell, neighbouring cell).
+type Edges = std::sync::Arc<[(IVec2, IVec2, IVec2)]>;
+type ComponentEdges = FastHashMap<IVec2, Edges>;
 
 /// Shared physical connectivity and clearance for all swarms and Nanobot Types.
 /// Chunk regions are materialized only where searches visit the large world.

@@ -214,12 +214,12 @@ impl Navigation {
             .get(&cell)
             .copied()
     }
-    async fn async_connections(&self, node: IVec2) -> Vec<(IVec2, IVec2, IVec2)> {
+    async fn async_connections(&self, node: IVec2) -> Edges {
         self.edge_owner(Self::chunk(node))
             .async_own_connections(node)
             .await
     }
-    async fn async_own_connections(&self, node: IVec2) -> Vec<(IVec2, IVec2, IVec2)> {
+    async fn async_own_connections(&self, node: IVec2) -> Edges {
         if let Some(edges) = self.connections.lock().unwrap().get(&node).cloned() {
             return edges;
         }
@@ -251,6 +251,7 @@ impl Navigation {
                 }
             }
         }
+        let result = Edges::from(result);
         self.connections
             .lock()
             .unwrap()
@@ -550,7 +551,7 @@ impl Navigation {
                 if sources.contains(&reverse) {
                     reverse_connected = true;
                 } else {
-                    for (other, _, _) in self.async_connections(reverse).await {
+                    for &(other, _, _) in self.async_connections(reverse).await.iter() {
                         WorkUnit::new().await;
                         if reverse_seen.insert(other) {
                             reverse_queue.push_back(other);
@@ -559,7 +560,7 @@ impl Navigation {
                 }
             }
             let mut neighbors: HashMap<IVec2, f32> = HashMap::new();
-            for (other, cell, next) in self.async_connections(node).await {
+            for &(other, cell, next) in self.async_connections(node).await.iter() {
                 WorkUnit::new().await;
                 let distance = Self::center(node).distance(Self::center(other));
                 let weight = (Self::paint_multiplier(grid, swarm, hauler, cell)
