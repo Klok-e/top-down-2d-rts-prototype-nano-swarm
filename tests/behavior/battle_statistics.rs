@@ -15,12 +15,15 @@ mod common;
 fn battle() -> App {
     let mut app = common::sim_app_with_elimination();
     record_battle(&mut app);
-    common::spawn_swarm_with_nanobots(&mut app, Vec2::ZERO, &[(NanobotType::Worker, 1)]);
-    common::spawn_opponent_swarm_with_nanobots(
+    let player =
+        common::spawn_swarm_with_nanobots(&mut app, Vec2::ZERO, &[(NanobotType::Worker, 1)]);
+    common::spawn_home_facility(&mut app, player);
+    let opponent = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
         Vec2::X * 500.,
         &[(NanobotType::Defender, 1)],
     );
+    common::spawn_home_facility(&mut app, opponent);
     app
 }
 
@@ -211,7 +214,7 @@ fn headless_frame_timing_follows_the_generic_unbounded_option() {
 fn samples_preserve_gross_events_and_stop_counters_after_draw() {
     use top_down_2d_rts_prototype_nano_swarm::{
         battle_statistics::{BattleCounters, BattleEvent},
-        nanobot::{Health, SwarmId},
+        nanobot::SwarmId,
     };
     let mut app = battle();
     app.update();
@@ -251,13 +254,7 @@ fn samples_preserve_gross_events_and_stop_counters_after_draw() {
         "non-combat structure loss must not count as hostile combat damage",
     );
     assert_eq!(latest_row(&mut app, 1)["births"], 0);
-    for mut health in app
-        .world_mut()
-        .query::<&mut Health>()
-        .iter_mut(app.world_mut())
-    {
-        health.current = 0;
-    }
+    common::destroy_structures(&mut app, |_| true);
     app.update();
     let completed = stats(&mut app);
     assert_eq!(completed["summary"]["outcome"], "draw");
@@ -308,13 +305,7 @@ fn effective_damage_is_cumulative_and_freezes_at_match_end() {
         app.update();
     }
 
-    for mut health in app
-        .world_mut()
-        .query::<&mut top_down_2d_rts_prototype_nano_swarm::nanobot::Health>()
-        .iter_mut(app.world_mut())
-    {
-        health.current = 0;
-    }
+    common::destroy_structures(&mut app, |_| true);
     app.update();
 
     let payload = stats(&mut app);
@@ -399,7 +390,7 @@ fn recording_uses_session_policy_without_a_scenario_selection() {
 #[test]
 fn recorded_outcomes_use_actual_swarm_ids_and_session_perspective() {
     use top_down_2d_rts_prototype_nano_swarm::{
-        nanobot::{Health, SwarmId, SwarmMember},
+        nanobot::{SwarmId, SwarmMember},
         session::{OutcomeMode, SessionRules},
     };
     for (mode, expected) in [
@@ -420,18 +411,18 @@ fn recorded_outcomes_use_actual_swarm_ids_and_session_perspective() {
         {
             id.0 = if id.0 == 0 { 7 } else { 42 };
         }
-        for (mut member, mut health) in app
+        for mut member in app
             .world_mut()
-            .query::<(&mut SwarmMember, &mut Health)>()
+            .query::<&mut SwarmMember>()
             .iter_mut(app.world_mut())
         {
-            if member.0.0 == 0 {
-                member.0 = SwarmId(7);
-                health.current = 0;
+            member.0 = if member.0.0 == 0 {
+                SwarmId(7)
             } else {
-                member.0 = SwarmId(42);
-            }
+                SwarmId(42)
+            };
         }
+        common::destroy_structures(&mut app, |id| id == SwarmId(7));
         app.update();
         let payload = stats(&mut app);
         assert_eq!(payload["summary"]["outcome"], expected);
@@ -855,6 +846,7 @@ fn battle_stats_report_status_at_elimination_and_freeze_while_the_world_advances
             health.current = 0;
         }
     }
+    common::destroy_structures(&mut app, |id| !id.is_player());
     app.update();
     let terminal = stats(&mut app);
     assert_eq!(terminal["summary"]["status"], "completed");
@@ -892,12 +884,15 @@ fn battle_stats_report_interruption_at_the_tick_limit_and_freeze() {
             ..default()
         },
     );
-    common::spawn_swarm_with_nanobots(&mut app, Vec2::ZERO, &[(NanobotType::Worker, 1)]);
-    common::spawn_opponent_swarm_with_nanobots(
+    let player =
+        common::spawn_swarm_with_nanobots(&mut app, Vec2::ZERO, &[(NanobotType::Worker, 1)]);
+    common::spawn_home_facility(&mut app, player);
+    let opponent = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
         Vec2::X * 500.,
         &[(NanobotType::Defender, 1)],
     );
+    common::spawn_home_facility(&mut app, opponent);
     advance(&mut app, 89);
     assert_eq!(stats(&mut app)["summary"]["status"], "in_progress");
     advance(&mut app, 1);
@@ -932,21 +927,18 @@ fn non_windowed_battle_freezes_its_simulation_at_the_end_without_exiting() {
                 ..default()
             },
         );
-        common::spawn_swarm_with_nanobots(&mut app, Vec2::ZERO, &[(NanobotType::Worker, 1)]);
-        common::spawn_opponent_swarm_with_nanobots(
+        let player =
+            common::spawn_swarm_with_nanobots(&mut app, Vec2::ZERO, &[(NanobotType::Worker, 1)]);
+        common::spawn_home_facility(&mut app, player);
+        let opponent = common::spawn_opponent_swarm_with_nanobots(
             &mut app,
             Vec2::X * 500.,
             &[(NanobotType::Defender, 1)],
         );
+        common::spawn_home_facility(&mut app, opponent);
         advance(&mut app, 30);
         if max_ticks.is_none() {
-            for mut health in app
-                .world_mut()
-                .query::<&mut top_down_2d_rts_prototype_nano_swarm::nanobot::Health>()
-                .iter_mut(app.world_mut())
-            {
-                health.current = 0;
-            }
+            common::destroy_structures(&mut app, |_| true);
         }
         advance(&mut app, 70);
         let terminal = stats(&mut app);

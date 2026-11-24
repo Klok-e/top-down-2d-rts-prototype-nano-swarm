@@ -18,11 +18,12 @@ fn sandbox_remains_open_ended_when_player_is_eliminated() {
         selection.current = scenario;
         app.insert_resource(selection);
         common::spawn_swarm_at(&mut app, Vec2::ZERO);
-        common::spawn_opponent_swarm_with_nanobots(
+        let opponent = common::spawn_opponent_swarm_with_nanobots(
             &mut app,
             Vec2::new(500.0, 0.0),
             &[(NanobotType::Defender, 1)],
         );
+        common::spawn_home_facility(&mut app, opponent);
         for x in -4..4 {
             app.world_mut().resource_mut::<IntentGrid>().paint(
                 IVec2::new(x, 0),

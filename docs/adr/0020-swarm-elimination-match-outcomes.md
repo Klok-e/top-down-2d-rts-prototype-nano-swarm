@@ -1,5 +1,7 @@
 # Swarm elimination determines match outcomes
 
+Superseded in part by [ADR-0033](0033-structure-only-swarm-elimination.md): Nanobots no longer keep a swarm in the match.
+
 Replace Production Collapse with Swarm Elimination: a swarm is eliminated only when it has zero Nanobots and zero completed structures, with Planned Structures excluded. Any surviving Nanobot, Production Facility, Stockpile, or Charger keeps the swarm in the match regardless of production, supply, or recovery potential; this makes the outcome predictable while accepting that a hopeless swarm can prolong a match until its remaining entities are destroyed or decay.
 
 In Standard, evaluate both swarms together at the end of each simulation tick after entity creation and removal are reflected in the state: only the opponent eliminated means Victory, only the player eliminated means Defeat, and both eliminated in that tick means Draw. The first result is permanent even if later simulation state changes; Sandbox has no match outcomes.

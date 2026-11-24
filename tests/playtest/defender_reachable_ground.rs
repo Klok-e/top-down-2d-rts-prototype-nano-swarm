@@ -3,8 +3,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     ai_battle::AiBattleLayout,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        DefenderResponse, Health, MatchOutcome, ResolvedCombatFact, SwarmEliminationPlugin,
-        SwarmId, SwarmMember, nanobot_death_cleanup_system, world_to_cell,
+        DefenderResponse, Health, ResolvedCombatFact, SwarmId, SwarmMember,
+        nanobot_death_cleanup_system, world_to_cell,
     },
     reachability::{IntentWriteAction, SwarmReachabilityMap, apply_reachable_intent},
     scenario::{LayoutSetup, cell_origin, default_rock_geometry},
@@ -40,10 +40,9 @@ fn install_terrain(
 }
 
 #[test]
-fn defend_paint_on_flanks_edge_ground_leads_to_elimination() {
+fn defend_paint_on_flanks_edge_ground_kills_the_hauler() {
     let mut app = common::sim_app_with_combat();
-    app.add_plugins(SwarmEliminationPlugin)
-        .add_systems(FixedLast, nanobot_death_cleanup_system);
+    app.add_systems(FixedLast, nanobot_death_cleanup_system);
     let layout = LayoutSetup::for_layout(AiBattleLayout::Flanks);
     let ground = install_terrain(
         &mut app,
@@ -92,7 +91,7 @@ fn defend_paint_on_flanks_edge_ground_leads_to_elimination() {
                 hit_hauler = true;
             }
         }
-        if *world.resource::<MatchOutcome>() == MatchOutcome::Winner(OPPONENT) {
+        if world.get_entity(hauler).is_err() {
             break;
         }
     }
@@ -106,10 +105,6 @@ fn defend_paint_on_flanks_edge_ground_leads_to_elimination() {
         "the responding Defender must hit the Hauler on edge ground"
     );
     assert!(app.world().get_entity(hauler).is_err());
-    assert_eq!(
-        *app.world().resource::<MatchOutcome>(),
-        MatchOutcome::Winner(OPPONENT)
-    );
 }
 
 #[test]

@@ -121,7 +121,7 @@ A non-player swarm governed by the same intent, production, logistics, maintenan
 _Avoid_: Enemy AI faction, scripted attackers
 
 **Swarm Elimination**:
-A swarm's loss of all its Nanobots and completed structures, excluding Planned Structures. Any surviving Nanobot, Production Facility, Stockpile, or Charger prevents elimination regardless of production or recovery potential.
+A swarm's loss of all its completed structures, excluding Planned Structures. Any surviving Production Facility, Stockpile, or Charger prevents elimination regardless of production or recovery potential; surviving Nanobots do not.
 _Avoid_: Production Collapse, population wipeout, king unit death
 
 **Match Outcome**:

@@ -42,12 +42,7 @@ fn strategic_intent_finishes_a_remnant_away_from_its_former_home() {
     let cadence = Duration::from_secs_f64(1.0 / 60.0);
     app.insert_resource(Time::<Fixed>::from_duration(cadence))
         .insert_resource(TimeUpdateStrategy::ManualDuration(cadence))
-        .add_plugins((
-            CombatPlugin,
-            ChargePlugin,
-            StrategicControllerPlugin,
-            SwarmEliminationPlugin,
-        ))
+        .add_plugins((CombatPlugin, ChargePlugin, StrategicControllerPlugin))
         .add_systems(FixedLast, nanobot_death_cleanup_system);
     app.update();
     app.insert_resource(Tuning::default());
@@ -98,7 +93,7 @@ fn strategic_intent_finishes_a_remnant_away_from_its_former_home() {
         {
             first_response = Some(tick);
         }
-        if *app.world().resource::<MatchOutcome>() == MatchOutcome::Winner(SwarmId::PLAYER) {
+        if !enemy_nanobots_remain(&mut app, enemy_id) {
             println!(
                 "first response at tick {}, elimination after {:.3} simulated seconds",
                 first_response.unwrap_or_default(),
@@ -112,20 +107,20 @@ fn strategic_intent_finishes_a_remnant_away_from_its_former_home() {
                 tick > 60,
                 "travel and combat must not become an instant remote kill"
             );
-            assert!(
-                !app.world_mut()
-                    .query::<&SwarmMember>()
-                    .iter(app.world())
-                    .any(|member| member.0 == enemy_id)
-            );
             break;
         }
     }
-    assert_eq!(
-        *app.world().resource::<MatchOutcome>(),
-        MatchOutcome::Winner(SwarmId::PLAYER),
+    assert!(
+        !enemy_nanobots_remain(&mut app, enemy_id),
         "controller must find the real remnant rather than only its former home"
     );
+}
+
+fn enemy_nanobots_remain(app: &mut App, enemy: SwarmId) -> bool {
+    app.world_mut()
+        .query::<&SwarmMember>()
+        .iter(app.world())
+        .any(|member| member.0 == enemy)
 }
 
 #[test]
@@ -136,11 +131,7 @@ fn strategic_intent_finishes_a_hauler_on_the_reachable_flanks_rim() {
 
     let mut app = common::sim_app();
     app.insert_resource(IntentGrid::new(64, 64))
-        .add_plugins((
-            CombatPlugin,
-            StrategicControllerPlugin,
-            SwarmEliminationPlugin,
-        ))
+        .add_plugins((CombatPlugin, StrategicControllerPlugin))
         .add_systems(FixedLast, nanobot_death_cleanup_system);
     let home = Vec2::new(-200.0, 3269.0374);
     let hauler_position = Vec2::new(-520.12854, 3269.0374);
@@ -149,11 +140,12 @@ fn strategic_intent_finishes_a_hauler_on_the_reachable_flanks_rim() {
     app.world_mut()
         .entity_mut(player)
         .insert(StrategicController::new(SwarmId::PLAYER));
-    common::spawn_opponent_swarm_with_nanobots(
+    let enemy = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
         hauler_position,
         &[(NanobotType::Hauler, 1)],
     );
+    let enemy_id = *app.world().get::<SwarmId>(enemy).unwrap();
     let geometry = default_rock_geometry();
     let terrain = geometry
         .iter()
@@ -177,15 +169,12 @@ fn strategic_intent_finishes_a_hauler_on_the_reachable_flanks_rim() {
             .is_some_and(|cell| cell.has_owned(IntentKind::Defend, SwarmId::PLAYER))
     );
     for _ in 0..600 {
-        if *app.world().resource::<MatchOutcome>() != MatchOutcome::InProgress {
+        if !enemy_nanobots_remain(&mut app, enemy_id) {
             break;
         }
         app.update();
     }
-    assert_eq!(
-        *app.world().resource::<MatchOutcome>(),
-        MatchOutcome::Winner(SwarmId::PLAYER)
-    );
+    assert!(!enemy_nanobots_remain(&mut app, enemy_id));
 }
 
 #[test]
@@ -782,6 +771,7 @@ fn swarm_hud_shows_distinct_graphical_combat_alerts_and_delivery_status() {
     let player = common::spawn_swarm_with_nanobots(&mut app, home, &[]);
     let worker = common::spawn_worker_at(&mut app, home);
     let opponent = common::spawn_opponent_swarm_with_nanobots(&mut app, home, &[]);
+    common::spawn_home_facility(&mut app, opponent);
     let opponent_id = *app.world().get::<SwarmId>(opponent).unwrap();
     let intruder = common::spawn_defender_at(&mut app, home + Vec2::X * 160.0);
     app.world_mut()

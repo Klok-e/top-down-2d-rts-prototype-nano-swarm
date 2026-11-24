@@ -6,8 +6,8 @@ use std::collections::BTreeSet;
 use crate::resources::Stockpile;
 
 use super::{
-    Charger, Nanobot, OwnerSwarm, PlannedStructure, ProductionFacility, Swarm, SwarmId,
-    SwarmMember, nanobot_death_cleanup_system,
+    Charger, OwnerSwarm, PlannedStructure, ProductionFacility, Swarm, SwarmId,
+    nanobot_death_cleanup_system,
 };
 
 /// Current elimination set for all participating swarms.
@@ -34,7 +34,6 @@ pub enum MatchOutcome {
 #[allow(clippy::type_complexity)]
 fn detect_swarm_elimination(
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,
-    nanobots: Query<&SwarmMember, With<Nanobot>>,
     structures: Query<
         &OwnerSwarm,
         (
@@ -51,8 +50,8 @@ fn detect_swarm_elimination(
     let mut winner = None;
     for (entity, id) in &swarms {
         participating += 1;
-        let eliminated = !nanobots.iter().any(|member| member.0 == *id)
-            && !structures.iter().any(|owner| owner.0 == entity);
+        // Nanobots never keep a swarm alive; only completed structures do.
+        let eliminated = !structures.iter().any(|owner| owner.0 == entity);
         if eliminated {
             state.eliminated.insert(*id);
         } else {
@@ -85,6 +84,7 @@ impl Plugin for SwarmEliminationPlugin {
                 FixedLast,
                 detect_swarm_elimination
                     .in_set(SwarmEliminationSet)
+                    // Statistics after this set must include the tick's deaths.
                     .after(nanobot_death_cleanup_system)
                     .run_if(outcomes_enabled),
             );

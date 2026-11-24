@@ -2,7 +2,7 @@
 
 Nano Swarm is a top-down RTS about steering a swarm of autonomous Nanobots. Paint Gather, Build, Defend, and Corridor zones to direct work across the map. Workers extract minerals and build structures, Haulers carry supplies, and Defenders respond to threats. Each Nanobot chooses work from its swarm’s intent. Both swarms can paint the same cell.
 
-In Standard, eliminate the opposing swarm by destroying its Nanobots and completed structures. A surviving bot or completed structure keeps its swarm in the match. [Gameplay glossary](GLOSSARY.md)
+In Standard, eliminate the opposing swarm by destroying its completed structures. Surviving bots do not keep a swarm in the match. [Gameplay glossary](GLOSSARY.md)
 
 ## Running
 

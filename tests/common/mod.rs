@@ -947,6 +947,34 @@ pub fn press_button(app: &mut App, button: Entity) {
     app.update();
 }
 
+/// Spawn an empty completed Production Facility, the structure that keeps `owner` in the match.
+pub fn spawn_home_facility(app: &mut App, owner: Entity) -> Entity {
+    spawn_empty_completed_structure(
+        app,
+        owner,
+        top_down_2d_rts_prototype_nano_swarm::nanobot::PlannedKind::ProductionFacility,
+    )
+}
+
+/// Despawn the completed structures of the swarms that `doomed` selects, eliminating them.
+pub fn destroy_structures(app: &mut App, doomed: impl Fn(SwarmId) -> bool) {
+    let world = app.world_mut();
+    let owned: Vec<(Entity, Entity)> = world
+        .query_filtered::<(Entity, &OwnerSwarm), Or<(
+            With<ProductionFacility>,
+            With<Stockpile>,
+            With<Charger>,
+        )>>()
+        .iter(world)
+        .map(|(entity, owner)| (entity, owner.0))
+        .collect();
+    for (entity, owner) in owned {
+        if world.get::<SwarmId>(owner).is_some_and(|id| doomed(*id)) {
+            world.despawn(entity);
+        }
+    }
+}
+
 /// Spawn one empty completed structure owned by `owner`, without maintenance or production.
 pub fn spawn_empty_completed_structure(
     app: &mut App,
