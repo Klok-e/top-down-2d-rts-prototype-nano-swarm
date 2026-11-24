@@ -103,6 +103,17 @@ struct StrategicRouteCache {
 }
 
 impl StrategicRouteCache {
+    /// Adopt a new navigation revision, keeping only found routes whose whole path is still
+    /// movement-clear. A kept route may be longer than a fresh search would find; unreachable
+    /// outcomes could have been invalidated by removed obstacles, so they are dropped.
+    fn revalidate(&mut self, navigation: &Navigation) {
+        self.revision = navigation.revision();
+        self.results.retain(|(start, _, outcome)| match outcome {
+            RouteOutcome::Found(route) => route.still_clear(navigation, *start),
+            RouteOutcome::Unreachable => false,
+        });
+    }
+
     fn query(
         &mut self,
         navigation: &Navigation,
@@ -357,9 +368,11 @@ fn strategic_intent_system(
         .iter()
         .map(|(rock, transform)| rock.obstacle(transform))
         .collect();
-    if routes.revision != navigation.revision() || reachability.is_changed() {
+    if reachability.is_changed() {
         routes.revision = navigation.revision();
         routes.results.clear();
+    } else if routes.revision != navigation.revision() {
+        routes.revalidate(&navigation);
     }
     let routes = RefCell::new(routes);
     let route_query = |start, goal, allow_work: &mut dyn FnMut() -> bool| {
@@ -475,5 +488,41 @@ pub fn reconcile_controller_tuning(
     }
     for mut controller in world.query::<&mut StrategicController>().iter_mut(world) {
         controller.planner.request_tuning_review();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::navigation::Obstacle;
+
+    #[test]
+    fn revalidation_drops_unreachable_outcomes_and_keeps_clear_found_routes() {
+        let grid = crate::intent::IntentGrid::new(8, 8);
+        let wall = Obstacle::Rectangle {
+            center: Vec2::new(1000.0, 0.0),
+            half: Vec2::splat(200.0),
+        };
+        let mut navigation = Navigation::new(&grid, vec![wall]);
+        let mut cache = StrategicRouteCache::default();
+        let start = Vec2::new(-1000.0, 0.0);
+        let free = RouteGoal::Point(Vec2::new(-500.0, 300.0));
+        let walled = RouteGoal::Point(Vec2::new(1000.0, 0.0));
+        let mut allow = || true;
+        assert!(matches!(
+            cache.query(&navigation, start, free, &mut allow),
+            Some(RouteOutcome::Found(_))
+        ));
+        assert!(matches!(
+            cache.query(&navigation, start, walled, &mut allow),
+            Some(RouteOutcome::Unreachable)
+        ));
+        assert_eq!(cache.results.len(), 2);
+
+        navigation.refresh(&grid, Vec::new());
+        cache.revalidate(&navigation);
+        assert_eq!(cache.revision, navigation.revision());
+        assert_eq!(cache.results.len(), 1);
+        assert_eq!(cache.results[0].1, free);
     }
 }

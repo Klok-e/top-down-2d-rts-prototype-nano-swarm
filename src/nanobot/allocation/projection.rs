@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use bevy::prelude::*;
+use bevy::{ecs::entity::EntityHashMap, platform::collections::hash_map::Entry, prelude::*};
 
 use super::{ActionableOpportunity, AllocationRegion, OpportunityCategory, OpportunityTarget};
 use crate::ZONE_BLOCK_SIZE;
@@ -72,6 +72,17 @@ struct SinkSnapshot {
     destination: Destination,
 }
 
+/// A Defender's swarm, cell and active charger, which decide the chargers it serves.
+type MaintenanceState = (SwarmId, IVec2, Option<Entity>);
+
+/// Each live Defender's charger-relevant state as of the previous projection.
+#[derive(Default)]
+pub struct TrackedMaintenanceDefenders {
+    /// The state, and the pass parity it was last seen in.
+    by_entity: EntityHashMap<(MaintenanceState, bool)>,
+    parity: bool,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct DefenderMaintenanceSnapshot {
     swarm: SwarmId,
@@ -128,7 +139,7 @@ pub fn project_actionable_opportunities_system(
         ),
         With<Nanobot>,
     >,
-    mut previous_maintenance_defenders: Local<BTreeMap<Entity, (SwarmId, IVec2, Option<Entity>)>>,
+    mut tracked_defenders: Local<TrackedMaintenanceDefenders>,
     generation: Option<Res<crate::session_lifecycle::SessionGeneration>>,
     mut previous_generation: Local<Option<u64>>,
     swarm_queries: (Query<&SwarmId>, Query<&SwarmId, With<Swarm>>),
@@ -138,7 +149,7 @@ pub fn project_actionable_opportunities_system(
     if let Some(generation) = generation.as_deref().map(|generation| generation.0)
         && *previous_generation != Some(generation)
     {
-        previous_maintenance_defenders.clear();
+        tracked_defenders.by_entity.clear();
         *previous_generation = Some(generation);
     }
     for cell in grid.drain_projection_dirty() {
@@ -220,40 +231,53 @@ pub fn project_actionable_opportunities_system(
         }
     }
 
-    let maintenance_defenders = defenders
-        .iter()
-        .filter(|(_, kind, _, health, _, _, _)| {
-            **kind == NanobotType::Defender
-                && !health.as_ref().is_some_and(|health| health.current == 0)
-        })
-        .map(|(entity, _, member, _, transform, assignment, progress)| {
-            (
-                entity,
-                (
-                    member.0,
-                    crate::nanobot::world_to_cell(transform.translation.truncate()),
-                    assignment
-                        .as_ref()
-                        .map(|assignment| assignment.charger)
-                        .or_else(|| progress.as_ref().map(|progress| progress.charger)),
-                ),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+    // Old and new states of Defenders that changed, appeared or left; they only mark
+    // cells dirty, so their order is free.
     let mut changed_defenders = Vec::new();
-    for (entity, previous) in previous_maintenance_defenders.iter() {
-        let current = maintenance_defenders.get(entity);
-        if current != Some(previous) {
-            changed_defenders.push(*previous);
-            if let Some(current) = current {
-                changed_defenders.push(*current);
+    let tracked = &mut *tracked_defenders;
+    tracked.parity = !tracked.parity;
+    let parity = tracked.parity;
+    let previously_tracked = tracked.by_entity.len();
+    let mut still_tracked = 0;
+    for (entity, kind, member, health, transform, assignment, progress) in &defenders {
+        if *kind != NanobotType::Defender
+            || health.as_ref().is_some_and(|health| health.current == 0)
+        {
+            continue;
+        }
+        let current = (
+            member.0,
+            crate::nanobot::world_to_cell(transform.translation.truncate()),
+            assignment
+                .as_ref()
+                .map(|assignment| assignment.charger)
+                .or_else(|| progress.as_ref().map(|progress| progress.charger)),
+        );
+        match tracked.by_entity.entry(entity) {
+            Entry::Occupied(mut slot) => {
+                still_tracked += 1;
+                let (previous, seen) = slot.get_mut();
+                if *previous != current {
+                    changed_defenders.push(*previous);
+                    changed_defenders.push(current);
+                    *previous = current;
+                }
+                *seen = parity;
+            }
+            Entry::Vacant(slot) => {
+                changed_defenders.push(current);
+                slot.insert((current, parity));
             }
         }
     }
-    for (entity, current) in &maintenance_defenders {
-        if !previous_maintenance_defenders.contains_key(entity) {
-            changed_defenders.push(*current);
-        }
+    if still_tracked < previously_tracked {
+        tracked.by_entity.retain(|_, (previous, seen)| {
+            let live = *seen == parity;
+            if !live {
+                changed_defenders.push(*previous);
+            }
+            live
+        });
     }
     for defender in changed_defenders {
         for (charger_entity, charger, owner, _) in &chargers {
@@ -269,11 +293,12 @@ pub fn project_actionable_opportunities_system(
             }
         }
     }
-    *previous_maintenance_defenders = maintenance_defenders;
-    let maintenance_defenders = previous_maintenance_defenders
+    // Charger work only asks whether any Defender serves it, so the order is free.
+    let maintenance_defenders = tracked
+        .by_entity
         .values()
         .map(
-            |(swarm, cell, active_charger)| DefenderMaintenanceSnapshot {
+            |((swarm, cell, active_charger), _)| DefenderMaintenanceSnapshot {
                 swarm: *swarm,
                 cell: *cell,
                 active_charger: *active_charger,

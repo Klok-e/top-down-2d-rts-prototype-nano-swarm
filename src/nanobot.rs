@@ -184,6 +184,27 @@ impl Plugin for NanobotPlugin {
             // cannot act during another fixed tick in the same rendered frame.
             .add_systems(FixedLast, nanobot_death_cleanup_system)
             .add_systems(Update, bot_debug_circle_system);
+        run_fixed_schedules_on_one_thread(app);
+    }
+}
+
+/// The fixed simulation runs its systems in order on the thread that runs the
+/// fixed loop. Its systems are short, so handing each one to a worker thread costs
+/// more than it saves, and woken workers often land on slow or idle cores. Single
+/// threading made the fixed tick about three times faster at 55 Nanobots and
+/// about a quarter faster at 5,000.
+fn run_fixed_schedules_on_one_thread(app: &mut App) {
+    use bevy::ecs::schedule::{ExecutorKind, ScheduleLabel};
+    for label in [
+        FixedFirst.intern(),
+        FixedPreUpdate.intern(),
+        FixedUpdate.intern(),
+        FixedPostUpdate.intern(),
+        FixedLast.intern(),
+    ] {
+        app.edit_schedule(label, |schedule| {
+            schedule.set_executor_kind(ExecutorKind::SingleThreaded);
+        });
     }
 }
 

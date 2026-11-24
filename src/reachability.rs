@@ -63,6 +63,8 @@ struct ReachabilityInner {
     homes: BTreeMap<SwarmId, Vec2>,
     cells: Mutex<HashMap<(SwarmId, IVec2), Option<Vec2>>>,
     ground_witnesses: Mutex<HashMap<(SwarmId, IVec2), Vec2>>,
+    /// Visible-tile planning points. The topology is immutable, so entries never go stale.
+    planning_points: Mutex<HashMap<(SwarmId, IVec2), Option<Vec2>>>,
 }
 
 impl SwarmReachabilityMap {
@@ -85,6 +87,7 @@ impl SwarmReachabilityMap {
                 homes,
                 cells: Mutex::new(HashMap::new()),
                 ground_witnesses: Mutex::new(HashMap::new()),
+                planning_points: Mutex::new(HashMap::new()),
             }),
         })
     }
@@ -253,12 +256,30 @@ impl SwarmReachabilityMap {
         let Some(&home) = self.inner.homes.get(&owner) else {
             return Ok(None);
         };
-        let (min, max) = tile_bounds(cell);
-        if let Some(point) = self
+        let cached = self
             .inner
-            .navigation
-            .visible_tile_point(home, min, max, allow_work)?
-        {
+            .planning_points
+            .lock()
+            .unwrap()
+            .get(&(owner, cell))
+            .copied();
+        let visible = match cached {
+            Some(visible) => visible,
+            None => {
+                let (min, max) = tile_bounds(cell);
+                let visible = self
+                    .inner
+                    .navigation
+                    .visible_tile_point(home, min, max, allow_work)?;
+                self.inner
+                    .planning_points
+                    .lock()
+                    .unwrap()
+                    .insert((owner, cell), visible);
+                visible
+            }
+        };
+        if let Some(point) = visible {
             self.inner
                 .ground_witnesses
                 .lock()

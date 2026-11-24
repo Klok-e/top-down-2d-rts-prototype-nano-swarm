@@ -468,7 +468,7 @@ pub fn reconcile_defender_responses_system(
         })
     };
 
-    let mut states = defenders
+    let unsorted = defenders
         .iter()
         .filter(|(_, _, kind, ..)| **kind == NanobotType::Defender)
         .map(
@@ -505,7 +505,18 @@ pub fn reconcile_defender_responses_system(
             },
         )
         .collect::<Vec<_>>();
-    states.sort_by_key(|state| state.combat_key);
+    // A stable sort by combat key: the query index breaks ties. Sorting the small
+    // pairs and gathering once avoids moving whole states through a merge sort.
+    let mut order = unsorted
+        .iter()
+        .enumerate()
+        .map(|(index, state)| (state.combat_key, index as u32))
+        .collect::<Vec<_>>();
+    order.sort_unstable();
+    let mut states = order
+        .into_iter()
+        .map(|(_, index)| unsorted[index as usize])
+        .collect::<Vec<_>>();
 
     let capacity = usize::from(tuning.combat.responders_per_defender_threat);
     let mut claims = EntityHashMap::default();

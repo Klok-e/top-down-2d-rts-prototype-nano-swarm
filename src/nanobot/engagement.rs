@@ -7,7 +7,11 @@ use super::{
     combat_key,
     move_system::{BODY_DIAMETER, coincident_pair_direction},
 };
-use crate::{spatial::FixedSpatialBuckets, tuning::Tuning};
+use crate::tuning::Tuning;
+
+mod index;
+
+use index::DefenderIndex;
 
 const FRIENDLY_DENSITY_RADIUS: f32 = BODY_DIAMETER * 2.0;
 
@@ -33,8 +37,7 @@ struct Engagement {
 #[derive(Default, Resource)]
 pub struct DefenderEngagements {
     contacts: EntityHashMap<Engagement>,
-    defenders: Option<FixedSpatialBuckets<EngagementDefender>>,
-    bucket_size: f32,
+    defenders: Option<DefenderIndex>,
     disengage_velocities: EntityHashMap<Vec2>,
 }
 
@@ -59,30 +62,38 @@ impl DefenderEngagements {
         self.disengage_velocities.insert(entity, velocity);
     }
 
-    pub(super) fn defenders_near(
-        &self,
-        position: Vec2,
-        radius: f32,
-    ) -> impl Iterator<Item = &EngagementDefender> {
-        let radius_squared = radius * radius;
-        let bucket_radius = (radius / self.bucket_size).ceil() as i32;
+    /// Whether a Defender outside `swarm` is within `radius` of `position`.
+    pub(super) fn hostile_near(&self, position: Vec2, swarm: SwarmId, radius: f32) -> bool {
         self.defenders
-            .iter()
-            .flat_map(move |buckets| {
-                buckets.neighbourhood(buckets.bucket_for_position(position), bucket_radius)
-            })
-            .flat_map(|(_, entries)| entries)
-            .filter(move |defender| position.distance_squared(defender.position) <= radius_squared)
+            .as_ref()
+            .is_some_and(|defenders| defenders.any_hostile(position, swarm, radius))
     }
 
-    pub(super) fn hostiles_near(
+    /// The closest Defender outside `swarm` within `radius`, with its squared
+    /// distance; equal distances break by combat key.
+    pub(super) fn nearest_hostile(
         &self,
         position: Vec2,
         swarm: SwarmId,
         radius: f32,
-    ) -> impl Iterator<Item = &EngagementDefender> {
-        self.defenders_near(position, radius)
-            .filter(move |defender| defender.swarm != swarm)
+    ) -> Option<(f32, &EngagementDefender)> {
+        self.defenders
+            .as_ref()?
+            .nearest_hostile(position, swarm, radius, None)
+    }
+
+    /// Whether Defender strength within `radius` leaves `swarm` below `ratio` of
+    /// the hostile strength there. Routing friends add no strength.
+    pub(super) fn outnumbered(
+        &self,
+        position: Vec2,
+        swarm: SwarmId,
+        radius: f32,
+        ratio: f32,
+    ) -> bool {
+        self.defenders
+            .as_ref()
+            .is_some_and(|defenders| defenders.outnumbered(position, swarm, radius, ratio))
     }
 
     pub(super) fn velocity_with_separation(
@@ -113,28 +124,12 @@ impl DefenderEngagements {
         }
 
         let defender = engagement.defender;
-        let entity = defender.entity;
         let tangent = toward.perp();
-        let buckets = self
+        let (positive, negative) = self
             .defenders
             .as_ref()
-            .expect("engagement indexes its Defender");
-        let center = buckets.bucket_for_position(defender.position);
-        let mut positive = 0;
-        let mut negative = 0;
-        for (_, neighbours) in buckets.neighbourhood(center, 1) {
-            for other in neighbours {
-                let offset = other.position - defender.position;
-                if other.entity != entity
-                    && other.swarm == defender.swarm
-                    && offset.length_squared() <= FRIENDLY_DENSITY_RADIUS.powi(2)
-                {
-                    let side = offset.dot(tangent);
-                    positive += usize::from(side > 0.0);
-                    negative += usize::from(side < 0.0);
-                }
-            }
-        }
+            .expect("engagement indexes its Defender")
+            .friendly_sides(&defender, FRIENDLY_DENSITY_RADIUS, tangent);
         let side = match positive.cmp(&negative) {
             std::cmp::Ordering::Less => 1.0,
             std::cmp::Ordering::Greater => -1.0,
@@ -232,31 +227,20 @@ pub fn defender_engagement_system(
         return;
     }
     let range = tuning.combat.attack_range * tuning.combat.engage_range_factor;
-    let range_squared = range * range;
     let outer = (tuning.combat.attack_range - 4.0).max(0.0);
     let inner = (tuning.combat.attack_range - tuning.combat.band_depth).clamp(0.0, outer);
     let speed = tuning.logistics.bot_speed;
     let tick = crate::tuning::elapsed_fixed_ticks(&time);
     let bucket_size = range.max(FRIENDLY_DENSITY_RADIUS);
-    let mut buckets = FixedSpatialBuckets::new(bucket_size);
     defenders.sort_unstable_by_key(|defender| (defender.key, defender.entity));
-    for defender in &defenders {
-        buckets.insert(defender.position, *defender);
-    }
-    for defender in defenders
-        .into_iter()
+    let index = DefenderIndex::new(defenders, bucket_size);
+    for &defender in index
+        .defenders()
+        .iter()
         .filter(|defender| !defender.using_charger && !defender.routing)
     {
-        let center = buckets.bucket_for_position(defender.position);
-        let Some((distance_squared, _, hostile)) = buckets
-            .neighbourhood(center, 1)
-            .flat_map(|(_, entries)| entries)
-            .filter(|other| other.swarm != defender.swarm)
-            .filter_map(|other| {
-                let distance = defender.position.distance_squared(other.position);
-                (distance <= range_squared).then_some((distance, other.key, other))
-            })
-            .min_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)))
+        let Some((distance_squared, hostile)) =
+            index.nearest_hostile(defender.position, defender.swarm, range, Some(1))
         else {
             continue;
         };
@@ -282,6 +266,5 @@ pub fn defender_engagement_system(
             },
         );
     }
-    engagements.bucket_size = bucket_size;
-    engagements.defenders = Some(buckets);
+    engagements.defenders = Some(index);
 }

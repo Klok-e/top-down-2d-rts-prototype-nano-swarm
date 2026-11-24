@@ -15,6 +15,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         move_velocity_system, separation_system, world_to_cell,
     },
     resources::ResourceLedger,
+    scenario::default_rock_geometry,
     tuning::Tuning,
 };
 
@@ -29,6 +30,8 @@ const PROOF_ONLY_ENV: &str = "NANO_SWARM_ACCEPTANCE_PROOF_ONLY";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AcceptanceScenario {
     ThreatResponse,
+    /// The steady Threat response workload on the default rock geometry.
+    ThreatResponseOnRockMap,
     UnengagedStaging,
     ExhaustedGather,
 }
@@ -180,10 +183,12 @@ fn app_with_bots(scenario: AcceptanceScenario) -> App {
     {
         let mut grid = app.world_mut().resource_mut::<IntentGrid>();
         match scenario {
-            AcceptanceScenario::ThreatResponse | AcceptanceScenario::ExhaustedGather => {
+            AcceptanceScenario::ThreatResponse
+            | AcceptanceScenario::ThreatResponseOnRockMap
+            | AcceptanceScenario::ExhaustedGather => {
                 for y in -8..8 {
                     for x in -8..8 {
-                        let kind = if scenario == AcceptanceScenario::ThreatResponse {
+                        let kind = if scenario != AcceptanceScenario::ExhaustedGather {
                             IntentKind::Defend
                         } else {
                             IntentKind::Gather
@@ -198,6 +203,12 @@ fn app_with_bots(scenario: AcceptanceScenario) -> App {
         }
     }
 
+    if scenario == AcceptanceScenario::ThreatResponseOnRockMap {
+        for (rock, transform) in default_rock_geometry() {
+            app.world_mut().spawn((rock, transform));
+        }
+    }
+
     for i in 0..BOT_COUNT {
         let x = (i % 100) as f32 * 40.0;
         let y = (i / 100) as f32 * 40.0;
@@ -208,7 +219,10 @@ fn app_with_bots(scenario: AcceptanceScenario) -> App {
                 NanobotType::Defender
             },
             swarm_member: SwarmMember::new(
-                if scenario == AcceptanceScenario::ThreatResponse && i % 2 == 1 {
+                if scenario != AcceptanceScenario::ExhaustedGather
+                    && scenario != AcceptanceScenario::UnengagedStaging
+                    && i % 2 == 1
+                {
                     SwarmId(11)
                 } else {
                     SwarmId::PLAYER
@@ -230,7 +244,10 @@ fn assert_warmed_load(app: &mut App, scenario: AcceptanceScenario) {
         .iter(app.world())
         .count();
     assert_eq!(population, BOT_COUNT, "benchmark warmup must preserve load");
-    if scenario == AcceptanceScenario::ThreatResponse {
+    if matches!(
+        scenario,
+        AcceptanceScenario::ThreatResponse | AcceptanceScenario::ThreatResponseOnRockMap
+    ) {
         let capacity = usize::from(
             app.world()
                 .resource::<Tuning>()
@@ -305,13 +322,13 @@ fn assert_within_budget(metric: &str, actual: Duration, budget: Duration) {
     );
 }
 
-fn defender_acceptance_p95_proof() {
-    let mut app = app_with_bots(AcceptanceScenario::ThreatResponse);
+fn defender_acceptance_p95_proof(scenario: AcceptanceScenario, label: &str) {
+    let mut app = app_with_bots(scenario);
     add_acceptance_timing(&mut app);
     for _ in 0..WARMUP_FRAMES {
         app.update();
     }
-    assert_warmed_load(&mut app, AcceptanceScenario::ThreatResponse);
+    assert_warmed_load(&mut app, scenario);
 
     {
         let mut timings = app.world_mut().resource_mut::<AcceptanceTimings>();
@@ -366,7 +383,7 @@ fn defender_acceptance_p95_proof() {
     let acquire_p95 = p95(&timings.acquire);
     let separation_p95 = p95(&timings.separation);
     println!(
-        "acceptance_p95 steady_threat_response_frame samples={} frame={:.4}ms/{:.4}ms regional_allocation_project_invalidate_acquire={:.4}ms/{:.4}ms project={:.4}ms invalidate={:.4}ms acquire={:.4}ms local_separation={:.4}ms/{:.4}ms",
+        "acceptance_p95 {label} samples={} frame={:.4}ms/{:.4}ms regional_allocation_project_invalidate_acquire={:.4}ms/{:.4}ms project={:.4}ms invalidate={:.4}ms acquire={:.4}ms local_separation={:.4}ms/{:.4}ms",
         ACCEPTANCE_SAMPLE_FRAMES,
         duration_ms(frame_p95),
         duration_ms(FRAME_P95_BUDGET),
@@ -517,6 +534,11 @@ fn swarm_acceptance(c: &mut Criterion) {
         b.iter(|| steady.update())
     });
 
+    let mut rock_map = warmed_app(AcceptanceScenario::ThreatResponseOnRockMap);
+    group.bench_function("steady_threat_response_default_rock_map_frame", |b| {
+        b.iter(|| rock_map.update())
+    });
+
     let mut staging = warmed_app(AcceptanceScenario::UnengagedStaging);
     group.bench_function("unengaged_staging_frame", |b| b.iter(|| staging.update()));
 
@@ -537,7 +559,14 @@ fn main() {
         return;
     }
 
-    defender_acceptance_p95_proof();
+    defender_acceptance_p95_proof(
+        AcceptanceScenario::ThreatResponse,
+        "steady_threat_response_frame",
+    );
+    defender_acceptance_p95_proof(
+        AcceptanceScenario::ThreatResponseOnRockMap,
+        "steady_threat_response_default_rock_map_frame",
+    );
     unengaged_staging_edit_proof();
     if std::env::var_os(PROOF_ONLY_ENV).is_some() {
         return;

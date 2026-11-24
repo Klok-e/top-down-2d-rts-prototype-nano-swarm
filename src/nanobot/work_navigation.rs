@@ -3,7 +3,7 @@ use super::{
     DefenderEngagements, DirectMovementComponent, ProgressChecker, STOP_THRESHOLD, TrafficYield,
     VelocityComponent,
 };
-use crate::spatial::FixedSpatialBuckets;
+use crate::spatial::{FixedSpatialBuckets, PackedSpatialBuckets};
 use crate::tuning::Tuning;
 use bevy::prelude::*;
 
@@ -45,7 +45,15 @@ pub struct RejectedWorkGoal {
 #[allow(clippy::type_complexity)]
 pub fn work_standing_system(
     mut commands: Commands,
-    bots: Query<(Entity, &Transform, Has<super::CongestionRecovery>), With<super::Nanobot>>,
+    bots: Query<
+        (
+            Entity,
+            &Transform,
+            Has<super::CongestionRecovery>,
+            Has<WorkBlocked>,
+        ),
+        With<super::Nanobot>,
+    >,
     mut rejected: Query<(Entity, &mut RejectedWorkGoal)>,
     time: Res<Time<Fixed>>,
 ) {
@@ -55,19 +63,16 @@ pub fn work_standing_system(
             commands.entity(entity).remove::<RejectedWorkGoal>();
         }
     }
-    let mut occupancy = FixedSpatialBuckets::new(2.0 * crate::navigation::BODY_RADIUS);
-    for (entity, transform, _) in &bots {
-        occupancy.insert(
-            transform.translation.truncate(),
-            (entity, transform.translation.truncate()),
-        );
-    }
-    for (entity, transform, recovering) in &bots {
-        let blocked =
-            recovering || !space_free(entity, transform.translation.truncate(), &occupancy);
-        if blocked {
+    let occupancy = Occupancy::new(
+        bots.iter()
+            .map(|(entity, transform, ..)| (entity, transform.translation.truncate())),
+    );
+    for (entity, transform, recovering, was_blocked) in &bots {
+        let blocked = recovering || !occupancy.space_free(entity, transform.translation.truncate());
+        // Only presence matters to readers, so unchanged markers need no command.
+        if blocked && !was_blocked {
             commands.entity(entity).insert(WorkBlocked);
-        } else {
+        } else if !blocked && was_blocked {
             commands.entity(entity).remove::<WorkBlocked>();
         }
     }
@@ -76,6 +81,11 @@ pub fn work_standing_system(
 #[derive(Default)]
 pub struct WorkApproaches {
     entries: std::collections::HashMap<Entity, ApproachEntry>,
+    /// Start-independent work candidates by region.
+    candidate_parts: bevy::platform::collections::HashMap<
+        super::interaction::InteractionBits,
+        super::interaction::CandidateParts,
+    >,
 }
 
 struct ApproachEntry {
@@ -135,6 +145,10 @@ impl ActiveRoute {
         false
     }
 }
+
+/// Regions whose start-independent work candidates stay cached; geometry is
+/// static, so the cache only bounds memory.
+const MAX_CACHED_CANDIDATE_REGIONS: usize = 4096;
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn move_velocity_system(
@@ -247,13 +261,11 @@ pub fn move_velocity_system(
             entity.to_bits(),
         )
     });
-    let mut occupancy = FixedSpatialBuckets::new(2.0 * crate::navigation::BODY_RADIUS);
-    for (entity, transform, _) in &bodies {
-        occupancy.insert(
-            transform.translation.truncate(),
-            (entity, transform.translation.truncate()),
-        );
-    }
+    let occupancy = Occupancy::new(
+        bodies
+            .iter()
+            .map(|(entity, transform, _)| (entity, transform.translation.truncate())),
+    );
     let mut claims = FixedSpatialBuckets::new(2.0 * crate::navigation::BODY_RADIUS);
     for entity in ordered {
         let Ok((
@@ -314,27 +326,32 @@ pub fn move_velocity_system(
             let free = |point: Vec2| {
                 navigation.point_clear(point)
                     && (!nearby
-                        || (space_free(entity, point, &occupancy)
+                        || (occupancy.space_free(entity, point)
                             && space_free(entity, point, &claims)))
             };
-            let mut candidates = region.work_candidates(position);
-            if let Some(old) = approaches
-                .entries
-                .get(&entity)
-                .and_then(|entry| entry.selected)
-            {
+            if approaches.candidate_parts.len() > MAX_CACHED_CANDIDATE_REGIONS {
+                approaches.candidate_parts.clear();
+            }
+            let parts = approaches
+                .candidate_parts
+                .entry(region.bits())
+                .or_insert_with(|| region.candidate_parts());
+            let mut candidates = region.work_candidates_from(parts, position);
+            let entry = approaches.entries.get(&entity).unwrap();
+            if let Some(old) = entry.selected {
                 candidates.insert(0, old);
             }
             // A separate position already in reach is useful immediately, even after yielding away from the intended approach.
             if region.contains(position) {
                 candidates.insert(0, position);
             }
-            let entry = approaches.entries.get(&entity).unwrap();
-            let mut candidates: Vec<_> = candidates
-                .into_iter()
-                .filter(|point| free(*point) && !entry.rejected.contains(point))
-                .collect();
-            if candidates.is_empty() && region.deposit_tile_band().is_some() {
+            // Usable candidates are evaluated lazily: selection reads only the
+            // retained point, the first clear one and the first one.
+            let usable = |point: &Vec2| free(*point) && !entry.rejected.contains(point);
+            let mut usable_candidates = candidates.iter().copied().filter(usable).peekable();
+            let first_usable = usable_candidates.peek().copied();
+            let mut connected = Vec::new();
+            if first_usable.is_none() && region.deposit_tile_band().is_some() {
                 let (status, origin) = navigation
                     .query_connectivity_with_origin(position, RouteGoal::Interaction(region));
                 match status {
@@ -343,7 +360,7 @@ pub fn move_velocity_system(
                             && navigation.movement_clear(position, origin)
                             && navigation.movement_clear(origin, endpoint);
                         if can_reattach || !entry.rejected.contains(&endpoint) {
-                            candidates.push(endpoint);
+                            connected.push(endpoint);
                         }
                         if can_reattach {
                             connection_origin = Some(origin);
@@ -356,7 +373,13 @@ pub fn move_velocity_system(
             // Retain a usable commitment, otherwise prefer an immediately clear approach.
             let retained = entry
                 .selected
-                .filter(|point| candidates.contains(point))
+                .filter(|point| {
+                    if first_usable.is_some() {
+                        candidates.contains(point) && usable(point)
+                    } else {
+                        connected.contains(point)
+                    }
+                })
                 .filter(|point| {
                     navigation.movement_clear(position, *point)
                         || routes.get(&entity).is_some_and(|route| {
@@ -364,14 +387,18 @@ pub fn move_velocity_system(
                                 && (route.pending.is_some() || !route.waypoints.is_empty())
                         })
                 });
-            let selected = retained
-                .or_else(|| {
-                    candidates
+            let selected = retained.or_else(|| {
+                let clear = |point: &Vec2| navigation.movement_clear(position, *point);
+                if first_usable.is_some() {
+                    usable_candidates.find(clear).or(first_usable)
+                } else {
+                    connected
                         .iter()
                         .copied()
-                        .find(|point| navigation.movement_clear(position, *point))
-                })
-                .or_else(|| candidates.first().copied());
+                        .find(clear)
+                        .or(connected.first().copied())
+                }
+            });
             if let Some(point) = selected {
                 if nearby {
                     claims.insert(point, (entity, point));
@@ -389,7 +416,7 @@ pub fn move_velocity_system(
                 selected_destination.interaction = None;
                 work_ready = nearby
                     && region.contains(position)
-                    && space_free(entity, position, &occupancy)
+                    && occupancy.space_free(entity, position)
                     && !bodies
                         .get(entity)
                         .is_ok_and(|(_, _, recovering)| recovering)
@@ -711,12 +738,47 @@ fn space_free(
     position: Vec2,
     occupancy: &FixedSpatialBuckets<(Entity, Vec2)>,
 ) -> bool {
-    occupancy
-        .neighbourhood(occupancy.bucket_for_position(position), 1)
-        .flat_map(|(_, entries)| entries)
-        .all(|(other, other_position)| {
-            *other == entity
-                || position.distance_squared(*other_position)
-                    >= (2.0 * crate::navigation::BODY_RADIUS - 0.001).powi(2)
-        })
+    clear_of(
+        entity,
+        position,
+        occupancy
+            .neighbourhood(occupancy.bucket_for_position(position), 1)
+            .flat_map(|(_, entries)| entries),
+    )
+}
+
+/// Whether no body other than `entity` among `nearby` overlaps `position`.
+fn clear_of<'a>(
+    entity: Entity,
+    position: Vec2,
+    nearby: impl IntoIterator<Item = &'a (Entity, Vec2)>,
+) -> bool {
+    nearby.into_iter().all(|(other, other_position)| {
+        *other == entity
+            || position.distance_squared(*other_position)
+                >= (2.0 * crate::navigation::BODY_RADIUS - 0.001).powi(2)
+    })
+}
+
+/// Every body's position, built once per pass.
+struct Occupancy(PackedSpatialBuckets<(Entity, Vec2)>);
+
+impl Occupancy {
+    fn new(bodies: impl IntoIterator<Item = (Entity, Vec2)>) -> Self {
+        Self(PackedSpatialBuckets::new(
+            2.0 * crate::navigation::BODY_RADIUS,
+            bodies.into_iter().map(|body| (body.1, body)),
+        ))
+    }
+
+    /// [`space_free`] against every body.
+    fn space_free(&self, entity: Entity, position: Vec2) -> bool {
+        clear_of(
+            entity,
+            position,
+            self.0
+                .neighbourhood_runs(self.0.bucket_for_position(position), 1)
+                .flatten(),
+        )
+    }
 }

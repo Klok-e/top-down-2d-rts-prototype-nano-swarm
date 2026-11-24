@@ -4,11 +4,11 @@ use crate::{
     intent::{IntentGrid, IntentKind},
     nanobot::{SwarmId, world_to_cell},
 };
-use bevy::platform::collections::HashMap as FastHashMap;
+use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 use std::{
     cmp::Ordering,
-    collections::{BinaryHeap, HashMap, HashSet, VecDeque},
+    collections::{BinaryHeap, VecDeque},
     sync::Mutex,
 };
 
@@ -28,12 +28,25 @@ pub struct Route {
     pub waypoints: Vec<Vec2>,
     pub cost: f32,
 }
+impl Route {
+    /// Whether a body walking from `start` along every waypoint stays movement-clear.
+    pub(crate) fn still_clear(&self, navigation: &Navigation, start: Vec2) -> bool {
+        let mut from = start;
+        self.waypoints.iter().all(|&waypoint| {
+            let clear = navigation.movement_clear(from, waypoint);
+            from = waypoint;
+            clear
+        })
+    }
+}
 #[derive(Debug, Clone)]
 pub enum RouteOutcome {
     Found(Route),
     Unreachable,
 }
-type ComponentEdges = FastHashMap<IVec2, Vec<(IVec2, IVec2, IVec2)>>;
+/// A region's edges: (neighbouring region, own cell, neighbouring cell).
+type Edges = std::sync::Arc<[(IVec2, IVec2, IVec2)]>;
+type ComponentEdges = HashMap<IVec2, Edges>;
 
 /// Shared physical connectivity and clearance for all swarms and Nanobot Types.
 /// Chunk regions are materialized only where searches visit the large world.
@@ -44,28 +57,36 @@ pub struct Navigation {
     obstacles: std::sync::Arc<Vec<Obstacle>>,
     obstacle_index: std::sync::Arc<ObstacleIndex>,
     clearing: Vec<Obstacle>,
+    /// Main geometry with every clearing footprint solid, shared by requests starting outside them.
+    clearing_layer: Option<std::sync::Arc<Navigation>>,
+    /// Main-hierarchy caches this geometry variant reuses where its changed shapes cannot reach.
+    base: Option<std::sync::Arc<BaseHierarchy>>,
     revision: u64,
-    chunks: std::sync::Arc<Mutex<FastHashMap<IVec2, Chunk>>>,
+    /// Distinct for every bounds, obstacle set and clearing a hierarchy has held.
+    clearance: u64,
+    chunks: std::sync::Arc<Mutex<HashMap<IVec2, Chunk>>>,
     connections: std::sync::Arc<Mutex<ComponentEdges>>,
     scheduler: Mutex<budget::Scheduler>,
-    chunk_builds: std::sync::Arc<Mutex<FastHashMap<IVec2, budget::ChunkBuild>>>,
+    chunk_builds: std::sync::Arc<Mutex<HashMap<IVec2, budget::ChunkBuild>>>,
     expansions: std::sync::Arc<budget::ExpansionCounters>,
 }
 /// Bucket coverage is capped for both shapes and queries. Huge shapes remain
 /// global candidates; long segments fall back to the bounded obstacle list.
 #[derive(Default)]
 struct ObstacleIndex {
-    buckets: FastHashMap<IVec2, Vec<usize>>,
+    buckets: HashMap<IVec2, Vec<usize>>,
     global: Vec<usize>,
     count: usize,
+    /// Per obstacle, the box beyond which it cannot constrain a body, with rounding slack.
+    reach: Vec<(Vec2, Vec2)>,
 }
 impl ObstacleIndex {
     const MAX_BUCKETS: i64 = 64;
     fn bounds(a: Vec2, b: Vec2) -> (IVec2, IVec2) {
         let width = CELL_WIDTH * CHUNK as f32;
         (
-            (a.min(b) / width).floor().as_ivec2(),
-            (a.max(b) / width).floor().as_ivec2(),
+            crate::spatial::floor_to_ivec2(a.min(b) / width),
+            crate::spatial::floor_to_ivec2(a.max(b) / width),
         )
     }
     fn small_span(min: IVec2, max: IVec2) -> bool {
@@ -85,6 +106,7 @@ impl ObstacleIndex {
                 Obstacle::Rectangle { center, half } => (center, half),
                 Obstacle::Circle { center, radius } => (center, Vec2::splat(radius)),
             };
+            index.reach.push(shape.reach_box());
             let half = half + Vec2::splat(BODY_RADIUS);
             let (min, max) = Self::bounds(center - half, center + half);
             if !Self::small_span(min, max) {
@@ -99,27 +121,84 @@ impl ObstacleIndex {
         }
         index
     }
-    fn candidates(&self, a: Vec2, b: Vec2) -> Vec<usize> {
+    /// Whether every obstacle that could constrain the query box satisfies `accepts`.
+    /// Same answers as testing every candidate, without collecting them.
+    fn all_near(
+        &self,
+        obstacles: &[Obstacle],
+        a: Vec2,
+        b: Vec2,
+        accepts: impl Fn(Obstacle) -> bool,
+    ) -> bool {
+        let (low, high) = (a.min(b), a.max(b));
+        let near =
+            |&id: &usize| super::separated(low, high, self.reach[id]) || accepts(obstacles[id]);
         let (min, max) = Self::bounds(a, b);
         if !Self::small_span(min, max) {
-            return (0..self.count).collect();
+            return (0..self.count).all(|id| near(&id));
         }
-        let mut candidates = self.global.clone();
-        for y in min.y..=max.y {
-            for x in min.x..=max.x {
-                if let Some(ids) = self.buckets.get(&IVec2::new(x, y)) {
-                    candidates.extend(ids);
+        self.global.iter().all(near)
+            && (min.y..=max.y).all(|y| {
+                (min.x..=max.x).all(|x| {
+                    self.buckets
+                        .get(&IVec2::new(x, y))
+                        .is_none_or(|ids| ids.iter().all(near))
+                })
+            })
+    }
+}
+/// Chunks and edges of a geometry variant that equal the main hierarchy's.
+struct BaseHierarchy {
+    navigation: Navigation,
+    /// `None` when changed shapes are too large to enumerate their chunks.
+    changed_chunks: Option<HashSet<IVec2>>,
+}
+impl BaseHierarchy {
+    /// Chunks whose regions changed shapes may alter, enumerated once per variant.
+    fn new(navigation: Navigation, changed: &[Obstacle]) -> Self {
+        const MAX_CHANGED_CHUNKS: i64 = 4096;
+        let width = CELL_WIDTH * CHUNK as f32;
+        let mut chunks = HashSet::default();
+        for &shape in changed {
+            let (center, half) = shape.bounds();
+            let margin = Vec2::splat(Navigation::CHUNK_MARGIN);
+            let min = ((center - half - margin) / width).floor().as_ivec2() - IVec2::ONE;
+            let max = ((center + half + margin) / width).floor().as_ivec2();
+            let span = (i64::from(max.x) - i64::from(min.x) + 1)
+                * (i64::from(max.y) - i64::from(min.y) + 1);
+            if !(0..=MAX_CHANGED_CHUNKS).contains(&span) {
+                return Self {
+                    navigation,
+                    changed_chunks: None,
+                };
+            }
+            for y in min.y..=max.y {
+                for x in min.x..=max.x {
+                    let chunk = IVec2::new(x, y);
+                    if Navigation::chunk_touched(chunk, shape) {
+                        chunks.insert(chunk);
+                    }
                 }
             }
         }
-        candidates.sort_unstable();
-        candidates.dedup();
-        candidates
+        Self {
+            navigation,
+            changed_chunks: Some(chunks),
+        }
+    }
+    fn shares_regions(&self, chunk: IVec2) -> bool {
+        self.changed_chunks
+            .as_ref()
+            .is_some_and(|changed| !changed.contains(&chunk))
+    }
+    /// Edges also name regions of neighboring chunks, so those must match too.
+    fn shares_edges(&self, chunk: IVec2) -> bool {
+        (-1..=1).all(|y| (-1..=1).all(|x| self.shares_regions(chunk + IVec2::new(x, y))))
     }
 }
 #[derive(Clone)]
 struct Chunk {
-    regions: FastHashMap<IVec2, IVec2>,
+    regions: HashMap<IVec2, IVec2>,
 }
 #[derive(Clone, Copy, PartialEq)]
 struct Visit {
@@ -143,6 +222,11 @@ impl PartialOrd for Visit {
         Some(self.cmp(other))
     }
 }
+/// A process-wide unique clearance identity.
+fn next_clearance() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
 impl Default for Navigation {
     fn default() -> Self {
         Self::new(&IntentGrid::new(0, 0), vec![])
@@ -157,8 +241,11 @@ impl Navigation {
             obstacle_index: std::sync::Arc::new(ObstacleIndex::new(&obstacles)),
             obstacles: std::sync::Arc::new(obstacles),
             clearing: Vec::new(),
+            clearing_layer: None,
+            base: None,
             revision: 1,
-            chunks: std::sync::Arc::new(Mutex::new(FastHashMap::default())),
+            clearance: next_clearance(),
+            chunks: std::sync::Arc::new(Mutex::new(HashMap::default())),
             connections: Default::default(),
             scheduler: Mutex::new(budget::Scheduler::default()),
             expansions: Default::default(),
@@ -174,33 +261,14 @@ impl Navigation {
             return false;
         }
         let replacement = Self::new(grid, obstacles);
-        let changed: Vec<_> = self
-            .obstacles
-            .iter()
-            .filter(|o| !replacement.obstacles.contains(o))
-            .chain(
-                replacement
-                    .obstacles
-                    .iter()
-                    .filter(|o| !self.obstacles.contains(o)),
-            )
-            .copied()
-            .collect();
+        let changed = changed_shapes(&self.obstacles, &replacement.obstacles);
         if self.min != replacement.min || self.max != replacement.max {
             self.chunks.lock().unwrap().clear();
         } else {
-            self.chunks.lock().unwrap().retain(|chunk, _| {
-                let lower =
-                    (*chunk * CHUNK).as_vec2() * CELL_WIDTH - Vec2::splat(CELL_WIDTH + BODY_RADIUS);
-                let upper = ((*chunk + IVec2::ONE) * CHUNK).as_vec2() * CELL_WIDTH
-                    + Vec2::splat(CELL_WIDTH + BODY_RADIUS);
-                !changed.iter().any(|shape| {
-                    let (center, half) = match *shape {
-                        Obstacle::Rectangle { center, half } => (center, half),
-                        Obstacle::Circle { center, radius } => (center, Vec2::splat(radius)),
-                    };
-                    (center + half).cmpge(lower).all() && (center - half).cmple(upper).all()
-                })
+            self.chunks.lock().unwrap().retain(|&chunk, _| {
+                !changed
+                    .iter()
+                    .any(|&shape| Self::chunk_touched(chunk, shape))
             });
         }
         self.chunk_builds.lock().unwrap().clear();
@@ -210,10 +278,109 @@ impl Navigation {
         self.obstacles = replacement.obstacles;
         self.obstacle_index = replacement.obstacle_index;
         self.revision = self.revision.wrapping_add(1);
+        self.clearance = next_clearance();
+        self.rebuild_clearing_layer();
         true
+    }
+    /// Chunk regions and their edges cannot change unless a shape reaches this far.
+    const CHUNK_MARGIN: f32 = CELL_WIDTH + BODY_RADIUS;
+    fn chunk_touched(chunk: IVec2, shape: Obstacle) -> bool {
+        let lower = (chunk * CHUNK).as_vec2() * CELL_WIDTH - Vec2::splat(Self::CHUNK_MARGIN);
+        let upper =
+            ((chunk + IVec2::ONE) * CHUNK).as_vec2() * CELL_WIDTH + Vec2::splat(Self::CHUNK_MARGIN);
+        let (center, half) = shape.bounds();
+        (center + half).cmpge(lower).all() && (center - half).cmple(upper).all()
+    }
+    /// Share this hierarchy's geometry and caches under an empty scheduler.
+    fn shared_snapshot(&self) -> Navigation {
+        Navigation {
+            min: self.min,
+            max: self.max,
+            obstacles: self.obstacles.clone(),
+            obstacle_index: self.obstacle_index.clone(),
+            clearing: Vec::new(),
+            clearing_layer: None,
+            base: self.base.clone(),
+            revision: self.revision,
+            clearance: next_clearance(),
+            chunks: self.chunks.clone(),
+            connections: self.connections.clone(),
+            scheduler: Mutex::new(budget::Scheduler::default()),
+            chunk_builds: self.chunk_builds.clone(),
+            expansions: self.expansions.clone(),
+        }
+    }
+    /// Geometry replacing this hierarchy's obstacles. Chunks and edges out of reach of
+    /// the changed shapes come from this hierarchy; only the rest get private caches.
+    fn variant(&self, obstacles: Vec<Obstacle>) -> Navigation {
+        debug_assert!(
+            self.base.is_none(),
+            "variants derive from the main hierarchy"
+        );
+        let changed = changed_shapes(&self.obstacles, &obstacles);
+        Navigation {
+            min: self.min,
+            max: self.max,
+            obstacle_index: std::sync::Arc::new(ObstacleIndex::new(&obstacles)),
+            obstacles: std::sync::Arc::new(obstacles),
+            clearing: Vec::new(),
+            clearing_layer: None,
+            base: Some(std::sync::Arc::new(BaseHierarchy::new(
+                self.shared_snapshot(),
+                &changed,
+            ))),
+            revision: self.revision,
+            clearance: next_clearance(),
+            chunks: Default::default(),
+            connections: Default::default(),
+            scheduler: Mutex::new(budget::Scheduler::default()),
+            chunk_builds: Default::default(),
+            expansions: self.expansions.clone(),
+        }
+    }
+    fn rebuild_clearing_layer(&mut self) {
+        self.clearing_layer = (!self.clearing.is_empty()).then(|| {
+            let obstacles = self
+                .obstacles
+                .iter()
+                .chain(&self.clearing)
+                .copied()
+                .collect();
+            std::sync::Arc::new(self.variant(obstacles))
+        });
+    }
+    /// The hierarchy that owns this chunk's regions for this geometry.
+    fn region_owner(&self, chunk: IVec2) -> &Navigation {
+        match &self.base {
+            Some(base) if base.shares_regions(chunk) => &base.navigation,
+            _ => self,
+        }
+    }
+    /// The hierarchy that owns the edges leaving this chunk for this geometry.
+    fn edge_owner(&self, chunk: IVec2) -> &Navigation {
+        match &self.base {
+            Some(base) if base.shares_edges(chunk) => &base.navigation,
+            _ => self,
+        }
+    }
+    /// An already-built region, without building or waiting.
+    fn cached_region(&self, cell: IVec2) -> Option<IVec2> {
+        let chunk = Self::chunk(cell);
+        self.region_owner(chunk)
+            .chunks
+            .lock()
+            .unwrap()
+            .get(&chunk)
+            .and_then(|built| built.regions.get(&cell))
+            .copied()
     }
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+    /// Equal for two hierarchies, or one hierarchy at two times, only when bounds,
+    /// obstacles and clearing are the same, so every clearance query answers the same.
+    pub(crate) fn clearance_identity(&self) -> u64 {
+        self.clearance
     }
     pub fn point_clear(&self, p: Vec2) -> bool {
         p.is_finite()
@@ -221,9 +388,7 @@ impl Navigation {
             && p.cmplt(self.max).all()
             && self
                 .obstacle_index
-                .candidates(p, p)
-                .into_iter()
-                .all(|id| self.obstacles[id].admits_body(p))
+                .all_near(&self.obstacles, p, p, |shape| shape.admits_body(p))
     }
     pub(crate) fn point_clear_for_entry(&self, point: Vec2) -> bool {
         self.point_clear(point) && self.clearing.iter().all(|shape| shape.admits_body(point))
@@ -234,9 +399,7 @@ impl Navigation {
             && self.point_clear(b)
             && self
                 .obstacle_index
-                .candidates(a, b)
-                .into_iter()
-                .all(|id| self.obstacles[id].segment_clear(a, b))
+                .all_near(&self.obstacles, a, b, |shape| shape.segment_clear(a, b))
     }
     /// Swept travel respects clearing entry barriers while allowing existing occupants to leave.
     pub(crate) fn movement_clear(&self, start: Vec2, end: Vec2) -> bool {
@@ -251,7 +414,7 @@ impl Navigation {
         (cell.as_vec2() + Vec2::splat(0.5)) * CELL_WIDTH
     }
     fn cell(p: Vec2) -> IVec2 {
-        (p / CELL_WIDTH).floor().as_ivec2()
+        crate::spatial::floor_to_ivec2(p / CELL_WIDTH)
     }
     fn chunk(cell: IVec2) -> IVec2 {
         IVec2::new(cell.x.div_euclid(CHUNK), cell.y.div_euclid(CHUNK))
@@ -307,6 +470,16 @@ impl Navigation {
             RouteOutcome::Unreachable => None,
         }
     }
+}
+/// Shapes present in only one of two obstacle lists.
+fn changed_shapes(old: &[Obstacle], new: &[Obstacle]) -> Vec<Obstacle> {
+    let old_bits: HashSet<_> = old.iter().map(|shape| shape.bits()).collect();
+    let new_bits: HashSet<_> = new.iter().map(|shape| shape.bits()).collect();
+    old.iter()
+        .filter(|shape| !new_bits.contains(&shape.bits()))
+        .chain(new.iter().filter(|shape| !old_bits.contains(&shape.bits())))
+        .copied()
+        .collect()
 }
 fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     let delta = b - a;

@@ -415,54 +415,117 @@ pub fn find_nearest_defend_zone_placement(
     obstacles: &[Obstacle],
     origin: Vec2,
 ) -> Option<(IVec2, Vec2)> {
-    find_nearest_defend_zone_placement_accepting(defend_cells, obstacles, origin, |_| true)
-}
-
-/// Preserve nearest-site ordering while rejecting access-breaking candidates.
-pub fn find_nearest_defend_zone_placement_accepting(
-    defend_cells: &[IVec2],
-    obstacles: &[Obstacle],
-    origin: Vec2,
-    mut accepts: impl FnMut(Vec2) -> bool,
-) -> Option<(IVec2, Vec2)> {
-    let side = dense_build_zone_side();
-    let candidate_count = side * side;
     let mut cells = defend_cells.to_vec();
     cells.sort_unstable_by_key(|cell| (cell.x, cell.y));
-    let mut candidates = Vec::new();
+    DefendLattice::build(&cells, obstacles).find_nearest_accepting(origin, |_| true)
+}
 
-    for cell in cells {
-        let center = crate::ai::get_world_from_zone(cell);
-        for index in 0..candidate_count {
-            let pos = dense_build_zone_position(center, side, index);
-            if world_to_cell(pos) != cell {
-                continue;
+/// Footprint-valid placement sites inside a swarm's Defend cells. It depends
+/// only on the cells and obstacles it was built from, so callers may keep it
+/// until either differs by value.
+pub struct DefendLattice {
+    cells: Vec<IVec2>,
+    obstacles: Vec<Obstacle>,
+    sites: Vec<(IVec2, Vec2)>,
+}
+
+impl DefendLattice {
+    /// `defend_cells` must be sorted by `(x, y)`.
+    pub fn build(defend_cells: &[IVec2], obstacles: &[Obstacle]) -> Self {
+        let side = dense_build_zone_side();
+        let candidate_count = side * side;
+        let mut sites = Vec::new();
+        for &cell in defend_cells {
+            let center = crate::ai::get_world_from_zone(cell);
+            for index in 0..candidate_count {
+                let pos = dense_build_zone_position(center, side, index);
+                if world_to_cell(pos) == cell
+                    && footprint_inside_zone(pos, defend_cells)
+                    && !overlaps_any_obstacle(
+                        pos,
+                        CELL_WIDTH / 2.0,
+                        BUILDING_FOOTPRINT_PADDING,
+                        obstacles,
+                    )
+                {
+                    sites.push((cell, pos));
+                }
             }
-            if !footprint_inside_zone(pos, defend_cells)
-                || overlaps_any_obstacle(
-                    pos,
-                    CELL_WIDTH / 2.0,
-                    BUILDING_FOOTPRINT_PADDING,
-                    obstacles,
-                )
-            {
-                continue;
-            }
-            candidates.push((origin.distance_squared(pos), cell, pos));
+        }
+        Self {
+            cells: defend_cells.to_vec(),
+            obstacles: obstacles.to_vec(),
+            sites,
         }
     }
-    candidates.sort_by(|a, b| {
-        a.0.total_cmp(&b.0)
-            .then_with(|| a.1.x.cmp(&b.1.x))
-            .then_with(|| a.1.y.cmp(&b.1.y))
-            .then_with(|| a.2.x.total_cmp(&b.2.x))
-            .then_with(|| a.2.y.total_cmp(&b.2.y))
-    });
-    candidates
-        .into_iter()
-        .find(|(_, _, position)| accepts(*position))
-        .map(|(_, cell, position)| (cell, position))
+
+    pub fn is_for(&self, defend_cells: &[IVec2], obstacles: &[Obstacle]) -> bool {
+        self.cells == defend_cells && self.obstacles == obstacles
+    }
+
+    /// Visit sites nearest-first and return the first one `accepts` takes.
+    pub fn find_nearest_accepting(
+        &self,
+        origin: Vec2,
+        mut accepts: impl FnMut(Vec2) -> bool,
+    ) -> Option<(IVec2, Vec2)> {
+        self.find_nearest(origin, |position| Some(accepts(position)))
+    }
+
+    /// Like [`Self::find_nearest_accepting`], but `accepts` may answer `None` to
+    /// end the search without a site.
+    pub fn find_nearest(
+        &self,
+        origin: Vec2,
+        mut accepts: impl FnMut(Vec2) -> Option<bool>,
+    ) -> Option<(IVec2, Vec2)> {
+        let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<SiteOrder>> = self
+            .sites
+            .iter()
+            .map(|&(cell, pos)| {
+                std::cmp::Reverse(SiteOrder {
+                    distance: origin.distance_squared(pos),
+                    cell,
+                    pos,
+                })
+            })
+            .collect();
+        while let Some(std::cmp::Reverse(site)) = heap.pop() {
+            if accepts(site.pos)? {
+                return Some((site.cell, site.pos));
+            }
+        }
+        None
+    }
 }
+
+struct SiteOrder {
+    distance: f32,
+    cell: IVec2,
+    pos: Vec2,
+}
+
+impl Ord for SiteOrder {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.distance
+            .total_cmp(&other.distance)
+            .then_with(|| self.cell.x.cmp(&other.cell.x))
+            .then_with(|| self.cell.y.cmp(&other.cell.y))
+            .then_with(|| self.pos.x.total_cmp(&other.pos.x))
+            .then_with(|| self.pos.y.total_cmp(&other.pos.y))
+    }
+}
+impl PartialOrd for SiteOrder {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl PartialEq for SiteOrder {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+impl Eq for SiteOrder {}
 
 #[cfg(test)]
 mod tests {
@@ -477,6 +540,36 @@ mod tests {
     use super::*;
 
     const EPS: f32 = 1e-3;
+
+    #[test]
+    fn defend_lattice_visits_sites_nearest_first_and_is_reusable() {
+        let cells = [IVec2::new(0, 0), IVec2::new(1, 0)];
+        let lattice = DefendLattice::build(&cells, &[]);
+        let origin = Vec2::new(-500.0, 0.0);
+        let mut visited = Vec::new();
+        let _ = lattice.find_nearest_accepting(origin, |pos| {
+            visited.push(origin.distance_squared(pos));
+            visited.len() >= 5
+        });
+        assert_eq!(visited.len(), 5);
+        assert!(visited.windows(2).all(|pair| pair[0] <= pair[1]));
+        let first = lattice.find_nearest_accepting(origin, |_| true);
+        assert_eq!(
+            first,
+            find_nearest_defend_zone_placement(&cells, &[], origin)
+        );
+        assert_eq!(lattice.find_nearest_accepting(origin, |_| false), None);
+    }
+
+    #[test]
+    fn defend_lattice_is_stale_when_cells_or_obstacles_differ() {
+        let cells = [IVec2::new(0, 0)];
+        let obstacle = Obstacle::deposit(Vec2::ZERO, 10.0);
+        let lattice = DefendLattice::build(&cells, &[obstacle]);
+        assert!(lattice.is_for(&cells, &[obstacle]));
+        assert!(!lattice.is_for(&cells, &[]));
+        assert!(!lattice.is_for(&[IVec2::new(1, 0)], &[obstacle]));
+    }
 
     #[test]
     fn placement_angles_returns_count_evenly_spaced_angles() {

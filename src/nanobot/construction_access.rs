@@ -35,6 +35,16 @@ pub struct AccessLayout {
     objects: Vec<AccessObject>,
     builders: Vec<(SwarmId, Vec2)>,
     pending: std::cell::Cell<bool>,
+    /// Object-derived parts of `validation_key` and the cancelled-site signature.
+    /// Every candidate check needs them, so they are built once per object set.
+    derived: std::cell::OnceCell<DerivedKeys>,
+}
+
+type Signature = Vec<(u64, [u32; 4], bool)>;
+
+struct DerivedKeys {
+    signature: Signature,
+    objects_hash: u64,
 }
 
 impl AccessLayout {
@@ -48,8 +58,22 @@ impl AccessLayout {
         builder: Option<Vec2>,
     ) -> bool {
         let navigation = Navigation::new(grid, vec![]);
+        self.accepts_on(&navigation, grid, swarm, candidate, ignored_plan, builder)
+    }
+
+    /// Like `accepts`, against a navigation whose access cache persists between calls.
+    #[cfg(test)]
+    fn accepts_on(
+        &self,
+        navigation: &Navigation,
+        grid: &IntentGrid,
+        swarm: SwarmId,
+        candidate: &Transform,
+        ignored_plan: Option<Entity>,
+        builder: Option<Vec2>,
+    ) -> bool {
         for _ in 0..1000 {
-            match self.check(&navigation, grid, swarm, candidate, ignored_plan, builder) {
+            match self.check(navigation, grid, swarm, candidate, ignored_plan, builder) {
                 AccessStatus::Accepted => return true,
                 AccessStatus::Rejected => return false,
                 AccessStatus::Pending => {
@@ -58,6 +82,11 @@ impl AccessLayout {
             }
         }
         panic!("access check did not finish within its deterministic work allowance");
+    }
+
+    /// Whether an access check returned Pending since this snapshot was taken.
+    pub fn is_pending(&self) -> bool {
+        self.pending.get()
     }
 
     pub fn check(
@@ -169,9 +198,50 @@ impl AccessLayout {
         matches!(object.owner, AccessOwner::Shared) || object.owner == AccessOwner::Swarm(swarm)
     }
 
+    fn new(objects: Vec<AccessObject>, builders: Vec<(SwarmId, Vec2)>) -> Self {
+        Self {
+            objects,
+            builders,
+            pending: std::cell::Cell::new(false),
+            derived: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// Objects for modification; derived keys are rebuilt on next use.
+    fn objects_mut(&mut self) -> &mut Vec<AccessObject> {
+        self.derived.take();
+        &mut self.objects
+    }
+
+    fn derived(&self) -> &DerivedKeys {
+        use std::hash::{Hash, Hasher};
+        self.derived.get_or_init(|| {
+            let signature = self.signature(None);
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            signature.hash(&mut hasher);
+            let mut eligibility: Vec<_> = self
+                .objects
+                .iter()
+                .map(|object| {
+                    (
+                        object.entity.to_bits(),
+                        object.owner,
+                        object.deposit.is_some_and(|deposit| deposit.amount > 0),
+                    )
+                })
+                .collect();
+            eligibility.sort_unstable();
+            eligibility.hash(&mut hasher);
+            DerivedKeys {
+                signature,
+                objects_hash: hasher.finish(),
+            }
+        })
+    }
+
     /// Include same-system deferred commitments in subsequent candidate checks.
     pub fn reserve(&mut self, swarm: SwarmId, transform: Transform) {
-        self.objects.push(AccessObject {
+        self.objects_mut().push(AccessObject {
             entity: Entity::PLACEHOLDER,
             transform,
             shape: Obstacle::structure(&transform),
@@ -186,21 +256,8 @@ impl AccessLayout {
     pub fn validation_key(&self, grid: &IntentGrid) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.signature(None).hash(&mut hasher);
+        self.derived().objects_hash.hash(&mut hasher);
         (grid.width(), grid.height()).hash(&mut hasher);
-        let mut eligibility: Vec<_> = self
-            .objects
-            .iter()
-            .map(|object| {
-                (
-                    object.entity.to_bits(),
-                    object.owner,
-                    object.deposit.is_some_and(|deposit| deposit.amount > 0),
-                )
-            })
-            .collect();
-        eligibility.sort_unstable();
-        eligibility.hash(&mut hasher);
         let mut gather: Vec<_> = grid
             .iter_active_cells()
             .filter(|(_, paint)| paint.has(IntentKind::Gather))
@@ -215,7 +272,7 @@ impl AccessLayout {
         hasher.finish()
     }
 
-    fn signature(&self, ignored: Option<Entity>) -> Vec<(u64, [u32; 4], bool)> {
+    fn signature(&self, ignored: Option<Entity>) -> Signature {
         let mut result: Vec<_> = self
             .objects
             .iter()
@@ -284,10 +341,8 @@ pub struct ConstructionAccess<'w, 's> {
 }
 impl ConstructionAccess<'_, '_> {
     pub fn snapshot(&self) -> AccessLayout {
-        AccessLayout {
-            pending: std::cell::Cell::new(false),
-            objects: self
-                .objects
+        AccessLayout::new(
+            self.objects
                 .iter()
                 .map(
                     |(entity, transform, deposit, planned, owner, rock)| AccessObject {
@@ -322,13 +377,12 @@ impl ConstructionAccess<'_, '_> {
                     },
                 )
                 .collect(),
-            builders: self
-                .workers
+            self.workers
                 .iter()
                 .filter(|(_, kind, _)| **kind == NanobotType::Worker)
                 .map(|(transform, _, member)| (member.0, transform.translation.truncate()))
                 .collect(),
-        }
+        )
     }
     pub fn accepts(
         &self,
@@ -414,7 +468,7 @@ impl CancelledSites {
             site.swarm == swarm
                 && site.kind == kind
                 && site.shape == shape
-                && site.signature == layout.signature(None)
+                && site.signature == layout.derived().signature
         })
     }
 }
@@ -444,9 +498,8 @@ mod tests {
     fn closing_last_passage_rejects_site_between_connected_friendly_terminals() {
         // A vertical wall has a 144-unit opening; one 72-unit site in its middle
         // leaves two 36-unit gaps, neither admitting a 68-unit body.
-        let layout = AccessLayout {
-            pending: std::cell::Cell::new(false),
-            objects: vec![
+        let layout = AccessLayout::new(
+            vec![
                 structure(
                     1,
                     Vec2::new(36.0, -292.0),
@@ -476,8 +529,8 @@ mod tests {
                     false,
                 ),
             ],
-            builders: vec![(SwarmId::PLAYER, Vec2::new(-108.0, 0.0))],
-        };
+            vec![(SwarmId::PLAYER, Vec2::new(-108.0, 0.0))],
+        );
         let candidate = Transform::from_xyz(36.0, 0.0, 0.0).with_scale(Vec3::splat(72.0 / 64.0));
         assert!(!layout.accepts(
             &IntentGrid::new(2, 2),
@@ -489,9 +542,8 @@ mod tests {
     }
     #[test]
     fn disconnected_friendly_networks_need_not_be_joined_by_new_construction() {
-        let layout = AccessLayout {
-            pending: std::cell::Cell::new(false),
-            objects: vec![
+        let layout = AccessLayout::new(
+            vec![
                 structure(
                     1,
                     Vec2::new(36.0, 0.0),
@@ -514,8 +566,8 @@ mod tests {
                     false,
                 ),
             ],
-            builders: vec![(SwarmId::PLAYER, Vec2::new(-108.0, 0.0))],
-        };
+            vec![(SwarmId::PLAYER, Vec2::new(-108.0, 0.0))],
+        );
         let candidate = crate::navigation::align_structure(Transform::from_xyz(-180.0, 180.0, 0.0));
         assert!(layout.accepts(
             &IntentGrid::new(2, 2),
@@ -527,10 +579,9 @@ mod tests {
     }
 
     #[test]
-    fn individually_open_plans_cannot_jointly_close_the_friendly_passage() {
-        let mut layout = AccessLayout {
-            pending: std::cell::Cell::new(false),
-            objects: vec![
+    fn a_reserved_plan_invalidates_cached_access_for_the_same_snapshot() {
+        let mut layout = AccessLayout::new(
+            vec![
                 structure(
                     1,
                     Vec2::new(36.0, -310.0),
@@ -560,12 +611,59 @@ mod tests {
                     false,
                 ),
             ],
-            builders: vec![(SwarmId::PLAYER, Vec2::new(-108.0, 0.0))],
-        };
+            vec![(SwarmId::PLAYER, Vec2::new(-108.0, 0.0))],
+        );
+        let candidate = crate::navigation::align_structure(Transform::from_xyz(36.0, 36.0, 0.0));
+        let grid = IntentGrid::new(2, 2);
+        let navigation = Navigation::new(&grid, vec![]);
+        assert!(layout.accepts_on(&navigation, &grid, SwarmId::PLAYER, &candidate, None, None));
+        // A same-tick commitment beside the passage makes the candidate close it.
+        layout.reserve(
+            SwarmId::PLAYER,
+            crate::navigation::align_structure(Transform::from_xyz(36.0, -36.0, 0.0)),
+        );
+        assert!(!layout.accepts_on(&navigation, &grid, SwarmId::PLAYER, &candidate, None, None));
+    }
+
+    #[test]
+    fn individually_open_plans_cannot_jointly_close_the_friendly_passage() {
+        let mut layout = AccessLayout::new(
+            vec![
+                structure(
+                    1,
+                    Vec2::new(36.0, -310.0),
+                    Vec2::new(36.0, 202.0),
+                    Some(SwarmId(2)),
+                    false,
+                ),
+                structure(
+                    2,
+                    Vec2::new(36.0, 310.0),
+                    Vec2::new(36.0, 202.0),
+                    Some(SwarmId(2)),
+                    false,
+                ),
+                structure(
+                    3,
+                    Vec2::new(-252.0, 0.0),
+                    Vec2::splat(36.0),
+                    Some(SwarmId::PLAYER),
+                    false,
+                ),
+                structure(
+                    4,
+                    Vec2::new(324.0, 0.0),
+                    Vec2::splat(36.0),
+                    Some(SwarmId::PLAYER),
+                    false,
+                ),
+            ],
+            vec![(SwarmId::PLAYER, Vec2::new(-108.0, 0.0))],
+        );
         let candidate = crate::navigation::align_structure(Transform::from_xyz(36.0, 36.0, 0.0));
         let grid = IntentGrid::new(2, 2);
         assert!(layout.accepts(&grid, SwarmId::PLAYER, &candidate, None, None));
-        layout.objects.push(structure(
+        layout.objects_mut().push(structure(
             5,
             Vec2::new(36.0, -36.0),
             Vec2::splat(36.0),
@@ -574,7 +672,7 @@ mod tests {
         ));
         assert!(!layout.accepts(&grid, SwarmId::PLAYER, &candidate, None, None));
         // Enemy terminals receive no friendly-access guarantee.
-        for object in &mut layout.objects {
+        for object in layout.objects_mut() {
             object.owner = AccessOwner::Swarm(SwarmId(2));
         }
         assert!(layout.accepts(&grid, SwarmId::PLAYER, &candidate, None, None));
@@ -582,9 +680,8 @@ mod tests {
 
     #[test]
     fn only_gather_eligible_deposits_receive_connection_protection() {
-        let mut layout = AccessLayout {
-            pending: std::cell::Cell::new(false),
-            objects: vec![
+        let mut layout = AccessLayout::new(
+            vec![
                 structure(
                     1,
                     Vec2::new(36.0, -292.0),
@@ -607,10 +704,10 @@ mod tests {
                     false,
                 ),
             ],
-            builders: vec![(SwarmId::PLAYER, Vec2::new(-108.0, 0.0))],
-        };
+            vec![(SwarmId::PLAYER, Vec2::new(-108.0, 0.0))],
+        );
         let transform = Transform::from_xyz(324.0, 0.0, 0.0);
-        layout.objects.push(AccessObject {
+        layout.objects_mut().push(AccessObject {
             entity: Entity::from_bits(4),
             transform,
             shape: Obstacle::deposit(Vec2::new(324.0, 0.0), 36.0),
@@ -629,7 +726,7 @@ mod tests {
         grid.paint(IVec2::ZERO, IntentKind::Gather, SwarmId::PLAYER);
         assert!(!layout.accepts(&grid, SwarmId::PLAYER, &candidate, None, None));
         layout
-            .objects
+            .objects_mut()
             .last_mut()
             .unwrap()
             .deposit
@@ -641,17 +738,16 @@ mod tests {
 
     #[test]
     fn a_builder_in_another_disconnected_network_cannot_service_the_site() {
-        let layout = AccessLayout {
-            pending: std::cell::Cell::new(false),
-            objects: vec![structure(
+        let layout = AccessLayout::new(
+            vec![structure(
                 1,
                 Vec2::new(36.0, 0.0),
                 Vec2::new(36.0, 512.0),
                 Some(SwarmId(2)),
                 false,
             )],
-            builders: vec![(SwarmId::PLAYER, Vec2::new(-108.0, 0.0))],
-        };
+            vec![(SwarmId::PLAYER, Vec2::new(-108.0, 0.0))],
+        );
         let candidate = crate::navigation::align_structure(Transform::from_xyz(252.0, 0.0, 0.0));
         assert!(!layout.accepts(
             &IntentGrid::new(2, 2),
@@ -672,11 +768,7 @@ mod tests {
             true,
         );
         let candidate = cancelled.transform;
-        let mut layout = AccessLayout {
-            pending: std::cell::Cell::new(false),
-            objects: vec![cancelled],
-            builders: vec![],
-        };
+        let mut layout = AccessLayout::new(vec![cancelled], vec![]);
         let mut sites = CancelledSites::default();
         sites.record(
             &layout,
@@ -685,9 +777,9 @@ mod tests {
             PlannedKind::Charger,
             &candidate,
         );
-        layout.objects.clear();
+        layout.objects_mut().clear();
         assert!(sites.excludes(&layout, SwarmId::PLAYER, PlannedKind::Charger, &candidate));
-        layout.objects.push(structure(
+        layout.objects_mut().push(structure(
             2,
             Vec2::new(324.0, 36.0),
             Vec2::splat(36.0),

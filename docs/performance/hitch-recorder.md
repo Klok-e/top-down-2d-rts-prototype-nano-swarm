@@ -10,7 +10,7 @@ The recorder runs in the windowed and headless game, including runs launched wit
 - A hitch opens an episode with up to 120 preceding frames. A later hitch extends it until 30 consecutive hitch-free frames have passed. The episode includes those 30 recovery frames.
 - Long episodes retain the first and last 300 frames, for at most 600 detailed records. A gap in the frame numbers marks omitted detail.
 - Each new session starts with empty preceding-frame history and discards any still-open episode. The process keeps the latest 32 closed episodes across sessions. Episode IDs increase for the life of the process.
-- [AI Battle](../ai-battle.md#recorded-results) writes up to 1,000 compact episode summaries to its hitch log. Its `summary.json` counts subsequent episodes in `hitch_episodes_suppressed`.
+- [AI Battle](../ai-battle.md#recorded-results) keeps a compact summary of the first 1,000 episodes in memory, counts later ones in `summary.hitch_episodes_suppressed`, and serves them through `battle.stats`.
 
 ## Frame detail
 
@@ -42,7 +42,7 @@ The next frame publishes the previous sample before agent requests run. Unmeasur
 | `strategic_controller` | `StrategicControllerSet` |
 | `fixed_other` | Other fixed systems and remaining time inside each fixed tick, including the other fixed schedules |
 
-Fixed phase boundaries make these intervals disjoint. They preserve existing dependencies and deferred command flushes, and systems within a span remain eligible to run concurrently. Systems in different spans wait for the preceding span to finish, which can reduce fixed-tick parallelism. Dependencies can split a phase across several spans. Automatically generated command flushes contribute to `fixed_other`.
+Fixed phase boundaries make these intervals disjoint. They preserve existing dependencies and deferred command flushes. The fixed schedules run their systems one at a time on the thread that runs the fixed loop, so the phase boundaries cost no parallelism. Dependencies can split a phase across several spans. Automatically generated command flushes contribute to `fixed_other`.
 
 The overhead target is about 30 monotonic clock reads per frame. The outer frame uses one read, adjacent measured main schedules share a boundary read, and each fixed tick uses two bounds plus one read per phase transition during `FixedUpdate`. Catch-up frames repeat the fixed measurements for each tick. Opening an episode copies the preceding detail. Closing it joins the retained start and end.
 
@@ -54,8 +54,7 @@ Enable `perf-trace` for a short profiling run when the recorder's phase timings 
 mkdir -p .tmp
 trace_run=$(mktemp -d .tmp/perf-trace.XXXXXX)
 RUST_LOG=info,wgpu=error,naga=warn TRACE_CHROME="$PWD/$trace_run/trace.json" \
-  cargo run --features perf-trace -- --headless --agent-socket --scenario ai-battle \
-  --output-root "$trace_run/battle"
+  cargo run --features perf-trace -- --headless --agent-socket --scenario ai-battle
 ```
 
 While the game is running, fetch a closed episode with `python3 scripts/nano_swarm_control.py perf-hitches`. Use `python3 scripts/nano_swarm_control.py shutdown` to stop cleanly and flush the trace. Traces can grow quickly, and tracing overhead can affect frame times.

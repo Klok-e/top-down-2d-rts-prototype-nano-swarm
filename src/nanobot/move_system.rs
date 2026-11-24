@@ -1,10 +1,16 @@
-use bevy::{ecs::system::SystemParam, prelude::*};
+use bevy::{
+    ecs::{
+        entity::{EntityHashMap, EntityHashSet},
+        system::SystemParam,
+    },
+    prelude::*,
+};
 
 use super::{
     CombatIdentity, DefenderEngagements, DirectMovementComponent, Nanobot, SwarmId, SwarmMember,
     VelocityComponent, combat_key, route_following::WAYPOINT_REACHED_DISTANCE,
 };
-use crate::{nanobot::consts::BOT_SEPARATION_FORCE, spatial::FixedSpatialBuckets, tuning::Tuning};
+use crate::{nanobot::consts::BOT_SEPARATION_FORCE, spatial::PackedSpatialBuckets, tuning::Tuning};
 
 pub(super) const BODY_DIAMETER: f32 = crate::navigation::BODY_RADIUS * 2.0;
 
@@ -66,10 +72,14 @@ fn separation_deltas(entries: &[SeparationEntry]) -> Vec<(Entity, Vec2)> {
     let mut sorted = entries.to_vec();
     sorted.sort_by_key(|entry| (entry.key, entry.entity.to_bits()));
 
-    let mut buckets = FixedSpatialBuckets::new(BODY_DIAMETER);
-    for (index, entry) in sorted.iter().enumerate() {
-        buckets.insert(entry.position, index);
-    }
+    // Packed buckets visit neighbours in the same order as incremental ones.
+    let buckets = PackedSpatialBuckets::new(
+        BODY_DIAMETER,
+        sorted
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (entry.position, index)),
+    );
 
     let mut deltas: Vec<(Entity, Vec2)> = sorted
         .iter()
@@ -77,7 +87,7 @@ fn separation_deltas(entries: &[SeparationEntry]) -> Vec<(Entity, Vec2)> {
         .collect();
     for (index, entry) in sorted.iter().enumerate() {
         let bucket = buckets.bucket_for_position(entry.position);
-        for (_, neighbours) in buckets.neighbourhood(bucket, 1) {
+        for neighbours in buckets.neighbourhood_runs(bucket, 1) {
             for &other_index in neighbours {
                 if other_index <= index {
                     continue;
@@ -204,6 +214,76 @@ fn swept_separation(start: Vec2, delta: Vec2, other: TrafficBody) -> f32 {
     (relative + travel * t).length()
 }
 
+/// Whether `swept_separation(start, delta, other)` certainly exceeds `distance`:
+/// the bodies start farther apart than the relative motion can close, with slack
+/// for rounding. A `false` answer decides nothing.
+fn sweep_stays_beyond(start: Vec2, delta: Vec2, other: TrafficBody, distance: f32) -> bool {
+    let relative = start - other.start;
+    let travel = (delta - other.delta).abs().element_sum();
+    let reach = distance + travel + 0.01 + 1e-4 * (relative.abs().element_sum() + travel);
+    reach >= 0.0 && relative.length_squared() > reach * reach
+}
+
+/// `swept_separation(start, delta, other) < distance`, skipping the sweep for
+/// bodies that stay beyond `distance`.
+fn sweep_comes_within(start: Vec2, delta: Vec2, other: TrafficBody, distance: f32) -> bool {
+    !sweep_stays_beyond(start, delta, other, distance)
+        && swept_separation(start, delta, other) < distance
+}
+
+/// A body that a swept motion must keep `required` clearance from.
+#[derive(Clone, Copy)]
+struct SweepConstraint {
+    other: TrafficBody,
+    required: f32,
+    /// The answer whenever the closest approach is the starting separation.
+    clears_at_start: bool,
+}
+
+impl SweepConstraint {
+    fn new(start: Vec2, other: TrafficBody, required: f32) -> Self {
+        Self {
+            other,
+            required,
+            clears_at_start: (start - other.start).length() + 0.001 >= required,
+        }
+    }
+
+    /// Whether moving from `start` by `delta` keeps clearance within the solver's
+    /// tolerance: `swept_separation(start, delta, other) + 0.001 >= required`.
+    fn clears(&self, start: Vec2, delta: Vec2) -> bool {
+        let relative = start - self.other.start;
+        let travel = delta - self.other.delta;
+        // Without closing motion the sweep projects to its start, which is precomputed.
+        if travel.length_squared() <= 1e-8 || relative.dot(travel) >= 0.0 {
+            return self.clears_at_start;
+        }
+        !self.ends_inside(start, delta)
+            && swept_separation(start, delta, self.other) + 0.001 >= self.required
+    }
+
+    /// Whether the motion ends so deep inside the clearance that it cannot clear,
+    /// whatever its path. The slack covers the solver tolerance and rounding.
+    fn ends_inside(&self, start: Vec2, delta: Vec2) -> bool {
+        let relative = start - self.other.start;
+        let travel = delta - self.other.delta;
+        let slack = 0.011 + 1e-4 * (relative.abs() + travel.abs()).element_sum();
+        let reject = self.required - slack;
+        reject > 0.0 && (relative + travel).length_squared() < reject * reject
+    }
+}
+
+/// The previous velocity plus four rings of headings around it.
+const CANDIDATE_COUNT: usize = 1 + 4 * 24;
+
+/// Unit headings of the velocity candidates, evaluated once so every call shares them.
+static CANDIDATE_HEADINGS: std::sync::LazyLock<[Vec2; 24]> = std::sync::LazyLock::new(|| {
+    std::array::from_fn(|heading| {
+        let angle = heading as f32 * std::f32::consts::TAU / 24.0;
+        Vec2::new(angle.cos(), angle.sin())
+    })
+});
+
 /// Choose a safe velocity in the acceleration-reachable disk, closest to the requested motion.
 /// A blocked disk permits an immediate stop; collision clearance is authoritative.
 fn continuous_velocity(
@@ -225,28 +305,40 @@ fn continuous_velocity(
     }
     let requested_speed = requested.length();
     let requested_direction = requested / requested_speed;
+    // Every heading of the innermost ring is the previous velocity itself, so it
+    // contributes one candidate. Scoring all candidates in one pass lets it vectorize.
+    let mut candidates = [Vec2::ZERO; CANDIDATE_COUNT];
+    let scaled = CANDIDATE_HEADINGS.map(|heading| heading * acceleration);
+    candidates[0] = previous + scaled[0] * 0.0 / 4.0;
+    for (ring, candidates) in candidates[1..].chunks_exact_mut(scaled.len()).enumerate() {
+        let ring = (ring + 1) as f32;
+        for (candidate, scaled) in candidates.iter_mut().zip(&scaled) {
+            *candidate = previous + *scaled * ring / 4.0;
+        }
+    }
+    let mut scores = [0.0; CANDIDATE_COUNT];
+    for (score, candidate) in scores.iter_mut().zip(&candidates) {
+        let candidate = *candidate;
+        let lateral = candidate.perp_dot(requested_direction);
+        let lost_speed = requested_speed - candidate.length();
+        // Retained momentum carries a passing body around contact instead of alternating tangents.
+        let value = candidate.distance_squared(requested)
+            + lateral * lateral
+            + 2.0 * lost_speed * lost_speed
+            + 0.5 * candidate.distance_squared(previous);
+        // Candidates beyond the speed limit can never win.
+        *score = if candidate.length_squared() > speed_limit * speed_limit + 1e-6 {
+            f32::INFINITY
+        } else {
+            value
+        };
+    }
     let mut best = None;
     let mut best_score = f32::INFINITY;
-    for ring in 0..=4 {
-        for heading in 0..24 {
-            let angle = heading as f32 * std::f32::consts::TAU / 24.0;
-            let candidate =
-                previous + Vec2::new(angle.cos(), angle.sin()) * acceleration * ring as f32 / 4.0;
-            if candidate.length_squared() > speed_limit * speed_limit + 1e-6 {
-                continue;
-            }
-            let lateral = candidate.perp_dot(requested_direction);
-            let lost_speed = requested_speed - candidate.length();
-            // Retained momentum carries a passing body around contact instead of alternating tangents.
-
-            let score = candidate.distance_squared(requested)
-                + lateral * lateral
-                + 2.0 * lost_speed * lost_speed
-                + 0.5 * candidate.distance_squared(previous);
-            if score < best_score && safe(candidate) {
-                best = Some(candidate);
-                best_score = score;
-            }
+    for (&candidate, &score) in candidates.iter().zip(&scores) {
+        if score < best_score && safe(candidate) {
+            best = Some(candidate);
+            best_score = score;
         }
     }
     best.unwrap_or(Vec2::ZERO)
@@ -254,7 +346,7 @@ fn continuous_velocity(
 
 #[derive(SystemParam)]
 pub struct TrafficContext<'w, 's> {
-    motion: Local<'s, std::collections::HashMap<Entity, LocalMotion>>,
+    motion: Local<'s, EntityHashMap<LocalMotion>>,
     previous_generation: Local<'s, Option<u64>>,
     generation: Option<Res<'w, crate::session_lifecycle::SessionGeneration>>,
     time: Res<'w, Time<Fixed>>,
@@ -285,8 +377,8 @@ pub fn velocity_system(
             Option<&CombatIdentity>,
         )>,
     )>,
-    mut yielding: Local<std::collections::HashMap<Entity, Yielding>>,
-    mut progress: Local<std::collections::HashMap<Entity, TravelProgress>>,
+    mut yielding: Local<EntityHashMap<Yielding>>,
+    mut progress: Local<EntityHashMap<TravelProgress>>,
     traffic: TrafficContext,
     tuning: Res<Tuning>,
     navigation: Res<crate::navigation::Navigation>,
@@ -347,22 +439,30 @@ pub fn velocity_system(
         })
         .collect();
     bodies.sort_by_key(|(body, _)| (body.key, body.entity.to_bits()));
-    let mut lookup = FixedSpatialBuckets::new(diameter * 2.0 + tuning.logistics.bot_speed * 2.0);
-    let indices: std::collections::HashMap<_, _> = bodies
+    let indices: EntityHashMap<_> = bodies
         .iter()
         .enumerate()
         .map(|(i, (body, _))| (body.entity, i))
         .collect();
-    for (i, (body, _)) in bodies.iter().enumerate() {
-        lookup.insert(body.start, i);
-    }
+    let lookup = PackedSpatialBuckets::new(
+        diameter * 2.0 + tuning.logistics.bot_speed * 2.0,
+        bodies
+            .iter()
+            .enumerate()
+            .map(|(i, (body, _))| (body.start, (i, body.start))),
+    );
     let now = time.elapsed_secs_f64();
     progress.retain(|entity, _| indices.contains_key(entity));
     motion.retain(|entity, _| indices.contains_key(entity));
-    let friendly = |a: Entity, b: Entity| {
-        members.get(a).map_or(SwarmId::PLAYER, |member| member.0)
-            == members.get(b).map_or(SwarmId::PLAYER, |member| member.0)
-    };
+    let swarms: Vec<_> = bodies
+        .iter()
+        .map(|(body, _)| {
+            members
+                .get(body.entity)
+                .map_or(SwarmId::PLAYER, |member| member.0)
+        })
+        .collect();
+    let friendly = |i: usize, j: usize| swarms[i] == swarms[j];
     let mut demanded_regions = Vec::new();
     for (entity, approach) in &approaches {
         let owner = members
@@ -372,7 +472,7 @@ pub fn velocity_system(
             demanded_regions.push((owner, approach.region));
         }
     }
-    let pinned: std::collections::HashSet<_> = bodies
+    let pinned: EntityHashSet = bodies
         .iter()
         .filter_map(|(body, _)| {
             (!is_engaged(body.entity)
@@ -411,22 +511,23 @@ pub fn velocity_system(
             // Step sideways before an approaching friendly reaches the waiting body's space.
             let approaching = lookup
                 .neighbourhood(lookup.bucket_for_position(body.start), 1)
-                .flat_map(|(_, entries)| entries.iter().copied())
+                .flat_map(|(_, entries)| entries.iter().map(|&(j, _)| j))
                 .filter(|j| *j != i)
-                .filter(|j| friendly(body.entity, bodies[*j].0.entity))
+                .filter(|j| friendly(i, *j))
                 .find(|j| {
                     let (other, wanted) = bodies[*j];
                     move_order(other.entity).is_some()
                         && !queued.contains(other.entity)
                         && wanted.dot(body.start - other.start) > 0.0
-                        && swept_separation(
+                        && sweep_comes_within(
                             body.start,
                             Vec2::ZERO,
                             TrafficBody {
                                 delta: wanted.normalize_or_zero() * diameter * 2.0,
                                 ..other
                             },
-                        ) < diameter + 2.0
+                            diameter + 2.0,
+                        )
                 });
             if let Some(j) = approaching {
                 let heading = bodies[j].1.normalize_or_zero();
@@ -504,7 +605,7 @@ pub fn velocity_system(
         }
         let overlapping = lookup
             .neighbourhood(lookup.bucket_for_position(body.start), 1)
-            .flat_map(|(_, entries)| entries.iter().copied())
+            .flat_map(|(_, entries)| entries.iter().map(|&(j, _)| j))
             .any(|j| j != i && body.start.distance(bodies[j].0.start) < diameter - 0.001);
         let Some(movement) = movement.filter(|_| !queued.contains(body.entity)) else {
             let recovering_overlap = overlapping
@@ -569,6 +670,7 @@ pub fn velocity_system(
     // Either body can spend a full step closing, with room for the solver's tolerance and rounding.
     let sweep_reach_squared = (diameter + 2.0 * speed + 0.01 + 1e-5 * speed).powi(2);
     let mut nearby = Vec::new();
+    let mut reachable = Vec::new();
     let mut sweep_constraints = Vec::new();
     // Earlier bodies reserve swept motion; later bodies remain stationary until resolved.
     for i in 0..bodies.len() {
@@ -580,47 +682,69 @@ pub fn velocity_system(
             continue;
         }
         nearby.clear();
-        nearby.extend(
-            lookup
-                .neighbourhood(lookup.bucket_for_position(body.start), 1)
-                .flat_map(|(_, entries)| entries.iter().copied())
-                .filter(|j| *j != i),
-        );
-        let prepare_sweep =
-            |bodies: &[(TrafficBody, Vec2)],
-             progress: &std::collections::HashMap<Entity, TravelProgress>,
-             recovering: bool,
-             constraints: &mut Vec<(TrafficBody, f32)>| {
-                constraints.clear();
-                for &j in &nearby {
-                    let other = bodies[j].0;
-                    let distance_squared = body.start.distance_squared(other.start);
-                    if distance_squared > sweep_reach_squared {
-                        continue;
-                    }
-                    let passing_friend = (recovering
-                        || progress
-                            .get(&other.entity)
-                            .is_some_and(|state| state.recovering))
-                        && friendly(body.entity, other.entity)
-                        && !holds_engagement(body.entity)
-                        && !holds_engagement(other.entity);
-                    // Invalid initial overlaps may separate, but cannot deepen.
-                    let required = if passing_friend {
-                        0.0
-                    } else {
-                        diameter.min(distance_squared.sqrt())
-                    };
-                    constraints.push((other, required));
+        reachable.clear();
+        // Sweeps only involve neighbours within reach; an engaged body needs no others.
+        let engaged = is_engaged(body.entity);
+        for run in lookup.neighbourhood_runs(lookup.bucket_for_position(body.start), 1) {
+            for &(j, start) in run {
+                if j == i {
+                    continue;
                 }
-            };
-        let safe_motion = |constraints: &[(TrafficBody, f32)], delta: Vec2| {
-            physical.movement_clear(body.start, body.start + delta)
-                && constraints.iter().all(|&(other, required)| {
-                    swept_separation(body.start, delta, other) + 0.001 >= required
-                })
+                if !engaged {
+                    nearby.push(j);
+                }
+                if body.start.distance_squared(start) <= sweep_reach_squared {
+                    reachable.push(j);
+                }
+            }
+        }
+        let prepare_sweep = |bodies: &[(TrafficBody, Vec2)],
+                             progress: &EntityHashMap<TravelProgress>,
+                             recovering: bool,
+                             constraints: &mut Vec<SweepConstraint>| {
+            constraints.clear();
+            // `reachable` holds only neighbours within sweep reach.
+            for &j in &reachable {
+                let other = bodies[j].0;
+                let distance_squared = body.start.distance_squared(other.start);
+                let passing_friend = (recovering
+                    || progress
+                        .get(&other.entity)
+                        .is_some_and(|state| state.recovering))
+                    && friendly(i, j)
+                    && !holds_engagement(body.entity)
+                    && !holds_engagement(other.entity);
+                // Invalid initial overlaps may separate, but cannot deepen.
+                let required = if passing_friend {
+                    0.0
+                } else {
+                    diameter.min(distance_squared.sqrt())
+                };
+                constraints.push(SweepConstraint::new(body.start, other, required));
+            }
         };
-        if is_engaged(body.entity) {
+        // Successive candidates usually conflict with the same body, so it is checked first.
+        let last_conflict = std::cell::Cell::new(0);
+        let safe_motion = |constraints: &[SweepConstraint], delta: Vec2| {
+            let separated = |constraint: &SweepConstraint| constraint.clears(body.start, delta);
+            let first = last_conflict.get();
+            if constraints
+                .get(first)
+                .is_some_and(|constraint| !separated(constraint))
+            {
+                return false;
+            }
+            if let Some(conflict) = constraints
+                .iter()
+                .enumerate()
+                .position(|(j, constraint)| j != first && !separated(constraint))
+            {
+                last_conflict.set(conflict);
+                return false;
+            }
+            physical.movement_clear(body.start, body.start + delta)
+        };
+        if engaged {
             let speed = desired.length();
             prepare_sweep(&bodies, &progress, false, &mut sweep_constraints);
             let applied = continuous_velocity(Vec2::ZERO, desired, speed, speed, |delta| {
@@ -648,10 +772,10 @@ pub fn velocity_system(
                 .is_ok_and(|remaining| remaining.0 > 0.01)
                 && nearby.iter().any(|j| {
                     let (other, wanted) = bodies[*j];
-                    if !friendly(body.entity, other.entity) {
+                    if !friendly(i, *j) {
                         return false;
                     }
-                    if swept_separation(body.start, recovery_intent, other) < diameter {
+                    if sweep_comes_within(body.start, recovery_intent, other, diameter) {
                         return true;
                     }
                     // Mutual yields can stop outside either body's individual sweep.
@@ -659,14 +783,15 @@ pub fn velocity_system(
                         && yielding
                             .get(&other.entity)
                             .is_some_and(|state| !state.returning && state.to == body.entity)
-                        && swept_separation(
+                        && sweep_comes_within(
                             body.start,
                             desired,
                             TrafficBody {
                                 delta: wanted,
                                 ..other
                             },
-                        ) < diameter
+                            diameter,
+                        )
                 });
             if !state.recovering && now - state.last_progress >= 1.0 && obstructed_by_friend {
                 state.recovering = true;
@@ -686,14 +811,12 @@ pub fn velocity_system(
             && physical.movement_clear(body.start, body.start + desired)
             && nearby.iter().all(|j| {
                 let (other, wanted) = bodies[*j];
-                swept_separation(
-                    body.start,
-                    desired,
-                    TrafficBody {
-                        delta: wanted,
-                        ..other
-                    },
-                ) >= diameter
+                let other = TrafficBody {
+                    delta: wanted,
+                    ..other
+                };
+                sweep_stays_beyond(body.start, desired, other, diameter)
+                    || swept_separation(body.start, desired, other) >= diameter
             });
         if can_resume_route {
             yielding.remove(&body.entity);
@@ -720,32 +843,36 @@ pub fn velocity_system(
             && desired.length_squared() > 0.01
             && move_order(body.entity).is_some()
         {
+            let heading = desired.normalize_or_zero();
+            // Cheap, selective tests come first; every test is pure, so the order is free.
             let conflict = nearby.iter().copied().find(|j| {
                 let (other, wanted) = bodies[*j];
                 let toward = other.start - body.start;
-                let heading = desired.normalize_or_zero();
-                let other_heading = wanted.normalize_or_zero();
-                let other_precedes = other_heading
-                    .x
-                    .total_cmp(&heading.x)
-                    .then_with(|| other_heading.y.total_cmp(&heading.y))
-                    .then_with(|| body.key.cmp(&other.key))
-                    .then_with(|| body.entity.to_bits().cmp(&other.entity.to_bits()))
-                    .is_gt();
-                other_precedes
-                    && move_order(other.entity).is_some()
+                let other_precedes = || {
+                    let other_heading = wanted.normalize_or_zero();
+                    other_heading
+                        .x
+                        .total_cmp(&heading.x)
+                        .then_with(|| other_heading.y.total_cmp(&heading.y))
+                        .then_with(|| body.key.cmp(&other.key))
+                        .then_with(|| body.entity.to_bits().cmp(&other.entity.to_bits()))
+                        .is_gt()
+                };
+                desired.dot(wanted) < 0.0
+                    && toward.dot(desired) > 0.0
                     && toward.length() >= diameter - 0.01
                     && toward.length() < diameter + tuning.logistics.bot_speed * 4.0
-                    && desired.dot(wanted) < 0.0
-                    && toward.dot(desired) > 0.0
-                    && swept_separation(
+                    && other_precedes()
+                    && move_order(other.entity).is_some()
+                    && sweep_comes_within(
                         body.start,
                         desired,
                         TrafficBody {
                             delta: wanted,
                             ..other
                         },
-                    ) < diameter
+                        diameter,
+                    )
             });
             if let Some(j) = conflict {
                 yielding.insert(
@@ -1007,6 +1134,202 @@ mod tests {
 
     fn entity(bits: u64) -> Entity {
         Entity::from_bits(bits)
+    }
+
+    /// The full scan that velocity selection must match: the first safe candidate with the lowest score.
+    fn full_scan_velocity(
+        previous: Vec2,
+        requested: Vec2,
+        acceleration: f32,
+        speed_limit: f32,
+        safe: impl Fn(Vec2) -> bool,
+    ) -> Vec2 {
+        if requested.length_squared() == 0.0 || acceleration <= 0.0 {
+            return Vec2::ZERO;
+        }
+        let preferred = clamp_velocity(
+            previous + clamp_velocity(requested - previous, acceleration),
+            speed_limit,
+        );
+        if safe(preferred) {
+            return preferred;
+        }
+        let requested_speed = requested.length();
+        let requested_direction = requested / requested_speed;
+        let mut best = None;
+        let mut best_score = f32::INFINITY;
+        for ring in 0..=4 {
+            for heading in 0..24 {
+                let angle = heading as f32 * std::f32::consts::TAU / 24.0;
+                let candidate = previous
+                    + Vec2::new(angle.cos(), angle.sin()) * acceleration * ring as f32 / 4.0;
+                if candidate.length_squared() > speed_limit * speed_limit + 1e-6 {
+                    continue;
+                }
+                let lateral = candidate.perp_dot(requested_direction);
+                let lost_speed = requested_speed - candidate.length();
+                let score = candidate.distance_squared(requested)
+                    + lateral * lateral
+                    + 2.0 * lost_speed * lost_speed
+                    + 0.5 * candidate.distance_squared(previous);
+                if score < best_score && safe(candidate) {
+                    best = Some(candidate);
+                    best_score = score;
+                }
+            }
+        }
+        best.unwrap_or(Vec2::ZERO)
+    }
+
+    #[test]
+    fn distant_sweeps_are_skipped_only_when_they_stay_beyond() {
+        use rand::{RngExt, SeedableRng, rngs::StdRng};
+
+        let mut rng = StdRng::seed_from_u64(0x5EED_BE70);
+        let mut skipped = 0;
+        for case in 0..200_000 {
+            let scale = [10.0, 100.0, 300.0][case % 3];
+            let mut vector = |scale: f32| {
+                Vec2::new(
+                    rng.random_range(-scale..scale),
+                    rng.random_range(-scale..scale),
+                )
+            };
+            let start = vector(2_000.0);
+            let delta = vector(10.0);
+            let other = TrafficBody {
+                entity: entity(1),
+                start: start + vector(scale),
+                delta: vector(10.0),
+                key: 1,
+            };
+            let distance = [BODY_DIAMETER, BODY_DIAMETER + 2.0][case % 2];
+            let swept = swept_separation(start, delta, other);
+            if sweep_stays_beyond(start, delta, other, distance) {
+                assert!(
+                    swept > distance,
+                    "case {case}: {swept} is within {distance}"
+                );
+                skipped += 1;
+            }
+            assert_eq!(
+                sweep_comes_within(start, delta, other, distance),
+                swept < distance,
+                "case {case}",
+            );
+        }
+        assert!(skipped > 50_000, "the cases must include distant sweeps");
+    }
+
+    #[test]
+    fn sweep_clearance_matches_the_swept_separation_test() {
+        use rand::{RngExt, SeedableRng, rngs::StdRng};
+
+        let mut rng = StdRng::seed_from_u64(0x5EED_5EE9);
+        let (mut rejected, mut ended_inside) = (0, 0);
+        for case in 0..200_000 {
+            let scale = [1.0, 10.0, 100.0, 1_000.0][case % 4];
+            let mut vector = |scale: f32| {
+                Vec2::new(
+                    rng.random_range(-scale..scale),
+                    rng.random_range(-scale..scale),
+                )
+            };
+            let start = vector(1_000.0);
+            let mut delta = vector(scale * 0.1);
+            let other = TrafficBody {
+                entity: entity(1),
+                start: start + vector(scale),
+                delta: if case % 3 == 0 {
+                    Vec2::ZERO
+                } else {
+                    vector(scale * 0.1)
+                },
+                key: 1,
+            };
+            // Matching motion leaves almost no relative travel.
+            if case % 7 == 0 {
+                delta = other.delta + Vec2::splat(1e-5);
+            }
+            let required = match case % 5 {
+                0 => 0.0,
+                1 => BODY_DIAMETER,
+                _ => BODY_DIAMETER.min(start.distance(other.start)),
+            };
+            let expected = swept_separation(start, delta, other) + 0.001 >= required;
+            let constraint = SweepConstraint::new(start, other, required);
+            // Ruling a motion out early must never contradict the full test.
+            if constraint.ends_inside(start, delta) {
+                assert!(!expected, "case {case} ends inside yet clears");
+                ended_inside += 1;
+            }
+            assert_eq!(
+                constraint.clears(start, delta),
+                expected,
+                "case {case}: start {start:?}, delta {delta:?}, other {:?} moving {:?}",
+                other.start,
+                other.delta,
+            );
+            rejected += usize::from(!expected);
+        }
+        assert!(rejected > 10_000, "the cases must include blocked sweeps");
+        assert!(
+            ended_inside > 1_000,
+            "the cases must include motions ending inside"
+        );
+    }
+
+    #[test]
+    fn velocity_choice_matches_a_full_scan_of_candidates() {
+        use rand::{RngExt, SeedableRng, rngs::StdRng};
+
+        let mut rng = StdRng::seed_from_u64(0x5EED_0089);
+        let vector = |rng: &mut StdRng, scale: f32| {
+            Vec2::new(
+                rng.random_range(-scale..scale),
+                rng.random_range(-scale..scale),
+            )
+        };
+        let mut stopped = 0;
+        for case in 0..20_000 {
+            // Axis-aligned requests from rest score mirrored candidates equally.
+            let axis_aligned = case % 4 == 1;
+            let previous = if axis_aligned || case % 3 == 0 {
+                Vec2::ZERO
+            } else {
+                vector(&mut rng, 5.0)
+            };
+            let requested = if axis_aligned {
+                [Vec2::X, Vec2::Y, Vec2::NEG_X, Vec2::NEG_Y][rng.random_range(0..4)]
+                    * rng.random_range(1..6) as f32
+            } else {
+                vector(&mut rng, 6.0)
+            };
+            let acceleration = if case % 2 == 0 {
+                5.0
+            } else {
+                rng.random_range(0.1..5.0)
+            };
+            let speed_limit = rng.random_range(0.0..6.0);
+            // Bodies around the mover block the motions that come too close to them.
+            let blockers: Vec<_> = (0..rng.random_range(0..6))
+                .map(|_| (vector(&mut rng, 8.0), rng.random_range(0.5..6.0)))
+                .collect();
+            let safe = |delta: Vec2| {
+                blockers
+                    .iter()
+                    .all(|&(center, radius)| delta.distance(center) >= radius)
+            };
+            let expected = full_scan_velocity(previous, requested, acceleration, speed_limit, safe);
+            let actual = continuous_velocity(previous, requested, acceleration, speed_limit, safe);
+            assert_eq!(
+                actual.to_array().map(f32::to_bits),
+                expected.to_array().map(f32::to_bits),
+                "case {case}: previous {previous:?}, requested {requested:?}",
+            );
+            stopped += usize::from(expected == Vec2::ZERO);
+        }
+        assert!(stopped > 100, "the cases must include fully blocked motion");
     }
 
     #[test]

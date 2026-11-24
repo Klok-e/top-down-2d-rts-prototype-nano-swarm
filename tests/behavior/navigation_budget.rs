@@ -404,3 +404,260 @@ fn connectivity_refresh_replaces_pending_geometry_and_caches_each_final_answer()
         "the completed partial-wall answer must remain cached"
     );
 }
+
+fn finish_connectivity(
+    navigation: &Navigation,
+    grid: &IntentGrid,
+    start: Vec2,
+    goal: top_down_2d_rts_prototype_nano_swarm::navigation::RouteGoal,
+) -> (
+    top_down_2d_rts_prototype_nano_swarm::navigation::ConnectivityStatus,
+    usize,
+) {
+    use top_down_2d_rts_prototype_nano_swarm::navigation::ConnectivityStatus;
+    let mut work = 0;
+    for _ in 0..1_000 {
+        let status = navigation.query_connectivity(start, goal);
+        if status != ConnectivityStatus::Pending {
+            return (status, work);
+        }
+        work += navigation.advance(grid, 1_000).work;
+    }
+    panic!("connectivity from {start} did not finish within its work allowance");
+}
+
+#[test]
+fn clearing_footprint_blocks_outside_bodies_and_releases_its_occupant() {
+    use top_down_2d_rts_prototype_nano_swarm::navigation::{
+        ConnectivityStatus, Obstacle, RouteGoal, RoutePriority, RouteStatus,
+    };
+    let grid = IntentGrid::new(4, 4);
+    let mut navigation = Navigation::new(&grid, vec![]);
+    navigation.refresh_clearing(vec![Obstacle::Rectangle {
+        center: Vec2::ZERO,
+        half: Vec2::new(36.0, 1_100.0),
+    }]);
+    let west = Vec2::new(-252.0, 36.0);
+    let east = Vec2::new(252.0, 36.0);
+    let occupant = Vec2::new(0.0, 36.0);
+    let route = |start: Vec2, end: Vec2| {
+        let id = navigation.request(
+            start,
+            RouteGoal::Point(end),
+            SwarmId::PLAYER,
+            false,
+            RoutePriority::Routine,
+        );
+        for _ in 0..1_000 {
+            navigation.advance(&grid, 1_000);
+            let status = navigation.poll(id);
+            if !matches!(status, RouteStatus::Pending) {
+                return status;
+            }
+        }
+        panic!("route from {start} did not finish within its work allowance");
+    };
+
+    assert!(
+        matches!(route(west, east), RouteStatus::Unreachable),
+        "an outside body must not route through a full-height clearing footprint"
+    );
+    assert_eq!(
+        finish_connectivity(&navigation, &grid, west, RouteGoal::Point(east)).0,
+        ConnectivityStatus::Unreachable
+    );
+    for exit in [west, east] {
+        assert!(
+            matches!(route(occupant, exit), RouteStatus::Found(_)),
+            "the occupant must be able to leave toward {exit}"
+        );
+        assert_eq!(
+            finish_connectivity(&navigation, &grid, occupant, RouteGoal::Point(exit)).0,
+            ConnectivityStatus::Connected { endpoint: exit }
+        );
+    }
+}
+
+#[test]
+fn connectivity_far_from_clearing_needs_the_same_work_as_without_clearing() {
+    use top_down_2d_rts_prototype_nano_swarm::navigation::{
+        ConnectivityStatus, Obstacle, RouteGoal,
+    };
+    let grid = IntentGrid::new(8, 8);
+    let wall = Obstacle::Rectangle {
+        center: Vec2::ZERO,
+        half: Vec2::new(72.0, 144.0),
+    };
+    let distant_clearing = Obstacle::Rectangle {
+        center: Vec2::new(1_620.0, -1_620.0),
+        half: Vec2::splat(36.0),
+    };
+    let east = RouteGoal::Point(Vec2::new(252.0, 36.0));
+    let queries = [
+        (Vec2::new(-252.0, 36.0), east),
+        (
+            Vec2::new(-252.0, 36.0),
+            RouteGoal::Point(Vec2::new(252.0, -108.0)),
+        ),
+        (Vec2::new(-324.0, 108.0), east),
+    ];
+    let work_with = |clearing: Vec<Obstacle>| {
+        let mut navigation = Navigation::new(&grid, vec![wall]);
+        navigation.refresh_clearing(clearing);
+        queries
+            .iter()
+            .map(|&(start, goal)| {
+                let (status, work) = finish_connectivity(&navigation, &grid, start, goal);
+                assert!(matches!(status, ConnectivityStatus::Connected { .. }));
+                work
+            })
+            .sum::<usize>()
+    };
+    let without = work_with(vec![]);
+    assert!(without > 0);
+    assert_eq!(
+        work_with(vec![distant_clearing]),
+        without,
+        "an unrelated clearing footprint must not rebuild or bypass shared routing caches"
+    );
+
+    // A clearing that starts after the main hierarchy is built reuses its chunks.
+    let chunks_after_warmup = |clearing: Vec<Obstacle>| {
+        let mut warmed = Navigation::new(&grid, vec![wall]);
+        finish_connectivity(&warmed, &grid, queries[0].0, queries[0].1);
+        warmed.refresh_clearing(clearing);
+        let (start, goal) = queries[1];
+        let mut chunks = 0;
+        while warmed.query_connectivity(start, goal) == ConnectivityStatus::Pending {
+            chunks += warmed.advance(&grid, 1_000).hierarchy_chunks;
+        }
+        chunks
+    };
+    assert_eq!(
+        chunks_after_warmup(vec![distant_clearing]),
+        chunks_after_warmup(vec![]),
+        "chunks the clearing footprint cannot reach must come from the built main hierarchy"
+    );
+}
+
+#[test]
+fn clearing_layer_routes_match_a_cold_build_after_main_geometry_changes() {
+    use top_down_2d_rts_prototype_nano_swarm::navigation::{
+        Obstacle, RouteGoal, RoutePriority, RouteStatus,
+    };
+    let grid = IntentGrid::new(4, 4);
+    let wall = Obstacle::Rectangle {
+        center: Vec2::new(0.0, -300.0),
+        half: Vec2::new(72.0, 444.0),
+    };
+    let footprint = Obstacle::Rectangle {
+        center: Vec2::new(0.0, 252.0),
+        half: Vec2::splat(36.0),
+    };
+    // Lowering the wall opens the direct line, so a stale layer would keep detouring.
+    let lowered_wall = Obstacle::Rectangle {
+        center: Vec2::new(0.0, -300.0),
+        half: Vec2::new(72.0, 300.0),
+    };
+    let (start, end) = (Vec2::new(-252.0, 36.0), Vec2::new(252.0, 36.0));
+    let route = |navigation: &Navigation| {
+        let id = navigation.request(
+            start,
+            RouteGoal::Point(end),
+            SwarmId::PLAYER,
+            false,
+            RoutePriority::Routine,
+        );
+        for _ in 0..1_000 {
+            navigation.advance(&grid, 1_000);
+            if let RouteStatus::Found(route) = navigation.poll(id) {
+                navigation.cancel(id);
+                return route;
+            }
+        }
+        panic!("a route around the wall must stay open");
+    };
+    let assert_matches_cold = |navigation: &Navigation, solids: Vec<Obstacle>| {
+        let cold = Navigation::new(&grid, solids);
+        let shared = route(navigation);
+        let mut previous = start;
+        for &point in &shared.waypoints {
+            assert!(
+                cold.segment_clear(previous, point),
+                "a shared-layer leg crosses solid geometry: {previous} -> {point}"
+            );
+            previous = point;
+        }
+        assert!((shared.cost - route(&cold).cost).abs() < 0.01);
+    };
+
+    let mut navigation = Navigation::new(&grid, vec![wall]);
+    route(&navigation);
+    navigation.refresh_clearing(vec![footprint]);
+    assert_matches_cold(&navigation, vec![wall, footprint]);
+    navigation.refresh(&grid, vec![lowered_wall]);
+    assert_matches_cold(&navigation, vec![lowered_wall, footprint]);
+}
+
+#[test]
+fn construction_access_reuses_the_built_hierarchy_outside_its_footprint() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::InteractionRegion,
+        navigation::{AccessCheck, AccessStatus, Obstacle, RouteGoal, RoutePriority},
+    };
+    let grid = IntentGrid::new(4, 4);
+    let stockpiles = [
+        Transform::from_xyz(-468.0, -396.0, 0.0).with_scale(Vec3::splat(1.125)),
+        Transform::from_xyz(468.0, -396.0, 0.0).with_scale(Vec3::splat(1.125)),
+    ];
+    let wall = Obstacle::Rectangle {
+        center: Vec2::new(0.0, -180.0),
+        half: Vec2::new(36.0, 360.0),
+    };
+    let solids: Vec<_> = stockpiles
+        .iter()
+        .map(Obstacle::structure)
+        .chain([wall])
+        .collect();
+    let endpoints: Vec<_> = stockpiles
+        .iter()
+        .map(InteractionRegion::structure)
+        .collect();
+    // The candidate lies inside one chunk, beyond body clearance of its edges.
+    let candidate = Transform::from_xyz(288.0, 288.0, 0.0).with_scale(Vec3::splat(1.125));
+    let builder = Vec2::new(-252.0, 180.0);
+    let check = || AccessCheck {
+        baseline: solids.clone(),
+        completed: solids
+            .iter()
+            .copied()
+            .chain([Obstacle::structure(&candidate)])
+            .collect(),
+        builders: vec![builder],
+        target: InteractionRegion::structure(&candidate),
+        endpoints: endpoints.clone(),
+        swarm: SwarmId::PLAYER,
+    };
+    let access_work = |navigation: &Navigation| {
+        let mut work = 0;
+        for _ in 0..1_000 {
+            match navigation.query_access(7, &[builder], check, RoutePriority::Routine) {
+                AccessStatus::Pending => work += navigation.advance(&grid, 1_000).work,
+                AccessStatus::Accepted => return work,
+                AccessStatus::Rejected => panic!("the candidate keeps every passage open"),
+            }
+        }
+        panic!("access check did not finish within its work allowance");
+    };
+
+    let cold = access_work(&Navigation::new(&grid, solids.clone()));
+    let built = Navigation::new(&grid, solids.clone());
+    for endpoint in &endpoints {
+        finish_connectivity(&built, &grid, builder, RouteGoal::Interaction(*endpoint));
+    }
+    let warm = access_work(&built);
+    assert!(
+        warm < cold,
+        "an access check against a built hierarchy must reuse chunks its footprint cannot touch: warm {warm}, cold {cold}"
+    );
+}
