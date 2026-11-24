@@ -436,8 +436,27 @@ pub fn regional_allocation_acquisition_system(
             .iter()
             .map(|(region, work)| (*region, work.as_slice()))
             .collect::<Vec<_>>();
+        let unclaimed_regions = regional_work
+            .iter()
+            .map(|(region, work)| {
+                let unclaimed = work
+                    .iter()
+                    .map(|work| ActionableOpportunity {
+                        available_work: unclaimed_work(
+                            *work,
+                            claims_for(&claim_counts, *work),
+                            &tuning,
+                        ),
+                        ..*work
+                    })
+                    .collect::<Vec<_>>();
+                (*region, unclaimed)
+            })
+            .collect::<Vec<_>>();
         let pressures = pressure_map(
-            region_slices.iter().copied(),
+            unclaimed_regions
+                .iter()
+                .map(|(region, work)| (*region, work.as_slice())),
             CategoryWeights::new([
                 tuning.autonomy.gather_weight,
                 tuning.autonomy.planned_build_weight,
@@ -536,10 +555,7 @@ pub fn regional_allocation_acquisition_system(
                 ordered.iter().copied(),
                 bounds,
                 |work| {
-                    let claims = claim_counts
-                        .get(&claim_key(work.target, work.owner))
-                        .copied()
-                        .unwrap_or(0);
+                    let claims = claims_for(&claim_counts, work);
                     if !target_available(
                         &tuning,
                         bot,
@@ -855,17 +871,38 @@ fn target_available(
     }
 }
 
+/// Work one claimant takes on, or `None` when a single claimant takes it all.
+fn claim_unit(category: OpportunityCategory, tuning: &crate::tuning::Tuning) -> Option<u32> {
+    match category {
+        OpportunityCategory::Gather => Some(tuning.logistics.worker_carry_capacity.max(1)),
+        OpportunityCategory::Haul => Some(tuning.logistics.hauler_carry_capacity.max(1)),
+        OpportunityCategory::PlannedBuild | OpportunityCategory::Maintenance => None,
+    }
+}
+
 fn opportunity_capacity(work: ActionableOpportunity, tuning: &crate::tuning::Tuning) -> usize {
-    let units = match work.category {
-        OpportunityCategory::Gather => work
-            .available_work
-            .div_ceil(tuning.logistics.worker_carry_capacity.max(1)),
-        OpportunityCategory::PlannedBuild | OpportunityCategory::Maintenance => 1,
-        OpportunityCategory::Haul => work
-            .available_work
-            .div_ceil(tuning.logistics.hauler_carry_capacity.max(1)),
+    claim_unit(work.category, tuning)
+        .map_or(1, |unit| work.available_work.div_ceil(unit))
+        .max(1) as usize
+}
+
+/// Work still open to another claimant. Fully claimed opportunities exert no
+/// pull, so they cannot reserve an idle bot's only category slot.
+fn unclaimed_work(
+    work: ActionableOpportunity,
+    claims: usize,
+    tuning: &crate::tuning::Tuning,
+) -> u32 {
+    if claims >= opportunity_capacity(work, tuning) {
+        return 0;
+    }
+    let Some(unit) = claim_unit(work.category, tuning) else {
+        return work.available_work;
     };
-    units.max(1) as usize
+    let claimed = u32::try_from(claims)
+        .unwrap_or(u32::MAX)
+        .saturating_mul(unit);
+    work.available_work.saturating_sub(claimed)
 }
 
 fn assign_worker_work(
@@ -919,6 +956,16 @@ fn assign_worker_work(
 
 fn region_distance_key(left: AllocationRegion, right: AllocationRegion) -> u32 {
     left.x.abs_diff(right.x) + left.y.abs_diff(right.y)
+}
+
+fn claims_for(
+    claim_counts: &BTreeMap<(u8, u64, u64, u64, Option<SwarmId>), usize>,
+    work: ActionableOpportunity,
+) -> usize {
+    claim_counts
+        .get(&claim_key(work.target, work.owner))
+        .copied()
+        .unwrap_or(0)
 }
 
 fn claim_key(
@@ -1000,5 +1047,50 @@ mod tests {
         };
 
         assert_eq!(claim_key(first, None), claim_key(second, None));
+    }
+
+    #[test]
+    fn claimed_work_leaves_only_the_unclaimed_share_as_pressure() {
+        let mut tuning = crate::tuning::Tuning::default();
+        tuning.logistics.worker_carry_capacity = 4;
+        let gather = ActionableOpportunity {
+            region: AllocationRegion { x: 0, y: 0 },
+            category: OpportunityCategory::Gather,
+            target: OpportunityTarget::Gather {
+                deposit: Entity::PLACEHOLDER,
+                cell: IVec2::ZERO,
+            },
+            cell: IVec2::ZERO,
+            owner: None,
+            available_work: 10,
+        };
+        let maintenance = ActionableOpportunity {
+            category: OpportunityCategory::Maintenance,
+            target: OpportunityTarget::Maintenance {
+                structure: Entity::PLACEHOLDER,
+            },
+            available_work: 1,
+            ..gather
+        };
+
+        assert_eq!(unclaimed_work(gather, 0, &tuning), 10);
+        assert_eq!(unclaimed_work(gather, 2, &tuning), 2);
+        assert_eq!(unclaimed_work(gather, 3, &tuning), 0);
+        assert_eq!(unclaimed_work(maintenance, 0, &tuning), 1);
+        assert_eq!(unclaimed_work(maintenance, 1, &tuning), 0);
+
+        tuning.logistics.hauler_carry_capacity = 10;
+        let haul = ActionableOpportunity {
+            category: OpportunityCategory::Haul,
+            target: OpportunityTarget::Haul {
+                source: Entity::PLACEHOLDER,
+                sink: Entity::PLACEHOLDER,
+                kind: crate::resources::ResourceKind::Minerals,
+            },
+            available_work: 25,
+            ..gather
+        };
+        assert_eq!(unclaimed_work(haul, 2, &tuning), 5);
+        assert_eq!(unclaimed_work(haul, 3, &tuning), 0);
     }
 }
