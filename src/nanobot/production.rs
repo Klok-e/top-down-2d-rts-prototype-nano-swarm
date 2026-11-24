@@ -161,6 +161,26 @@ impl ProductionFacility {
     pub fn input_free_space(&self) -> u32 {
         self.input_capacity.saturating_sub(self.input_amount)
     }
+
+    /// Hopper capacity haulers may claim. While the facility is producing,
+    /// one queued cycle of space is added: the next cycle start drains that
+    /// much, so a delivery can wait at the facility instead of arriving only
+    /// after the hopper empties.
+    pub fn claimable_capacity(&self, cost_per_bot: u32) -> u32 {
+        let queued = if self.current_target.is_some() {
+            cost_per_bot
+        } else {
+            0
+        };
+        self.input_capacity.saturating_add(queued)
+    }
+
+    /// Unfilled part of [`Self::claimable_capacity`]. Unloading still moves
+    /// minerals only into [`Self::input_free_space`].
+    pub fn claimable_space(&self, cost_per_bot: u32) -> u32 {
+        self.claimable_capacity(cost_per_bot)
+            .saturating_sub(self.input_amount)
+    }
 }
 
 impl Default for ProductionFacility {

@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
-    nanobot::{NanobotType, PopulationDemand, Swarm, SwarmId, SwarmMember},
+    nanobot::{NanobotType, PopulationDemand, Swarm, SwarmId, SwarmMember, gather_worker_slots},
     resources::{ResourceDeposit, ResourceKind},
 };
 
@@ -156,8 +156,16 @@ fn gather_work_creates_worker_demand_not_generic_population() {
     app.update();
 
     let demand = app.world().resource::<PopulationDemand>();
-    assert_eq!(demand.desired_for(SwarmId::PLAYER, NanobotType::Worker), 1);
-    assert_eq!(demand.desired_for(SwarmId(7), NanobotType::Worker), 1);
+    let ring_slots = gather_worker_slots(32.0);
+    assert!(ring_slots > 1, "a deposit justifies more than one Worker");
+    assert_eq!(
+        demand.desired_for(SwarmId::PLAYER, NanobotType::Worker),
+        ring_slots
+    );
+    assert_eq!(
+        demand.desired_for(SwarmId(7), NanobotType::Worker),
+        ring_slots
+    );
     assert_eq!(demand.desired_for(SwarmId(7), NanobotType::Defender), 1);
     assert_eq!(demand.desired_for(SwarmId::PLAYER, NanobotType::Hauler), 0);
     assert_eq!(

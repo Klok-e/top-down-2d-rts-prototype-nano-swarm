@@ -728,7 +728,7 @@ fn choose_terminal_logistics_work(
                     PickupBuffer {
                         role: DestinationRole::ProductionFacility,
                         buffered: facility.input_amount,
-                        capacity: facility.input_capacity,
+                        capacity: facility.claimable_capacity(tuning.production.cost_per_bot),
                     },
                     transform,
                 )

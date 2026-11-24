@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
-    nanobot::{NanobotType, PopulationDemand, SwarmId},
+    nanobot::{NanobotType, PopulationDemand, SwarmId, gather_worker_slots},
     navigation_runtime::NavigationBudget,
 };
 #[path = "../common/mod.rs"]
@@ -37,7 +37,7 @@ fn unreachable_work_stops_population_demand_and_reopening_restores_it() {
         app.world()
             .resource::<PopulationDemand>()
             .desired_for(SwarmId::PLAYER, NanobotType::Worker),
-        1,
+        gather_worker_slots(32.0),
         "unknown access must preserve demand"
     );
     app.world_mut().resource_mut::<NavigationBudget>().0 = 32_768;
@@ -59,7 +59,7 @@ fn unreachable_work_stops_population_demand_and_reopening_restores_it() {
         app.world()
             .resource::<PopulationDemand>()
             .desired_for(SwarmId::PLAYER, NanobotType::Worker),
-        1,
+        gather_worker_slots(32.0),
         "removing the wall reopens the work"
     );
 }

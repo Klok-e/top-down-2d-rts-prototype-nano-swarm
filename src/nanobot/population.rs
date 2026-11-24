@@ -3,6 +3,8 @@
 use std::collections::{HashMap, HashSet};
 
 use super::work_access::{WorkAccess, WorkReachability};
+use crate::navigation::BODY_RADIUS;
+use crate::resources::ResourceDeposit;
 use bevy::prelude::*;
 
 use crate::nanobot::{
@@ -72,15 +74,23 @@ impl PopulationDemand {
     }
 }
 
+/// Workers that fit side by side on a deposit's work ring: the circle of body
+/// centers just outside its footprint, divided by one body diameter.
+pub fn gather_worker_slots(deposit_radius: f32) -> u32 {
+    let ring = std::f32::consts::TAU * (deposit_radius.max(0.0) + BODY_RADIUS);
+    ((ring / (2.0 * BODY_RADIUS)).floor() as u32).max(1)
+}
+
 /// Convert actionable work into bounded nanobot slots. Resource quantities are
-/// never summed directly: one large deposit is one extraction slot, not one slot
-/// per mineral.
+/// never summed directly: a deposit's extraction slots come from its physical
+/// size, not from the minerals it holds.
 pub fn population_demand_system(
     tuning: Res<crate::tuning::Tuning>,
     projection: Res<ActionableProjection>,
     territory: Res<TerritorySnapshot>,
     mut demand: ResMut<PopulationDemand>,
     access: WorkAccess,
+    deposits: Query<&ResourceDeposit>,
 ) {
     demand.desired.clear();
     let mut haul_slots = HashMap::<(SwarmId, Entity), u32>::new();
@@ -96,9 +106,18 @@ pub fn population_demand_system(
                     continue;
                 }
                 let (kind, slots) = match opportunity.category {
-                    OpportunityCategory::Gather
-                    | OpportunityCategory::PlannedBuild
-                    | OpportunityCategory::Maintenance => (NanobotType::Worker, 1),
+                    OpportunityCategory::Gather => {
+                        let OpportunityTarget::Gather { deposit, .. } = opportunity.target else {
+                            continue;
+                        };
+                        let Ok(deposit) = deposits.get(deposit) else {
+                            continue;
+                        };
+                        (NanobotType::Worker, gather_worker_slots(deposit.radius))
+                    }
+                    OpportunityCategory::PlannedBuild | OpportunityCategory::Maintenance => {
+                        (NanobotType::Worker, 1)
+                    }
                     OpportunityCategory::Haul => {
                         let OpportunityTarget::Haul { source, .. } = opportunity.target else {
                             continue;
@@ -195,6 +214,14 @@ mod tests {
             demand.most_underfilled_type(SwarmId::PLAYER, &HashMap::new()),
             Some(NanobotType::Worker),
         );
+    }
+
+    #[test]
+    fn gather_slots_count_bodies_on_the_work_ring() {
+        // Ring radius 64 + 34 = 98; circumference ≈ 615.8; body diameter 68.
+        assert_eq!(gather_worker_slots(64.0), 9);
+        // A point-sized deposit still fits floor(2π·34 / 68) = 3 bodies.
+        assert_eq!(gather_worker_slots(0.0), 3);
     }
 
     #[test]
