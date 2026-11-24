@@ -218,6 +218,52 @@ fn worker_travels_to_and_maintains_stale_structure() {
 }
 
 #[test]
+fn nearer_idle_worker_takes_over_maintenance_from_a_travelling_worker() {
+    let mut app = build_app();
+    let cell = IVec2::new(0, 0);
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(cell, IntentKind::Build, SwarmId::PLAYER);
+    let center = common::cell_world_center(cell);
+    let structure = common::spawn_structure_at(&mut app, center);
+    app.world_mut()
+        .entity_mut(structure)
+        .get_mut::<Structure>()
+        .unwrap()
+        .ticks_since_maintained = Tuning::default().maintenance.needs_threshold;
+    let far = common::spawn_worker_at(&mut app, center + Vec2::new(-1500.0, 0.0));
+    let maintains = |app: &App, worker: Entity| {
+        app.world()
+            .get::<MaintenanceAssignment>(worker)
+            .is_some_and(|assignment| assignment.target == structure)
+    };
+    for _ in 0..30 {
+        app.update();
+        if maintains(&app, far) {
+            break;
+        }
+    }
+    assert!(
+        maintains(&app, far),
+        "the only Worker claims the stale structure"
+    );
+
+    let near = common::spawn_worker_at(&mut app, center + Vec2::new(-100.0, 0.0));
+    for _ in 0..30 {
+        app.update();
+        if maintains(&app, near) {
+            break;
+        }
+    }
+
+    assert!(
+        maintains(&app, near),
+        "a Worker beside the structure takes over from one still far away",
+    );
+    assert!(!maintains(&app, far), "the far Worker is released");
+}
+
+#[test]
 fn maintenance_does_not_consume_stockpile_resources() {
     // Acceptance: "Maintenance consumes Worker time only, not
     // extra resources." A worker maintaining a structure must

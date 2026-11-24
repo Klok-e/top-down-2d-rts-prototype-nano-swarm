@@ -212,6 +212,131 @@ pub struct AllocationInputs<'w, 's> {
         ),
     >,
     ages: ResMut<'w, TerminalDemandAges>,
+    travelling: TravellingWorkers<'w, 's>,
+}
+
+/// Workers holding Maintenance or Planned Build work that have not reached it.
+type TravellingWorkers<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static Transform,
+        &'static RegionalLease,
+        &'static SwarmMember,
+        Option<&'static MaintenanceAssignment>,
+    ),
+    (
+        With<Nanobot>,
+        Or<(With<MaintenanceAssignment>, With<PlannedStructureClaim>)>,
+        Without<MaintenanceProgress>,
+        Without<PlannedStructureProgress>,
+    ),
+>;
+
+/// An idle Worker takes over travelling work only when at least this many
+/// times closer to the target than its current holder.
+const HANDOFF_DISTANCE_RATIO: f32 = 2.0;
+/// ...and when that saves at least four cells of travel, so near-equal
+/// Workers do not trade the same job back and forth.
+const HANDOFF_MIN_SAVING: f32 = 4.0 * crate::navigation::CELL_WIDTH;
+
+/// Hand Maintenance and Planned Build work from a Worker still travelling to
+/// it to a much nearer idle Worker. Each job holds one Worker, so without this
+/// the first idle Worker anywhere keeps it while Workers beside it gather on.
+#[allow(clippy::too_many_arguments)]
+fn hand_off_travelling_worker_jobs(
+    commands: &mut Commands,
+    candidates: &mut Vec<BotSnapshot>,
+    travelling: &TravellingWorkers,
+    structures: &Query<&Transform>,
+    planned: &mut Query<(Entity, &mut PlannedStructure, &Transform)>,
+    navigation: &Navigation,
+    now_tick: u64,
+    lease_ttl: u64,
+) {
+    let mut released = std::collections::BTreeSet::new();
+    let mut taken = std::collections::BTreeSet::new();
+    for bot in candidates
+        .iter()
+        .filter(|bot| bot.kind == NanobotType::Worker)
+    {
+        let mut best: Option<(f32, Entity, RegionalLease, Option<MaintenanceAssignment>)> = None;
+        for (holder, holder_transform, lease, member, maintenance) in travelling {
+            if member.0 != bot.swarm || released.contains(&holder) {
+                continue;
+            }
+            let (OpportunityTarget::Maintenance { structure }
+            | OpportunityTarget::PlannedBuild { structure, .. }) = lease.target
+            else {
+                continue;
+            };
+            let Ok(target) = structures.get(structure) else {
+                continue;
+            };
+            let target = target.translation.truncate();
+            let own = bot.position.distance(target);
+            let theirs = holder_transform.translation.truncate().distance(target);
+            if own * HANDOFF_DISTANCE_RATIO > theirs || theirs - own < HANDOFF_MIN_SAVING {
+                continue;
+            }
+            if best.as_ref().is_none_or(|(distance, ..)| own < *distance) {
+                best = Some((own, holder, *lease, maintenance.copied()));
+            }
+        }
+        let Some((_, holder, lease, maintenance)) = best else {
+            continue;
+        };
+        let (OpportunityTarget::Maintenance { structure }
+        | OpportunityTarget::PlannedBuild { structure, .. }) = lease.target
+        else {
+            continue;
+        };
+        let Ok(target_transform) = structures.get(structure) else {
+            continue;
+        };
+        let region = InteractionRegion::structure(target_transform);
+        if !matches!(
+            navigation.query_connectivity(bot.position, RouteGoal::Interaction(region)),
+            ConnectivityStatus::Connected { .. }
+        ) {
+            continue;
+        }
+        if let Some(assignment) = maintenance {
+            commands
+                .entity(bot.entity)
+                .insert((assignment, region.movement_from(bot.position)));
+            commands
+                .entity(holder)
+                .remove::<(MaintenanceAssignment, MaintenanceProgress)>();
+        } else {
+            let Ok((_, mut plan, transform)) = planned.get_mut(structure) else {
+                continue;
+            };
+            if !plan.hand_over_worker(commands, structure, bot.entity, bot.position, transform) {
+                continue;
+            }
+            commands
+                .entity(holder)
+                .remove::<(PlannedStructureClaim, PlannedStructureProgress)>();
+        }
+        commands
+            .entity(holder)
+            .remove::<(RegionalLease, DirectMovementComponent)>()
+            .insert(Commitment::Idle);
+        commands.entity(bot.entity).insert(RegionalLease::new(
+            lease.region,
+            lease.category,
+            lease.target,
+            lease.owner,
+            now_tick,
+            0,
+            lease_ttl,
+        ));
+        released.insert(holder);
+        taken.insert(bot.entity);
+    }
+    candidates.retain(|bot| !taken.contains(&bot.entity));
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
@@ -388,6 +513,16 @@ pub fn regional_allocation_acquisition_system(
         })
         .collect::<Vec<_>>();
     candidates.sort_by_key(|bot| bot.entity.to_bits());
+    hand_off_travelling_worker_jobs(
+        &mut commands,
+        &mut candidates,
+        &terminal.travelling,
+        &structures,
+        &mut planned,
+        &navigation,
+        clock.tick(),
+        tuning.autonomy.lease_no_progress_ttl_ticks,
+    );
 
     let work_by_kind = NanobotType::ALL.map(|kind| {
         projection
