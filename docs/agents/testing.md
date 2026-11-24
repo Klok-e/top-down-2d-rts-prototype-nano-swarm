@@ -62,7 +62,7 @@ Allowed:
 - Minimal Bevy apps with only the resources, schedules, and systems under test.
 - GPU rendering into `Presentation::Offscreen` image targets.
 - ECS-only `Window` component fixtures when a system needs viewport or cursor math, provided `WinitPlugin` is not installed.
-- A real binary launched with `--headless --agent-socket` and controlled through `scripts/nano_swarm_control.py`.
+- A real binary launched with `--headless` and a private `XDG_RUNTIME_DIR`, and controlled through `scripts/nano_swarm_control.py`.
 
 Forbidden:
 
@@ -170,7 +170,7 @@ Script input through Bevy state, not OS automation:
 
 Headless scripted playtests run in normal `cargo test`. GPU-bearing presentation checks carry `#[ignore]`, and GPU-rendered screenshot evidence belongs in the ignored `screenshots/` target; see "Screenshot evidence" below.
 
-For a real-process playtest, launch `cargo run -- --headless --agent-socket`. Drive all actions through `scripts/nano_swarm_control.py`, use `frame.wait` for explicit synchronization, capture offscreen screenshots throughout the flow, inspect every required artifact, and finish with `shutdown`. Do not substitute direct ECS mutation, `socat`, or compositor input for the external client during final verification.
+For a real-process playtest, launch `cargo run -- --headless` with a private `XDG_RUNTIME_DIR` and pass the matching `--socket` to the client, as in [Agent Control](agent-control.md#launch); the standard socket path belongs to the user's own game. Drive all actions through `scripts/nano_swarm_control.py`, use `frame.wait` for explicit synchronization, capture offscreen screenshots throughout the flow, inspect every required artifact, and finish with `shutdown`. Do not substitute direct ECS mutation, `socat`, or compositor input for the external client during final verification.
 
 ### Screenshot evidence
 

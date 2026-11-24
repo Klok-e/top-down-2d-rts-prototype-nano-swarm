@@ -9,6 +9,7 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z,
+    agent_control::AgentControlConfig,
     fly_camera::CameraZoom2d,
     intent::{IntentGrid, IntentKind},
     nanobot::{
@@ -40,14 +41,17 @@ struct TrafficScene {
 }
 
 fn main() {
-    let mut app = build_runtime_app(RuntimeOptions {
-        headless: true,
-        scenario: Some(Scenario::Standard),
-        agent_socket: true,
-        width: 1280,
-        height: 720,
-        ..Default::default()
-    })
+    let control = AgentControlConfig::from_environment().expect("agent control socket");
+    let mut app = build_runtime_app(
+        RuntimeOptions {
+            headless: true,
+            scenario: Some(Scenario::Standard),
+            width: 1280,
+            height: 720,
+            ..Default::default()
+        },
+        Some(control),
+    )
     .expect("headless runtime");
     app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
         std::time::Duration::from_secs_f64(1. / 60.),

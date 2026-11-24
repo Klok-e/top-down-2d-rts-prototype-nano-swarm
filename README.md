@@ -25,7 +25,7 @@ The game loads the complete [balance configuration](config/balance.ron) before c
 Run an accelerated headless AI Battle. It keeps statistics in memory and serves them over the agent socket until you send `shutdown`:
 
 ```bash
-cargo run --release -- --scenario ai-battle --headless --unbounded --agent-socket --seed 42
+cargo run --release -- --scenario ai-battle --headless --unbounded --seed 42
 ```
 
 See [AI Battle](docs/ai-battle.md) for statistics fields, end-of-battle behavior, and comparison guidance.
@@ -36,14 +36,7 @@ Run with GPU-backed offscreen rendering and no desktop window:
 cargo run -- --headless
 ```
 
-Enable the opt-in Unix agent control socket in either presentation mode:
-
-```bash
-cargo run -- --agent-socket
-cargo run -- --headless --agent-socket --width 1280 --height 720
-```
-
-`--agent-socket` listens at `$XDG_RUNTIME_DIR/nano-swarm/control.sock`. The standard-library client controls a running process:
+Every launch, windowed or headless, opens the agent control socket at `$XDG_RUNTIME_DIR/nano-swarm/control.sock`, so an agent can inspect or control the game you are playing. Startup fails if `XDG_RUNTIME_DIR` is unset or another nano-swarm process holds the socket; give a second instance its own `XDG_RUNTIME_DIR`. nano-swarm supports only Unix. The standard-library client controls a running process:
 
 ```bash
 python scripts/nano_swarm_control.py state

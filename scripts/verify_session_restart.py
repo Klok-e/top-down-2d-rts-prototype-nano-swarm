@@ -35,7 +35,7 @@ def main():
         socket = Path(runtime) / "nano-swarm/control.sock"
         with (artifacts / "process.log").open("w") as log:
             process = subprocess.Popen([
-                str(binary), "--headless", "--agent-socket", "--scenario", "standard",
+                str(binary), "--headless", "--scenario", "standard",
                 "--width", "1280", "--height", "720",
             ], env=env, stdout=log, stderr=subprocess.STDOUT)
             try:

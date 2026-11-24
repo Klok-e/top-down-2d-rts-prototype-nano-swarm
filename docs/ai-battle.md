@@ -5,23 +5,23 @@ Select **AI Battle** in the scenario menu to watch two automatically controlled 
 ## Run a battle
 
 ```bash
-cargo run --release -- --headless --agent-socket --scenario ai-battle --seed 42
+cargo run --release -- --headless --scenario ai-battle --seed 42
 ```
 
-A headless or simulation-only AI Battle requires `--agent-socket`, and startup rejects the combination otherwise. No AI Battle writes files or exits by itself. Read results over the socket with [`battle.stats`](agents/agent-control.md#battle-statistics) and stop the process with `shutdown`.
+Every launch opens the agent socket. No AI Battle writes files or exits by itself. Read results over the socket with [`battle.stats`](agents/agent-control.md#battle-statistics) and stop the process with `shutdown`.
 
 AI Battle is an ordinary symmetric self-play scenario. Both swarms use the same live [balance configuration](../config/balance.ron), shared with Standard and Sandbox. `--tuning-file PATH` selects a separate configuration for an experiment; accepted live edits save to that file.
 
 Headless runs use normal pacing by default. Add `--unbounded` to advance one 60 Hz simulation tick per application update without frame sleeping; this startup option applies to Standard and Sandbox as well:
 
 ```bash
-cargo run --release -- --headless --unbounded --agent-socket --scenario ai-battle --seed 42
+cargo run --release -- --headless --unbounded --scenario ai-battle --seed 42
 ```
 
 Choose one of the two balanced layouts with `--layout standard` or `--layout flanks`:
 
 ```bash
-cargo run --release -- --headless --scenario ai-battle --layout flanks --seed 11 --agent-socket
+cargo run --release -- --headless --scenario ai-battle --layout flanks --seed 11
 ```
 
 `--layout` and `--max-ticks` require `--scenario ai-battle`. The `--unbounded` option requires `--headless`. A battle ends when Swarm Elimination resolves it. Use `--max-ticks N` to end it after N fixed ticks; without it, only Swarm Elimination ends a battle.
@@ -31,7 +31,7 @@ At the end, a headless or simulation-only battle freezes its simulation. Statist
 For fast gameplay diagnostics, run AI Battle without graphics or frame pacing. For example, this runs Standard for up to 7,200 fixed ticks (120 simulated seconds):
 
 ```bash
-cargo run --release -- --simulation-only --agent-socket --scenario ai-battle --layout standard --seed 11 --max-ticks 7200
+cargo run --release -- --simulation-only --scenario ai-battle --layout standard --seed 11 --max-ticks 7200
 ```
 
 For verification, apply the [test duration and interactive socket guidance](agents/testing.md#commands). Use rendered self-play to verify outcomes in the player runtime. Runs with the same seed can follow different trajectories across modes.

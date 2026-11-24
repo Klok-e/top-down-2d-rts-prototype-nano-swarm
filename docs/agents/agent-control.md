@@ -1,22 +1,32 @@
 # Agent Control
 
-The agent control interface drives a real nano-swarm process without OS input automation. It is opt-in and works with either the normal window or GPU-backed offscreen presentation.
+The agent control interface drives a real nano-swarm process without OS input automation. Every launch opens it, including a game the user starts themselves, with either the normal window or GPU-backed offscreen presentation. There is no flag to disable it ([ADR-0032](../adr/0032-agent-socket-always-on.md)).
 
 Agents may extend the agent-control interface as they see fit.
 
 ## Launch
 
 ```bash
-cargo run -- --agent-socket
-cargo run -- --headless --agent-socket
-cargo run -- --headless --agent-socket --width 1280 --height 720
+cargo run
+cargo run -- --headless
+cargo run -- --headless --width 1280 --height 720
 ```
 
-`--agent-socket` requires `XDG_RUNTIME_DIR` and listens on:
+The socket requires `XDG_RUNTIME_DIR` and listens on:
 
 ```txt
 $XDG_RUNTIME_DIR/nano-swarm/control.sock
 ```
+
+Startup fails if the socket cannot be opened, including when another nano-swarm process holds it. Launch your own processes with a private runtime directory so they never contend with the user's game at the standard path:
+
+```bash
+rt=$(mktemp -d /tmp/ns.XXXXXX)
+XDG_RUNTIME_DIR="$rt" cargo run -- --headless
+python scripts/nano_swarm_control.py --socket "$rt/nano-swarm/control.sock" state
+```
+
+The directory lives under `/tmp` because Unix socket paths are limited to about 100 bytes. Remove it after `shutdown`. Without `--socket`, the client connects to the standard path, which is normally the user's own running game.
 
 Headless mode disables Winit and creates no desktop window. Rendering, UI layout, fixed simulation, and GPU screenshots remain active. The runner handles `AppExit` and Ctrl-C; its default pacing is 60 application frames per second. `--headless --unbounded` advances one fixed simulation tick per application update without frame sleeping for any scenario. See [AI Battle](../ai-battle.md) for launch options and statistics.
 
@@ -148,7 +158,7 @@ python scripts/nano_swarm_control.py battle-stats --after-sample 41 --after-hitc
 
 `battle.stats` serves the in-memory statistics of the running AI Battle. The result has `summary`, `samples`, `hitches`, `last_sample`, and `last_hitch`. It returns `battle_unavailable` outside an AI Battle recording.
 
-- `summary` holds the run's metadata, tuning, `status`, `outcome`, `termination_reason`, and `samples` (the sample count). `status` is `in_progress` with a null `termination_reason` while the run continues. Swarm Elimination gives `completed` with `swarm_elimination`. The tick limit gives `interrupted` with `tick_limit`. Statistics stop changing after the end. A headless or simulation-only battle then freezes its simulation and serves `battle.stats` until `process.shutdown`, with no idle timeout; a battle needs `--agent-socket` to run in those modes.
+- `summary` holds the run's metadata, tuning, `status`, `outcome`, `termination_reason`, and `samples` (the sample count). `status` is `in_progress` with a null `termination_reason` while the run continues. Swarm Elimination gives `completed` with `swarm_elimination`. The tick limit gives `interrupted` with `tick_limit`. Statistics stop changing after the end. A headless or simulation-only battle then freezes its simulation and serves `battle.stats` until `process.shutdown`, with no idle timeout.
 - `samples` holds one sample per simulated second plus a final partial sample on the tick the run ends. Each sample is an object whose `swarms` array has one object per swarm, holding the sample's fields. Numbers are numbers, `deposit_extraction` is a nested array, `controller_last_explanation` is a string, and fields without a value, such as frame timing in unbounded runs, are null. Sample-level columns repeat in each swarm object.
 - `hitches` holds compact hitch summaries with `start_frame`, `end_frame`, `start_fixed_tick`, `hitch_count`, `worst_frame_ns`, `catch_up_ticks`, `top_phases`, and `nanobots`. The first 1,000 are kept; `summary.hitch_episodes_suppressed` counts later ones.
 - The optional unsigned cursors `after_sample` and `after_hitch` select entries whose zero-based recording-order indices are greater than the cursor. An omitted cursor returns the whole list, and a cursor at or above the highest index returns an empty list. `last_sample` and `last_hitch` are the highest index so far, or null while the list is empty, and `summary.samples` equals `last_sample` + 1. Pass the previous `last_*` values as cursors to poll for new entries.
@@ -230,7 +240,7 @@ The socket worker polls a nonblocking listener and performs bounded blocking cli
 
 `XDG_RUNTIME_DIR is required`: launch from a desktop/session environment that defines it, or set it to a private runtime directory owned by the current user.
 
-`another nano-swarm control server is active`: use the existing process or shut it down before starting another controlled process.
+`another nano-swarm control server is active`: the standard path is usually the user's own game. Launch your process with a private `XDG_RUNTIME_DIR` instead of shutting that game down.
 
 `control response did not complete`: verify the game process is still running and increase the client `--timeout` for long fixed-tick waits or GPU capture.
 

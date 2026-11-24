@@ -2,16 +2,6 @@ use crate::scenario_selection::{Scenario, ScenarioSelection};
 use crate::ui::scenario_menu::{MenuAction, MenuInputSet, ScenarioMenu};
 use std::{
     collections::HashMap,
-    path::PathBuf,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc::{Receiver, SyncSender, TrySendError, sync_channel},
-    },
-};
-
-#[cfg(unix)]
-use std::{
     fs::{self, File, OpenOptions},
     io::{self, BufRead, BufReader, Write},
     os::unix::{
@@ -19,8 +9,12 @@ use std::{
         io::AsRawFd,
         net::{UnixListener, UnixStream},
     },
-    path::Path,
-    sync::mpsc::RecvTimeoutError,
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel},
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -54,11 +48,8 @@ pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 pub const MAX_WAIT_DELTA: u64 = 18_000;
 pub const DEFAULT_STATE_CELL_LIMIT: u32 = 10_000;
 pub const MAX_STATE_CELL_LIMIT: u32 = 10_000;
-#[cfg(unix)]
 const MAX_CONTROL_RESPONSE_DURATION: Duration = Duration::from_secs(310);
-#[cfg(unix)]
 const CONTROL_RESPONSE_POLL_DURATION: Duration = Duration::from_millis(10);
-#[cfg(unix)]
 const MAX_CONTROL_LINE_DURATION: Duration = Duration::from_secs(30);
 pub const AGENT_PROTOCOL_VERSION: u32 = 5;
 pub const SUPPORTED_METHODS: [&str; 16] = [
@@ -366,14 +357,12 @@ struct SharedAgentControlClock {
 #[derive(Resource, Clone)]
 struct SharedAgentControlClockResource(Arc<SharedAgentControlClock>);
 
-#[cfg(unix)]
 #[derive(Debug, Clone)]
 pub struct AgentControlConfig {
     pub socket_path: PathBuf,
     pub screenshot_directory: PathBuf,
 }
 
-#[cfg(unix)]
 impl AgentControlConfig {
     pub fn at_socket_path(socket_path: PathBuf) -> Self {
         let screenshot_directory = socket_path
@@ -396,10 +385,9 @@ impl AgentControlConfig {
     }
 }
 
-#[cfg(unix)]
 #[derive(Debug, thiserror::Error)]
 pub enum AgentControlServerError {
-    #[error("XDG_RUNTIME_DIR is required for --agent-socket")]
+    #[error("XDG_RUNTIME_DIR is required for the agent control socket")]
     MissingRuntimeDirectory,
     #[error("control socket path has no parent directory: {0}")]
     MissingParent(PathBuf),
@@ -418,14 +406,12 @@ pub enum AgentControlServerError {
     },
 }
 
-#[cfg(unix)]
 struct SocketFileGuard {
     path: PathBuf,
     device: u64,
     inode: u64,
 }
 
-#[cfg(unix)]
 impl SocketFileGuard {
     fn new(path: PathBuf, metadata: &fs::Metadata) -> Self {
         Self {
@@ -436,7 +422,6 @@ impl SocketFileGuard {
     }
 }
 
-#[cfg(unix)]
 impl Drop for SocketFileGuard {
     fn drop(&mut self) {
         if fs::symlink_metadata(&self.path).is_ok_and(|metadata| {
@@ -449,7 +434,6 @@ impl Drop for SocketFileGuard {
     }
 }
 
-#[cfg(unix)]
 pub struct AgentControlPlugin {
     listener: Mutex<Option<UnixListener>>,
     socket_guard: Mutex<Option<SocketFileGuard>>,
@@ -457,7 +441,6 @@ pub struct AgentControlPlugin {
     screenshot_directory: PathBuf,
 }
 
-#[cfg(unix)]
 impl AgentControlPlugin {
     pub fn bind(config: AgentControlConfig) -> Result<Self, AgentControlServerError> {
         prepare_control_socket_parent(&config.socket_path)?;
@@ -502,7 +485,6 @@ impl AgentControlPlugin {
     }
 }
 
-#[cfg(unix)]
 impl Plugin for AgentControlPlugin {
     fn build(&self, app: &mut App) {
         let listener = self
@@ -542,7 +524,6 @@ impl Plugin for AgentControlPlugin {
     }
 }
 
-#[cfg(unix)]
 #[derive(Resource)]
 struct AgentControlServer {
     stop: Arc<AtomicBool>,
@@ -551,7 +532,6 @@ struct AgentControlServer {
     _lifecycle_lock: File,
 }
 
-#[cfg(unix)]
 impl Drop for AgentControlServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
@@ -566,7 +546,6 @@ impl Drop for AgentControlServer {
     }
 }
 
-#[cfg(unix)]
 fn prepare_control_socket_parent(socket_path: &Path) -> Result<(), AgentControlServerError> {
     let parent = socket_path
         .parent()
@@ -610,14 +589,12 @@ fn prepare_control_socket_parent(socket_path: &Path) -> Result<(), AgentControlS
     Ok(())
 }
 
-#[cfg(unix)]
 fn control_socket_lock_path(socket_path: &Path) -> PathBuf {
     let mut lock_path = socket_path.as_os_str().to_os_string();
     lock_path.push(".lock");
     PathBuf::from(lock_path)
 }
 
-#[cfg(unix)]
 fn acquire_control_socket_lock(socket_path: &Path) -> Result<File, AgentControlServerError> {
     let lock_path = control_socket_lock_path(socket_path);
     let file = OpenOptions::new()
@@ -658,7 +635,6 @@ fn acquire_control_socket_lock(socket_path: &Path) -> Result<File, AgentControlS
     }
 }
 
-#[cfg(unix)]
 fn remove_stale_control_socket(socket_path: &Path) -> Result<(), AgentControlServerError> {
     let metadata = match fs::symlink_metadata(socket_path) {
         Ok(metadata) => metadata,
@@ -700,7 +676,6 @@ fn remove_stale_control_socket(socket_path: &Path) -> Result<(), AgentControlSer
     }
 }
 
-#[cfg(unix)]
 fn run_control_socket_worker(
     listener: UnixListener,
     control: AgentControlHandle,
@@ -723,7 +698,6 @@ fn run_control_socket_worker(
     }
 }
 
-#[cfg(unix)]
 fn serve_control_client(mut stream: UnixStream, control: &AgentControlHandle, stop: &AtomicBool) {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
@@ -836,7 +810,6 @@ fn serve_control_client(mut stream: UnixStream, control: &AgentControlHandle, st
     }
 }
 
-#[cfg(unix)]
 fn control_peer_disconnected(stream: &UnixStream) -> bool {
     let mut byte = 0u8;
     // SAFETY: the stream owns a valid descriptor and `byte` is writable for one byte.
@@ -870,14 +843,12 @@ fn control_peer_disconnected(stream: &UnixStream) -> bool {
     poll_result > 0 && descriptor.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
 }
 
-#[cfg(unix)]
 enum IncomingControlLine {
     Data(Vec<u8>),
     TooLarge,
     Eof,
 }
 
-#[cfg(unix)]
 fn read_control_line<R, N>(
     reader: &mut R,
     stop: &AtomicBool,
@@ -944,7 +915,6 @@ where
     }
 }
 
-#[cfg(unix)]
 fn extract_request_id(line: &[u8]) -> Option<RequestId> {
     serde_json::from_slice::<serde_json::Value>(line)
         .ok()?
@@ -953,7 +923,6 @@ fn extract_request_id(line: &[u8]) -> Option<RequestId> {
         .and_then(|id| serde_json::from_value(id).ok())
 }
 
-#[cfg(unix)]
 fn write_control_response(stream: &mut UnixStream, response: &AgentResponse) -> io::Result<()> {
     serde_json::to_writer(&mut *stream, response).map_err(io::Error::other)?;
     stream.write_all(b"\n")?;
@@ -1850,7 +1819,6 @@ fn next_screenshot_path(
     };
     std::fs::create_dir_all(&directory)
         .map_err(|error| ("screenshot_failed", error.to_string()))?;
-    #[cfg(unix)]
     std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
         .map_err(|error| ("screenshot_failed", error.to_string()))?;
 
@@ -1905,7 +1873,6 @@ fn complete_agent_screenshot(
     let save_result = image
         .and_then(|image| image.save(&pending.path).map_err(|error| error.to_string()))
         .and_then(|()| {
-            #[cfg(unix)]
             std::fs::set_permissions(&pending.path, std::fs::Permissions::from_mode(0o600))
                 .map_err(|error| error.to_string())?;
             Ok(())
@@ -2399,7 +2366,6 @@ mod tests {
 
     use super::*;
 
-    #[cfg(unix)]
     fn remove_control_socket_test_directory(directory: &Path) {
         std::fs::remove_file(directory.join("control.sock.lock")).unwrap();
         std::fs::remove_dir(directory).unwrap();
@@ -3428,7 +3394,6 @@ mod tests {
         assert_eq!(app.should_exit(), Some(AppExit::Success));
     }
 
-    #[cfg(unix)]
     #[test]
     fn insecure_existing_socket_parent_is_rejected_without_changing_permissions() {
         use std::{
@@ -3460,7 +3425,6 @@ mod tests {
         assert_eq!(mode, 0o755);
     }
 
-    #[cfg(unix)]
     #[test]
     fn unix_socket_is_owner_only_and_removed_with_the_app() {
         use std::{
@@ -3495,7 +3459,6 @@ mod tests {
         remove_control_socket_test_directory(&directory);
     }
 
-    #[cfg(unix)]
     #[test]
     fn lifecycle_lock_serializes_stale_socket_replacement() {
         use std::{
@@ -3529,7 +3492,6 @@ mod tests {
         remove_control_socket_test_directory(&directory);
     }
 
-    #[cfg(unix)]
     #[test]
     fn shutdown_survives_unlinked_socket_without_removing_replacement() {
         use std::{
@@ -3562,7 +3524,6 @@ mod tests {
         remove_control_socket_test_directory(&directory);
     }
 
-    #[cfg(unix)]
     #[test]
     fn unix_socket_round_trips_ndjson_with_request_id_and_clock() {
         use std::{
@@ -3616,7 +3577,6 @@ mod tests {
         remove_control_socket_test_directory(&directory);
     }
 
-    #[cfg(unix)]
     #[test]
     fn disconnected_wait_client_does_not_block_the_next_client() {
         use std::{
@@ -3685,7 +3645,6 @@ mod tests {
         remove_control_socket_test_directory(&directory);
     }
 
-    #[cfg(unix)]
     #[test]
     fn request_line_reader_enforces_an_absolute_deadline() {
         use std::{io::Read, time::Duration};
@@ -3727,7 +3686,6 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     }
 
-    #[cfg(unix)]
     #[test]
     fn disconnect_probe_distinguishes_buffered_half_close_from_full_close() {
         use std::{io::Write, net::Shutdown, os::unix::net::UnixStream};
@@ -3743,7 +3701,6 @@ mod tests {
         assert!(control_peer_disconnected(&closed_server));
     }
 
-    #[cfg(unix)]
     #[test]
     fn write_half_closed_wait_client_receives_its_response() {
         use std::{

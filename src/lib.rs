@@ -1,5 +1,8 @@
 #![recursion_limit = "256"]
 
+#[cfg(not(unix))]
+compile_error!("nano-swarm supports only Unix: its agent control socket is always on");
+
 pub mod agent_control;
 pub mod ai;
 pub mod ai_battle;

@@ -9,7 +9,6 @@ use bevy::{
     time::TimeUpdateStrategy,
 };
 
-#[cfg(unix)]
 use crate::agent_control::{AgentControlConfig, AgentControlPlugin, AgentControlServerError};
 use crate::{
     Presentation,
@@ -97,7 +96,6 @@ pub const RUNTIME_HELP: &str = "\
 Usage: top-down-2d-rts-prototype-nano-swarm [OPTIONS]\n\
 \n\
 Options:\n\
-    --agent-socket     Enable the Unix agent control socket\n\
     --headless         Render offscreen without creating a desktop window\n\
     --simulation-only Run AI Battle without graphics or frame pacing\n\
     --max-ticks <COUNT>  Freeze AI Battle after COUNT simulation ticks\n\
@@ -112,7 +110,8 @@ Options:\n\
 \n\
 `--unbounded` requires `--headless` and applies to every scenario.\n\
 `--simulation-only` and `--max-ticks` require `--scenario ai-battle`.\n\
-`--headless` or `--simulation-only` with AI Battle requires `--agent-socket`.\n";
+\n\
+The agent control socket always listens at $XDG_RUNTIME_DIR/nano-swarm/control.sock.\n";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeOptions {
@@ -120,7 +119,6 @@ pub struct RuntimeOptions {
     pub unbounded: bool,
     pub simulation_only: bool,
     pub max_ticks: Option<std::num::NonZeroU64>,
-    pub agent_socket: bool,
     pub width: u32,
     pub height: u32,
     pub scenario: Option<Scenario>,
@@ -136,7 +134,6 @@ impl Default for RuntimeOptions {
             unbounded: false,
             simulation_only: false,
             max_ticks: None,
-            agent_socket: false,
             width: DEFAULT_HEADLESS_WIDTH,
             height: DEFAULT_HEADLESS_HEIGHT,
             scenario: None,
@@ -179,8 +176,6 @@ pub enum RuntimeOptionsError {
     OptionRequiresAiBattle { flag: String },
     #[error("{flag} requires --headless")]
     OptionRequiresHeadless { flag: String },
-    #[error("a non-windowed AI Battle requires --agent-socket to read its results")]
-    BattleRequiresAgentSocket,
     #[error("unknown argument: {0}")]
     UnknownArgument(String),
 }
@@ -191,12 +186,8 @@ pub enum RuntimeBuildError {
     InvalidOptions(#[from] RuntimeOptionsError),
     #[error("cannot load tuning: {0}")]
     Tuning(String),
-    #[cfg(unix)]
     #[error(transparent)]
     AgentControl(#[from] AgentControlServerError),
-    #[cfg(not(unix))]
-    #[error("--agent-socket is supported only on Unix platforms")]
-    UnsupportedAgentSocket,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -240,7 +231,6 @@ impl RuntimeOptions {
                 "--headless" => options.headless = true,
                 "--simulation-only" => options.simulation_only = true,
                 "--unbounded" => options.unbounded = true,
-                "--agent-socket" => options.agent_socket = true,
                 flag @ ("--scenario" | "--seed" | "--layout" | "--tuning-file" | "--max-ticks") => {
                     let value = args
                         .next()
@@ -344,12 +334,6 @@ impl RuntimeOptions {
                 flag: "--unbounded".to_string(),
             });
         }
-        if self
-            .scenario
-            .is_some_and(|scenario| headless_battle_without_socket(&self, scenario))
-        {
-            return Err(RuntimeOptionsError::BattleRequiresAgentSocket);
-        }
         for (flag, value) in [("--width", self.width), ("--height", self.height)] {
             if value > MAX_HEADLESS_DIMENSION {
                 return Err(RuntimeOptionsError::DimensionTooLarge {
@@ -371,21 +355,16 @@ impl RuntimeOptions {
     }
 }
 
-/// The scenario saved in the player's configuration can also start AI Battle.
-fn headless_battle_without_socket(options: &RuntimeOptions, scenario: Scenario) -> bool {
-    (options.headless || options.simulation_only)
-        && scenario == Scenario::AiBattle
-        && !options.agent_socket
-}
-
-pub fn build_runtime_app(options: RuntimeOptions) -> Result<App, RuntimeBuildError> {
+/// Builds the runtime app. The game binary always passes `control`; code that
+/// must not bind the user's socket, such as tests, passes `None`.
+pub fn build_runtime_app(
+    options: RuntimeOptions,
+    control: Option<AgentControlConfig>,
+) -> Result<App, RuntimeBuildError> {
     let options = options.validate(false)?;
     let mut selection = ScenarioSelection::from_environment();
     if let Some(scenario) = options.scenario {
         selection.current = scenario;
-    }
-    if headless_battle_without_socket(&options, selection.current) {
-        return Err(RuntimeOptionsError::BattleRequiresAgentSocket.into());
     }
     let presentation = if options.simulation_only {
         Presentation::SimulationOnly
@@ -415,15 +394,8 @@ pub fn build_runtime_app(options: RuntimeOptions) -> Result<App, RuntimeBuildErr
         simulation_only: options.simulation_only,
         max_ticks: options.max_ticks,
     });
-    #[cfg(unix)]
-    if options.agent_socket {
-        app.add_plugins(AgentControlPlugin::bind(
-            AgentControlConfig::from_environment()?,
-        )?);
-    }
-    #[cfg(not(unix))]
-    if options.agent_socket {
-        return Err(RuntimeBuildError::UnsupportedAgentSocket);
+    if let Some(control) = control {
+        app.add_plugins(AgentControlPlugin::bind(control)?);
     }
     Ok(app)
 }
@@ -437,15 +409,9 @@ mod tests {
 
     #[test]
     fn ai_battle_options_are_accepted_for_an_explicit_scenario() {
-        let options = RuntimeOptions::parse([
-            "--headless",
-            "--agent-socket",
-            "--scenario",
-            "ai-battle",
-            "--seed",
-            "42",
-        ])
-        .unwrap();
+        let options =
+            RuntimeOptions::parse(["--headless", "--scenario", "ai-battle", "--seed", "42"])
+                .unwrap();
         assert!(options.headless);
         assert_eq!(options.scenario, Some(Scenario::AiBattle));
         assert_eq!(options.seed, 42);
@@ -456,7 +422,6 @@ mod tests {
     fn ai_battle_options_describe_the_layout() {
         let options = RuntimeOptions::parse([
             "--headless",
-            "--agent-socket",
             "--scenario",
             "ai-battle",
             "--layout",
@@ -483,14 +448,9 @@ mod tests {
     #[test]
     fn unbounded_headless_execution_is_available_to_every_scenario() {
         for scenario in ["standard", "sandbox", "ai-battle"] {
-            let options = RuntimeOptions::parse([
-                "--headless",
-                "--unbounded",
-                "--agent-socket",
-                "--scenario",
-                scenario,
-            ])
-            .unwrap();
+            let options =
+                RuntimeOptions::parse(["--headless", "--unbounded", "--scenario", scenario])
+                    .unwrap();
             assert!(options.unbounded);
         }
         assert_eq!(
@@ -530,37 +490,24 @@ mod tests {
     }
 
     #[test]
-    fn non_windowed_ai_battle_requires_the_agent_socket() {
-        for mode in ["--headless", "--simulation-only"] {
-            assert_eq!(
-                RuntimeOptions::parse([mode, "--scenario", "ai-battle"]),
-                Err(RuntimeOptionsError::BattleRequiresAgentSocket)
-            );
-            assert!(
-                RuntimeOptions::parse([mode, "--agent-socket", "--scenario", "ai-battle"]).is_ok()
-            );
-        }
-        assert!(RuntimeOptions::parse(["--scenario", "ai-battle"]).is_ok());
-        assert!(RuntimeOptions::parse(["--headless", "--scenario", "standard"]).is_ok());
+    fn the_removed_agent_socket_flag_is_rejected() {
+        assert_eq!(
+            RuntimeOptions::parse(["--agent-socket"]),
+            Err(RuntimeOptionsError::UnknownArgument(
+                "--agent-socket".into()
+            ))
+        );
     }
 
     #[test]
-    fn parses_headless_agent_socket_and_resolution() {
-        let options = RuntimeOptions::parse([
-            "--headless",
-            "--agent-socket",
-            "--width",
-            "1600",
-            "--height",
-            "900",
-        ])
-        .unwrap();
+    fn parses_headless_resolution() {
+        let options =
+            RuntimeOptions::parse(["--headless", "--width", "1600", "--height", "900"]).unwrap();
 
         assert_eq!(
             options,
             RuntimeOptions {
                 headless: true,
-                agent_socket: true,
                 width: 1600,
                 height: 900,
                 ..RuntimeOptions::default()
@@ -570,11 +517,14 @@ mod tests {
 
     #[test]
     fn headless_runtime_uses_a_no_window_schedule_runner() {
-        let mut app = build_runtime_app(RuntimeOptions {
-            headless: true,
-            scenario: Some(Scenario::Standard),
-            ..RuntimeOptions::default()
-        })
+        let mut app = build_runtime_app(
+            RuntimeOptions {
+                headless: true,
+                scenario: Some(Scenario::Standard),
+                ..RuntimeOptions::default()
+            },
+            None,
+        )
         .unwrap();
 
         assert!(app.is_plugin_added::<HeadlessRunnerPlugin>());
@@ -599,7 +549,7 @@ mod tests {
     fn runtime_installs_startup_unbounded_pacing_independently_of_scenario() {
         let options =
             RuntimeOptions::parse(["--headless", "--unbounded", "--scenario", "standard"]).unwrap();
-        let app = build_runtime_app(options).unwrap();
+        let app = build_runtime_app(options, None).unwrap();
 
         assert!(app.world().resource::<HeadlessPacing>().unbounded);
     }

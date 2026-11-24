@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
+    agent_control::AgentControlConfig,
     nanobot::{
         ApproachPhase, Cargo, Commitment, CongestionRecovery, DirectMovementComponent,
         ExtractProgress, HaulerLoading, Nanobot, NanobotType, RemainingTravel,
@@ -31,13 +32,16 @@ struct Observations {
 }
 
 fn main() {
-    let mut app = build_runtime_app(RuntimeOptions {
-        headless: true,
-        agent_socket: true,
-        width: 1280,
-        height: 720,
-        ..Default::default()
-    })
+    let control = AgentControlConfig::from_environment().expect("agent control socket");
+    let mut app = build_runtime_app(
+        RuntimeOptions {
+            headless: true,
+            width: 1280,
+            height: 720,
+            ..Default::default()
+        },
+        Some(control),
+    )
     .expect("headless runtime");
     app.init_resource::<Observations>()
         .add_systems(FixedPostUpdate, observe);

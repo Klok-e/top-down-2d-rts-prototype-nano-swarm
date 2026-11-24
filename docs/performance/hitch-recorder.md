@@ -1,6 +1,6 @@
 # Hitch recorder
 
-The recorder runs in the windowed and headless game, including runs launched without the agent socket. Fetch closed episodes with [`perf.hitches`](../agents/agent-control.md#hitch-episodes).
+The recorder runs in the windowed and headless game. Fetch closed episodes with [`perf.hitches`](../agents/agent-control.md#hitch-episodes).
 
 ## Detection and retention
 
@@ -54,7 +54,7 @@ Enable `perf-trace` for a short profiling run when the recorder's phase timings 
 mkdir -p .tmp
 trace_run=$(mktemp -d .tmp/perf-trace.XXXXXX)
 RUST_LOG=info,wgpu=error,naga=warn TRACE_CHROME="$PWD/$trace_run/trace.json" \
-  cargo run --features perf-trace -- --headless --agent-socket --scenario ai-battle
+  cargo run --features perf-trace -- --headless --scenario ai-battle
 ```
 
 While the game is running, fetch a closed episode with `python3 scripts/nano_swarm_control.py perf-hitches`. Use `python3 scripts/nano_swarm_control.py shutdown` to stop cleanly and flush the trace. Traces can grow quickly, and tracing overhead can affect frame times.

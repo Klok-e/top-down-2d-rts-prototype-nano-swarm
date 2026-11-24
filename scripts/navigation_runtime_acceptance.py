@@ -39,7 +39,7 @@ def run_scene(kind, output):
         binary = "examples/local_avoidance" if kind == "bottleneck" else "top-down-2d-rts-prototype-nano-swarm"
         launch = [str(ROOT / "target/debug" / binary)]
         if kind == "normal":
-            launch += ["--headless", "--agent-socket", "--width", "1280", "--height", "720"]
+            launch += ["--headless", "--width", "1280", "--height", "720"]
         (output / "launch.json").write_text(json.dumps({"argv": launch, "runtime": runtime}, indent=2))
         with (output / "process.log").open("w") as log:
             process = subprocess.Popen(launch, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
