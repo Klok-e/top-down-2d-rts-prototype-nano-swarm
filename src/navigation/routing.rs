@@ -4,9 +4,7 @@ use crate::{
     intent::{IntentGrid, IntentKind},
     nanobot::{SwarmId, world_to_cell},
 };
-use bevy::platform::collections::{
-    HashMap, HashMap as FastHashMap, HashSet, HashSet as FastHashSet,
-};
+use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 use std::{
     cmp::Ordering,
@@ -48,7 +46,7 @@ pub enum RouteOutcome {
 }
 /// A region's edges: (neighbouring region, own cell, neighbouring cell).
 type Edges = std::sync::Arc<[(IVec2, IVec2, IVec2)]>;
-type ComponentEdges = FastHashMap<IVec2, Edges>;
+type ComponentEdges = HashMap<IVec2, Edges>;
 
 /// Shared physical connectivity and clearance for all swarms and Nanobot Types.
 /// Chunk regions are materialized only where searches visit the large world.
@@ -66,17 +64,17 @@ pub struct Navigation {
     revision: u64,
     /// Distinct for every bounds, obstacle set and clearing a hierarchy has held.
     clearance: u64,
-    chunks: std::sync::Arc<Mutex<FastHashMap<IVec2, Chunk>>>,
+    chunks: std::sync::Arc<Mutex<HashMap<IVec2, Chunk>>>,
     connections: std::sync::Arc<Mutex<ComponentEdges>>,
     scheduler: Mutex<budget::Scheduler>,
-    chunk_builds: std::sync::Arc<Mutex<FastHashMap<IVec2, budget::ChunkBuild>>>,
+    chunk_builds: std::sync::Arc<Mutex<HashMap<IVec2, budget::ChunkBuild>>>,
     expansions: std::sync::Arc<budget::ExpansionCounters>,
 }
 /// Bucket coverage is capped for both shapes and queries. Huge shapes remain
 /// global candidates; long segments fall back to the bounded obstacle list.
 #[derive(Default)]
 struct ObstacleIndex {
-    buckets: FastHashMap<IVec2, Vec<usize>>,
+    buckets: HashMap<IVec2, Vec<usize>>,
     global: Vec<usize>,
     count: usize,
     /// Per obstacle, the box beyond which it cannot constrain a body, with rounding slack.
@@ -153,14 +151,14 @@ impl ObstacleIndex {
 struct BaseHierarchy {
     navigation: Navigation,
     /// `None` when changed shapes are too large to enumerate their chunks.
-    changed_chunks: Option<FastHashSet<IVec2>>,
+    changed_chunks: Option<HashSet<IVec2>>,
 }
 impl BaseHierarchy {
     /// Chunks whose regions changed shapes may alter, enumerated once per variant.
     fn new(navigation: Navigation, changed: &[Obstacle]) -> Self {
         const MAX_CHANGED_CHUNKS: i64 = 4096;
         let width = CELL_WIDTH * CHUNK as f32;
-        let mut chunks = FastHashSet::default();
+        let mut chunks = HashSet::default();
         for &shape in changed {
             let (center, half) = shape.bounds();
             let margin = Vec2::splat(Navigation::CHUNK_MARGIN);
@@ -200,7 +198,7 @@ impl BaseHierarchy {
 }
 #[derive(Clone)]
 struct Chunk {
-    regions: FastHashMap<IVec2, IVec2>,
+    regions: HashMap<IVec2, IVec2>,
 }
 #[derive(Clone, Copy, PartialEq)]
 struct Visit {
@@ -247,7 +245,7 @@ impl Navigation {
             base: None,
             revision: 1,
             clearance: next_clearance(),
-            chunks: std::sync::Arc::new(Mutex::new(FastHashMap::default())),
+            chunks: std::sync::Arc::new(Mutex::new(HashMap::default())),
             connections: Default::default(),
             scheduler: Mutex::new(budget::Scheduler::default()),
             expansions: Default::default(),
@@ -475,8 +473,8 @@ impl Navigation {
 }
 /// Shapes present in only one of two obstacle lists.
 fn changed_shapes(old: &[Obstacle], new: &[Obstacle]) -> Vec<Obstacle> {
-    let old_bits: FastHashSet<_> = old.iter().map(|shape| shape.bits()).collect();
-    let new_bits: FastHashSet<_> = new.iter().map(|shape| shape.bits()).collect();
+    let old_bits: HashSet<_> = old.iter().map(|shape| shape.bits()).collect();
+    let new_bits: HashSet<_> = new.iter().map(|shape| shape.bits()).collect();
     old.iter()
         .filter(|shape| !new_bits.contains(&shape.bits()))
         .chain(new.iter().filter(|shape| !old_bits.contains(&shape.bits())))

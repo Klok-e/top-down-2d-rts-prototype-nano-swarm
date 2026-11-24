@@ -345,7 +345,6 @@ pub fn move_velocity_system(
             if region.contains(position) {
                 candidates.insert(0, position);
             }
-            let entry = approaches.entries.get(&entity).unwrap();
             // Usable candidates are evaluated lazily: selection reads only the
             // retained point, the first clear one and the first one.
             let usable = |point: &Vec2| free(*point) && !entry.rejected.contains(point);

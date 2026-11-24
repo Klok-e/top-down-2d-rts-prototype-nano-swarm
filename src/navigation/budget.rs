@@ -120,7 +120,7 @@ impl Navigation {
             base: None,
             revision: self.revision,
             clearance: super::next_clearance(),
-            chunks: Arc::new(Mutex::new(FastHashMap::default())),
+            chunks: Arc::new(Mutex::new(HashMap::default())),
             connections: Default::default(),
             scheduler: Mutex::new(Scheduler::default()),
             chunk_builds: Default::default(),
@@ -160,7 +160,7 @@ impl Navigation {
         self.expansions
             .hierarchy_chunks
             .fetch_add(1, AtomicOrdering::Relaxed);
-        let mut regions = FastHashMap::default();
+        let mut regions = HashMap::default();
         for y in 0..CHUNK {
             WorkUnit::new().await;
             for x in 0..CHUNK {
