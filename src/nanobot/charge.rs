@@ -589,8 +589,11 @@ pub fn charger_auto_creation_system(
             }
         };
         let Some((cell, placement_pos)) = lattice
-            .find_nearest_accepting(defender_pos, |position| {
-                access.accepts(&access_layout, &grid, swarm, PlannedKind::Charger, position)
+            // Once a check is Pending every further site is refused, so stop there.
+            .find_nearest(defender_pos, |position| {
+                (!access_layout.is_pending()).then(|| {
+                    access.accepts(&access_layout, &grid, swarm, PlannedKind::Charger, position)
+                })
             })
         else {
             continue;

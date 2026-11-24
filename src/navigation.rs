@@ -39,6 +39,15 @@ pub(crate) fn separated(low: Vec2, high: Vec2, (min, max): (Vec2, Vec2)) -> bool
     low.is_finite() && high.is_finite() && (low.cmpgt(max).any() || high.cmplt(min).any())
 }
 
+/// Whether segment `a`–`b` clears every shape. Shapes whose reach box the
+/// segment's box misses are skipped, as in the obstacle index.
+pub(crate) fn segment_clears_all(shapes: &[Obstacle], a: Vec2, b: Vec2) -> bool {
+    let (low, high) = (a.min(b), a.max(b));
+    shapes
+        .iter()
+        .all(|shape| separated(low, high, shape.reach_box()) || shape.segment_clear(a, b))
+}
+
 /// Physical shapes retain their world geometry rather than occupying intent cells.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Obstacle {
@@ -163,6 +172,61 @@ impl Obstacle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skipping_distant_shapes_keeps_every_segment_answer() {
+        use rand::{RngExt, SeedableRng, rngs::StdRng};
+        let mut rng = StdRng::seed_from_u64(89);
+        let point = |rng: &mut StdRng, spread: f32| {
+            Vec2::new(
+                rng.random_range(-spread..spread),
+                rng.random_range(-spread..spread),
+            )
+        };
+        let mut differing_shapes = 0;
+        for _ in 0..2_000 {
+            let shapes: Vec<_> = (0..6)
+                .map(|_| {
+                    let center = point(&mut rng, 400.0);
+                    if rng.random_bool(0.5) {
+                        Obstacle::Circle {
+                            center,
+                            radius: rng.random_range(1.0..120.0),
+                        }
+                    } else {
+                        Obstacle::Rectangle {
+                            center,
+                            half: Vec2::new(
+                                rng.random_range(1.0..120.0),
+                                rng.random_range(1.0..120.0),
+                            ),
+                        }
+                    }
+                })
+                .collect();
+            for _ in 0..20 {
+                // Endpoints near reach-box edges exercise the skip's margin.
+                let a = point(&mut rng, 600.0);
+                let b = if rng.random_bool(0.5) {
+                    let (min, max) = shapes[0].reach_box();
+                    Vec2::new(
+                        if rng.random_bool(0.5) { min.x } else { max.x },
+                        rng.random_range(min.y..max.y),
+                    ) + point(&mut rng, 2.0)
+                } else {
+                    point(&mut rng, 600.0)
+                };
+                let exact = shapes.iter().all(|shape| shape.segment_clear(a, b));
+                assert_eq!(
+                    segment_clears_all(&shapes, a, b),
+                    exact,
+                    "{a} {b} {shapes:?}"
+                );
+                differing_shapes += usize::from(!exact);
+            }
+        }
+        assert!(differing_shapes > 1_000, "blocked segments must be common");
+    }
 
     fn dense_segment_clear(obstacle: Obstacle, a: Vec2, b: Vec2) -> bool {
         const SAMPLES: u32 = 4096;

@@ -16,6 +16,17 @@ pub struct InteractionRegion {
     cell: Option<IVec2>,
 }
 
+/// Start-independent work candidates of one region; see
+/// [`InteractionRegion::candidate_parts`].
+pub(crate) struct CandidateParts {
+    /// Tile-limited approaches, always kept.
+    fixed: Vec<Vec2>,
+    /// Fine-cell projections, kept unless near an earlier candidate.
+    probes: Vec<Vec2>,
+    /// Perimeter samples, always kept.
+    perimeter: Vec<Vec2>,
+}
+
 /// Exact bit identity of an interaction region for hashed cache keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct InteractionBits {
@@ -107,26 +118,55 @@ impl InteractionRegion {
     /// Include the closest point without requiring a work position to coincide
     /// with a cell center in the thin interaction band.
     pub(crate) fn candidates(self, start: Vec2) -> Vec<Vec2> {
-        let (min, max) = self.candidate_cell_bounds();
-        let mut candidates = Vec::new();
-        candidates.extend(self.in_cell(self.approach(start)));
+        self.candidates_from(&self.approach_parts(), start)
+    }
+
+    /// The parts of [`Self::work_candidates_from`] that do not depend on the
+    /// start, in the order it considers them.
+    pub(crate) fn candidate_parts(self) -> CandidateParts {
+        CandidateParts {
+            perimeter: self.perimeter_candidates(),
+            ..self.approach_parts()
+        }
+    }
+
+    /// [`Self::candidate_parts`] without the perimeter samples.
+    fn approach_parts(self) -> CandidateParts {
+        let mut fixed = Vec::new();
         if let Some(cell) = self.cell {
             let center = crate::ai::get_world_from_zone(cell);
-            candidates.extend(self.in_cell(self.approach(center)));
-            self.add_tile_boundary_candidates(cell, &mut candidates);
+            fixed.extend(self.in_cell(self.approach(center)));
+            self.add_tile_boundary_candidates(cell, &mut fixed);
         }
+        let (min, max) = self.candidate_cell_bounds();
+        let mut probes = Vec::new();
         for y in min.y..=max.y {
             for x in min.x..=max.x {
                 let point = (IVec2::new(x, y).as_vec2() + Vec2::splat(0.5)) * CELL_WIDTH;
                 let distance = self.surface(point).0;
-                if (0.0..=BODY_RADIUS + CELL_WIDTH * 1.5).contains(&distance)
-                    && let Some(candidate) = self.in_cell(self.approach(point))
-                    && candidates
-                        .iter()
-                        .all(|old| old.distance_squared(candidate) > 0.01)
-                {
-                    candidates.push(candidate);
+                if (0.0..=BODY_RADIUS + CELL_WIDTH * 1.5).contains(&distance) {
+                    probes.extend(self.in_cell(self.approach(point)));
                 }
+            }
+        }
+        CandidateParts {
+            fixed,
+            probes,
+            perimeter: Vec::new(),
+        }
+    }
+
+    /// [`Self::candidates`] from parts this region computed earlier.
+    fn candidates_from(self, parts: &CandidateParts, start: Vec2) -> Vec<Vec2> {
+        let mut candidates = Vec::new();
+        candidates.extend(self.in_cell(self.approach(start)));
+        candidates.extend_from_slice(&parts.fixed);
+        for &candidate in &parts.probes {
+            if candidates
+                .iter()
+                .all(|old| old.distance_squared(candidate) > 0.01)
+            {
+                candidates.push(candidate);
             }
         }
         candidates.sort_by(|a, b| {
@@ -150,9 +190,19 @@ impl InteractionRegion {
         (min, max)
     }
 
-    /// Closely spaced perimeter probes for finding gaps between physical working bodies.
-    pub(crate) fn work_candidates(self, start: Vec2) -> Vec<Vec2> {
-        let mut candidates = self.candidates(start);
+    /// Candidates plus closely spaced perimeter probes for finding gaps between
+    /// physical working bodies, from parts this region computed earlier.
+    pub(crate) fn work_candidates_from(self, parts: &CandidateParts, start: Vec2) -> Vec<Vec2> {
+        let mut candidates = self.candidates_from(parts, start);
+        candidates.extend_from_slice(&parts.perimeter);
+        candidates.sort_by(|a, b| {
+            a.distance_squared(start)
+                .total_cmp(&b.distance_squared(start))
+        });
+        candidates
+    }
+
+    fn perimeter_candidates(self) -> Vec<Vec2> {
         // Sample the whole perimeter more finely than a body, including face centers.
         // Fine-grid projections alone can miss the only gap between two working bodies.
         let samples = match self.shape {
@@ -189,16 +239,14 @@ impl InteractionRegion {
                 samples
             }
         };
-        candidates.extend(samples.into_iter().filter_map(|local| {
-            self.in_cell(
-                self.approach(self.center + (self.rotation * local.extend(0.0)).truncate()),
-            )
-        }));
-        candidates.sort_by(|a, b| {
-            a.distance_squared(start)
-                .total_cmp(&b.distance_squared(start))
-        });
-        candidates
+        samples
+            .into_iter()
+            .filter_map(|local| {
+                self.in_cell(
+                    self.approach(self.center + (self.rotation * local.extend(0.0)).truncate()),
+                )
+            })
+            .collect()
     }
 
     fn in_cell(self, point: Vec2) -> Option<Vec2> {
@@ -258,5 +306,137 @@ impl InteractionRegion {
     fn surface(self, position: Vec2) -> (f32, Vec2, Vec2) {
         let local = (self.rotation.inverse() * (position - self.center).extend(0.0)).truncate();
         self.shape.surface(local)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rand::{RngExt, SeedableRng, rngs::StdRng};
+
+    use super::*;
+
+    /// The candidate search before its start-independent parts were split out.
+    fn reference_candidates(region: InteractionRegion, start: Vec2) -> Vec<Vec2> {
+        let this = region;
+        let (min, max) = this.candidate_cell_bounds();
+        let mut candidates = Vec::new();
+        candidates.extend(this.in_cell(this.approach(start)));
+        if let Some(cell) = this.cell {
+            let center = crate::ai::get_world_from_zone(cell);
+            candidates.extend(this.in_cell(this.approach(center)));
+            this.add_tile_boundary_candidates(cell, &mut candidates);
+        }
+        for y in min.y..=max.y {
+            for x in min.x..=max.x {
+                let point = (IVec2::new(x, y).as_vec2() + Vec2::splat(0.5)) * CELL_WIDTH;
+                let distance = this.surface(point).0;
+                if (0.0..=BODY_RADIUS + CELL_WIDTH * 1.5).contains(&distance)
+                    && let Some(candidate) = this.in_cell(this.approach(point))
+                    && candidates
+                        .iter()
+                        .all(|old| old.distance_squared(candidate) > 0.01)
+                {
+                    candidates.push(candidate);
+                }
+            }
+        }
+        candidates.sort_by(|a, b| {
+            a.distance_squared(start)
+                .total_cmp(&b.distance_squared(start))
+        });
+        candidates
+    }
+
+    fn reference_work_candidates(region: InteractionRegion, start: Vec2) -> Vec<Vec2> {
+        let this = region;
+        let mut candidates = reference_candidates(this, start);
+        // Sample the whole perimeter more finely than a body, including face centers.
+        // Fine-grid projections alone can miss the only gap between two working bodies.
+        let samples = match this.shape {
+            Obstacle::Circle { radius, .. } => {
+                let count = ((std::f32::consts::TAU * (radius + BODY_RADIUS) / (BODY_RADIUS / 2.0))
+                    .ceil() as usize)
+                    .max(8);
+                (0..count)
+                    .map(|i| {
+                        Vec2::from_angle(std::f32::consts::TAU * i as f32 / count as f32)
+                            * (radius + BODY_RADIUS)
+                    })
+                    .collect::<Vec<_>>()
+            }
+            Obstacle::Rectangle { half, .. } => {
+                let outer = half + Vec2::splat(BODY_RADIUS + STOP_THRESHOLD);
+                let mut samples = Vec::new();
+                for axis in 0..2 {
+                    let along = if axis == 0 { outer.y } else { outer.x };
+                    let steps = ((2.0 * along / (BODY_RADIUS / 2.0)).ceil() as usize)
+                        .max(2)
+                        .next_multiple_of(2);
+                    for i in 0..=steps {
+                        let offset = -along + 2.0 * along * i as f32 / steps as f32;
+                        for sign in [-1.0, 1.0] {
+                            samples.push(if axis == 0 {
+                                Vec2::new(sign * outer.x, offset)
+                            } else {
+                                Vec2::new(offset, sign * outer.y)
+                            });
+                        }
+                    }
+                }
+                samples
+            }
+        };
+        candidates.extend(samples.into_iter().filter_map(|local| {
+            this.in_cell(
+                this.approach(this.center + (this.rotation * local.extend(0.0)).truncate()),
+            )
+        }));
+        candidates.sort_by(|a, b| {
+            a.distance_squared(start)
+                .total_cmp(&b.distance_squared(start))
+        });
+        candidates
+    }
+
+    #[test]
+    fn cached_parts_give_the_same_work_candidates_from_any_start() {
+        let mut rng = StdRng::seed_from_u64(89);
+        for _ in 0..300 {
+            let center = Vec2::new(
+                rng.random_range(-500.0..500.0),
+                rng.random_range(-500.0..500.0),
+            );
+            let mut transform = Transform::from_translation(center.extend(0.0));
+            let region = if rng.random_bool(0.5) {
+                InteractionRegion::deposit(&transform, rng.random_range(8.0..90.0))
+            } else {
+                transform.scale =
+                    Vec3::new(rng.random_range(0.5..2.5), rng.random_range(0.5..2.5), 1.0);
+                transform.rotation =
+                    Quat::from_rotation_z(rng.random_range(0.0..std::f32::consts::TAU));
+                InteractionRegion::structure(&transform)
+            };
+            let region = if rng.random_bool(0.5) {
+                region.within_cell(super::super::world_to_cell(center))
+            } else {
+                region
+            };
+            let parts = region.candidate_parts();
+            for _ in 0..10 {
+                let start = center
+                    + Vec2::new(
+                        rng.random_range(-300.0..300.0),
+                        rng.random_range(-300.0..300.0),
+                    );
+                assert_eq!(
+                    region.work_candidates_from(&parts, start),
+                    reference_work_candidates(region, start)
+                );
+                assert_eq!(
+                    region.candidates(start),
+                    reference_candidates(region, start)
+                );
+            }
+        }
     }
 }
