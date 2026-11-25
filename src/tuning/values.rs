@@ -86,6 +86,9 @@ tuning_schema! {
         bot_speed: f32 = 5.0 => ("Bot speed", "world/tick", 1.0, 0.5, 0.01, 1_000_000.0);
         corridor_cost_multiplier: f32 = 0.35 => ("Corridor cost multiplier", "", 1.0, 0.05, 0.01, 1.0);
         haul_urgency_cost: f32 = 50.0 => ("Haul cost per urgency level", "world/mineral", 1.0, 5.0, 0.0, 1_000_000.0);
+        haul_growth_step: f32 = 0.25 => ("Haul Quota growth step", "of Haulers", 1.0, 0.05, 0.0, 10.0);
+        haul_growth_threshold: f32 = 0.5 => ("Haul Quota growth threshold", "of added rate", 1.0, 0.05, 0.0, 10.0);
+        haul_growth_retry_ticks: u32 = 3600 => ("Haul Quota growth retry", "s", 1.0 / 60.0, 1.0 / 60.0, 1.0, 1_000_000_000.0);
     }
     combat: CombatTuning {
         rout_radius: f32 = 384.0 => ("Rout strength radius", "world", 1.0, 16.0, 0.0, 1536.0);

@@ -3,9 +3,9 @@
 use crate::{
     ai_battle::AiBattleConfig,
     nanobot::{
-        Cargo, Charge, Charger, GatherQuotas, Health, MatchOutcome, Nanobot, NanobotType,
-        OwnerSwarm, PlannedStructure, ProductionFacility, Structure, Swarm, SwarmEliminationSet,
-        SwarmEliminationState, SwarmId, SwarmMember, world_to_cell,
+        Cargo, Charge, Charger, GatherQuotas, HaulQuotas, Health, MatchOutcome, Nanobot,
+        NanobotType, OwnerSwarm, PlannedStructure, ProductionFacility, Structure, Swarm,
+        SwarmEliminationSet, SwarmEliminationState, SwarmId, SwarmMember, world_to_cell,
     },
     perf::{HitchEpisodeSummary, HitchRecorderPlugin},
     resources::{ResourceDeposit, ResourceKind, Stockpile, buffered_minerals},
@@ -222,6 +222,17 @@ pub struct SwarmSample {
     pub gathering_workers: u32,
     #[serde(default)]
     pub gather_rate: f32,
+    /// Haul Quota inputs and result from the last finished window.
+    #[serde(default)]
+    pub haul_target_flow: f32,
+    #[serde(default)]
+    pub delivered_rate: f32,
+    #[serde(default)]
+    pub haul_rate: f32,
+    #[serde(default)]
+    pub haul_quota: u32,
+    #[serde(default)]
+    pub haul_growing: bool,
     pub elimination_seconds: Option<f64>,
     #[serde(default)]
     pub deposit_extraction: Vec<DepositExtraction>,
@@ -354,7 +365,7 @@ impl BattleRun {
     ) -> Self {
         Self {
             summary: BattleSummary {
-                schema_version: 10,
+                schema_version: 11,
                 scenario: scenario_name.into(),
                 seed: config.seed,
                 timestep_seconds,
@@ -494,6 +505,11 @@ fn sample_json(sample: &BattleSample) -> serde_json::Value {
                 "gather_quota": s.gather_quota,
                 "gathering_workers": s.gathering_workers,
                 "gather_rate": s.gather_rate,
+                "haul_target_flow": s.haul_target_flow,
+                "delivered_rate": s.delivered_rate,
+                "haul_rate": s.haul_rate,
+                "haul_quota": s.haul_quota,
+                "haul_growing": s.haul_growing,
                 "controller_last_explanation": controller.last_explanation,
                 "deposit_extraction": s.deposit_extraction,
             })
@@ -597,6 +613,17 @@ fn snapshot(world: &mut World, run: &mut BattleRun) -> BattleSample {
                 swarm.gather_quota = economy.gather_quota;
                 swarm.gathering_workers = economy.gathering_workers;
                 swarm.gather_rate = economy.gather_rate;
+            }
+        }
+    }
+    if let Some(quotas) = world.get_resource::<HaulQuotas>() {
+        for (id, economy) in quotas.iter() {
+            if let Some(swarm) = swarms.get_mut(&id.0) {
+                swarm.haul_target_flow = economy.target_flow;
+                swarm.delivered_rate = economy.delivered_rate;
+                swarm.haul_rate = economy.haul_rate;
+                swarm.haul_quota = economy.haul_quota;
+                swarm.haul_growing = economy.growing;
             }
         }
     }

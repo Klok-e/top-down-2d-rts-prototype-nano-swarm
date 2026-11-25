@@ -159,7 +159,7 @@ fn battle_stats_serve_one_compact_summary_of_the_whole_hitch_episode() {
             "nanobots": 2,
         })
     );
-    assert_eq!(payload["summary"]["schema_version"], 10);
+    assert_eq!(payload["summary"]["schema_version"], 11);
 }
 
 #[test]
@@ -310,7 +310,7 @@ fn effective_damage_is_cumulative_and_freezes_at_match_end() {
 
     let payload = stats(&mut app);
     let row = swarm_row(payload["samples"].as_array().unwrap().last().unwrap(), 0);
-    assert_eq!(payload["summary"]["schema_version"], 10);
+    assert_eq!(payload["summary"]["schema_version"], 11);
     assert_eq!(row["effective_damage_total"], 22);
     assert_eq!(row["effective_damage_nanobots"], 17);
     assert_eq!(row["effective_damage_structures"], 5);
@@ -777,7 +777,7 @@ fn battle_stats_samples_use_typed_json_with_null_for_empty_cells() {
         row["fixed_tick"],
         swarm_row(&payload["samples"][0], 1)["fixed_tick"]
     );
-    assert_eq!(payload["summary"]["schema_version"], 10);
+    assert_eq!(payload["summary"]["schema_version"], 11);
 }
 
 #[test]

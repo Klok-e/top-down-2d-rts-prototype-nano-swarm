@@ -7,9 +7,10 @@ use crate::navigation::BODY_RADIUS;
 use bevy::prelude::*;
 
 use crate::nanobot::{
-    ActionableProjection, GatherQuotas, NanobotType, OpportunityCategory, OpportunityTarget,
-    RegionalAllocationSet, SwarmId, TerritorySnapshot, defender_population_demand,
-    gather_quota_system, production_facility_pick_target_system,
+    ActionableProjection, GatherQuotas, HaulQuotas, NanobotType, OpportunityCategory,
+    OpportunityTarget, RegionalAllocationSet, SwarmId, TerritorySnapshot,
+    defender_population_demand, gather_quota_system, haul_quota_system,
+    production_facility_pick_target_system,
 };
 
 /// Desired population by swarm and Nanobot Type, derived from discrete useful
@@ -82,7 +83,8 @@ pub fn gather_worker_slots(deposit_radius: f32) -> u32 {
 
 /// Convert actionable work into bounded nanobot slots. Gathering Workers come
 /// from the swarm's Gather Quota, which balances income against spending;
-/// construction and maintenance add one Worker each.
+/// construction and maintenance add one Worker each. Haulers cover pickup
+/// trips or the swarm's Haul Quota, whichever is larger.
 pub fn population_demand_system(
     tuning: Res<crate::tuning::Tuning>,
     projection: Res<ActionableProjection>,
@@ -90,6 +92,7 @@ pub fn population_demand_system(
     mut demand: ResMut<PopulationDemand>,
     access: WorkAccess,
     quotas: Res<GatherQuotas>,
+    haul_quotas: Res<HaulQuotas>,
 ) {
     demand.desired.clear();
     let mut haul_slots = HashMap::<(SwarmId, Entity), u32>::new();
@@ -132,10 +135,18 @@ pub fn population_demand_system(
             }
         }
     }
+    let mut trip_haulers = HashMap::<SwarmId, u32>::new();
     for ((swarm, _), slots) in haul_slots {
-        demand.add(swarm, NanobotType::Hauler, slots);
+        *trip_haulers.entry(swarm).or_default() += slots;
     }
     for swarm in live_swarms {
+        // Haulers cover today's pickups, or the Haul Quota once delivery is
+        // measured, whichever is larger.
+        let trips = trip_haulers.remove(&swarm).unwrap_or_default();
+        let haul_quota = haul_quotas
+            .economy(swarm)
+            .map_or(0, |economy| economy.haul_quota);
+        demand.add(swarm, NanobotType::Hauler, trips.max(haul_quota));
         let gather_quota = quotas
             .economy(swarm)
             .map_or(0, |economy| economy.gather_quota);
@@ -146,6 +157,10 @@ pub fn population_demand_system(
             defender_population_demand(territory.tile_count(swarm), territory.threat_count(swarm)),
         );
     }
+    // Pickups owned by a swarm missing from the territory snapshot.
+    for (swarm, trips) in trip_haulers {
+        demand.add(swarm, NanobotType::Hauler, trips);
+    }
 }
 
 pub struct PopulationDemandPlugin;
@@ -155,9 +170,14 @@ impl Plugin for PopulationDemandPlugin {
         app.init_resource::<crate::tuning::Tuning>()
             .init_resource::<PopulationDemand>()
             .init_resource::<GatherQuotas>()
+            .init_resource::<HaulQuotas>()
             .add_systems(
                 FixedUpdate,
-                (gather_quota_system, population_demand_system)
+                (
+                    gather_quota_system,
+                    haul_quota_system,
+                    population_demand_system,
+                )
                     .chain()
                     .after(RegionalAllocationSet::Invalidate)
                     .before(RegionalAllocationSet::Acquire)

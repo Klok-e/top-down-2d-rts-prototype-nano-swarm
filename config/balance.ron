@@ -22,6 +22,9 @@
         bot_speed: 5.0,
         corridor_cost_multiplier: 0.35,
         haul_urgency_cost: 50.0,
+        haul_growth_step: 0.25,
+        haul_growth_threshold: 0.5,
+        haul_growth_retry_ticks: 3600,
     ),
     combat: (
         rout_radius: 384.0,

@@ -490,7 +490,7 @@ pub fn production_facility_pick_target_system(
             continue;
         }
         facility.input_amount -= tuning.production.cost_per_bot;
-        ledger.remove_for(
+        ledger.consume_for(
             owner_id,
             facility.input_kind,
             tuning.production.cost_per_bot,

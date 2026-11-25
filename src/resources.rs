@@ -155,6 +155,7 @@ pub struct ResourceLedger {
     pub totals: HashMap<ResourceKind, u32>,
     swarm_totals: HashMap<crate::nanobot::SwarmId, HashMap<ResourceKind, u32>>,
     extracted_minerals: HashMap<crate::nanobot::SwarmId, u64>,
+    consumed_minerals: HashMap<crate::nanobot::SwarmId, u64>,
 }
 
 impl ResourceLedger {
@@ -209,6 +210,24 @@ impl ResourceLedger {
 
     pub(crate) fn extracted_minerals_for(&self, swarm: crate::nanobot::SwarmId) -> u64 {
         self.extracted_minerals.get(&swarm).copied().unwrap_or(0)
+    }
+
+    /// Spend resources at a terminal: a production cycle or a Charger pulse.
+    pub(crate) fn consume_for(
+        &mut self,
+        swarm: crate::nanobot::SwarmId,
+        kind: ResourceKind,
+        amount: u32,
+    ) {
+        self.remove_for(swarm, kind, amount);
+        if kind == ResourceKind::Minerals {
+            *self.consumed_minerals.entry(swarm).or_default() += u64::from(amount);
+        }
+    }
+
+    /// Minerals the swarm's terminals have consumed since the run began.
+    pub(crate) fn consumed_minerals_for(&self, swarm: crate::nanobot::SwarmId) -> u64 {
+        self.consumed_minerals.get(&swarm).copied().unwrap_or(0)
     }
 
     /// Legacy player-owned subtraction.
