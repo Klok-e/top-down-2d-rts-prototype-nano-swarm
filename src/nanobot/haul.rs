@@ -367,7 +367,7 @@ fn valid_destination_region(
     chargers: &Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
     swarms: &Query<&SwarmId, With<Swarm>>,
     conditions: &Query<&SupportCondition>,
-    queued_space: u32,
+    tuning: &Tuning,
 ) -> Option<InteractionRegion> {
     if !endpoint_is_operational(destination, conditions) {
         return None;
@@ -389,11 +389,11 @@ fn valid_destination_region(
                 Destination {
                     kind: facility.input_kind,
                     role: DestinationRole::ProductionFacility,
-                    free_space: facility.claimable_space(queued_space),
+                    free_space: facility.claimable_space(tuning),
                     owner: logistics_owner(owner, swarms),
                 },
                 transform,
-                facility.claimable_capacity(queued_space),
+                facility.claimable_capacity(tuning),
             )
         } else if let Ok((_, charger, transform, owner)) = chargers.get(destination) {
             (
@@ -494,7 +494,7 @@ pub fn hauler_reroute_system(
                 &chargers,
                 &swarms,
                 &conditions,
-                crate::nanobot::queued_hopper_space(&tuning),
+                &tuning,
             )
         };
         if reservation_covers_destination(reservation, assignment.sink, cargo.amount)
@@ -566,9 +566,9 @@ pub fn hauler_reroute_system(
             .get(destination)
             .map(|(_, stockpile, ..)| stockpile.free_space())
             .or_else(|_| {
-                facilities.get(destination).map(|(_, facility, ..)| {
-                    facility.claimable_space(crate::nanobot::queued_hopper_space(&tuning))
-                })
+                facilities
+                    .get(destination)
+                    .map(|(_, facility, ..)| facility.claimable_space(&tuning))
             })
             .or_else(|_| {
                 chargers
@@ -683,7 +683,7 @@ pub fn hauler_carry_assign_system(
             &chargers,
             &swarms,
             &conditions,
-            crate::nanobot::queued_hopper_space(&tuning),
+            &tuning,
         ) else {
             continue;
         };
@@ -779,7 +779,7 @@ pub fn hauler_delivery_system(
             &chargers.as_readonly(),
             &swarms,
             &conditions,
-            crate::nanobot::queued_hopper_space(&tuning),
+            &tuning,
         ) else {
             continue;
         };

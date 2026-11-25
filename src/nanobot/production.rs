@@ -120,13 +120,13 @@ pub struct ProductionFacility {
     /// feeds production directly, so the three-leg chain is
     /// real and the hauler cannot be bypassed.
     pub input_amount: u32,
-    /// Maximum material the input hopper can hold. A full hopper
-    /// reports zero free space, so the hauler sink matcher skips
-    /// it until production drains some.
+    /// Maximum material the input hopper can hold. Haulers may still claim
+    /// queued space beyond it (see [`Self::claimable_capacity`]), but unload
+    /// only into its real free space.
     pub input_capacity: u32,
     /// The owner swarm had unmet Population Demand when targets were last
     /// picked, so the next funded cycle starts as soon as the hopper holds its
-    /// cost. Lets haulers claim a queued cycle even while the facility idles.
+    /// cost. Lets haulers claim queued space even while the facility idles.
     pub demand_waiting: bool,
 }
 
@@ -168,13 +168,12 @@ impl ProductionFacility {
     }
 
     /// Hopper capacity haulers may claim. While the facility is producing or
-    /// its swarm still wants nanobots, `queued_space` (see
-    /// [`queued_hopper_space`]) is added: Haulers holding that claim wait at
-    /// the facility and unload as cycles drain the hopper, instead of arriving
-    /// only after it empties.
-    pub fn claimable_capacity(&self, queued_space: u32) -> u32 {
+    /// its swarm still wants nanobots, [`queued_hopper_space`] is added:
+    /// Haulers holding that claim wait at the facility and unload as cycles
+    /// drain the hopper, instead of arriving only after it empties.
+    pub fn claimable_capacity(&self, tuning: &Tuning) -> u32 {
         let queued = if self.current_target.is_some() || self.demand_waiting {
-            queued_space
+            queued_hopper_space(tuning)
         } else {
             0
         };
@@ -183,8 +182,8 @@ impl ProductionFacility {
 
     /// Unfilled part of [`Self::claimable_capacity`]. Unloading still moves
     /// minerals only into [`Self::input_free_space`].
-    pub fn claimable_space(&self, queued_space: u32) -> u32 {
-        self.claimable_capacity(queued_space)
+    pub fn claimable_space(&self, tuning: &Tuning) -> u32 {
+        self.claimable_capacity(tuning)
             .saturating_sub(self.input_amount)
     }
 }
@@ -741,14 +740,15 @@ mod tests {
 
     #[test]
     fn claimable_capacity_queues_space_only_when_a_cycle_will_start() {
+        let tuning = Tuning::default();
+        let queued = queued_hopper_space(&tuning);
         let mut f = ProductionFacility::new();
-        let queued = 7;
-        assert_eq!(f.claimable_capacity(queued), f.input_capacity);
+        assert_eq!(f.claimable_capacity(&tuning), f.input_capacity);
         f.demand_waiting = true;
-        assert_eq!(f.claimable_capacity(queued), f.input_capacity + queued);
+        assert_eq!(f.claimable_capacity(&tuning), f.input_capacity + queued);
         f.demand_waiting = false;
         f.current_target = Some(NanobotType::Worker);
-        assert_eq!(f.claimable_capacity(queued), f.input_capacity + queued);
+        assert_eq!(f.claimable_capacity(&tuning), f.input_capacity + queued);
     }
 
     #[test]

@@ -393,8 +393,7 @@ pub fn project_actionable_opportunities_system(
                     entity,
                     destination: Destination {
                         kind: facility.input_kind,
-                        free_space: facility
-                            .claimable_space(crate::nanobot::queued_hopper_space(&tuning)),
+                        free_space: facility.claimable_space(&tuning),
                         owner: Some(owner),
                         role: DestinationRole::ProductionFacility,
                     },

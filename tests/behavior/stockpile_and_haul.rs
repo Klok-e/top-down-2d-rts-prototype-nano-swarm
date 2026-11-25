@@ -742,7 +742,7 @@ fn hauler_never_picks_source_stockpile_as_sink() {
 }
 
 #[test]
-fn two_hauler_loads_may_wait_at_a_full_producing_facility() {
+fn two_hauler_loads_wait_at_a_full_facility_and_drain_over_several_cycles() {
     let (mut app, facility, first) = full_producing_facility_app_with_waiting_loads(2);
     let second = common::spawn_hauler_at(&mut app, Vec2::new(32.0, 60.0));
     let carry = app
@@ -774,5 +774,59 @@ fn two_hauler_loads_may_wait_at_a_full_producing_facility() {
     assert_eq!(
         waiting, 2,
         "both Haulers carry a full load to the full facility and wait"
+    );
+
+    // Each simulated cycle drains 5 from the hopper. Two 20-mineral loads,
+    // each larger than the 5-mineral hopper, must empty into it over
+    // several cycles without overfilling it or going anywhere else.
+    let start = app
+        .world()
+        .get::<ProductionFacility>(facility)
+        .unwrap()
+        .input_amount;
+    let mut drained = 0;
+    let mut emptied = [false; 2];
+    for tick in 0..2_000 {
+        if tick % 10 == 0 {
+            let mut hopper = app
+                .world_mut()
+                .get_mut::<ProductionFacility>(facility)
+                .unwrap();
+            if hopper.input_amount >= 5 {
+                hopper.input_amount -= 5;
+                drained += 5;
+            }
+        }
+        app.update();
+        let hopper = app.world().get::<ProductionFacility>(facility).unwrap();
+        assert!(hopper.input_amount <= hopper.input_capacity);
+        for (index, hauler) in [first, second].into_iter().enumerate() {
+            let cargo = app.world().get::<Cargo>(hauler).map_or(0, |c| c.amount);
+            if cargo == 0 {
+                emptied[index] = true;
+            } else if !emptied[index] {
+                assert_eq!(
+                    app.world()
+                        .get::<LogisticsReservation>(hauler)
+                        .map(|r| r.destination),
+                    Some(facility),
+                    "a waiting Hauler keeps its facility claim until empty",
+                );
+            }
+        }
+        if emptied == [true, true] {
+            break;
+        }
+    }
+    assert_eq!(emptied, [true, true], "both loads drain into the facility");
+    let end = app
+        .world()
+        .get::<ProductionFacility>(facility)
+        .unwrap()
+        .input_amount;
+    assert_eq!(
+        drained + end - start,
+        2 * carry,
+        "every carried mineral entered the hopper"
     );
 }

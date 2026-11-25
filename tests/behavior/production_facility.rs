@@ -8,6 +8,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         NanobotType, OwnerSwarm, PopulationDemand, ProductionFacility,
         SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, SwarmId, SwarmMember,
+        queued_hopper_space,
     },
     resources::{ResourceKind, ResourceLedger},
 };
@@ -255,7 +256,7 @@ fn starved_facility_with_unmet_demand_offers_a_queued_cycle_to_haulers() {
         .world_mut()
         .spawn((ProductionFacility::new(), OwnerSwarm(swarm)))
         .id();
-    let cost = app.world().resource::<Tuning>().production.cost_per_bot;
+    let tuning = app.world().resource::<Tuning>().clone();
 
     app.update();
 
@@ -265,8 +266,8 @@ fn starved_facility_with_unmet_demand_offers_a_queued_cycle_to_haulers() {
         "an empty hopper cannot fund a cycle"
     );
     assert_eq!(
-        state.claimable_space(cost),
-        state.input_capacity + cost,
+        state.claimable_space(&tuning),
+        state.input_capacity + queued_hopper_space(&tuning),
         "unmet demand lets haulers queue the cycle after the one being funded",
     );
 
@@ -279,7 +280,7 @@ fn starved_facility_with_unmet_demand_offers_a_queued_cycle_to_haulers() {
 
     let state = app.world().get::<ProductionFacility>(facility).unwrap();
     assert_eq!(
-        state.claimable_space(cost),
+        state.claimable_space(&tuning),
         state.input_capacity,
         "covered demand withdraws the queued cycle",
     );

@@ -162,10 +162,7 @@ pub fn reconcile_logistics_tuning(
         .query::<(Entity, &super::ProductionFacility)>()
         .iter(world)
     {
-        free_capacity.insert(
-            entity,
-            facility.claimable_space(super::queued_hopper_space(new)),
-        );
+        free_capacity.insert(entity, facility.claimable_space(new));
     }
     for (entity, charger) in world.query::<(Entity, &super::Charger)>().iter(world) {
         free_capacity.insert(entity, charger.free_space());
