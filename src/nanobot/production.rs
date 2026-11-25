@@ -168,12 +168,13 @@ impl ProductionFacility {
     }
 
     /// Hopper capacity haulers may claim. While the facility is producing or
-    /// its swarm still wants nanobots, one queued cycle of space is added: the
-    /// next cycle start drains that much, so a delivery can wait at the
-    /// facility instead of arriving only after the hopper empties.
-    pub fn claimable_capacity(&self, cost_per_bot: u32) -> u32 {
+    /// its swarm still wants nanobots, `queued_space` (see
+    /// [`queued_hopper_space`]) is added: Haulers holding that claim wait at
+    /// the facility and unload as cycles drain the hopper, instead of arriving
+    /// only after it empties.
+    pub fn claimable_capacity(&self, queued_space: u32) -> u32 {
         let queued = if self.current_target.is_some() || self.demand_waiting {
-            cost_per_bot
+            queued_space
         } else {
             0
         };
@@ -182,8 +183,8 @@ impl ProductionFacility {
 
     /// Unfilled part of [`Self::claimable_capacity`]. Unloading still moves
     /// minerals only into [`Self::input_free_space`].
-    pub fn claimable_space(&self, cost_per_bot: u32) -> u32 {
-        self.claimable_capacity(cost_per_bot)
+    pub fn claimable_space(&self, queued_space: u32) -> u32 {
+        self.claimable_capacity(queued_space)
             .saturating_sub(self.input_amount)
     }
 }
@@ -683,6 +684,17 @@ impl Plugin for ProductionPlugin {
     }
 }
 
+/// Space beyond the hopper Haulers may claim at a busy facility: one
+/// production cycle, or `waiting_hauler_loads` full Hauler loads if larger.
+pub fn queued_hopper_space(tuning: &Tuning) -> u32 {
+    tuning.production.cost_per_bot.max(
+        tuning
+            .production
+            .waiting_hauler_loads
+            .saturating_mul(tuning.logistics.hauler_carry_capacity),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     //! Pure-helper unit tests. End-to-end behaviour lives in the production
@@ -728,15 +740,30 @@ mod tests {
     }
 
     #[test]
-    fn claimable_capacity_queues_one_cycle_only_when_a_cycle_will_start() {
+    fn claimable_capacity_queues_space_only_when_a_cycle_will_start() {
         let mut f = ProductionFacility::new();
-        let cost = 7;
-        assert_eq!(f.claimable_capacity(cost), f.input_capacity);
+        let queued = 7;
+        assert_eq!(f.claimable_capacity(queued), f.input_capacity);
         f.demand_waiting = true;
-        assert_eq!(f.claimable_capacity(cost), f.input_capacity + cost);
+        assert_eq!(f.claimable_capacity(queued), f.input_capacity + queued);
         f.demand_waiting = false;
         f.current_target = Some(NanobotType::Worker);
-        assert_eq!(f.claimable_capacity(cost), f.input_capacity + cost);
+        assert_eq!(f.claimable_capacity(queued), f.input_capacity + queued);
+    }
+
+    #[test]
+    fn queued_space_holds_waiting_hauler_loads_and_at_least_one_cycle() {
+        let mut tuning = Tuning::default();
+        tuning.production.cost_per_bot = 5;
+        tuning.logistics.hauler_carry_capacity = 10;
+        tuning.production.waiting_hauler_loads = 2;
+        assert_eq!(queued_hopper_space(&tuning), 20, "two Haulers may wait");
+        tuning.production.waiting_hauler_loads = 0;
+        assert_eq!(
+            queued_hopper_space(&tuning),
+            5,
+            "one cycle is always queued"
+        );
     }
 
     #[test]

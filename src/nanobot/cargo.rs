@@ -145,7 +145,7 @@ pub fn reconcile_logistics_tuning(
         && old.logistics.hauler_carry_capacity == new.logistics.hauler_carry_capacity
         && old.logistics.stockpile_capacity == new.logistics.stockpile_capacity
         && old.production.input_capacity == new.production.input_capacity
-        && old.production.cost_per_bot == new.production.cost_per_bot
+        && super::queued_hopper_space(old) == super::queued_hopper_space(new)
         && old.charge.charger_capacity == new.charge.charger_capacity
     {
         return;
@@ -164,7 +164,7 @@ pub fn reconcile_logistics_tuning(
     {
         free_capacity.insert(
             entity,
-            facility.claimable_space(new.production.cost_per_bot),
+            facility.claimable_space(super::queued_hopper_space(new)),
         );
     }
     for (entity, charger) in world.query::<(Entity, &super::Charger)>().iter(world) {

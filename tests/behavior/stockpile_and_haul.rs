@@ -589,13 +589,19 @@ fn hauler_reserves_partial_facility_leg_when_hopper_has_less_space_than_capacity
 }
 
 /// A swarm with a stocked sink, a full producing facility, and one idle hauler.
+/// Only one production cycle may queue beyond the hopper.
 fn full_producing_facility_app() -> (App, Entity, Entity) {
+    full_producing_facility_app_with_waiting_loads(0)
+}
+
+fn full_producing_facility_app_with_waiting_loads(loads: u32) -> (App, Entity, Entity) {
     let mut app = build_app();
     {
         let mut tuning = app.world_mut().resource_mut::<Tuning>();
         tuning.logistics.material_work_ticks = 1;
         tuning.production.cost_per_bot = 5;
         tuning.production.input_capacity = 5;
+        tuning.production.waiting_hauler_loads = loads;
     }
     let tuning = app.world().resource::<Tuning>().clone();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
@@ -732,5 +738,41 @@ fn hauler_never_picks_source_stockpile_as_sink() {
     assert_eq!(
         assignment.sink, sink,
         "leg-2 sink is the sink stockpile; a source-role stockpile is never a sink (no reversal)"
+    );
+}
+
+#[test]
+fn two_hauler_loads_may_wait_at_a_full_producing_facility() {
+    let (mut app, facility, first) = full_producing_facility_app_with_waiting_loads(2);
+    let second = common::spawn_hauler_at(&mut app, Vec2::new(32.0, 60.0));
+    let carry = app
+        .world()
+        .resource::<Tuning>()
+        .logistics
+        .hauler_carry_capacity;
+    // Keep the hopper full so neither delivery can unload during the test.
+    let mut waiting = 0;
+    for _ in 0..600 {
+        app.world_mut()
+            .get_mut::<ProductionFacility>(facility)
+            .unwrap()
+            .input_amount = 5;
+        app.update();
+        waiting = [first, second]
+            .into_iter()
+            .filter(|hauler| {
+                app.world()
+                    .get::<LogisticsReservation>(*hauler)
+                    .is_some_and(|r| r.destination == facility && r.source_remaining == 0)
+                    && app.world().get::<Cargo>(*hauler).map_or(0, |c| c.amount) == carry
+            })
+            .count();
+        if waiting == 2 {
+            break;
+        }
+    }
+    assert_eq!(
+        waiting, 2,
+        "both Haulers carry a full load to the full facility and wait"
     );
 }
