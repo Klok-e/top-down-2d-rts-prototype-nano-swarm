@@ -360,7 +360,7 @@ fn displaced_partial_worker_waits_for_source_route_then_delivers_cargo_when_sour
             radius: 32.0,
         },
     );
-    let destination = common::spawn_stockpile(&mut app, Vec2::new(600.0, 100.0), 0, 10);
+    let destination = common::spawn_stockpile(&mut app, Vec2::new(500.0, 100.0), 0, 10);
     app.world_mut()
         .entity_mut(worker)
         .insert(GatherAssignment::new(IVec2::ZERO, source));
@@ -436,5 +436,46 @@ fn displaced_partial_worker_waits_for_source_route_then_delivers_cargo_when_sour
             .resource::<ResourceLedger>()
             .total_for(SwarmId::PLAYER, ResourceKind::Minerals),
         1
+    );
+}
+
+#[test]
+fn gatherer_does_not_carry_its_load_to_a_far_source() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::GatherAssignment;
+
+    let mut app = common::sim_app_with_gather();
+    common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(100.0, 100.0),
+            amount: 40,
+            capacity: 40,
+            radius: 32.0,
+        },
+    );
+    // The deposit's own Source is full; another Source far away has room.
+    let near = common::spawn_stockpile(&mut app, Vec2::new(300.0, 100.0), 10, 10);
+    let far = common::spawn_stockpile(&mut app, Vec2::new(1_200.0, 100.0), 0, 100);
+    let worker = common::spawn_worker_at(&mut app, Vec2::new(168.0, 100.0));
+    app.world_mut()
+        .entity_mut(worker)
+        .insert(GatherAssignment::new(IVec2::ZERO, deposit));
+
+    for _ in 0..600 {
+        app.update();
+    }
+
+    assert_eq!(app.world().get::<Stockpile>(far).unwrap().amount, 0);
+    assert_eq!(app.world().get::<Stockpile>(near).unwrap().amount, 10);
+    let position = app
+        .world()
+        .get::<Transform>(worker)
+        .unwrap()
+        .translation
+        .truncate();
+    assert!(
+        position.distance(Vec2::new(100.0, 100.0)) < 500.0,
+        "the gatherer stays at its deposit: {position:?}"
     );
 }

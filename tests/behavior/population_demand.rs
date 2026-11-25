@@ -197,7 +197,7 @@ fn gather_quota_app() -> (App, Entity, Entity) {
         OwnerSwarm(swarm),
         Transform::from_xyz(2_000.0, 2_000.0, 0.0),
     ));
-    let source = common::spawn_stockpile(&mut app, Vec2::new(0.0, 600.0), 0, 1_000);
+    let source = common::spawn_stockpile(&mut app, Vec2::new(0.0, 300.0), 0, 1_000);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
     (app, swarm, source)
 }
