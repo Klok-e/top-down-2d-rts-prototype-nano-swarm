@@ -92,12 +92,17 @@ impl PickupBuffer {
             .min(source_amount.saturating_sub(source_claims))
             .min(unclaimed_space);
         let base_urgency = match self.role {
+            // Startable only when this load is what lets the next cycle
+            // start. Loads queued behind an already funded cycle cannot raise
+            // output sooner, so they rank as ordinary refill and a starving
+            // facility elsewhere outranks them.
             DestinationRole::ProductionFacility
-                if self
-                    .buffered
-                    .saturating_add(incoming)
-                    .saturating_add(amount)
-                    >= production_cost =>
+                if self.buffered.saturating_add(incoming) < production_cost
+                    && self
+                        .buffered
+                        .saturating_add(incoming)
+                        .saturating_add(amount)
+                        >= production_cost =>
             {
                 3
             }
@@ -126,4 +131,41 @@ impl PickupBuffer {
 
 fn unclaimed_space(free_space: u32, incoming: u32) -> u32 {
     free_space.saturating_sub(incoming)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn facility(buffered: u32) -> PickupBuffer {
+        PickupBuffer {
+            role: DestinationRole::ProductionFacility,
+            buffered,
+            capacity: 25,
+        }
+    }
+
+    fn urgency(buffer: &PickupBuffer, incoming: u32) -> u8 {
+        buffer.quote(100, 0, incoming, None, 10, 5).base_urgency
+    }
+
+    #[test]
+    fn only_the_load_that_funds_the_next_cycle_is_startable() {
+        assert_eq!(
+            urgency(&facility(0), 0),
+            3,
+            "an empty hopper starts a cycle"
+        );
+        assert_eq!(urgency(&facility(3), 0), 3, "topping up to one cycle");
+        assert_eq!(
+            urgency(&facility(5), 0),
+            4,
+            "a funded hopper only queues the load"
+        );
+        assert_eq!(
+            urgency(&facility(0), 10),
+            4,
+            "a load already on its way funds the cycle"
+        );
+    }
 }

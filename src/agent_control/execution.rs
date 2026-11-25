@@ -311,6 +311,8 @@ fn collect_structures(world: &mut World) -> serde_json::Value {
                     "progress": facility.progress,
                     "finished_at": facility.finished_at,
                     "current_target": facility.current_target.map(nanobot_kind),
+                    "demand_waiting": facility.demand_waiting,
+                    "queued_space": facility.queued_space,
                 })),
                 "build_site": build_site.map(|site| serde_json::json!({
                     "cell": cell(site.cell),

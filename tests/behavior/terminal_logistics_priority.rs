@@ -3,11 +3,12 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::IntentGrid,
     nanobot::{
         AllocationClock, Charge, ChargerAssignment, DirectMovementComponent, HaulerAssignment,
-        InteractionRegion, LogisticsReservation, OwnerSwarm, ProductionFacility,
+        InteractionRegion, LogisticsReservation, NanobotType, OwnerSwarm, ProductionFacility,
         RegionalAllocationWake, RegionalLease, TerminalDemandAges,
     },
     navigation::{ConnectivityStatus, Navigation, RouteGoal},
     navigation_runtime::NavigationBudget,
+    tuning::Tuning,
 };
 
 #[path = "../common/mod.rs"]
@@ -443,4 +444,51 @@ fn wait_for_assignment(app: &mut App, hauler: Entity) {
         }
     }
     panic!("terminal request remained unresolved after 120 navigation ticks");
+}
+
+#[test]
+fn starving_facility_beats_a_nearer_facility_whose_next_cycle_is_funded() {
+    let mut app = common::sim_app_with_gather_haul();
+    {
+        let mut tuning = app.world_mut().resource_mut::<Tuning>();
+        tuning.production.cost_per_bot = 5;
+        tuning.production.input_capacity = 5;
+        tuning.logistics.hauler_carry_capacity = 10;
+    }
+    let tuning = app.world().resource::<Tuning>().clone();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::ZERO, 100, 100);
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
+    // Near facility: a full hopper funds its next cycle; a load would queue.
+    let mut funded = ProductionFacility::with_tuning(&tuning);
+    funded.input_amount = funded.input_capacity;
+    funded.current_target = Some(NanobotType::Worker);
+    funded.queued_space = 10;
+    let funded = app
+        .world_mut()
+        .spawn((
+            funded,
+            OwnerSwarm(swarm),
+            Transform::from_xyz(100.0, 0.0, 0.0),
+        ))
+        .id();
+    // Farther facility: empty while its swarm wants nanobots.
+    let mut starving = ProductionFacility::with_tuning(&tuning);
+    starving.demand_waiting = true;
+    starving.queued_space = 10;
+    let starving = app
+        .world_mut()
+        .spawn((
+            starving,
+            OwnerSwarm(swarm),
+            Transform::from_xyz(-400.0, 0.0, 0.0),
+        ))
+        .id();
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(0.0, 80.0));
+
+    wait_for_assignment(&mut app, hauler);
+
+    let sink_of = app.world().get::<HaulerAssignment>(hauler).unwrap().sink;
+    assert_ne!(sink_of, funded, "a queued load cannot raise output sooner");
+    assert_eq!(sink_of, starving);
 }
