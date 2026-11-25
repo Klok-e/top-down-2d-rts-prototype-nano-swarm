@@ -66,6 +66,7 @@ The economy fields are recorded separately for each swarm. Window totals cover t
 | `delivered_rate` | Minerals per second the swarm's Production Facilities and Chargers consumed over that window. |
 | `haul_rate` | Minerals consumed per busy-Hauler-second over that window. |
 | `haul_quota` | Haulers the swarm wants for `haul_target_flow` at `haul_rate`, limited by the growth guard; 0 before the first window. |
+| `haul_growing` | Whether the growth guard lets Hauler demand exceed the current Hauler count: false for `haul_growth_retry_ticks` after added Haulers failed to raise delivery. |
 
 The `battle.stats` summary uses schema version 11. `tuning` contains the full native-unit configuration at battle start. `tuning_edits` records accepted changes with `revision`, `key`, `old_value`, `value`, and `fixed_tick`. Edit values use the editor's display units; ticks are relative to the current battle's start. Earlier-session edits are excluded, and a fresh battle snapshots the current configuration. Unchanged assignments and rejected edits add no revision.
 

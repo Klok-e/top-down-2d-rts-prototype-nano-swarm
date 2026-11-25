@@ -231,6 +231,8 @@ pub struct SwarmSample {
     pub haul_rate: f32,
     #[serde(default)]
     pub haul_quota: u32,
+    #[serde(default)]
+    pub haul_growing: bool,
     pub elimination_seconds: Option<f64>,
     #[serde(default)]
     pub deposit_extraction: Vec<DepositExtraction>,
@@ -507,6 +509,7 @@ fn sample_json(sample: &BattleSample) -> serde_json::Value {
                 "delivered_rate": s.delivered_rate,
                 "haul_rate": s.haul_rate,
                 "haul_quota": s.haul_quota,
+                "haul_growing": s.haul_growing,
                 "controller_last_explanation": controller.last_explanation,
                 "deposit_extraction": s.deposit_extraction,
             })
@@ -620,6 +623,7 @@ fn snapshot(world: &mut World, run: &mut BattleRun) -> BattleSample {
                 swarm.delivered_rate = economy.delivered_rate;
                 swarm.haul_rate = economy.haul_rate;
                 swarm.haul_quota = economy.haul_quota;
+                swarm.haul_growing = economy.growing;
             }
         }
     }

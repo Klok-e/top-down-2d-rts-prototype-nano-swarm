@@ -135,20 +135,18 @@ pub fn population_demand_system(
             }
         }
     }
-    // Haulers cover today's pickups, or the Haul Quota once delivery is
-    // measured, whichever is larger.
     let mut trip_haulers = HashMap::<SwarmId, u32>::new();
     for ((swarm, _), slots) in haul_slots {
         *trip_haulers.entry(swarm).or_default() += slots;
     }
-    for swarm in &live_swarms {
-        let trips = trip_haulers.get(swarm).copied().unwrap_or_default();
-        let quota = haul_quotas
-            .economy(*swarm)
-            .map_or(0, |economy| economy.haul_quota);
-        demand.add(*swarm, NanobotType::Hauler, trips.max(quota));
-    }
     for swarm in live_swarms {
+        // Haulers cover today's pickups, or the Haul Quota once delivery is
+        // measured, whichever is larger.
+        let trips = trip_haulers.remove(&swarm).unwrap_or_default();
+        let haul_quota = haul_quotas
+            .economy(swarm)
+            .map_or(0, |economy| economy.haul_quota);
+        demand.add(swarm, NanobotType::Hauler, trips.max(haul_quota));
         let gather_quota = quotas
             .economy(swarm)
             .map_or(0, |economy| economy.gather_quota);
@@ -158,6 +156,10 @@ pub fn population_demand_system(
             NanobotType::Defender,
             defender_population_demand(territory.tile_count(swarm), territory.threat_count(swarm)),
         );
+    }
+    // Pickups owned by a swarm missing from the territory snapshot.
+    for (swarm, trips) in trip_haulers {
+        demand.add(swarm, NanobotType::Hauler, trips);
     }
 }
 

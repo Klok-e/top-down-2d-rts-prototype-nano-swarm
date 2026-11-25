@@ -57,14 +57,38 @@ impl HaulQuotas {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct HaulWindow {
     started: u64,
     consumed_at_start: u64,
     extracted_at_start: u64,
+    hauler_ticks: u64,
     busy_hauler_ticks: u64,
     guard: GrowthGuard,
     economy: Option<HaulEconomy>,
+}
+
+impl HaulWindow {
+    fn new(tick: u64, consumed: u64, extracted: u64) -> Self {
+        Self {
+            started: tick,
+            consumed_at_start: consumed,
+            extracted_at_start: extracted,
+            hauler_ticks: 0,
+            busy_hauler_ticks: 0,
+            guard: GrowthGuard::default(),
+            economy: None,
+        }
+    }
+
+    /// Start the next window where this one ended.
+    fn reopen(&mut self, tick: u64, consumed: u64, extracted: u64) {
+        self.started = tick;
+        self.consumed_at_start = consumed;
+        self.extracted_at_start = extracted;
+        self.hauler_ticks = 0;
+        self.busy_hauler_ticks = 0;
+    }
 }
 
 /// Minerals per second there are to deliver: income plus the stock above the
@@ -77,73 +101,74 @@ pub fn target_flow(
     reserve_seconds: f32,
     spending_capacity: f32,
 ) -> f32 {
+    // `reserve_seconds` may be tuned to 0; the Gather Quota spreads its gap
+    // over at least a second too.
     let backlog = (stock as f32 - reserve_target as f32) / reserve_seconds.max(1.0);
-    (income + backlog).clamp(0.0, spending_capacity.max(0.0))
+    (income + backlog).clamp(0.0, spending_capacity)
 }
 
 /// Haulers needed to deliver `target_flow` at `haul_rate` per Hauler; none
 /// until a rate is measured.
 pub fn throughput_quota(target_flow: f32, haul_rate: f32) -> u32 {
     if haul_rate > 0.0 && target_flow > 0.0 {
-        (target_flow / haul_rate).ceil().min(u32::MAX as f32) as u32
+        (target_flow / haul_rate).ceil() as u32
     } else {
         0
     }
 }
 
+/// One finished window as the growth guard judges it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WindowSample {
+    /// Haulers averaged over the window, so Haulers that arrived late count
+    /// only for the time they could deliver.
+    pub mean_haulers: f32,
+    pub delivered_rate: f32,
+    pub haul_rate: f32,
+}
+
 /// Lets Hauler demand exceed the current Hauler count only while the last
 /// added Haulers raised delivery, so a bottleneck elsewhere cannot make the
 /// quota run away.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct GrowthGuard {
-    growing: bool,
-    /// Haulers and delivered minerals per second at the previous window's end.
-    baseline: Option<(u32, f32)>,
-    stopped_at: u64,
-}
-
-impl Default for GrowthGuard {
-    fn default() -> Self {
-        Self {
-            growing: true,
-            baseline: None,
-            stopped_at: 0,
-        }
-    }
+    baseline: Option<WindowSample>,
+    /// When added Haulers last failed to raise delivery; growing while `None`.
+    stopped_at: Option<u64>,
 }
 
 impl GrowthGuard {
     pub fn growing(&self) -> bool {
-        self.growing
+        self.stopped_at.is_none()
     }
 
     /// Judge the window that just ended and return the most Haulers demand may
-    /// ask for next.
+    /// ask for next, given `haulers` now.
     pub fn update(
         &mut self,
         tick: u64,
+        sample: WindowSample,
         haulers: u32,
-        delivered_rate: f32,
-        haul_rate: f32,
         tuning: &LogisticsTuning,
     ) -> u32 {
-        if let Some((before, delivered_before)) = self.baseline
-            && haulers > before
+        // Half a Hauler more on average is enough evidence to judge; less
+        // keeps the current verdict.
+        if let Some(before) = self.baseline
+            && sample.mean_haulers >= before.mean_haulers + 0.5
         {
-            let added = haul_rate * (haulers - before) as f32;
-            let helped = delivered_rate - delivered_before >= tuning.haul_growth_threshold * added;
-            if !helped {
-                self.stopped_at = tick;
-            }
-            self.growing = helped;
+            // Added Haulers should deliver at the rate Haulers delivered
+            // before they came, not the rate they have already diluted.
+            let expected = before.haul_rate * (sample.mean_haulers - before.mean_haulers);
+            let gained = sample.delivered_rate - before.delivered_rate;
+            self.stopped_at = (gained < tuning.haul_growth_threshold * expected).then_some(tick);
         }
-        if !self.growing
-            && tick.saturating_sub(self.stopped_at) >= u64::from(tuning.haul_growth_retry_ticks)
-        {
-            self.growing = true;
+        if self.stopped_at.is_some_and(|stopped| {
+            tick.saturating_sub(stopped) >= u64::from(tuning.haul_growth_retry_ticks)
+        }) {
+            self.stopped_at = None;
         }
-        self.baseline = Some((haulers, delivered_rate));
-        if self.growing {
+        self.baseline = Some(sample);
+        if self.growing() {
             let step = ((haulers as f32 * tuning.haul_growth_step).floor() as u32).max(1);
             haulers.saturating_add(step)
         } else {
@@ -200,12 +225,17 @@ pub fn haul_quota_system(
             .map_or(0, |ledger| ledger.extracted_minerals_for(swarm))
     };
     for swarm in live_swarms {
-        let window = quotas.swarms.entry(swarm).or_insert_with(|| HaulWindow {
-            started: tick,
-            consumed_at_start: consumed(swarm),
-            extracted_at_start: extracted(swarm),
-            ..default()
-        });
+        let Some(window) = quotas.swarms.get_mut(&swarm) else {
+            // Samples cover the span after them, so a new window counts from
+            // its next sample.
+            quotas.swarms.insert(
+                swarm,
+                HaulWindow::new(tick, consumed(swarm), extracted(swarm)),
+            );
+            continue;
+        };
+        let haulers = haulers.get(&swarm).copied().unwrap_or_default();
+        window.hauler_ticks += u64::from(haulers) * SAMPLE_TICKS;
         window.busy_hauler_ticks +=
             u64::from(busy.get(&swarm).copied().unwrap_or_default()) * SAMPLE_TICKS;
         let elapsed = tick - window.started;
@@ -215,12 +245,15 @@ pub fn haul_quota_system(
         let (consumed_now, extracted_now) = (consumed(swarm), extracted(swarm));
         let seconds = elapsed as f32 / TICKS_PER_SECOND as f32;
         let delivered = consumed_now.saturating_sub(window.consumed_at_start);
-        let delivered_rate = delivered as f32 / seconds;
         let income = extracted_now.saturating_sub(window.extracted_at_start) as f32 / seconds;
-        let haul_rate = if window.busy_hauler_ticks > 0 {
-            delivered as f32 * TICKS_PER_SECOND as f32 / window.busy_hauler_ticks as f32
-        } else {
-            0.0
+        let sample = WindowSample {
+            mean_haulers: window.hauler_ticks as f32 / elapsed as f32,
+            delivered_rate: delivered as f32 / seconds,
+            haul_rate: if window.busy_hauler_ticks > 0 {
+                delivered as f32 * TICKS_PER_SECOND as f32 / window.busy_hauler_ticks as f32
+            } else {
+                0.0
+            },
         };
         let economy = gather.economy(swarm).unwrap_or_default();
         let target_flow = target_flow(
@@ -230,22 +263,18 @@ pub fn haul_quota_system(
             tuning.production.reserve_seconds,
             economy.spending_capacity,
         );
-        let haulers = haulers.get(&swarm).copied().unwrap_or_default();
         let cap = window
             .guard
-            .update(tick, haulers, delivered_rate, haul_rate, &tuning.logistics);
+            .update(tick, sample, haulers, &tuning.logistics);
         window.economy = Some(HaulEconomy {
             target_flow,
-            delivered_rate,
-            haul_rate,
+            delivered_rate: sample.delivered_rate,
+            haul_rate: sample.haul_rate,
             haulers,
             growing: window.guard.growing(),
-            haul_quota: throughput_quota(target_flow, haul_rate).min(cap),
+            haul_quota: throughput_quota(target_flow, sample.haul_rate).min(cap),
         });
-        window.started = tick;
-        window.consumed_at_start = consumed_now;
-        window.extracted_at_start = extracted_now;
-        window.busy_hauler_ticks = 0;
+        window.reopen(tick, consumed_now, extracted_now);
     }
 }
 
@@ -260,6 +289,32 @@ mod tests {
             haul_growth_retry_ticks: 3600,
             ..default()
         }
+    }
+
+    fn sample(mean_haulers: f32, delivered_rate: f32, haul_rate: f32) -> WindowSample {
+        WindowSample {
+            mean_haulers,
+            delivered_rate,
+            haul_rate,
+        }
+    }
+
+    #[test]
+    fn a_new_session_forgets_the_previous_quota() {
+        let mut window = HaulWindow::new(0, 500, 900);
+        window.economy = Some(HaulEconomy {
+            haul_quota: 30,
+            ..default()
+        });
+        let mut world = World::new();
+        world.insert_resource(HaulQuotas {
+            tick: 9_000,
+            swarms: BTreeMap::from([(SwarmId::PLAYER, window)]),
+        });
+        crate::nanobot::reset_session(&mut world);
+        let quotas = world.resource::<HaulQuotas>();
+        assert_eq!(quotas.economy(SwarmId::PLAYER), None);
+        assert_eq!(quotas.tick, 0);
     }
 
     #[test]
@@ -285,37 +340,62 @@ mod tests {
     fn growth_steps_by_a_quarter_of_the_haulers() {
         let tuning = logistics();
         let mut guard = GrowthGuard::default();
-        assert_eq!(guard.update(1200, 2, 1.0, 0.2, &tuning), 3, "at least one");
         assert_eq!(
-            guard.update(2400, 2, 1.0, 0.2, &tuning),
+            guard.update(1200, sample(2.0, 1.0, 0.5), 2, &tuning),
+            3,
+            "at least one"
+        );
+        assert_eq!(
+            guard.update(2400, sample(2.0, 1.0, 0.5), 2, &tuning),
             3,
             "no evidence yet"
         );
-        assert_eq!(guard.update(3600, 20, 5.0, 0.2, &tuning), 25);
+        assert_eq!(guard.update(3600, sample(19.0, 9.0, 0.5), 20, &tuning), 25);
     }
 
     #[test]
     fn growth_stops_when_added_haulers_do_not_raise_delivery_and_retries_later() {
         let tuning = logistics();
         let mut guard = GrowthGuard::default();
-        guard.update(1200, 20, 4.0, 0.2, &tuning);
-        // Four more Haulers at 0.2/s should add 0.8/s; 0.3/s is under half.
-        assert_eq!(guard.update(2400, 24, 4.3, 0.2, &tuning), 24);
+        guard.update(1200, sample(20.0, 4.0, 0.2), 20, &tuning);
+        // Four more Haulers at the earlier 0.2/s should add 0.8/s; 0.3/s is
+        // under half.
+        assert_eq!(guard.update(2400, sample(24.0, 4.3, 0.18), 24, &tuning), 24);
         assert!(!guard.growing());
-        assert_eq!(guard.update(3600, 24, 4.3, 0.2, &tuning), 24, "holding");
         assert_eq!(
-            guard.update(2400 + 3600, 24, 4.3, 0.2, &tuning),
+            guard.update(3600, sample(24.0, 4.3, 0.18), 24, &tuning),
+            24,
+            "holding"
+        );
+        assert_eq!(
+            guard.update(2400 + 3600, sample(24.0, 4.3, 0.18), 24, &tuning),
             30,
             "retried after the delay"
         );
     }
 
     #[test]
-    fn growth_continues_while_added_haulers_raise_delivery() {
+    fn late_haulers_count_only_for_the_time_they_were_present() {
         let tuning = logistics();
         let mut guard = GrowthGuard::default();
-        guard.update(1200, 20, 4.0, 0.2, &tuning);
-        assert_eq!(guard.update(2400, 24, 4.5, 0.2, &tuning), 30);
+        guard.update(1200, sample(20.0, 4.0, 0.2), 20, &tuning);
+        // Four Haulers arrived halfway through: two more on average, which
+        // should add 0.4/s; 0.25/s is enough.
+        assert_eq!(
+            guard.update(2400, sample(22.0, 4.25, 0.19), 24, &tuning),
+            30
+        );
+        assert!(guard.growing());
+    }
+
+    #[test]
+    fn growth_resumes_once_added_haulers_raise_delivery_again() {
+        let tuning = logistics();
+        let mut guard = GrowthGuard::default();
+        guard.update(1200, sample(20.0, 4.0, 0.2), 20, &tuning);
+        guard.update(2400, sample(24.0, 4.0, 0.17), 24, &tuning);
+        assert!(!guard.growing());
+        assert_eq!(guard.update(3600, sample(28.0, 5.0, 0.18), 28, &tuning), 35);
         assert!(guard.growing());
     }
 }

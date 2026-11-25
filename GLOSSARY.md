@@ -220,6 +220,10 @@ _Avoid_: Mineral reserve, bank, buffer target
 The number of Workers a swarm assigns to gathering so its income covers its Spending Capacity and closes the gap to its Reserve Target. Every Gather-painted Resource Deposit keeps at least one gatherer; no deposit takes more gatherers than fit around it, and beyond that one per deposit a swarm sends no more gatherers than full loads its Source Stockpiles can still receive. Workers beyond the quota take other work or idle.
 _Avoid_: Gather demand, worker cap
 
+**Haul Quota**:
+The number of Haulers a swarm wants so they can deliver the minerals it has to its terminals: its income plus stock above its Reserve Target, at most its Spending Capacity, divided by what one busy Hauler has been delivering. It grows past the current Hauler count only in small steps, and only while the last added Haulers raised delivery. Pickup trips still demand Haulers when they need more than the quota.
+_Avoid_: Hauler cap, haul demand
+
 **Production Pressure**:
 Consecutive unmet Population Demand of any type while every operational Production Facility remains busy producing, or while no Production Facility is operational; waiting for exit space does not qualify as busy production. Resolved demand or idle operational capacity clears it, while brief demand spikes and a facility's internal cycle progress do not establish it.
 _Avoid_: Build-zone size, instantaneous deficit
