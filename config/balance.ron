@@ -5,7 +5,6 @@
         input_capacity: 5,
         pressure_ticks: 60,
         reserve_seconds: 10.0,
-        waiting_hauler_loads: 2,
         gather_rate_fallback: 0.3,
     ),
     construction: (

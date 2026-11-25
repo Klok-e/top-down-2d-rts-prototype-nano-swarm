@@ -8,7 +8,6 @@ use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
         NanobotType, OwnerSwarm, PopulationDemand, ProductionFacility,
         SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure, StructureKind, SwarmId, SwarmMember,
-        queued_hopper_space,
     },
     resources::{ResourceKind, ResourceLedger},
 };
@@ -267,7 +266,7 @@ fn starved_facility_with_unmet_demand_offers_a_queued_cycle_to_haulers() {
     );
     assert_eq!(
         state.claimable_space(&tuning),
-        state.input_capacity + queued_hopper_space(&tuning),
+        state.input_capacity + tuning.production.cost_per_bot,
         "unmet demand lets haulers queue the cycle after the one being funded",
     );
 
@@ -283,5 +282,61 @@ fn starved_facility_with_unmet_demand_offers_a_queued_cycle_to_haulers() {
         state.claimable_space(&tuning),
         state.input_capacity,
         "covered demand withdraws the queued cycle",
+    );
+}
+
+#[test]
+fn delivery_window_follows_the_nearest_stocked_sink_but_keeps_held_claims() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{LogisticsReservation, delivery_window};
+    use top_down_2d_rts_prototype_nano_swarm::resources::Stockpile;
+
+    let mut app = common::sim_app_with_production();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let facility = app
+        .world_mut()
+        .spawn((
+            ProductionFacility::new(),
+            OwnerSwarm(swarm),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ))
+        .id();
+    let near = common::spawn_sink_stockpile(&mut app, Vec2::new(600.0, 0.0), 30, 60);
+    let far = common::spawn_sink_stockpile(&mut app, Vec2::new(-3_000.0, 0.0), 30, 60);
+    for sink in [near, far] {
+        app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
+    }
+    let tuning = app.world().resource::<Tuning>().clone();
+    let window = |app: &App| {
+        app.world()
+            .get::<ProductionFacility>(facility)
+            .unwrap()
+            .queued_space
+    };
+
+    app.update();
+    assert_eq!(window(&app), delivery_window(&tuning, 600.0));
+
+    // The near Sink runs dry: deliveries now come from the far one.
+    app.world_mut().get_mut::<Stockpile>(near).unwrap().amount = 0;
+    app.update();
+    let far_window = delivery_window(&tuning, 3_000.0);
+    assert!(far_window > delivery_window(&tuning, 600.0));
+    assert_eq!(window(&app), far_window);
+
+    // Haulers hold claims for the far window when the near Sink restocks.
+    let input_capacity = app
+        .world()
+        .get::<ProductionFacility>(facility)
+        .unwrap()
+        .input_capacity;
+    let mut claim = LogisticsReservation::new(far, facility, ResourceKind::Minerals, 0);
+    claim.destination_remaining = input_capacity + far_window;
+    app.world_mut().spawn(claim);
+    app.world_mut().get_mut::<Stockpile>(near).unwrap().amount = 30;
+    app.update();
+    assert_eq!(
+        window(&app),
+        far_window,
+        "the window never shrinks below claims Haulers already hold"
     );
 }

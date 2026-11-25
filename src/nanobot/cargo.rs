@@ -145,7 +145,7 @@ pub fn reconcile_logistics_tuning(
         && old.logistics.hauler_carry_capacity == new.logistics.hauler_carry_capacity
         && old.logistics.stockpile_capacity == new.logistics.stockpile_capacity
         && old.production.input_capacity == new.production.input_capacity
-        && super::queued_hopper_space(old) == super::queued_hopper_space(new)
+        && old.production.cost_per_bot == new.production.cost_per_bot
         && old.charge.charger_capacity == new.charge.charger_capacity
     {
         return;

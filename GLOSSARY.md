@@ -225,5 +225,5 @@ Consecutive unmet Population Demand of any type while every operational Producti
 _Avoid_: Build-zone size, instantaneous deficit
 
 **Production Facility**:
-A swarm-owned terminal support structure that consumes delivered resources and automatically fills its swarm's typed Population Demand. While producing or awaiting demand it accepts Logistics Reservations beyond its input buffer, for a tuned number of Hauler loads and at least one production cycle, and those Haulers wait for room to unload. Production Pressure may create one unfinished expansion commitment per swarm; capacity is reassessed after that commitment completes or is lost.
+A swarm-owned terminal support structure that consumes delivered resources and automatically fills its swarm's typed Population Demand. While producing or awaiting demand it accepts Logistics Reservations beyond its input buffer, covering what it consumes while a delivery travels from its nearest stocked Sink, and at least one production cycle, and those Haulers wait for room to unload. Production Pressure may create one unfinished expansion commitment per swarm; capacity is reassessed after that commitment completes or is lost.
 _Avoid_: Barracks, factory queue, manual spawner

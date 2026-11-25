@@ -69,7 +69,6 @@ tuning_schema! {
         input_capacity: u32 = 80 => ("Input capacity", "", 1.0, 1.0, 1.0, 1_000_000.0);
         pressure_ticks: u32 = 60 => ("Expansion delay", "s", 1.0 / 60.0, 1.0 / 60.0, 1.0, 1_000_000_000.0);
         reserve_seconds: f32 = 10.0 => ("Reserve target", "s of spending", 1.0, 1.0, 0.0, 3600.0);
-        waiting_hauler_loads: u32 = 2 => ("Hauler loads that may wait at a busy facility", "", 1.0, 1.0, 0.0, 1_000.0);
         gather_rate_fallback: f32 = 0.3 => ("Gather rate per Worker before measurement", "/s", 1.0, 0.05, 0.01, 1_000.0);
     }
     construction: ConstructionTuning {

@@ -601,7 +601,6 @@ fn full_producing_facility_app_with_waiting_loads(loads: u32) -> (App, Entity, E
         tuning.logistics.material_work_ticks = 1;
         tuning.production.cost_per_bot = 5;
         tuning.production.input_capacity = 5;
-        tuning.production.waiting_hauler_loads = loads;
     }
     let tuning = app.world().resource::<Tuning>().clone();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
@@ -611,6 +610,8 @@ fn full_producing_facility_app_with_waiting_loads(loads: u32) -> (App, Entity, E
     let mut facility = ProductionFacility::with_tuning(&tuning);
     facility.input_amount = facility.input_capacity;
     facility.current_target = Some(NanobotType::Worker);
+    // No production plugin runs here, so set the delivery window directly.
+    facility.queued_space = loads * tuning.logistics.hauler_carry_capacity;
     let facility = app
         .world_mut()
         .spawn((
