@@ -58,7 +58,7 @@ The economy fields are recorded separately for each swarm. Window totals cover t
 | `empty_charge_defenders` | Defenders at zero Charge at sample time. |
 | `spending_capacity` | Minerals per second the swarm would spend at sample time: Production Facilities that are producing or have unmet Population Demand, running continuously, plus charge upkeep for its Defenders. |
 | `reserve_target` | Reserve Target at sample time: `reserve_seconds` of Spending Capacity, in minerals. |
-| `reserve_stock` | Minerals in the swarm's operational Source and Sink Stockpiles at sample time. |
+| `reserve_stock` | Minerals in the swarm's operational Source and Sink Stockpiles at sample time, each counted by how soon it could reach the nearest Production Facility or Charger (in full within `reserve_seconds`). |
 | `gather_quota` | Gather Quota at sample time: Workers the swarm assigns to gathering. |
 | `gathering_workers` | Workers travelling to, working at, or returning from a deposit, or holding gathered cargo, at sample time. |
 | `gather_rate` | Minerals per second one productive gatherer brought in over the trailing 20 s, or `gather_rate_fallback` when that window measured nothing. |
