@@ -479,3 +479,42 @@ fn gatherer_does_not_carry_its_load_to_a_far_source() {
         "the gatherer stays at its deposit: {position:?}"
     );
 }
+
+#[test]
+fn loaded_gatherer_whose_source_is_lost_does_not_carry_to_a_far_source() {
+    let mut app = common::sim_app_with_gather();
+    common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let deposit = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: Vec2::new(100.0, 100.0),
+            amount: 40,
+            capacity: 40,
+            radius: 32.0,
+        },
+    );
+    let near = common::spawn_stockpile(&mut app, Vec2::new(300.0, 100.0), 0, 10);
+    let far = common::spawn_stockpile(&mut app, Vec2::new(1_200.0, 100.0), 0, 100);
+    let worker = common::spawn_worker_at(&mut app, Vec2::new(168.0, 100.0));
+    // Carrying a load from the deposit toward its nearby Source.
+    let mut claim = LogisticsReservation::new(deposit, near, ResourceKind::Minerals, 4);
+    claim.source_remaining = 0;
+    app.world_mut().entity_mut(worker).insert((
+        Cargo {
+            kind: ResourceKind::Minerals,
+            amount: 4,
+        },
+        claim,
+        ReturningToStockpile { stockpile: near },
+    ));
+    app.update();
+    // The nearby Source is lost mid-trip.
+    app.world_mut().despawn(near);
+
+    for _ in 0..600 {
+        app.update();
+    }
+
+    assert_eq!(app.world().get::<Stockpile>(far).unwrap().amount, 0);
+    assert_eq!(app.world().get::<Cargo>(worker).unwrap().amount, 4);
+}

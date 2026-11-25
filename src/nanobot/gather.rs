@@ -262,13 +262,15 @@ impl DropOffArea {
         self.center.distance(position) <= self.radius
     }
 
-    /// The drop-off area of a Worker that still holds its gather assignment.
+    /// The drop-off area of a Worker carrying a load from `source`. A gather
+    /// claim's source is the deposit the load came from; any other source, or
+    /// a deposit that is gone, leaves the drop-off unrestricted.
     fn of(
-        assignment: Option<&GatherAssignment>,
+        source: Entity,
         deposits: &Query<(&ResourceDeposit, &Transform)>,
         tuning: &Tuning,
     ) -> Option<Self> {
-        let (deposit, transform) = deposits.get(assignment?.deposit).ok()?;
+        let (deposit, transform) = deposits.get(source).ok()?;
         Some(Self::for_deposit(
             transform.translation.truncate(),
             deposit.radius,
@@ -360,8 +362,8 @@ fn stockpile_owned_by(
 }
 
 /// Whether nearby built Source Stockpile capacity satisfies planning demand.
-/// The configured proximity radius governs planning; extraction may reserve
-/// a reachable Source Stockpile beyond this radius.
+/// The configured proximity radius governs planning; gatherers drop off only
+/// within their deposit's [`DropOffArea`], which contains this radius.
 ///
 /// ## Issue #26: Source vs Sink filter
 ///
@@ -1162,7 +1164,6 @@ pub fn worker_gather_reroute_system(
             &SwarmMember,
             &LogisticsReservation,
             &NanobotType,
-            Option<&GatherAssignment>,
         ),
         (With<Nanobot>, Without<ExtractProgress>),
     >,
@@ -1185,9 +1186,7 @@ pub fn worker_gather_reroute_system(
     ordered.extend(
         workers
             .iter()
-            .filter(|(_, _, cargo, _, _, kind, _)| {
-                cargo.amount > 0 && **kind == NanobotType::Worker
-            })
+            .filter(|(_, _, cargo, _, _, kind)| cargo.amount > 0 && **kind == NanobotType::Worker)
             .map(|(entity, ..)| {
                 (
                     super::combat_key(entity, identities.get(entity).ok()),
@@ -1197,8 +1196,7 @@ pub fn worker_gather_reroute_system(
     );
     ordered.sort_unstable();
     for &(_, entity) in &*ordered {
-        let Ok((_, transform, cargo, swarm_member, reservation, _, gather)) = workers.get(entity)
-        else {
+        let Ok((_, transform, cargo, swarm_member, reservation, _)) = workers.get(entity) else {
             continue;
         };
         let current_valid = stockpiles.get(reservation.destination).is_ok_and(
@@ -1241,7 +1239,7 @@ pub fn worker_gather_reroute_system(
             &reservations,
             &same_tick_claims,
             &identities,
-            DropOffArea::of(gather, &deposits, &tuning),
+            DropOffArea::of(reservation.source, &deposits, &tuning),
             |destination_transform| {
                 matches!(
                     navigation.query_connectivity(
@@ -1295,7 +1293,6 @@ pub fn worker_gather_carry_assign_system(
             &SwarmMember,
             Option<&LogisticsReservation>,
             &NanobotType,
-            Option<&GatherAssignment>,
         ),
         (
             With<Nanobot>,
@@ -1322,9 +1319,7 @@ pub fn worker_gather_carry_assign_system(
     ordered.extend(
         workers
             .iter()
-            .filter(|(_, _, cargo, _, _, kind, _)| {
-                cargo.amount > 0 && **kind == NanobotType::Worker
-            })
+            .filter(|(_, _, cargo, _, _, kind)| cargo.amount > 0 && **kind == NanobotType::Worker)
             .map(|(entity, ..)| {
                 (
                     super::combat_key(entity, identities.get(entity).ok()),
@@ -1334,8 +1329,7 @@ pub fn worker_gather_carry_assign_system(
     );
     ordered.sort_unstable();
     for &(_, entity) in &*ordered {
-        let Ok((_, transform, load, swarm_member, reservation, _, gather)) = workers.get(entity)
-        else {
+        let Ok((_, transform, load, swarm_member, reservation, _)) = workers.get(entity) else {
             continue;
         };
         let selected = if let Some(reservation) = reservation {
@@ -1377,7 +1371,9 @@ pub fn worker_gather_carry_assign_system(
                 &reservations,
                 &same_tick_claims,
                 &identities,
-                DropOffArea::of(gather, &deposits, &tuning),
+                reservation.and_then(|reservation| {
+                    DropOffArea::of(reservation.source, &deposits, &tuning)
+                }),
                 |destination_transform| {
                     matches!(
                         navigation.query_connectivity(
