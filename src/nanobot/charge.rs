@@ -1026,7 +1026,7 @@ pub fn defender_charger_work_system(
             continue;
         }
         charger.amount -= consumed;
-        ledger.remove_for(member.0, charger.kind, consumed);
+        ledger.consume_for(member.0, charger.kind, consumed);
         if let Some(counters) = counters.as_deref_mut() {
             counters.record(member.0, BattleEvent::Consumed(consumed));
         }

@@ -62,7 +62,11 @@ The economy fields are recorded separately for each swarm. Window totals cover t
 | `gather_quota` | Gather Quota at sample time: Workers the swarm assigns to gathering. |
 | `gathering_workers` | Workers travelling to, working at, or returning from a deposit, or holding gathered cargo, at sample time. |
 | `gather_rate` | Minerals per second one productive gatherer brought in over the trailing 20 s, or `gather_rate_fallback` when that window measured nothing. |
+| `haul_target_flow` | Minerals per second the last 20 s Haul Quota window found to deliver: income plus stock above `reserve_target` spread over `reserve_seconds`, at most `spending_capacity`. |
+| `delivered_rate` | Minerals per second the swarm's Production Facilities and Chargers consumed over that window. |
+| `haul_rate` | Minerals consumed per busy-Hauler-second over that window. |
+| `haul_quota` | Haulers the swarm wants for `haul_target_flow` at `haul_rate`, limited by the growth guard; 0 before the first window. |
 
-The `battle.stats` summary uses schema version 10. `tuning` contains the full native-unit configuration at battle start. `tuning_edits` records accepted changes with `revision`, `key`, `old_value`, `value`, and `fixed_tick`. Edit values use the editor's display units; ticks are relative to the current battle's start. Earlier-session edits are excluded, and a fresh battle snapshots the current configuration. Unchanged assignments and rejected edits add no revision.
+The `battle.stats` summary uses schema version 11. `tuning` contains the full native-unit configuration at battle start. `tuning_edits` records accepted changes with `revision`, `key`, `old_value`, `value`, and `fixed_tick`. Edit values use the editor's display units; ticks are relative to the current battle's start. Earlier-session edits are excluded, and a fresh battle snapshots the current configuration. Unchanged assignments and rejected edits add no revision.
 
 Compare the initial configuration and edit history as well as the seed when comparing runs. The seed improves repeatability but does not guarantee identical outcomes. Inspect economy, sustained attacks, recovery, and finishing behavior when evaluating a run.
