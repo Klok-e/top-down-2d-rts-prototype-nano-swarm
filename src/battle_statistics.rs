@@ -3,8 +3,8 @@
 use crate::{
     ai_battle::AiBattleConfig,
     nanobot::{
-        Cargo, Charge, Charger, Health, MatchOutcome, Nanobot, NanobotType, OwnerSwarm,
-        PlannedStructure, ProductionFacility, Structure, Swarm, SwarmEliminationSet,
+        Cargo, Charge, Charger, GatherQuotas, Health, MatchOutcome, Nanobot, NanobotType,
+        OwnerSwarm, PlannedStructure, ProductionFacility, Structure, Swarm, SwarmEliminationSet,
         SwarmEliminationState, SwarmId, SwarmMember, world_to_cell,
     },
     perf::{HitchEpisodeSummary, HitchRecorderPlugin},
@@ -209,6 +209,19 @@ pub struct SwarmSample {
     pub mineral_starved_facility_seconds: f64,
     pub unspent_minerals: u32,
     pub empty_charge_defenders: u64,
+    /// Gather Quota inputs and result at sample time.
+    #[serde(default)]
+    pub spending_capacity: f32,
+    #[serde(default)]
+    pub reserve_target: u32,
+    #[serde(default)]
+    pub reserve_stock: u32,
+    #[serde(default)]
+    pub gather_quota: u32,
+    #[serde(default)]
+    pub gathering_workers: u32,
+    #[serde(default)]
+    pub gather_rate: f32,
     pub elimination_seconds: Option<f64>,
     #[serde(default)]
     pub deposit_extraction: Vec<DepositExtraction>,
@@ -341,7 +354,7 @@ impl BattleRun {
     ) -> Self {
         Self {
             summary: BattleSummary {
-                schema_version: 9,
+                schema_version: 10,
                 scenario: scenario_name.into(),
                 seed: config.seed,
                 timestep_seconds,
@@ -475,6 +488,12 @@ fn sample_json(sample: &BattleSample) -> serde_json::Value {
                 "mineral_starved_facility_seconds": s.mineral_starved_facility_seconds,
                 "unspent_minerals": s.unspent_minerals,
                 "empty_charge_defenders": s.empty_charge_defenders,
+                "spending_capacity": s.spending_capacity,
+                "reserve_target": s.reserve_target,
+                "reserve_stock": s.reserve_stock,
+                "gather_quota": s.gather_quota,
+                "gathering_workers": s.gathering_workers,
+                "gather_rate": s.gather_rate,
                 "controller_last_explanation": controller.last_explanation,
                 "deposit_extraction": s.deposit_extraction,
             })
@@ -569,6 +588,18 @@ fn snapshot(world: &mut World, run: &mut BattleRun) -> BattleSample {
         })
         .collect();
     deposits.sort_unstable();
+    if let Some(quotas) = world.get_resource::<GatherQuotas>() {
+        for (id, economy) in quotas.iter() {
+            if let Some(swarm) = swarms.get_mut(&id.0) {
+                swarm.spending_capacity = economy.spending_capacity;
+                swarm.reserve_target = economy.reserve_target;
+                swarm.reserve_stock = economy.reserve_stock;
+                swarm.gather_quota = economy.gather_quota;
+                swarm.gathering_workers = economy.gathering_workers;
+                swarm.gather_rate = economy.gather_rate;
+            }
+        }
+    }
     let counters = world.resource::<BattleCounters>();
     for (id, swarm) in &mut swarms {
         swarm.totals = counters.totals_for(SwarmId(*id));

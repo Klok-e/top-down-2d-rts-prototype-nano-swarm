@@ -371,6 +371,23 @@ impl PlannedStructure {
         true
     }
 
+    /// Move the construction reservation to a nearer Worker while the current
+    /// one is still travelling. The caller releases the previous Worker.
+    pub(crate) fn hand_over_worker(
+        &mut self,
+        commands: &mut Commands,
+        target: Entity,
+        worker: Entity,
+        worker_position: Vec2,
+        transform: &Transform,
+    ) -> bool {
+        if self.available_work() == 0 {
+            return false;
+        }
+        self.active_worker = None;
+        self.assign_worker(commands, target, worker, worker_position, transform)
+    }
+
     /// Completed work and the plan's original total used by the progress display.
     pub fn construction_progress(&self) -> (u32, u32) {
         (

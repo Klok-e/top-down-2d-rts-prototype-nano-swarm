@@ -16,13 +16,14 @@ use super::{
 };
 use crate::{
     nanobot::{
-        Commitment, DirectMovementComponent, ExtractProgress, GatherAssignment, HaulerAssignment,
-        HaulerLoad, HaulerLoading, Health, InteractionRegion, LogisticsReservation,
-        MaintenanceAssignment, MaintenanceProgress, Nanobot, NanobotType, PlannedStructure,
-        PlannedStructureClaim, PlannedStructureProgress, ProductionFacility, ReturningToStockpile,
-        SwarmId, SwarmMember, WorkerLoad,
+        Commitment, DirectMovementComponent, ExtractProgress, GatherAssignment, GatherQuotas,
+        HaulerAssignment, HaulerLoad, HaulerLoading, Health, InteractionRegion,
+        LogisticsReservation, MaintenanceAssignment, MaintenanceProgress, Nanobot, NanobotType,
+        PlannedStructure, PlannedStructureClaim, PlannedStructureProgress, ProductionFacility,
+        ReturningToStockpile, SwarmId, SwarmMember, WorkerLoad,
         charge::{Charge, Charger, ChargerAssignment, ChargerProgress, minerals_to_fully_charge},
         gather::painted_gather_regions,
+        gather_worker_slots,
         logistics_leg::{DestinationRole, PickupBuffer},
     },
     navigation::{ConnectivityStatus, Navigation, RouteGoal},
@@ -76,7 +77,7 @@ pub enum RegionalAllocationSet {
 }
 
 #[derive(Debug, Resource)]
-pub(super) struct AllocationTickDue {
+pub(crate) struct AllocationTickDue {
     due: bool,
     initialized: bool,
 }
@@ -182,7 +183,9 @@ fn advance_allocation_clock_system(
     due.initialized = true;
 }
 
-fn allocation_tick_due(due: Res<AllocationTickDue>) -> bool {
+/// True on fixed steps where regional allocation acquires work (every
+/// [`super::ALLOCATION_TICK_PERIOD`] or on request).
+pub(crate) fn allocation_tick_due(due: Res<AllocationTickDue>) -> bool {
     due.due
 }
 
@@ -212,6 +215,132 @@ pub struct AllocationInputs<'w, 's> {
         ),
     >,
     ages: ResMut<'w, TerminalDemandAges>,
+    travelling: TravellingWorkers<'w, 's>,
+    gather_quotas: Option<Res<'w, GatherQuotas>>,
+}
+
+/// Workers holding Maintenance or Planned Build work that have not reached it.
+type TravellingWorkers<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static Transform,
+        &'static RegionalLease,
+        &'static SwarmMember,
+        Option<&'static MaintenanceAssignment>,
+    ),
+    (
+        With<Nanobot>,
+        Or<(With<MaintenanceAssignment>, With<PlannedStructureClaim>)>,
+        Without<MaintenanceProgress>,
+        Without<PlannedStructureProgress>,
+    ),
+>;
+
+/// An idle Worker takes over travelling work only when at least this many
+/// times closer to the target than its current holder.
+const HANDOFF_DISTANCE_RATIO: f32 = 2.0;
+/// ...and when that saves at least four cells of travel, so near-equal
+/// Workers do not trade the same job back and forth.
+const HANDOFF_MIN_SAVING: f32 = 4.0 * crate::navigation::CELL_WIDTH;
+
+/// Hand Maintenance and Planned Build work from a Worker still travelling to
+/// it to a much nearer idle Worker. Each job holds one Worker, so without this
+/// the first idle Worker anywhere keeps it while Workers beside it gather on.
+#[allow(clippy::too_many_arguments)]
+fn hand_off_travelling_worker_jobs(
+    commands: &mut Commands,
+    candidates: &mut Vec<BotSnapshot>,
+    travelling: &TravellingWorkers,
+    structures: &Query<&Transform>,
+    planned: &mut Query<(Entity, &mut PlannedStructure, &Transform)>,
+    navigation: &Navigation,
+    now_tick: u64,
+    lease_ttl: u64,
+) {
+    let mut released = std::collections::BTreeSet::new();
+    let mut taken = std::collections::BTreeSet::new();
+    for bot in candidates
+        .iter()
+        .filter(|bot| bot.kind == NanobotType::Worker)
+    {
+        let mut best: Option<(f32, Entity, RegionalLease, Option<MaintenanceAssignment>)> = None;
+        for (holder, holder_transform, lease, member, maintenance) in travelling {
+            if member.0 != bot.swarm || released.contains(&holder) {
+                continue;
+            }
+            let (OpportunityTarget::Maintenance { structure }
+            | OpportunityTarget::PlannedBuild { structure, .. }) = lease.target
+            else {
+                continue;
+            };
+            let Ok(target) = structures.get(structure) else {
+                continue;
+            };
+            let target = target.translation.truncate();
+            let own = bot.position.distance(target);
+            let theirs = holder_transform.translation.truncate().distance(target);
+            if own * HANDOFF_DISTANCE_RATIO > theirs || theirs - own < HANDOFF_MIN_SAVING {
+                continue;
+            }
+            if best.as_ref().is_none_or(|(distance, ..)| own < *distance) {
+                best = Some((own, holder, *lease, maintenance.copied()));
+            }
+        }
+        let Some((_, holder, lease, maintenance)) = best else {
+            continue;
+        };
+        let (OpportunityTarget::Maintenance { structure }
+        | OpportunityTarget::PlannedBuild { structure, .. }) = lease.target
+        else {
+            continue;
+        };
+        let Ok(target_transform) = structures.get(structure) else {
+            continue;
+        };
+        let region = InteractionRegion::structure(target_transform);
+        if !matches!(
+            navigation.query_connectivity(bot.position, RouteGoal::Interaction(region)),
+            ConnectivityStatus::Connected { .. }
+        ) {
+            continue;
+        }
+        if let Some(assignment) = maintenance {
+            commands
+                .entity(bot.entity)
+                .insert((assignment, region.movement_from(bot.position)));
+            commands
+                .entity(holder)
+                .remove::<(MaintenanceAssignment, MaintenanceProgress)>();
+        } else {
+            let Ok((_, mut plan, transform)) = planned.get_mut(structure) else {
+                continue;
+            };
+            if !plan.hand_over_worker(commands, structure, bot.entity, bot.position, transform) {
+                continue;
+            }
+            commands
+                .entity(holder)
+                .remove::<(PlannedStructureClaim, PlannedStructureProgress)>();
+        }
+        commands
+            .entity(holder)
+            .remove::<(RegionalLease, DirectMovementComponent)>()
+            .insert(Commitment::Idle);
+        commands.entity(bot.entity).insert(RegionalLease::new(
+            lease.region,
+            lease.category,
+            lease.target,
+            lease.owner,
+            now_tick,
+            0,
+            lease_ttl,
+        ));
+        released.insert(holder);
+        taken.insert(bot.entity);
+    }
+    candidates.retain(|bot| !taken.contains(&bot.entity));
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
@@ -315,14 +444,34 @@ pub fn regional_allocation_acquisition_system(
     }
 
     let mut active_terminals = BTreeMap::new();
+    let mut nearest_terminal_source = BTreeMap::<Entity, f32>::new();
     for (_, opportunities) in projection.iter_regions() {
         for opportunity in opportunities {
-            let OpportunityTarget::Haul { sink, .. } = opportunity.target else {
+            let OpportunityTarget::Haul { source, sink, .. } = opportunity.target else {
                 continue;
             };
-            if facilities.get(sink).is_ok() || chargers.get(sink).is_ok() {
-                active_terminals.insert(sink, ());
+            let Some(terminal_transform) = facilities
+                .get(sink)
+                .map(|(_, transform)| transform)
+                .or_else(|_| chargers.get(sink).map(|(_, transform)| transform))
+                .ok()
+            else {
+                continue;
+            };
+            active_terminals.insert(sink, ());
+            let Ok((stockpile, source_transform, _)) = stockpiles.get(source) else {
+                continue;
+            };
+            let reserved = reserved_source.get(&source).copied().unwrap_or_default();
+            if stockpile.amount <= reserved {
+                continue;
             }
+            let distance = source_transform
+                .translation
+                .truncate()
+                .distance(terminal_transform.translation.truncate());
+            let nearest = nearest_terminal_source.entry(sink).or_insert(f32::INFINITY);
+            *nearest = nearest.min(distance);
         }
     }
     terminal
@@ -368,6 +517,16 @@ pub fn regional_allocation_acquisition_system(
         })
         .collect::<Vec<_>>();
     candidates.sort_by_key(|bot| bot.entity.to_bits());
+    hand_off_travelling_worker_jobs(
+        &mut commands,
+        &mut candidates,
+        &terminal.travelling,
+        &structures,
+        &mut planned,
+        &navigation,
+        clock.tick(),
+        tuning.autonomy.lease_no_progress_ttl_ticks,
+    );
 
     let work_by_kind = NanobotType::ALL.map(|kind| {
         projection
@@ -386,6 +545,25 @@ pub fn regional_allocation_acquisition_system(
         .iter()
         .map(|bot| bot.swarm)
         .collect::<std::collections::BTreeSet<_>>();
+    // Gather slots left under each swarm's Gather Quota. A swarm without a
+    // quota (no Population Demand in this app) gathers without a cap.
+    let mut gather_open = terminal
+        .gather_quotas
+        .as_deref()
+        .map(|quotas| {
+            quotas
+                .iter()
+                .map(|(swarm, economy)| {
+                    (
+                        swarm,
+                        economy
+                            .gather_quota
+                            .saturating_sub(economy.gathering_workers),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
     let mut work_by_swarm_kind = BTreeMap::new();
     for swarm in candidate_swarms.iter().copied() {
         for (kind, regional_work) in work_by_kind.iter().enumerate() {
@@ -396,6 +574,7 @@ pub fn regional_allocation_acquisition_system(
                         .iter()
                         .copied()
                         .filter(|work| work.owner.is_none_or(|owner| owner == swarm))
+                        .filter(|work| !gather_closed(&gather_open, swarm, *work))
                         .collect::<Vec<_>>();
                     (!compatible.is_empty()).then_some((*region, compatible))
                 })
@@ -441,13 +620,23 @@ pub fn regional_allocation_acquisition_system(
             .map(|(region, work)| {
                 let unclaimed = work
                     .iter()
-                    .map(|work| ActionableOpportunity {
-                        available_work: unclaimed_work(
-                            *work,
-                            claims_for(&claim_counts, *work),
-                            &tuning,
-                        ),
-                        ..*work
+                    .map(|work| {
+                        let claims = claims_for(&claim_counts, *work);
+                        let available_work = if gather_ring_full(*work, claims, &deposits) {
+                            0
+                        } else {
+                            gather_quota_work(
+                                &gather_open,
+                                *swarm,
+                                *work,
+                                unclaimed_work(*work, claims, &tuning),
+                                &tuning,
+                            )
+                        };
+                        ActionableOpportunity {
+                            available_work,
+                            ..*work
+                        }
                     })
                     .collect::<Vec<_>>();
                 (*region, unclaimed)
@@ -529,6 +718,7 @@ pub fn regional_allocation_acquisition_system(
                 &reserved_destination,
                 &charger_demand,
                 &terminal.ages,
+                &nearest_terminal_source,
             ) else {
                 continue;
             };
@@ -555,6 +745,9 @@ pub fn regional_allocation_acquisition_system(
                 ordered.iter().copied(),
                 bounds,
                 |work| {
+                    if gather_closed(&gather_open, bot.swarm, work) {
+                        return None;
+                    }
                     let claims = claims_for(&claim_counts, work);
                     if !target_available(
                         &tuning,
@@ -650,14 +843,33 @@ pub fn regional_allocation_acquisition_system(
             let remaining = pull.categories.get(work.category).saturating_sub(1);
             pull.categories.set(work.category, remaining);
         }
+        if work.category == OpportunityCategory::Gather
+            && let Some(open) = gather_open.get_mut(&bot.swarm)
+        {
+            *open = open.saturating_sub(1);
+        }
     }
 }
 
+/// Base urgency of a startable production cycle. Lower base urgencies are
+/// Charger emergencies that sustain committed Defenders.
+const STARTABLE_PRODUCTION_URGENCY: u8 = 3;
+
+/// How much farther than a terminal's nearest stocked Sink Stockpile another
+/// pickup may be: two cells, so near-equal Sinks share the load.
+const NEAREST_TERMINAL_SOURCE_SLACK: f32 = 2.0 * crate::navigation::CELL_WIDTH;
+
+/// Strict tier: urgency, waiting-age fairness, then proportional deficit.
+type StrictRank = (u8, u32, u64);
+
 #[derive(Clone, Copy)]
 struct TerminalLogisticsScore {
-    urgency: u8,
-    age_key: u32,
-    deficit_key: u64,
+    /// `Some` for Charger emergencies and fully aged terminals, which keep
+    /// strict ordering ahead of all other haul work.
+    strict: Option<StrictRank>,
+    /// Route cost per mineral moved plus a penalty per urgency level, so a
+    /// long trip carrying a few minerals loses to a short full refill.
+    weighted_cost: f32,
     estimated_cost: f32,
     terminal: u64,
     source: u64,
@@ -665,12 +877,15 @@ struct TerminalLogisticsScore {
 
 impl TerminalLogisticsScore {
     fn cmp(self, other: Self) -> Ordering {
-        self.urgency
-            .cmp(&other.urgency)
-            .then_with(|| self.age_key.cmp(&other.age_key))
-            .then_with(|| self.deficit_key.cmp(&other.deficit_key))
-            .then_with(|| self.estimated_cost.total_cmp(&other.estimated_cost))
-            .then_with(|| self.terminal.cmp(&other.terminal))
+        let rank = match (self.strict, other.strict) {
+            (Some(own), Some(theirs)) => own
+                .cmp(&theirs)
+                .then_with(|| self.estimated_cost.total_cmp(&other.estimated_cost)),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => self.weighted_cost.total_cmp(&other.weighted_cost),
+        };
+        rank.then_with(|| self.terminal.cmp(&other.terminal))
             .then_with(|| self.source.cmp(&other.source))
     }
 }
@@ -698,6 +913,7 @@ fn choose_terminal_logistics_work(
     reserved_destination: &BTreeMap<Entity, u32>,
     charger_demand: &BTreeMap<Entity, (u8, u32)>,
     ages: &TerminalDemandAges,
+    nearest_terminal_source: &BTreeMap<Entity, f32>,
 ) -> Option<SelectedHaul> {
     if pull.categories.get(OpportunityCategory::Haul) == 0 {
         return None;
@@ -728,7 +944,7 @@ fn choose_terminal_logistics_work(
                     PickupBuffer {
                         role: DestinationRole::ProductionFacility,
                         buffered: facility.input_amount,
-                        capacity: facility.input_capacity,
+                        capacity: facility.claimable_capacity(tuning),
                     },
                     transform,
                 )
@@ -753,6 +969,18 @@ fn choose_terminal_logistics_work(
             } else {
                 continue;
             };
+            // A terminal draws from its nearest stocked Sink Stockpiles. A far
+            // pickup would hold the terminal's claim for the whole long trip
+            // while haulers beside a nearer stocked Sink find nothing to claim.
+            if let Some(nearest) = nearest_terminal_source.get(&sink) {
+                let delivery = source_transform
+                    .translation
+                    .truncate()
+                    .distance(sink_transform.translation.truncate());
+                if delivery > nearest + NEAREST_TERMINAL_SOURCE_SLACK {
+                    continue;
+                }
+            }
             let quote = buffer.quote(
                 source_state.amount,
                 reserved_source.get(&source).copied().unwrap_or_default(),
@@ -786,10 +1014,12 @@ fn choose_terminal_logistics_work(
             if !estimated_cost.is_finite() {
                 continue;
             }
+            let strict = (quote.base_urgency < STARTABLE_PRODUCTION_URGENCY || urgency == 0)
+                .then_some((urgency, u32::MAX - age, u64::MAX - deficit_ratio));
             let score = TerminalLogisticsScore {
-                urgency,
-                age_key: u32::MAX - age,
-                deficit_key: u64::MAX - deficit_ratio,
+                strict,
+                weighted_cost: estimated_cost / quote.amount as f32
+                    + f32::from(urgency) * tuning.logistics.haul_urgency_cost,
                 estimated_cost,
                 terminal: sink.to_bits(),
                 source: source.to_bits(),
@@ -860,7 +1090,7 @@ fn target_available(
         return false;
     }
     match work.target {
-        OpportunityTarget::Gather { deposit, .. } => deposits.get(deposit).is_ok(),
+        OpportunityTarget::Gather { .. } => !gather_ring_full(work, claims, deposits),
         OpportunityTarget::PlannedBuild { structure, .. } => planned_workers
             .get(&structure.to_bits())
             .is_some_and(|worker| worker.is_none() || *worker == Some(bot.entity.to_bits())),
@@ -869,6 +1099,49 @@ fn target_available(
             .get(source)
             .is_ok_and(|(stockpile, _, _)| stockpile.amount > 0 && work.available_work > 0),
     }
+}
+
+/// Gather work once the swarm's gatherers have reached its Gather Quota.
+fn gather_closed(
+    gather_open: &BTreeMap<SwarmId, u32>,
+    swarm: SwarmId,
+    work: ActionableOpportunity,
+) -> bool {
+    work.category == OpportunityCategory::Gather && gather_open.get(&swarm) == Some(&0)
+}
+
+/// Gather pressure limited to the loads the open quota slots can carry. Raw
+/// deposit minerals would hand Gather nearly every pull slot, and Workers
+/// refused at the quota would then find no budget left for other work.
+fn gather_quota_work(
+    gather_open: &BTreeMap<SwarmId, u32>,
+    swarm: SwarmId,
+    work: ActionableOpportunity,
+    available_work: u32,
+    tuning: &crate::tuning::Tuning,
+) -> u32 {
+    match gather_open.get(&swarm) {
+        Some(open) if work.category == OpportunityCategory::Gather => {
+            available_work.min(open.saturating_mul(tuning.logistics.worker_carry_capacity.max(1)))
+        }
+        _ => available_work,
+    }
+}
+
+/// A deposit takes no more gatherers than fit around its work ring; a missing
+/// deposit has no room at all.
+fn gather_ring_full(
+    work: ActionableOpportunity,
+    claims: usize,
+    deposits: &Query<(&ResourceDeposit, &Transform)>,
+) -> bool {
+    let OpportunityTarget::Gather { deposit, .. } = work.target else {
+        return false;
+    };
+    deposits
+        .get(deposit)
+        .ok()
+        .is_none_or(|(state, _)| claims >= gather_worker_slots(state.radius) as usize)
 }
 
 /// Work one claimant takes on, or `None` when a single claimant takes it all.

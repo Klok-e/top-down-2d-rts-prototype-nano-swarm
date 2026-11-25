@@ -367,6 +367,7 @@ fn valid_destination_region(
     chargers: &Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
     swarms: &Query<&SwarmId, With<Swarm>>,
     conditions: &Query<&SupportCondition>,
+    tuning: &Tuning,
 ) -> Option<InteractionRegion> {
     if !endpoint_is_operational(destination, conditions) {
         return None;
@@ -388,11 +389,11 @@ fn valid_destination_region(
                 Destination {
                     kind: facility.input_kind,
                     role: DestinationRole::ProductionFacility,
-                    free_space: facility.input_free_space(),
+                    free_space: facility.claimable_space(tuning),
                     owner: logistics_owner(owner, swarms),
                 },
                 transform,
-                facility.input_capacity,
+                facility.claimable_capacity(tuning),
             )
         } else if let Ok((_, charger, transform, owner)) = chargers.get(destination) {
             (
@@ -425,6 +426,7 @@ fn valid_destination_region(
 /// Redirect loaded cargo when its destination is no longer valid.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn hauler_reroute_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     mut haulers: Query<
         (
@@ -492,6 +494,7 @@ pub fn hauler_reroute_system(
                 &chargers,
                 &swarms,
                 &conditions,
+                &tuning,
             )
         };
         if reservation_covers_destination(reservation, assignment.sink, cargo.amount)
@@ -565,7 +568,7 @@ pub fn hauler_reroute_system(
             .or_else(|_| {
                 facilities
                     .get(destination)
-                    .map(|(_, facility, ..)| facility.input_free_space())
+                    .map(|(_, facility, ..)| facility.claimable_space(&tuning))
             })
             .or_else(|_| {
                 chargers
@@ -617,6 +620,7 @@ fn release_destination_claim(
 /// Route loaded haulers only after revalidating the committed destination.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn hauler_carry_assign_system(
+    tuning: Res<Tuning>,
     mut commands: Commands,
     haulers: Query<
         (
@@ -679,6 +683,7 @@ pub fn hauler_carry_assign_system(
             &chargers,
             &swarms,
             &conditions,
+            &tuning,
         ) else {
             continue;
         };
@@ -774,6 +779,7 @@ pub fn hauler_delivery_system(
             &chargers.as_readonly(),
             &swarms,
             &conditions,
+            &tuning,
         ) else {
             continue;
         };

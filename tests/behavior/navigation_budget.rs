@@ -42,7 +42,8 @@ fn pending_worker_access_preserves_population_demand_until_budget_allows_assignm
         app.world()
             .resource::<PopulationDemand>()
             .desired_for(SwarmId::PLAYER, NanobotType::Worker),
-        1
+        1,
+        "a swarm with no spending keeps one gatherer per Gather-painted deposit"
     );
     assert!(app.world().resource::<Navigation>().work().pending > 0);
     assert_eq!(app.world().resource::<Navigation>().work().work, 0);

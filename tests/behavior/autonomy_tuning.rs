@@ -111,7 +111,7 @@ fn live_category_weights_redirect_new_workers_without_revoking_existing_work() {
             world_pos: position,
             amount: 1_000_000,
             capacity: 1_000_000,
-            radius: 24.0,
+            radius: 64.0,
         },
     );
     app.world_mut().resource_mut::<IntentGrid>().paint(

@@ -245,3 +245,188 @@ fn empty_hopper_retries_after_delivery_without_block_state() {
         Some(NanobotType::Worker),
     );
 }
+
+#[test]
+fn starved_facility_with_unmet_demand_offers_a_queued_cycle_to_haulers() {
+    let mut app = common::sim_app_with_production();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    add_gather_work(&mut app, IVec2::ZERO);
+    let facility = app
+        .world_mut()
+        .spawn((ProductionFacility::new(), OwnerSwarm(swarm)))
+        .id();
+    let tuning = app.world().resource::<Tuning>().clone();
+
+    app.update();
+
+    let state = app.world().get::<ProductionFacility>(facility).unwrap();
+    assert_eq!(
+        state.current_target, None,
+        "an empty hopper cannot fund a cycle"
+    );
+    assert_eq!(
+        state.claimable_space(&tuning),
+        state.input_capacity + tuning.production.cost_per_bot,
+        "unmet demand lets haulers queue the cycle after the one being funded",
+    );
+
+    app.world_mut().resource_mut::<IntentGrid>().erase(
+        IVec2::ZERO,
+        IntentKind::Gather,
+        SwarmId::PLAYER,
+    );
+    app.update();
+
+    let state = app.world().get::<ProductionFacility>(facility).unwrap();
+    assert_eq!(
+        state.claimable_space(&tuning),
+        state.input_capacity,
+        "covered demand withdraws the queued cycle",
+    );
+}
+
+/// Run one regional allocation period, after which delivery windows are fresh.
+fn run_allocation_period(app: &mut App) {
+    for _ in 0..7 {
+        app.update();
+    }
+}
+
+#[test]
+fn delivery_window_follows_the_nearest_usable_stocked_sink() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::delivery_window;
+    use top_down_2d_rts_prototype_nano_swarm::resources::Stockpile;
+
+    let mut app = common::sim_app_with_production();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let rival = app
+        .world_mut()
+        .spawn((
+            top_down_2d_rts_prototype_nano_swarm::nanobot::Swarm {},
+            SwarmId(7),
+        ))
+        .id();
+    let mut busy = ProductionFacility::new();
+    busy.current_target = Some(NanobotType::Worker);
+    let facility = app
+        .world_mut()
+        .spawn((busy, OwnerSwarm(swarm), Transform::from_xyz(0.0, 0.0, 0.0)))
+        .id();
+    let near = common::spawn_sink_stockpile(&mut app, Vec2::new(600.0, 0.0), 30, 60);
+    let far = common::spawn_sink_stockpile(&mut app, Vec2::new(-3_000.0, 0.0), 30, 60);
+    for sink in [near, far] {
+        app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
+    }
+    // Nearer Sinks Haulers cannot draw from: a rival's and a broken one.
+    let foreign = common::spawn_sink_stockpile(&mut app, Vec2::new(100.0, 0.0), 30, 60);
+    app.world_mut()
+        .entity_mut(foreign)
+        .insert(OwnerSwarm(rival));
+    let broken = common::spawn_sink_stockpile(&mut app, Vec2::new(0.0, 100.0), 30, 60);
+    app.world_mut().entity_mut(broken).insert((
+        OwnerSwarm(swarm),
+        Structure {
+            kind: StructureKind::Basic,
+            health: SUPPORT_OPERATIONAL_HEALTH_THRESHOLD - 1,
+            ticks_since_maintained: 0,
+        },
+    ));
+    let tuning = app.world().resource::<Tuning>().clone();
+    let window = |app: &App| {
+        app.world()
+            .get::<ProductionFacility>(facility)
+            .unwrap()
+            .queued_space
+    };
+
+    run_allocation_period(&mut app);
+    assert_eq!(window(&app), delivery_window(&tuning, 600.0));
+
+    app.world_mut().get_mut::<Stockpile>(near).unwrap().amount = 0;
+    run_allocation_period(&mut app);
+    let far_window = delivery_window(&tuning, 3_000.0);
+    assert!(far_window > delivery_window(&tuning, 600.0));
+    assert_eq!(
+        window(&app),
+        far_window,
+        "deliveries now come from the far Sink"
+    );
+
+    app.world_mut().get_mut::<Stockpile>(far).unwrap().amount = 0;
+    run_allocation_period(&mut app);
+    assert_eq!(window(&app), 0, "no usable stocked Sink");
+    let state = app.world().get::<ProductionFacility>(facility).unwrap();
+    assert_eq!(
+        state.claimable_capacity(&tuning),
+        state.input_capacity + tuning.production.cost_per_bot,
+        "one cycle is always offered"
+    );
+}
+
+#[test]
+fn delivery_window_keeps_held_claims_until_they_finish() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{
+        HaulerAssignment, LogisticsReservation, delivery_window,
+    };
+    use top_down_2d_rts_prototype_nano_swarm::resources::Stockpile;
+
+    let mut app = common::sim_app_with_production();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let mut busy = ProductionFacility::new();
+    busy.current_target = Some(NanobotType::Worker);
+    let facility = app
+        .world_mut()
+        .spawn((busy, OwnerSwarm(swarm), Transform::from_xyz(0.0, 0.0, 0.0)))
+        .id();
+    let near = common::spawn_sink_stockpile(&mut app, Vec2::new(600.0, 0.0), 0, 60);
+    let far = common::spawn_sink_stockpile(&mut app, Vec2::new(-3_000.0, 0.0), 30, 60);
+    for sink in [near, far] {
+        app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
+    }
+    let tuning = app.world().resource::<Tuning>().clone();
+    let window = |app: &App| {
+        app.world()
+            .get::<ProductionFacility>(facility)
+            .unwrap()
+            .queued_space
+    };
+    run_allocation_period(&mut app);
+    let far_window = delivery_window(&tuning, 3_000.0);
+    assert_eq!(window(&app), far_window);
+
+    // A Hauler holds a claim sized for the far window when the near Sink
+    // restocks.
+    let input_capacity = app
+        .world()
+        .get::<ProductionFacility>(facility)
+        .unwrap()
+        .input_capacity;
+    let mut claim = LogisticsReservation::new(far, facility, ResourceKind::Minerals, 0);
+    claim.destination_remaining = input_capacity + far_window;
+    let hauler = app
+        .world_mut()
+        .spawn((
+            claim,
+            HaulerAssignment {
+                source: far,
+                sink: facility,
+                pickup_role: Default::default(),
+            },
+        ))
+        .id();
+    app.world_mut().get_mut::<Stockpile>(near).unwrap().amount = 30;
+    run_allocation_period(&mut app);
+    assert_eq!(
+        window(&app),
+        far_window,
+        "the window never shrinks below claims Haulers already hold"
+    );
+
+    app.world_mut().despawn(hauler);
+    run_allocation_period(&mut app);
+    assert_eq!(
+        window(&app),
+        delivery_window(&tuning, 600.0),
+        "once the claim finishes the window follows the near Sink again"
+    );
+}

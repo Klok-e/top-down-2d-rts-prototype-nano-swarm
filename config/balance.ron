@@ -2,8 +2,10 @@
     production: (
         cost_per_bot: 5,
         ticks_per_bot: 120,
-        input_capacity: 5,
+        input_capacity: 10,
         pressure_ticks: 60,
+        reserve_seconds: 10.0,
+        gather_rate_fallback: 0.3,
     ),
     construction: (
         work_ticks: 300,
@@ -19,6 +21,7 @@
         source_proximity_radius: 384.0,
         bot_speed: 5.0,
         corridor_cost_multiplier: 0.35,
+        haul_urgency_cost: 50.0,
     ),
     combat: (
         rout_radius: 384.0,

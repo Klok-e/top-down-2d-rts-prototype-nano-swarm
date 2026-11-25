@@ -120,10 +120,20 @@ pub struct ProductionFacility {
     /// feeds production directly, so the three-leg chain is
     /// real and the hauler cannot be bypassed.
     pub input_amount: u32,
-    /// Maximum material the input hopper can hold. A full hopper
-    /// reports zero free space, so the hauler sink matcher skips
-    /// it until production drains some.
+    /// Maximum material the input hopper can hold. Haulers may still claim
+    /// queued space beyond it (see [`Self::claimable_capacity`]), but unload
+    /// only into its real free space.
     pub input_capacity: u32,
+    /// The owner swarm had unmet Population Demand when targets were last
+    /// picked, so the next funded cycle starts as soon as the hopper holds its
+    /// cost. Lets haulers claim queued space even while the facility idles.
+    pub demand_waiting: bool,
+    /// Space beyond the hopper Haulers may claim while the facility is busy:
+    /// what it consumes during one delivery's lead time from its nearest
+    /// stocked Sink, in whole Hauler loads. Kept by
+    /// [`facility_delivery_window_system`]; 0 until first sized.
+    /// [`Self::claimable_capacity`] never offers less than one cycle.
+    pub queued_space: u32,
 }
 
 impl ProductionFacility {
@@ -143,6 +153,8 @@ impl ProductionFacility {
             input_kind: ResourceKind::Minerals,
             input_amount: 0,
             input_capacity: tuning.production.input_capacity,
+            demand_waiting: false,
+            queued_space: 0,
         }
     }
 
@@ -160,6 +172,27 @@ impl ProductionFacility {
     /// through the same shape.
     pub fn input_free_space(&self) -> u32 {
         self.input_capacity.saturating_sub(self.input_amount)
+    }
+
+    /// Hopper capacity haulers may claim. While the facility is producing or
+    /// its swarm still wants nanobots, its delivery window ([`Self::queued_space`],
+    /// at least one production cycle) is added: Haulers holding that claim
+    /// travel or wait while cycles drain the hopper, so the next load is
+    /// already on its way when the hopper empties.
+    pub fn claimable_capacity(&self, tuning: &Tuning) -> u32 {
+        let queued = if self.current_target.is_some() || self.demand_waiting {
+            self.queued_space.max(tuning.production.cost_per_bot)
+        } else {
+            0
+        };
+        self.input_capacity.saturating_add(queued)
+    }
+
+    /// Unfilled part of [`Self::claimable_capacity`]. Unloading still moves
+    /// minerals only into [`Self::input_free_space`].
+    pub fn claimable_space(&self, tuning: &Tuning) -> u32 {
+        self.claimable_capacity(tuning)
+            .saturating_sub(self.input_amount)
     }
 }
 
@@ -442,7 +475,12 @@ pub fn production_facility_pick_target_system(
         let counts = available_by_swarm
             .entry(owner_id)
             .or_insert_with(|| count_swarm_nanobots_by_type(owner_id, &nanobots));
-        let Some(kind) = population_demand.most_underfilled_type(owner_id, counts) else {
+        let target = population_demand.most_underfilled_type(owner_id, counts);
+        // Write only on change so haul projection is not invalidated every tick.
+        if facility.demand_waiting != target.is_some() {
+            facility.demand_waiting = target.is_some();
+        }
+        let Some(kind) = target else {
             continue;
         };
         if facility.input_amount < tuning.production.cost_per_bot {
@@ -641,6 +679,13 @@ impl Plugin for ProductionPlugin {
             .init_resource::<ProductionPressure>()
             .add_systems(
                 FixedUpdate,
+                facility_delivery_window_system
+                    .after(crate::nanobot::RegionalAllocationSet::Invalidate)
+                    .before(crate::nanobot::RegionalAllocationSet::Acquire)
+                    .run_if(crate::nanobot::allocation::allocation_tick_due),
+            )
+            .add_systems(
+                FixedUpdate,
                 (
                     production_facility_pick_target_system,
                     production_facility_work_system,
@@ -650,6 +695,79 @@ impl Plugin for ProductionPlugin {
                     .chain()
                     .after(crate::nanobot::NanobotSimulationSet::Movement),
             );
+    }
+}
+
+/// Minerals a facility consumes while one delivery travels from a Sink
+/// `sink_distance` away, rounded up to whole Hauler loads. Lead time is the
+/// trip to the Sink, loading a full load, and the trip back; the facility
+/// consumes one cycle's cost per production cycle meanwhile (Little's law).
+pub fn delivery_window(tuning: &Tuning, sink_distance: f32) -> u32 {
+    let carry = tuning.logistics.hauler_carry_capacity.max(1);
+    let loading = (carry * tuning.logistics.material_work_ticks) as f32;
+    let travel = 2.0 * sink_distance.max(0.0) / tuning.logistics.bot_speed;
+    let per_tick =
+        tuning.production.cost_per_bot as f32 / tuning.production.ticks_per_bot.max(1) as f32;
+    let loads = (per_tick * (loading + travel) / carry as f32).ceil() as u32;
+    loads.saturating_mul(carry)
+}
+
+/// Size each busy facility's delivery window from its nearest stocked Sink of
+/// the same owner. Runs on the allocation cadence, since only claims read it.
+/// The window never shrinks below what Haulers already claimed, so a Sink
+/// emptying or restocking nearby cannot revoke a delivery in flight; Hauler
+/// claims are summed only when some window would shrink.
+#[allow(clippy::type_complexity)]
+pub fn facility_delivery_window_system(
+    tuning: Res<Tuning>,
+    mut facilities: Query<(Entity, &mut ProductionFacility, &Transform, &OwnerSwarm)>,
+    sinks: Query<(
+        &Stockpile,
+        &Transform,
+        Option<&crate::resources::StockpileRole>,
+        Option<&OwnerSwarm>,
+        Option<&SupportCondition>,
+    )>,
+    reservations: Query<
+        &crate::nanobot::LogisticsReservation,
+        With<crate::nanobot::HaulerAssignment>,
+    >,
+) {
+    let mut claimed: Option<HashMap<Entity, u32>> = None;
+    for (entity, mut facility, transform, owner) in &mut facilities {
+        if facility.current_target.is_none() && !facility.demand_waiting {
+            continue;
+        }
+        let position = transform.translation.truncate();
+        let nearest = sinks
+            .iter()
+            .filter(|(stockpile, _, role, sink_owner, condition)| {
+                stockpile.amount > 0
+                    && matches!(role, Some(crate::resources::StockpileRole::Sink))
+                    && sink_owner.is_some_and(|sink_owner| sink_owner.0 == owner.0)
+                    && condition.is_none_or(|condition| condition.is_operational())
+            })
+            .map(|(_, sink, ..)| sink.translation.truncate().distance(position))
+            .min_by(f32::total_cmp);
+        let derived = nearest.map_or(0, |distance| delivery_window(&tuning, distance));
+        let window = if derived >= facility.queued_space {
+            derived
+        } else {
+            let claimed = claimed.get_or_insert_with(|| {
+                let mut claimed = HashMap::<Entity, u32>::new();
+                for reservation in &reservations {
+                    *claimed.entry(reservation.destination).or_default() +=
+                        reservation.destination_remaining;
+                }
+                claimed
+            });
+            let held = (facility.input_amount + claimed.get(&entity).copied().unwrap_or_default())
+                .saturating_sub(facility.input_capacity);
+            derived.max(held)
+        };
+        if facility.queued_space != window {
+            facility.queued_space = window;
+        }
     }
 }
 
@@ -695,6 +813,50 @@ mod tests {
         assert!(!f.is_busy(Tuning::default().production.ticks_per_bot));
         assert_eq!(f.progress, 0);
         assert_eq!(f.current_target, None);
+    }
+
+    #[test]
+    fn claimable_capacity_queues_space_only_when_a_cycle_will_start() {
+        let tuning = Tuning::default();
+        let queued = tuning.production.cost_per_bot;
+        let mut f = ProductionFacility::new();
+        assert_eq!(f.claimable_capacity(&tuning), f.input_capacity);
+        f.demand_waiting = true;
+        assert_eq!(f.claimable_capacity(&tuning), f.input_capacity + queued);
+        f.demand_waiting = false;
+        f.current_target = Some(NanobotType::Worker);
+        assert_eq!(f.claimable_capacity(&tuning), f.input_capacity + queued);
+    }
+
+    fn balance_tuning() -> Tuning {
+        let mut tuning = Tuning::default();
+        tuning.production.cost_per_bot = 5;
+        tuning.production.ticks_per_bot = 120;
+        tuning.logistics.hauler_carry_capacity = 10;
+        tuning.logistics.material_work_ticks = 24;
+        tuning.logistics.bot_speed = 5.0;
+        tuning
+    }
+
+    #[test]
+    fn delivery_window_covers_consumption_during_the_lead_time() {
+        let tuning = balance_tuning();
+        // 240 ticks loading + 240 ticks travel at 5/120 per tick = 20.
+        assert_eq!(delivery_window(&tuning, 600.0), 20);
+        // 240 + 600 ticks = 35 minerals, rounded up to four loads.
+        assert_eq!(delivery_window(&tuning, 1_500.0), 40);
+        // Loading alone takes 240 ticks: ten minerals, one load.
+        assert_eq!(delivery_window(&tuning, 0.0), 10);
+    }
+
+    #[test]
+    fn claimable_space_queues_at_least_one_cycle() {
+        let tuning = balance_tuning();
+        let mut f = ProductionFacility::with_tuning(&tuning);
+        f.current_target = Some(NanobotType::Worker);
+        assert_eq!(f.claimable_capacity(&tuning), f.input_capacity + 5);
+        f.queued_space = 30;
+        assert_eq!(f.claimable_capacity(&tuning), f.input_capacity + 30);
     }
 
     #[test]

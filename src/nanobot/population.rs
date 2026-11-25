@@ -3,12 +3,13 @@
 use std::collections::{HashMap, HashSet};
 
 use super::work_access::{WorkAccess, WorkReachability};
+use crate::navigation::BODY_RADIUS;
 use bevy::prelude::*;
 
 use crate::nanobot::{
-    ActionableProjection, NanobotType, OpportunityCategory, OpportunityTarget,
+    ActionableProjection, GatherQuotas, NanobotType, OpportunityCategory, OpportunityTarget,
     RegionalAllocationSet, SwarmId, TerritorySnapshot, defender_population_demand,
-    production_facility_pick_target_system,
+    gather_quota_system, production_facility_pick_target_system,
 };
 
 /// Desired population by swarm and Nanobot Type, derived from discrete useful
@@ -72,15 +73,23 @@ impl PopulationDemand {
     }
 }
 
-/// Convert actionable work into bounded nanobot slots. Resource quantities are
-/// never summed directly: one large deposit is one extraction slot, not one slot
-/// per mineral.
+/// Workers that fit side by side on a deposit's work ring: the circle of body
+/// centers just outside its footprint, divided by one body diameter.
+pub fn gather_worker_slots(deposit_radius: f32) -> u32 {
+    let ring = std::f32::consts::TAU * (deposit_radius.max(0.0) + BODY_RADIUS);
+    ((ring / (2.0 * BODY_RADIUS)).floor() as u32).max(1)
+}
+
+/// Convert actionable work into bounded nanobot slots. Gathering Workers come
+/// from the swarm's Gather Quota, which balances income against spending;
+/// construction and maintenance add one Worker each.
 pub fn population_demand_system(
     tuning: Res<crate::tuning::Tuning>,
     projection: Res<ActionableProjection>,
     territory: Res<TerritorySnapshot>,
     mut demand: ResMut<PopulationDemand>,
     access: WorkAccess,
+    quotas: Res<GatherQuotas>,
 ) {
     demand.desired.clear();
     let mut haul_slots = HashMap::<(SwarmId, Entity), u32>::new();
@@ -92,13 +101,18 @@ pub fn population_demand_system(
                 .map(|owner| vec![owner])
                 .unwrap_or_else(|| live_swarms.iter().copied().collect());
             for swarm in owners {
-                if access.opportunity(swarm, opportunity.target) == WorkReachability::Unreachable {
+                if opportunity.category == OpportunityCategory::Gather
+                    || access.opportunity(swarm, opportunity.target)
+                        == WorkReachability::Unreachable
+                {
                     continue;
                 }
                 let (kind, slots) = match opportunity.category {
-                    OpportunityCategory::Gather
-                    | OpportunityCategory::PlannedBuild
-                    | OpportunityCategory::Maintenance => (NanobotType::Worker, 1),
+                    // Skipped above: the swarm's Gather Quota sizes gathering.
+                    OpportunityCategory::Gather => continue,
+                    OpportunityCategory::PlannedBuild | OpportunityCategory::Maintenance => {
+                        (NanobotType::Worker, 1)
+                    }
                     OpportunityCategory::Haul => {
                         let OpportunityTarget::Haul { source, .. } = opportunity.target else {
                             continue;
@@ -122,6 +136,10 @@ pub fn population_demand_system(
         demand.add(swarm, NanobotType::Hauler, slots);
     }
     for swarm in live_swarms {
+        let gather_quota = quotas
+            .economy(swarm)
+            .map_or(0, |economy| economy.gather_quota);
+        demand.add(swarm, NanobotType::Worker, gather_quota);
         demand.add(
             swarm,
             NanobotType::Defender,
@@ -136,10 +154,13 @@ impl Plugin for PopulationDemandPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<crate::tuning::Tuning>()
             .init_resource::<PopulationDemand>()
+            .init_resource::<GatherQuotas>()
             .add_systems(
                 FixedUpdate,
-                population_demand_system
-                    .after(RegionalAllocationSet::Project)
+                (gather_quota_system, population_demand_system)
+                    .chain()
+                    .after(RegionalAllocationSet::Invalidate)
+                    .before(RegionalAllocationSet::Acquire)
                     .before(production_facility_pick_target_system),
             );
     }
@@ -195,6 +216,14 @@ mod tests {
             demand.most_underfilled_type(SwarmId::PLAYER, &HashMap::new()),
             Some(NanobotType::Worker),
         );
+    }
+
+    #[test]
+    fn gather_slots_count_bodies_on_the_work_ring() {
+        // Ring radius 64 + 34 = 98; circumference ≈ 615.8; body diameter 68.
+        assert_eq!(gather_worker_slots(64.0), 9);
+        // A point-sized deposit still fits floor(2π·34 / 68) = 3 bodies.
+        assert_eq!(gather_worker_slots(0.0), 3);
     }
 
     #[test]

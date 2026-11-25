@@ -21,6 +21,7 @@ fn loaded_delivery_revalidation_keeps_commitments_without_materializing_routes()
     for hauler in [false, true] {
         let mut app = App::new();
         let grid = IntentGrid::new(4, 4);
+        app.init_resource::<top_down_2d_rts_prototype_nano_swarm::tuning::Tuning>();
         app.insert_resource(Navigation::new(
             &grid,
             vec![Obstacle::Rectangle {

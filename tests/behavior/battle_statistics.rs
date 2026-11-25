@@ -159,7 +159,7 @@ fn battle_stats_serve_one_compact_summary_of_the_whole_hitch_episode() {
             "nanobots": 2,
         })
     );
-    assert_eq!(payload["summary"]["schema_version"], 9);
+    assert_eq!(payload["summary"]["schema_version"], 10);
 }
 
 #[test]
@@ -310,7 +310,7 @@ fn effective_damage_is_cumulative_and_freezes_at_match_end() {
 
     let payload = stats(&mut app);
     let row = swarm_row(payload["samples"].as_array().unwrap().last().unwrap(), 0);
-    assert_eq!(payload["summary"]["schema_version"], 9);
+    assert_eq!(payload["summary"]["schema_version"], 10);
     assert_eq!(row["effective_damage_total"], 22);
     assert_eq!(row["effective_damage_nanobots"], 17);
     assert_eq!(row["effective_damage_structures"], 5);
@@ -777,7 +777,7 @@ fn battle_stats_samples_use_typed_json_with_null_for_empty_cells() {
         row["fixed_tick"],
         swarm_row(&payload["samples"][0], 1)["fixed_tick"]
     );
-    assert_eq!(payload["summary"]["schema_version"], 9);
+    assert_eq!(payload["summary"]["schema_version"], 10);
 }
 
 #[test]
@@ -962,4 +962,36 @@ fn battle_stats_are_unavailable_outside_an_ai_battle_recording() {
     let response = query_stats(&mut app, None, None);
     assert!(!response.ok);
     assert_eq!(response.error.unwrap().code, "battle_unavailable");
+}
+
+#[test]
+fn battle_samples_record_the_gather_quota_inputs() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{NanobotType, OwnerSwarm, ProductionFacility},
+        tuning::Tuning,
+    };
+
+    let mut app = common::sim_app_with_population_demand();
+    record_battle(&mut app);
+    let owner = OwnerSwarm(common::spawn_swarm_at(&mut app, Vec2::ZERO));
+    let stockpile = common::spawn_stockpile(&mut app, Vec2::X * 300.0, 30, 100);
+    app.world_mut().entity_mut(stockpile).insert(owner);
+    let mut facility = ProductionFacility::new();
+    facility.current_target = Some(NanobotType::Worker);
+    app.world_mut()
+        .spawn((facility, owner, Transform::from_xyz(-300.0, 0.0, 0.0)));
+    advance(&mut app, 60);
+
+    // One facility at default tuning spends 40 minerals per 10 s cycle.
+    let tuning = Tuning::default();
+    let row = latest_row(&mut app, 0);
+    assert_eq!(row["spending_capacity"], 4.0);
+    assert_eq!(row["reserve_target"], 40);
+    assert_eq!(row["reserve_stock"], 30);
+    assert_eq!(row["gather_quota"], 0, "no Gather-painted deposit to work");
+    assert_eq!(row["gathering_workers"], 0);
+    assert_eq!(
+        row["gather_rate"].as_f64().unwrap() as f32,
+        tuning.production.gather_rate_fallback
+    );
 }

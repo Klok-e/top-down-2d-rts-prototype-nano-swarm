@@ -9,8 +9,8 @@ use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        DirectMovementComponent, HaulerAssignment, HaulerLoad, LogisticsReservation, OwnerSwarm,
-        ProductionFacility, Swarm, SwarmId,
+        Cargo, DirectMovementComponent, HaulerAssignment, HaulerLoad, LogisticsReservation,
+        NanobotType, OwnerSwarm, ProductionFacility, Swarm, SwarmId,
     },
     resources::{ResourceKind, ResourceLedger, Stockpile, StockpileRole},
 };
@@ -588,6 +588,121 @@ fn hauler_reserves_partial_facility_leg_when_hopper_has_less_space_than_capacity
     assert_eq!(reservation.amount, 10);
 }
 
+/// A swarm with a stocked sink, a full producing facility, and one idle hauler.
+/// Only one production cycle may queue beyond the hopper.
+fn full_producing_facility_app() -> (App, Entity, Entity) {
+    full_producing_facility_app_with_waiting_loads(0)
+}
+
+fn full_producing_facility_app_with_waiting_loads(loads: u32) -> (App, Entity, Entity) {
+    let mut app = build_app();
+    {
+        let mut tuning = app.world_mut().resource_mut::<Tuning>();
+        tuning.logistics.material_work_ticks = 1;
+        tuning.production.cost_per_bot = 5;
+        tuning.production.input_capacity = 5;
+    }
+    let tuning = app.world().resource::<Tuning>().clone();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let sink_pos = Vec2::new(100.0, 0.0);
+    let sink = common::spawn_sink_stockpile(&mut app, sink_pos, 1000, 1000);
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
+    let mut facility = ProductionFacility::with_tuning(&tuning);
+    facility.input_amount = facility.input_capacity;
+    facility.current_target = Some(NanobotType::Worker);
+    // No production plugin runs here, so set the delivery window directly.
+    facility.queued_space = loads * tuning.logistics.hauler_carry_capacity;
+    let facility = app
+        .world_mut()
+        .spawn((
+            facility,
+            OwnerSwarm(swarm),
+            Transform::from_xyz(450.0, 0.0, 0.0),
+        ))
+        .id();
+    let hauler = common::spawn_hauler_at(&mut app, sink_pos + Vec2::new(-68.0, 0.0));
+    (app, facility, hauler)
+}
+
+/// Run until the hauler carries a queued delivery for `facility`, then let it
+/// reach the facility and wait there.
+fn queue_delivery_at_full_facility(app: &mut App, facility: Entity, hauler: Entity) -> u32 {
+    let mut queued = None;
+    for _ in 0..600 {
+        app.update();
+        let reservation = app.world().get::<LogisticsReservation>(hauler).copied();
+        let cargo = app.world().get::<Cargo>(hauler).map_or(0, |c| c.amount);
+        if reservation.is_some_and(|r| r.destination == facility && r.source_remaining == 0)
+            && cargo > 0
+        {
+            queued = Some(cargo);
+            break;
+        }
+    }
+    let carried = queued.expect("a full producing facility accepts one queued cycle");
+    for _ in 0..300 {
+        app.update();
+    }
+    carried
+}
+
+#[test]
+fn hauler_queues_a_cycle_for_a_full_producing_facility_and_unloads_after_it_drains() {
+    let (mut app, facility, hauler) = full_producing_facility_app();
+    let cost = app.world().resource::<Tuning>().production.cost_per_bot;
+
+    let carried = queue_delivery_at_full_facility(&mut app, facility, hauler);
+    assert_eq!(carried, cost, "the queued claim is one production cycle");
+    let hopper = app.world().get::<ProductionFacility>(facility).unwrap();
+    assert_eq!(
+        hopper.input_amount, hopper.input_capacity,
+        "a full hopper takes nothing"
+    );
+    assert_eq!(
+        app.world().get::<HaulerAssignment>(hauler).map(|a| a.sink),
+        Some(facility),
+        "the loaded hauler waits at the producing facility",
+    );
+
+    // The next cycle start drains one cycle from the hopper.
+    app.world_mut()
+        .get_mut::<ProductionFacility>(facility)
+        .unwrap()
+        .input_amount -= cost;
+    // One-tick transfers refill from waiting cargo far faster than the
+    // ~140-tick round trip a fresh delivery would need.
+    let mut refilled = false;
+    for _ in 0..20 {
+        app.update();
+        let hopper = app.world().get::<ProductionFacility>(facility).unwrap();
+        if hopper.input_amount == hopper.input_capacity {
+            refilled = true;
+            break;
+        }
+    }
+    assert!(refilled, "the waiting cargo refills the drained hopper");
+}
+
+#[test]
+fn waiting_hauler_leaves_a_full_facility_that_goes_idle() {
+    let (mut app, facility, hauler) = full_producing_facility_app();
+    queue_delivery_at_full_facility(&mut app, facility, hauler);
+
+    app.world_mut()
+        .get_mut::<ProductionFacility>(facility)
+        .unwrap()
+        .current_target = None;
+    for _ in 0..30 {
+        app.update();
+    }
+
+    assert_ne!(
+        app.world().get::<HaulerAssignment>(hauler).map(|a| a.sink),
+        Some(facility),
+        "an idle facility no longer drains, so its queued claim is released",
+    );
+}
+
 #[test]
 fn hauler_never_picks_source_stockpile_as_sink() {
     // Ping-pong guard (ADR-0005): a source-role stockpile is never
@@ -624,5 +739,95 @@ fn hauler_never_picks_source_stockpile_as_sink() {
     assert_eq!(
         assignment.sink, sink,
         "leg-2 sink is the sink stockpile; a source-role stockpile is never a sink (no reversal)"
+    );
+}
+
+#[test]
+fn two_hauler_loads_wait_at_a_full_facility_and_drain_over_several_cycles() {
+    let (mut app, facility, first) = full_producing_facility_app_with_waiting_loads(2);
+    let second = common::spawn_hauler_at(&mut app, Vec2::new(32.0, 60.0));
+    let carry = app
+        .world()
+        .resource::<Tuning>()
+        .logistics
+        .hauler_carry_capacity;
+    // Keep the hopper full so neither delivery can unload during the test.
+    let mut waiting = 0;
+    for _ in 0..600 {
+        app.world_mut()
+            .get_mut::<ProductionFacility>(facility)
+            .unwrap()
+            .input_amount = 5;
+        app.update();
+        waiting = [first, second]
+            .into_iter()
+            .filter(|hauler| {
+                app.world()
+                    .get::<LogisticsReservation>(*hauler)
+                    .is_some_and(|r| r.destination == facility && r.source_remaining == 0)
+                    && app.world().get::<Cargo>(*hauler).map_or(0, |c| c.amount) == carry
+            })
+            .count();
+        if waiting == 2 {
+            break;
+        }
+    }
+    assert_eq!(
+        waiting, 2,
+        "both Haulers carry a full load to the full facility and wait"
+    );
+
+    // Each simulated cycle drains 5 from the hopper. Two 20-mineral loads,
+    // each larger than the 5-mineral hopper, must empty into it over
+    // several cycles without overfilling it or going anywhere else.
+    let start = app
+        .world()
+        .get::<ProductionFacility>(facility)
+        .unwrap()
+        .input_amount;
+    let mut drained = 0;
+    let mut emptied = [false; 2];
+    for tick in 0..2_000 {
+        if tick % 10 == 0 {
+            let mut hopper = app
+                .world_mut()
+                .get_mut::<ProductionFacility>(facility)
+                .unwrap();
+            if hopper.input_amount >= 5 {
+                hopper.input_amount -= 5;
+                drained += 5;
+            }
+        }
+        app.update();
+        let hopper = app.world().get::<ProductionFacility>(facility).unwrap();
+        assert!(hopper.input_amount <= hopper.input_capacity);
+        for (index, hauler) in [first, second].into_iter().enumerate() {
+            let cargo = app.world().get::<Cargo>(hauler).map_or(0, |c| c.amount);
+            if cargo == 0 {
+                emptied[index] = true;
+            } else if !emptied[index] {
+                assert_eq!(
+                    app.world()
+                        .get::<LogisticsReservation>(hauler)
+                        .map(|r| r.destination),
+                    Some(facility),
+                    "a waiting Hauler keeps its facility claim until empty",
+                );
+            }
+        }
+        if emptied == [true, true] {
+            break;
+        }
+    }
+    assert_eq!(emptied, [true, true], "both loads drain into the facility");
+    let end = app
+        .world()
+        .get::<ProductionFacility>(facility)
+        .unwrap()
+        .input_amount;
+    assert_eq!(
+        drained + end - start,
+        2 * carry,
+        "every carried mineral entered the hopper"
     );
 }
