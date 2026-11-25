@@ -571,3 +571,44 @@ fn a_charger_emergency_takes_a_sliver_from_a_sink_being_refilled() {
     assert_eq!(assignment.source, sink);
     assert_eq!(assignment.sink, charger);
 }
+
+#[test]
+fn a_refilling_sliver_does_not_pin_a_terminal_away_from_a_full_sink() {
+    let (mut app, swarm, near, facility) = refilling_sink_with_hungry_facility(3);
+    // Farther from the facility than the refilling Sink, but holding full loads.
+    let far = common::spawn_sink_stockpile(&mut app, Vec2::new(1_000.0, 0.0), 100, 100);
+    app.world_mut().entity_mut(far).insert(OwnerSwarm(swarm));
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(600.0, 100.0));
+
+    wait_for_assignment(&mut app, hauler);
+
+    let assignment = app.world().get::<HaulerAssignment>(hauler).unwrap();
+    assert_ne!(assignment.source, near);
+    assert_eq!(assignment.source, far);
+    assert_eq!(assignment.sink, facility);
+}
+
+#[test]
+fn a_sliver_with_nothing_inbound_is_still_delivered() {
+    let mut app = common::sim_app_with_gather_haul();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(-200.0, 0.0), 3, 100);
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
+    let mut hungry = ProductionFacility::new();
+    hungry.demand_waiting = true;
+    let facility = app
+        .world_mut()
+        .spawn((
+            hungry,
+            OwnerSwarm(swarm),
+            Transform::from_xyz(200.0, 0.0, 0.0),
+        ))
+        .id();
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-200.0, 100.0));
+
+    wait_for_assignment(&mut app, hauler);
+
+    let assignment = app.world().get::<HaulerAssignment>(hauler).unwrap();
+    assert_eq!(assignment.source, sink);
+    assert_eq!(assignment.sink, facility);
+}

@@ -93,7 +93,7 @@ A stockpile placed near a resource deposit to receive resources extracted by wor
 _Avoid_: Mining depot, deposit storage
 
 **Sink Stockpile**:
-A shared stockpile placed in a build zone that stages material between hauler legs: it receives material from source stockpiles and may supply both production facilities and chargers through physical hauler transport. It holds more than a Source Stockpile, since every delivered mineral passes through it. It is not a terminal buffer.
+A shared stockpile placed in a build zone that stages material between hauler legs: it receives material from source stockpiles and may supply both production facilities and chargers through physical hauler transport. Its capacity is tuned apart from Source Stockpiles, since every delivered mineral passes through it. It is not a terminal buffer.
 _Avoid_: Global storage, base inventory, production facility hopper
 
 **Logistics Leg**:
