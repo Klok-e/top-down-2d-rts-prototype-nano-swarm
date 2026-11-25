@@ -2,7 +2,7 @@
     production: (
         cost_per_bot: 5,
         ticks_per_bot: 120,
-        input_capacity: 5,
+        input_capacity: 10,
         pressure_ticks: 60,
         reserve_seconds: 10.0,
         gather_rate_fallback: 0.3,
