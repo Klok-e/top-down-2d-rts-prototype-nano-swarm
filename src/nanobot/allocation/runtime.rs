@@ -992,6 +992,22 @@ fn choose_terminal_logistics_work(
             if quote.amount == 0 {
                 continue;
             }
+            // A Sink being refilled offers its unclaimed stock in slivers as
+            // loads land. Taking a sliver costs a whole round trip, so wait
+            // for a full load unless a Charger emergency cannot wait.
+            let unclaimed_stock = source_state
+                .amount
+                .saturating_sub(reserved_source.get(&source).copied().unwrap_or_default());
+            if source_role == Some(&StockpileRole::Sink)
+                && quote.amount < tuning.logistics.hauler_carry_capacity
+                && quote.amount >= unclaimed_stock
+                && reserved_destination
+                    .get(&source)
+                    .is_some_and(|incoming| *incoming > 0)
+                && quote.base_urgency >= STARTABLE_PRODUCTION_URGENCY
+            {
+                continue;
+            }
             let age = ages.waiting_ticks(sink);
             let urgency = u32::from(quote.base_urgency)
                 .saturating_sub(age / tuning.autonomy.terminal_fairness_promotion_ticks.max(1))

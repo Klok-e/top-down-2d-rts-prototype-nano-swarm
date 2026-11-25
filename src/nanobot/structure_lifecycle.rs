@@ -665,14 +665,14 @@ fn promote_planned_to_completion(
     match kind {
         PlannedKind::SourceStockpile => {
             commands.entity(planned_entity).insert((
-                empty_mineral_stockpile(tuning),
+                empty_mineral_stockpile(tuning.logistics.stockpile_capacity),
                 StockpileRole::Source,
                 visual,
             ));
         }
         PlannedKind::SinkStockpile => {
             commands.entity(planned_entity).insert((
-                empty_mineral_stockpile(tuning),
+                empty_mineral_stockpile(tuning.logistics.sink_capacity),
                 StockpileRole::Sink,
                 visual,
             ));
@@ -704,14 +704,14 @@ fn promote_planned_to_completion(
 }
 
 /// Empty mineral buffer used by every completed planned kind
-/// that needs a local `Stockpile`. Source and Sink Stockpiles
-/// share capacity; their role marks logistics position, not
-/// size.
-fn empty_mineral_stockpile(tuning: &Tuning) -> Stockpile {
+/// that needs a local `Stockpile`. Sinks are sized apart from
+/// Sources: every delivered mineral passes through a Sink, so its
+/// room bounds how many Haulers can bring loads in at once.
+fn empty_mineral_stockpile(capacity: u32) -> Stockpile {
     Stockpile {
         kind: ResourceKind::Minerals,
         amount: 0,
-        capacity: tuning.logistics.stockpile_capacity,
+        capacity,
         radius: 32.0,
     }
 }

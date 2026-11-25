@@ -81,7 +81,8 @@ tuning_schema! {
         worker_extract_per_pulse: u32 = 1 => ("Worker extract per pulse", "", 1.0, 1.0, 1.0, 1_000_000.0);
         hauler_transfer_per_pulse: u32 = 1 => ("Hauler transfer per pulse", "", 1.0, 1.0, 1.0, 1_000_000.0);
         material_work_ticks: u32 = 75 => ("Material transfer interval", "s", 1.0 / 60.0, 1.0 / 60.0, 1.0, 1_000_000_000.0);
-        stockpile_capacity: u32 = 150 => ("Stockpile capacity", "", 1.0, 1.0, 1.0, 1_000_000.0);
+        stockpile_capacity: u32 = 150 => ("Source Stockpile capacity", "", 1.0, 1.0, 1.0, 1_000_000.0);
+        sink_capacity: u32 = 150 => ("Sink Stockpile capacity", "", 1.0, 1.0, 1.0, 1_000_000.0);
         source_proximity_radius: f32 = 384.0 => ("Source proximity radius", "world", 1.0, 16.0, 1.0, 1_000_000.0);
         bot_speed: f32 = 5.0 => ("Bot speed", "world/tick", 1.0, 0.5, 0.01, 1_000_000.0);
         corridor_cost_multiplier: f32 = 0.35 => ("Corridor cost multiplier", "", 1.0, 0.05, 0.01, 1.0);

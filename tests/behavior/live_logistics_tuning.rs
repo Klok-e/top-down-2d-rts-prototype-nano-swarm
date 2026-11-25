@@ -62,6 +62,7 @@ fn live_logistics_capacity_shrink_preserves_minerals_and_releases_excess_claims(
     let mut new = old.clone();
     new.logistics.hauler_carry_capacity = 3;
     new.logistics.stockpile_capacity = 10;
+    new.logistics.sink_capacity = 10;
     app.insert_resource(new.clone());
 
     reconcile_logistics_tuning(app.world_mut(), &old, &new);

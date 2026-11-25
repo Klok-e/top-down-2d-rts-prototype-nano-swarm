@@ -967,7 +967,7 @@ fn battle_stats_are_unavailable_outside_an_ai_battle_recording() {
 #[test]
 fn battle_samples_record_the_gather_quota_inputs() {
     use top_down_2d_rts_prototype_nano_swarm::{
-        nanobot::{NanobotType, OwnerSwarm, ProductionFacility},
+        nanobot::{NanobotType, OwnerSwarm, ProductionFacility, reserve_weight},
         tuning::Tuning,
     };
 
@@ -987,7 +987,11 @@ fn battle_samples_record_the_gather_quota_inputs() {
     let row = latest_row(&mut app, 0);
     assert_eq!(row["spending_capacity"], 4.0);
     assert_eq!(row["reserve_target"], 40);
-    assert_eq!(row["reserve_stock"], 30);
+    // The stockpile is 600 units from the facility, a delivery longer than
+    // the reserve horizon at default tuning, so it counts in part.
+    let weighted = (30.0 * reserve_weight(&tuning, Some(600.0))).round() as u64;
+    assert!(weighted < 30);
+    assert_eq!(row["reserve_stock"], weighted);
     assert_eq!(row["gather_quota"], 0, "no Gather-painted deposit to work");
     assert_eq!(row["gathering_workers"], 0);
     assert_eq!(

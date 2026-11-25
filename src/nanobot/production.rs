@@ -129,11 +129,14 @@ pub struct ProductionFacility {
     /// cost. Lets haulers claim queued space even while the facility idles.
     pub demand_waiting: bool,
     /// Space beyond the hopper Haulers may claim while the facility is busy:
-    /// what it consumes during one delivery's lead time from its nearest
-    /// stocked Sink, in whole Hauler loads. Kept by
-    /// [`facility_delivery_window_system`]; 0 until first sized.
-    /// [`Self::claimable_capacity`] never offers less than one cycle.
+    /// what it consumes during one delivery's lead time, in whole Hauler
+    /// loads. Kept by [`facility_delivery_window_system`]; 0 until first
+    /// sized. [`Self::claimable_capacity`] never offers less than one cycle.
     pub queued_space: u32,
+    /// Fixed ticks from a Hauler claiming a delivery here to arriving with it,
+    /// averaged over recent deliveries; `None` until one arrives. Kept by
+    /// [`facility_lead_time_system`].
+    pub measured_lead_ticks: Option<f32>,
 }
 
 impl ProductionFacility {
@@ -155,6 +158,7 @@ impl ProductionFacility {
             input_capacity: tuning.production.input_capacity,
             demand_waiting: false,
             queued_space: 0,
+            measured_lead_ticks: None,
         }
     }
 
@@ -677,9 +681,11 @@ impl Plugin for ProductionPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Tuning>()
             .init_resource::<ProductionPressure>()
+            .init_resource::<FacilityClaimTimes>()
             .add_systems(
                 FixedUpdate,
-                facility_delivery_window_system
+                (facility_lead_time_system, facility_delivery_window_system)
+                    .chain()
                     .after(crate::nanobot::RegionalAllocationSet::Invalidate)
                     .before(crate::nanobot::RegionalAllocationSet::Acquire)
                     .run_if(crate::nanobot::allocation::allocation_tick_due),
@@ -698,22 +704,113 @@ impl Plugin for ProductionPlugin {
     }
 }
 
-/// Minerals a facility consumes while one delivery travels from a Sink
-/// `sink_distance` away, rounded up to whole Hauler loads. Lead time is the
-/// trip to the Sink, loading a full load, and the trip back; the facility
-/// consumes one cycle's cost per production cycle meanwhile (Little's law).
-pub fn delivery_window(tuning: &Tuning, sink_distance: f32) -> u32 {
+/// Weight of each new delivery in a facility's measured lead time.
+const LEAD_TIME_SMOOTHING: f32 = 0.2;
+
+/// Fixed ticks for one delivery from a Sink `sink_distance` away, before any
+/// delivery has been measured: the trip to the Sink, loading a full load, and
+/// the trip back.
+pub fn estimated_lead_ticks(tuning: &Tuning, sink_distance: f32) -> f32 {
     let carry = tuning.logistics.hauler_carry_capacity.max(1);
     let loading = (carry * tuning.logistics.material_work_ticks) as f32;
     let travel = 2.0 * sink_distance.max(0.0) / tuning.logistics.bot_speed;
+    loading + travel
+}
+
+/// Minerals a facility consumes during `lead_ticks`, rounded up to whole
+/// Hauler loads: it consumes one cycle's cost per production cycle while a
+/// delivery is under way (Little's law).
+pub fn window_for_lead(tuning: &Tuning, lead_ticks: f32) -> u32 {
+    let carry = tuning.logistics.hauler_carry_capacity.max(1);
     let per_tick =
         tuning.production.cost_per_bot as f32 / tuning.production.ticks_per_bot.max(1) as f32;
-    let loads = (per_tick * (loading + travel) / carry as f32).ceil() as u32;
+    let loads = (per_tick * lead_ticks.max(0.0) / carry as f32).ceil() as u32;
     loads.saturating_mul(carry)
 }
 
-/// Size each busy facility's delivery window from its nearest stocked Sink of
-/// the same owner. Runs on the allocation cadence, since only claims read it.
+/// Delivery window for an unmeasured facility whose nearest stocked Sink is
+/// `sink_distance` away.
+pub fn delivery_window(tuning: &Tuning, sink_distance: f32) -> u32 {
+    window_for_lead(tuning, estimated_lead_ticks(tuning, sink_distance))
+}
+
+/// Facility claims Haulers hold, by Hauler, with the allocation tick each was
+/// first seen; kept until the claim ends.
+#[derive(Debug, Default, Resource)]
+pub struct FacilityClaimTimes {
+    claims: HashMap<Entity, ClaimTime>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ClaimTime {
+    facility: Entity,
+    claimed_at: u64,
+    arrived: bool,
+}
+
+/// Time each Hauler's facility claim from when it is first seen until the
+/// Hauler stands at the facility with its load, and fold it into the
+/// facility's measured lead time. Time spent waiting for hopper room after
+/// arriving is excluded, so a facility that cannot consume faster does not
+/// read as far away. Runs on the allocation cadence, when claims are made.
+#[allow(clippy::type_complexity)]
+pub fn facility_lead_time_system(
+    clock: Res<crate::nanobot::AllocationClock>,
+    mut times: ResMut<FacilityClaimTimes>,
+    haulers: Query<
+        (
+            Entity,
+            &Transform,
+            &crate::nanobot::LogisticsReservation,
+            Option<&crate::nanobot::Cargo>,
+            Has<crate::nanobot::DirectMovementComponent>,
+        ),
+        With<crate::nanobot::HaulerAssignment>,
+    >,
+    mut facilities: Query<(&mut ProductionFacility, &Transform)>,
+) {
+    let now = clock.tick();
+    let fixed_ticks_per_period =
+        crate::nanobot::ALLOCATION_TICK_PERIOD.as_secs_f32() * crate::SIMULATION_HZ as f32;
+    let mut live = std::collections::HashSet::new();
+    for (hauler, transform, reservation, cargo, moving) in &haulers {
+        let Ok((mut facility, facility_transform)) = facilities.get_mut(reservation.destination)
+        else {
+            continue;
+        };
+        live.insert(hauler);
+        let fresh = ClaimTime {
+            facility: reservation.destination,
+            claimed_at: now,
+            arrived: false,
+        };
+        let time = times.claims.entry(hauler).or_insert(fresh);
+        if time.facility != reservation.destination {
+            *time = fresh;
+        }
+        let loaded = cargo.is_some_and(|cargo| cargo.amount > 0);
+        if time.arrived
+            || moving
+            || !loaded
+            || !crate::nanobot::InteractionRegion::structure(facility_transform)
+                .contains(transform.translation.truncate())
+        {
+            continue;
+        }
+        time.arrived = true;
+        // Claims are made after this system runs, so each was first seen one
+        // period after it was made.
+        let lead = (now - time.claimed_at + 1) as f32 * fixed_ticks_per_period;
+        facility.measured_lead_ticks = Some(facility.measured_lead_ticks.map_or(lead, |average| {
+            average + LEAD_TIME_SMOOTHING * (lead - average)
+        }));
+    }
+    times.claims.retain(|hauler, _| live.contains(hauler));
+}
+
+/// Size each busy facility's delivery window from its measured lead time, or
+/// before any delivery is measured, from its nearest stocked Sink of the same
+/// owner. Runs on the allocation cadence, since only claims read it.
 /// The window never shrinks below what Haulers already claimed, so a Sink
 /// emptying or restocking nearby cannot revoke a delivery in flight; Hauler
 /// claims are summed only when some window would shrink.
@@ -749,7 +846,10 @@ pub fn facility_delivery_window_system(
             })
             .map(|(_, sink, ..)| sink.translation.truncate().distance(position))
             .min_by(f32::total_cmp);
-        let derived = nearest.map_or(0, |distance| delivery_window(&tuning, distance));
+        let derived = facility
+            .measured_lead_ticks
+            .or_else(|| nearest.map(|distance| estimated_lead_ticks(&tuning, distance)))
+            .map_or(0, |lead| window_for_lead(&tuning, lead));
         let window = if derived >= facility.queued_space {
             derived
         } else {
