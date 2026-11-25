@@ -285,22 +285,100 @@ fn starved_facility_with_unmet_demand_offers_a_queued_cycle_to_haulers() {
     );
 }
 
+/// Run one regional allocation period, after which delivery windows are fresh.
+fn run_allocation_period(app: &mut App) {
+    for _ in 0..7 {
+        app.update();
+    }
+}
+
 #[test]
-fn delivery_window_follows_the_nearest_stocked_sink_but_keeps_held_claims() {
-    use top_down_2d_rts_prototype_nano_swarm::nanobot::{LogisticsReservation, delivery_window};
+fn delivery_window_follows_the_nearest_usable_stocked_sink() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::delivery_window;
     use top_down_2d_rts_prototype_nano_swarm::resources::Stockpile;
 
     let mut app = common::sim_app_with_production();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    let facility = app
+    let rival = app
         .world_mut()
         .spawn((
-            ProductionFacility::new(),
-            OwnerSwarm(swarm),
-            Transform::from_xyz(0.0, 0.0, 0.0),
+            top_down_2d_rts_prototype_nano_swarm::nanobot::Swarm {},
+            SwarmId(7),
         ))
         .id();
+    let mut busy = ProductionFacility::new();
+    busy.current_target = Some(NanobotType::Worker);
+    let facility = app
+        .world_mut()
+        .spawn((busy, OwnerSwarm(swarm), Transform::from_xyz(0.0, 0.0, 0.0)))
+        .id();
     let near = common::spawn_sink_stockpile(&mut app, Vec2::new(600.0, 0.0), 30, 60);
+    let far = common::spawn_sink_stockpile(&mut app, Vec2::new(-3_000.0, 0.0), 30, 60);
+    for sink in [near, far] {
+        app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
+    }
+    // Nearer Sinks Haulers cannot draw from: a rival's and a broken one.
+    let foreign = common::spawn_sink_stockpile(&mut app, Vec2::new(100.0, 0.0), 30, 60);
+    app.world_mut()
+        .entity_mut(foreign)
+        .insert(OwnerSwarm(rival));
+    let broken = common::spawn_sink_stockpile(&mut app, Vec2::new(0.0, 100.0), 30, 60);
+    app.world_mut().entity_mut(broken).insert((
+        OwnerSwarm(swarm),
+        Structure {
+            kind: StructureKind::Basic,
+            health: SUPPORT_OPERATIONAL_HEALTH_THRESHOLD - 1,
+            ticks_since_maintained: 0,
+        },
+    ));
+    let tuning = app.world().resource::<Tuning>().clone();
+    let window = |app: &App| {
+        app.world()
+            .get::<ProductionFacility>(facility)
+            .unwrap()
+            .queued_space
+    };
+
+    run_allocation_period(&mut app);
+    assert_eq!(window(&app), delivery_window(&tuning, 600.0));
+
+    app.world_mut().get_mut::<Stockpile>(near).unwrap().amount = 0;
+    run_allocation_period(&mut app);
+    let far_window = delivery_window(&tuning, 3_000.0);
+    assert!(far_window > delivery_window(&tuning, 600.0));
+    assert_eq!(
+        window(&app),
+        far_window,
+        "deliveries now come from the far Sink"
+    );
+
+    app.world_mut().get_mut::<Stockpile>(far).unwrap().amount = 0;
+    run_allocation_period(&mut app);
+    assert_eq!(window(&app), 0, "no usable stocked Sink");
+    let state = app.world().get::<ProductionFacility>(facility).unwrap();
+    assert_eq!(
+        state.claimable_capacity(&tuning),
+        state.input_capacity + tuning.production.cost_per_bot,
+        "one cycle is always offered"
+    );
+}
+
+#[test]
+fn delivery_window_keeps_held_claims_until_they_finish() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{
+        HaulerAssignment, LogisticsReservation, delivery_window,
+    };
+    use top_down_2d_rts_prototype_nano_swarm::resources::Stockpile;
+
+    let mut app = common::sim_app_with_production();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let mut busy = ProductionFacility::new();
+    busy.current_target = Some(NanobotType::Worker);
+    let facility = app
+        .world_mut()
+        .spawn((busy, OwnerSwarm(swarm), Transform::from_xyz(0.0, 0.0, 0.0)))
+        .id();
+    let near = common::spawn_sink_stockpile(&mut app, Vec2::new(600.0, 0.0), 0, 60);
     let far = common::spawn_sink_stockpile(&mut app, Vec2::new(-3_000.0, 0.0), 30, 60);
     for sink in [near, far] {
         app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
@@ -312,18 +390,12 @@ fn delivery_window_follows_the_nearest_stocked_sink_but_keeps_held_claims() {
             .unwrap()
             .queued_space
     };
-
-    app.update();
-    assert_eq!(window(&app), delivery_window(&tuning, 600.0));
-
-    // The near Sink runs dry: deliveries now come from the far one.
-    app.world_mut().get_mut::<Stockpile>(near).unwrap().amount = 0;
-    app.update();
+    run_allocation_period(&mut app);
     let far_window = delivery_window(&tuning, 3_000.0);
-    assert!(far_window > delivery_window(&tuning, 600.0));
     assert_eq!(window(&app), far_window);
 
-    // Haulers hold claims for the far window when the near Sink restocks.
+    // A Hauler holds a claim sized for the far window when the near Sink
+    // restocks.
     let input_capacity = app
         .world()
         .get::<ProductionFacility>(facility)
@@ -331,12 +403,30 @@ fn delivery_window_follows_the_nearest_stocked_sink_but_keeps_held_claims() {
         .input_capacity;
     let mut claim = LogisticsReservation::new(far, facility, ResourceKind::Minerals, 0);
     claim.destination_remaining = input_capacity + far_window;
-    app.world_mut().spawn(claim);
+    let hauler = app
+        .world_mut()
+        .spawn((
+            claim,
+            HaulerAssignment {
+                source: far,
+                sink: facility,
+                pickup_role: Default::default(),
+            },
+        ))
+        .id();
     app.world_mut().get_mut::<Stockpile>(near).unwrap().amount = 30;
-    app.update();
+    run_allocation_period(&mut app);
     assert_eq!(
         window(&app),
         far_window,
         "the window never shrinks below claims Haulers already hold"
+    );
+
+    app.world_mut().despawn(hauler);
+    run_allocation_period(&mut app);
+    assert_eq!(
+        window(&app),
+        delivery_window(&tuning, 600.0),
+        "once the claim finishes the window follows the near Sink again"
     );
 }

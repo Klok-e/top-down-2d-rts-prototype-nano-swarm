@@ -77,7 +77,7 @@ pub enum RegionalAllocationSet {
 }
 
 #[derive(Debug, Resource)]
-pub(super) struct AllocationTickDue {
+pub(crate) struct AllocationTickDue {
     due: bool,
     initialized: bool,
 }
@@ -183,7 +183,9 @@ fn advance_allocation_clock_system(
     due.initialized = true;
 }
 
-fn allocation_tick_due(due: Res<AllocationTickDue>) -> bool {
+/// True on fixed steps where regional allocation acquires work (every
+/// [`super::ALLOCATION_TICK_PERIOD`] or on request).
+pub(crate) fn allocation_tick_due(due: Res<AllocationTickDue>) -> bool {
     due.due
 }
 

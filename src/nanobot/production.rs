@@ -131,7 +131,8 @@ pub struct ProductionFacility {
     /// Space beyond the hopper Haulers may claim while the facility is busy:
     /// what it consumes during one delivery's lead time from its nearest
     /// stocked Sink, in whole Hauler loads. Kept by
-    /// [`facility_delivery_window_system`]; never below one cycle.
+    /// [`facility_delivery_window_system`]; 0 until first sized.
+    /// [`Self::claimable_capacity`] never offers less than one cycle.
     pub queued_space: u32,
 }
 
@@ -679,7 +680,9 @@ impl Plugin for ProductionPlugin {
             .add_systems(
                 FixedUpdate,
                 facility_delivery_window_system
-                    .before(crate::nanobot::RegionalAllocationSet::Project),
+                    .after(crate::nanobot::RegionalAllocationSet::Invalidate)
+                    .before(crate::nanobot::RegionalAllocationSet::Acquire)
+                    .run_if(crate::nanobot::allocation::allocation_tick_due),
             )
             .add_systems(
                 FixedUpdate,
@@ -709,9 +712,11 @@ pub fn delivery_window(tuning: &Tuning, sink_distance: f32) -> u32 {
     loads.saturating_mul(carry)
 }
 
-/// Size each facility's delivery window from its nearest stocked Sink of the
-/// same owner. The window never shrinks below what Haulers already claimed,
-/// so a Sink emptying or restocking nearby cannot revoke a delivery in flight.
+/// Size each busy facility's delivery window from its nearest stocked Sink of
+/// the same owner. Runs on the allocation cadence, since only claims read it.
+/// The window never shrinks below what Haulers already claimed, so a Sink
+/// emptying or restocking nearby cannot revoke a delivery in flight; Hauler
+/// claims are summed only when some window would shrink.
 #[allow(clippy::type_complexity)]
 pub fn facility_delivery_window_system(
     tuning: Res<Tuning>,
@@ -721,28 +726,45 @@ pub fn facility_delivery_window_system(
         &Transform,
         Option<&crate::resources::StockpileRole>,
         Option<&OwnerSwarm>,
+        Option<&SupportCondition>,
     )>,
-    reservations: Query<&crate::nanobot::LogisticsReservation>,
+    reservations: Query<
+        &crate::nanobot::LogisticsReservation,
+        With<crate::nanobot::HaulerAssignment>,
+    >,
 ) {
-    let mut claimed = HashMap::<Entity, u32>::new();
-    for reservation in &reservations {
-        *claimed.entry(reservation.destination).or_default() += reservation.destination_remaining;
-    }
+    let mut claimed: Option<HashMap<Entity, u32>> = None;
     for (entity, mut facility, transform, owner) in &mut facilities {
+        if facility.current_target.is_none() && !facility.demand_waiting {
+            continue;
+        }
         let position = transform.translation.truncate();
         let nearest = sinks
             .iter()
-            .filter(|(stockpile, _, role, sink_owner)| {
+            .filter(|(stockpile, _, role, sink_owner, condition)| {
                 stockpile.amount > 0
                     && matches!(role, Some(crate::resources::StockpileRole::Sink))
                     && sink_owner.is_some_and(|sink_owner| sink_owner.0 == owner.0)
+                    && condition.is_none_or(|condition| condition.is_operational())
             })
             .map(|(_, sink, ..)| sink.translation.truncate().distance(position))
             .min_by(f32::total_cmp);
         let derived = nearest.map_or(0, |distance| delivery_window(&tuning, distance));
-        let held = (facility.input_amount + claimed.get(&entity).copied().unwrap_or_default())
-            .saturating_sub(facility.input_capacity);
-        let window = derived.max(held);
+        let window = if derived >= facility.queued_space {
+            derived
+        } else {
+            let claimed = claimed.get_or_insert_with(|| {
+                let mut claimed = HashMap::<Entity, u32>::new();
+                for reservation in &reservations {
+                    *claimed.entry(reservation.destination).or_default() +=
+                        reservation.destination_remaining;
+                }
+                claimed
+            });
+            let held = (facility.input_amount + claimed.get(&entity).copied().unwrap_or_default())
+                .saturating_sub(facility.input_capacity);
+            derived.max(held)
+        };
         if facility.queued_space != window {
             facility.queued_space = window;
         }
