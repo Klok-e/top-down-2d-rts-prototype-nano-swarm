@@ -4,8 +4,7 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z, ZONE_BLOCK_SIZE,
     fly_camera::CameraZoom2d,
-    nanobot::{find_build_zone_placement, overlaps_any_obstacle},
-    navigation::CELL_WIDTH,
+    nanobot::{PlannedKind, find_build_zone_placement, overlaps_any_obstacle},
 };
 
 use crate::harness::{TestContext, TestFlow, clear_nanobots_and_sprite_entities};
@@ -78,23 +77,23 @@ fn spawn_placement_examples(world: &mut World) {
             Transform::from_translation(center.extend(1.0)),
         ));
 
-        let kind_seed = if index.is_multiple_of(2) { 27 } else { 26 };
-        let (_, position) = find_build_zone_placement(&[cell], &[], kind_seed)
+        let (kind, kind_seed) = if index.is_multiple_of(2) {
+            (PlannedKind::ProductionFacility, 27)
+        } else {
+            (PlannedKind::SinkStockpile, 26)
+        };
+        let half_extent = kind.footprint_half_extent();
+        let (_, position) = find_build_zone_placement(&[cell], &[], half_extent, kind_seed)
             .expect("an empty Build cell has available placement");
         assert!(position.distance(center) > 0.01);
-        assert!(!overlaps_any_obstacle(
-            position,
-            CELL_WIDTH / 2.0,
-            16.0,
-            &[],
-        ));
-        let color = if kind_seed == 27 {
+        assert!(!overlaps_any_obstacle(position, half_extent, 16.0, &[]));
+        let color = if kind == PlannedKind::ProductionFacility {
             Color::srgb(0.95, 0.55, 0.18)
         } else {
             Color::srgb(0.35, 0.9, 0.65)
         };
         world.spawn((
-            Sprite::from_color(color, Vec2::splat(CELL_WIDTH)),
+            Sprite::from_color(color, Vec2::splat(2.0 * half_extent)),
             Transform::from_translation(position.extend(GAMEPLAY_SPRITE_Z)),
         ));
     }
