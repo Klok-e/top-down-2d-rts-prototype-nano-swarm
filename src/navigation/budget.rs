@@ -1322,28 +1322,37 @@ impl Navigation {
         swarm: SwarmId,
         hauler: bool,
     ) -> RouteOutcome {
-        let paint = PaintCosts {
-            corridor_cost_multiplier: self
-                .scheduler
-                .lock()
-                .unwrap()
-                .corridor_cost_multiplier
-                .unwrap_or_else(|| {
-                    crate::tuning::Tuning::default()
-                        .logistics
-                        .corridor_cost_multiplier
-                }),
-            corridor_swarms: grid
-                .iter_active_cells()
-                .flat_map(|(_, cell)| cell.owners(IntentKind::Corridor))
-                .collect(),
-            cells: grid
-                .iter_active_cells()
-                .map(|(p, c)| (p, c.clone()))
-                .collect(),
+        let paint = if hauler {
+            PaintCosts {
+                corridor_cost_multiplier: self
+                    .scheduler
+                    .lock()
+                    .unwrap()
+                    .corridor_cost_multiplier
+                    .unwrap_or_else(|| {
+                        crate::tuning::Tuning::default()
+                            .logistics
+                            .corridor_cost_multiplier
+                    }),
+                corridor_swarms: grid
+                    .iter_active_cells()
+                    .flat_map(|(_, cell)| cell.owners(IntentKind::Corridor))
+                    .collect(),
+                cells: grid
+                    .iter_active_cells()
+                    .map(|(p, c)| (p, c.clone()))
+                    .collect(),
+            }
+        } else {
+            PaintCosts::default()
         };
-        let future = self.async_solve(start, goal, &paint, swarm, hauler, false);
-        poll_with_budget(future, &mut || true).expect("unlimited route search")
+        let mut future =
+            std::pin::pin!(self.async_solve(start, goal, &paint, swarm, hauler, false));
+        loop {
+            if let (Poll::Ready(outcome), _) = poll_units(future.as_mut(), usize::MAX) {
+                return outcome;
+            }
+        }
     }
     async fn async_solve(
         &self,
