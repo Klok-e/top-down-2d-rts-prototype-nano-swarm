@@ -30,7 +30,7 @@ The implemented design, run alongside the unchanged baseline on the same seeds:
 | Defender-seconds at empty Charge | 691 / 402 | 589 / 331 |
 | Haulers at the end | 53 / 42 | 75 / 73 |
 
-Run alongside a Sink per facility on Standard, it built 258 bots against 246, within noise. It ships regardless of that comparison. Flanks Defender time at empty Charge was 331 against 163 for a Sink per facility in an earlier, separate run; Standard showed no difference, and Flanks was not rerun.
+Run alongside a Sink per facility on Standard, it built 258 bots against 246, within noise. It ships regardless of that comparison. Alongside a Sink per facility on Flanks seeds 42-51, Defender time at empty Charge was 272 against 264 Defender-seconds per swarm, and bots built 337 against 312, both within noise. An earlier five-seed gap came from seed 42 alone.
 
 ## Considered Options
 
@@ -42,5 +42,5 @@ Run alongside a Sink per facility on Standard, it built 258 bots against 246, wi
 ## Consequences
 
 - On the current maps the margin rarely skips a Sink, because a Sink at the nearest spot sits much closer to its facility than any Source.
-- Each navigation geometry change drops the cached walking paths, and the next pass recomputes every facility's paths at once. Side by side with a Sink per facility, mean tick time was unchanged (3.42 vs 3.40 ms) but the worst tick rose from 30.5 to 36.8 ms, measured on a loaded machine.
+- Each navigation geometry change drops the cached walking paths, and the next pass recomputes every facility's paths at once: up to 23 searches in one pass on Standard seed 11. Walking searches skip the intent grid's paint and poll their work in batches, which cut the worst pass from 7.7 to 5.7 ms; about 20 passes per 10-minute battle still exceed 2 ms. Spreading searches over passes would remove the rest at the cost of delaying Sink decisions.
 - Two follow-ups remain open: terminals often take small loads from Sources that gatherers are still filling (15-60% of direct loads were 4 minerals or fewer), and Hauler Population Demand falls when Sink pickup trips do.
