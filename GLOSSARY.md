@@ -93,7 +93,7 @@ A stockpile placed near a resource deposit to receive resources extracted by wor
 _Avoid_: Mining depot, deposit storage
 
 **Sink Stockpile**:
-A shared stockpile placed in a build zone that stages material between hauler legs: it receives material from source stockpiles and may supply both production facilities and chargers through physical hauler transport. It is not a terminal buffer.
+A shared stockpile placed in a build zone that stages material between hauler legs: it receives material from source stockpiles and may supply both production facilities and chargers through physical hauler transport. Its capacity is tuned apart from Source Stockpiles, since every delivered mineral passes through it. It is not a terminal buffer.
 _Avoid_: Global storage, base inventory, production facility hopper
 
 **Logistics Leg**:
@@ -213,7 +213,7 @@ The mineral rate a swarm would spend if every Production Facility with unmet Pop
 _Avoid_: Expenditure, consumption rate, burn rate
 
 **Reserve Target**:
-The stockpiled minerals a swarm aims to hold: a tuned number of seconds of its Spending Capacity. Only Source and Sink Stockpiles count toward it; minerals in Chargers, facility hoppers, or cargo are already committed.
+The stockpiled minerals a swarm aims to hold: a tuned number of seconds of its Spending Capacity. Only Source and Sink Stockpiles count toward it, each by how soon its minerals could reach the swarm's nearest Production Facility or Charger: in full within the reserve horizon, in part beyond it. Minerals in Chargers, facility hoppers, or cargo are already committed.
 _Avoid_: Mineral reserve, bank, buffer target
 
 **Gather Quota**:
@@ -229,5 +229,5 @@ Consecutive unmet Population Demand of any type while every operational Producti
 _Avoid_: Build-zone size, instantaneous deficit
 
 **Production Facility**:
-A swarm-owned terminal support structure that consumes delivered resources and automatically fills its swarm's typed Population Demand. While producing or awaiting demand it accepts Logistics Reservations beyond its input buffer, covering what it consumes while a delivery travels from its nearest stocked Sink, and at least one production cycle, and those Haulers wait for room to unload. Production Pressure may create one unfinished expansion commitment per swarm; capacity is reassessed after that commitment completes or is lost.
+A swarm-owned terminal support structure that consumes delivered resources and automatically fills its swarm's typed Population Demand. While producing or awaiting demand it accepts Logistics Reservations beyond its input buffer, covering what it consumes while a delivery is under way, as recent deliveries took, and at least one production cycle, and those Haulers wait for room to unload. Production Pressure may create one unfinished expansion commitment per swarm; capacity is reassessed after that commitment completes or is lost.
 _Avoid_: Barracks, factory queue, manual spawner

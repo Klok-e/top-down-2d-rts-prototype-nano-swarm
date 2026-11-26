@@ -62,6 +62,7 @@ fn live_logistics_capacity_shrink_preserves_minerals_and_releases_excess_claims(
     let mut new = old.clone();
     new.logistics.hauler_carry_capacity = 3;
     new.logistics.stockpile_capacity = 10;
+    new.logistics.sink_capacity = 10;
     app.insert_resource(new.clone());
 
     reconcile_logistics_tuning(app.world_mut(), &old, &new);
@@ -256,4 +257,24 @@ fn live_smaller_stockpiles_accept_existing_worker_and_hauler_loads_in_segments()
             "the entire retained load must unload across smaller buffers (hauler={is_hauler})"
         );
     }
+}
+
+#[test]
+fn sink_capacity_edits_resize_only_sink_stockpiles() {
+    let mut app = common::sim_app_with_gather_haul();
+    let source = common::spawn_stockpile(&mut app, Vec2::ZERO, 5, 60);
+    app.world_mut()
+        .entity_mut(source)
+        .insert(top_down_2d_rts_prototype_nano_swarm::resources::StockpileRole::Source);
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(300.0, 0.0), 5, 150);
+    let old = Tuning::default();
+    let mut new = old.clone();
+    new.logistics.stockpile_capacity = 40;
+    new.logistics.sink_capacity = 90;
+    app.insert_resource(new.clone());
+
+    reconcile_logistics_tuning(app.world_mut(), &old, &new);
+
+    assert_eq!(app.world().get::<Stockpile>(source).unwrap().capacity, 40);
+    assert_eq!(app.world().get::<Stockpile>(sink).unwrap().capacity, 90);
 }

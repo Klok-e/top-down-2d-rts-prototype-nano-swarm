@@ -463,7 +463,16 @@ pub fn regional_allocation_acquisition_system(
                 continue;
             };
             let reserved = reserved_source.get(&source).copied().unwrap_or_default();
-            if stockpile.amount <= reserved {
+            let unclaimed = stockpile.amount.saturating_sub(reserved);
+            // A refilling sliver serves only Charger emergencies, so it must
+            // not pin terminals away from Sinks that hold full loads.
+            let inbound = reserved_destination
+                .get(&source)
+                .copied()
+                .unwrap_or_default();
+            if unclaimed == 0
+                || refilling_sliver(unclaimed, inbound, tuning.logistics.hauler_carry_capacity)
+            {
                 continue;
             }
             let distance = source_transform
@@ -851,6 +860,13 @@ pub fn regional_allocation_acquisition_system(
     }
 }
 
+/// A Sink other Haulers are refilling whose unclaimed stock is short of a
+/// full Hauler load. Only a Charger emergency takes a pickup from it; other
+/// terminals wait for the load to land or draw from another Sink.
+fn refilling_sliver(unclaimed: u32, inbound: u32, hauler_capacity: u32) -> bool {
+    inbound > 0 && unclaimed < hauler_capacity
+}
+
 /// Base urgency of a startable production cycle. Lower base urgencies are
 /// Charger emergencies that sustain committed Defenders.
 const STARTABLE_PRODUCTION_URGENCY: u8 = 3;
@@ -981,15 +997,35 @@ fn choose_terminal_logistics_work(
                     continue;
                 }
             }
+            let source_claims = reserved_source.get(&source).copied().unwrap_or_default();
             let quote = buffer.quote(
                 source_state.amount,
-                reserved_source.get(&source).copied().unwrap_or_default(),
+                source_claims,
                 reserved_destination.get(&sink).copied().unwrap_or_default(),
                 charger_demand.get(&sink).copied(),
                 tuning.logistics.hauler_carry_capacity,
                 tuning.production.cost_per_bot,
             );
             if quote.amount == 0 {
+                continue;
+            }
+            // A Sink being refilled offers its unclaimed stock in slivers as
+            // loads land. Taking a sliver costs a whole round trip, so wait
+            // for a full load unless a Charger emergency cannot wait.
+            let unclaimed_stock = source_state.amount.saturating_sub(source_claims);
+            let inbound = reserved_destination
+                .get(&source)
+                .copied()
+                .unwrap_or_default();
+            if source_role == Some(&StockpileRole::Sink)
+                && refilling_sliver(
+                    unclaimed_stock,
+                    inbound,
+                    tuning.logistics.hauler_carry_capacity,
+                )
+                && quote.amount >= unclaimed_stock
+                && quote.base_urgency >= STARTABLE_PRODUCTION_URGENCY
+            {
                 continue;
             }
             let age = ages.waiting_ticks(sink);

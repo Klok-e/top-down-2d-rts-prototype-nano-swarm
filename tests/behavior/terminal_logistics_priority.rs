@@ -492,3 +492,123 @@ fn starving_facility_beats_a_nearer_facility_whose_next_cycle_is_funded() {
     assert_ne!(sink_of, funded, "a queued load cannot raise output sooner");
     assert_eq!(sink_of, starving);
 }
+
+/// A Sink holding `stock` with an inbound claim from a Source, and an empty
+/// facility beside it whose swarm wants nanobots.
+fn refilling_sink_with_hungry_facility(stock: u32) -> (App, Entity, Entity, Entity) {
+    let mut app = common::sim_app_with_gather_haul();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(-200.0, 0.0), stock, 100);
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
+    let source = common::spawn_stockpile(&mut app, Vec2::new(-3_000.0, 0.0), 0, 100);
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
+    // Another Hauler is already bringing a load into the Sink.
+    app.world_mut().spawn(LogisticsReservation::new(
+        source,
+        sink,
+        top_down_2d_rts_prototype_nano_swarm::resources::ResourceKind::Minerals,
+        10,
+    ));
+    let mut hungry = ProductionFacility::new();
+    hungry.demand_waiting = true;
+    let facility = app
+        .world_mut()
+        .spawn((
+            hungry,
+            OwnerSwarm(swarm),
+            Transform::from_xyz(200.0, 0.0, 0.0),
+        ))
+        .id();
+    (app, swarm, sink, facility)
+}
+
+#[test]
+fn haulers_wait_for_a_full_load_from_a_sink_being_refilled() {
+    let (mut app, _, sink, _) = refilling_sink_with_hungry_facility(3);
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-200.0, 100.0));
+    for _ in 0..120 {
+        app.update();
+    }
+    assert!(
+        app.world()
+            .get::<HaulerAssignment>(hauler)
+            .is_none_or(|assignment| assignment.source != sink),
+        "a 3-mineral sliver is not worth a round trip while the Sink refills"
+    );
+
+    // Once a full load is unclaimed, the facility is served.
+    app.world_mut()
+        .get_mut::<top_down_2d_rts_prototype_nano_swarm::resources::Stockpile>(sink)
+        .unwrap()
+        .amount = 30;
+    wait_for_assignment(&mut app, hauler);
+    assert_eq!(
+        app.world().get::<HaulerAssignment>(hauler).unwrap().source,
+        sink
+    );
+}
+
+#[test]
+fn a_charger_emergency_takes_a_sliver_from_a_sink_being_refilled() {
+    let (mut app, swarm, sink, _) = refilling_sink_with_hungry_facility(3);
+    let charger = common::spawn_operational_charger_at(&mut app, IVec2::ZERO, 0);
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
+    let defender = common::spawn_defender_at(&mut app, Vec2::new(20.0, 0.0));
+    app.world_mut().entity_mut(defender).insert((
+        Charge {
+            current: 0.0,
+            max: 1.0,
+        },
+        ChargerAssignment { charger },
+    ));
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-200.0, 100.0));
+
+    wait_for_assignment(&mut app, hauler);
+
+    let assignment = app.world().get::<HaulerAssignment>(hauler).unwrap();
+    assert_eq!(assignment.source, sink);
+    assert_eq!(assignment.sink, charger);
+}
+
+#[test]
+fn a_refilling_sliver_does_not_pin_a_terminal_away_from_a_full_sink() {
+    let (mut app, swarm, near, facility) = refilling_sink_with_hungry_facility(3);
+    // Farther from the facility than the refilling Sink, but holding full loads.
+    let far = common::spawn_sink_stockpile(&mut app, Vec2::new(1_000.0, 0.0), 100, 100);
+    app.world_mut().entity_mut(far).insert(OwnerSwarm(swarm));
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(600.0, 100.0));
+
+    wait_for_assignment(&mut app, hauler);
+
+    let assignment = app.world().get::<HaulerAssignment>(hauler).unwrap();
+    assert_ne!(assignment.source, near);
+    assert_eq!(assignment.source, far);
+    assert_eq!(assignment.sink, facility);
+}
+
+#[test]
+fn a_sliver_with_nothing_inbound_is_still_delivered() {
+    let mut app = common::sim_app_with_gather_haul();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(-200.0, 0.0), 3, 100);
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
+    let mut hungry = ProductionFacility::new();
+    hungry.demand_waiting = true;
+    let facility = app
+        .world_mut()
+        .spawn((
+            hungry,
+            OwnerSwarm(swarm),
+            Transform::from_xyz(200.0, 0.0, 0.0),
+        ))
+        .id();
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-200.0, 100.0));
+
+    wait_for_assignment(&mut app, hauler);
+
+    let assignment = app.world().get::<HaulerAssignment>(hauler).unwrap();
+    assert_eq!(assignment.source, sink);
+    assert_eq!(assignment.sink, facility);
+}

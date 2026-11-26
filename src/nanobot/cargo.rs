@@ -127,12 +127,21 @@ pub fn reconcile_logistics_tuning(
             .min(new.logistics.material_work_ticks.saturating_sub(1));
         }
     }
-    if old.logistics.stockpile_capacity != new.logistics.stockpile_capacity {
-        for mut stockpile in world
-            .query::<&mut crate::resources::Stockpile>()
+    if old.logistics.stockpile_capacity != new.logistics.stockpile_capacity
+        || old.logistics.sink_capacity != new.logistics.sink_capacity
+    {
+        for (mut stockpile, role) in world
+            .query::<(
+                &mut crate::resources::Stockpile,
+                Option<&crate::resources::StockpileRole>,
+            )>()
             .iter_mut(world)
         {
-            stockpile.capacity = new.logistics.stockpile_capacity;
+            stockpile.capacity = if role == Some(&crate::resources::StockpileRole::Sink) {
+                new.logistics.sink_capacity
+            } else {
+                new.logistics.stockpile_capacity
+            };
         }
     }
     if old.logistics.corridor_cost_multiplier != new.logistics.corridor_cost_multiplier
@@ -144,6 +153,7 @@ pub fn reconcile_logistics_tuning(
     if old.logistics.worker_carry_capacity == new.logistics.worker_carry_capacity
         && old.logistics.hauler_carry_capacity == new.logistics.hauler_carry_capacity
         && old.logistics.stockpile_capacity == new.logistics.stockpile_capacity
+        && old.logistics.sink_capacity == new.logistics.sink_capacity
         && old.production.input_capacity == new.production.input_capacity
         && old.production.cost_per_bot == new.production.cost_per_bot
         && old.charge.charger_capacity == new.charge.charger_capacity

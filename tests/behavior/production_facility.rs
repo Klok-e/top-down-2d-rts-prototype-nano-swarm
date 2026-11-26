@@ -430,3 +430,89 @@ fn delivery_window_keeps_held_claims_until_they_finish() {
         "once the claim finishes the window follows the near Sink again"
     );
 }
+
+#[test]
+fn delivery_window_follows_measured_delivery_time_once_a_hauler_arrives() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{
+        Cargo, HaulerAssignment, LogisticsReservation, delivery_window, window_for_lead,
+    };
+    use top_down_2d_rts_prototype_nano_swarm::resources::{ResourceKind, StockpileRole};
+
+    let mut app = common::sim_app_with_production();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let facility = app
+        .world_mut()
+        .spawn((
+            ProductionFacility::new(),
+            OwnerSwarm(swarm),
+            Transform::from_xyz(0.0, 0.0, 0.0),
+        ))
+        .id();
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(100.0, 0.0), 30, 60);
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
+    let tuning = app.world().resource::<Tuning>().clone();
+    let keep_busy = |app: &mut App| {
+        let mut state = app
+            .world_mut()
+            .get_mut::<ProductionFacility>(facility)
+            .unwrap();
+        state.current_target = Some(NanobotType::Worker);
+        state.progress = 0;
+    };
+    // A stand-in Hauler: it holds a claim and cargo but no simulation system
+    // moves it, so the test decides when it arrives.
+    let mut claim = LogisticsReservation::new(sink, facility, ResourceKind::Minerals, 10);
+    claim.source_remaining = 0;
+    let hauler = app
+        .world_mut()
+        .spawn((
+            claim,
+            HaulerAssignment {
+                source: sink,
+                sink: facility,
+                pickup_role: StockpileRole::Sink,
+            },
+            Cargo {
+                kind: ResourceKind::Minerals,
+                amount: 10,
+            },
+            Transform::from_xyz(5_000.0, 0.0, 0.0),
+        ))
+        .id();
+    let state = |app: &App| {
+        let state = app.world().get::<ProductionFacility>(facility).unwrap();
+        (state.measured_lead_ticks, state.queued_space)
+    };
+
+    for _ in 0..60 {
+        keep_busy(&mut app);
+        run_allocation_period(&mut app);
+    }
+    assert_eq!(state(&app).0, None, "still on its way");
+    assert_eq!(
+        state(&app).1,
+        delivery_window(&tuning, 100.0),
+        "estimated from the nearest Sink until a delivery is measured"
+    );
+
+    // Arrive at the facility's interaction ring.
+    let arrival = top_down_2d_rts_prototype_nano_swarm::nanobot::InteractionRegion::structure(
+        &Transform::IDENTITY,
+    )
+    .approach(Vec2::new(5_000.0, 0.0));
+    app.world_mut()
+        .get_mut::<Transform>(hauler)
+        .unwrap()
+        .translation = arrival.extend(0.0);
+    keep_busy(&mut app);
+    run_allocation_period(&mut app);
+
+    let lead = state(&app).0.expect("arrival was timed");
+    // 61 calls of 7 fixed ticks each passed between claim and arrival.
+    assert!((400.0..=450.0).contains(&lead), "about 427 ticks: {lead}");
+    assert_ne!(
+        window_for_lead(&tuning, lead),
+        delivery_window(&tuning, 100.0)
+    );
+    assert_eq!(state(&app).1, window_for_lead(&tuning, lead));
+}

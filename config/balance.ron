@@ -18,6 +18,7 @@
         hauler_transfer_per_pulse: 1,
         material_work_ticks: 24,
         stockpile_capacity: 60,
+        sink_capacity: 150,
         source_proximity_radius: 384.0,
         bot_speed: 5.0,
         corridor_cost_multiplier: 0.35,

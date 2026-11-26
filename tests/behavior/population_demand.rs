@@ -238,19 +238,24 @@ fn spending_capacity_raises_the_gather_quota() {
     );
 }
 
-#[test]
-fn a_full_reserve_drops_gathering_to_one_per_deposit() {
-    let (mut app, swarm, _) = gather_quota_app();
+/// Spawn a mineral stockpile holding `amount` at `position` for `swarm`.
+fn spawn_owned_stock(app: &mut App, swarm: Entity, amount: u32, position: Vec2) {
     app.world_mut().spawn((
         Stockpile {
             kind: ResourceKind::Minerals,
-            amount: 10_000,
-            capacity: 10_000,
+            amount,
+            capacity: amount,
             radius: 32.0,
         },
         OwnerSwarm(swarm),
-        Transform::from_xyz(-2_000.0, -2_000.0, 0.0),
+        Transform::from_translation(position.extend(0.0)),
     ));
+}
+
+#[test]
+fn a_full_reserve_drops_gathering_to_one_per_deposit() {
+    let (mut app, swarm, _) = gather_quota_app();
+    spawn_owned_stock(&mut app, swarm, 10_000, Vec2::splat(2_000.0));
     app.update();
 
     let economy = app
@@ -258,7 +263,10 @@ fn a_full_reserve_drops_gathering_to_one_per_deposit() {
         .resource::<GatherQuotas>()
         .economy(SwarmId::PLAYER)
         .unwrap();
-    assert_eq!(economy.reserve_stock, 10_000);
+    assert!(
+        economy.reserve_stock > economy.reserve_target,
+        "{economy:?}"
+    );
     assert_eq!(economy.gather_quota, 1);
     assert_eq!(
         app.world()
@@ -518,4 +526,46 @@ fn haul_quota_sizes_hauler_demand_once_a_window_is_measured() {
         expected,
         "the Haul Quota, not pickup trips, sizes Hauler demand"
     );
+}
+
+#[test]
+fn far_stock_counts_by_how_soon_it_can_reach_a_consumer() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::reserve_weight;
+
+    let reserve = |offset: f32| {
+        let (mut app, swarm, _) = gather_quota_app();
+        let mut tuning = app.world().resource::<Tuning>().clone();
+        // Loading a full load fits well inside the reserve horizon, so only
+        // distance decides.
+        tuning.logistics.material_work_ticks = 6;
+        app.insert_resource(tuning);
+        spawn_owned_stock(&mut app, swarm, 200, Vec2::new(2_000.0 + offset, 2_000.0));
+        app.update();
+        app.world()
+            .resource::<GatherQuotas>()
+            .economy(SwarmId::PLAYER)
+            .unwrap()
+    };
+    let near = reserve(100.0);
+    let far = reserve(9_000.0);
+    assert_eq!(near.reserve_stock, 200, "a short delivery counts in full");
+    let tuning = {
+        let mut tuning = Tuning::default();
+        tuning.logistics.material_work_ticks = 6;
+        tuning
+    };
+    let weight = reserve_weight(&tuning, Some(9_000.0));
+    assert!(weight < 0.5, "{weight}");
+    assert_eq!(far.reserve_stock, (200.0 * weight).round() as u32);
+    assert!(
+        far.gather_quota > near.gather_quota,
+        "stock far from consumers leaves more gathering to do: {far:?} vs {near:?}"
+    );
+}
+
+#[test]
+fn stock_with_no_consumer_does_not_count() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::reserve_weight;
+
+    assert_eq!(reserve_weight(&Tuning::default(), None), 0.0);
 }

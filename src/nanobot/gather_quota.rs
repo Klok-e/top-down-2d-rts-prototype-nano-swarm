@@ -27,7 +27,9 @@ pub struct SwarmEconomy {
     /// Defender charge upkeep.
     pub spending_capacity: f32,
     pub reserve_target: u32,
-    /// Minerals in the swarm's operational Source and Sink Stockpiles.
+    /// Minerals in the swarm's operational Source and Sink Stockpiles, each
+    /// counted by how soon it could reach a consumer: see
+    /// [`reserve_weight`].
     pub reserve_stock: u32,
     /// Minerals one gathering Worker brings in per second while not waiting
     /// for Source Stockpile room.
@@ -122,6 +124,24 @@ pub fn spending_capacity(producing_facilities: u32, defenders: u32, tuning: &Tun
     producing_facilities as f32 * per_facility + defenders as f32 * per_defender
 }
 
+/// Share of a stockpile's minerals that counts toward Reserve stock: all of it
+/// when a delivery from it to the nearest consumer fits within
+/// `reserve_seconds`, otherwise `reserve_seconds` over that delivery's time.
+/// Stock with no consumer to reach counts for nothing.
+pub fn reserve_weight(tuning: &Tuning, consumer_distance: Option<f32>) -> f32 {
+    let Some(distance) = consumer_distance else {
+        return 0.0;
+    };
+    let lead_seconds =
+        crate::nanobot::estimated_lead_ticks(tuning, distance) / crate::SIMULATION_HZ as f32;
+    let horizon = tuning.production.reserve_seconds.max(1.0);
+    if lead_seconds <= horizon {
+        1.0
+    } else {
+        horizon / lead_seconds
+    }
+}
+
 pub fn reserve_target(spending_capacity: f32, reserve_seconds: f32) -> u32 {
     (spending_capacity * reserve_seconds.max(0.0)).round() as u32
 }
@@ -174,14 +194,20 @@ pub fn gather_quota_system(
     structures: Query<
         (
             &OwnerSwarm,
+            &Transform,
             Option<&SupportCondition>,
             Option<&ProductionFacility>,
             Option<&Stockpile>,
             Option<&StockpileRole>,
+            Has<crate::nanobot::Charger>,
         ),
         (
             Without<PlannedStructure>,
-            Or<(With<ProductionFacility>, With<Stockpile>)>,
+            Or<(
+                With<ProductionFacility>,
+                With<Stockpile>,
+                With<crate::nanobot::Charger>,
+            )>,
         ),
     >,
 ) {
@@ -236,30 +262,57 @@ pub fn gather_quota_system(
         }
     }
 
+    let operational = structures
+        .iter()
+        .filter(|(_, _, condition, ..)| {
+            condition.is_none_or(|condition| condition.is_operational())
+        })
+        .filter_map(
+            |(owner, transform, _, facility, stockpile, role, charger)| {
+                let swarm = swarm_ids.get(owner.0).copied().ok()?;
+                Some((
+                    swarm,
+                    transform.translation.truncate(),
+                    facility,
+                    stockpile,
+                    role,
+                    charger,
+                ))
+            },
+        )
+        .collect::<Vec<_>>();
+    // Where each swarm spends minerals: its facilities and Chargers.
+    let mut consumers = BTreeMap::<SwarmId, Vec<Vec2>>::new();
     let mut producing = BTreeMap::<SwarmId, u32>::new();
-    let mut stock = BTreeMap::<SwarmId, u32>::new();
-    let mut source_room = BTreeMap::<SwarmId, u32>::new();
-    for (owner, condition, facility, stockpile, role) in &structures {
-        if condition.is_some_and(|condition| !condition.is_operational()) {
-            continue;
+    for &(swarm, position, facility, _, _, charger) in &operational {
+        if facility.is_some() || charger {
+            consumers.entry(swarm).or_default().push(position);
         }
-        let Ok(swarm) = swarm_ids.get(owner.0).copied() else {
-            continue;
-        };
         if facility
             .is_some_and(|facility| facility.current_target.is_some() || facility.demand_waiting)
         {
             *producing.entry(swarm).or_default() += 1;
         }
-        if let Some(stockpile) = stockpile
-            && stockpile.kind == ResourceKind::Minerals
-        {
-            let total = stock.entry(swarm).or_default();
-            *total = total.saturating_add(stockpile.amount);
-            if role != Some(&StockpileRole::Sink) {
-                let room = source_room.entry(swarm).or_default();
-                *room = room.saturating_add(stockpile.free_space());
-            }
+    }
+    let mut weighted_stock = BTreeMap::<SwarmId, f32>::new();
+    let mut source_room = BTreeMap::<SwarmId, u32>::new();
+    for &(swarm, position, _, stockpile, role, _) in &operational {
+        let Some(stockpile) =
+            stockpile.filter(|stockpile| stockpile.kind == ResourceKind::Minerals)
+        else {
+            continue;
+        };
+        let consumer_distance = consumers.get(&swarm).and_then(|consumers| {
+            consumers
+                .iter()
+                .map(|consumer| consumer.distance(position))
+                .min_by(f32::total_cmp)
+        });
+        *weighted_stock.entry(swarm).or_default() +=
+            stockpile.amount as f32 * reserve_weight(&tuning, consumer_distance);
+        if role != Some(&StockpileRole::Sink) {
+            let room = source_room.entry(swarm).or_default();
+            *room = room.saturating_add(stockpile.free_space());
         }
     }
 
@@ -286,7 +339,11 @@ pub fn gather_quota_system(
             defenders.get(&swarm).copied().unwrap_or_default(),
             &tuning,
         );
-        let reserve_stock = stock.get(&swarm).copied().unwrap_or_default();
+        let reserve_stock = weighted_stock
+            .get(&swarm)
+            .copied()
+            .unwrap_or_default()
+            .round() as u32;
         let deposits = gather_deposits.remove(&swarm).unwrap_or_default();
         let floor = deposits.len() as u32;
         // Gatherers beyond the full loads Source Stockpiles can still take
