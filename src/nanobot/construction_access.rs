@@ -395,8 +395,7 @@ impl ConstructionAccess<'_, '_> {
         if layout.pending.get() {
             return false;
         }
-        let transform =
-            crate::navigation::align_structure(Transform::from_translation(position.extend(0.0)));
+        let transform = kind.footprint_transform(position.extend(0.0));
         if self
             .cancelled
             .as_ref()

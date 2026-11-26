@@ -377,6 +377,7 @@ pub fn production_facility_auto_creation_system(
                 crate::nanobot::placement::find_build_zone_placement_accepting(
                     cells,
                     &obstacles,
+                    PlannedKind::ProductionFacility.footprint_half_extent(),
                     27,
                     |position| {
                         access.accepts(
@@ -394,9 +395,7 @@ pub fn production_facility_auto_creation_system(
         };
         access_layout.reserve(
             *swarm_id,
-            crate::navigation::align_structure(Transform::from_translation(
-                placement_pos.extend(0.0),
-            )),
+            PlannedKind::ProductionFacility.footprint_transform(placement_pos.extend(0.0)),
         );
         commands.spawn((
             PlannedStructure::new(PlannedKind::ProductionFacility, build_cell)

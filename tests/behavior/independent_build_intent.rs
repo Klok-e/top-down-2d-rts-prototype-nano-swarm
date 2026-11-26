@@ -26,7 +26,8 @@ fn overlapping_build_orders_construct_separate_owned_facilities() {
     app.world_mut()
         .entity_mut(enemy_worker)
         .insert(SwarmMember::new(SwarmId(7)));
-    for cell in [IVec2::new(2, 0)] {
+    // One Build cell holds a single 3x3 facility, so the orders share two cells.
+    for cell in [IVec2::new(2, 0), IVec2::new(3, 0)] {
         for swarm in [SwarmId::PLAYER, SwarmId(7)] {
             app.world_mut()
                 .resource_mut::<IntentGrid>()
@@ -42,22 +43,25 @@ fn overlapping_build_orders_construct_separate_owned_facilities() {
         .query::<(Entity, &PlannedStructure, &OwnerSwarm, &Transform)>()
         .iter(app.world())
         .filter(|(_, plan, _, _)| plan.kind == PlannedKind::ProductionFacility)
-        .map(|(entity, _, owner, transform)| (entity, owner.0, transform.translation.truncate()))
+        .map(|(entity, plan, owner, transform)| {
+            (entity, owner.0, transform.translation.truncate(), plan.cell)
+        })
         .collect::<Vec<_>>();
     assert_eq!(
         plans.len(),
         2,
         "both swarms need their own facility reservation"
     );
-    assert!(plans.iter().any(|(_, owner, _)| *owner == player));
-    assert!(plans.iter().any(|(_, owner, _)| *owner == enemy));
+    assert!(plans.iter().any(|(_, owner, _, _)| *owner == player));
+    assert!(plans.iter().any(|(_, owner, _, _)| *owner == enemy));
     let separation = (plans[0].2 - plans[1].2).abs();
+    let side = 2.0 * PlannedKind::ProductionFacility.footprint_half_extent();
     assert!(
-        separation.x >= 72.0 || separation.y >= 72.0,
+        separation.x >= side || separation.y >= side,
         "reservations must occupy separate physical space"
     );
 
-    for (plan, owner, center) in &plans {
+    for (plan, owner, center, cell) in &plans {
         let worker = if *owner == player {
             player_worker
         } else {
@@ -67,11 +71,11 @@ fn overlapping_build_orders_construct_separate_owned_facilities() {
             Transform::from_translation(center.extend(0.0)),
             PlannedStructureClaim {
                 target: *plan,
-                cell: IVec2::new(2, 0),
+                cell: *cell,
             },
             PlannedStructureProgress {
                 target: *plan,
-                cell: IVec2::new(2, 0),
+                cell: *cell,
             },
         ));
     }
@@ -79,12 +83,12 @@ fn overlapping_build_orders_construct_separate_owned_facilities() {
         app.update();
         if plans
             .iter()
-            .all(|(entity, _, _)| app.world().get::<ProductionFacility>(*entity).is_some())
+            .all(|(entity, _, _, _)| app.world().get::<ProductionFacility>(*entity).is_some())
         {
             break;
         }
     }
-    for (entity, owner, _) in plans {
+    for (entity, owner, _, _) in plans {
         assert!(
             app.world().get::<ProductionFacility>(entity).is_some(),
             "each swarm's Worker must finish its own reservation"
@@ -146,7 +150,7 @@ fn enemy_only_build_does_not_supply_player_construction() {
 }
 
 #[test]
-fn enemy_facility_blocks_its_footprint_but_not_the_rest_of_shared_build_cell() {
+fn enemy_facility_blocks_its_footprint_but_not_the_rest_of_shared_build_zone() {
     let mut app = common::sim_app_with_production();
     let player = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let enemy = app
@@ -155,13 +159,18 @@ fn enemy_facility_blocks_its_footprint_but_not_the_rest_of_shared_build_cell() {
         .id();
     common::spawn_worker_at(&mut app, Vec2::new(-256.0, -256.0));
     let cell = IVec2::new(2, 0);
-    for swarm in [SwarmId::PLAYER, SwarmId(7)] {
-        app.world_mut()
-            .resource_mut::<IntentGrid>()
-            .paint(cell, IntentKind::Build, swarm);
+    for shared in [cell, IVec2::new(3, 0)] {
+        for swarm in [SwarmId::PLAYER, SwarmId(7)] {
+            app.world_mut()
+                .resource_mut::<IntentGrid>()
+                .paint(shared, IntentKind::Build, swarm);
+        }
     }
     let enemy_facility =
         common::spawn_facility_at(&mut app, enemy, common::cell_world_center(cell));
+    let footprint = PlannedKind::ProductionFacility
+        .footprint_transform(common::cell_world_center(cell).extend(0.0));
+    app.world_mut().entity_mut(enemy_facility).insert(footprint);
     let occupied = app
         .world()
         .get::<Transform>(enemy_facility)
@@ -183,12 +192,13 @@ fn enemy_facility_blocks_its_footprint_but_not_the_rest_of_shared_build_cell() {
     assert_eq!(
         plans.len(),
         1,
-        "the free part of the shared Build cell must remain available"
+        "the free part of the shared Build Zone must remain available"
     );
     assert_eq!(plans[0].0, player);
     let separation = (plans[0].1 - occupied).abs();
+    let side = 2.0 * PlannedKind::ProductionFacility.footprint_half_extent();
     assert!(
-        separation.x >= 72.0 || separation.y >= 72.0,
+        separation.x >= side || separation.y >= side,
         "the new reservation must not overlap the enemy facility footprint"
     );
     assert_eq!(

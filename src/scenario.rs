@@ -354,10 +354,8 @@ fn spawn_production_facility(
     texture: &Handle<Image>,
     tuning: &crate::tuning::Tuning,
 ) {
-    let transform = crate::navigation::align_structure(
-        Transform::from_translation(world_pos.extend(GAMEPLAY_SPRITE_Z))
-            .with_scale(vec3(3., 3., 1.)),
-    );
+    let transform =
+        PlannedKind::ProductionFacility.footprint_transform(world_pos.extend(GAMEPLAY_SPRITE_Z));
     commands.spawn((
         ProductionFacility::with_tuning(tuning),
         ProcessingFacility {},

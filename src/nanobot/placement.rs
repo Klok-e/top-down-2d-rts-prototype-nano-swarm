@@ -67,11 +67,14 @@ pub const BUILDING_FOOTPRINT_RADIUS: f32 = crate::navigation::STRUCTURE_SPRITE_S
 /// between support structures and Resource Deposits.
 pub const BUILDING_FOOTPRINT_PADDING: f32 = 16.0;
 
-/// Maximum in-cell offset used when searching for a valid
+/// Maximum in-cell offset used when searching for a valid one-cell
 /// Build-Zone placement. `ZONE_BLOCK_SIZE / 2 - radius - padding`
 /// keeps candidates inside the painted cell with room for gap.
-pub const BUILD_ZONE_PLACEMENT_MAX_OFFSET: f32 =
-    crate::ZONE_BLOCK_SIZE / 2.0 - CELL_WIDTH / 2.0 - BUILDING_FOOTPRINT_PADDING;
+pub const BUILD_ZONE_PLACEMENT_MAX_OFFSET: f32 = build_zone_placement_max_offset(CELL_WIDTH / 2.0);
+
+const fn build_zone_placement_max_offset(half_extent: f32) -> f32 {
+    crate::ZONE_BLOCK_SIZE / 2.0 - half_extent - BUILDING_FOOTPRINT_PADDING
+}
 
 const BUILD_ZONE_RANDOM_CANDIDATES_PER_CELL: u32 = 16;
 
@@ -173,14 +176,16 @@ pub fn overlaps_any_obstacle(
         .any(|obstacle| obstacle.overlaps_rectangle(pos, Vec2::splat(self_radius), padding))
 }
 
+/// One-cell alignment puts the center on a cell center, which also aligns every
+/// odd-cell footprint; an even-cell kind would need its own snapping.
 fn snap_candidate(pos: Vec2) -> Vec2 {
     align_structure(Transform::from_translation(pos.extend(0.0)))
         .translation
         .truncate()
 }
 
-fn footprint_inside_zone(pos: Vec2, cells: &[IVec2]) -> bool {
-    let half = Vec2::splat(CELL_WIDTH / 2.0);
+fn footprint_inside_zone(pos: Vec2, half_extent: f32, cells: &[IVec2]) -> bool {
+    let half = Vec2::splat(half_extent);
     let min = world_to_cell(pos - half);
     let max = world_to_cell(pos + half - Vec2::splat(0.001));
     (min.x..=max.x).all(|x| (min.y..=max.y).all(|y| cells.contains(&IVec2::new(x, y))))
@@ -279,7 +284,7 @@ pub fn find_source_stockpile_placement_accepting(
         let base = ring_position(deposit_pos, ring_radius, angle);
         let jitter = deterministic_jitter(angle_index, deposit_cell, jitter_amplitude);
         let pos = snap_candidate(base + jitter);
-        if !footprint_inside_zone(pos, gather_cells) {
+        if !footprint_inside_zone(pos, CELL_WIDTH / 2.0, gather_cells) {
             continue;
         }
         if overlaps_any_obstacle(
@@ -300,7 +305,12 @@ pub fn find_source_stockpile_placement_accepting(
         .find(|position| accepts(*position))
 }
 
-fn seeded_build_zone_candidates(build_cells: &[IVec2], kind_seed: u32) -> Vec<(u64, IVec2, Vec2)> {
+fn seeded_build_zone_candidates(
+    build_cells: &[IVec2],
+    half_extent: f32,
+    kind_seed: u32,
+) -> Vec<(u64, IVec2, Vec2)> {
+    let max_offset = build_zone_placement_max_offset(half_extent);
     let mut candidates =
         Vec::with_capacity(build_cells.len() * BUILD_ZONE_RANDOM_CANDIDATES_PER_CELL as usize);
     for &cell in build_cells {
@@ -313,7 +323,7 @@ fn seeded_build_zone_candidates(build_cells: &[IVec2], kind_seed: u32) -> Vec<(u
             let x = map_to_unit(splitmix64(seed)) * 2.0 - 1.0;
             let y = map_to_unit(splitmix64(seed.wrapping_add(SPLITMIX64_MIX))) * 2.0 - 1.0;
             let priority = splitmix64(seed ^ 0xD1B5_4A32_D192_ED03);
-            let offset = Vec2::new(x, y) * BUILD_ZONE_PLACEMENT_MAX_OFFSET;
+            let offset = Vec2::new(x, y) * max_offset;
             candidates.push((priority, cell, snap_candidate(center + offset)));
         }
     }
@@ -326,6 +336,7 @@ fn seeded_build_zone_candidates(build_cells: &[IVec2], kind_seed: u32) -> Vec<(u
 fn find_dense_build_zone_placement(
     build_cells: &[IVec2],
     obstacles: &[Obstacle],
+    half_extent: f32,
     kind_seed: u32,
     accepts: &mut impl FnMut(Vec2) -> bool,
 ) -> Option<(IVec2, Vec2)> {
@@ -349,13 +360,8 @@ fn find_dense_build_zone_placement(
             if world_to_cell(pos) != cell {
                 continue;
             }
-            if footprint_inside_zone(pos, build_cells)
-                && !overlaps_any_obstacle(
-                    pos,
-                    CELL_WIDTH / 2.0,
-                    BUILDING_FOOTPRINT_PADDING,
-                    obstacles,
-                )
+            if footprint_inside_zone(pos, half_extent, build_cells)
+                && !overlaps_any_obstacle(pos, half_extent, BUILDING_FOOTPRINT_PADDING, obstacles)
                 && accepts(pos)
             {
                 return Some((cell, pos));
@@ -377,34 +383,36 @@ fn dense_build_zone_position(center: Vec2, side: u32, index: u32) -> Vec2 {
 }
 
 /// Pick a stable, non-overlapping support-structure placement inside one of
-/// `build_cells`. Seeded candidates are ranked across the whole eligible
-/// region, so no cell or cell center receives special priority. A dense,
-/// deterministic fallback finds tight remaining spaces that random sampling
-/// can miss.
+/// `build_cells` for a square footprint of `half_extent`. Seeded candidates
+/// are ranked across the whole eligible region, so no cell or cell center
+/// receives special priority. A dense, deterministic fallback finds tight
+/// remaining spaces that random sampling can miss.
 pub fn find_build_zone_placement(
     build_cells: &[IVec2],
     obstacles: &[Obstacle],
+    half_extent: f32,
     kind_seed: u32,
 ) -> Option<(IVec2, Vec2)> {
-    find_build_zone_placement_accepting(build_cells, obstacles, kind_seed, |_| true)
+    find_build_zone_placement_accepting(build_cells, obstacles, half_extent, kind_seed, |_| true)
 }
 
 /// Search every placement candidate until its access policy accepts a site.
 pub fn find_build_zone_placement_accepting(
     build_cells: &[IVec2],
     obstacles: &[Obstacle],
+    half_extent: f32,
     kind_seed: u32,
     mut accepts: impl FnMut(Vec2) -> bool,
 ) -> Option<(IVec2, Vec2)> {
-    for (_, cell, pos) in seeded_build_zone_candidates(build_cells, kind_seed) {
-        if footprint_inside_zone(pos, build_cells)
-            && !overlaps_any_obstacle(pos, CELL_WIDTH / 2.0, BUILDING_FOOTPRINT_PADDING, obstacles)
+    for (_, cell, pos) in seeded_build_zone_candidates(build_cells, half_extent, kind_seed) {
+        if footprint_inside_zone(pos, half_extent, build_cells)
+            && !overlaps_any_obstacle(pos, half_extent, BUILDING_FOOTPRINT_PADDING, obstacles)
             && accepts(pos)
         {
             return Some((cell, pos));
         }
     }
-    find_dense_build_zone_placement(build_cells, obstacles, kind_seed, &mut accepts)
+    find_dense_build_zone_placement(build_cells, obstacles, half_extent, kind_seed, &mut accepts)
 }
 
 /// Pick the nearest stable, non-overlapping Charger placement from the shared
@@ -440,7 +448,7 @@ impl DefendLattice {
             for index in 0..candidate_count {
                 let pos = dense_build_zone_position(center, side, index);
                 if world_to_cell(pos) == cell
-                    && footprint_inside_zone(pos, defend_cells)
+                    && footprint_inside_zone(pos, CELL_WIDTH / 2.0, defend_cells)
                     && !overlaps_any_obstacle(
                         pos,
                         CELL_WIDTH / 2.0,
@@ -1018,8 +1026,8 @@ mod tests {
     #[test]
     fn build_zone_placement_is_seeded_stable_and_not_center_first() {
         let cell = IVec2::new(3, -2);
-        let first = find_build_zone_placement(&[cell], &[], 27).unwrap();
-        let second = find_build_zone_placement(&[cell], &[], 27).unwrap();
+        let first = find_build_zone_placement(&[cell], &[], CELL_WIDTH / 2.0, 27).unwrap();
+        let second = find_build_zone_placement(&[cell], &[], CELL_WIDTH / 2.0, 27).unwrap();
         let center = crate::ai::get_world_from_zone(cell);
 
         assert_eq!(first, second);
@@ -1031,26 +1039,43 @@ mod tests {
     }
 
     #[test]
+    fn multi_cell_footprint_stays_inside_a_lone_build_cell() {
+        let cell = IVec2::new(3, -2);
+        let half_extent = 1.5 * CELL_WIDTH;
+        let (chosen_cell, chosen) =
+            find_build_zone_placement(&[cell], &[], half_extent, 27).unwrap();
+
+        assert_eq!(chosen_cell, cell);
+        let center = crate::ai::get_world_from_zone(cell);
+        let room = crate::ZONE_BLOCK_SIZE / 2.0 - half_extent;
+        let offset = chosen - center;
+        assert!(
+            offset.x.abs() <= room && offset.y.abs() <= room,
+            "a 3x3 footprint at {chosen:?} leaves Build cell {cell:?}"
+        );
+    }
+
+    #[test]
     fn build_zone_placement_is_independent_of_cell_input_order() {
         let cells = [IVec2::new(0, 0), IVec2::new(1, 0), IVec2::new(-1, 2)];
         let mut reversed = cells;
         reversed.reverse();
 
         assert_eq!(
-            find_build_zone_placement(&cells, &[], 26),
-            find_build_zone_placement(&reversed, &[], 26),
+            find_build_zone_placement(&cells, &[], CELL_WIDTH / 2.0, 26),
+            find_build_zone_placement(&reversed, &[], CELL_WIDTH / 2.0, 26),
         );
     }
 
     #[test]
     fn build_zone_placement_uses_dense_fallback_after_random_candidates_are_blocked() {
         let cell = IVec2::ZERO;
-        let obstacles = seeded_build_zone_candidates(&[cell], 27)
+        let obstacles = seeded_build_zone_candidates(&[cell], CELL_WIDTH / 2.0, 27)
             .into_iter()
             .map(|(_, _, pos)| Obstacle::deposit(pos, 0.0))
             .collect::<Vec<_>>();
 
-        let (_, chosen) = find_build_zone_placement(&[cell], &obstacles, 27)
+        let (_, chosen) = find_build_zone_placement(&[cell], &obstacles, CELL_WIDTH / 2.0, 27)
             .expect("dense fallback finds remaining in-cell space");
         assert!(!overlaps_any_obstacle(
             chosen,

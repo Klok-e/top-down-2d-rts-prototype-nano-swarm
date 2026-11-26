@@ -1155,6 +1155,55 @@ fn completed_facility_uses_the_same_art_as_the_starting_facility() {
 }
 
 #[test]
+fn emerging_facility_has_the_starting_facility_footprint() {
+    use top_down_2d_rts_prototype_nano_swarm::{nanobot::ProductionFacility, navigation::Obstacle};
+
+    let mut app = default_headless_app();
+    let (_, tuning) = TuningStore::load(TuningStore::default_path())
+        .expect("the authored economy uses the shipped balance");
+    app.insert_resource(tuning);
+    app.update();
+    let world = app.world_mut();
+    let starting = world
+        .query_filtered::<(&OwnerSwarm, &Transform), With<ProductionFacility>>()
+        .iter(world)
+        .find(|(owner, _)| world.get::<SwarmId>(owner.0) == Some(&SwarmId::PLAYER))
+        .map(|(_, transform)| Obstacle::structure(transform))
+        .expect("the player starts with a Production Facility");
+
+    let mut planned = None;
+    // The shipped balance first plans one after about 1,700 ticks.
+    for _ in 0..6_000 {
+        app.update();
+        let world = app.world_mut();
+        planned = world
+            .query::<(&PlannedStructure, &OwnerSwarm, &Transform)>()
+            .iter(world)
+            .find(|(plan, owner, _)| {
+                plan.kind == PlannedKind::ProductionFacility
+                    && world.get::<SwarmId>(owner.0) == Some(&SwarmId::PLAYER)
+            })
+            .map(|(_, _, transform)| Obstacle::structure(transform));
+        if planned.is_some() {
+            break;
+        }
+    }
+
+    let Obstacle::Rectangle { half: starting, .. } = starting else {
+        unreachable!("structures are rectangles")
+    };
+    let Some(Obstacle::Rectangle { half: planned, .. }) = planned else {
+        panic!("growing demand must plan a second Production Facility");
+    };
+    assert!(
+        (planned - starting).length() < 0.001,
+        "a planned facility spans {:?}, the starting one {:?}",
+        planned * 2.0,
+        starting * 2.0,
+    );
+}
+
+#[test]
 fn default_economy_loaded_bots_do_not_wait_for_clear_routes() {
     use top_down_2d_rts_prototype_nano_swarm::{
         nanobot::{Cargo, ExtractProgress, HaulerLoading, WaitingForWork, WorkBlocked},

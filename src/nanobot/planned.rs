@@ -95,6 +95,28 @@ impl PlannedKind {
         PlannedKind::ProductionFacility,
         PlannedKind::Charger,
     ];
+
+    /// Whole cells along each side of this kind's Building Footprint, shared by
+    /// planned, built, and authored starting structures.
+    pub const fn footprint_cells(self) -> u32 {
+        match self {
+            PlannedKind::ProductionFacility => 3,
+            PlannedKind::SourceStockpile | PlannedKind::SinkStockpile | PlannedKind::Charger => 1,
+        }
+    }
+
+    /// Half the side length of this kind's Building Footprint in world units.
+    pub const fn footprint_half_extent(self) -> f32 {
+        self.footprint_cells() as f32 * crate::navigation::CELL_WIDTH / 2.0
+    }
+
+    /// The aligned whole-cell transform of this kind's footprint near `position`.
+    pub fn footprint_transform(self, position: Vec3) -> Transform {
+        let scale = 2.0 * self.footprint_half_extent() / crate::navigation::STRUCTURE_SPRITE_SIZE;
+        crate::navigation::align_structure(
+            Transform::from_translation(position).with_scale(Vec3::new(scale, scale, 1.0)),
+        )
+    }
 }
 
 /// Tint for the translucent artwork on Planned Structures.
@@ -252,6 +274,7 @@ pub fn sink_stockpile_demand_system(
             crate::nanobot::placement::find_build_zone_placement_accepting(
                 &zone_cells,
                 &local_obstacles,
+                PlannedKind::SinkStockpile.footprint_half_extent(),
                 26,
                 |position| {
                     access.accepts(
@@ -299,9 +322,7 @@ pub(crate) fn planned_visual_components(
 ) -> (Sprite, Transform, StructureVisual) {
     StructureVisual::planned(kind).components(
         structure_sprites.handle(kind, StructureVisualState::Planned),
-        crate::navigation::align_structure(Transform::from_translation(
-            world_pos.extend(GAMEPLAY_SPRITE_Z),
-        )),
+        kind.footprint_transform(world_pos.extend(GAMEPLAY_SPRITE_Z)),
     )
 }
 
