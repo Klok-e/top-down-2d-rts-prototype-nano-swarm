@@ -238,6 +238,47 @@ fn reserved_source_amount(
         .sum()
 }
 
+/// Where a gatherer may drop off its load: Source Stockpiles within
+/// `source_proximity_radius` of its deposit's edge. That covers every Source
+/// [`has_any_near_source_stockpile`] counts for the deposit, so when all of
+/// them are full another one is planned beside it. A gatherer whose Sources are full waits for
+/// room or for a new Source to be built beside the deposit, instead of
+/// carrying a few minerals across the map and walking back.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DropOffArea {
+    pub center: Vec2,
+    pub radius: f32,
+}
+
+impl DropOffArea {
+    pub(crate) fn for_deposit(deposit: Vec2, deposit_radius: f32, tuning: &Tuning) -> Self {
+        Self {
+            center: deposit,
+            radius: deposit_radius + tuning.logistics.source_proximity_radius,
+        }
+    }
+
+    pub(crate) fn contains(self, position: Vec2) -> bool {
+        self.center.distance(position) <= self.radius
+    }
+
+    /// The drop-off area of a Worker carrying a load from `source`. A gather
+    /// claim's source is the deposit the load came from; any other source, or
+    /// a deposit that is gone, leaves the drop-off unrestricted.
+    fn of(
+        source: Entity,
+        deposits: &Query<(&ResourceDeposit, &Transform)>,
+        tuning: &Tuning,
+    ) -> Option<Self> {
+        let (deposit, transform) = deposits.get(source).ok()?;
+        Some(Self::for_deposit(
+            transform.translation.truncate(),
+            deposit.radius,
+            tuning,
+        ))
+    }
+}
+
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn find_nearest_stockpile(
     kind: ResourceKind,
@@ -258,6 +299,7 @@ fn find_nearest_stockpile(
     reservations: &Query<(Entity, &LogisticsReservation)>,
     same_tick_reserved: &std::collections::HashMap<Entity, u32>,
     identities: &Query<&super::CombatIdentity>,
+    area: Option<DropOffArea>,
     mut reachable: impl FnMut(&Transform) -> bool,
 ) -> Option<(Entity, u32)> {
     let identity_key = |entity: Entity| {
@@ -274,6 +316,9 @@ fn find_nearest_stockpile(
             || !stockpile_owned_by(owner, worker_swarm, swarms)
             || condition.is_some_and(|condition| !condition.is_operational())
         {
+            continue;
+        }
+        if area.is_some_and(|area| !area.contains(transform.translation.truncate())) {
             continue;
         }
         let reserved = reserved_destination_capacity(reservations, entity, excluding_worker)
@@ -317,8 +362,8 @@ fn stockpile_owned_by(
 }
 
 /// Whether nearby built Source Stockpile capacity satisfies planning demand.
-/// The configured proximity radius governs planning; extraction may reserve
-/// a reachable Source Stockpile beyond this radius.
+/// The configured proximity radius governs planning; gatherers drop off only
+/// within their deposit's [`DropOffArea`], which contains this radius.
 ///
 /// ## Issue #26: Source vs Sink filter
 ///
@@ -887,6 +932,11 @@ pub fn worker_gather_arrive_system(
             &reservations,
             &same_tick_destinations,
             &identities,
+            Some(DropOffArea::for_deposit(
+                deposit_transform.translation.truncate(),
+                deposit.radius,
+                &tuning,
+            )),
             |destination_transform| match navigation.query_connectivity(
                 worker_pos,
                 RouteGoal::Interaction(InteractionRegion::structure(destination_transform)),
@@ -1105,6 +1155,7 @@ pub(super) fn transition_worker_to_carrying(commands: &mut Commands, entity: Ent
 pub fn worker_gather_reroute_system(
     mut commands: Commands,
     navigation: Res<Navigation>,
+    tuning: Res<Tuning>,
     workers: Query<
         (
             Entity,
@@ -1116,6 +1167,7 @@ pub fn worker_gather_reroute_system(
         ),
         (With<Nanobot>, Without<ExtractProgress>),
     >,
+    deposits: Query<(&ResourceDeposit, &Transform)>,
     stockpiles: Query<(
         Entity,
         &Stockpile,
@@ -1187,6 +1239,7 @@ pub fn worker_gather_reroute_system(
             &reservations,
             &same_tick_claims,
             &identities,
+            DropOffArea::of(reservation.source, &deposits, &tuning),
             |destination_transform| {
                 matches!(
                     navigation.query_connectivity(
@@ -1230,6 +1283,8 @@ pub fn worker_gather_reroute_system(
 pub fn worker_gather_carry_assign_system(
     mut commands: Commands,
     navigation: Res<Navigation>,
+    tuning: Res<Tuning>,
+    deposits: Query<(&ResourceDeposit, &Transform)>,
     workers: Query<
         (
             Entity,
@@ -1316,6 +1371,9 @@ pub fn worker_gather_carry_assign_system(
                 &reservations,
                 &same_tick_claims,
                 &identities,
+                reservation.and_then(|reservation| {
+                    DropOffArea::of(reservation.source, &deposits, &tuning)
+                }),
                 |destination_transform| {
                     matches!(
                         navigation.query_connectivity(

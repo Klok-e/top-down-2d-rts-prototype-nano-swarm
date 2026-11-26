@@ -352,7 +352,8 @@ fn worker_extracts_through_narrow_contact_ground_at_tile_edges() {
             Vec2::new(-22.0, 302.8),
             Vec2::new(128.0, 256.0),
             10.0,
-            Vec2::new(-300.0, 302.8),
+            // Within drop-off reach of the deposit.
+            Vec2::new(-200.0, 302.8),
             &[
                 (Vec2::new(0.0, 267.35), Vec2::new(5000.0, 0.35)),
                 (Vec2::new(0.0, 337.8), Vec2::new(5000.0, 0.2)),

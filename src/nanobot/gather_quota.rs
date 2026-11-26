@@ -177,7 +177,7 @@ pub fn gather_quota_system(
     access: WorkAccess,
     ledger: Option<Res<ResourceLedger>>,
     mut quotas: ResMut<GatherQuotas>,
-    deposits: Query<&ResourceDeposit>,
+    deposits: Query<(&ResourceDeposit, &Transform)>,
     swarm_ids: Query<&SwarmId, With<Swarm>>,
     bots: Query<
         (
@@ -222,7 +222,7 @@ pub fn gather_quota_system(
             let OpportunityTarget::Gather { deposit, .. } = opportunity.target else {
                 continue;
             };
-            let Ok(state) = deposits.get(deposit) else {
+            let Ok((state, _)) = deposits.get(deposit) else {
                 continue;
             };
             let owners = opportunity
@@ -310,7 +310,21 @@ pub fn gather_quota_system(
         });
         *weighted_stock.entry(swarm).or_default() +=
             stockpile.amount as f32 * reserve_weight(&tuning, consumer_distance);
-        if role != Some(&StockpileRole::Sink) {
+        // Gatherers drop off only at Sources beside their deposit, so room
+        // elsewhere cannot take their loads.
+        let serves_gathering = gather_deposits.get(&swarm).is_some_and(|gathered| {
+            gathered.keys().any(|deposit| {
+                deposits.get(*deposit).is_ok_and(|(state, transform)| {
+                    super::gather::DropOffArea::for_deposit(
+                        transform.translation.truncate(),
+                        state.radius,
+                        &tuning,
+                    )
+                    .contains(position)
+                })
+            })
+        });
+        if role != Some(&StockpileRole::Sink) && serves_gathering {
             let room = source_room.entry(swarm).or_default();
             *room = room.saturating_add(stockpile.free_space());
         }

@@ -320,7 +320,7 @@ fn loaded_worker_reroutes_from_wrong_owner_without_losing_cargo() {
     app.world_mut()
         .entity_mut(wrong)
         .insert((StockpileRole::Source, OwnerSwarm(enemy_swarm)));
-    let replacement_pos = Vec2::new(300.0, 0.0);
+    let replacement_pos = Vec2::new(-300.0, 300.0);
     let replacement = common::spawn_stockpile(&mut app, replacement_pos, 0, 100);
     app.world_mut()
         .entity_mut(replacement)

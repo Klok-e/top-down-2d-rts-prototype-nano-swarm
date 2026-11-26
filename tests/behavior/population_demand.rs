@@ -197,7 +197,7 @@ fn gather_quota_app() -> (App, Entity, Entity) {
         OwnerSwarm(swarm),
         Transform::from_xyz(2_000.0, 2_000.0, 0.0),
     ));
-    let source = common::spawn_stockpile(&mut app, Vec2::new(0.0, 600.0), 0, 1_000);
+    let source = common::spawn_stockpile(&mut app, Vec2::new(0.0, 300.0), 0, 1_000);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
     (app, swarm, source)
 }
@@ -568,4 +568,28 @@ fn stock_with_no_consumer_does_not_count() {
     use top_down_2d_rts_prototype_nano_swarm::nanobot::reserve_weight;
 
     assert_eq!(reserve_weight(&Tuning::default(), None), 0.0);
+}
+
+#[test]
+fn room_in_a_source_far_from_gathered_deposits_does_not_raise_the_quota() {
+    let (mut app, swarm, source) = gather_quota_app();
+    let carry = Tuning::default().logistics.worker_carry_capacity;
+    app.world_mut()
+        .get_mut::<Stockpile>(source)
+        .unwrap()
+        .capacity = carry;
+    // Plenty of room, but thousands of units from the gathered deposit.
+    let far = common::spawn_stockpile(&mut app, Vec2::new(-3_000.0, 0.0), 0, 1_000);
+    app.world_mut().entity_mut(far).insert(OwnerSwarm(swarm));
+    app.update();
+
+    let economy = app
+        .world()
+        .resource::<GatherQuotas>()
+        .economy(SwarmId::PLAYER)
+        .unwrap();
+    assert_eq!(
+        economy.gather_quota, 2,
+        "gatherers cannot drop off at the far Source, so its room does not count"
+    );
 }

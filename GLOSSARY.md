@@ -217,7 +217,7 @@ The stockpiled minerals a swarm aims to hold: a tuned number of seconds of its S
 _Avoid_: Mineral reserve, bank, buffer target
 
 **Gather Quota**:
-The number of Workers a swarm assigns to gathering so its income covers its Spending Capacity and closes the gap to its Reserve Target. Every Gather-painted Resource Deposit keeps at least one gatherer; no deposit takes more gatherers than fit around it, and beyond that one per deposit a swarm sends no more gatherers than full loads its Source Stockpiles can still receive. Workers beyond the quota take other work or idle.
+The number of Workers a swarm assigns to gathering so its income covers its Spending Capacity and closes the gap to its Reserve Target. Every Gather-painted Resource Deposit keeps at least one gatherer; no deposit takes more gatherers than fit around it, and beyond that one per deposit a swarm sends no more gatherers than full loads the Source Stockpiles beside its gathered deposits can still receive. A gatherer drops its load only at a Source beside its deposit; when those are full it waits and another Source is planned there. Workers beyond the quota take other work or idle.
 _Avoid_: Gather demand, worker cap
 
 **Haul Quota**:
