@@ -98,8 +98,9 @@ impl Stockpile {
 ///     Source Stockpile" check (issue #23) counts only these.
 ///   - `Sink` stockpiles live in `Build` cells and stage material
 ///     for production facilities and future base infrastructure. A
-///     hauler can deliver into a sink stockpile (leg 2) and later
-///     draw from it to feed a terminal (leg 3). Worker gather
+///     hauler can deliver into a sink stockpile and later draw
+///     from it to feed a terminal; terminals may also draw from
+///     source stockpiles directly. Worker gather
 ///     delivery targets only source stockpiles so deposit-side flow
 ///     cannot bypass the tiered logistics chain.
 ///
@@ -124,6 +125,28 @@ pub enum StockpileRole {
     /// Build cell. Feeds the base; not a Source for the gather
     /// flow.
     Sink,
+}
+
+/// Whether a Sink Stockpile repays its Maintenance for at least one own
+/// Production Facility. A Sink that does not requests no Maintenance and takes
+/// no new material, so terminals draw it down until it decays.
+#[derive(Debug, Component, Clone, Copy, PartialEq, Eq)]
+pub struct SinkUpkeep {
+    pub pays: bool,
+}
+
+impl Default for SinkUpkeep {
+    fn default() -> Self {
+        Self { pays: true }
+    }
+}
+
+impl SinkUpkeep {
+    /// Whether a stockpile's upkeep is paid: true for every stockpile except a
+    /// Sink judged not to repay its Maintenance.
+    pub fn paid(upkeep: Option<&SinkUpkeep>) -> bool {
+        upkeep.is_none_or(|upkeep| upkeep.pays)
+    }
 }
 
 pub(crate) fn buffered_minerals(

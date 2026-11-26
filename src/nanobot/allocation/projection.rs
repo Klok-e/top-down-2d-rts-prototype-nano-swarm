@@ -13,7 +13,7 @@ use crate::nanobot::{
     cell_overlaps_circle, charger_can_serve_in_owned_zone,
     logistics_leg::{Destination, DestinationRole},
 };
-use crate::resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole};
+use crate::resources::{ResourceDeposit, ResourceKind, SinkUpkeep, Stockpile, StockpileRole};
 
 /// Region-indexed derived work. Callers may invalidate cells/regions without
 /// owning projection logic; next projection pass replaces those regions only.
@@ -64,6 +64,7 @@ struct StockpileSnapshot {
     amount: u32,
     free_space: u32,
     owner: Option<SwarmId>,
+    accepts_fill: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -114,6 +115,7 @@ pub fn project_actionable_opportunities_system(
         Option<Ref<StockpileRole>>,
         Option<Ref<OwnerSwarm>>,
         Option<Ref<SupportCondition>>,
+        Option<Ref<SinkUpkeep>>,
     )>,
     facilities: Query<(
         Entity,
@@ -307,7 +309,7 @@ pub fn project_actionable_opportunities_system(
         .collect::<Vec<_>>();
 
     let mut haul_sinks_changed = false;
-    for (_, stockpile, transform, role, owner, condition) in &stockpiles {
+    for (_, stockpile, transform, role, owner, condition, upkeep) in &stockpiles {
         if stockpile.is_changed()
             || transform.is_changed()
             || role.as_ref().is_some_and(|role| role.is_changed())
@@ -315,6 +317,7 @@ pub fn project_actionable_opportunities_system(
             || condition
                 .as_ref()
                 .is_some_and(|condition| condition.is_changed())
+            || upkeep.as_ref().is_some_and(|upkeep| upkeep.is_changed())
         {
             projection.invalidate_cell(crate::nanobot::world_to_cell(
                 transform.translation.truncate(),
@@ -341,7 +344,7 @@ pub fn project_actionable_opportunities_system(
         }
     }
     if haul_sinks_changed {
-        for (_, stockpile, transform, _, _, _) in &stockpiles {
+        for (_, stockpile, transform, ..) in &stockpiles {
             if stockpile.amount > 0 {
                 projection.invalidate_cell(crate::nanobot::world_to_cell(
                     transform.translation.truncate(),
@@ -352,20 +355,23 @@ pub fn project_actionable_opportunities_system(
 
     let stockpile_snapshots = stockpiles
         .iter()
-        .filter_map(|(entity, stockpile, transform, role, owner, condition)| {
-            if condition.is_some_and(|condition| !condition.is_operational()) {
-                return None;
-            }
-            Some(StockpileSnapshot {
-                entity,
-                cell: crate::nanobot::world_to_cell(transform.translation.truncate()),
-                kind: stockpile.kind,
-                role: role.as_deref().copied().unwrap_or_default(),
-                amount: stockpile.amount,
-                free_space: stockpile.free_space(),
-                owner: resolve_owner(owner.as_deref(), &swarms)?,
-            })
-        })
+        .filter_map(
+            |(entity, stockpile, transform, role, owner, condition, upkeep)| {
+                if condition.is_some_and(|condition| !condition.is_operational()) {
+                    return None;
+                }
+                Some(StockpileSnapshot {
+                    entity,
+                    cell: crate::nanobot::world_to_cell(transform.translation.truncate()),
+                    kind: stockpile.kind,
+                    role: role.as_deref().copied().unwrap_or_default(),
+                    amount: stockpile.amount,
+                    free_space: stockpile.free_space(),
+                    owner: resolve_owner(owner.as_deref(), &swarms)?,
+                    accepts_fill: SinkUpkeep::paid(upkeep.as_deref()),
+                })
+            },
+        )
         .collect::<Vec<_>>();
     let mut sinks = stockpile_snapshots
         .iter()
@@ -377,6 +383,7 @@ pub fn project_actionable_opportunities_system(
                 free_space: stockpile.free_space,
                 owner: stockpile.owner,
                 role: DestinationRole::Stockpile(stockpile.role),
+                accepts_fill: stockpile.accepts_fill,
             },
         })
         .collect::<Vec<_>>();
@@ -396,6 +403,7 @@ pub fn project_actionable_opportunities_system(
                         free_space: facility.claimable_space(&tuning),
                         owner: Some(owner),
                         role: DestinationRole::ProductionFacility,
+                        accepts_fill: true,
                     },
                 })
             }),
@@ -414,6 +422,7 @@ pub fn project_actionable_opportunities_system(
                         free_space: charger.free_space(),
                         owner: resolve_owner(owner.as_deref(), &swarms)?,
                         role: DestinationRole::Charger,
+                        accepts_fill: true,
                     },
                 })
             }),
@@ -430,6 +439,7 @@ pub fn project_actionable_opportunities_system(
             &structures,
             &facilities,
             &chargers,
+            &stockpiles,
             &maintenance_defenders,
             &swarms,
             &facility_swarms,
@@ -524,6 +534,15 @@ fn project_maintenance_work(
         Option<Ref<OwnerSwarm>>,
         Option<Ref<SupportCondition>>,
     )>,
+    stockpiles: &Query<(
+        Entity,
+        Ref<Stockpile>,
+        Ref<Transform>,
+        Option<Ref<StockpileRole>>,
+        Option<Ref<OwnerSwarm>>,
+        Option<Ref<SupportCondition>>,
+        Option<Ref<SinkUpkeep>>,
+    )>,
     maintenance_defenders: &[DefenderMaintenanceSnapshot],
     swarms: &Query<&SwarmId>,
     facility_swarms: &Query<&SwarmId, With<Swarm>>,
@@ -531,6 +550,13 @@ fn project_maintenance_work(
 ) {
     for (entity, structure, transform, owner) in structures.iter() {
         if !structure.needs_maintenance(tuning) {
+            continue;
+        }
+        // A Sink that repays its Maintenance for no facility is left to decay.
+        if stockpiles
+            .get(entity)
+            .is_ok_and(|(.., upkeep)| !SinkUpkeep::paid(upkeep.as_deref()))
+        {
             continue;
         }
         if let Ok((_, charger, charger_owner, condition)) = chargers.get(entity)

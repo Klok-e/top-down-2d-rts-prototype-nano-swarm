@@ -706,13 +706,13 @@ impl Plugin for ProductionPlugin {
 /// Weight of each new delivery in a facility's measured lead time.
 const LEAD_TIME_SMOOTHING: f32 = 0.2;
 
-/// Fixed ticks for one delivery from a Sink `sink_distance` away, before any
-/// delivery has been measured: the trip to the Sink, loading a full load, and
-/// the trip back.
-pub fn estimated_lead_ticks(tuning: &Tuning, sink_distance: f32) -> f32 {
+/// Fixed ticks for one delivery from a pickup `pickup_distance` away, before
+/// any delivery has been measured: the trip to the pickup, loading a full
+/// load, and the trip back.
+pub fn estimated_lead_ticks(tuning: &Tuning, pickup_distance: f32) -> f32 {
     let carry = tuning.logistics.hauler_carry_capacity.max(1);
     let loading = (carry * tuning.logistics.material_work_ticks) as f32;
-    let travel = 2.0 * sink_distance.max(0.0) / tuning.logistics.bot_speed;
+    let travel = 2.0 * pickup_distance.max(0.0) / tuning.logistics.bot_speed;
     loading + travel
 }
 
@@ -727,10 +727,10 @@ pub fn window_for_lead(tuning: &Tuning, lead_ticks: f32) -> u32 {
     loads.saturating_mul(carry)
 }
 
-/// Delivery window for an unmeasured facility whose nearest stocked Sink is
-/// `sink_distance` away.
-pub fn delivery_window(tuning: &Tuning, sink_distance: f32) -> u32 {
-    window_for_lead(tuning, estimated_lead_ticks(tuning, sink_distance))
+/// Delivery window for an unmeasured facility whose nearest stocked pickup is
+/// `pickup_distance` away.
+pub fn delivery_window(tuning: &Tuning, pickup_distance: f32) -> u32 {
+    window_for_lead(tuning, estimated_lead_ticks(tuning, pickup_distance))
 }
 
 /// Facility claims Haulers hold, by Hauler, with the allocation tick each was
@@ -808,19 +808,19 @@ pub fn facility_lead_time_system(
 }
 
 /// Size each busy facility's delivery window from its measured lead time, or
-/// before any delivery is measured, from its nearest stocked Sink of the same
-/// owner. Runs on the allocation cadence, since only claims read it.
-/// The window never shrinks below what Haulers already claimed, so a Sink
-/// emptying or restocking nearby cannot revoke a delivery in flight; Hauler
+/// before any delivery is measured, from its nearest stocked Source or Sink
+/// Stockpile of the same owner. Runs on the allocation cadence, since only
+/// claims read it. The window never shrinks below what Haulers already
+/// claimed, so a pickup emptying or restocking nearby cannot revoke a delivery
+/// in flight; Hauler
 /// claims are summed only when some window would shrink.
 #[allow(clippy::type_complexity)]
 pub fn facility_delivery_window_system(
     tuning: Res<Tuning>,
     mut facilities: Query<(Entity, &mut ProductionFacility, &Transform, &OwnerSwarm)>,
-    sinks: Query<(
+    pickups: Query<(
         &Stockpile,
         &Transform,
-        Option<&crate::resources::StockpileRole>,
         Option<&OwnerSwarm>,
         Option<&SupportCondition>,
     )>,
@@ -835,15 +835,14 @@ pub fn facility_delivery_window_system(
             continue;
         }
         let position = transform.translation.truncate();
-        let nearest = sinks
+        let nearest = pickups
             .iter()
-            .filter(|(stockpile, _, role, sink_owner, condition)| {
+            .filter(|(stockpile, _, pickup_owner, condition)| {
                 stockpile.amount > 0
-                    && matches!(role, Some(crate::resources::StockpileRole::Sink))
-                    && sink_owner.is_some_and(|sink_owner| sink_owner.0 == owner.0)
+                    && pickup_owner.is_some_and(|pickup_owner| pickup_owner.0 == owner.0)
                     && condition.is_none_or(|condition| condition.is_operational())
             })
-            .map(|(_, sink, ..)| sink.translation.truncate().distance(position))
+            .map(|(_, pickup, ..)| pickup.translation.truncate().distance(position))
             .min_by(f32::total_cmp);
         let derived = facility
             .measured_lead_ticks

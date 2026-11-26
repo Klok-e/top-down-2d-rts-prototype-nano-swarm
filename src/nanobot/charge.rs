@@ -418,7 +418,7 @@ pub fn charger_auto_creation_system(
         (With<Nanobot>, With<Charge>),
     >,
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,
-    mut lattices: Local<HashMap<SwarmId, crate::nanobot::placement::DefendLattice>>,
+    mut lattices: Local<HashMap<SwarmId, crate::nanobot::placement::SiteLattice>>,
 ) {
     let mut access_layout = access.snapshot();
     let swarm_by_id: HashMap<SwarmId, Entity> =
@@ -578,7 +578,7 @@ pub fn charger_auto_creation_system(
             }
             entry => {
                 let built =
-                    crate::nanobot::placement::DefendLattice::build(&defend_cells, &obstacles);
+                    crate::nanobot::placement::SiteLattice::build(&defend_cells, &obstacles);
                 match entry {
                     std::collections::hash_map::Entry::Occupied(mut entry) => {
                         entry.insert(built);
