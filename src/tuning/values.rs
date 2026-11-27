@@ -1,19 +1,30 @@
 use bevy::prelude::Resource;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::IgnoredAny};
 
 use super::TuningField;
 
+fn ignore_retired_field<'de, D: Deserializer<'de>>(deserializer: D) -> Result<(), D::Error> {
+    IgnoredAny::deserialize(deserializer).map(|_| ())
+}
+
 macro_rules! tuning_schema {
-    ($( $section:ident: $section_type:ident { $( $field:ident: $ty:ty = $default:expr => ($label:literal, $unit:literal, $scale:expr, $step:expr, $min:expr, $max:expr); )* } )*) => {
+    ($( $section:ident: $section_type:ident { $( $field:ident: $ty:ty = $default:expr => ($label:literal, $unit:literal, $scale:expr, $step:expr, $min:expr, $max:expr); )* } $(=> ignore [$($retired:ident),+])? )*) => {
         #[derive(Resource, Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
         #[serde(deny_unknown_fields)]
         pub struct Tuning { $(pub $section: $section_type,)* }
         $(
             #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
             #[serde(deny_unknown_fields)]
-            pub struct $section_type { $(pub $field: $ty,)* }
+            pub struct $section_type {
+                $(pub $field: $ty,)*
+                $($(
+                    #[doc(hidden)]
+                    #[serde(default, skip_serializing, deserialize_with = "ignore_retired_field")]
+                    pub $retired: (),
+                )+)?
+            }
             impl Default for $section_type {
-                fn default() -> Self { Self { $($field: $default,)* } }
+                fn default() -> Self { Self { $($field: $default,)* $($($retired: (),)+)? } }
             }
         )*
         impl Tuning {
@@ -157,8 +168,7 @@ tuning_schema! {
         strategy_defender_baseline: u32 = 4 => ("Baseline Defender demand", "Defenders", 1.0, 1.0, 1.0, 48.0);
         strategy_income_spending_weight: f32 = 0.8 => ("Income available for upkeep", "%", 100.0, 5.0, 0.0, 1.0);
         strategy_bank_spending_seconds: f32 = 45.0 => ("Reserve surplus spending horizon", "s", 1.0, 1.0, 1.0, 1_000.0);
-        strategy_production_mineral_threshold: u32 = 90 => ("Production expansion threshold", "minerals", 1.0, 1.0, 0.0, 1_000_000.0);
-        strategy_production_room_cells: u32 = 2 => ("Production expansion room", "cells", 1.0, 1.0, 0.0, 4.0);
+        strategy_production_room_cells: u32 = 2 => ("Build room per economic site", "cells", 1.0, 1.0, 0.0, 4.0);
         strategy_raid_charger_value: f32 = 95.0 => ("raid charger value", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_raid_stockpile_value: f32 = 80.0 => ("raid stockpile value", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_raid_facility_value: f32 = 60.0 => ("raid facility value", "", 1.0, 0.05, 0.0, 1_000_000.0);
@@ -180,6 +190,7 @@ tuning_schema! {
         strategy_force_base_weight: f32 = 0.35 => ("force base weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_force_charge_weight: f32 = 0.65 => ("force charge weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
     }
+    => ignore [strategy_production_mineral_threshold]
     presentation: PresentationTuning {
         effects_intensity: f32 = 1.0 => ("Combat effects intensity", "", 1.0, 0.1, 0.0, 4.0);
         bloom_intensity: f32 = 0.3 => ("Bloom intensity", "", 1.0, 0.05, 0.0, 1.2);

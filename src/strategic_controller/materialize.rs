@@ -1,11 +1,11 @@
 use super::{
     economy::{EconomyPlan, SUPPORT_PAINT_RESERVE},
     lifecycle::WorkBudget,
-    spending::{DefenderBudget, add_production_room, keep_charger_support},
+    spending::{DefenderBudget, keep_charger_support},
     staging::{DefendBlock, StagingFront},
     *,
 };
-use crate::navigation::Route;
+use crate::{nanobot::footprint_intent_cells, navigation::Route};
 use std::collections::VecDeque;
 
 pub(super) fn materialize_plan(
@@ -36,7 +36,6 @@ pub(super) fn materialize_plan(
         ..
     } = economy;
 
-    let paint_capacity = EXPANSION_PLAN_CELLS.max(desired.len() + SUPPORT_PAINT_RESERVE);
     push_desired(
         &mut desired,
         owner,
@@ -59,22 +58,17 @@ pub(super) fn materialize_plan(
         true,
         budget,
     );
-    if anchor != home_cell {
-        for cell in [anchor, anchor + IVec2::Y, anchor + IVec2::X] {
-            if Some(cell) == protected_home {
-                continue;
-            }
-            let build = DesiredIntent {
-                cell,
-                kind: IntentKind::Build,
-            };
-            if desired.contains(&build)
-                || push_desired(&mut desired, owner, build, state, true, budget)
-            {
-                break;
-            }
-        }
-    }
+    keep_spare_build_room(
+        owner,
+        tuning.strategy_production_room_cells,
+        std::iter::once(home_cell).chain(owned_deposits.iter().map(|mine| mine.build_cell)),
+        state,
+        &mut desired,
+        budget,
+    );
+    let paint_capacity = EXPANSION_PLAN_CELLS
+        .max(desired.len() + SUPPORT_PAINT_RESERVE)
+        .min(MAX_PLAN_CELLS);
 
     let defense = DefenderBudget::estimate(tuning, owner, swarm, state, budget);
     let (key_charger, supplied_slots) = keep_charger_support(
@@ -113,17 +107,6 @@ pub(super) fn materialize_plan(
             protected_home,
         );
     }
-    if let Some(swarm) = swarm {
-        add_production_room(
-            tuning,
-            swarm,
-            std::iter::once(home_cell).chain(owned_deposits.iter().map(|mine| mine.build_cell)),
-            state,
-            &mut desired,
-            paint_capacity,
-            budget,
-        );
-    }
 
     let block = fit_defend_block(
         block_at_anchor,
@@ -149,6 +132,96 @@ pub(super) fn materialize_plan(
         desired,
         reachability: state.reachability.cloned(),
         grid_size: IVec2::new(state.grid.width(), state.grid.height()),
+    }
+}
+
+pub(super) fn retain_build_footprints(
+    owner: SwarmId,
+    state: &GameState<'_>,
+    paint_limit: usize,
+    budget: &mut WorkBudget,
+) -> Option<HashSet<DesiredIntent>> {
+    let mut desired = HashSet::new();
+    let mut required = Vec::new();
+    for footprint in state.build_footprints {
+        if !budget.spend(1) {
+            return None;
+        }
+        if footprint.owner != owner {
+            continue;
+        }
+        if let Some(map) = state.reachability
+            && !map
+                .position_is_reachable_with_budget(owner, footprint.center, state.grid, &mut || {
+                    budget.spend(1)
+                })
+                .ok()?
+        {
+            continue;
+        }
+        required.clear();
+        let mut accessible = true;
+        for cell in footprint_intent_cells(footprint.center, footprint.half) {
+            if !budget.spend(1) {
+                return None;
+            }
+            if !cell_is_reachable(owner, state, cell, budget)? {
+                accessible = false;
+                break;
+            }
+            required.push(DesiredIntent {
+                cell,
+                kind: IntentKind::Build,
+            });
+        }
+        if accessible {
+            desired.extend(required.iter().copied());
+            if desired.len() > paint_limit {
+                return None;
+            }
+        }
+    }
+    Some(desired)
+}
+
+fn keep_spare_build_room(
+    owner: SwarmId,
+    allowance: u32,
+    origins: impl Iterator<Item = IVec2>,
+    state: &GameState<'_>,
+    desired: &mut HashSet<DesiredIntent>,
+    budget: &mut WorkBudget,
+) {
+    for origin in origins {
+        let mut remaining = allowance;
+        for offset in [IVec2::X, -IVec2::X, IVec2::Y, -IVec2::Y] {
+            if remaining == 0 {
+                break;
+            }
+            if desired.len() >= MAX_PLAN_CELLS - SUPPORT_PAINT_RESERVE || budget.exhausted {
+                return;
+            }
+            let cell = origin + offset;
+            if desired.contains(&DesiredIntent {
+                cell,
+                kind: IntentKind::Gather,
+            }) {
+                continue;
+            }
+            if push_desired(
+                desired,
+                owner,
+                DesiredIntent {
+                    cell,
+                    kind: IntentKind::Build,
+                },
+                state,
+                true,
+                budget,
+            ) {
+                remaining -= 1;
+            }
+        }
     }
 }
 
