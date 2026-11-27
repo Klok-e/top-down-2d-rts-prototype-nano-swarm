@@ -15,6 +15,7 @@ use crate::resources::ResourceKind;
 
 pub use allocator::*;
 pub use defender_response::*;
+pub use defender_staging::DefenderStagingAssignments;
 pub use lease::*;
 pub use projection::{ActionableProjection, project_actionable_opportunities_system};
 pub use runtime::*;
@@ -33,6 +34,7 @@ pub(super) fn reset_session(world: &mut World) {
     reset_resource::<ActionableProjection>(world);
     reset_resource::<TerritorySnapshot>(world);
     reset_resource::<defender_staging::DefenderStagingLayouts>(world);
+    reset_resource::<DefenderStagingAssignments>(world);
     reset_resource::<AllocationClock>(world);
     reset_resource::<runtime::AllocationTickDue>(world);
     reset_resource::<RegionalAllocationWake>(world);
