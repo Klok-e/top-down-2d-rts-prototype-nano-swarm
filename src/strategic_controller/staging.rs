@@ -37,6 +37,10 @@ impl StagingFront {
         self.readiness_shortfall_started.is_some()
     }
 
+    pub(super) fn observe_readiness_from(&mut self, reviewed: &Self) {
+        self.readiness_shortfall_started = reviewed.readiness_shortfall_started;
+    }
+
     pub(super) fn covers(&self, target: IVec2, owner: SwarmId, state: &GameState<'_>) -> bool {
         self.block.contains(target)
             && state

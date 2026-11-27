@@ -76,6 +76,7 @@ mod raid_readiness {
             DirectMovementComponent, Health, OwnerSwarm, SwarmMember,
         },
         navigation_runtime::NavigationBudget,
+        resources::Stockpile,
         strategic_runtime::ControllerTelemetry,
         terrain::RockFormation,
         tuning::Tuning,
@@ -85,9 +86,19 @@ mod raid_readiness {
     const ENEMY: SwarmId = SwarmId(9);
     const TARGET: IVec2 = IVec2::new(9, 0);
     const REVIEW_TICKS: u64 = 5;
+    const DISTANT_TARGET: IVec2 = IVec2::new(50, 0);
+    const DISTANT_NEUTRAL: IVec2 = IVec2::new(-50, 0);
 
-    fn raid_fixture<const N: usize>(mut app: App) -> (App, [Entity; N]) {
-        app.insert_resource(IntentGrid::new(64, 64));
+    fn raid_fixture<const N: usize>(app: App) -> (App, [Entity; N]) {
+        raid_fixture_at(app, TARGET, 64)
+    }
+
+    fn raid_fixture_at<const N: usize>(
+        mut app: App,
+        target: IVec2,
+        grid_width: i32,
+    ) -> (App, [Entity; N]) {
+        app.insert_resource(IntentGrid::new(grid_width, 64));
         app.add_plugins(StrategicControllerPlugin);
         let home = common::cell_world_center(IVec2::ZERO);
         app.world_mut().spawn((
@@ -96,7 +107,7 @@ mod raid_readiness {
             Transform::from_translation(home.extend(0.0)),
             StrategicController::new(OWNER),
         ));
-        let enemy_home = common::cell_world_center(TARGET + 4 * IVec2::X);
+        let enemy_home = common::cell_world_center(target + 4 * IVec2::X);
         let enemy = app
             .world_mut()
             .spawn((
@@ -105,21 +116,8 @@ mod raid_readiness {
                 Transform::from_translation(enemy_home.extend(0.0)),
             ))
             .id();
-        let position = common::cell_world_center(TARGET);
-        let mine = common::spawn_deposit(
-            &mut app,
-            common::DepositFixture {
-                world_pos: position,
-                amount: 72_000,
-                capacity: 72_000,
-                radius: 80.0,
-            },
-        );
-        let stockpile = common::spawn_stockpile(&mut app, position, 80, 100);
+        add_enemy_mine(&mut app, enemy, target);
         common::spawn_facility_at(&mut app, enemy, enemy_home);
-        for entity in [mine, stockpile] {
-            app.world_mut().entity_mut(entity).insert(OwnerSwarm(enemy));
-        }
         let force =
             std::array::from_fn(|_| common::spawn_stationary_defender_at(&mut app, home, OWNER));
         install_empty_reachability(&mut app, [OWNER, ENEMY]);
@@ -127,6 +125,42 @@ mod raid_readiness {
         tuning.autonomy.controller_review_period_ticks = REVIEW_TICKS;
         tuning.autonomy.strategy_raid_base = 10_000.0;
         (app, force)
+    }
+
+    fn add_enemy_mine(app: &mut App, enemy: Entity, cell: IVec2) {
+        let position = common::cell_world_center(cell);
+        let mine = common::spawn_deposit(
+            app,
+            common::DepositFixture {
+                world_pos: position,
+                amount: 72_000,
+                capacity: 72_000,
+                radius: 80.0,
+            },
+        );
+        let stockpile = common::spawn_stockpile(app, position, 80, 100);
+        for entity in [mine, stockpile] {
+            app.world_mut().entity_mut(entity).insert(OwnerSwarm(enemy));
+        }
+    }
+
+    fn neutral_deposit(app: &mut App, cell: IVec2) {
+        common::spawn_deposit(
+            app,
+            common::DepositFixture {
+                world_pos: common::cell_world_center(cell),
+                amount: 72_000,
+                capacity: 72_000,
+                radius: 80.0,
+            },
+        );
+    }
+
+    fn add_claim_crew(app: &mut App) {
+        let home = common::cell_world_center(IVec2::ZERO);
+        common::spawn_worker_at(app, home);
+        common::spawn_worker_at(app, home);
+        common::spawn_hauler_at(app, home);
     }
 
     fn review(app: &mut App) {
@@ -146,16 +180,209 @@ mod raid_readiness {
     }
 
     fn owns_defend(app: &App, cell: IVec2) -> bool {
+        owns_intent(app, cell, IntentKind::Defend)
+    }
+
+    fn owns_intent(app: &App, cell: IVec2, kind: IntentKind) -> bool {
         app.world()
             .resource::<IntentGrid>()
             .cell(cell)
-            .is_some_and(|intent| intent.has_owned(IntentKind::Defend, OWNER))
+            .is_some_and(|intent| intent.has_owned(kind, OWNER))
     }
 
     fn explanation(app: &App) -> String {
         app.world().resource::<ControllerTelemetry>().profiles()[&OWNER.0]
             .last_explanation
             .clone()
+    }
+
+    #[test]
+    fn an_ineligible_neutral_deposit_leaves_the_raid_available() {
+        for has_crew in [false, true] {
+            let (mut app, _) = raid_fixture::<2>(common::minimal_app());
+            let neutral = IVec2::new(-4, 0);
+            neutral_deposit(&mut app, neutral);
+            if has_crew {
+                add_claim_crew(&mut app);
+                app.world_mut()
+                    .resource_mut::<Tuning>()
+                    .autonomy
+                    .strategy_expansion_income_weight = 0.0;
+            }
+
+            review(&mut app);
+
+            assert!(!owns_intent(&app, neutral, IntentKind::Gather));
+            assert!(owns_defend(&app, IVec2::new(3, 0)), "{}", explanation(&app));
+        }
+    }
+
+    #[test]
+    fn a_viable_neutral_claim_keeps_the_active_raid_staging_point() {
+        let (mut app, _) = raid_fixture::<2>(common::minimal_app());
+        add_claim_crew(&mut app);
+        review(&mut app);
+        let front = forward_defend_cells(&app);
+        let staging_point = IVec2::new(3, 0);
+        assert!(front.contains(&staging_point), "{}", explanation(&app));
+
+        let neutral = IVec2::new(-4, 0);
+        neutral_deposit(&mut app, neutral);
+        review(&mut app);
+
+        assert!(
+            owns_intent(&app, neutral, IntentKind::Gather),
+            "{}",
+            explanation(&app)
+        );
+        assert!(owns_intent(&app, neutral + IVec2::X, IntentKind::Build));
+        assert!(owns_intent(&app, neutral, IntentKind::Corridor));
+        assert!(owns_intent(&app, staging_point, IntentKind::Corridor));
+        assert_eq!(forward_defend_cells(&app), front, "{}", explanation(&app));
+    }
+
+    #[test]
+    fn paint_overflow_keeps_a_viable_raid_and_replaces_it_after_its_target_is_lost() {
+        let (mut app, _) = over_budget_raid_and_claim_fixture();
+        let target = DISTANT_TARGET;
+        let neutral = DISTANT_NEUTRAL;
+        review(&mut app);
+        let revision = app.world().resource::<IntentGrid>().revision();
+        assert!(owns_defend(&app, target), "{}", explanation(&app));
+        assert!(owns_intent(&app, target, IntentKind::Corridor));
+
+        neutral_deposit(&mut app, neutral);
+        review(&mut app);
+
+        assert_eq!(
+            app.world().resource::<IntentGrid>().revision(),
+            revision,
+            "a paint-limited review must leave the whole previously applied plan intact: {}",
+            explanation(&app)
+        );
+        assert!(explanation(&app).contains("paint"), "{}", explanation(&app));
+
+        let stockpile = {
+            let world = app.world_mut();
+            world
+                .query_filtered::<Entity, With<Stockpile>>()
+                .single(world)
+                .expect("the raid fixture has one target Stockpile")
+        };
+        let enemy = app.world().get::<OwnerSwarm>(stockpile).unwrap().0;
+        app.world_mut().despawn(stockpile);
+        let replacement = target + IVec2::Y;
+        let next_target =
+            common::spawn_stockpile(&mut app, common::cell_world_center(replacement), 80, 100);
+        app.world_mut()
+            .entity_mut(next_target)
+            .insert(OwnerSwarm(enemy));
+        review(&mut app);
+
+        assert!(owns_defend(&app, replacement), "{}", explanation(&app));
+        assert!(owns_intent(&app, replacement, IntentKind::Corridor));
+        assert!(!owns_intent(&app, neutral, IntentKind::Gather));
+    }
+
+    #[test]
+    fn an_over_budget_first_review_publishes_complete_home_support() {
+        let (mut app, _) = over_budget_raid_and_claim_fixture();
+        let neutral = DISTANT_NEUTRAL;
+        neutral_deposit(&mut app, neutral);
+
+        review(&mut app);
+
+        assert!(owns_intent(&app, IVec2::ZERO, IntentKind::Build));
+        assert!(owns_intent(&app, IVec2::ZERO, IntentKind::Corridor));
+        assert!(owns_defend(&app, IVec2::ZERO));
+        assert!(
+            forward_defend_cells(&app).is_empty(),
+            "{}",
+            explanation(&app)
+        );
+        assert!(!owns_intent(&app, neutral, IntentKind::Gather));
+    }
+
+    #[test]
+    fn paint_overflow_preserves_raid_readiness_observations() {
+        let (mut app, force) = over_budget_raid_and_claim_fixture();
+        review(&mut app);
+        let target = DISTANT_TARGET;
+        assert!(owns_defend(&app, target), "{}", explanation(&app));
+        neutral_deposit(&mut app, DISTANT_NEUTRAL);
+
+        let set_charge = |app: &mut App, charge| {
+            for defender in force {
+                app.world_mut().get_mut::<Charge>(defender).unwrap().current = charge;
+            }
+        };
+        let wait_three_seconds = |app: &mut App| {
+            for _ in 0..3 * SIMULATION_HZ as u64 {
+                app.update();
+            }
+        };
+        set_charge(&mut app, 0.1);
+        wait_three_seconds(&mut app);
+        assert!(owns_defend(&app, target), "{}", explanation(&app));
+
+        set_charge(&mut app, 1.0);
+        review(&mut app);
+        assert!(!owns_intent(&app, DISTANT_NEUTRAL, IntentKind::Gather));
+
+        set_charge(&mut app, 0.1);
+        wait_three_seconds(&mut app);
+        assert!(owns_defend(&app, target), "{}", explanation(&app));
+
+        wait_three_seconds(&mut app);
+        assert!(!owns_defend(&app, target), "{}", explanation(&app));
+        assert!(owns_intent(&app, DISTANT_NEUTRAL, IntentKind::Gather));
+    }
+
+    fn over_budget_raid_and_claim_fixture() -> (App, [Entity; 2]) {
+        let (mut app, force) = raid_fixture_at(common::minimal_app(), DISTANT_TARGET, 128);
+        prepare_distant_claim(&mut app);
+        (app, force)
+    }
+
+    fn prepare_distant_claim(app: &mut App) {
+        add_claim_crew(app);
+        let mut tuning = app.world_mut().resource_mut::<Tuning>();
+        tuning.autonomy.strategy_staging_spacing_cells = 64;
+        tuning.autonomy.strategy_expansion_travel_cost = 0.0;
+        tuning.autonomy.strategy_expansion_haul_cost = 0.0;
+    }
+
+    #[test]
+    fn paint_overflow_can_replace_an_ineligible_raid_with_one_of_equal_priority() {
+        let guarded_target = IVec2::new(100, 0);
+        let open_target = IVec2::new(55, -10);
+        let (mut app, _) = raid_fixture_at::<2>(common::minimal_app(), guarded_target, 256);
+        prepare_distant_claim(&mut app);
+        review(&mut app);
+        assert!(owns_defend(&app, DISTANT_TARGET), "{}", explanation(&app));
+
+        let enemy = {
+            let world = app.world_mut();
+            world
+                .query::<(Entity, &SwarmId)>()
+                .iter(world)
+                .find_map(|(entity, &owner)| (owner == ENEMY).then_some(entity))
+                .unwrap()
+        };
+        add_enemy_mine(&mut app, enemy, open_target);
+        neutral_deposit(&mut app, DISTANT_NEUTRAL);
+        for cell in [guarded_target, guarded_target - IVec2::X] {
+            common::spawn_stationary_defender_at(&mut app, common::cell_world_center(cell), ENEMY);
+        }
+        review(&mut app);
+        assert!(owns_defend(&app, DISTANT_TARGET), "{}", explanation(&app));
+
+        for _ in 0..6 * SIMULATION_HZ as u64 {
+            app.update();
+        }
+        assert!(owns_defend(&app, open_target), "{}", explanation(&app));
+        assert!(owns_intent(&app, open_target, IntentKind::Corridor));
+        assert!(!owns_intent(&app, DISTANT_NEUTRAL, IntentKind::Gather));
     }
 
     #[test]
@@ -557,6 +784,16 @@ fn strategic_adapter_contests_a_deposit_when_a_hostile_worker_moves_toward_it() 
         .entity_mut(swarm)
         .insert(StrategicController::new(owner));
     install_empty_reachability(&mut app, [owner]);
+    let enemy_home = common::cell_world_center(IVec2::new(0, -4));
+    let enemy_swarm = app
+        .world_mut()
+        .spawn((
+            Swarm {},
+            enemy,
+            Transform::from_translation(enemy_home.extend(0.0)),
+        ))
+        .id();
+    common::spawn_facility_at(&mut app, enemy_swarm, enemy_home);
     common::spawn_deposit(
         &mut app,
         common::DepositFixture {

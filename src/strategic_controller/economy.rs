@@ -24,16 +24,15 @@ pub(super) struct OwnedDeposit {
     haul_distance: f32,
     pub(super) gather_cell: IVec2,
     pub(super) build_cell: IVec2,
-    desired: Vec<DesiredIntent>,
+    pub(super) desired: Vec<DesiredIntent>,
 }
 
 #[derive(Default)]
 pub(super) struct EconomyPlan {
     pub(super) owned_deposits: Vec<OwnedDeposit>,
     pub(super) desired: HashSet<DesiredIntent>,
-    pub(super) expansion: Option<u64>,
+    pub(super) expansion: Option<OwnedDeposit>,
     pub(super) threatened: Option<(u64, IVec2)>,
-    pub(super) free_deposit_exists: bool,
     pub(super) contested_deposits: Vec<(u64, IVec2, RouteGoal)>,
     pub(super) enemy_deposits: Vec<(DepositState, SwarmId)>,
     pub(super) enemy_gather_claims: BTreeSet<(u64, SwarmId)>,
@@ -238,10 +237,6 @@ pub(super) fn plan_economy(
     if budget.exhausted {
         return None;
     }
-    if economy.threatened.is_some() {
-        return Some(economy);
-    }
-
     let mut unchecked = Vec::new();
     for deposit in opportunities {
         let mut approached = false;
@@ -259,18 +254,12 @@ pub(super) fn plan_economy(
             }
         }
         if approached {
-            match mine_support(owner, deposit, state, home, budget) {
-                Ok(Some((mine, _))) => {
-                    economy.contested_deposits.push((
-                        deposit.id,
-                        mine.gather_cell,
-                        RouteGoal::Interaction(
-                            deposit_region(deposit).within_cell(mine.gather_cell),
-                        ),
-                    ));
-                }
-                Err(_) => economy.free_deposit_exists = true,
-                Ok(None) => {}
+            if let Ok(Some((mine, _))) = mine_support(owner, deposit, state, home, budget) {
+                economy.contested_deposits.push((
+                    deposit.id,
+                    mine.gather_cell,
+                    RouteGoal::Interaction(deposit_region(deposit).within_cell(mine.gather_cell)),
+                ));
             }
         } else {
             unchecked.push(deposit);
@@ -365,20 +354,15 @@ pub(super) fn plan_economy(
             .max(0.0);
         let optimistic =
             value - min_route / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_haul_cost;
-        let could_claim = optimistic > best.as_ref().map_or(0.0, |(_, score)| *score);
-        if !could_claim && economy.free_deposit_exists {
+        if optimistic <= best.as_ref().map_or(0.0, |(_, score)| *score) {
             continue;
         }
         let (mine, distance) = match mine_support(owner, deposit, state, home, budget) {
             Ok(Some(support)) => support,
             Ok(None) if budget.exhausted => return None,
             Ok(None) => continue,
-            Err(_) => {
-                economy.free_deposit_exists = true;
-                continue;
-            }
+            Err(_) => continue,
         };
-        economy.free_deposit_exists = true;
         let score = value - distance / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_haul_cost;
         if score > best.as_ref().map_or(0.0, |(_, score)| *score)
             && economy.can_fit(&mine, ECONOMY_EXPANSION_PAINT_LIMIT, budget)
@@ -389,13 +373,7 @@ pub(super) fn plan_economy(
             best = Some((mine, score));
         }
     }
-    if let Some((mine, _)) = best {
-        let id = mine.id;
-        if !economy.add(mine, budget) {
-            return None;
-        }
-        economy.expansion = Some(id);
-    }
+    economy.expansion = best.map(|(mine, _)| mine);
     (!budget.exhausted).then_some(economy)
 }
 
