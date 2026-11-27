@@ -108,6 +108,7 @@ pub type RouteQuery<'a> =
 pub struct MineObservation {
     pub worker_capacity: u32,
     pub active_workers: u32,
+    pub unladen_gatherers: u32,
     pub delivered_minerals: u64,
     pub completed_dropoffs: u32,
     pub observation_ticks: u64,
@@ -140,8 +141,12 @@ pub struct MinePressure {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum MineObservationAt {
-    Service(IVec2),
+pub enum MineObservationAt<'a> {
+    Service {
+        gather: IVec2,
+        other_gather: &'a [IVec2],
+        check_placement: bool,
+    },
     Defense([IVec2; 2]),
 }
 
@@ -149,7 +154,7 @@ pub enum MineObservationAt {
 pub type MineQuery<'a> = dyn Fn(
         SwarmId,
         &DepositState,
-        MineObservationAt,
+        MineObservationAt<'_>,
         &mut dyn FnMut() -> bool,
     ) -> Option<MineObservation>
     + 'a;

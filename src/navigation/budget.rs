@@ -1563,6 +1563,16 @@ pub enum AccessStatus {
     Rejected,
 }
 impl Navigation {
+    pub(crate) fn assess_construction_with_budget(
+        &self,
+        check: &AccessCheck,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, ()> {
+        let paint = PaintCosts::default();
+        let outcome = poll_with_budget(self.async_access(check, &paint), allow_work)?;
+        Ok(matches!(outcome, RouteOutcome::Found(_)))
+    }
+
     pub fn query_access(
         &self,
         key: u64,

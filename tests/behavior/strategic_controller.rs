@@ -1740,7 +1740,9 @@ fn review_expansion(
         let grid = app.world().resource::<IntentGrid>();
         assert!(
             grid.cell(opening)
-                .is_some_and(|cell| cell.has_owned(IntentKind::Gather, owner))
+                .is_some_and(|cell| cell.has_owned(IntentKind::Gather, owner)),
+            "opening mine lost Gather at tick {tick}, split={split_work_ring}, situation={supply:?}, telemetry={:?}",
+            app.world().resource::<top_down_2d_rts_prototype_nano_swarm::strategic_runtime::ControllerTelemetry>().profiles()
         );
         let expanded = grid
             .cell(expansion)
@@ -1788,7 +1790,7 @@ mod mine_recovery {
         SIMULATION_HZ,
         nanobot::{
             Cargo, ExtractProgress, GatherAssignment, InteractionRegion, LogisticsReservation,
-            NanobotBundle, NanobotType, OwnerSwarm, ReturningToStockpile, SwarmMember,
+            NanobotType, OwnerSwarm, ReturningToStockpile, deterministic_jitter,
             worker_gather_delivery_system,
         },
         navigation::align_structure,
@@ -1833,10 +1835,13 @@ mod mine_recovery {
             for index in 0..8 {
                 let angle = index as f32 * std::f32::consts::TAU / 8.0;
                 let transform = align_structure(Transform::from_translation(
-                    (center + 164.0 * Vec2::from_angle(angle)).extend(0.0),
+                    (center
+                        + 164.0 * Vec2::from_angle(angle)
+                        + deterministic_jitter(index, FAILED, 16.0))
+                    .extend(0.0),
                 ));
                 let rock = RockFormation::Rectangle {
-                    half: Vec2::splat(34.0),
+                    half: Vec2::splat(12.0),
                 };
                 rocks.push(rock.obstacle(&transform));
                 app.world_mut().spawn((rock, transform));
@@ -1866,7 +1871,13 @@ mod mine_recovery {
     }
 
     fn source(app: &mut App, cell: IVec2) -> Entity {
-        common::spawn_stockpile(app, common::cell_world_center(cell) - 330.0 * Vec2::Y, 0, 4)
+        let offset = if cell == SURVIVOR { 330.0 } else { -330.0 };
+        common::spawn_stockpile(
+            app,
+            common::cell_world_center(cell) + offset * Vec2::Y,
+            0,
+            4,
+        )
     }
 
     fn drop_off(app: &mut App, mine: Entity, source: Entity) {
@@ -1911,16 +1922,7 @@ mod mine_recovery {
     }
 
     fn add_hauler(app: &mut App) -> Entity {
-        app.world_mut()
-            .spawn((
-                NanobotBundle {
-                    nanobot_type: NanobotType::Hauler,
-                    swarm_member: SwarmMember::new(OWNER),
-                    ..Default::default()
-                },
-                Transform::from_translation(common::cell_world_center(IVec2::ZERO).extend(0.0)),
-            ))
-            .id()
+        common::spawn_hauler_at(app, common::cell_world_center(IVec2::ZERO))
     }
 
     fn owns(app: &App, cell: IVec2, kind: IntentKind) -> bool {
@@ -1977,6 +1979,25 @@ mod mine_recovery {
         add_hauler(&mut app);
         run_ticks(&mut app, 2);
         assert_support(&app, REPLACEMENT, REPLACEMENT - IVec2::Y);
+    }
+
+    #[test]
+    fn a_disconnected_empty_source_can_prevent_automatic_restoration() {
+        let (mut app, _, source) = fixture(false);
+        app.world_mut().get_mut::<Stockpile>(source).unwrap().amount = 0;
+        app.world_mut().spawn((
+            RockFormation::Rectangle {
+                half: Vec2::new(
+                    8.0 * top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE,
+                    24.0,
+                ),
+            },
+            Transform::default(),
+        ));
+        add_hauler(&mut app);
+        run_ticks(&mut app, 16);
+        assert_support(&app, REPLACEMENT, REPLACEMENT - IVec2::Y);
+        assert!(!owns(&app, FAILED, IntentKind::Gather));
     }
 
     #[test]

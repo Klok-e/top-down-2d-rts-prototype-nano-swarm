@@ -193,7 +193,7 @@ pub(super) fn plan_economy(
     for mine in previous_mines {
         let Some(deposit) = find_deposit(mine.id, state, budget)
             .ok()?
-            .filter(|d| available(d, owner) && d.position == mine.position)
+            .filter(|d| available(d, owner))
         else {
             continue;
         };
@@ -208,7 +208,9 @@ pub(super) fn plan_economy(
         ) {
             Ok(Some((supported, _))) => supported,
             _ if budget.exhausted => return None,
-            _ if cell_is_reachable(owner, state, mine.gather_cell, budget)? => {
+            _ if deposit.position == mine.position
+                && cell_is_reachable(owner, state, mine.gather_cell, budget)? =>
+            {
                 if !budget.spend(mine.desired.len()) {
                     return None;
                 }
@@ -220,9 +222,9 @@ pub(super) fn plan_economy(
             }
             _ => continue,
         };
-        supported.blocked_since = mine
-            .blocked_since
-            .filter(|_| supported.gather_cell == mine.gather_cell);
+        supported.blocked_since = mine.blocked_since.filter(|_| {
+            supported.position == mine.position && supported.gather_cell == mine.gather_cell
+        });
         if !can_fit(
             &economy.desired,
             &supported,
@@ -301,40 +303,37 @@ pub(super) fn plan_economy(
         .saturating_add(previous_mines.len())
         .saturating_sub(economy.owned_deposits.len());
 
+    let mut observation = state
+        .supply
+        .and_then(|supply| supply.economies.get(&owner))
+        .copied()
+        .unwrap_or_default();
     let mut retained = Vec::with_capacity(economy.owned_deposits.len());
     let mut failed_mine = None;
     let mut rerouted_any = false;
-    for mine in &mut economy.owned_deposits {
+    for index in 0..economy.owned_deposits.len() {
+        let other_gather = gather_support(
+            &economy.owned_deposits,
+            Some(economy.owned_deposits[index].id),
+            budget,
+        )?;
+        let mine = &mut economy.owned_deposits[index];
         let deposit = find_deposit(mine.id, state, budget).ok()??;
-        let mut service = mine_observation(owner, deposit, mine.gather_cell, state, budget)?;
-        if service.source_path == Some(false) {
-            let mut alternate_service = MineObservation::default();
-            let alternate = mine_support_where(
-                owner,
-                deposit,
-                state,
-                home,
-                None,
-                budget,
-                |gather_cell, budget| {
-                    if gather_cell == mine.gather_cell {
-                        return Some(false);
-                    }
-                    alternate_service =
-                        mine_observation(owner, deposit, gather_cell, state, budget)?;
-                    Some(alternate_service.source_path == Some(true))
-                },
-            );
-            if budget.exhausted {
-                return None;
-            }
-            if let Ok(Some((rerouted, _))) = alternate {
-                *mine = rerouted;
-                service = alternate_service;
-                rerouted_any = true;
-            }
-        }
-        mine.blocked_since = (service.source_path == Some(false)).then(|| {
+        let mut service =
+            if previous.is_some() || observation.low_reserve_ticks >= HAUL_WINDOW_TICKS {
+                mine_observation(
+                    owner,
+                    deposit,
+                    mine.gather_cell,
+                    &other_gather,
+                    false,
+                    state,
+                    budget,
+                )?
+            } else {
+                MineObservation::default()
+            };
+        mine.blocked_since = (service.source_path != Some(true)).then(|| {
             let last_dropoff = service
                 .ticks_since_dropoff
                 .map_or(0, |elapsed| state.tick.saturating_sub(elapsed));
@@ -343,13 +342,64 @@ pub(super) fn plan_economy(
                 .unwrap_or(state.tick)
                 .max(last_dropoff)
         });
-        if failed_mine.is_none()
-            && economy.recovery.vacancies == 0
-            && mine
-                .blocked_since
-                .is_some_and(|since| state.tick - since >= MINE_OBSERVATION_TICKS)
+        let stalled = mine
+            .blocked_since
+            .is_some_and(|since| state.tick - since >= MINE_OBSERVATION_TICKS);
+        if stalled
+            && (!opportunities.is_empty()
+                || deposit_candidate_cells(state.grid, deposit.position, deposit.radius)
+                    .any(|cell| cell != mine.gather_cell))
         {
-            failed_mine = Some(mine.id);
+            if service.source_path.is_none() {
+                service = mine_observation(
+                    owner,
+                    deposit,
+                    mine.gather_cell,
+                    &other_gather,
+                    true,
+                    state,
+                    budget,
+                )?;
+            }
+            if service.source_path == Some(false) {
+                let mut alternate_service = MineObservation::default();
+                let alternate = mine_support_where(
+                    owner,
+                    deposit,
+                    state,
+                    home,
+                    None,
+                    budget,
+                    |gather_cell, budget| {
+                        if gather_cell == mine.gather_cell {
+                            return Some(false);
+                        }
+                        alternate_service = mine_observation(
+                            owner,
+                            deposit,
+                            gather_cell,
+                            &other_gather,
+                            true,
+                            state,
+                            budget,
+                        )?;
+                        Some(alternate_service.source_path == Some(true))
+                    },
+                );
+                if budget.exhausted {
+                    return None;
+                }
+                if let Ok(Some((rerouted, _))) = alternate {
+                    *mine = rerouted;
+                    service = alternate_service;
+                    rerouted_any = true;
+                } else if failed_mine.is_none() && economy.recovery.vacancies == 0 {
+                    failed_mine = Some(mine.id);
+                }
+            }
+            if service.source_path == Some(true) {
+                mine.blocked_since = None;
+            }
         }
         retained.push((mine.id, service));
     }
@@ -399,13 +449,14 @@ pub(super) fn plan_economy(
     let establishing_supply = economy.owned_deposits.is_empty()
         || economy.recovery.vacancies > 0
         || failed_mine.is_some();
-    let observation = state
-        .supply
-        .and_then(|supply| supply.economies.get(&owner))
-        .copied()
-        .unwrap_or_default();
     if !establishing_supply && observation.low_reserve_ticks < HAUL_WINDOW_TICKS {
         return Some(economy);
+    }
+    if let Some((_, service)) = retained.iter().find(|(id, _)| Some(*id) == failed_mine) {
+        observation.gather.gathering_workers = observation
+            .gather
+            .gathering_workers
+            .saturating_sub(service.unladen_gatherers);
     }
     let retained = retained
         .into_iter()
@@ -449,6 +500,7 @@ pub(super) fn plan_economy(
     let retained_paint = replacement
         .as_ref()
         .map_or(&economy.desired, |replacement| &replacement.retained_paint);
+    let other_gather = gather_support(&economy.owned_deposits, failed_mine, budget)?;
 
     // Start with the cheapest plausible routes so distant candidates usually
     // need only an optimistic value bound, even when the map has many deposits.
@@ -505,7 +557,18 @@ pub(super) fn plan_economy(
             None,
             budget,
             |gather_cell, budget| {
-                let service = mine_observation(owner, deposit, gather_cell, state, budget)?;
+                if !establishing_supply && capacity.workers > 1 {
+                    return Some(true);
+                }
+                let service = mine_observation(
+                    owner,
+                    deposit,
+                    gather_cell,
+                    &other_gather,
+                    establishing_supply && capacity.workers > 1,
+                    state,
+                    budget,
+                )?;
                 Some(
                     service.source_path != Some(false)
                         && (capacity.workers > 1 || service.has_source),
@@ -543,6 +606,19 @@ fn mine_paint(
         footprints.extend(mine.desired.iter().copied());
     }
     (footprints.len() <= ECONOMY_RETENTION_PAINT_LIMIT).then_some(footprints)
+}
+
+fn gather_support(
+    mines: &[OwnedDeposit],
+    excluded: Option<u64>,
+    budget: &mut WorkBudget,
+) -> Option<Vec<IVec2>> {
+    budget.spend(mines.len()).then(|| {
+        mines
+            .iter()
+            .filter_map(|mine| (Some(mine.id) != excluded).then_some(mine.gather_cell))
+            .collect()
+    })
 }
 
 fn mine_supply(mines: &[MineObservation]) -> f32 {
@@ -664,6 +740,8 @@ pub(super) fn mine_observation(
     owner: SwarmId,
     deposit: &DepositState,
     gather_cell: IVec2,
+    other_gather: &[IVec2],
+    check_placement: bool,
     state: &GameState<'_>,
     budget: &mut WorkBudget,
 ) -> Option<MineObservation> {
@@ -673,7 +751,11 @@ pub(super) fn mine_observation(
             query(
                 owner,
                 deposit,
-                MineObservationAt::Service(gather_cell),
+                MineObservationAt::Service {
+                    gather: gather_cell,
+                    other_gather,
+                    check_placement,
+                },
                 &mut || budget.spend(1),
             )
         })
