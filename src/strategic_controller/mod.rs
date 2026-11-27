@@ -33,8 +33,6 @@ pub struct SwarmState {
     /// Minerals currently held in this swarm’s operational structure buffers.
     pub minerals: u32,
     pub mineral_income_per_second: f32,
-    /// Every operational facility is producing, including zero operational facilities.
-    pub production_saturated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -71,6 +69,14 @@ pub struct StructureState {
     pub health: u32,
     pub max_health: u32,
     pub minerals: u32,
+}
+
+/// The physical bounds of an owned structure that still relies on Build intent.
+#[derive(Debug, Clone, Copy)]
+pub struct BuildFootprint {
+    pub owner: SwarmId,
+    pub center: Vec2,
+    pub half: Vec2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -117,6 +123,7 @@ pub struct GameState<'a> {
     pub swarms: &'a [SwarmState],
     pub bots: &'a [BotState],
     pub structures: &'a [StructureState],
+    pub build_footprints: &'a [BuildFootprint],
     pub deposits: &'a [DepositState],
     pub terrain: &'a [Obstacle],
     pub charge: &'a ChargeTuning,

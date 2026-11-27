@@ -467,7 +467,8 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
 
     use bevy::time::TimeUpdateStrategy;
     use top_down_2d_rts_prototype_nano_swarm::{
-        nanobot::{PlannedKind, Structure, StructureKind},
+        ZONE_BLOCK_SIZE,
+        nanobot::{PlannedKind, PlannedStructure, Structure, StructureKind},
         resources::{ResourceKind, ResourceLedger},
     };
 
@@ -547,11 +548,9 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
         let first = grid
             .iter_active_cells()
             .find(|(cell, intent)| {
-                cell.x >= 2
-                    && intent.has_owned(IntentKind::Build, SwarmId::PLAYER)
-                    && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)
+                cell.x >= 2 && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)
             })
-            .expect("a staging block and its Charger Build must lead the army");
+            .expect("a staging block must lead the army");
         assert!(first.0.x < target_cell.x);
         assert!(
             !grid
@@ -562,6 +561,34 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
         first.0
     };
 
+    let build_cells = |app: &App| {
+        app.world()
+            .resource::<IntentGrid>()
+            .iter_active_cells()
+            .filter_map(|(cell, intent)| {
+                intent
+                    .has_owned(IntentKind::Build, SwarmId::PLAYER)
+                    .then_some(cell)
+            })
+            .collect::<std::collections::HashSet<_>>()
+    };
+    let mut expected_build = build_cells(&app);
+    let planned_cells = [first_stage, first_stage + IVec2::Y];
+    let former_front = common::cell_world_center(first_stage) + Vec2::Y * ZONE_BLOCK_SIZE / 2.0;
+    app.world_mut().spawn((
+        OwnerSwarm(own),
+        PlannedStructure::new(PlannedKind::ProductionFacility, first_stage),
+        PlannedKind::ProductionFacility.footprint_transform(former_front.extend(0.0)),
+    ));
+    for cell in planned_cells {
+        expected_build.insert(cell);
+        app.world_mut().resource_mut::<IntentGrid>().paint(
+            cell,
+            IntentKind::Build,
+            SwarmId::PLAYER,
+        );
+    }
+
     let mut advanced_defenders = 0;
     for _ in 0..5_400 {
         app.update();
@@ -569,10 +596,7 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
         let target_support = world
             .resource::<IntentGrid>()
             .cell(target_cell)
-            .is_some_and(|cell| {
-                cell.has_owned(IntentKind::Build, SwarmId::PLAYER)
-                    && cell.has_owned(IntentKind::Defend, SwarmId::PLAYER)
-            });
+            .is_some_and(|cell| cell.has_owned(IntentKind::Defend, SwarmId::PLAYER));
         if !target_support {
             continue;
         }
@@ -590,6 +614,11 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
             break;
         }
     }
+    assert_eq!(
+        build_cells(&app),
+        expected_build,
+        "the advance preserves the former front's footprint and stable Build room at economic sites"
+    );
     let world = app.world();
     let profiles = world
         .resource::<top_down_2d_rts_prototype_nano_swarm::strategic_runtime::ControllerTelemetry>()
@@ -600,14 +629,6 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
         profiles[&SwarmId::PLAYER.0].last_explanation
     );
     let grid = world.resource::<IntentGrid>();
-    assert!(
-        grid.iter_active_cells().any(|(cell, intent)| {
-            intent.has_owned(IntentKind::Build, SwarmId::PLAYER)
-                && (cell - target_cell).abs().max_element() <= 2
-                && (cell - home_cell).abs().max_element() >= 3
-        }),
-        "Charger Build must accompany the final staging block"
-    );
     assert!(
         !grid
             .cell(first_stage)

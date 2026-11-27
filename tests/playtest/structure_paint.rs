@@ -444,3 +444,145 @@ fn erasing_a_stockpiles_paint_stops_loading_until_the_same_stockpile_is_repainte
         );
     }
 }
+
+#[test]
+fn strategic_reviews_preserve_live_facility_construction_work() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        ZONE_BLOCK_SIZE,
+        strategic_runtime::{ControllerTelemetry, StrategicController},
+    };
+
+    let (mut app, swarm) = sandbox();
+    // Keep the recovery delivery under script control and give the tested facility
+    // the normal production demand after the starting facility is removed.
+    let world = app.world_mut();
+    let starting_facility = world
+        .query_filtered::<Entity, With<ProductionFacility>>()
+        .single(world)
+        .unwrap();
+    world.despawn(starting_facility);
+    let other_roles = world
+        .query::<(Entity, &NanobotType)>()
+        .iter(world)
+        .filter_map(|(entity, kind)| (*kind != NanobotType::Worker).then_some(entity))
+        .collect::<Vec<_>>();
+    for entity in other_roles {
+        world.despawn(entity);
+    }
+    let owner = SwarmId::PLAYER;
+    let site_cell = IVec2::new(3, 2);
+    let site = site_cell.as_vec2() * ZONE_BLOCK_SIZE + Vec2::new(0.0, ZONE_BLOCK_SIZE / 2.0);
+    let footprint_cells = [site_cell - IVec2::X, site_cell];
+    for cell in footprint_cells {
+        apply_paint(&mut app, cell, IntentKind::Build, PlayerIntentAction::Paint);
+    }
+    let initial_work = app.world().resource::<Tuning>().construction.work_ticks;
+    let footprint = PlannedKind::ProductionFacility.footprint_transform(site.extend(0.0));
+    let region = InteractionRegion::structure(&footprint);
+    let worker = common::spawn_worker_at(&mut app, region.approach(site - Vec2::X * 200.0));
+    let mut plan = PlannedStructure::new(PlannedKind::ProductionFacility, site_cell)
+        .with_work_budget(initial_work);
+    assert!(plan.try_claim(worker));
+    let facility = app
+        .world_mut()
+        .spawn((plan, footprint, OwnerSwarm(swarm)))
+        .id();
+
+    app.world_mut().entity_mut(worker).insert((
+        top_down_2d_rts_prototype_nano_swarm::nanobot::Commitment::Working,
+        PlannedStructureClaim {
+            cell: site_cell,
+            target: facility,
+        },
+        PlannedStructureProgress {
+            cell: site_cell,
+            target: facility,
+        },
+    ));
+
+    for _ in 0..300 {
+        app.update();
+        if app
+            .world()
+            .get::<PlannedStructure>(facility)
+            .unwrap()
+            .available_work()
+            <= initial_work - 44
+        {
+            break;
+        }
+    }
+    let before_review = app
+        .world()
+        .get::<PlannedStructure>(facility)
+        .unwrap()
+        .available_work();
+    assert!(
+        before_review <= initial_work - 44,
+        "a Worker must invest real construction before review, remaining work: {before_review}"
+    );
+    app.world_mut()
+        .entity_mut(swarm)
+        .insert(StrategicController::new(owner));
+
+    let mut completed = false;
+    for _ in 0..600 {
+        app.update();
+        let world = app.world();
+        for cell in footprint_cells {
+            assert!(
+                world
+                    .resource::<IntentGrid>()
+                    .cell(cell)
+                    .unwrap()
+                    .has_owned(IntentKind::Build, owner),
+                "review lost required Build at {cell} after {} ticks of construction",
+                initial_work - before_review,
+            );
+        }
+        if world.get::<ProductionFacility>(facility).is_some() {
+            completed = true;
+            if world.resource::<ControllerTelemetry>().profiles()[&owner.0].reviews >= 12 {
+                break;
+            }
+        } else {
+            let plan = world
+                .get::<PlannedStructure>(facility)
+                .expect("the live construction must survive the review");
+            assert!(
+                plan.available_work() <= before_review,
+                "the review must preserve invested work"
+            );
+        }
+    }
+    assert!(
+        completed,
+        "the original plan must complete through normal construction"
+    );
+    assert!(app.world().resource::<ControllerTelemetry>().profiles()[&owner.0].reviews >= 12);
+    for _ in 0..30 {
+        app.update();
+        if app
+            .world()
+            .get::<ProductionFacility>(facility)
+            .unwrap()
+            .demand_waiting
+        {
+            break;
+        }
+    }
+    let idle = app.world().get::<ProductionFacility>(facility).unwrap();
+    assert_eq!(idle.current_target, None);
+    assert_eq!(idle.input_amount, 0);
+    assert!(
+        idle.demand_waiting,
+        "production must have a shortage to fill. Condition: {:?}, demand: {:?}",
+        app.world().get::<Structure>(facility),
+        app.world()
+            .resource::<top_down_2d_rts_prototype_nano_swarm::nanobot::PopulationDemand>(),
+    );
+    assert!(common::fill_facility_input(&mut app, facility) > 0);
+    app.update();
+    let funded = app.world().get::<ProductionFacility>(facility).unwrap();
+    assert!(funded.current_target.is_some() && funded.progress > 0);
+}
