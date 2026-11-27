@@ -10,9 +10,10 @@ use std::{
 use crate::{
     intent::IntentGrid,
     nanobot::{
-        Cargo, Charge, Charger, Health, MatchOutcome, Nanobot, NanobotType, OwnerSwarm,
-        PlannedStructure, ProductionFacility, RegionalAllocationSet, Structure, Swarm, SwarmId,
-        SwarmMember,
+        Cargo, Charge, Charger, ChargerAssignment, ChargerProgress, ClearingEvacuation, Commitment,
+        DefenderDisengagement, DefenderResponse, DefenderRout, Health, MatchOutcome, Nanobot,
+        NanobotType, OwnerSwarm, PlannedStructure, ProductionFacility, RegionalAllocationSet,
+        Structure, Swarm, SwarmId, SwarmMember,
     },
     navigation::{Navigation, Obstacle, RouteGoal, RouteOutcome},
     reachability::{IntentWriteAction, SwarmReachabilityMap, apply_reachable_intent},
@@ -21,8 +22,8 @@ use crate::{
         buffered_minerals,
     },
     strategic_controller::{
-        BotState, BuildFootprint, Controller, DepositState, GameState, IntentEditAction,
-        SourceNeed, SourceSupport, StructureKind, StructureState, SwarmState,
+        BotState, BuildFootprint, Controller, DefenderDuty, DepositState, GameState,
+        IntentEditAction, SourceNeed, SourceSupport, StructureKind, StructureState, SwarmState,
     },
     terrain::RockFormation,
 };
@@ -201,6 +202,15 @@ fn strategic_intent_system(
             &Health,
             Option<&Charge>,
             Option<&Cargo>,
+            (
+                Option<&Commitment>,
+                Has<ChargerAssignment>,
+                Has<ChargerProgress>,
+                Has<DefenderDisengagement>,
+                Has<DefenderRout>,
+                Has<ClearingEvacuation>,
+                Option<&DefenderResponse>,
+            ),
         ),
         With<Nanobot>,
     >,
@@ -254,24 +264,67 @@ fn strategic_intent_system(
     previous_positions.retain(|entity, _| bots.get(*entity).is_ok());
     let mut bot_states: Vec<_> = bots
         .iter()
-        .map(|(entity, owner, kind, transform, health, charge, cargo)| {
-            let position = transform.translation.truncate();
-            let previous = previous_positions
-                .insert(entity, position)
-                .unwrap_or(position);
-            BotState {
-                id: entity.to_bits(),
-                owner: owner.0,
-                kind: *kind,
-                position,
-                health: health.current,
-                max_health: health.max,
-                charge: charge.map_or(1.0, |c| c.current),
-                max_charge: charge.map_or(1.0, |c| c.max),
-                cargo: cargo.map_or(0, |c| c.amount),
-                displacement: position - previous,
-            }
-        })
+        .map(
+            |(
+                entity,
+                owner,
+                kind,
+                transform,
+                health,
+                charge,
+                cargo,
+                (
+                    commitment,
+                    assigned_charger,
+                    charging,
+                    disengaging,
+                    routing,
+                    evacuating,
+                    response,
+                ),
+            )| {
+                let position = transform.translation.truncate();
+                let previous = previous_positions
+                    .insert(entity, position)
+                    .unwrap_or(position);
+                let defender_duty = if *kind != NanobotType::Defender {
+                    DefenderDuty::Available
+                } else if commitment.is_some_and(|task| *task != Commitment::Idle)
+                    || assigned_charger
+                    || charging
+                    || disengaging
+                    || routing
+                    || evacuating
+                {
+                    DefenderDuty::Unavailable
+                } else {
+                    let response_position = response.and_then(|response| {
+                        bots.get(response.target)
+                            .map(|(_, _, _, transform, ..)| transform.translation.truncate())
+                            .or_else(|_| {
+                                structures
+                                    .get(response.target)
+                                    .map(|(_, transform, ..)| transform.translation.truncate())
+                            })
+                            .ok()
+                    });
+                    response_position.map_or(DefenderDuty::Available, DefenderDuty::RespondingTo)
+                };
+                BotState {
+                    id: entity.to_bits(),
+                    owner: owner.0,
+                    kind: *kind,
+                    position,
+                    health: health.current,
+                    max_health: health.max,
+                    charge: charge.map_or(0.0, |c| c.current),
+                    max_charge: charge.map_or(0.0, |c| c.max),
+                    cargo: cargo.map_or(0, |c| c.amount),
+                    displacement: position - previous,
+                    defender_duty,
+                }
+            },
+        )
         .collect();
     bot_states.sort_by_key(|bot| bot.id);
     let mut economies = BTreeMap::<SwarmId, EconomyObservation>::new();
