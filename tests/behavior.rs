@@ -6,6 +6,9 @@ mod battle_statistics;
 #[path = "behavior/strategic_controller.rs"]
 mod strategic_controller;
 
+#[path = "behavior/strategic_mine_defense.rs"]
+mod strategic_mine_defense;
+
 #[path = "behavior/gameplay_pacing.rs"]
 mod gameplay_pacing;
 
