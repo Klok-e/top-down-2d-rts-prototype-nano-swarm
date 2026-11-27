@@ -178,15 +178,13 @@ fn strategic_intent_finishes_a_hauler_on_the_reachable_flanks_rim() {
 }
 
 #[test]
-fn strategic_intent_clears_a_structure_and_distant_hauler() {
+fn destroying_the_last_inactive_facility_wins_while_a_distant_worker_survives() {
     use std::time::Duration;
 
     use bevy::time::TimeUpdateStrategy;
     use top_down_2d_rts_prototype_nano_swarm::{
-        nanobot::{ChargePlugin, PlannedKind, Structure, StructureKind},
+        nanobot::{ChargePlugin, Structure, StructureKind},
         resources::{ResourceKind, ResourceLedger},
-        terrain::RockFormation,
-        tuning::Tuning,
     };
 
     let mut app = common::sim_app();
@@ -202,7 +200,6 @@ fn strategic_intent_clears_a_structure_and_distant_hauler() {
         ))
         .add_systems(FixedLast, nanobot_death_cleanup_system);
     app.update();
-    app.insert_resource(Tuning::default());
 
     let home = common::cell_world_center(IVec2::ZERO);
     let own = common::spawn_swarm_with_nanobots(&mut app, home, &[(NanobotType::Defender, 8)]);
@@ -223,73 +220,65 @@ fn strategic_intent_clears_a_structure_and_distant_hauler() {
         },
     );
     app.world_mut().entity_mut(support).insert(OwnerSwarm(own));
+    install_empty_reachability(&mut app);
 
-    let hauler_start = common::cell_world_center(IVec2::new(0, 4));
-    let rock = RockFormation::Rectangle {
-        half: Vec2::new(1_024.0, 72.0),
-    };
-    let rock_transform = Transform::from_translation((hauler_start + Vec2::Y * 280.0).extend(0.0));
-    app.world_mut().spawn((rock, rock_transform));
-    let reachability = SwarmReachabilityMap::new(
-        app.world().resource::<IntentGrid>(),
-        [rock.obstacle(&rock_transform)],
-        [(SwarmId::PLAYER, home)],
-    )
-    .unwrap();
-    app.insert_resource(reachability);
+    let worker_start = common::cell_world_center(IVec2::new(0, 12));
     let enemy = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
-        hauler_start,
-        &[(NanobotType::Hauler, 1)],
+        worker_start,
+        &[(NanobotType::Worker, 1)],
     );
     let enemy_id = *app.world().get::<SwarmId>(enemy).unwrap();
-    let hauler = {
-        let world = app.world_mut();
-        world
-            .query::<(Entity, &SwarmMember)>()
-            .iter(world)
-            .find(|(_, member)| member.0 == enemy_id)
-            .map(|(entity, _)| entity)
-            .unwrap()
-    };
-    let enemy_home = common::cell_world_center(IVec2::new(6, 0));
-    app.world_mut()
-        .entity_mut(enemy)
-        .insert(Transform::from_translation(enemy_home.extend(0.0)));
-    let structure =
-        common::spawn_empty_completed_structure(&mut app, enemy, PlannedKind::SinkStockpile);
-    app.world_mut().entity_mut(structure).insert((
-        Structure::new(StructureKind::Basic),
-        Transform::from_translation(enemy_home.extend(0.0)),
-    ));
+    let target_cell = IVec2::new(6, 0);
+    let target = common::cell_world_center(target_cell);
+    let facility = app
+        .world_mut()
+        .spawn((
+            ProductionFacility::new(),
+            Structure {
+                paint_suspended: true,
+                ..Structure::new(StructureKind::Basic)
+            },
+            OwnerSwarm(enemy),
+            Transform::from_translation(target.extend(0.0)),
+        ))
+        .id();
 
-    let started = app.world().resource::<Time<Fixed>>().elapsed_secs_f64();
-    for _ in 0..2400 {
+    app.update();
+    assert_eq!(
+        *app.world().resource::<MatchOutcome>(),
+        MatchOutcome::InProgress
+    );
+    assert!(
+        app.world()
+            .resource::<IntentGrid>()
+            .iter_active_cells()
+            .any(|(cell, intent)| {
+                (2..target_cell.x).contains(&cell.x)
+                    && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)
+            }),
+        "charged Defenders must stage toward the inactive facility"
+    );
+
+    for _ in 0..2_400 {
         app.update();
-        if *app.world().resource::<MatchOutcome>() == MatchOutcome::Winner(SwarmId::PLAYER) {
+        if *app.world().resource::<MatchOutcome>() != MatchOutcome::InProgress {
             break;
         }
     }
-
-    let elapsed = app.world().resource::<Time<Fixed>>().elapsed_secs_f64() - started;
     assert_eq!(
         *app.world().resource::<MatchOutcome>(),
         MatchOutcome::Winner(SwarmId::PLAYER),
-        "mixed cleanup must finish through shared movement and combat within forty simulated seconds; structure health={:?}; Hauler health={:?}, position={:?}",
+        "the controller must finish through shared movement and combat within forty simulated seconds; facility health: {:?}",
         app.world()
-            .get::<Structure>(structure)
-            .map(|structure| structure.health),
-        app.world()
-            .get::<top_down_2d_rts_prototype_nano_swarm::nanobot::Health>(hauler)
-            .map(|health| health.current),
-        app.world()
-            .get::<Transform>(hauler)
-            .map(|transform| transform.translation)
+            .get::<Structure>(facility)
+            .map(|structure| structure.health)
     );
-    assert!(elapsed > 1.0, "distant targets require physical travel");
-    assert!(app.world().get_entity(structure).is_err());
-    assert!(app.world().get_entity(hauler).is_err());
-    println!("mixed-target cleanup after {elapsed:.3} simulated seconds");
+    assert!(app.world().get_entity(facility).is_err());
+    assert!(
+        enemy_nanobots_remain(&mut app, enemy_id),
+        "destroying the last completed facility must resolve the match while the Worker survives"
+    );
 }
 
 #[test]

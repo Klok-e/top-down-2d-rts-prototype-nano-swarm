@@ -127,7 +127,7 @@ mod raid_readiness {
         (app, force)
     }
 
-    fn add_enemy_mine(app: &mut App, enemy: Entity, cell: IVec2) {
+    fn add_enemy_mine(app: &mut App, enemy: Entity, cell: IVec2) -> Entity {
         let position = common::cell_world_center(cell);
         let mine = common::spawn_deposit(
             app,
@@ -142,6 +142,7 @@ mod raid_readiness {
         for entity in [mine, stockpile] {
             app.world_mut().entity_mut(entity).insert(OwnerSwarm(enemy));
         }
+        stockpile
     }
 
     fn neutral_deposit(app: &mut App, cell: IVec2) {
@@ -487,6 +488,152 @@ mod raid_readiness {
             "{undefended}"
         );
         assert!(!forward_defend_cells(&app).is_empty());
+    }
+
+    fn finishing_fixture<const N: usize>() -> (App, Entity) {
+        use top_down_2d_rts_prototype_nano_swarm::nanobot::{
+            PlannedKind, ProductionFacility, Structure, StructureKind,
+        };
+
+        let mut app = common::minimal_app();
+        app.insert_resource(IntentGrid::new(64, 64))
+            .add_plugins(StrategicControllerPlugin);
+        let home = common::cell_world_center(IVec2::ZERO);
+        let target = common::cell_world_center(TARGET);
+        let enemy_home = common::cell_world_center(TARGET + IVec2::Y * 4);
+        app.world_mut().spawn((
+            Swarm {},
+            OWNER,
+            Transform::from_translation(home.extend(0.0)),
+            StrategicController::new(OWNER),
+        ));
+        let enemy = app
+            .world_mut()
+            .spawn((
+                Swarm {},
+                ENEMY,
+                Transform::from_translation(enemy_home.extend(0.0)),
+            ))
+            .id();
+        app.world_mut().spawn((
+            ProductionFacility::new(),
+            OwnerSwarm(enemy),
+            Structure {
+                paint_suspended: true,
+                ..Structure::new(StructureKind::Basic)
+            },
+            Transform::from_translation(target.extend(0.0)),
+        ));
+        let worker = common::spawn_worker_at(&mut app, enemy_home);
+        app.world_mut()
+            .entity_mut(worker)
+            .insert(SwarmMember(ENEMY));
+
+        let planned_cell = TARGET + IVec2::X + IVec2::Y;
+        let planned = common::spawn_planned_structure_of_kind_at_cell(
+            &mut app,
+            planned_cell,
+            PlannedKind::ProductionFacility,
+        );
+        app.world_mut()
+            .entity_mut(planned)
+            .insert((OwnerSwarm(enemy), ProductionFacility::new()));
+
+        for _ in 0..N {
+            common::spawn_stationary_defender_at(&mut app, home, OWNER);
+        }
+        install_empty_reachability(&mut app, [OWNER, ENEMY]);
+        let mut tuning = app.world_mut().resource_mut::<Tuning>();
+        tuning.autonomy.controller_review_period_ticks = REVIEW_TICKS;
+        tuning.autonomy.strategy_staging_spacing_cells = 64;
+        (app, enemy)
+    }
+
+    #[test]
+    fn ready_force_finishes_an_inactive_facility_despite_a_worker_and_idle_neutral_site() {
+        let (mut app, _) = finishing_fixture::<2>();
+        let neutral = IVec2::new(-4, 0);
+        neutral_deposit(&mut app, neutral);
+
+        review(&mut app);
+
+        assert!(owns_defend(&app, TARGET), "{}", explanation(&app));
+        assert!(!owns_defend(&app, TARGET + IVec2::Y * 4));
+        assert!(!owns_intent(&app, neutral, IntentKind::Gather));
+    }
+
+    #[test]
+    fn final_structure_requires_defenders_that_can_take_the_entire_approach() {
+        let (mut guarded, _) = finishing_fixture::<2>();
+        for cell in [IVec2::new(3, 0), IVec2::new(4, 0)] {
+            common::spawn_stationary_defender_at(
+                &mut guarded,
+                common::cell_world_center(cell),
+                ENEMY,
+            );
+        }
+        let (mut unstaffed, _) = finishing_fixture::<0>();
+        for app in [&mut guarded, &mut unstaffed] {
+            review(app);
+            assert!(forward_defend_cells(app).is_empty(), "{}", explanation(app));
+        }
+    }
+
+    #[test]
+    fn elimination_bonus_wins_a_close_comparison_but_a_strong_raid_can_outscore_it() {
+        let raid_target = IVec2::new(-9, 0);
+        for (stock, extra_complete, finishing) in [
+            (100, false, true),
+            (1_000, false, false),
+            (100, true, false),
+        ] {
+            let (mut app, enemy) = finishing_fixture::<2>();
+            if extra_complete {
+                let stockpile = common::spawn_stockpile(
+                    &mut app,
+                    common::cell_world_center(TARGET + IVec2::Y * 40),
+                    0,
+                    150,
+                );
+                app.world_mut()
+                    .entity_mut(stockpile)
+                    .insert(OwnerSwarm(enemy));
+            }
+            let raided_swarm = app
+                .world_mut()
+                .spawn((
+                    Swarm {},
+                    SwarmId(8),
+                    Transform::from_xyz(-4_000.0, 4_000.0, 0.0),
+                ))
+                .id();
+            let stockpile = add_enemy_mine(&mut app, raided_swarm, raid_target);
+            {
+                let mut pile = app.world_mut().get_mut::<Stockpile>(stockpile).unwrap();
+                pile.amount = stock;
+                pile.capacity = stock;
+            }
+            common::spawn_facility_at(
+                &mut app,
+                raided_swarm,
+                common::cell_world_center(IVec2::new(-13, 10)),
+            );
+
+            review(&mut app);
+
+            assert_eq!(
+                owns_defend(&app, TARGET),
+                finishing,
+                "{}",
+                explanation(&app)
+            );
+            assert_eq!(
+                owns_defend(&app, raid_target),
+                !finishing,
+                "{}",
+                explanation(&app)
+            );
+        }
     }
 
     #[test]

@@ -230,7 +230,7 @@ impl PlannerState {
         });
         let raid_forces = if candidates
             .iter()
-            .any(|candidate| candidate.objective.requires_raid_readiness())
+            .any(|candidate| candidate.objective.needs_ready_force())
         {
             RaidForces::observe(owner, state, &mut budget)
         } else {
@@ -239,7 +239,7 @@ impl PlannerState {
         let current = self.current.as_ref();
         let current_raid = current
             .map(|plan| plan.objective)
-            .filter(|objective| objective.requires_raid_readiness());
+            .filter(|objective| objective.needs_ready_force());
         let mut incumbent_stage = None;
         let mut secured_mine = None;
         let mut stage_candidate = |candidate: &PlanCandidate| {
@@ -312,7 +312,7 @@ impl PlannerState {
                                                 + candidate.score.abs()
                                                     * (tuning.controller_switch_margin - 1.0)
                                                 + tuning.controller_switch_bias);
-                            if !normal_retention && !candidate.objective.requires_raid_readiness() {
+                            if !normal_retention && !candidate.objective.needs_ready_force() {
                                 return None;
                             }
                             let staging = if index == best_index {

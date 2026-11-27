@@ -109,8 +109,6 @@
         strategy_hunt_hauler_value: 25.0,
         strategy_hunt_worker_value: 15.0,
         strategy_hunt_vulnerability_weight: 0.5,
-        strategy_hunt_remnant_base: 500.0,
-        strategy_hunt_force_weight: 0.04,
         strategy_hunt_distance_cost: 2.0,
         strategy_force_base_weight: 0.35,
         strategy_force_charge_weight: 0.65,

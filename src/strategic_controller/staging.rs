@@ -201,7 +201,7 @@ pub(super) fn plan_staging(
                 budget,
             )
     });
-    let requires_readiness = candidate.objective.requires_raid_readiness();
+    let requires_readiness = candidate.objective.needs_ready_force();
     if requires_readiness && continuing.is_none() && !raid_forces.can_launch() {
         return None;
     }
@@ -220,13 +220,12 @@ pub(super) fn plan_staging(
             continuing
                 .is_some_and(|front| front.covers(world_to_intent_cell(position), owner, state))
         };
+        let target_position = match candidate.approach {
+            Some(RouteGoal::Range { center, .. }) => center,
+            _ => intent_cell_center(target),
+        };
         if requires_readiness
-            && !raid_forces.ready(
-                &route,
-                intent_cell_center(target),
-                response_supports_front,
-                budget,
-            )?
+            && !raid_forces.ready(&route, target_position, response_supports_front, budget)?
         {
             let mut held = continuing?.clone();
             let shortfall_started = held.readiness_shortfall_started.unwrap_or(state.tick);
@@ -313,14 +312,18 @@ fn staging_route(
     if budget.exhausted {
         return None;
     }
-    if state.route_query.is_none() {
-        return Some(Arc::from([start, destination]));
-    }
     let goal = candidate.approach.unwrap_or(RouteGoal::Range {
         center: destination,
         // Leave room to route beside a structure at the tile center.
         radius: crate::ZONE_BLOCK_SIZE / 2.0,
     });
+    if state.route_query.is_none() {
+        let destination = match goal {
+            RouteGoal::Range { center, .. } => center,
+            _ => destination,
+        };
+        return Some(Arc::from([start, destination]));
+    }
     let (start, route) = if let Some(route) = query_route(state, start, goal, budget) {
         (start, route)
     } else {

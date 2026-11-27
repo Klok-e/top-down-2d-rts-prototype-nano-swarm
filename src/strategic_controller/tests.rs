@@ -35,6 +35,22 @@ fn supply_state(economies: &BTreeMap<SwarmId, EconomyObservation>) -> SupplyStat
     }
 }
 
+fn ready_defenders(owner: SwarmId, position: Vec2) -> [BotState; 2] {
+    [1_000, 1_001].map(|id| BotState {
+        id,
+        owner,
+        kind: NanobotType::Defender,
+        position,
+        health: 100,
+        max_health: 100,
+        charge: 1.0,
+        max_charge: 1.0,
+        cargo: 0,
+        displacement: Vec2::ZERO,
+        defender_duty: DefenderDuty::Available,
+    })
+}
+
 fn direct_attack_tuning() -> AutonomyTuning {
     AutonomyTuning {
         strategy_staging_spacing_cells: 64,
@@ -495,13 +511,14 @@ fn controller_stops_hunting_a_target_on_the_isolated_side_of_a_painted_tile() {
         displacement: Vec2::ZERO,
         defender_duty: Default::default(),
     };
+    let [first, second] = ready_defenders(owner, home);
     let tuning = direct_attack_tuning();
     let mut controller = Controller::new(owner);
     let initial = controller.decide(
         &tuning,
         &GameState {
             swarms: &swarms,
-            bots: &[target],
+            bots: &[first, second, target],
             terrain: &terrain,
             charge: &DEFAULT_CHARGE,
             reachability: Some(&reachability),
@@ -526,7 +543,7 @@ fn controller_stops_hunting_a_target_on_the_isolated_side_of_a_painted_tile() {
         &tuning,
         &GameState {
             swarms: &swarms,
-            bots: &[moved],
+            bots: &[first, second, moved],
             terrain: &terrain,
             charge: &DEFAULT_CHARGE,
             reachability: Some(&reachability),
@@ -1293,7 +1310,7 @@ fn losing_a_mine_keeps_a_progressing_attack_front() {
     assert!(
         revised
             .explanation
-            .contains("retained finish remaining structure 30"),
+            .contains("retained attack remaining structure 30"),
         "{}",
         revised.explanation
     );
@@ -1678,7 +1695,8 @@ fn income_lead_adds_a_home_push_without_abandoning_the_mine() {
     let bots = [owner, enemy]
         .into_iter()
         .flat_map(|bot_owner| {
-            (0..3).map(move |id| BotState {
+            let count = if bot_owner == owner { 4 } else { 3 };
+            (0..count).map(move |id| BotState {
                 id: bot_owner.0 as u64 * 10 + id,
                 owner: bot_owner,
                 kind: NanobotType::Defender,
@@ -1715,6 +1733,12 @@ fn income_lead_adds_a_home_push_without_abandoning_the_mine() {
         max_health: 100,
         minerals: 0,
     };
+    let supply = StructureState {
+        id: 31,
+        kind: StructureKind::Source,
+        position: initial_swarms[1].home + Vec2::X * crate::ZONE_BLOCK_SIZE,
+        ..facility
+    };
     let mut controller = Controller::new(owner);
     let initial = controller.decide(
         &direct_attack_tuning(),
@@ -1722,7 +1746,7 @@ fn income_lead_adds_a_home_push_without_abandoning_the_mine() {
             grid: &grid,
             swarms: &initial_swarms,
             bots: &bots,
-            structures: &[facility],
+            structures: &[facility, supply],
             deposits: &deposit,
             terrain: &[],
             charge: &DEFAULT_CHARGE,
@@ -1755,7 +1779,7 @@ fn income_lead_adds_a_home_push_without_abandoning_the_mine() {
             grid: &grid,
             swarms: &supplied_swarms,
             bots: &bots,
-            structures: &[facility],
+            structures: &[facility, supply],
             deposits: &deposit,
             terrain: &[],
             charge: &DEFAULT_CHARGE,
@@ -2796,13 +2820,14 @@ fn hunt_paint_holds_until_the_target_leaves_its_block() {
         displacement: Vec2::ZERO,
         defender_duty: Default::default(),
     };
+    let [first_defender, second_defender] = ready_defenders(owner, swarms[0].home);
     let mut controller = Controller::new(owner);
     let first = controller.decide(
         &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
-            bots: &[remnant],
+            bots: &[first_defender, second_defender, remnant],
             structures: &[],
             deposits: &deposit,
             terrain: &[],
@@ -2834,10 +2859,14 @@ fn hunt_paint_holds_until_the_target_leaves_its_block() {
             &direct_attack_tuning(),
             &GameState {
                 swarms: &swarms,
-                bots: &[BotState {
-                    position: world(cell),
-                    ..remnant
-                }],
+                bots: &[
+                    first_defender,
+                    second_defender,
+                    BotState {
+                        position: world(cell),
+                        ..remnant
+                    },
+                ],
                 deposits: &deposit,
                 ..empty_state(&grid, (review as u64 + 1) * WORK_WINDOW_TICKS)
             },
@@ -2853,7 +2882,7 @@ fn hunt_paint_holds_until_the_target_leaves_its_block() {
         &direct_attack_tuning(),
         &GameState {
             swarms: &swarms,
-            bots: &[moved],
+            bots: &[first_defender, second_defender, moved],
             deposits: &deposit,
             ..empty_state(&grid, 3 * WORK_WINDOW_TICKS + 1)
         },
@@ -3004,7 +3033,7 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
         .collect::<Vec<_>>();
     let stocked_source = mine_at(owner, deposits[0].position, saturated_mine());
     let expansion = controller.decide(
-        &AutonomyTuning::default(),
+        &direct_attack_tuning(),
         &GameState {
             grid: &grid,
             swarms: &supplied_swarms,
@@ -3096,7 +3125,8 @@ fn live_scoring_review_changes_intent_without_refilling_the_planning_allowance()
             mineral_income_per_second: 2.0,
         },
     ];
-    let bots = [enemy];
+    let [first, second] = ready_defenders(owner, swarms[0].home);
+    let bots = [first, second, enemy];
     let mut grid = IntentGrid::new(32, 32);
     let mut tuning = direct_attack_tuning();
     let mut controller = Controller::new(owner);
@@ -3172,6 +3202,7 @@ fn wounded_target_priority_uses_the_edited_health_maximum() {
         minerals: 0,
         mineral_income_per_second: 0.0,
     }];
+    let [first, second] = ready_defenders(owner, swarms[0].home);
     let mut structure = StructureState {
         id: 9,
         owner: enemy,
@@ -3194,6 +3225,7 @@ fn wounded_target_priority_uses_the_edited_health_maximum() {
             &GameState {
                 swarms: &swarms,
                 structures: &[target, nearer_structure],
+                bots: &[first, second],
                 ..empty_state(&grid, 0)
             },
         )
@@ -3201,13 +3233,13 @@ fn wounded_target_priority_uses_the_edited_health_maximum() {
     assert!(
         decide_structure(structure)
             .explanation
-            .contains("finish remaining structure 10")
+            .contains("attack remaining structure 10")
     );
     structure.max_health = 200;
     assert!(
         decide_structure(structure)
             .explanation
-            .contains("finish remaining structure 9"),
+            .contains("attack remaining structure 9"),
         "half-health logistics must receive its wound priority with a larger maximum"
     );
 
@@ -3234,7 +3266,7 @@ fn wounded_target_priority_uses_the_edited_health_maximum() {
             &tuning,
             &GameState {
                 swarms: &swarms,
-                bots: &[target, nearer_bot],
+                bots: &[first, second, target, nearer_bot],
                 ..empty_state(&grid, 0)
             },
         )
@@ -3533,9 +3565,7 @@ fn a_rerouted_raid_advances_on_the_approach_used_for_readiness() {
 }
 
 #[test]
-fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
-    use std::cell::Cell;
-
+fn staging_follows_the_supplied_approach_when_spacing_changes() {
     use crate::navigation::Route;
 
     let owner = SwarmId::PLAYER;
@@ -3556,14 +3586,11 @@ fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
         max_health: 100,
         minerals: 0,
     };
-    let side = Cell::new(-6);
     let route = |_, goal, _: &mut dyn FnMut() -> bool| {
         let waypoints = match goal {
-            RouteGoal::Range { center, .. } => vec![
-                world(IVec2::new(0, side.get())),
-                world(IVec2::new(12, side.get())),
-                center,
-            ],
+            RouteGoal::Range { center, .. } => {
+                vec![world(IVec2::new(0, -6)), world(IVec2::new(12, -6)), center]
+            }
             RouteGoal::Point(center) => vec![center],
             RouteGoal::Interaction(_) => unreachable!(),
         };
@@ -3596,7 +3623,7 @@ fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
             tuning,
             &GameState {
                 swarms: &swarms,
-                bots: &[defender],
+                bots: &[defender, BotState { id: 2, ..defender }],
                 structures: &[target],
                 route_query: Some(&route),
                 ..empty_state(grid, tick)
@@ -3613,7 +3640,6 @@ fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
         "the block must follow the reachable approach: {first:?}"
     );
 
-    side.set(6);
     review(
         &mut controller,
         &mut grid,
@@ -3809,7 +3835,7 @@ fn an_undefended_enemy_mine_is_raided_until_arrival_then_can_be_raided_again() {
             ..claimed
         },
     ];
-    let structures = [StructureState {
+    let facility = StructureState {
         id: 40,
         owner: enemy,
         position: world(enemy_home),
@@ -3818,7 +3844,16 @@ fn an_undefended_enemy_mine_is_raided_until_arrival_then_can_be_raided_again() {
         health: 100,
         max_health: 100,
         minerals: 40,
-    }];
+    };
+    let structures = [
+        facility,
+        StructureState {
+            id: 41,
+            kind: StructureKind::Source,
+            position: facility.position + Vec2::X * crate::ZONE_BLOCK_SIZE,
+            ..facility
+        },
+    ];
     let mut controller = Controller::new(owner);
     let tuning = AutonomyTuning {
         strategy_hunt_distance_cost: 1000.0,
@@ -4024,12 +4059,19 @@ fn a_hostile_near_an_unreachable_mine_does_not_preempt_an_income_backed_home_pus
             cost: end.distance(start),
         }))
     };
+    let [first, second] = ready_defenders(owner, home);
+    let supply = StructureState {
+        id: 11,
+        kind: StructureKind::Source,
+        position: deposit.position,
+        ..facility
+    };
     let decision = Controller::new(owner).decide(
         &direct_attack_tuning(),
         &GameState {
             swarms: &swarms,
-            bots: &[hauler],
-            structures: &[facility],
+            bots: &[first, second, hauler],
+            structures: &[facility, supply],
             deposits: &[deposit],
             reachability: Some(&reachability),
             route_query: Some(&route),
@@ -4251,7 +4293,7 @@ fn military_priorities_protect_expansion_before_attacking_home() {
             .any(|edit| { edit.kind == IntentKind::Defend && edit.cell == enemy_mine + IVec2::Y })
     );
 
-    let home = decide(&deposits[..1], &[own_source, home_facility], &[]);
+    let home = decide(&deposits[..1], &structures, &ready_force);
     assert!(home.explanation.contains("push enemy home"), "{home:?}");
     assert!(
         home.edits
@@ -4354,7 +4396,7 @@ fn healthy_enemy_home_requires_a_live_tuned_income_lead() {
             mineral_income_per_second: 10.0,
         },
     ];
-    let structures = [StructureState {
+    let facility = StructureState {
         id: 1,
         owner: enemy,
         position: world(enemy_home),
@@ -4363,11 +4405,22 @@ fn healthy_enemy_home_requires_a_live_tuned_income_lead() {
         health: 100,
         max_health: 100,
         minerals: 0,
-    }];
+    };
+    let structures = [
+        facility,
+        StructureState {
+            id: 3,
+            kind: StructureKind::Source,
+            position: facility.position + Vec2::X * crate::ZONE_BLOCK_SIZE,
+            ..facility
+        },
+    ];
+    let [first, second] = ready_defenders(owner, swarms[0].home);
     tuning.strategy_home_income_lead = 5.0;
     let state = GameState {
         swarms: &swarms,
         structures: &structures,
+        bots: &[first, second],
         ..empty_state(&grid, 0)
     };
 
@@ -4417,7 +4470,7 @@ fn healthy_enemy_home_requires_a_live_tuned_income_lead() {
                     ..swarms[1]
                 },
             ],
-            bots: &[survivor],
+            bots: &[first, second, survivor],
             ..empty_state(&grid, 0)
         },
     );
