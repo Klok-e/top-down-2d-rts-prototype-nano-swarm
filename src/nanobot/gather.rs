@@ -1443,6 +1443,8 @@ pub fn worker_gather_delivery_system(
         Option<&OwnerSwarm>,
         Option<&SupportCondition>,
     )>,
+    deposits: Query<(), With<ResourceDeposit>>,
+    mut ledger: Option<ResMut<ResourceLedger>>,
     swarms: Query<&SwarmId, With<Swarm>>,
 ) {
     for (entity, transform, mut load, returning, mut reservation, swarm_member, nanobot_type) in
@@ -1489,6 +1491,19 @@ pub fn worker_gather_delivery_system(
             .min(stockpile.free_space());
         stockpile.amount += delivered;
         load.amount -= delivered;
+        if delivered > 0
+            && load.kind == ResourceKind::Minerals
+            && let Some(reservation) = reservation.as_deref()
+            && deposits.contains(reservation.source)
+            && let Some(ledger) = ledger.as_deref_mut()
+        {
+            ledger.record_worker_delivery(
+                swarm_member.0,
+                reservation.source,
+                delivered,
+                load.amount == 0,
+            );
+        }
         if let Some(reservation) = reservation.as_deref_mut() {
             reservation.destination_remaining =
                 reservation.destination_remaining.saturating_sub(delivered);

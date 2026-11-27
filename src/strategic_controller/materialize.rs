@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 
 pub(super) fn materialize_plan(
     candidate: PlanCandidate,
-    economy: EconomyPlan,
+    economy: &EconomyPlan,
     mut staging: Option<StagingFront>,
     owner: SwarmId,
     state: &GameState<'_>,
@@ -30,12 +30,19 @@ pub(super) fn materialize_plan(
     let swarm = state.swarms.iter().find(|swarm| swarm.id == owner);
     let home = swarm.map_or(Vec2::ZERO, |swarm| swarm.home);
     let home_cell = world_to_intent_cell(home);
-    let EconomyPlan {
-        owned_deposits,
-        mut desired,
-        expansion,
-        ..
-    } = economy;
+    let mines = economy
+        .owned_deposits
+        .iter()
+        .chain(economy.expansion.iter());
+    let extra_paint = economy
+        .expansion
+        .as_ref()
+        .map_or(&[][..], |mine| &mine.desired);
+    if !budget.spend(economy.desired.len() + extra_paint.len()) {
+        return None;
+    }
+    let mut desired = economy.desired.clone();
+    desired.extend(extra_paint.iter().copied());
 
     push_desired(
         &mut desired,
@@ -62,12 +69,12 @@ pub(super) fn materialize_plan(
     keep_spare_build_room(
         owner,
         tuning.strategy_production_room_cells,
-        std::iter::once(home_cell).chain(owned_deposits.iter().map(|mine| mine.build_cell)),
+        std::iter::once(home_cell).chain(mines.clone().map(|mine| mine.build_cell)),
         state,
         &mut desired,
         budget,
     );
-    let paint_capacity = if expansion.is_some() {
+    let paint_capacity = if economy.expansion.is_some() {
         EXPANSION_PLAN_CELLS
     } else {
         EXPANSION_PLAN_CELLS
@@ -107,15 +114,14 @@ pub(super) fn materialize_plan(
         return None;
     }
 
-    if anchor != home_cell && owned_deposits.iter().all(|mine| mine.gather_cell != anchor) {
+    if anchor != home_cell && mines.clone().all(|mine| mine.gather_cell != anchor) {
         paint_corridor(
             &mut desired,
             owner,
             state,
             budget,
             home,
-            anchor,
-            anchor_ground.map(|(_, ground)| ground),
+            anchor_ground.unwrap_or_else(|| (anchor, intent_cell_center(anchor))),
             protected_home,
         )?;
     }
@@ -135,7 +141,13 @@ pub(super) fn materialize_plan(
     if block != minimum {
         paint_defend_block(block, anchor_ground, owner, state, &mut desired, budget);
     }
-    (desired.len() <= paint_capacity).then_some(IntentPlan {
+    if budget.exhausted || desired.len() > paint_capacity || !budget.spend(desired.len()) {
+        return None;
+    }
+    let owned_deposits = mines
+        .map(|mine| budget.spend(mine.desired.len() + 1).then(|| mine.clone()))
+        .collect::<Option<Vec<_>>>()?;
+    let plan = IntentPlan {
         objective,
         owned_deposits,
         attack,
@@ -144,7 +156,8 @@ pub(super) fn materialize_plan(
         desired,
         reachability: state.reachability.cloned(),
         grid_size: IVec2::new(state.grid.width(), state.grid.height()),
-    })
+    };
+    plan.is_coordinated().then_some(plan)
 }
 
 pub(super) fn retain_build_footprints(
@@ -554,12 +567,11 @@ fn paint_corridor(
     state: &GameState<'_>,
     budget: &mut WorkBudget,
     start: Vec2,
-    target: IVec2,
-    target_ground: Option<Vec2>,
+    (target, ground): (IVec2, Vec2),
     protected_home: Option<IVec2>,
 ) -> Option<()> {
     let center = intent_cell_center(target);
-    let goal = RouteGoal::Point(target_ground.unwrap_or(center));
+    let goal = RouteGoal::Point(ground);
     let (cells, _) = match corridor_route(owner, state, budget, start, target, goal).ok()? {
         Some(route) => route,
         None if state.route_query.is_some() && !budget.exhausted => corridor_route(
@@ -570,13 +582,16 @@ fn paint_corridor(
             target,
             RouteGoal::Range {
                 center,
-                radius: crate::ZONE_BLOCK_SIZE * 0.49,
+                radius: crate::ZONE_BLOCK_SIZE / 2.0 - crate::nanobot::STOP_THRESHOLD,
             },
         )
         .ok()??,
         None => return None,
     };
-    if !budget.spend(cells.len()) || protected_home.is_some_and(|home| cells.contains(&home)) {
+    if !budget.spend(cells.len())
+        || !cells.contains(&target)
+        || protected_home.is_some_and(|home| cells.contains(&home))
+    {
         return None;
     }
     for cell in cells {

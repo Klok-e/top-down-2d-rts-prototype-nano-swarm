@@ -176,7 +176,7 @@ impl PlannerState {
             .current
             .as_ref()
             .map_or(&[][..], |plan| plan.owned_deposits.as_slice());
-        let Some(economy) = plan_economy(tuning, owner, state, previous_deposits, &mut budget)
+        let Some(mut economy) = plan_economy(tuning, owner, state, previous_deposits, &mut budget)
         else {
             self.tuning_review_requested |= tuning_review;
             self.work_used = budget.used;
@@ -373,23 +373,35 @@ impl PlannerState {
                 ", owned Resource Deposit {id} was exhausted, lost, or unreachable"
             ));
         }
-        let keeps_objective = self
-            .current
-            .as_ref()
-            .is_some_and(|current| current.objective == selected.objective);
-        let expansion = economy.expansion;
-        let selected = materialize_plan(
+        let mut plan = materialize_plan(
             selected.clone(),
-            economy,
+            &economy,
             staging,
             owner,
             state,
             tuning,
             &mut budget,
         );
-        let Some(selected) = selected.filter(|plan| {
-            !budget.exhausted && budget.spend(plan.desired.len()) && plan.is_coordinated()
-        }) else {
+        if plan.is_none()
+            && current.is_none()
+            && !budget.exhausted
+            && (selected.objective != Objective::HoldHome || economy.expansion.is_some())
+        {
+            economy.expansion = None;
+            let hold_home = &candidates[0];
+            plan = materialize_plan(
+                hold_home.clone(),
+                &economy,
+                None,
+                owner,
+                state,
+                tuning,
+                &mut budget,
+            );
+            explanation =
+                "selected hold the home economy because the proposed paint did not fit".to_string();
+        }
+        let Some(selected) = plan else {
             self.tuning_review_requested |= tuning_review && budget.exhausted;
             self.work_used = budget.used;
             return Decision {
@@ -403,6 +415,8 @@ impl PlannerState {
                 work_units: budget.call_work(),
             };
         };
+        let keeps_objective =
+            current.is_some_and(|current| current.objective == selected.objective);
         let previous = self.current.as_ref().map(|plan| &plan.desired);
         budget.release_edit_reserve(previous.map_or(0, HashSet::len) + selected.desired.len());
         let edits = intent_edits(
@@ -421,8 +435,8 @@ impl PlannerState {
             && !attack_progressed
             && (stall_grace || self.covered_stall_grace_used);
         self.denied_deposits = denied_deposits;
-        if let Some(id) = expansion {
-            explanation.push_str(&format!(", claimed neutral Resource Deposit {id}"));
+        if let Some(mine) = economy.expansion {
+            explanation.push_str(&format!(", claimed neutral Resource Deposit {}", mine.id));
         }
         selected.append_context(&mut explanation);
         self.current = Some(selected);

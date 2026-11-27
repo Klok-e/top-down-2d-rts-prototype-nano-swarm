@@ -102,22 +102,30 @@ pub struct DepositState {
 pub type RouteQuery<'a> =
     dyn Fn(Vec2, RouteGoal, &mut dyn FnMut() -> bool) -> Option<RouteOutcome> + 'a;
 
-#[derive(Clone, Copy, Default)]
-pub struct SourceSupport {
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MineObservation {
+    pub worker_capacity: u32,
+    pub active_workers: u32,
+    pub delivered_minerals: u64,
+    pub completed_dropoffs: u32,
+    pub observation_ticks: u64,
+    pub ticks_since_dropoff: Option<u64>,
+    pub has_source: bool,
     pub has_space: bool,
-    pub stocked: bool,
+    pub sustained_dropoffs: bool,
 }
 
-#[derive(Clone, Copy)]
-pub enum SourceNeed {
-    Space,
-    /// Stocked support settles startup immediately. Without it, report open capacity.
-    Opening,
+impl MineObservation {
+    pub fn is_saturated(&self) -> bool {
+        self.worker_capacity > 0
+            && self.active_workers >= self.worker_capacity
+            && self.sustained_dropoffs
+    }
 }
 
-/// A budgeted snapshot query for qualifying nearby operational Source Stockpiles.
-pub type SourceQuery<'a> =
-    dyn Fn(SwarmId, Vec2, SourceNeed, &mut dyn FnMut() -> bool) -> Option<SourceSupport> + 'a;
+/// Recent Worker activity, completed deliveries and reachable Source capacity at a deposit.
+pub type MineQuery<'a> =
+    dyn Fn(SwarmId, &DepositState, IVec2, &mut dyn FnMut() -> bool) -> Option<MineObservation> + 'a;
 
 pub struct GameState<'a> {
     pub grid: &'a IntentGrid,
@@ -131,8 +139,7 @@ pub struct GameState<'a> {
     /// Present for gameplay controllers; omitted by terrain-agnostic unit fixtures.
     pub reachability: Option<&'a SwarmReachabilityMap>,
     pub route_query: Option<&'a RouteQuery<'a>>,
-    /// Fixtures without this query assume no existing Source Stockpile support.
-    pub source_query: Option<&'a SourceQuery<'a>>,
+    pub mine_query: Option<&'a MineQuery<'a>>,
     pub tick: u64,
     pub finished: bool,
 }
