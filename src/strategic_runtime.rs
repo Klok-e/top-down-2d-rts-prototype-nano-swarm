@@ -822,7 +822,7 @@ fn strategic_intent_system(
                         layout,
                         owner,
                         position,
-                        start,
+                        (deposit_region, start),
                         &gather_cells,
                         allow_work,
                     ) {
