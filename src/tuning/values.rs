@@ -3,28 +3,15 @@ use serde::{Deserialize, Deserializer, Serialize, de::IgnoredAny};
 
 use super::TuningField;
 
-fn ignore_retired_field<'de, D: Deserializer<'de>>(deserializer: D) -> Result<(), D::Error> {
-    IgnoredAny::deserialize(deserializer).map(|_| ())
-}
-
 macro_rules! tuning_schema {
     ($( $section:ident: $section_type:ident { $( $field:ident: $ty:ty = $default:expr => ($label:literal, $unit:literal, $scale:expr, $step:expr, $min:expr, $max:expr); )* } $(=> ignore [$($retired:ident),+])? )*) => {
         #[derive(Resource, Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
         #[serde(deny_unknown_fields)]
         pub struct Tuning { $(pub $section: $section_type,)* }
         $(
-            #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-            #[serde(deny_unknown_fields)]
-            pub struct $section_type {
-                $(pub $field: $ty,)*
-                $($(
-                    #[doc(hidden)]
-                    #[serde(default, skip_serializing, deserialize_with = "ignore_retired_field")]
-                    pub $retired: (),
-                )+)?
-            }
+            tuning_schema!(@section $section_type { $($field: $ty,)* } $(ignore [$($retired),+])?);
             impl Default for $section_type {
-                fn default() -> Self { Self { $($field: $default,)* $($($retired: (),)+)? } }
+                fn default() -> Self { Self { $($field: $default,)* } }
             }
         )*
         impl Tuning {
@@ -70,7 +57,32 @@ macro_rules! tuning_schema {
                 self.validate_relationships()
             }
         }
-    }
+    };
+    (@section $section_type:ident { $($field:ident: $ty:ty,)* }) => {
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct $section_type { $(pub $field: $ty,)* }
+    };
+    (@section $section_type:ident { $($field:ident: $ty:ty,)* } ignore [$($retired:ident),+]) => {
+        #[derive(Debug, Clone, PartialEq, Serialize)]
+        pub struct $section_type { $(pub $field: $ty,)* }
+
+        impl<'de> Deserialize<'de> for $section_type {
+            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                // Keep the section name for RON input with explicit struct names.
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct $section_type {
+                    $($field: $ty,)*
+                    $(#[serde(default)] $retired: IgnoredAny,)+
+                }
+
+                let $section_type { $($field,)* $($retired: IgnoredAny,)+ } =
+                    $section_type::deserialize(deserializer)?;
+                Ok(Self { $($field,)* })
+            }
+        }
+    };
 }
 
 tuning_schema! {
