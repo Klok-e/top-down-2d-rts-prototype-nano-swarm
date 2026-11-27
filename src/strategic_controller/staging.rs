@@ -241,27 +241,6 @@ impl DefendBlock {
     }
 }
 
-pub(super) fn plan_staging(
-    tuning: &AutonomyTuning,
-    candidate: &PlanCandidate,
-    current: Option<&IntentPlan>,
-    owner: SwarmId,
-    state: &GameState<'_>,
-    raid_forces: &RaidForces<'_>,
-    budget: &mut WorkBudget,
-) -> Option<StagingFront> {
-    review_staging(
-        tuning,
-        candidate,
-        current,
-        owner,
-        state,
-        raid_forces,
-        budget,
-    )
-    .ok()
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum StageFailure {
     Ineligible,

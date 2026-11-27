@@ -152,13 +152,22 @@ fn find_deposit<'a>(
     Ok(None)
 }
 
-pub(super) fn plan_economy(
-    tuning: &AutonomyTuning,
+pub(super) struct ExpansionReview<'a> {
+    opportunities: Vec<&'a DepositState>,
+    observation: EconomyObservation,
+    retained: BTreeMap<u64, MineObservation>,
+    failed_mine: Option<u64>,
+    structural_support: HashSet<DesiredIntent>,
+    pub(super) home: Vec2,
+    enemy_home: Option<Vec2>,
+}
+
+pub(super) fn plan_economy<'a>(
     owner: SwarmId,
-    state: &GameState<'_>,
+    state: &GameState<'a>,
     previous: Option<&IntentPlan>,
     budget: &mut WorkBudget,
-) -> Option<EconomyPlan> {
+) -> Option<(EconomyPlan, ExpansionReview<'a>)> {
     let previous_mines = previous.map_or(&[][..], |plan| plan.owned_deposits.as_slice());
     if !budget.spend(
         state
@@ -331,7 +340,7 @@ pub(super) fn plan_economy(
         }
     }
 
-    let mut observation = state
+    let observation = state
         .supply
         .and_then(|supply| supply.economies.get(&owner))
         .copied()
@@ -476,8 +485,29 @@ pub(super) fn plan_economy(
     }
     economy.threatened = threatened_deposit(&economy.owned_deposits, owner, state, budget)?;
 
+    Some((
+        economy,
+        ExpansionReview {
+            opportunities,
+            observation,
+            retained,
+            failed_mine,
+            structural_support,
+            home,
+            enemy_home,
+        },
+    ))
+}
+
+pub(super) fn observe_contested(
+    expansion: &mut ExpansionReview<'_>,
+    economy: &mut EconomyPlan,
+    owner: SwarmId,
+    state: &GameState<'_>,
+    budget: &mut WorkBudget,
+) -> Option<()> {
     let mut unchecked = Vec::new();
-    for deposit in opportunities {
+    for deposit in expansion.opportunities.drain(..) {
         let mut approached = false;
         for bot in state.bots {
             if !budget.spend(1) {
@@ -493,7 +523,8 @@ pub(super) fn plan_economy(
             }
         }
         if approached {
-            if let Ok(Some((mine, _))) = mine_support(owner, deposit, state, home, budget) {
+            if let Ok(Some((mine, _))) = mine_support(owner, deposit, state, expansion.home, budget)
+            {
                 economy.contested_deposits.push((
                     deposit.id,
                     mine.gather_cell,
@@ -507,13 +538,34 @@ pub(super) fn plan_economy(
             return None;
         }
     }
+    expansion.opportunities = unchecked;
+    Some(())
+}
+
+pub(super) fn choose_claim(
+    expansion: ExpansionReview<'_>,
+    economy: &mut EconomyPlan,
+    tuning: &AutonomyTuning,
+    owner: SwarmId,
+    state: &GameState<'_>,
+    budget: &mut WorkBudget,
+) -> Option<()> {
+    let ExpansionReview {
+        opportunities: mut unchecked,
+        mut observation,
+        mut retained,
+        failed_mine,
+        structural_support,
+        home,
+        enemy_home,
+    } = expansion;
     if unchecked.is_empty() {
-        return Some(economy);
+        return Some(());
     }
     let recovering = economy.recovery.vacancies > 0 || failed_mine.is_some();
     let establishing_supply = economy.owned_deposits.is_empty() || recovering;
     if !establishing_supply && observation.low_reserve_ticks < HAUL_WINDOW_TICKS {
-        return Some(economy);
+        return Some(());
     }
     let other_gather = gather_support(
         &economy.owned_deposits,
@@ -548,11 +600,11 @@ pub(super) fn plan_economy(
             .any(|mine| mine.source_path == Some(false) || !mine.is_saturated())
             || !needs_more_extraction(observation, &retained_services))
     {
-        return Some(economy);
+        return Some(());
     }
     let capacity = expansion_capacity(owner, state, observation, &retained_services, budget)?;
     if capacity.workers == 0 || capacity.haulers == 0 {
-        return Some(economy);
+        return Some(());
     }
     let haul_overhead = if retained.len() > 1 {
         if !budget.spend(economy.owned_deposits.len()) {
@@ -687,6 +739,9 @@ pub(super) fn plan_economy(
         let score = value - distance / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_haul_cost;
         best = Some((mine, score));
     }
+    if budget.exhausted {
+        return None;
+    }
     if let Some((mine, _)) = best {
         if let Some(replacement) = &replacement
             && !preserves_mine_sources(
@@ -701,11 +756,11 @@ pub(super) fn plan_economy(
                 budget,
             )?
         {
-            return Some(economy);
+            return Some(());
         }
         economy.expansion = Some(MineClaim { mine, replacement });
     }
-    (!budget.exhausted).then_some(economy)
+    Some(())
 }
 
 fn retain_source_gather(
