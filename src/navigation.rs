@@ -3,6 +3,7 @@
 use bevy::prelude::*;
 
 mod routing;
+pub(crate) use routing::segment_box;
 pub use routing::{
     AccessCheck, AccessStatus, ConnectivityStatus, Navigation, NavigationWork, RequestPurpose,
     Route, RouteGoal, RouteOutcome, RoutePriority, RouteRequestId, RouteStatus,

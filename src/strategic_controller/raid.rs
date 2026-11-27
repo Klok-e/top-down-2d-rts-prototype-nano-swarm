@@ -22,7 +22,7 @@ impl<'a> RaidForces<'a> {
     ) -> Self {
         let is_rear_garrison = |cell| {
             current.is_some_and(|plan| {
-                !plan.primary_defend_block.contains(cell)
+                !plan.primary_defend_cells.contains(&cell)
                     && plan.desired.contains(&DesiredIntent {
                         cell,
                         kind: IntentKind::Defend,

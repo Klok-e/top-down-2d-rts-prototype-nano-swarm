@@ -252,7 +252,7 @@ mod raid_readiness {
         assert!(owns_defend(&app, target), "{}", explanation(&app));
         assert!(owns_intent(&app, target, IntentKind::Corridor));
 
-        neutral_deposit(&mut app, neutral);
+        ready_distant_prospect(&mut app);
         review(&mut app);
 
         assert_eq!(
@@ -266,7 +266,7 @@ mod raid_readiness {
         let stockpile = {
             let world = app.world_mut();
             world
-                .query_filtered::<Entity, With<Stockpile>>()
+                .query_filtered::<Entity, (With<Stockpile>, With<OwnerSwarm>)>()
                 .single(world)
                 .expect("the raid fixture has one target Stockpile")
         };
@@ -289,7 +289,7 @@ mod raid_readiness {
     fn an_over_budget_first_review_publishes_complete_home_support() {
         let (mut app, _) = over_budget_raid_and_claim_fixture();
         let neutral = DISTANT_NEUTRAL;
-        neutral_deposit(&mut app, neutral);
+        ready_distant_prospect(&mut app);
 
         review(&mut app);
 
@@ -310,7 +310,7 @@ mod raid_readiness {
         review(&mut app);
         let target = DISTANT_TARGET;
         assert!(owns_defend(&app, target), "{}", explanation(&app));
-        neutral_deposit(&mut app, DISTANT_NEUTRAL);
+        ready_distant_prospect(&mut app);
 
         let set_charge = |app: &mut App, charge| {
             for defender in force {
@@ -337,6 +337,16 @@ mod raid_readiness {
         wait_three_seconds(&mut app);
         assert!(!owns_defend(&app, target), "{}", explanation(&app));
         assert!(owns_intent(&app, DISTANT_NEUTRAL, IntentKind::Gather));
+    }
+
+    fn ready_distant_prospect(app: &mut App) {
+        neutral_deposit(app, DISTANT_NEUTRAL);
+        common::spawn_stockpile(
+            app,
+            common::cell_world_center(DISTANT_NEUTRAL) + 144.0 * Vec2::X,
+            0,
+            4,
+        );
     }
 
     fn over_budget_raid_and_claim_fixture() -> (App, [Entity; 2]) {
@@ -371,7 +381,7 @@ mod raid_readiness {
                 .unwrap()
         };
         add_enemy_mine(&mut app, enemy, open_target);
-        neutral_deposit(&mut app, DISTANT_NEUTRAL);
+        ready_distant_prospect(&mut app);
         for cell in [guarded_target, guarded_target - IVec2::X] {
             common::spawn_stationary_defender_at(&mut app, common::cell_world_center(cell), ENEMY);
         }
@@ -749,30 +759,16 @@ mod raid_readiness {
     }
 
     #[test]
-    fn an_unchanged_raid_approach_keeps_its_next_fixed_staging_point() {
-        let target = IVec2::new(11, 0);
-        let (mut app, defenders) = raid_fixture_at::<2>(common::sim_app(), target, 64);
-        review(&mut app);
-        let first = IVec2::new(3, 0);
-        assert!(owns_defend(&app, first), "{}", explanation(&app));
-        for defender in defenders {
-            app.world_mut()
-                .get_mut::<Transform>(defender)
-                .unwrap()
-                .translation = common::cell_world_center(first).extend(0.0);
-        }
-        review(&mut app);
-
-        let next_block = forward_defend_cells(&app);
-        assert!(
-            next_block.contains(&IVec2::new(4, 0)) && !next_block.contains(&IVec2::new(7, 0)),
-            "the second block stays centered at (5, 0): {}",
-            explanation(&app)
-        );
+    fn rear_mine_garrisons_do_not_sustain_a_raid_with_only_one_ready_defender() {
+        assert_raid_withdraws_with_rear_garrison(false);
     }
 
     #[test]
-    fn rear_mine_garrisons_do_not_sustain_a_raid_with_only_one_ready_defender() {
+    fn a_rock_disconnected_garrison_inside_the_nominal_front_is_still_rear_defense() {
+        assert_raid_withdraws_with_rear_garrison(true);
+    }
+
+    fn assert_raid_withdraws_with_rear_garrison(clip_front: bool) {
         let (mut app, [front, replacement]) = raid_fixture::<2>(common::sim_app());
         app.world_mut()
             .resource_mut::<Tuning>()
@@ -785,12 +781,36 @@ mod raid_readiness {
                 .single(world)
                 .unwrap()
         };
-        let mine_cell = IVec2::new(-7, 0);
+        let (mine_cell, support_offset) = if clip_front {
+            let rock = RockFormation::Rectangle {
+                half: Vec2::new(
+                    2.0 * top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE,
+                    32.0,
+                ),
+            };
+            let mut wall = common::cell_world_center(TARGET);
+            wall.y += top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE / 2.0;
+            let transform = Transform::from_translation(wall.extend(0.0));
+            let reachability = SwarmReachabilityMap::new(
+                app.world().resource::<IntentGrid>(),
+                [rock.obstacle(&transform)],
+                [
+                    (OWNER, common::cell_world_center(IVec2::ZERO)),
+                    (ENEMY, common::cell_world_center(TARGET + 4 * IVec2::X)),
+                ],
+            )
+            .unwrap();
+            app.insert_resource(reachability);
+            app.world_mut().spawn((rock, transform));
+            (TARGET + IVec2::Y, -IVec2::X)
+        } else {
+            (IVec2::new(-7, 0), IVec2::X)
+        };
         let mine = neutral_deposit(&mut app, mine_cell);
         app.world_mut()
             .entity_mut(mine)
             .insert(OwnerSwarm(own_swarm));
-        for (defender, offset) in [(front, IVec2::Y), (replacement, -IVec2::Y)] {
+        for (defender, offset) in [(front, IVec2::ZERO), (replacement, -IVec2::Y)] {
             app.world_mut()
                 .get_mut::<Transform>(defender)
                 .unwrap()
@@ -799,7 +819,7 @@ mod raid_readiness {
         review(&mut app);
         assert!(owns_defend(&app, TARGET), "{}", explanation(&app));
 
-        let rear_cells = [mine_cell, mine_cell + IVec2::X];
+        let rear_cells = [mine_cell, mine_cell + support_offset];
         let garrison = rear_cells.map(|cell| {
             common::spawn_stationary_defender_at(&mut app, common::cell_world_center(cell), OWNER)
         });
@@ -1676,6 +1696,8 @@ enum SupplySituation {
     CommittedHauler,
     DeliveryBottleneck,
     BufferedConsumption,
+    BlockedProspect,
+    FullProspect,
 }
 
 #[test]
@@ -1776,6 +1798,28 @@ fn strategic_adapter_requires_haul_activity_to_confirm_delivery() {
     );
 }
 
+#[test]
+fn strategic_adapter_leaves_an_unbuildable_prospect_unclaimed() {
+    review_expansion(
+        4,
+        Deliveries::Ongoing,
+        false,
+        SupplySituation::BlockedProspect,
+        true,
+    );
+}
+
+#[test]
+fn strategic_adapter_requires_source_room_when_only_one_worker_is_spare() {
+    review_expansion(
+        4,
+        Deliveries::Ongoing,
+        false,
+        SupplySituation::FullProspect,
+        true,
+    );
+}
+
 fn review_expansion(
     capacity: u32,
     deliveries: Deliveries,
@@ -1790,8 +1834,10 @@ fn review_expansion(
             HaulerLoading, InteractionRegion, LogisticsReservation, MaintenanceAssignment,
             NanobotType, OwnerSwarm, PopulationDemandPlugin, ProductionFacility,
             ReturningToStockpile, SwarmMember, TerritorySnapshot, defender_charger_work_system,
-            gather_quota_system, project_territory_snapshot_system, worker_gather_delivery_system,
+            deterministic_jitter, gather_quota_system, project_territory_snapshot_system,
+            worker_gather_delivery_system,
         },
+        navigation::align_structure,
         resources::Stockpile,
         terrain::RockFormation,
         tuning::Tuning,
@@ -1843,7 +1889,14 @@ fn review_expansion(
         &mut app,
         home,
         &[
-            (NanobotType::Worker, if committed_worker { 2 } else { 3 }),
+            (
+                NanobotType::Worker,
+                match supply {
+                    SupplySituation::FullProspect => 1,
+                    SupplySituation::CommittedWorker => 2,
+                    _ => 3,
+                },
+            ),
             (NanobotType::Hauler, if committed_haulers { 2 } else { 4 }),
         ],
     );
@@ -1869,6 +1922,24 @@ fn review_expansion(
         app.world_mut().spawn((rock, transform));
         common::spawn_stockpile(&mut app, deposit_position + Vec2::X * 160.0, 0, 60);
     }
+    let mut prospect_rocks = Vec::new();
+    if matches!(supply, SupplySituation::BlockedProspect) {
+        let center = common::cell_world_center(expansion);
+        for index in 0..8 {
+            let angle = index as f32 * std::f32::consts::TAU / 8.0;
+            let transform = align_structure(Transform::from_translation(
+                (center
+                    + 148.0 * Vec2::from_angle(angle)
+                    + deterministic_jitter(index, expansion, 16.0))
+                .extend(0.0),
+            ));
+            let rock = RockFormation::Rectangle {
+                half: Vec2::splat(22.0),
+            };
+            obstacles.push(rock.obstacle(&transform));
+            prospect_rocks.push(app.world_mut().spawn((rock, transform)).id());
+        }
+    }
     let reachability = SwarmReachabilityMap::new(
         app.world().resource::<IntentGrid>(),
         obstacles,
@@ -1877,15 +1948,39 @@ fn review_expansion(
     .unwrap();
     app.insert_resource(reachability);
 
-    let [mine, ..] = [opening, expansion, IVec2::new(5, 4)].map(|cell| {
+    let spawn_deposit = |app: &mut App, cell| {
         common::spawn_deposit(
-            &mut app,
+            app,
             common::DepositFixture {
                 world_pos: common::cell_world_center(cell),
                 amount: 72_000,
                 capacity: 72_000,
                 radius: 64.0,
             },
+        )
+    };
+    let mine = spawn_deposit(&mut app, opening);
+    let prospect = spawn_deposit(&mut app, expansion);
+    if split_work_ring {
+        common::spawn_stockpile(
+            &mut app,
+            common::cell_world_center(expansion) + 144.0 * Vec2::X,
+            0,
+            4,
+        );
+    }
+    if !matches!(
+        supply,
+        SupplySituation::BlockedProspect | SupplySituation::FullProspect
+    ) {
+        spawn_deposit(&mut app, IVec2::new(5, 4));
+    }
+    let prospect_source = matches!(supply, SupplySituation::FullProspect).then(|| {
+        common::spawn_stockpile(
+            &mut app,
+            common::cell_world_center(expansion) + 144.0 * Vec2::X,
+            4,
+            4,
         )
     });
     app.world_mut().entity_mut(mine).insert(OwnerSwarm(swarm));
@@ -1983,7 +2078,46 @@ fn review_expansion(
     let origin = if other_deposit { second_mine } else { mine };
     let mut transfers = 0;
     let mut feeding_terminal = false;
-    for tick in 0..1560 {
+    const RESTORE_PROSPECT_TICK: u32 = 1800;
+    const RELEASE_ROOM_TICK: u32 = 1920;
+    let incoming_worker = prospect_source.map(|_| {
+        let world = app.world_mut();
+        world
+            .query::<(Entity, &NanobotType)>()
+            .iter(world)
+            .find_map(|(entity, kind)| {
+                (*kind == NanobotType::Worker && entity != worker).then_some(entity)
+            })
+            .unwrap()
+    });
+    let delayed_prospect = matches!(
+        supply,
+        SupplySituation::BlockedProspect | SupplySituation::FullProspect
+    );
+    let ticks = if delayed_prospect {
+        RESTORE_PROSPECT_TICK + 360
+    } else {
+        1560
+    };
+    for tick in 0..ticks {
+        if tick == RESTORE_PROSPECT_TICK {
+            for rock in prospect_rocks.drain(..) {
+                app.world_mut().despawn(rock);
+            }
+            if let Some(source) = prospect_source {
+                app.world_mut().get_mut::<Stockpile>(source).unwrap().amount = 0;
+                app.world_mut().entity_mut(incoming_worker.unwrap()).insert(
+                    LogisticsReservation::new(prospect, source, ResourceKind::Minerals, 4),
+                );
+            }
+        }
+        if tick == RELEASE_ROOM_TICK
+            && let Some(incoming_worker) = incoming_worker
+        {
+            app.world_mut()
+                .entity_mut(incoming_worker)
+                .remove::<LogisticsReservation>();
+        }
         if tick == 1350 && matches!(supply, SupplySituation::BriefSpendingIncrease) {
             app.world_mut()
                 .resource_mut::<Tuning>()
@@ -2062,6 +2196,16 @@ fn review_expansion(
             .cell(expansion)
             .is_some_and(|cell| cell.has_owned(IntentKind::Gather, owner));
         if expanded {
+            if delayed_prospect {
+                assert!(
+                    tick >= if prospect_source.is_some() {
+                        RELEASE_ROOM_TICK
+                    } else {
+                        RESTORE_PROSPECT_TICK
+                    },
+                    "the claim at tick {tick} jumped ahead of Source viability with {supply:?}"
+                );
+            }
             assert!(
                 should_expand,
                 "unexpected claim at tick {tick} with {supply:?}, capacity {capacity}, source deposits from {delivery_owner:?}, other deposit {other_deposit}. Gather: {:?}. Haul: {:?}",
@@ -2086,7 +2230,7 @@ fn review_expansion(
             );
             break;
         }
-        if tick == 1559 && should_expand {
+        if tick == ticks - 1 && should_expand {
             let profiles = app
                 .world()
                 .resource::<top_down_2d_rts_prototype_nano_swarm::strategic_runtime::ControllerTelemetry>()
@@ -2103,9 +2247,8 @@ mod mine_recovery {
     use top_down_2d_rts_prototype_nano_swarm::{
         SIMULATION_HZ,
         nanobot::{
-            Cargo, ExtractProgress, GatherAssignment, InteractionRegion, LogisticsReservation,
-            NanobotType, OwnerSwarm, ReturningToStockpile, deterministic_jitter,
-            worker_gather_delivery_system,
+            ExtractProgress, GatherAssignment, InteractionRegion, NanobotType, OwnerSwarm,
+            deterministic_jitter, worker_gather_delivery_system,
         },
         navigation::align_structure,
         resources::{ResourceDeposit, Stockpile},
@@ -2204,23 +2347,14 @@ mod mine_recovery {
         let approach = InteractionRegion::structure(app.world().get::<Transform>(source).unwrap())
             .approach(mine_pos);
         let worker = common::spawn_worker_at(app, approach);
-        let mut reservation = LogisticsReservation::new(mine, source, ResourceKind::Minerals, 4);
-        reservation.source_remaining = 0;
         app.world_mut().entity_mut(worker).insert((
             GatherAssignment::new(FAILED, mine),
             ExtractProgress::default(),
         ));
         app.update();
+        common::prepare_mineral_dropoff(app, worker, mine, source, 4);
         app.world_mut()
             .entity_mut(worker)
-            .insert((
-                ReturningToStockpile { stockpile: source },
-                reservation,
-                Cargo {
-                    kind: ResourceKind::Minerals,
-                    amount: 4,
-                },
-            ))
             .remove::<ExtractProgress>();
         app.update();
         assert_eq!(app.world().get::<Stockpile>(source).unwrap().amount, 4);

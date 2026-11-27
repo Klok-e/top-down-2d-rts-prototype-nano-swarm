@@ -889,7 +889,12 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
             break;
         }
     }
-    assert!(withdrew, "rear garrisons cannot sustain the weakened raid");
+    assert!(
+        withdrew,
+        "rear garrisons cannot sustain the weakened raid ({})",
+        app.world().resource::<ControllerTelemetry>().profiles()[&SwarmId::PLAYER.0]
+            .last_explanation
+    );
 }
 
 #[test]
@@ -1192,7 +1197,17 @@ fn strategic_opening_keeps_neutral_gather_pending_through_the_first_extraction_p
 
 #[test]
 fn strategic_retarget_erases_superseded_corridor_in_the_same_tick() {
-    use top_down_2d_rts_prototype_nano_swarm::resources::ResourceDeposit;
+    for exhausted in [true, false] {
+        retarget_after_losing_mine(exhausted);
+    }
+}
+
+fn retarget_after_losing_mine(exhausted: bool) {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{Structure, StructureKind},
+        resources::ResourceDeposit,
+        terrain::RockFormation,
+    };
 
     let mut app = common::minimal_app();
     let mut grid = IntentGrid::new(64, 64);
@@ -1200,6 +1215,7 @@ fn strategic_retarget_erases_superseded_corridor_in_the_same_tick() {
     let foreign = SwarmId(9);
     let first_cell = IVec2::new(8, 0);
     let next_cell = IVec2::new(0, 6);
+    let retained_cell = IVec2::new(8, 1);
     let old_corridor = IVec2::new(6, 0);
     for y in -32..-16 {
         for x in -32..32 {
@@ -1227,7 +1243,36 @@ fn strategic_retarget_erases_superseded_corridor_in_the_same_tick() {
             radius: 80.0,
         },
     );
+    let retained = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: common::cell_world_center(retained_cell),
+            amount: 72_000,
+            capacity: 72_000,
+            radius: 80.0,
+        },
+    );
+    for mine in [first, retained] {
+        app.world_mut().entity_mut(mine).insert(OwnerSwarm(swarm));
+    }
+    let shared_source = common::spawn_stockpile(
+        &mut app,
+        common::cell_world_center(first_cell) + 180.0 * Vec2::Y,
+        0,
+        4,
+    );
+    app.world_mut()
+        .entity_mut(shared_source)
+        .insert((OwnerSwarm(swarm), Structure::new(StructureKind::Basic)));
+    let owns = |app: &App, cell, kind| {
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(cell)
+            .is_some_and(|paint| paint.has_owned(kind, owner))
+    };
     app.update();
+    assert!(owns(&app, first_cell, IntentKind::Gather));
+    assert!(owns(&app, retained_cell, IntentKind::Gather));
     assert!(
         app.world()
             .resource::<IntentGrid>()
@@ -1236,10 +1281,14 @@ fn strategic_retarget_erases_superseded_corridor_in_the_same_tick() {
             .has_owned(IntentKind::Corridor, owner)
     );
 
-    app.world_mut()
-        .get_mut::<ResourceDeposit>(first)
-        .unwrap()
-        .amount = 0;
+    if exhausted {
+        app.world_mut()
+            .get_mut::<ResourceDeposit>(first)
+            .unwrap()
+            .amount = 0;
+    } else {
+        app.world_mut().despawn(first);
+    }
     common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -1250,7 +1299,14 @@ fn strategic_retarget_erases_superseded_corridor_in_the_same_tick() {
         },
     );
 
-    for _ in 0..30 {
+    common::spawn_stockpile(
+        &mut app,
+        common::cell_world_center(next_cell) + 150.0 * Vec2::Y,
+        0,
+        4,
+    );
+
+    for _ in 0..90 {
         app.update();
         let grid = app.world().resource::<IntentGrid>();
         if grid
@@ -1270,6 +1326,41 @@ fn strategic_retarget_erases_superseded_corridor_in_the_same_tick() {
                     .unwrap()
                     .has_owned(IntentKind::Corridor, foreign)
             );
+            assert!(
+                owns(&app, first_cell, IntentKind::Gather),
+                "retiring the depleted mine must keep Gather under the retained mine's Source"
+            );
+            for _ in 0..240 {
+                app.update();
+                assert!(owns(&app, first_cell, IntentKind::Gather));
+                assert!(owns(&app, retained_cell, IntentKind::Gather));
+            }
+            let interruption = app
+                .world_mut()
+                .spawn((
+                    RockFormation::Rectangle {
+                        half: Vec2::splat(120.0),
+                    },
+                    Transform::from_translation(
+                        common::cell_world_center(retained_cell).extend(0.0),
+                    ),
+                ))
+                .id();
+            for _ in 0..90 {
+                app.update();
+                assert!(
+                    owns(&app, first_cell, IntentKind::Gather),
+                    "a temporary route failure must keep Gather under the shared Source"
+                );
+                assert!(owns(&app, retained_cell, IntentKind::Gather));
+            }
+            app.world_mut().despawn(interruption);
+            app.world_mut().despawn(shared_source);
+            for _ in 0..240 {
+                app.update();
+            }
+            assert!(!owns(&app, first_cell, IntentKind::Gather));
+            assert!(owns(&app, retained_cell, IntentKind::Gather));
             return;
         }
     }
