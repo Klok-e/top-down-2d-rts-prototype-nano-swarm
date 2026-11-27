@@ -53,11 +53,15 @@ impl StagingFront {
     ) -> bool {
         let destination = self.destination();
         target == destination
-            || if self.active + 1 == self.points.len() {
+            || if self.at_destination() {
                 self.covers(target, owner, state)
             } else {
                 DefendBlock::new(destination, MINIMUM_STAGING_BLOCK_CELLS).contains(target)
             }
+    }
+
+    fn at_destination(&self) -> bool {
+        self.active + 1 == self.points.len()
     }
 
     fn destination(&self) -> IVec2 {
@@ -74,9 +78,7 @@ impl StagingFront {
         fraction: f32,
         budget: &mut WorkBudget,
     ) {
-        if self.active + 1 < self.points.len()
-            && self.defenders_arrived(owner, state, fraction, budget)
-        {
+        if !self.at_destination() && self.defenders_arrived(owner, state, fraction, budget) {
             self.active += 1;
         }
     }
@@ -88,8 +90,7 @@ impl StagingFront {
         fraction: f32,
         budget: &mut WorkBudget,
     ) -> bool {
-        self.active + 1 == self.points.len()
-            && self.defenders_arrived(owner, state, fraction, budget)
+        self.at_destination() && self.defenders_arrived(owner, state, fraction, budget)
     }
 
     fn defenders_arrived(
@@ -196,7 +197,8 @@ pub(super) fn plan_staging(
         return None;
     }
     let reusable = continuing.filter(|front| {
-        front.destination_contains(target, owner, state)
+        (!requires_readiness || front.at_destination())
+            && front.destination_contains(target, owner, state)
             && front.points[front.active + 1..]
                 .iter()
                 .all(|point| stageable(owner, state, candidate.protected_home, point.cell, budget))
@@ -205,7 +207,18 @@ pub(super) fn plan_staging(
     let route = if requires_readiness || reusable.is_none() {
         let active_raid = requires_readiness && continuing.is_some();
         let route = staging_route(candidate, previous, active_raid, owner, state, budget)?;
-        if requires_readiness && !raid_forces.ready(&route, intent_cell_center(target), budget)? {
+        let response_supports_front = |position| {
+            continuing
+                .is_some_and(|front| front.covers(world_to_intent_cell(position), owner, state))
+        };
+        if requires_readiness
+            && !raid_forces.ready(
+                &route,
+                intent_cell_center(target),
+                response_supports_front,
+                budget,
+            )?
+        {
             let mut held = continuing?.clone();
             let shortfall_started = held.readiness_shortfall_started.unwrap_or(state.tick);
             if state.tick.saturating_sub(shortfall_started) >= READINESS_GRACE_TICKS {
@@ -223,7 +236,7 @@ pub(super) fn plan_staging(
     let arrival_fraction = tuning.strategy_staging_arrival_fraction;
     if let Some(previous) = reusable {
         let mut retained = previous.clone();
-        if previous.spacing_cells != spacing && previous.active + 1 < previous.points.len() {
+        if previous.spacing_cells != spacing && !previous.at_destination() {
             retained.points = staging_points(
                 &previous.route,
                 Some(previous.points[previous.active]),
@@ -246,7 +259,7 @@ pub(super) fn plan_staging(
     }
 
     let route = route?;
-    let held_stage = continuing.filter(|old| old.active + 1 < old.points.len());
+    let held_stage = continuing.filter(|old| !old.at_destination());
     let first = held_stage.map(|stage| StagingPoint {
         cell: stage.point(),
         distance: 0.0,

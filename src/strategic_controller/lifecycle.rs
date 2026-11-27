@@ -276,42 +276,49 @@ impl PlannerState {
             Some(Some(front))
         };
 
-        let (best, best_staging) = candidates
+        let (best_index, best_staging) = candidates
             .iter()
+            .enumerate()
             .rev()
-            .find_map(|candidate| stage_candidate(candidate).map(|staging| (candidate, staging)))
+            .find_map(|(index, candidate)| {
+                stage_candidate(candidate).map(|staging| (index, staging))
+            })
             .expect("the home economy is eligible");
+        let best = &candidates[best_index];
 
         let progressing_attack = attack_progressed && !tuning_review;
-        let retained = current
-            .filter(|plan| plan.objective.priority() == best.objective.priority())
-            .and_then(|plan| {
-                candidates.iter().rev().find_map(|candidate| {
-                    if candidate.objective != plan.objective {
-                        return None;
-                    }
-                    let normal_retention = progressing_attack
-                        || invalidation.is_none()
-                            && (stall_grace
-                                || best.score
-                                    <= candidate.score
-                                        + candidate.score.abs()
-                                            * (tuning.controller_switch_margin - 1.0)
-                                        + tuning.controller_switch_bias);
-                    if !normal_retention && !candidate.objective.requires_raid_readiness() {
-                        return None;
-                    }
-                    let staging = if std::ptr::eq(candidate, best) {
-                        best_staging.clone()
-                    } else {
-                        stage_candidate(candidate)?
-                    };
-                    let waiting = staging
-                        .as_ref()
-                        .is_some_and(|front| front.waiting_for_readiness());
-                    (normal_retention || waiting).then_some((candidate, staging))
-                })
-            });
+        let retained =
+            current
+                .filter(|plan| plan.objective.priority() == best.objective.priority())
+                .and_then(|plan| {
+                    candidates[..=best_index].iter().enumerate().rev().find_map(
+                        |(index, candidate)| {
+                            if candidate.objective != plan.objective {
+                                return None;
+                            }
+                            let normal_retention = progressing_attack
+                                || invalidation.is_none()
+                                    && (stall_grace
+                                        || best.score
+                                            <= candidate.score
+                                                + candidate.score.abs()
+                                                    * (tuning.controller_switch_margin - 1.0)
+                                                + tuning.controller_switch_bias);
+                            if !normal_retention && !candidate.objective.requires_raid_readiness() {
+                                return None;
+                            }
+                            let staging = if index == best_index {
+                                best_staging.clone()
+                            } else {
+                                stage_candidate(candidate)?
+                            };
+                            let waiting = staging
+                                .as_ref()
+                                .is_some_and(|front| front.waiting_for_readiness());
+                            (normal_retention || waiting).then_some((candidate, staging))
+                        },
+                    )
+                });
         if let Some(id) = secured_mine {
             for (deposit, enemy) in &economy.enemy_deposits {
                 if !budget.spend(1) {

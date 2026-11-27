@@ -54,6 +54,7 @@ impl<'a> RaidForces<'a> {
         &self,
         approach: &[Vec2],
         target: Vec2,
+        response_supports_front: impl Fn(Vec2) -> bool,
         budget: &mut WorkBudget,
     ) -> Option<bool> {
         if !self.can_launch() {
@@ -66,7 +67,7 @@ impl<'a> RaidForces<'a> {
                 return None;
             }
             if let DefenderDuty::RespondingTo(position) = bot.defender_duty
-                && !near_approach(position, approach, target, budget)?
+                && !response_supports_front(position)
             {
                 continue;
             }

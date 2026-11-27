@@ -3467,6 +3467,126 @@ fn a_compact_front_leads_the_army_and_waits_for_most_defenders() {
 }
 
 #[test]
+fn a_rerouted_raid_advances_on_the_approach_used_for_readiness() {
+    use crate::navigation::Route;
+    use std::cell::Cell;
+
+    let owner = SwarmId::PLAYER;
+    let enemy = SwarmId(9);
+    let target_cell = IVec2::new(12, 0);
+    let swarms = [
+        SwarmState {
+            id: owner,
+            home: world(IVec2::ZERO),
+            minerals: 100,
+            mineral_income_per_second: 0.0,
+        },
+        SwarmState {
+            id: enemy,
+            home: world(IVec2::new(15, 0)),
+            minerals: 100,
+            mineral_income_per_second: 0.0,
+        },
+    ];
+    let target = StructureState {
+        id: 20,
+        owner: enemy,
+        position: world(target_cell),
+        kind: StructureKind::Sink,
+        operational: true,
+        health: 100,
+        max_health: 100,
+        minerals: 0,
+    };
+    let mine = DepositState {
+        id: 21,
+        owner: Some(enemy),
+        position: target.position,
+        amount: 1_000,
+        radius: 80.0,
+    };
+    let defender = BotState {
+        id: 1,
+        owner,
+        kind: NanobotType::Defender,
+        position: swarms[0].home,
+        health: 100,
+        max_health: 100,
+        charge: 1.0,
+        max_charge: 1.0,
+        cargo: 0,
+        displacement: Vec2::ZERO,
+        defender_duty: DefenderDuty::Available,
+    };
+    let flank = Cell::new(-6);
+    let route = |_, goal, _: &mut dyn FnMut() -> bool| {
+        let waypoints = match goal {
+            RouteGoal::Range { center, .. } => {
+                let y = flank.get();
+                let mut waypoints = Vec::new();
+                if y < 0 {
+                    waypoints.push(world(IVec2::new(3, 0)));
+                }
+                waypoints.extend([world(IVec2::new(3, y)), world(IVec2::new(12, y)), center]);
+                waypoints
+            }
+            RouteGoal::Point(point) => vec![point],
+            RouteGoal::Interaction(_) => unreachable!(),
+        };
+        Some(RouteOutcome::Found(Route {
+            waypoints,
+            cost: 0.0,
+        }))
+    };
+    let mut grid = IntentGrid::new(32, 32);
+    let mut controller = Controller::new(owner);
+    let tuning = AutonomyTuning::default();
+    let review = |controller: &mut Controller, grid: &mut IntentGrid, bots: &[BotState], tick| {
+        let decision = controller.decide(
+            &tuning,
+            &GameState {
+                swarms: &swarms,
+                structures: &[target],
+                deposits: &[mine],
+                bots,
+                route_query: Some(&route),
+                ..empty_state(grid, tick)
+            },
+        );
+        assert!(
+            decision.explanation.contains("raid enemy Resource Deposit"),
+            "{decision:?}"
+        );
+        apply(grid, owner, &decision);
+    };
+
+    let ready = [defender, BotState { id: 2, ..defender }];
+    review(&mut controller, &mut grid, &ready, 0);
+    let first = IVec2::new(3, -1);
+    assert!(owned_defend_cells(&grid, owner).contains(&(first.x, first.y)));
+
+    let mut force: Vec<_> = ready
+        .map(|bot| BotState {
+            position: world(first),
+            ..bot
+        })
+        .into();
+    force.extend([3, 4].map(|id| BotState {
+        id,
+        owner: enemy,
+        position: world(IVec2::new(3, -5)),
+        ..defender
+    }));
+    flank.set(6);
+    review(&mut controller, &mut grid, &force, WORK_WINDOW_TICKS);
+    let next = owned_defend_cells(&grid, owner);
+    assert!(
+        next.contains(&(3, 3)) && !next.contains(&(3, -5)),
+        "{next:?}"
+    );
+}
+
+#[test]
 fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
     use std::cell::Cell;
 

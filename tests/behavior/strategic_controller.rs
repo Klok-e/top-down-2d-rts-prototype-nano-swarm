@@ -43,7 +43,7 @@ mod raid_readiness {
     use super::*;
     use top_down_2d_rts_prototype_nano_swarm::{
         SIMULATION_HZ,
-        nanobot::{Charge, ChargerAssignment, Health, OwnerSwarm},
+        nanobot::{Charge, ChargerAssignment, DefenderResponse, Health, OwnerSwarm, SwarmMember},
         strategic_runtime::ControllerTelemetry,
         terrain::RockFormation,
         tuning::Tuning,
@@ -104,16 +104,14 @@ mod raid_readiness {
         }
     }
 
-    fn staging_cell(app: &App) -> Option<IVec2> {
+    fn forward_defend_cells(app: &App) -> std::collections::HashSet<IVec2> {
         app.world()
             .resource::<IntentGrid>()
             .iter_active_cells()
-            .find_map(|(cell, intent)| {
-                (cell.x >= 2
-                    && intent.has_owned(IntentKind::Defend, OWNER)
-                    && intent.has_owned(IntentKind::Build, OWNER))
-                .then_some(cell)
+            .filter_map(|(cell, intent)| {
+                (cell.x >= 2 && intent.has_owned(IntentKind::Defend, OWNER)).then_some(cell)
             })
+            .collect()
     }
 
     fn owns_defend(app: &App, cell: IVec2) -> bool {
@@ -137,7 +135,11 @@ mod raid_readiness {
             .entity_mut(defender)
             .insert(ChargerAssignment { charger });
         review(&mut app);
-        assert!(staging_cell(&app).is_none(), "{}", explanation(&app));
+        assert!(
+            forward_defend_cells(&app).is_empty(),
+            "{}",
+            explanation(&app)
+        );
         assert!(owns_defend(&app, IVec2::ZERO));
 
         app.world_mut()
@@ -145,17 +147,49 @@ mod raid_readiness {
             .remove::<ChargerAssignment>();
         app.world_mut().get_mut::<Charge>(defender).unwrap().current = 0.1;
         review(&mut app);
-        assert!(staging_cell(&app).is_none(), "{}", explanation(&app));
+        assert!(
+            forward_defend_cells(&app).is_empty(),
+            "{}",
+            explanation(&app)
+        );
 
         app.world_mut().get_mut::<Health>(defender).unwrap().current = 1;
         app.world_mut().get_mut::<Charge>(defender).unwrap().current = 1.0;
         review(&mut app);
-        assert!(staging_cell(&app).is_none(), "{}", explanation(&app));
+        assert!(
+            forward_defend_cells(&app).is_empty(),
+            "{}",
+            explanation(&app)
+        );
 
         let mut health = app.world_mut().get_mut::<Health>(defender).unwrap();
         health.current = health.max;
+        let intruder = common::spawn_worker_at(
+            &mut app,
+            common::cell_world_center(IVec2::ZERO) + Vec2::X * 120.0,
+        );
+        app.world_mut()
+            .entity_mut(intruder)
+            .insert(SwarmMember(ENEMY));
+        app.world_mut()
+            .entity_mut(defender)
+            .insert(DefenderResponse { target: intruder });
         review(&mut app);
-        assert!(staging_cell(&app).is_some(), "{}", explanation(&app));
+        assert!(
+            forward_defend_cells(&app).is_empty(),
+            "{}",
+            explanation(&app)
+        );
+
+        app.world_mut()
+            .entity_mut(defender)
+            .remove::<DefenderResponse>();
+        review(&mut app);
+        assert!(
+            !forward_defend_cells(&app).is_empty(),
+            "{}",
+            explanation(&app)
+        );
     }
 
     #[test]
@@ -194,41 +228,47 @@ mod raid_readiness {
             undefended.contains("raid enemy Resource Deposit"),
             "{undefended}"
         );
-        assert!(staging_cell(&app).is_some());
+        assert!(!forward_defend_cells(&app).is_empty());
     }
 
     #[test]
     fn raid_holds_during_a_brief_recharge_and_withdraws_after_sustained_readiness_loss() {
         let (mut app, defenders) = raid_fixture();
         review(&mut app);
-        let first = staging_cell(&app).expect("ready force stages");
+        let first = forward_defend_cells(&app);
+        let first_point = IVec2::new(3, 0);
+        assert!(first.contains(&first_point), "{}", explanation(&app));
         for defender in defenders {
             app.world_mut()
                 .get_mut::<Transform>(defender)
                 .unwrap()
-                .translation = common::cell_world_center(first).extend(0.0);
+                .translation = common::cell_world_center(first_point).extend(0.0);
             app.world_mut().get_mut::<Charge>(defender).unwrap().current = 0.1;
         }
         review(&mut app);
-        assert_eq!(staging_cell(&app), Some(first), "{}", explanation(&app));
+        assert_eq!(forward_defend_cells(&app), first, "{}", explanation(&app));
 
         for defender in defenders {
             app.world_mut().get_mut::<Charge>(defender).unwrap().current = 1.0;
         }
         review(&mut app);
-        assert!(!owns_defend(&app, first), "{}", explanation(&app));
-        let second = staging_cell(&app).expect("recovered force advances");
+        assert!(!owns_defend(&app, first_point), "{}", explanation(&app));
+        let second = forward_defend_cells(&app);
+        assert!(!second.is_empty(), "recovered force advances");
 
         for defender in defenders {
             app.world_mut().get_mut::<Charge>(defender).unwrap().current = 0.1;
         }
         review(&mut app);
-        assert_eq!(staging_cell(&app), Some(second));
+        assert_eq!(forward_defend_cells(&app), second);
         for _ in 0..(10 * SIMULATION_HZ as u64) {
             app.update();
         }
-        assert!(staging_cell(&app).is_none(), "{}", explanation(&app));
-        assert!(!owns_defend(&app, second));
+        assert!(
+            forward_defend_cells(&app).is_empty(),
+            "{}",
+            explanation(&app)
+        );
         assert!(owns_defend(&app, IVec2::ZERO));
     }
 
@@ -236,7 +276,9 @@ mod raid_readiness {
     fn raid_withdraws_when_an_obstacle_closes_the_target_approach() {
         let (mut app, _) = raid_fixture();
         review(&mut app);
-        let first = staging_cell(&app).expect("ready force stages");
+        let first = forward_defend_cells(&app);
+        let first_point = IVec2::new(3, 0);
+        assert!(first.contains(&first_point), "{}", explanation(&app));
         app.world_mut().spawn((
             RockFormation::Rectangle {
                 half: Vec2::splat(384.0),
@@ -244,8 +286,12 @@ mod raid_readiness {
             Transform::from_translation(common::cell_world_center(TARGET).extend(0.0)),
         ));
         review(&mut app);
-        assert!(staging_cell(&app).is_none(), "{}", explanation(&app));
-        assert!(!owns_defend(&app, first));
+        assert!(
+            forward_defend_cells(&app).is_empty(),
+            "{}",
+            explanation(&app)
+        );
+        assert!(!owns_defend(&app, first_point));
         assert!(owns_defend(&app, IVec2::ZERO));
     }
 }
