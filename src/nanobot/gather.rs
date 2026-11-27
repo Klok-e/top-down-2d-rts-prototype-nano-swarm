@@ -494,8 +494,26 @@ fn find_source_stockpile_placement_for_demand_accepting(
         }
     }
     let haul_direction = compute_haul_direction(deposit_pos, &build_worlds, swarm_origin);
+    find_deposit_source_stockpile_placement(
+        deposit_pos,
+        deposit.radius,
+        &gather_cells,
+        obstacles,
+        haul_direction,
+        accepts,
+    )
+}
+
+pub(crate) fn find_deposit_source_stockpile_placement(
+    deposit_pos: Vec2,
+    deposit_radius: f32,
+    gather_cells: &[IVec2],
+    obstacles: &[Obstacle],
+    haul_direction: Vec2,
+    accepts: impl FnMut(Vec2) -> bool,
+) -> Option<Vec2> {
     let required_clearance =
-        deposit.radius + SOURCE_STOCKPILE_FOOTPRINT_RADIUS + SOURCE_STOCKPILE_PADDING;
+        deposit_radius + SOURCE_STOCKPILE_FOOTPRINT_RADIUS + SOURCE_STOCKPILE_PADDING;
     let placement_radius = if required_clearance > SOURCE_STOCKPILE_PLACEMENT_RADIUS {
         required_clearance + SOURCE_STOCKPILE_JITTER_AMPLITUDE * 2.0
     } else {
@@ -503,7 +521,7 @@ fn find_source_stockpile_placement_for_demand_accepting(
     };
     crate::nanobot::placement::find_source_stockpile_placement_accepting(
         deposit_pos,
-        &gather_cells,
+        gather_cells,
         obstacles,
         haul_direction,
         placement_radius,

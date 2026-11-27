@@ -20,6 +20,7 @@ use crate::{
 /// Maximum accounted planner operations shared by all decisions in one review window.
 pub const PLANNING_WORK_BUDGET: usize = 100_000;
 const WORK_WINDOW_TICKS: u64 = crate::SIMULATION_HZ as u64 / 2;
+pub(crate) const MINE_OBSERVATION_TICKS: u64 = 12 * crate::SIMULATION_HZ as u64;
 
 const EDIT_WORK_RESERVE: usize = 4_096;
 const MAX_ACTIVE_CELLS: usize = 256;
@@ -113,6 +114,9 @@ pub struct MineObservation {
     pub ticks_since_dropoff: Option<u64>,
     pub has_source: bool,
     pub has_space: bool,
+    /// A current Source interaction or a position where one can be restored.
+    /// None means the snapshot did not assess restoration.
+    pub source_path: Option<bool>,
     pub sustained_dropoffs: bool,
 }
 
@@ -203,6 +207,7 @@ pub struct Controller {
 struct IntentPlan {
     objective: Objective,
     owned_deposits: Vec<economy::OwnedDeposit>,
+    mine_recovery: economy::MineRecovery,
     attack: Option<AttackObligation>,
     staging: Option<staging::StagingFront>,
     key_charger: Option<u64>,

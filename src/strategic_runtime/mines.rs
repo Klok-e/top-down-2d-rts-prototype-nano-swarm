@@ -1,9 +1,11 @@
 use std::collections::VecDeque;
 
-use crate::{resources::WorkerDeliveryTotals, strategic_controller::MineObservation};
+use crate::{
+    resources::WorkerDeliveryTotals,
+    strategic_controller::{MINE_OBSERVATION_TICKS, MineObservation},
+};
 
 const TICKS_PER_SECOND: u64 = crate::SIMULATION_HZ as u64;
-const OBSERVATION_TICKS: u64 = 12 * TICKS_PER_SECOND;
 const SERVICE_CYCLE_TICKS: u64 = 3 * TICKS_PER_SECOND;
 const MIN_DROPOFF_SPACING_TICKS: u64 = SERVICE_CYCLE_TICKS;
 
@@ -40,7 +42,7 @@ impl MineHistory {
                 deliveries,
             });
         }
-        while self.samples.len() > 1 && tick - self.samples[1].tick >= OBSERVATION_TICKS {
+        while self.samples.len() > 1 && tick - self.samples[1].tick >= MINE_OBSERVATION_TICKS {
             self.samples.pop_front();
         }
     }
@@ -48,13 +50,13 @@ impl MineHistory {
     pub(super) fn recent(&self, tick: u64) -> (MineObservation, u32) {
         let start = self.samples[0];
         let observation_ticks = tick - start.tick;
-        let middle = self.sample_at_least_as_old_as(tick, OBSERVATION_TICKS / 2);
+        let middle = self.sample_at_least_as_old_as(tick, MINE_OBSERVATION_TICKS / 2);
         let cycle_start = self.sample_at_least_as_old_as(tick, SERVICE_CYCLE_TICKS);
         let cycle_deliveries = self.deliveries.minerals - cycle_start.deliveries.minerals;
         let active_workers = (self.worker_ticks - start.worker_ticks + observation_ticks / 2)
             .checked_div(observation_ticks)
             .unwrap_or_default();
-        let sustained_dropoffs = observation_ticks >= OBSERVATION_TICKS
+        let sustained_dropoffs = observation_ticks >= MINE_OBSERVATION_TICKS
             && middle.deliveries.completed > start.deliveries.completed
             && self.last_dropoff.is_some_and(|last| {
                 last > middle.tick

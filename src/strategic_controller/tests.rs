@@ -580,6 +580,7 @@ fn saturated_mine() -> MineObservation {
         has_source: true,
         has_space: true,
         sustained_dropoffs: true,
+        ..Default::default()
     }
 }
 
