@@ -11,7 +11,7 @@ use crate::nanobot::{
     estimated_lead_ticks, throughput_quota,
 };
 use bevy::prelude::Transform;
-use std::collections::HashMap;
+use std::cmp::Reverse;
 
 // Leave room for the home base and mandatory military support.
 pub(super) const SUPPORT_PAINT_RESERVE: usize = 8;
@@ -360,10 +360,8 @@ pub(super) fn plan_economy(
         }
         economy.desired = mine_paint(footprints.clone(), &economy.owned_deposits, None, budget)?;
     }
-    economy.threatened = threatened_deposit(&economy.owned_deposits, owner, state, budget);
-    if budget.exhausted {
-        return None;
-    }
+    economy.threatened = threatened_deposit(&economy.owned_deposits, owner, state, budget)?;
+
     let mut unchecked = Vec::new();
     for deposit in opportunities {
         let mut approached = false;
@@ -672,7 +670,12 @@ pub(super) fn mine_observation(
     state
         .mine_query
         .map_or(Some(MineObservation::default()), |query| {
-            query(owner, deposit, gather_cell, &mut || budget.spend(1))
+            query(
+                owner,
+                deposit,
+                MineObservationAt::Service(gather_cell),
+                &mut || budget.spend(1),
+            )
         })
 }
 
@@ -692,44 +695,60 @@ fn threatened_deposit(
     owner: SwarmId,
     state: &GameState<'_>,
     budget: &mut WorkBudget,
-) -> Option<(u64, IVec2)> {
-    if owned.is_empty() {
-        return None;
-    }
-    if !budget.spend(owned.len() * 2) {
-        return None;
-    }
-    let mut local_mines = HashMap::new();
+) -> Option<Option<(u64, IVec2)>> {
+    const DROPOFF_GRACE_TICKS: u64 = 3 * crate::SIMULATION_HZ as u64;
+    const DISRUPTION_TICKS: u64 = 2 * DROPOFF_GRACE_TICKS;
+
+    let Some(query) = state.mine_query else {
+        return Some(None);
+    };
+    let mut most_threatened = None;
     for mine in owned {
-        for cell in [mine.gather_cell, mine.build_cell] {
-            local_mines.entry(cell).or_insert(mine.id);
-        }
-    }
-    let entities = state
-        .bots
-        .iter()
-        .map(|bot| (bot.owner, bot.position, bot.health))
-        .chain(state.structures.iter().map(|structure| {
-            let health = if structure.kind == StructureKind::Planned {
-                0
-            } else {
-                structure.health
-            };
-            (structure.owner, structure.position, health)
-        }));
-    for (other, position, health) in entities {
-        if !budget.spend(1) {
-            return None;
-        }
-        if other == owner || health == 0 {
+        let deposit = find_deposit(mine.id, state, budget).ok()??;
+        let cells = [mine.gather_cell, mine.build_cell];
+        let observation = query(
+            owner,
+            deposit,
+            MineObservationAt::Defense(cells),
+            &mut || budget.spend(1),
+        )?;
+        let pressure = observation.pressure;
+        let damage = pressure.recent_damage.into_iter().sum::<u64>();
+        let hostile_denial =
+            pressure
+                .ticks_since_attack_during_presence
+                .is_some_and(|since_attack| {
+                    observation
+                        .ticks_since_dropoff
+                        .is_none_or(|since_delivery| since_delivery >= since_attack)
+                });
+        let disrupted = hostile_denial
+            || pressure.armed_presence_ticks >= DISRUPTION_TICKS
+                && observation.ticks_since_dropoff.is_some_and(|elapsed| {
+                    elapsed >= DISRUPTION_TICKS
+                        && elapsed <= pressure.armed_presence_ticks + DROPOFF_GRACE_TICKS
+                });
+        if damage == 0 && !disrupted {
             continue;
         }
-        let cell = world_to_intent_cell(position);
-        if let Some(&mine) = local_mines.get(&cell) {
-            return Some((mine, cell));
+        let danger = (
+            pressure.ongoing_damage,
+            disrupted,
+            damage,
+            pressure.armed_defenders,
+        );
+        let importance = (
+            observation.delivered_minerals,
+            observation.completed_dropoffs,
+            observation.active_workers,
+        );
+        let rank = (danger, importance, Reverse(mine.id));
+        if most_threatened.is_none_or(|(best, _)| rank > best) {
+            let target = cells[usize::from(pressure.recent_damage[1] > pressure.recent_damage[0])];
+            most_threatened = Some((rank, (mine.id, target)));
         }
     }
-    None
+    Some(most_threatened.map(|(_, threat)| threat))
 }
 
 fn deposit_access(

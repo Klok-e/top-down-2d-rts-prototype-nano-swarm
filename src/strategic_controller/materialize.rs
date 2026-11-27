@@ -235,6 +235,8 @@ fn keep_spare_build_room(
     desired: &mut HashSet<DesiredIntent>,
     budget: &mut WorkBudget,
 ) {
+    const MAX_SPARE_CELL_WORK: usize = 512;
+
     for origin in origins {
         let mut remaining = allowance;
         for offset in [IVec2::X, -IVec2::X, IVec2::Y, -IVec2::Y] {
@@ -251,17 +253,19 @@ fn keep_spare_build_room(
             }) {
                 continue;
             }
-            if push_desired(
-                desired,
-                owner,
-                DesiredIntent {
-                    cell,
-                    kind: IntentKind::Build,
-                },
-                state,
-                true,
-                budget,
-            ) {
+            if budget.optional_probe(MAX_SPARE_CELL_WORK, |budget| {
+                push_desired(
+                    desired,
+                    owner,
+                    DesiredIntent {
+                        cell,
+                        kind: IntentKind::Build,
+                    },
+                    state,
+                    true,
+                    budget,
+                )
+            }) {
                 remaining -= 1;
             }
         }

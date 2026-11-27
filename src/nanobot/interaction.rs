@@ -84,6 +84,39 @@ impl InteractionRegion {
         Some((min, max, self.center, [inner, inner + 2.0 * STOP_THRESHOLD]))
     }
 
+    pub(crate) fn deposit_work_within_range(self, point: Vec2, range: f32) -> bool {
+        let Some((min, max, center, radii)) = self.deposit_tile_band() else {
+            return false;
+        };
+        let range_squared = range.powi(2);
+        let projected = point.clamp(min, max);
+        if projected.distance_squared(point) > range_squared {
+            return false;
+        }
+        if self.contains(projected) {
+            return true;
+        }
+
+        let direction = (point - center).try_normalize().unwrap_or(Vec2::X);
+        if radii.into_iter().any(|radius| {
+            let contact = center + direction * radius;
+            self.contains(contact) && contact.distance_squared(point) <= range_squared
+        }) {
+            return true;
+        }
+
+        // If the closest radial point is outside the cell, the closest work position
+        // is at the intersection of the work band and the cell's edge.
+        let mut boundary = Vec::new();
+        self.add_tile_boundary_candidates(
+            self.cell.expect("a deposit tile band has a cell"),
+            &mut boundary,
+        );
+        boundary
+            .into_iter()
+            .any(|contact| contact.distance_squared(point) <= range_squared)
+    }
+
     /// True only while the entire body is outside and its surface can reach work.
     pub fn contains(self, position: Vec2) -> bool {
         let (distance, _, _) = self.surface(position);

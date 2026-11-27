@@ -588,7 +588,12 @@ fn mine_at(
     owner: SwarmId,
     deposit: Vec2,
     observation: MineObservation,
-) -> impl Fn(SwarmId, &DepositState, IVec2, &mut dyn FnMut() -> bool) -> Option<MineObservation> {
+) -> impl Fn(
+    SwarmId,
+    &DepositState,
+    MineObservationAt,
+    &mut dyn FnMut() -> bool,
+) -> Option<MineObservation> {
     move |swarm, site, _, allow_work| {
         allow_work().then_some(if owner == swarm && deposit == site.position {
             observation
@@ -3826,6 +3831,21 @@ fn an_undefended_enemy_mine_is_raided_until_arrival_then_can_be_raided_again() {
         ..direct_attack_tuning()
     };
     let decide = |controller: &mut Controller, grid: &IntentGrid, bots: &[BotState], tick| {
+        let mine = mine_at(
+            owner,
+            world(home_mine),
+            MineObservation {
+                pressure: MinePressure {
+                    recent_damage: if tick == 4 * WORK_WINDOW_TICKS {
+                        [10, 0]
+                    } else {
+                        [0; 2]
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
         controller.decide(
             &tuning,
             &GameState {
@@ -3833,6 +3853,7 @@ fn an_undefended_enemy_mine_is_raided_until_arrival_then_can_be_raided_again() {
                 deposits: &deposits,
                 structures: &structures,
                 bots,
+                mine_query: Some(&mine),
                 ..empty_state(grid, tick)
             },
         )
@@ -4137,8 +4158,23 @@ fn military_priorities_protect_expansion_before_attacking_home() {
         strategy_raid_distance_cost: 1_000.0,
         ..direct_attack_tuning()
     };
-    let stocked_source = mine_at(owner, main_deposit.position, saturated_mine());
+    let attacked_mine = MineObservation {
+        pressure: MinePressure {
+            recent_damage: [0, 10],
+            ..Default::default()
+        },
+        ..saturated_mine()
+    };
     let decide = |deposits: &[DepositState], structures: &[StructureState], bots: &[BotState]| {
+        let mine = mine_at(
+            owner,
+            main_deposit.position,
+            if bots.contains(&intruder) {
+                attacked_mine
+            } else {
+                saturated_mine()
+            },
+        );
         Controller::new(owner).decide(
             &tuning,
             &GameState {
@@ -4146,7 +4182,7 @@ fn military_priorities_protect_expansion_before_attacking_home() {
                 deposits,
                 structures,
                 bots,
-                mine_query: Some(&stocked_source),
+                mine_query: Some(&mine),
                 supply: Some(supply_state(&supply_gap(owner, 1.0))),
                 ..empty_state(&grid, 0)
             },
@@ -4311,6 +4347,7 @@ fn military_priorities_protect_expansion_before_attacking_home() {
         health: 20,
         ..raid_target
     };
+    let observed_attack = mine_at(owner, main_deposit.position, attacked_mine);
     let defend = controller.decide(
         &tuning,
         &GameState {
@@ -4318,6 +4355,7 @@ fn military_priorities_protect_expansion_before_attacking_home() {
             deposits: &deposits[..2],
             structures: &[own_source, home_facility, damaged_mine],
             bots: &[intruder],
+            mine_query: Some(&observed_attack),
             ..empty_state(&grid, WORK_WINDOW_TICKS)
         },
     );
