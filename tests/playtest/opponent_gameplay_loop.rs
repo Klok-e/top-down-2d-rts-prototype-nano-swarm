@@ -362,6 +362,89 @@ fn destroying_the_last_inactive_facility_wins_while_a_distant_worker_survives() 
 }
 
 #[test]
+fn strategic_front_withdraws_when_required_mine_review_cannot_finish() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        ZONE_BLOCK_SIZE, strategic_runtime::ControllerTelemetry, terrain::RockFormation,
+    };
+
+    let owner = SwarmId::PLAYER;
+    let home = IVec2::ZERO;
+    let mine_cell = IVec2::new(7, 0);
+    let target_cell = IVec2::new(8, 0);
+    let mut app = common::sim_app();
+    app.insert_resource(IntentGrid::new(64, 64))
+        .add_plugins(StrategicControllerPlugin);
+    {
+        let mut tuning = app.world_mut().resource_mut::<Tuning>();
+        tuning.autonomy.strategy_staging_spacing_cells = 64;
+    }
+    install_empty_reachability(&mut app);
+    let home_position = common::cell_world_center(home);
+    let swarm = common::spawn_swarm_with_nanobots(&mut app, home_position, &[]);
+    app.world_mut()
+        .entity_mut(swarm)
+        .insert(StrategicController::new(owner));
+    for _ in 0..4 {
+        common::spawn_stationary_defender_at(&mut app, home_position, owner);
+    }
+    let mine = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: common::cell_world_center(mine_cell),
+            radius: 80.0,
+            amount: 72_000,
+            capacity: 72_000,
+        },
+    );
+    app.world_mut().entity_mut(mine).insert(OwnerSwarm(swarm));
+    let target_position = common::cell_world_center(target_cell);
+    let enemy = common::spawn_opponent_swarm_with_nanobots(&mut app, target_position, &[]);
+    let target = common::spawn_facility_at(&mut app, enemy, target_position);
+    let owns = |app: &App, cell, kind| {
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(cell)
+            .is_some_and(|paint| paint.has_owned(kind, owner))
+    };
+    let explanation = |app: &App| {
+        app.world().resource::<ControllerTelemetry>().profiles()[&owner.0]
+            .last_explanation
+            .clone()
+    };
+
+    app.update();
+    assert!(owns(&app, mine_cell, IntentKind::Gather));
+    assert!(
+        owns(&app, target_cell, IntentKind::Defend),
+        "{}",
+        explanation(&app)
+    );
+    assert!(owns(&app, target_cell, IntentKind::Corridor));
+
+    app.world_mut().despawn(target);
+    app.world_mut().spawn((
+        RockFormation::Rectangle {
+            half: Vec2::new(24.0, ZONE_BLOCK_SIZE * 12.0),
+        },
+        Transform::from_translation(common::cell_world_center(IVec2::new(4, 0)).extend(0.0)),
+    ));
+    app.update();
+
+    let withdrawal = explanation(&app);
+    assert!(
+        withdrawal.contains("planning allowance exhausted while reviewing owned Resource Deposits"),
+        "{withdrawal}"
+    );
+    assert!(!owns(&app, target_cell, IntentKind::Defend), "{withdrawal}");
+    assert!(!owns(&app, target_cell, IntentKind::Corridor));
+    for kind in [IntentKind::Build, IntentKind::Defend, IntentKind::Corridor] {
+        assert!(owns(&app, home, kind));
+    }
+    assert!(owns(&app, mine_cell, IntentKind::Gather));
+    assert!(owns(&app, mine_cell, IntentKind::Corridor));
+}
+
+#[test]
 fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforcements() {
     use std::time::Duration;
 
