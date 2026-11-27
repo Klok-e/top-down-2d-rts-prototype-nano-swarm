@@ -17,6 +17,34 @@ use top_down_2d_rts_prototype_nano_swarm::{
     strategic_runtime::{StrategicController, StrategicControllerPlugin},
 };
 
+fn spawnable_crew(
+    owner: SwarmId,
+    home: Vec2,
+) -> [top_down_2d_rts_prototype_nano_swarm::strategic_controller::BotState; 3] {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::NanobotType, strategic_controller::BotState,
+    };
+
+    let crew = [
+        NanobotType::Worker,
+        NanobotType::Worker,
+        NanobotType::Hauler,
+    ];
+    std::array::from_fn(|id| BotState {
+        id: id as u64,
+        owner,
+        kind: crew[id],
+        position: home,
+        health: 100,
+        max_health: 100,
+        charge: 0.0,
+        max_charge: 0.0,
+        cargo: 0,
+        displacement: Vec2::ZERO,
+        defender_duty: Default::default(),
+    })
+}
+
 fn apply_decision(grid: &mut IntentGrid, owner: SwarmId, decision: &Decision) {
     for edit in &decision.edits {
         match edit.action {
@@ -369,14 +397,17 @@ fn strategic_adapter_connects_the_deposit_to_home_around_rock() {
     };
     let rock_transform =
         Transform::from_translation(common::cell_world_center(IVec2::ZERO).extend(0.0));
-    app.world_mut().spawn((
-        Swarm {},
-        owner,
-        Transform::from_translation(home.extend(0.0)),
-        StrategicController::new(owner),
-    ));
+    let swarm = app
+        .world_mut()
+        .spawn((
+            Swarm {},
+            owner,
+            Transform::from_translation(home.extend(0.0)),
+            StrategicController::new(owner),
+        ))
+        .id();
     app.world_mut().spawn((rock, rock_transform));
-    common::spawn_deposit(
+    let deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
             world_pos: common::cell_world_center(deposit_cell),
@@ -384,6 +415,9 @@ fn strategic_adapter_connects_the_deposit_to_home_around_rock() {
             capacity: 72_000,
             radius: 80.0,
         },
+    );
+    app.world_mut().entity_mut(deposit).insert(
+        top_down_2d_rts_prototype_nano_swarm::nanobot::OwnerSwarm(swarm),
     );
     let reachability = SwarmReachabilityMap::new(
         app.world().resource::<IntentGrid>(),
@@ -418,21 +452,26 @@ fn strategic_adapter_connects_the_deposit_to_home_around_rock() {
 
 #[test]
 fn strategic_adapter_contests_a_deposit_when_a_hostile_worker_moves_toward_it() {
-    use top_down_2d_rts_prototype_nano_swarm::{nanobot::SwarmMember, tuning::Tuning};
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{NanobotType, SwarmMember},
+        tuning::Tuning,
+    };
 
     let mut app = common::minimal_app();
     app.insert_resource(IntentGrid::new(16, 16));
     app.add_plugins(StrategicControllerPlugin);
-    let owner = SwarmId(7);
     let enemy = SwarmId(9);
     let deposit = IVec2::new(5, 0);
     let deposit_position = common::cell_world_center(deposit);
-    app.world_mut().spawn((
-        Swarm {},
-        owner,
-        Transform::default(),
-        StrategicController::new(owner),
-    ));
+    let swarm = common::spawn_opponent_swarm_with_nanobots(
+        &mut app,
+        Vec2::ZERO,
+        &[(NanobotType::Worker, 2), (NanobotType::Hauler, 1)],
+    );
+    let owner = *app.world().get::<SwarmId>(swarm).unwrap();
+    app.world_mut()
+        .entity_mut(swarm)
+        .insert(StrategicController::new(owner));
     install_empty_reachability(&mut app, [owner]);
     common::spawn_deposit(
         &mut app,
@@ -481,14 +520,17 @@ fn controller_telemetry_counts_invalidation_checks_between_reviews() {
     let mut app = common::minimal_app();
     app.add_plugins(StrategicControllerPlugin);
     let owner = SwarmId(7);
-    app.world_mut().spawn((
-        Swarm {},
-        owner,
-        Transform::default(),
-        StrategicController::new(owner),
-    ));
+    let swarm = app
+        .world_mut()
+        .spawn((
+            Swarm {},
+            owner,
+            Transform::default(),
+            StrategicController::new(owner),
+        ))
+        .id();
     install_empty_reachability(&mut app, [owner]);
-    common::spawn_deposit(
+    let deposit = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
             world_pos: common::cell_world_center(IVec2::new(-1, -1)),
@@ -496,6 +538,9 @@ fn controller_telemetry_counts_invalidation_checks_between_reviews() {
             capacity: 72_000,
             radius: 80.0,
         },
+    );
+    app.world_mut().entity_mut(deposit).insert(
+        top_down_2d_rts_prototype_nano_swarm::nanobot::OwnerSwarm(swarm),
     );
     app.update();
     let initial = app.world().resource::<ControllerTelemetry>().profiles()[&owner.0].clone();
@@ -549,6 +594,7 @@ fn controller_eventually_erases_stale_owned_intent_after_large_foreign_prefix() 
                 reachability: None,
                 route_query: None,
                 mine_query: None,
+                supply: None,
                 build_footprints: &[],
                 tick: review * 30,
                 finished: false,
@@ -589,10 +635,11 @@ fn controller_reviews_immediately_when_an_owned_deposit_is_exhausted() {
         minerals: 0,
         mineral_income_per_second: 0.0,
     }];
+    let bots = spawnable_crew(owner, swarms[0].home);
     let deposits = [
         DepositState {
             id: 20,
-            owner: None,
+            owner: Some(owner),
             position: world(IVec2::new(2, 0)),
             amount: 1_000,
             radius: 100.0,
@@ -611,7 +658,7 @@ fn controller_reviews_immediately_when_an_owned_deposit_is_exhausted() {
         &GameState {
             grid: &grid,
             swarms: &swarms,
-            bots: &[],
+            bots: &bots,
             structures: &[],
             deposits: &deposits,
             terrain: &[],
@@ -619,6 +666,7 @@ fn controller_reviews_immediately_when_an_owned_deposit_is_exhausted() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 0,
             finished: false,
@@ -638,7 +686,7 @@ fn controller_reviews_immediately_when_an_owned_deposit_is_exhausted() {
         &GameState {
             grid: &grid,
             swarms: &swarms,
-            bots: &[],
+            bots: &bots,
             structures: &[],
             deposits: &depleted,
             terrain: &[],
@@ -646,6 +694,7 @@ fn controller_reviews_immediately_when_an_owned_deposit_is_exhausted() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 1,
             finished: false,
@@ -714,6 +763,7 @@ fn controller_urgently_replans_when_key_support_is_lost() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 0,
             finished: false,
@@ -734,6 +784,7 @@ fn controller_urgently_replans_when_key_support_is_lost() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 1,
             finished: false,
@@ -805,13 +856,15 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
         max_health: 100,
         minerals: 25,
     };
+    let [worker, builder, hauler] = spawnable_crew(owner, swarms[0].home);
+    let bots = [remnant, worker, builder, hauler];
     let mut controller = Controller::new(owner);
     let initial = controller.decide(
         &top_down_2d_rts_prototype_nano_swarm::tuning::AutonomyTuning::default(),
         &GameState {
             grid: &grid,
             swarms: &swarms,
-            bots: &[remnant],
+            bots: &bots,
             structures: &[charger],
             deposits: &deposit,
             terrain: &[],
@@ -819,6 +872,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 0,
             finished: false,
@@ -843,7 +897,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
         &GameState {
             grid: &grid,
             swarms: &swarms,
-            bots: &[remnant],
+            bots: &bots,
             structures: &crowded_structures,
             deposits: &deposit,
             terrain: &[],
@@ -851,6 +905,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 1,
             finished: false,
@@ -891,6 +946,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 2,
             finished: false,
@@ -940,6 +996,7 @@ fn strategic_adapter_waits_for_mine_saturation_despite_a_stocked_source() {
             },
         )
     });
+    app.world_mut().entity_mut(mine).insert(OwnerSwarm(swarm));
     let source = common::spawn_stockpile(&mut app, opening_position + Vec2::Y * 300.0, 59, 60);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
 
@@ -965,34 +1022,29 @@ fn strategic_adapter_waits_for_mine_saturation_despite_a_stocked_source() {
     );
 }
 
+#[derive(Clone, Copy)]
+enum Deliveries {
+    Ongoing,
+    OtherSwarm,
+    OtherMine,
+    Stall,
+    Burst,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SupplySituation {
+    Shortfall,
+    HealthyReserve,
+    AdequateFlow,
+    BriefSpendingIncrease,
+    CommittedWorker,
+    CommittedHauler,
+    DeliveryBottleneck,
+    BufferedConsumption,
+}
+
 #[test]
 fn strategic_adapter_uses_sustained_local_dropoffs_and_reachable_source_capacity() {
-    use top_down_2d_rts_prototype_nano_swarm::{
-        nanobot::{
-            Cargo, ExtractProgress, GatherAssignment, InteractionRegion, LogisticsReservation,
-            NanobotType, OwnerSwarm, ReturningToStockpile, SwarmMember,
-            worker_gather_delivery_system,
-        },
-        resources::Stockpile,
-        terrain::RockFormation,
-        tuning::Tuning,
-    };
-
-    enum Deliveries {
-        Ongoing,
-        OtherSwarm,
-        OtherMine,
-        Stall,
-        Burst,
-    }
-
-    let owner = SwarmId::PLAYER;
-    let foreign = SwarmId(3);
-    let home = common::cell_world_center(IVec2::ZERO);
-    let opening = IVec2::new(2, 0);
-    let expansion = IVec2::new(0, 5);
-    let deposit_position = common::cell_world_center(opening);
-    let source_position = deposit_position + Vec2::new(-100.0, 340.0);
     for (capacity, deliveries, split_work_ring, should_expand) in [
         (4, Deliveries::Ongoing, false, true),
         (4, Deliveries::Ongoing, true, true),
@@ -1002,171 +1054,409 @@ fn strategic_adapter_uses_sustained_local_dropoffs_and_reachable_source_capacity
         (4, Deliveries::Stall, false, false),
         (4, Deliveries::Burst, false, false),
     ] {
-        let delivery_owner = if matches!(deliveries, Deliveries::OtherSwarm) {
-            foreign
-        } else {
-            owner
-        };
-        let mut app = common::minimal_app();
-        app.insert_resource(IntentGrid::new(16, 16))
-            .add_plugins(StrategicControllerPlugin)
-            .add_systems(FixedUpdate, worker_gather_delivery_system);
-        app.world_mut()
-            .resource_mut::<Tuning>()
-            .logistics
-            .source_proximity_radius = 300.0;
-        let swarm = common::spawn_swarm_with_nanobots(
-            &mut app,
-            home,
-            &[(NanobotType::Worker, 4), (NanobotType::Hauler, 3)],
+        review_expansion(
+            capacity,
+            deliveries,
+            split_work_ring,
+            SupplySituation::Shortfall,
+            should_expand,
         );
-        app.world_mut()
-            .entity_mut(swarm)
-            .insert(StrategicController::new(owner));
-        let foreign_home = Vec2::new(-2000.0, 0.0);
-        let foreign_swarm = app
-            .world_mut()
-            .spawn((
-                Swarm {},
-                foreign,
-                Transform::from_translation(foreign_home.extend(0.0)),
-            ))
-            .id();
-        let mut obstacles = Vec::new();
-        if split_work_ring {
-            let rock = RockFormation::Rectangle {
-                half: Vec2::new(22.0, 5000.0),
-            };
-            let transform = Transform::from_translation(deposit_position.extend(0.0));
-            obstacles.push(rock.obstacle(&transform));
-            app.world_mut().spawn((rock, transform));
-            common::spawn_stockpile(&mut app, deposit_position + Vec2::X * 160.0, 0, 60);
-        }
-        let reachability = SwarmReachabilityMap::new(
-            app.world().resource::<IntentGrid>(),
-            obstacles,
-            [(owner, home), (foreign, foreign_home)],
-        )
-        .unwrap();
-        app.insert_resource(reachability);
+    }
+}
 
-        let [mine, _] = [opening, expansion].map(|cell| {
-            common::spawn_deposit(
-                &mut app,
-                common::DepositFixture {
-                    world_pos: common::cell_world_center(cell),
-                    amount: 72_000,
-                    capacity: 72_000,
-                    radius: 64.0,
-                },
-            )
-        });
-        let second_mine = common::spawn_deposit(
+#[test]
+fn strategic_adapter_defers_expansion_when_reserves_are_healthy() {
+    review_expansion(
+        4,
+        Deliveries::Ongoing,
+        false,
+        SupplySituation::HealthyReserve,
+        false,
+    );
+}
+
+#[test]
+fn strategic_adapter_defers_expansion_when_income_already_covers_spending() {
+    review_expansion(
+        4,
+        Deliveries::Ongoing,
+        false,
+        SupplySituation::AdequateFlow,
+        false,
+    );
+}
+
+#[test]
+fn strategic_adapter_defers_expansion_after_a_brief_spending_increase() {
+    review_expansion(
+        4,
+        Deliveries::Ongoing,
+        false,
+        SupplySituation::BriefSpendingIncrease,
+        false,
+    );
+}
+
+#[test]
+fn strategic_adapter_defers_expansion_when_workers_are_committed() {
+    review_expansion(
+        4,
+        Deliveries::Ongoing,
+        false,
+        SupplySituation::CommittedWorker,
+        false,
+    );
+}
+
+#[test]
+fn strategic_adapter_defers_expansion_when_haulers_are_committed() {
+    review_expansion(
+        4,
+        Deliveries::Ongoing,
+        false,
+        SupplySituation::CommittedHauler,
+        false,
+    );
+}
+
+#[test]
+fn strategic_adapter_keeps_existing_supply_supported_during_delivery_bottlenecks() {
+    review_expansion(
+        4,
+        Deliveries::Ongoing,
+        false,
+        SupplySituation::DeliveryBottleneck,
+        false,
+    );
+}
+
+#[test]
+fn strategic_adapter_requires_haul_activity_to_confirm_delivery() {
+    review_expansion(
+        4,
+        Deliveries::Ongoing,
+        false,
+        SupplySituation::BufferedConsumption,
+        false,
+    );
+}
+
+fn review_expansion(
+    capacity: u32,
+    deliveries: Deliveries,
+    split_work_ring: bool,
+    supply: SupplySituation,
+    should_expand: bool,
+) {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{
+            ActionableProjection, Cargo, Charge, Charger, ChargerAssignment, ChargerProgress,
+            ChargerPulseProgress, ExtractProgress, GatherAssignment, GatherQuotas, HaulQuotas,
+            HaulerLoading, InteractionRegion, LogisticsReservation, MaintenanceAssignment,
+            NanobotType, OwnerSwarm, PopulationDemandPlugin, ProductionFacility,
+            ReturningToStockpile, SwarmMember, TerritorySnapshot, defender_charger_work_system,
+            gather_quota_system, project_territory_snapshot_system, worker_gather_delivery_system,
+        },
+        resources::Stockpile,
+        terrain::RockFormation,
+        tuning::Tuning,
+    };
+
+    let owner = SwarmId::PLAYER;
+    let foreign = SwarmId(3);
+    let home = common::cell_world_center(IVec2::ZERO);
+    let opening = IVec2::new(2, 0);
+    let expansion = IVec2::new(0, 5);
+    let deposit_position = common::cell_world_center(opening);
+    let source_position = deposit_position + Vec2::new(-100.0, 340.0);
+    let delivery_owner = if matches!(deliveries, Deliveries::OtherSwarm) {
+        foreign
+    } else {
+        owner
+    };
+    let mut app = common::minimal_app();
+    app.insert_resource(IntentGrid::new(16, 16))
+        .init_resource::<ActionableProjection>()
+        .init_resource::<TerritorySnapshot>()
+        .add_plugins((StrategicControllerPlugin, PopulationDemandPlugin))
+        .add_systems(
+            FixedUpdate,
+            (
+                project_territory_snapshot_system.before(gather_quota_system),
+                worker_gather_delivery_system,
+                defender_charger_work_system,
+            ),
+        );
+    let mut tuning = app.world_mut().resource_mut::<Tuning>();
+    tuning.logistics.source_proximity_radius = 300.0;
+    tuning.logistics.hauler_transfer_per_pulse = 2;
+    tuning.production.cost_per_bot = 5;
+    tuning.production.ticks_per_bot = 120;
+    tuning.production.reserve_seconds = 10.0;
+    tuning.charge.drain_per_tick = 0.0;
+    tuning.charge.pulse_interval_ticks = 1;
+    tuning.charge.material_per_pulse = 2;
+    if matches!(
+        supply,
+        SupplySituation::AdequateFlow | SupplySituation::BriefSpendingIncrease
+    ) {
+        tuning.production.ticks_per_bot = 1200;
+    }
+    let committed_worker = matches!(supply, SupplySituation::CommittedWorker);
+    let committed_haulers = matches!(supply, SupplySituation::CommittedHauler);
+    let swarm = common::spawn_swarm_with_nanobots(
+        &mut app,
+        home,
+        &[
+            (NanobotType::Worker, if committed_worker { 2 } else { 3 }),
+            (NanobotType::Hauler, if committed_haulers { 2 } else { 4 }),
+        ],
+    );
+    app.world_mut()
+        .entity_mut(swarm)
+        .insert(StrategicController::new(owner));
+    let foreign_home = Vec2::new(-2000.0, 0.0);
+    let foreign_swarm = app
+        .world_mut()
+        .spawn((
+            Swarm {},
+            foreign,
+            Transform::from_translation(foreign_home.extend(0.0)),
+        ))
+        .id();
+    let mut obstacles = Vec::new();
+    if split_work_ring {
+        let rock = RockFormation::Rectangle {
+            half: Vec2::new(22.0, 5000.0),
+        };
+        let transform = Transform::from_translation(deposit_position.extend(0.0));
+        obstacles.push(rock.obstacle(&transform));
+        app.world_mut().spawn((rock, transform));
+        common::spawn_stockpile(&mut app, deposit_position + Vec2::X * 160.0, 0, 60);
+    }
+    let reachability = SwarmReachabilityMap::new(
+        app.world().resource::<IntentGrid>(),
+        obstacles,
+        [(owner, home), (foreign, foreign_home)],
+    )
+    .unwrap();
+    app.insert_resource(reachability);
+
+    let [mine, ..] = [opening, expansion, IVec2::new(5, 4)].map(|cell| {
+        common::spawn_deposit(
             &mut app,
             common::DepositFixture {
-                world_pos: deposit_position + Vec2::Y * 430.0,
+                world_pos: common::cell_world_center(cell),
                 amount: 72_000,
                 capacity: 72_000,
                 radius: 64.0,
             },
-        );
-        app.world_mut()
-            .entity_mut(second_mine)
-            .insert(OwnerSwarm(foreign_swarm));
-        let source = common::spawn_stockpile(&mut app, source_position, capacity - 4, capacity);
-        let source_region =
-            InteractionRegion::structure(app.world().get::<Transform>(source).unwrap());
-        let deposit_approach = InteractionRegion::deposit(
-            &Transform::from_translation(deposit_position.extend(0.0)),
-            64.0,
         )
-        .approach(source_position);
-        let worker = common::spawn_worker_at(&mut app, deposit_approach);
-        let other_deposit = matches!(deliveries, Deliveries::OtherMine);
-        let delivery_worker = if delivery_owner == owner && !other_deposit {
-            worker
-        } else {
-            let entity =
-                common::spawn_worker_at(&mut app, source_region.approach(deposit_position));
+    });
+    app.world_mut().entity_mut(mine).insert(OwnerSwarm(swarm));
+    app.world_mut().spawn((
+        ProductionFacility {
+            demand_waiting: true,
+            ..ProductionFacility::new()
+        },
+        OwnerSwarm(swarm),
+        Transform::from_translation((home - Vec2::X * 160.0).extend(0.0)),
+    ));
+    let charger = common::spawn_charger(
+        &mut app,
+        common::ChargerFixture {
+            cell: IVec2::ZERO,
+            amount: 0,
+            ticks_since_maintained: 0,
+        },
+    );
+    app.world_mut()
+        .entity_mut(charger)
+        .insert(OwnerSwarm(swarm));
+    app.world_mut()
+        .resource_mut::<IntentGrid>()
+        .paint(IVec2::ZERO, IntentKind::Defend, owner);
+    let charger_region =
+        InteractionRegion::structure(app.world().get::<Transform>(charger).unwrap());
+    let defender = common::spawn_stationary_defender_at(
+        &mut app,
+        charger_region.approach(home + Vec2::Y * 160.0),
+        owner,
+    );
+    if matches!(supply, SupplySituation::HealthyReserve) {
+        let sink = common::spawn_sink_stockpile(&mut app, home - Vec2::Y * 180.0, 100, 120);
+        app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
+    }
+    let world = app.world_mut();
+    if committed_worker {
+        let worker = world
+            .query::<(Entity, &NanobotType)>()
+            .iter(world)
+            .find_map(|(entity, kind)| (*kind == NanobotType::Worker).then_some(entity))
+            .unwrap();
+        world.entity_mut(worker).insert(MaintenanceAssignment {
+            cell: IVec2::ZERO,
+            target: charger,
+        });
+    }
+    let in_transit_haulers: Vec<_> = {
+        world
+            .query::<(Entity, &NanobotType)>()
+            .iter(world)
+            .filter_map(|(entity, kind)| (*kind == NanobotType::Hauler).then_some(entity))
+            .take(match supply {
+                SupplySituation::CommittedHauler => 2,
+                SupplySituation::BufferedConsumption => 0,
+                _ => 1,
+            })
+            .collect()
+    };
+    for hauler in in_transit_haulers {
+        world.entity_mut(hauler).insert(HaulerLoading);
+    }
+
+    let second_mine = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: deposit_position + Vec2::Y * 430.0,
+            amount: 72_000,
+            capacity: 72_000,
+            radius: 64.0,
+        },
+    );
+    app.world_mut()
+        .entity_mut(second_mine)
+        .insert(OwnerSwarm(foreign_swarm));
+    let source = common::spawn_stockpile(&mut app, source_position, capacity - 4, capacity);
+    let source_region = InteractionRegion::structure(app.world().get::<Transform>(source).unwrap());
+    let deposit_approach = InteractionRegion::deposit(
+        &Transform::from_translation(deposit_position.extend(0.0)),
+        64.0,
+    )
+    .approach(source_position);
+    let worker = common::spawn_worker_at(&mut app, deposit_approach);
+    let other_deposit = matches!(deliveries, Deliveries::OtherMine);
+    let delivery_worker = if delivery_owner == owner && !other_deposit {
+        worker
+    } else {
+        let entity = common::spawn_worker_at(&mut app, source_region.approach(deposit_position));
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(SwarmMember::new(delivery_owner));
+        entity
+    };
+    let origin = if other_deposit { second_mine } else { mine };
+    let mut transfers = 0;
+    let mut feeding_terminal = false;
+    for tick in 0..1560 {
+        if tick == 1350 && matches!(supply, SupplySituation::BriefSpendingIncrease) {
             app.world_mut()
-                .entity_mut(entity)
-                .insert(SwarmMember::new(delivery_owner));
-            entity
+                .resource_mut::<Tuning>()
+                .production
+                .ticks_per_bot = 120;
+        }
+        let active_claim = LogisticsReservation::new(mine, source, ResourceKind::Minerals, 4);
+        app.world_mut().entity_mut(worker).insert((
+            GatherAssignment::new(opening, mine),
+            ExtractProgress::default(),
+            active_claim,
+            Transform::from_translation(deposit_approach.extend(0.0)),
+        ));
+        let deliver = match deliveries {
+            Deliveries::Burst => matches!(tick, 357 | 362),
+            Deliveries::Stall => tick % 240 == 30 && tick < 300,
+            _ => tick % 240 == 30,
         };
-        let origin = if other_deposit { second_mine } else { mine };
-        let mut transfers = 0;
-        for tick in 0..960 {
-            let active_claim = LogisticsReservation::new(mine, source, ResourceKind::Minerals, 4);
-            app.world_mut().entity_mut(worker).insert((
-                GatherAssignment::new(opening, mine),
-                ExtractProgress::default(),
-                active_claim,
-                Transform::from_translation(deposit_approach.extend(0.0)),
+        if deliver {
+            let mut reservation =
+                LogisticsReservation::new(origin, source, ResourceKind::Minerals, 4);
+            reservation.source_remaining = 0;
+            app.world_mut()
+                .entity_mut(delivery_worker)
+                .insert((
+                    ReturningToStockpile { stockpile: source },
+                    reservation,
+                    Cargo {
+                        kind: ResourceKind::Minerals,
+                        amount: 2,
+                    },
+                    Transform::from_translation(
+                        source_region.approach(deposit_position).extend(0.0),
+                    ),
+                ))
+                .remove::<ExtractProgress>();
+        }
+        if matches!(deliveries, Deliveries::Stall) && tick == 300 {
+            app.world_mut().get_mut::<Stockpile>(source).unwrap().amount = capacity;
+        }
+        if capacity > 4 {
+            app.world_mut().get_mut::<Stockpile>(source).unwrap().amount = 0;
+        }
+        if feeding_terminal {
+            app.world_mut().get_mut::<Charger>(charger).unwrap().amount = 2;
+            let mut defender = app.world_mut().entity_mut(defender);
+            defender.get_mut::<Charge>().unwrap().current = 0.0;
+            defender.insert((
+                ChargerAssignment { charger },
+                ChargerProgress { charger },
+                ChargerPulseProgress::default(),
             ));
-            let deliver = match deliveries {
-                Deliveries::Burst => matches!(tick, 357 | 362),
-                Deliveries::Stall => tick % 120 == 30 && tick < 300,
-                _ => tick % 120 == 30,
-            };
-            if deliver {
-                let mut reservation =
-                    LogisticsReservation::new(origin, source, ResourceKind::Minerals, 4);
-                reservation.source_remaining = 0;
-                app.world_mut()
-                    .entity_mut(delivery_worker)
-                    .insert((
-                        ReturningToStockpile { stockpile: source },
-                        reservation,
-                        Cargo {
-                            kind: ResourceKind::Minerals,
-                            amount: 1,
-                        },
-                        Transform::from_translation(
-                            source_region.approach(deposit_position).extend(0.0),
-                        ),
-                    ))
-                    .remove::<ExtractProgress>();
-            }
-            if matches!(deliveries, Deliveries::Stall) && tick == 300 {
-                app.world_mut().get_mut::<Stockpile>(source).unwrap().amount = capacity;
-            }
-            if capacity > 4 {
-                app.world_mut().get_mut::<Stockpile>(source).unwrap().amount = 0;
-            }
-            app.update();
-            if deliver {
-                let mut stock = app.world_mut().get_mut::<Stockpile>(source).unwrap();
-                assert!(
-                    stock.amount > if capacity == 4 { capacity - 4 } else { 0 },
-                    "the Worker fixture must actually transfer its load to the Source"
-                );
-                transfers += 1;
-                stock.amount -= 1;
-            }
-            let grid = app.world().resource::<IntentGrid>();
+        }
+        app.update();
+        if feeding_terminal {
+            assert_eq!(app.world().get::<Charger>(charger).unwrap().amount, 0);
+        }
+        feeding_terminal = deliver && !matches!(supply, SupplySituation::DeliveryBottleneck);
+        if deliver {
+            let mut stock = app.world_mut().get_mut::<Stockpile>(source).unwrap();
             assert!(
-                grid.cell(opening)
+                stock.amount > if capacity == 4 { capacity - 4 } else { 0 },
+                "the Worker fixture must actually transfer its load to the Source"
+            );
+            transfers += 1;
+            stock.amount -= 2;
+        }
+        let grid = app.world().resource::<IntentGrid>();
+        assert!(
+            grid.cell(opening)
+                .is_some_and(|cell| cell.has_owned(IntentKind::Gather, owner))
+        );
+        let expanded = grid
+            .cell(expansion)
+            .is_some_and(|cell| cell.has_owned(IntentKind::Gather, owner));
+        if expanded {
+            assert!(
+                should_expand,
+                "unexpected claim at tick {tick} with {supply:?}, capacity {capacity}, source deposits from {delivery_owner:?}, other deposit {other_deposit}. Gather: {:?}. Haul: {:?}",
+                app.world().resource::<GatherQuotas>().economy(owner),
+                app.world().resource::<HaulQuotas>().economy(owner),
+            );
+            assert!(tick >= 12 * 60, "the claim needs sustained activity");
+            assert!(
+                grid.cell(expansion - IVec2::Y)
+                    .is_some_and(|cell| cell.has_owned(IntentKind::Build, owner)
+                        && cell.has_owned(IntentKind::Corridor, owner))
+            );
+            assert!(
+                grid.cell(expansion)
+                    .unwrap()
+                    .has_owned(IntentKind::Defend, owner)
+            );
+            assert!(
+                !grid
+                    .cell(IVec2::new(5, 4))
                     .is_some_and(|cell| cell.has_owned(IntentKind::Gather, owner))
             );
-            let expanded = grid
-                .cell(expansion)
-                .is_some_and(|cell| cell.has_owned(IntentKind::Gather, owner));
-            if expanded {
-                assert!(
-                    should_expand && tick >= 12 * 60,
-                    "unexpected claim at tick {tick} with capacity {capacity}, source deposits from {delivery_owner:?}, other deposit {other_deposit}"
-                );
-                break;
-            }
-            if tick == 959 && should_expand {
-                let profiles = app
-                    .world()
-                    .resource::<top_down_2d_rts_prototype_nano_swarm::strategic_runtime::ControllerTelemetry>()
-                    .profiles();
-                panic!(
-                    "one active Worker with {transfers} completed drop-offs can sustain a four-unit reachable Source with its capacity reserved (split work ring {split_work_ring}): {profiles:?}"
-                );
-            }
+            break;
+        }
+        if tick == 1559 && should_expand {
+            let profiles = app
+                .world()
+                .resource::<top_down_2d_rts_prototype_nano_swarm::strategic_runtime::ControllerTelemetry>()
+                .profiles();
+            panic!(
+                "one active Worker with {transfers} completed drop-offs can sustain a four-unit reachable Source with its capacity reserved (split work ring {split_work_ring}): {profiles:?}"
+            );
         }
     }
 }
@@ -1434,6 +1724,7 @@ fn economic_defend_paint_changes_real_defender_population_demand() {
                 reachability: None,
                 route_query: None,
                 mine_query: None,
+                supply: None,
                 build_footprints: &[],
                 tick,
                 finished: false,
@@ -1547,14 +1838,17 @@ mod route_reuse {
         };
         let rock_transform =
             Transform::from_translation(common::cell_world_center(IVec2::ZERO).extend(0.0));
-        app.world_mut().spawn((
-            Swarm {},
-            OWNER,
-            Transform::from_translation(home.extend(0.0)),
-            StrategicController::new(OWNER),
-        ));
+        let swarm = app
+            .world_mut()
+            .spawn((
+                Swarm {},
+                OWNER,
+                Transform::from_translation(home.extend(0.0)),
+                StrategicController::new(OWNER),
+            ))
+            .id();
         app.world_mut().spawn((rock, rock_transform));
-        common::spawn_deposit(
+        let deposit = common::spawn_deposit(
             &mut app,
             common::DepositFixture {
                 world_pos: common::cell_world_center(IVec2::new(3, 0)),
@@ -1562,6 +1856,9 @@ mod route_reuse {
                 capacity: 72_000,
                 radius: 80.0,
             },
+        );
+        app.world_mut().entity_mut(deposit).insert(
+            top_down_2d_rts_prototype_nano_swarm::nanobot::OwnerSwarm(swarm),
         );
         let reachability = SwarmReachabilityMap::new(
             app.world().resource::<IntentGrid>(),
@@ -1666,6 +1963,7 @@ mod route_reuse {
             charge: &DEFAULT_CHARGE,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 0,
             finished: false,

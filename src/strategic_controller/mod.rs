@@ -4,15 +4,15 @@
 //! return edits which the runtime applies only for [`Controller::owner`]. The
 //! module never writes ECS state or chooses work for individual nanobots.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use crate::tuning::{AutonomyTuning, ChargeTuning};
+use crate::tuning::{AutonomyTuning, ChargeTuning, LogisticsTuning};
 
 use bevy::prelude::{IVec2, Vec2};
 
 use crate::{
     intent::{IntentGrid, IntentKind},
-    nanobot::{NanobotType, SwarmId},
+    nanobot::{HaulEconomy, NanobotType, SwarmEconomy, SwarmId},
     navigation::{Obstacle, RouteGoal, RouteOutcome},
     reachability::SwarmReachabilityMap,
 };
@@ -127,6 +127,21 @@ impl MineObservation {
 pub type MineQuery<'a> =
     dyn Fn(SwarmId, &DepositState, IVec2, &mut dyn FnMut() -> bool) -> Option<MineObservation> + 'a;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EconomyObservation {
+    pub gather: SwarmEconomy,
+    pub haul: Option<HaulEconomy>,
+    pub low_reserve_ticks: u64,
+    pub upkeep_workers: u32,
+    pub committed_haulers: u32,
+}
+
+#[derive(Clone, Copy)]
+pub struct SupplyState<'a> {
+    pub economies: &'a BTreeMap<SwarmId, EconomyObservation>,
+    pub logistics: &'a LogisticsTuning,
+}
+
 pub struct GameState<'a> {
     pub grid: &'a IntentGrid,
     pub swarms: &'a [SwarmState],
@@ -140,6 +155,7 @@ pub struct GameState<'a> {
     pub reachability: Option<&'a SwarmReachabilityMap>,
     pub route_query: Option<&'a RouteQuery<'a>>,
     pub mine_query: Option<&'a MineQuery<'a>>,
+    pub supply: Option<SupplyState<'a>>,
     pub tick: u64,
     pub finished: bool,
 }

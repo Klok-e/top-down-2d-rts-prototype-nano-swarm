@@ -15,10 +15,12 @@ use crate::{
     nanobot::{
         Cargo, Charge, Charger, ChargerAssignment, ChargerProgress, ClearingEvacuation, Commitment,
         DefenderDisengagement, DefenderResponse, DefenderRout, DirectMovementComponent,
-        DropOffArea, ExtractProgress, GatherAssignment, Health, InteractionRegion,
-        LogisticsReservation, MatchOutcome, Nanobot, NanobotType, OwnerSwarm, PlannedStructure,
-        ProductionFacility, RegionalAllocationSet, ReturningToStockpile, Structure, Swarm, SwarmId,
-        SwarmMember, WorkBlocked, gather_worker_slots,
+        DropOffArea, ExtractProgress, GatherAssignment, GatherQuotas, HaulQuotas, HaulerAssignment,
+        HaulerLoading, Health, InteractionRegion, LogisticsReservation, MaintenanceAssignment,
+        MaintenanceProgress, MatchOutcome, Nanobot, NanobotType, OwnerSwarm, PlannedStructure,
+        PlannedStructureClaim, PopulationDemand, ProductionFacility, RegionalAllocationSet,
+        ReturningToStockpile, Structure, Swarm, SwarmId, SwarmMember, WorkBlocked,
+        gather_worker_slots,
     },
     navigation::{Navigation, Obstacle, RouteGoal, RouteOutcome},
     reachability::{IntentWriteAction, SwarmReachabilityMap, apply_reachable_intent},
@@ -27,8 +29,8 @@ use crate::{
         buffered_minerals,
     },
     strategic_controller::{
-        BotState, BuildFootprint, Controller, DefenderDuty, DepositState, GameState,
-        IntentEditAction, StructureKind, StructureState, SwarmState,
+        BotState, BuildFootprint, Controller, DefenderDuty, DepositState, EconomyObservation,
+        GameState, IntentEditAction, StructureKind, StructureState, SupplyState, SwarmState,
     },
     terrain::RockFormation,
 };
@@ -188,6 +190,7 @@ struct StrategicObservations {
     previous_positions: HashMap<Entity, Vec2>,
     mines: HashMap<(SwarmId, Entity), MineHistory>,
     active_workers: HashMap<(SwarmId, Entity), u32>,
+    low_reserve_since: BTreeMap<SwarmId, u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -201,7 +204,7 @@ struct SourceObservation {
 }
 
 #[derive(Default, Clone, Copy)]
-struct EconomyObservation {
+struct MineralBuffers {
     banked_minerals: u32,
 }
 
@@ -226,6 +229,12 @@ fn strategic_intent_system(
                 Has<ReturningToStockpile>,
                 Has<DirectMovementComponent>,
                 Has<WorkBlocked>,
+            ),
+            (
+                Has<PlannedStructureClaim>,
+                (Has<MaintenanceAssignment>, Has<MaintenanceProgress>),
+                Has<HaulerAssignment>,
+                Has<HaulerLoading>,
             ),
             (
                 Option<&Commitment>,
@@ -267,11 +276,17 @@ fn strategic_intent_system(
     reachability: Res<SwarmReachabilityMap>,
     navigation: Res<Navigation>,
     time: Res<Time<Fixed>>,
-    outcome: Option<Res<MatchOutcome>>,
+    economy: (
+        Option<Res<MatchOutcome>>,
+        Option<Res<GatherQuotas>>,
+        Option<Res<HaulQuotas>>,
+        Option<Res<PopulationDemand>>,
+    ),
     mut telemetry: ResMut<ControllerTelemetry>,
     mut observations: Local<StrategicObservations>,
     mut income_history: Local<BTreeMap<Entity, MineralIncomeHistory>>,
 ) {
+    let (outcome, gather_quotas, haul_quotas, population_demand) = economy;
     if controllers.is_empty()
         || outcome
             .as_deref()
@@ -284,12 +299,14 @@ fn strategic_intent_system(
         previous_positions,
         mines,
         active_workers,
+        low_reserve_since,
     } = &mut *observations;
     let owners: BTreeMap<_, _> = swarms.iter().map(|(entity, id, _)| (entity, *id)).collect();
     let tick = (time.elapsed_secs_f64() * crate::SIMULATION_HZ).round() as u64;
     income_history.retain(|entity, _| owners.contains_key(entity));
     previous_positions.retain(|entity, _| bots.get(*entity).is_ok());
     active_workers.clear();
+    let mut supply = BTreeMap::<SwarmId, EconomyObservation>::new();
     let mut bot_states: Vec<_> = bots
         .iter()
         .map(
@@ -302,6 +319,7 @@ fn strategic_intent_system(
                 charge,
                 cargo,
                 gathering,
+                (building, maintaining, hauling, loading),
                 (
                     commitment,
                     assigned_charger,
@@ -323,6 +341,18 @@ fn strategic_intent_system(
                     };
                     if let Some(deposit) = deposit.filter(|&deposit| deposits.contains(deposit)) {
                         *active_workers.entry((owner.0, deposit)).or_default() += 1;
+                    }
+                }
+                if health.current > 0 {
+                    let loaded = cargo.is_some_and(|cargo| cargo.amount > 0);
+                    match kind {
+                        NanobotType::Worker if building || maintaining.0 || maintaining.1 => {
+                            supply.entry(owner.0).or_default().upkeep_workers += 1;
+                        }
+                        NanobotType::Hauler if hauling || loading || loaded => {
+                            supply.entry(owner.0).or_default().committed_haulers += 1;
+                        }
+                        _ => {}
                     }
                 }
                 let position = transform.translation.truncate();
@@ -383,7 +413,39 @@ fn strategic_intent_system(
         true
     });
     bot_states.sort_by_key(|bot| bot.id);
-    let mut economies = BTreeMap::<SwarmId, EconomyObservation>::new();
+    low_reserve_since.retain(|owner, _| {
+        gather_quotas
+            .as_ref()
+            .is_some_and(|quotas| quotas.economy(*owner).is_some())
+    });
+    for (_, &owner, _) in &swarms {
+        let entry = supply.entry(owner).or_default();
+        let Some(gather) = gather_quotas
+            .as_ref()
+            .and_then(|quotas| quotas.economy(owner))
+        else {
+            continue;
+        };
+        entry.gather = gather;
+        entry.haul = haul_quotas
+            .as_ref()
+            .and_then(|quotas| quotas.economy(owner));
+        if let Some(demand) = &population_demand {
+            let upkeep = demand
+                .desired_for(owner, NanobotType::Worker)
+                .saturating_sub(gather.gather_quota);
+            entry.upkeep_workers = entry.upkeep_workers.max(upkeep);
+        }
+        if gather.spending_capacity > 0.0
+            && (gather.reserve_target == 0 || gather.reserve_stock < gather.reserve_target)
+        {
+            let since = low_reserve_since.entry(owner).or_insert(tick);
+            entry.low_reserve_ticks = tick.saturating_sub(*since);
+        } else {
+            low_reserve_since.remove(&owner);
+        }
+    }
+    let mut economies = BTreeMap::<SwarmId, MineralBuffers>::new();
     let mut operational_sources = Vec::new();
     let mut build_footprints = Vec::new();
     let mut structure_states: Vec<_> = structures
@@ -607,6 +669,10 @@ fn strategic_intent_system(
         reachability: Some(&reachability),
         route_query: Some(&route_query),
         mine_query: Some(&mine_query),
+        supply: Some(SupplyState {
+            economies: &supply,
+            logistics: &tuning.logistics,
+        }),
         tick,
         finished: false,
     };
