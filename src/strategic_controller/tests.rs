@@ -544,6 +544,7 @@ fn saturated_mine() -> MineObservation {
         has_source: true,
         has_space: true,
         sustained_dropoffs: true,
+        ..Default::default()
     }
 }
 
@@ -551,7 +552,12 @@ fn mine_at(
     owner: SwarmId,
     deposit: Vec2,
     observation: MineObservation,
-) -> impl Fn(SwarmId, &DepositState, IVec2, &mut dyn FnMut() -> bool) -> Option<MineObservation> {
+) -> impl Fn(
+    SwarmId,
+    &DepositState,
+    MineObservationAt,
+    &mut dyn FnMut() -> bool,
+) -> Option<MineObservation> {
     move |swarm, site, _, allow_work| {
         allow_work().then_some(if owner == swarm && deposit == site.position {
             observation

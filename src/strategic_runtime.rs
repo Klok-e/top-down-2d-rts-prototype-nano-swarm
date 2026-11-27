@@ -1,8 +1,10 @@
 //! Read-only world observation and owner-scoped application of strategic intent.
 
+mod mine_pressure;
 mod mines;
 
 use bevy::prelude::*;
+use mine_pressure::MinePressureHistory;
 use mines::MineHistory;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -17,8 +19,8 @@ use crate::{
         DefenderDisengagement, DefenderResponse, DefenderRout, DirectMovementComponent,
         DropOffArea, ExtractProgress, GatherAssignment, Health, InteractionRegion,
         LogisticsReservation, MatchOutcome, Nanobot, NanobotType, OwnerSwarm, PlannedStructure,
-        ProductionFacility, RegionalAllocationSet, ReturningToStockpile, Structure, Swarm, SwarmId,
-        SwarmMember, WorkBlocked, gather_worker_slots,
+        ProductionFacility, RegionalAllocationSet, ResolvedCombatFact, ReturningToStockpile,
+        Structure, Swarm, SwarmId, SwarmMember, WorkBlocked, effective_attack, gather_worker_slots,
     },
     navigation::{Navigation, Obstacle, RouteGoal, RouteOutcome},
     reachability::{IntentWriteAction, SwarmReachabilityMap, apply_reachable_intent},
@@ -28,7 +30,7 @@ use crate::{
     },
     strategic_controller::{
         BotState, BuildFootprint, Controller, DefenderDuty, DepositState, GameState,
-        IntentEditAction, StructureKind, StructureState, SwarmState,
+        IntentEditAction, MineObservationAt, StructureKind, StructureState, SwarmState,
     },
     terrain::RockFormation,
 };
@@ -59,6 +61,7 @@ impl Plugin for StrategicControllerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<crate::tuning::Tuning>()
             .init_resource::<ControllerTelemetry>()
+            .add_message::<ResolvedCombatFact>()
             .add_systems(
                 FixedUpdate,
                 strategic_intent_system
@@ -188,6 +191,7 @@ struct StrategicObservations {
     previous_positions: HashMap<Entity, Vec2>,
     mines: HashMap<(SwarmId, Entity), MineHistory>,
     active_workers: HashMap<(SwarmId, Entity), u32>,
+    mine_pressure: MinePressureHistory,
 }
 
 #[derive(Clone, Copy)]
@@ -266,8 +270,8 @@ fn strategic_intent_system(
     mut grid: ResMut<IntentGrid>,
     reachability: Res<SwarmReachabilityMap>,
     navigation: Res<Navigation>,
-    time: Res<Time<Fixed>>,
-    outcome: Option<Res<MatchOutcome>>,
+    (time, outcome): (Res<Time<Fixed>>, Option<Res<MatchOutcome>>),
+    mut combat: MessageReader<ResolvedCombatFact>,
     mut telemetry: ResMut<ControllerTelemetry>,
     mut observations: Local<StrategicObservations>,
     mut income_history: Local<BTreeMap<Entity, MineralIncomeHistory>>,
@@ -277,6 +281,8 @@ fn strategic_intent_system(
             .as_deref()
             .is_some_and(|outcome| *outcome != MatchOutcome::InProgress)
     {
+        combat.clear();
+        observations.mine_pressure = MinePressureHistory::default();
         return;
     }
     let StrategicObservations {
@@ -284,9 +290,19 @@ fn strategic_intent_system(
         previous_positions,
         mines,
         active_workers,
+        mine_pressure,
     } = &mut *observations;
     let owners: BTreeMap<_, _> = swarms.iter().map(|(entity, id, _)| (entity, *id)).collect();
     let tick = (time.elapsed_secs_f64() * crate::SIMULATION_HZ).round() as u64;
+    if mine_pressure.begin_tick(&owners, tick) {
+        combat.clear();
+    }
+    for fact in combat.read() {
+        if let ResolvedCombatFact::Hit(hit) = fact {
+            mine_pressure.record_hit(tick, *hit);
+        }
+    }
+    mine_pressure.clear_links();
     income_history.retain(|entity, _| owners.contains_key(entity));
     previous_positions.retain(|entity, _| bots.get(*entity).is_ok());
     active_workers.clear();
@@ -323,9 +339,19 @@ fn strategic_intent_system(
                     };
                     if let Some(deposit) = deposit.filter(|&deposit| deposits.contains(deposit)) {
                         *active_workers.entry((owner.0, deposit)).or_default() += 1;
+                        mine_pressure.link_mine_work(entity, deposit);
+                        if let Some(reservation) = reservation.filter(|r| r.source == deposit) {
+                            mine_pressure.link_mine_work(reservation.destination, deposit);
+                        }
                     }
                 }
                 let position = transform.translation.truncate();
+                if *kind == NanobotType::Defender
+                    && health.current > 0
+                    && effective_attack(charge.map_or(0.0, |charge| charge.current), &tuning) > 0.0
+                {
+                    mine_pressure.record_defender(entity, owner.0, position);
+                }
                 let previous = previous_positions
                     .insert(entity, position)
                     .unwrap_or(position);
@@ -510,6 +536,7 @@ fn strategic_intent_system(
         })
         .collect();
     deposit_states.sort_by_key(|deposit| deposit.id);
+    mine_pressure.update_presence(tick, &deposit_states, tuning.combat.attack_range);
     let terrain: Vec<_> = rocks
         .iter()
         .map(|(rock, transform)| rock.obstacle(transform))
@@ -528,7 +555,7 @@ fn strategic_intent_system(
     };
     let mine_query = |owner: SwarmId,
                       deposit: &DepositState,
-                      gather_cell,
+                      location: MineObservationAt,
                       allow_work: &mut dyn FnMut() -> bool| {
         if !allow_work() {
             return None;
@@ -536,6 +563,14 @@ fn strategic_intent_system(
         let (mut observation, delivery_room) = mines
             .get(&(owner, Entity::from_bits(deposit.id)))
             .map_or_else(Default::default, |history| history.recent(tick));
+        let gather_cell = match location {
+            MineObservationAt::Service(gather_cell) => gather_cell,
+            MineObservationAt::Defense(cells) => {
+                observation.pressure =
+                    mine_pressure.observe(tick, owner, deposit, cells, &tuning, allow_work)?;
+                return Some(observation);
+            }
+        };
         let drop_off_area = DropOffArea::for_deposit(deposit.position, deposit.radius, &tuning);
         let deposit_region = InteractionRegion::deposit(
             &Transform::from_translation(deposit.position.extend(0.0)),

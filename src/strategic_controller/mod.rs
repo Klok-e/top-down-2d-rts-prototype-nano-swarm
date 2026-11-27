@@ -113,6 +113,7 @@ pub struct MineObservation {
     pub has_source: bool,
     pub has_space: bool,
     pub sustained_dropoffs: bool,
+    pub pressure: MinePressure,
 }
 
 impl MineObservation {
@@ -123,9 +124,29 @@ impl MineObservation {
     }
 }
 
-/// Recent Worker activity, completed deliveries and reachable Source capacity at a deposit.
-pub type MineQuery<'a> =
-    dyn Fn(SwarmId, &DepositState, IVec2, &mut dyn FnMut() -> bool) -> Option<MineObservation> + 'a;
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MinePressure {
+    /// Resolved damage in the Gather and Build areas, in that order.
+    pub recent_damage: [u64; 2],
+    pub ongoing_damage: u64,
+    pub armed_defenders: u32,
+    pub armed_presence_ticks: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum MineObservationAt {
+    Service(IVec2),
+    Defense([IVec2; 2]),
+}
+
+/// Recent Worker activity and completed deliveries, with Source or hostile observations.
+pub type MineQuery<'a> = dyn Fn(
+        SwarmId,
+        &DepositState,
+        MineObservationAt,
+        &mut dyn FnMut() -> bool,
+    ) -> Option<MineObservation>
+    + 'a;
 
 pub struct GameState<'a> {
     pub grid: &'a IntentGrid,
