@@ -1,8 +1,8 @@
 use super::{
-    economy::plan_economy,
-    materialize::{intent_edits, materialize_plan},
+    economy::{EconomyPlan, choose_claim, observe_contested, plan_economy},
+    materialize::{intent_edits, materialize_plan, world_to_intent_cell},
     raid::RaidForces,
-    staging::plan_staging,
+    staging::{StageFailure, review_staging},
     strategy::{generate_candidates, validate_plan},
     *,
 };
@@ -197,8 +197,8 @@ impl PlannerState {
             };
         }
 
-        let Some(mut economy) =
-            plan_economy(tuning, owner, state, self.current.as_ref(), &mut budget)
+        let Some((mut economy, mut expansion)) =
+            plan_economy(owner, state, self.current.as_ref(), &mut budget)
         else {
             self.tuning_review_requested |= tuning_review;
             self.work_used = budget.used;
@@ -213,111 +213,169 @@ impl PlannerState {
                 work_units: budget.call_work(),
             };
         };
-        let mut denied_deposits = self
-            .denied_deposits
-            .iter()
-            .take_while(|_| budget.spend(1))
-            .filter(|claim| economy.enemy_gather_claims.contains(claim))
-            .copied()
-            .collect();
-        let mut candidates = generate_candidates(
-            tuning,
-            owner,
-            state,
-            &economy,
-            &mut denied_deposits,
-            &mut budget,
-        );
-        let candidate_count = candidates.len();
-        if budget.exhausted
-            || !budget.spend(candidate_count.saturating_mul(candidate_count.ilog2() as usize + 1))
-        {
-            self.tuning_review_requested |= tuning_review;
-            self.work_used = budget.used;
-            return Decision {
-                edits: Vec::new(),
-                explanation: self.describe_active_plan(
-                    "planning allowance exhausted during review, retained the current Intent Plan until the next review window",
-                ),
-                reviewed: true,
-                work_units: budget.call_work(),
-            };
-        }
-        candidates.sort_by(|left, right| {
-            left.objective
-                .priority()
-                .cmp(&right.objective.priority())
-                .then_with(|| left.score.total_cmp(&right.score))
-        });
-        let raid_forces = if candidates
-            .iter()
-            .any(|candidate| candidate.objective.needs_ready_force())
-        {
-            RaidForces::observe(owner, state, self.current.as_ref(), &mut budget)
-        } else {
-            RaidForces::default()
-        };
         let current = self.current.as_ref();
-        let current_raid = current
-            .map(|plan| plan.objective)
-            .filter(|objective| objective.needs_ready_force());
+        let home_candidate = PlanCandidate::hold_home(world_to_intent_cell(expansion.home));
         let mut incumbent_stage = None;
-        let mut secured_mine = None;
-        let mut stage_candidate = |candidate: &PlanCandidate| {
-            if candidate.attack_target.is_none() {
-                return Some(None);
-            }
+        let mut denied_deposits = None;
+        let materialize_home = |economy: &EconomyPlan, budget: &mut WorkBudget| {
+            materialize_plan(&home_candidate, economy, None, owner, state, tuning, budget)
+        };
+        let (plan, mut explanation) = 'review: {
+            let mut fallback = if invalidated || current.is_none() {
+                materialize_home(&economy, &mut budget)
+            } else {
+                None
+            };
+            let defending_mine = economy.threatened.is_some();
             if budget.exhausted
-                || matches!(candidate.objective, Objective::DenyDeposit(id) if secured_mine == Some(id))
+                || !defending_mine
+                    && observe_contested(&mut expansion, &mut economy, owner, state, &mut budget)
+                        .is_none()
             {
-                return None;
+                break 'review with_fallback(
+                    fallback,
+                    "planning allowance exhausted while observing neutral Resource Deposits",
+                );
             }
-            let front = plan_staging(
+            let mut reviewed_denials = self
+                .denied_deposits
+                .iter()
+                .take_while(|_| budget.spend(1))
+                .filter(|claim| economy.enemy_gather_claims.contains(claim))
+                .copied()
+                .collect();
+            let mut candidates = generate_candidates(
                 tuning,
-                candidate,
-                current,
                 owner,
                 state,
-                &raid_forces,
+                &economy,
+                &mut reviewed_denials,
                 &mut budget,
-            )?;
-            if let Objective::DenyDeposit(id) = candidate.objective
-                && !front.waiting_for_readiness()
-                && current
-                    .filter(|plan| plan.objective == candidate.objective)
-                    .and_then(|plan| plan.staging.as_ref())
-                    .is_some_and(|previous| {
-                        previous.point() == front.point()
-                            && previous.destination_secured(
-                                owner,
-                                state,
-                                tuning.strategy_staging_arrival_fraction,
-                                &mut budget,
-                            )
-                    })
+            );
+            let candidate_count = candidates.len();
+            if budget.exhausted
+                || !budget
+                    .spend(candidate_count.saturating_mul(candidate_count.ilog2() as usize + 1))
             {
-                secured_mine = Some(id);
-                return None;
+                break 'review with_fallback(
+                    fallback,
+                    "planning allowance exhausted while comparing objectives",
+                );
             }
-            if current_raid == Some(candidate.objective) && incumbent_stage.is_none() {
-                incumbent_stage = Some(front.clone());
+            candidates.sort_by(|left, right| {
+                left.objective
+                    .priority()
+                    .cmp(&right.objective.priority())
+                    .then_with(|| left.score.total_cmp(&right.score))
+            });
+            let raid_forces = if candidates
+                .iter()
+                .any(|candidate| candidate.objective.needs_ready_force())
+            {
+                RaidForces::observe(owner, state, current, &mut budget)
+            } else {
+                RaidForces::default()
+            };
+            let current_raid = current
+                .map(|plan| plan.objective)
+                .filter(|objective| objective.needs_ready_force());
+            if budget.exhausted {
+                break 'review with_fallback(
+                    fallback,
+                    "planning allowance exhausted while observing raid forces",
+                );
             }
-            Some(Some(front))
-        };
 
-        let (best_index, best_staging) = candidates
-            .iter()
-            .enumerate()
-            .rev()
-            .find_map(|(index, candidate)| {
-                stage_candidate(candidate).map(|staging| (index, staging))
-            })
-            .expect("the home economy is eligible");
-        let best = &candidates[best_index];
+            // Confirm the incumbent's readiness before routing alternatives.
+            let incumbent_index = current_raid.and_then(|objective| {
+                candidates
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .take_while(|_| budget.spend(1))
+                    .find_map(|(index, candidate)| {
+                        (candidate.objective == objective).then_some(index)
+                    })
+            });
+            let mut incumbent_ineligible = false;
+            if let Some(index) = incumbent_index {
+                match review_staging(
+                    tuning,
+                    &candidates[index],
+                    current,
+                    owner,
+                    state,
+                    &raid_forces,
+                    &mut budget,
+                ) {
+                    Ok(front) => incumbent_stage = Some(front),
+                    Err(StageFailure::WorkExhausted) => (),
+                    Err(StageFailure::Ineligible | StageFailure::SustainedReadinessLoss) => {
+                        incumbent_ineligible = true;
+                        if fallback.is_none() {
+                            fallback = materialize_home(&economy, &mut budget);
+                        }
+                    }
+                }
+            }
 
-        let progressing_attack = attack_progressed && !tuning_review;
-        let retained =
-            current
+            let mut secured_mine = None;
+            let mut stage_candidate = |index, candidate: &PlanCandidate| {
+                if candidate.attack_target.is_none() {
+                    return Some(None);
+                }
+                if budget.exhausted
+                    || matches!(candidate.objective, Objective::DenyDeposit(id) if secured_mine == Some(id))
+                {
+                    return None;
+                }
+                let front = if incumbent_index == Some(index) {
+                    incumbent_stage.clone()?
+                } else {
+                    review_staging(
+                        tuning,
+                        candidate,
+                        current,
+                        owner,
+                        state,
+                        &raid_forces,
+                        &mut budget,
+                    )
+                    .ok()?
+                };
+                if let Objective::DenyDeposit(id) = candidate.objective
+                    && !front.waiting_for_readiness()
+                    && current
+                        .filter(|plan| plan.objective == candidate.objective)
+                        .and_then(|plan| plan.staging.as_ref())
+                        .is_some_and(|previous| {
+                            previous.point() == front.point()
+                                && previous.destination_secured(
+                                    owner,
+                                    state,
+                                    tuning.strategy_staging_arrival_fraction,
+                                    &mut budget,
+                                )
+                        })
+                {
+                    secured_mine = Some(id);
+                    return None;
+                }
+                Some(Some(front))
+            };
+
+            let (best_index, best_staging) = candidates
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(index, candidate)| {
+                    stage_candidate(index, candidate).map(|staging| (index, staging))
+                })
+                .expect("the home economy is eligible");
+            let best = &candidates[best_index];
+
+            let progressing_attack = attack_progressed && !tuning_review;
+            let retained = current
                 .filter(|plan| plan.objective.priority() == best.objective.priority())
                 .and_then(|plan| {
                     candidates[..=best_index].iter().enumerate().rev().find_map(
@@ -339,7 +397,7 @@ impl PlannerState {
                             let staging = if index == best_index {
                                 best_staging.clone()
                             } else {
-                                stage_candidate(candidate)?
+                                stage_candidate(index, candidate)?
                             };
                             let waiting = staging
                                 .as_ref()
@@ -348,103 +406,124 @@ impl PlannerState {
                         },
                     )
                 });
-        if let Some(id) = secured_mine {
-            for (deposit, enemy) in &economy.enemy_deposits {
-                if !budget.spend(1) {
-                    break;
-                }
-                if deposit.id == id {
-                    denied_deposits.insert((id, *enemy));
-                    break;
+            if let Some(id) = secured_mine {
+                incumbent_stage = None;
+                for (deposit, enemy) in &economy.enemy_deposits {
+                    if !budget.spend(1) {
+                        break;
+                    }
+                    if deposit.id == id {
+                        reviewed_denials.insert((id, *enemy));
+                        break;
+                    }
                 }
             }
-        }
-        let (selected, staging, mut explanation) = if let Some((retained, staging)) = retained {
-            let label = retained.objective.label();
-            let explanation = if staging
-                .as_ref()
-                .is_some_and(|front| front.waiting_for_readiness())
+            let (selected, staging, explanation) = if let Some((retained, staging)) = retained {
+                let label = retained.objective.label();
+                let explanation = if staging
+                    .as_ref()
+                    .is_some_and(|front| front.waiting_for_readiness())
+                {
+                    format!("held {label} while the raid force recovers")
+                } else if progressing_attack {
+                    format!("retained {label}; attack is progressing")
+                } else if stall_grace {
+                    format!("retained {label}; covered attack is in its stall grace review")
+                } else {
+                    format!("retained viable {label}; no alternative was clearly better")
+                };
+                (retained, staging, explanation)
+            } else {
+                let label = best.objective.label();
+                let explanation = if invalidation.is_some() {
+                    format!("selected {label} after urgent review")
+                } else if current.is_some() {
+                    format!("selected {label} because it is clearly better than the current plan")
+                } else {
+                    format!("selected {label} from economic, support, and combat alternatives")
+                };
+                (best, best_staging, explanation)
+            };
+
+            if budget.exhausted {
+                break 'review with_fallback(
+                    fallback,
+                    "planning allowance exhausted while choosing staging points",
+                );
+            }
+            denied_deposits = Some(reviewed_denials);
+
+            let replace_invalid_plan = invalidated
+                || incumbent_ineligible
+                || current_raid.is_some_and(|objective| {
+                    objective.priority() >= selected.objective.priority()
+                        && incumbent_stage.is_none()
+                });
+            let urgent_defense = matches!(selected.objective, Objective::DefendDeposit(_));
+            // Finish a plan without the optional claim before spending the
+            // remaining allowance on the combined plan.
+            if (urgent_defense || (current.is_some() && replace_invalid_plan))
+                && fallback
+                    .as_ref()
+                    .is_none_or(|plan| plan.objective != selected.objective)
+                && let Some(plan) = materialize_plan(
+                    selected,
+                    &economy,
+                    staging.as_ref(),
+                    owner,
+                    state,
+                    tuning,
+                    &mut budget,
+                )
             {
-                format!("held {label} while the raid force recovers")
-            } else if progressing_attack {
-                format!("retained {label}; attack is progressing")
-            } else if stall_grace {
-                format!("retained {label}; covered attack is in its stall grace review")
+                fallback = Some(plan);
+            }
+            if budget.exhausted {
+                break 'review with_fallback(
+                    fallback,
+                    "planning allowance exhausted during paint fulfillment",
+                );
+            }
+            if defending_mine
+                && observe_contested(&mut expansion, &mut economy, owner, state, &mut budget)
+                    .is_none()
+                || choose_claim(expansion, &mut economy, tuning, owner, state, &mut budget)
+                    .is_none()
+            {
+                break 'review with_fallback(
+                    fallback,
+                    "planning allowance exhausted while reviewing a new Resource Deposit claim",
+                );
+            }
+
+            let plan = if economy.expansion.is_none()
+                && fallback
+                    .as_ref()
+                    .is_some_and(|plan| plan.objective == selected.objective)
+            {
+                fallback.take()
             } else {
-                format!("retained viable {label}; no alternative was clearly better")
+                materialize_plan(
+                    selected,
+                    &economy,
+                    staging.as_ref(),
+                    owner,
+                    state,
+                    tuning,
+                    &mut budget,
+                )
             };
-            (retained, staging, explanation)
-        } else {
-            let label = best.objective.label();
-            let explanation = if let Some(reason) = invalidation {
-                format!("{reason}; selected {label} after urgent review")
-            } else if current.is_some() {
-                format!("selected {label} because it is clearly better than the current plan")
-            } else {
-                format!("selected {label} from economic, support, and combat alternatives")
-            };
-            (best, best_staging, explanation)
+            if plan.is_none() {
+                economy.expansion = None;
+                let reason = if budget.exhausted {
+                    "planning allowance exhausted during paint fulfillment"
+                } else {
+                    "coordinated paint could not be fulfilled within the review limits"
+                };
+                break 'review with_fallback(fallback, reason);
+            }
+            (plan, explanation)
         };
-        if budget.exhausted {
-            self.tuning_review_requested |= tuning_review;
-            self.work_used = budget.used;
-            return Decision {
-                edits: Vec::new(),
-                explanation: self.describe_active_plan(
-                    "planning allowance exhausted while choosing staging points, retained the current Intent Plan until the next review window",
-                ),
-                reviewed: true,
-                work_units: budget.call_work(),
-            };
-        }
-        let mut plan = materialize_plan(
-            selected,
-            &economy,
-            staging.as_ref(),
-            owner,
-            state,
-            tuning,
-            &mut budget,
-        );
-        let replace_invalid_plan = invalidated
-            || current_raid.is_some_and(|objective| {
-                objective.priority() >= selected.objective.priority() && incumbent_stage.is_none()
-            });
-        let urgent_defense = matches!(selected.objective, Objective::DefendDeposit(_));
-        if plan.is_none()
-            && (urgent_defense || (current.is_some() && replace_invalid_plan))
-            && !budget.exhausted
-            && economy.expansion.take().is_some()
-        {
-            plan = materialize_plan(
-                selected,
-                &economy,
-                staging.as_ref(),
-                owner,
-                state,
-                tuning,
-                &mut budget,
-            );
-            explanation.push_str(", deferred the new claim to complete the military plan");
-        }
-        if plan.is_none()
-            && (current.is_none() || replace_invalid_plan)
-            && !budget.exhausted
-            && (selected.objective != Objective::HoldHome || economy.expansion.is_some())
-        {
-            economy.expansion = None;
-            plan = materialize_plan(
-                &PlanCandidate::hold_home(selected.anchor),
-                &economy,
-                None,
-                owner,
-                state,
-                tuning,
-                &mut budget,
-            );
-            explanation =
-                "selected hold the home economy because the proposed paint did not fit".to_string();
-        }
         let Some(selected) = plan else {
             if let Some(held) = self.current.as_mut().and_then(|plan| plan.staging.as_mut())
                 && let Some(reviewed) = incumbent_stage.as_ref()
@@ -455,15 +534,14 @@ impl PlannerState {
             self.work_used = budget.used;
             return Decision {
                 edits: Vec::new(),
-                explanation: self.describe_active_plan(if budget.exhausted {
-                    "planning allowance exhausted during paint fulfillment"
-                } else {
-                    "coordinated paint could not be fulfilled within the review limits"
-                }),
+                explanation: self.describe_active_plan(&explanation),
                 reviewed: true,
                 work_units: budget.call_work(),
             };
         };
+        if let Some(reason) = invalidation {
+            explanation = format!("{reason}; {explanation}");
+        }
         if let Some(id) = lost_deposit {
             explanation.push_str(&format!(
                 ", owned Resource Deposit {id} was exhausted, lost, or unreachable"
@@ -488,7 +566,9 @@ impl PlannerState {
         self.covered_stall_grace_used = self.retained_covered_movement
             && !attack_progressed
             && (stall_grace || self.covered_stall_grace_used);
-        self.denied_deposits = denied_deposits;
+        if let Some(denials) = denied_deposits {
+            self.denied_deposits = denials;
+        }
         if let Some(claim) = economy.expansion {
             if let Some(replacement) = claim.replacement {
                 explanation.push_str(&format!(
@@ -511,4 +591,17 @@ impl PlannerState {
             work_units: budget.call_work(),
         }
     }
+}
+
+fn with_fallback(fallback: Option<IntentPlan>, reason: &str) -> (Option<IntentPlan>, String) {
+    let explanation = fallback.as_ref().map_or_else(
+        || reason.to_string(),
+        |plan| {
+            format!(
+                "{reason}; selected {} without a new claim",
+                plan.objective.label()
+            )
+        },
+    );
+    (fallback, explanation)
 }

@@ -1618,6 +1618,229 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
 }
 
 #[test]
+fn exhausted_reviews_keep_viable_raids_and_remove_invalid_fronts() {
+    use std::cell::Cell;
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::NanobotType,
+        navigation::{Route, RouteGoal, RouteOutcome},
+        strategic_controller::{
+            BotState, Controller, DepositState, GameState, PLANNING_WORK_BUDGET, StructureKind,
+            StructureState, SwarmState,
+        },
+        tuning::AutonomyTuning,
+    };
+
+    let owner = SwarmId::PLAYER;
+    let enemy = SwarmId(9);
+    let home_cell = IVec2::ZERO;
+    let old_target = IVec2::new(8, 0);
+    let replacement = IVec2::new(3, 3);
+    let neutral = IVec2::new(-4, 0);
+    let other_target = common::cell_world_center(IVec2::new(4, -6));
+    let swarms = [
+        SwarmState {
+            id: owner,
+            home: common::cell_world_center(home_cell),
+            minerals: 100,
+            mineral_income_per_second: 0.0,
+        },
+        SwarmState {
+            id: enemy,
+            home: common::cell_world_center(IVec2::new(12, 0)),
+            minerals: 0,
+            mineral_income_per_second: 0.0,
+        },
+    ];
+    let crew = spawnable_crew(owner, swarms[0].home);
+    let defender = BotState {
+        kind: NanobotType::Defender,
+        charge: 1.0,
+        max_charge: 1.0,
+        ..crew[0]
+    };
+    let bots = [
+        crew[0],
+        crew[1],
+        crew[2],
+        BotState { id: 3, ..defender },
+        BotState { id: 4, ..defender },
+    ];
+    let target = StructureState {
+        id: 20,
+        owner: enemy,
+        position: Some(common::cell_world_center(old_target)),
+        kind: StructureKind::Source,
+        operational: true,
+        health: 100,
+        max_health: 100,
+        minerals: 0,
+    };
+    let first_structures = [target];
+    let next_structures = [StructureState {
+        id: 21,
+        position: Some(common::cell_world_center(replacement)),
+        ..target
+    }];
+    let deposits = [DepositState {
+        id: 30,
+        owner: None,
+        position: common::cell_world_center(neutral),
+        amount: 72_000,
+        radius: 80.0,
+    }];
+    let claim_routed = Cell::new(false);
+    let exhausted_calls = Cell::new(0);
+    let exhaust_other_approach = Cell::new(false);
+    let route = |start: Vec2, goal, allow_work: &mut dyn FnMut() -> bool| {
+        if matches!(goal, RouteGoal::Point(_) if claim_routed.get())
+            || matches!(goal, RouteGoal::Range { center, .. } if exhaust_other_approach.get() && center == other_target)
+        {
+            while allow_work() {}
+            exhausted_calls.set(exhausted_calls.get() + 1);
+            return None;
+        }
+        let end = match goal {
+            RouteGoal::Interaction(_) => {
+                claim_routed.set(true);
+                deposits[0].position
+            }
+            RouteGoal::Point(point) | RouteGoal::Range { center: point, .. } => point,
+        };
+        Some(RouteOutcome::Found(Route {
+            waypoints: vec![end],
+            cost: start.distance(end),
+        }))
+    };
+    let tuning = AutonomyTuning {
+        strategy_staging_spacing_cells: 64,
+        ..AutonomyTuning::default()
+    };
+    let review = |controller: &mut Controller,
+                  grid: &IntentGrid,
+                  structures: &[StructureState],
+                  deposits: &[DepositState],
+                  bots: &[BotState],
+                  tick| {
+        claim_routed.set(false);
+        controller.decide(
+            &tuning,
+            &GameState {
+                grid,
+                swarms: &swarms,
+                bots,
+                structures,
+                deposits,
+                terrain: &[],
+                charge: &DEFAULT_CHARGE,
+                reachability: None,
+                route_query: Some(&route),
+                mine_query: None,
+                supply: None,
+                build_footprints: &[],
+                tick,
+                finished: false,
+            },
+        )
+    };
+    let mut controller = Controller::new(owner);
+    let mut grid = IntentGrid::new(64, 64);
+    grid.paint(old_target, IntentKind::Defend, enemy);
+    let holds = |grid: &IntentGrid, cell, kind, swarm| {
+        grid.cell(cell)
+            .is_some_and(|intent| intent.has_owned(kind, swarm))
+    };
+    let initial = review(&mut controller, &grid, &first_structures, &[], &bots, 0);
+    apply_decision(&mut grid, owner, &initial);
+    assert!(holds(&grid, old_target, IntentKind::Defend, owner));
+
+    let period = tuning.controller_review_period_ticks;
+    let retained = review(
+        &mut controller,
+        &grid,
+        &first_structures,
+        &deposits,
+        &bots,
+        period,
+    );
+    assert_eq!(exhausted_calls.get(), 1);
+    assert!(retained.edits.is_empty(), "{}", retained.explanation);
+    assert!(retained.work_units <= PLANNING_WORK_BUDGET);
+
+    let repaired = review(
+        &mut controller,
+        &grid,
+        &next_structures,
+        &deposits,
+        &bots,
+        2 * period,
+    );
+    assert_eq!(exhausted_calls.get(), 2);
+    assert!(repaired.work_units <= PLANNING_WORK_BUDGET);
+    apply_decision(&mut grid, owner, &repaired);
+
+    assert!(
+        holds(&grid, replacement, IntentKind::Defend, owner),
+        "{}",
+        repaired.explanation
+    );
+    assert!(holds(&grid, replacement, IntentKind::Corridor, owner));
+    assert!(holds(&grid, home_cell, IntentKind::Build, owner));
+    assert!(!holds(&grid, old_target, IntentKind::Defend, owner));
+    assert!(holds(&grid, old_target, IntentKind::Defend, enemy));
+    assert!(!holds(&grid, neutral, IntentKind::Gather, owner));
+
+    let guards = [5, 6].map(|id| BotState {
+        id,
+        owner: enemy,
+        position: common::cell_world_center(replacement),
+        ..defender
+    });
+    let guarded_bots = [bots.as_slice(), &guards].concat();
+    let shortfall = review(
+        &mut controller,
+        &grid,
+        &next_structures,
+        &deposits,
+        &guarded_bots,
+        3 * period,
+    );
+    assert_eq!(exhausted_calls.get(), 3);
+    assert!(shortfall.edits.is_empty(), "{}", shortfall.explanation);
+
+    let structures = [
+        next_structures[0],
+        StructureState {
+            id: 22,
+            position: Some(other_target),
+            minerals: 1_000,
+            ..target
+        },
+    ];
+    exhaust_other_approach.set(true);
+    let withdrawn = review(
+        &mut controller,
+        &grid,
+        &structures,
+        &deposits,
+        &guarded_bots,
+        3 * period + 6 * top_down_2d_rts_prototype_nano_swarm::SIMULATION_HZ as u64,
+    );
+    assert_eq!(exhausted_calls.get(), 4);
+    assert!(withdrawn.work_units <= PLANNING_WORK_BUDGET);
+    apply_decision(&mut grid, owner, &withdrawn);
+    assert!(
+        !holds(&grid, replacement, IntentKind::Defend, owner),
+        "{}",
+        withdrawn.explanation
+    );
+    assert!(!holds(&grid, replacement, IntentKind::Corridor, owner));
+    for kind in [IntentKind::Defend, IntentKind::Build, IntentKind::Corridor] {
+        assert!(holds(&grid, home_cell, kind, owner));
+    }
+    assert!(!holds(&grid, neutral, IntentKind::Gather, owner));
+}
+
+#[test]
 fn strategic_adapter_waits_for_mine_saturation_despite_a_stocked_source() {
     use top_down_2d_rts_prototype_nano_swarm::{
         nanobot::{NanobotType, OwnerSwarm},
