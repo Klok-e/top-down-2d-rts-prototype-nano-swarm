@@ -147,7 +147,7 @@ impl PlannerState {
             covered_attack,
             covered_attack_movement,
         } = validation;
-        let replace_invalid_plan = invalidation.is_some() || lost_deposit.is_some();
+        let invalidated = invalidation.is_some() || lost_deposit.is_some();
         let tuning_review = std::mem::take(&mut self.tuning_review_requested);
         let regular_review = tuning_review
             || self.last_review_tick.is_none_or(|last| {
@@ -378,6 +378,11 @@ impl PlannerState {
             tuning,
             &mut budget,
         );
+        let replace_invalid_plan = invalidated
+            || current.is_some_and(|plan| {
+                plan.objective.requires_raid_readiness()
+                    && plan.objective.priority() > selected.objective.priority()
+            });
         let urgent_defense = matches!(selected.objective, Objective::DefendDeposit(_));
         if plan.is_none()
             && (urgent_defense || (current.is_some() && replace_invalid_plan))
@@ -414,6 +419,12 @@ impl PlannerState {
                 "selected hold the home economy because the proposed paint did not fit".to_string();
         }
         let Some(selected) = plan else {
+            if let Some(current) = self.current.as_mut()
+                && current.objective == selected.objective
+                && let Some((held, reviewed)) = current.staging.as_mut().zip(staging.as_ref())
+            {
+                held.observe_readiness_from(reviewed);
+            }
             self.tuning_review_requested |= tuning_review && budget.exhausted;
             self.work_used = budget.used;
             return Decision {

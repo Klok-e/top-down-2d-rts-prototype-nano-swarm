@@ -37,6 +37,10 @@ impl StagingFront {
         self.readiness_shortfall_started.is_some()
     }
 
+    pub(super) fn observe_readiness_from(&mut self, reviewed: &Self) {
+        self.readiness_shortfall_started = reviewed.readiness_shortfall_started;
+    }
+
     pub(super) fn covers(&self, target: IVec2, owner: SwarmId, state: &GameState<'_>) -> bool {
         self.block.contains(target)
             && state
@@ -101,13 +105,18 @@ impl StagingFront {
         budget: &mut WorkBudget,
     ) -> bool {
         let mut arrived = 0;
-        let mut living = 0;
+        let mut assigned = 0;
         for bot in state.bots {
             if !budget.spend(1) {
                 return false;
             }
-            if bot.owner == owner && bot.kind == NanobotType::Defender && bot.health > 0 {
-                living += 1;
+            if bot.owner == owner
+                && bot.kind == NanobotType::Defender
+                && bot.health > 0
+                && let DefenderDuty::StagingAt(destination) = bot.defender_duty
+                && self.covers(destination, owner, state)
+            {
+                assigned += 1;
                 if bot.position.is_finite()
                     && self.covers(world_to_intent_cell(bot.position), owner, state)
                 {
@@ -115,7 +124,7 @@ impl StagingFront {
                 }
             }
         }
-        living > 0 && arrived as f32 >= living as f32 * fraction
+        assigned > 0 && arrived as f32 >= assigned as f32 * fraction
     }
 }
 

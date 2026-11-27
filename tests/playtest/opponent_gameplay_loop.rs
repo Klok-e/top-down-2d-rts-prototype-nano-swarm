@@ -480,12 +480,15 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
 
 #[test]
 fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
-    use std::time::Duration;
+    use std::{collections::HashSet, time::Duration};
 
     use bevy::time::TimeUpdateStrategy;
     use top_down_2d_rts_prototype_nano_swarm::{
         ZONE_BLOCK_SIZE,
-        nanobot::{Charge, PlannedKind, PlannedStructure, Structure, StructureKind},
+        nanobot::{
+            Charge, ChargerAssignment, DefenderStagingAssignments, PlannedKind, PlannedStructure,
+            Structure, StructureKind, world_to_cell,
+        },
         resources::{ResourceKind, ResourceLedger},
         strategic_runtime::ControllerTelemetry,
     };
@@ -540,6 +543,16 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
         },
     );
     app.world_mut().entity_mut(support).insert(OwnerSwarm(own));
+    for index in 0..7 {
+        let charging = common::spawn_stationary_defender_at(
+            &mut app,
+            common::cell_world_center(IVec2::new(-1, 0)) + index as f32 * 40.0 * Vec2::Y,
+            SwarmId::PLAYER,
+        );
+        app.world_mut()
+            .entity_mut(charging)
+            .insert(ChargerAssignment { charger: support });
+    }
     let gather_cell = IVec2::new(-1, -1);
     let deposit = common::spawn_deposit(
         &mut app,
@@ -607,23 +620,46 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
     for _ in 0..review_ticks {
         app.update();
     }
-    let first_stage = {
-        let grid = app.world().resource::<IntentGrid>();
-        let first = grid
-            .iter_active_cells()
-            .find(|(cell, intent)| {
-                cell.x >= 2 && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)
+    let first_block = app
+        .world()
+        .resource::<IntentGrid>()
+        .iter_active_cells()
+        .filter_map(|(cell, intent)| {
+            (cell.x >= 2 && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)).then_some(cell)
+        })
+        .collect::<HashSet<_>>();
+    let first_stage = *first_block
+        .iter()
+        .min_by_key(|cell| (cell.y, cell.x))
+        .expect("a staging block must lead the army");
+    assert!(first_stage.x < target_cell.x && !first_block.contains(&target_cell));
+    let front_force = {
+        let world = app.world_mut();
+        let mut defenders = world.query_filtered::<Entity, With<Nanobot>>();
+        let assignments = world.resource::<DefenderStagingAssignments>();
+        defenders
+            .iter(world)
+            .filter(|&entity| {
+                assignments
+                    .destination(entity)
+                    .is_some_and(|cell| first_block.contains(&cell))
             })
-            .expect("a staging block must lead the army");
-        assert!(first.0.x < target_cell.x);
-        assert!(
-            !grid
-                .cell(target_cell)
-                .unwrap()
-                .has_owned(IntentKind::Defend, SwarmId::PLAYER)
-        );
-        first.0
+            .collect::<Vec<_>>()
     };
+    assert!(
+        (1..8).contains(&front_force.len()),
+        "the front should have a force and leave some available Defenders on rear defense"
+    );
+    let first_arrivals = |world: &World| {
+        front_force
+            .iter()
+            .filter(|&&entity| {
+                let position = world.get::<Transform>(entity).unwrap().translation;
+                first_block.contains(&world_to_cell(position.truncate()))
+            })
+            .count()
+    };
+    assert_eq!(first_arrivals(app.world()), 0);
 
     let build_cells = |app: &App| {
         app.world()
@@ -653,10 +689,24 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
         );
     }
 
+    let mut left_first_stage = false;
     let mut advanced_defenders = 0;
     for _ in 0..5_400 {
         app.update();
         let world = app.world_mut();
+        if !left_first_stage
+            && !world
+                .resource::<IntentGrid>()
+                .cell(first_stage)
+                .unwrap()
+                .has_owned(IntentKind::Defend, SwarmId::PLAYER)
+        {
+            assert!(
+                first_arrivals(world) as f32 >= 0.6 * front_force.len() as f32,
+                "the first block must stay painted until its assigned force arrives"
+            );
+            left_first_stage = true;
+        }
         let target_support = world
             .resource::<IntentGrid>()
             .cell(target_cell)
@@ -678,6 +728,7 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
             break;
         }
     }
+    assert!(left_first_stage, "the assigned force must advance");
     assert_eq!(
         build_cells(&app),
         expected_build,
