@@ -122,10 +122,10 @@ pub struct MineObservation {
     pub completed_dropoffs: u32,
     pub observation_ticks: u64,
     pub ticks_since_dropoff: Option<u64>,
-    pub has_source: bool,
-    pub has_space: bool,
-    /// A current Source interaction or a position where one can be restored.
-    /// None means the snapshot did not assess restoration.
+    /// Physically supported Sources in drop-off range, even during an interruption.
+    pub covered_sources: u32,
+    /// Source viability for the requested service check.
+    /// None means the snapshot did not establish whether service is possible.
     pub source_path: Option<bool>,
     pub sustained_dropoffs: bool,
     pub pressure: MinePressure,
@@ -150,11 +150,18 @@ pub struct MinePressure {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub enum SourceCheck {
+    Existing,
+    Restore,
+    Claim { allow_construction: bool },
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum MineObservationAt<'a> {
     Service {
         gather: IVec2,
         other_gather: &'a [IVec2],
-        check_placement: bool,
+        source_check: SourceCheck,
     },
     Defense([IVec2; 2]),
 }
