@@ -30,6 +30,7 @@ mod planned;
 mod population;
 mod production;
 mod retreat;
+mod sink_payoff;
 mod spread;
 mod sprites;
 mod work_access;
@@ -64,6 +65,7 @@ pub use planned::*;
 pub use population::*;
 pub use production::*;
 pub use retreat::*;
+pub use sink_payoff::{SinkPayoff, sink_break_even_margin};
 pub use spread::*;
 pub use sprites::*;
 

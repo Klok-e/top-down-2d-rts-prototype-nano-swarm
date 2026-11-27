@@ -425,30 +425,31 @@ pub fn find_nearest_defend_zone_placement(
 ) -> Option<(IVec2, Vec2)> {
     let mut cells = defend_cells.to_vec();
     cells.sort_unstable_by_key(|cell| (cell.x, cell.y));
-    DefendLattice::build(&cells, obstacles).find_nearest_accepting(origin, |_| true)
+    SiteLattice::build(&cells, obstacles).find_nearest_accepting(origin, |_| true)
 }
 
-/// Footprint-valid placement sites inside a swarm's Defend cells. It depends
-/// only on the cells and obstacles it was built from, so callers may keep it
-/// until either differs by value.
-pub struct DefendLattice {
+/// Footprint-valid sites for a one-cell support structure inside a set of
+/// intent cells, such as a swarm's Defend cells for Chargers or a facility's
+/// Build cells for its Sink. It depends only on the cells and obstacles it was
+/// built from, so callers may keep it until either differs by value.
+pub struct SiteLattice {
     cells: Vec<IVec2>,
     obstacles: Vec<Obstacle>,
     sites: Vec<(IVec2, Vec2)>,
 }
 
-impl DefendLattice {
-    /// `defend_cells` must be sorted by `(x, y)`.
-    pub fn build(defend_cells: &[IVec2], obstacles: &[Obstacle]) -> Self {
+impl SiteLattice {
+    /// `cells` must be sorted by `(x, y)`.
+    pub fn build(cells: &[IVec2], obstacles: &[Obstacle]) -> Self {
         let side = dense_build_zone_side();
         let candidate_count = side * side;
         let mut sites = Vec::new();
-        for &cell in defend_cells {
+        for &cell in cells {
             let center = crate::ai::get_world_from_zone(cell);
             for index in 0..candidate_count {
                 let pos = dense_build_zone_position(center, side, index);
                 if world_to_cell(pos) == cell
-                    && footprint_inside_zone(pos, CELL_WIDTH / 2.0, defend_cells)
+                    && footprint_inside_zone(pos, CELL_WIDTH / 2.0, cells)
                     && !overlaps_any_obstacle(
                         pos,
                         CELL_WIDTH / 2.0,
@@ -461,14 +462,14 @@ impl DefendLattice {
             }
         }
         Self {
-            cells: defend_cells.to_vec(),
+            cells: cells.to_vec(),
             obstacles: obstacles.to_vec(),
             sites,
         }
     }
 
-    pub fn is_for(&self, defend_cells: &[IVec2], obstacles: &[Obstacle]) -> bool {
-        self.cells == defend_cells && self.obstacles == obstacles
+    pub fn is_for(&self, cells: &[IVec2], obstacles: &[Obstacle]) -> bool {
+        self.cells == cells && self.obstacles == obstacles
     }
 
     /// Visit sites nearest-first and return the first one `accepts` takes.
@@ -550,9 +551,9 @@ mod tests {
     const EPS: f32 = 1e-3;
 
     #[test]
-    fn defend_lattice_visits_sites_nearest_first_and_is_reusable() {
+    fn site_lattice_visits_sites_nearest_first_and_is_reusable() {
         let cells = [IVec2::new(0, 0), IVec2::new(1, 0)];
-        let lattice = DefendLattice::build(&cells, &[]);
+        let lattice = SiteLattice::build(&cells, &[]);
         let origin = Vec2::new(-500.0, 0.0);
         let mut visited = Vec::new();
         let _ = lattice.find_nearest_accepting(origin, |pos| {
@@ -570,10 +571,10 @@ mod tests {
     }
 
     #[test]
-    fn defend_lattice_is_stale_when_cells_or_obstacles_differ() {
+    fn site_lattice_is_stale_when_cells_or_obstacles_differ() {
         let cells = [IVec2::new(0, 0)];
         let obstacle = Obstacle::deposit(Vec2::ZERO, 10.0);
-        let lattice = DefendLattice::build(&cells, &[obstacle]);
+        let lattice = SiteLattice::build(&cells, &[obstacle]);
         assert!(lattice.is_for(&cells, &[obstacle]));
         assert!(!lattice.is_for(&cells, &[]));
         assert!(!lattice.is_for(&[IVec2::new(1, 0)], &[obstacle]));

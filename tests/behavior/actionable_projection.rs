@@ -7,7 +7,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
         PlannedStructure, ProductionFacility, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure,
         StructureKind, SwarmId, SwarmMember,
     },
-    resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole},
+    resources::{ResourceDeposit, ResourceKind, SinkUpkeep, Stockpile, StockpileRole},
 };
 
 #[path = "../common/mod.rs"]
@@ -111,6 +111,44 @@ fn invalid_facility_owner_does_not_project_maintenance() {
             .opportunities(AllocationRegion::for_cell(IVec2::ZERO))
             .iter()
             .all(|opportunity| opportunity.category != OpportunityCategory::Maintenance)
+    );
+}
+
+#[test]
+fn sink_that_stops_paying_its_upkeep_loses_maintenance_work() {
+    let mut app = common::minimal_app_with_actionable_projection();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let mut structure = Structure::new(StructureKind::Basic);
+    structure.ticks_since_maintained =
+        top_down_2d_rts_prototype_nano_swarm::tuning::Tuning::default()
+            .maintenance
+            .needs_threshold;
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(32.0, 32.0), 0, 20);
+    app.world_mut().entity_mut(sink).insert((
+        structure,
+        OwnerSwarm(swarm),
+        SinkUpkeep { pays: true },
+    ));
+    let maintenance = |app: &App| {
+        app.world()
+            .resource::<ActionableProjection>()
+            .opportunities(AllocationRegion::for_cell(IVec2::ZERO))
+            .iter()
+            .filter(|opportunity| {
+                opportunity.target == OpportunityTarget::Maintenance { structure: sink }
+            })
+            .count()
+    };
+
+    app.update();
+    assert_eq!(maintenance(&app), 1, "a paying Sink is maintained");
+
+    app.world_mut().get_mut::<SinkUpkeep>(sink).unwrap().pays = false;
+    app.update();
+    assert_eq!(
+        maintenance(&app),
+        0,
+        "a Sink that repays its Maintenance for no facility is left to decay"
     );
 }
 
@@ -404,18 +442,23 @@ fn haul_opportunity_is_indexed_by_source_region() {
 }
 
 #[test]
-fn haul_projection_only_pairs_adjacent_logistics_tiers() {
+fn haul_projection_fills_paying_sinks_and_feeds_terminals_from_any_stockpile() {
     let mut app = common::minimal_app_with_actionable_projection();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
     let source = common::spawn_stockpile(&mut app, Vec2::new(32.0, 32.0), 20, 20);
     let stocked_sink = common::spawn_sink_stockpile(&mut app, Vec2::new(96.0, 32.0), 20, 20);
     let empty_sink = common::spawn_sink_stockpile(&mut app, Vec2::new(160.0, 32.0), 0, 20);
+    // Room to spare and stock to give: it is still drawn down, never filled.
+    let unpaid_sink = common::spawn_sink_stockpile(&mut app, Vec2::new(224.0, 32.0), 10, 20);
+    app.world_mut()
+        .entity_mut(unpaid_sink)
+        .insert(SinkUpkeep { pays: false });
     let facility = app
         .world_mut()
         .spawn((ProductionFacility::new(), OwnerSwarm(swarm)))
         .id();
     let charger = common::spawn_operational_charger_at(&mut app, IVec2::ZERO, 0);
-    for endpoint in [source, stocked_sink, empty_sink, charger] {
+    for endpoint in [source, stocked_sink, empty_sink, unpaid_sink, charger] {
         app.world_mut()
             .entity_mut(endpoint)
             .insert(OwnerSwarm(swarm));
@@ -433,10 +476,22 @@ fn haul_projection_only_pairs_adjacent_logistics_tiers() {
             _ => None,
         })
         .collect();
-    assert_eq!(haul_pairs.len(), 3, "projected haul pairs: {haul_pairs:?}");
-    assert!(haul_pairs.contains(&(source, empty_sink)));
-    assert!(haul_pairs.contains(&(stocked_sink, facility)));
-    assert!(haul_pairs.contains(&(stocked_sink, charger)));
+    let mut expected = vec![
+        (source, empty_sink),
+        (source, facility),
+        (source, charger),
+        (stocked_sink, facility),
+        (stocked_sink, charger),
+        (unpaid_sink, facility),
+        (unpaid_sink, charger),
+    ];
+    let mut actual = haul_pairs;
+    expected.sort();
+    actual.sort();
+    assert_eq!(
+        actual, expected,
+        "Sinks fill only from Sources and only while they pay; terminals draw from both"
+    );
 }
 
 #[test]

@@ -89,15 +89,15 @@ The maximum material a stockpile can hold. It is a local buffer limit, not a glo
 _Avoid_: Stockpile size, global cap
 
 **Source Stockpile**:
-A stockpile placed near a resource deposit to receive resources extracted by workers before haulers move them onward.
+A stockpile placed near a resource deposit to receive resources extracted by workers before haulers move them to sink stockpiles or directly to terminal consumers.
 _Avoid_: Mining depot, deposit storage
 
 **Sink Stockpile**:
-A shared stockpile placed in a build zone that stages material between hauler legs: it receives material from source stockpiles and may supply both production facilities and chargers through physical hauler transport. Its capacity is tuned apart from Source Stockpiles, since every delivered mineral passes through it. It is not a terminal buffer.
+A shared stockpile placed in a build zone that stages material near terminal consumers: it receives material from source stockpiles and may supply both production facilities and chargers through physical hauler transport. Terminals may also draw directly from source stockpiles, so a production facility gets a sink only where it would shorten deliveries enough to repay its Maintenance; a sink that no longer does receives neither Maintenance nor new material and may decay. Its capacity is tuned apart from Source Stockpiles. It is not a terminal buffer.
 _Avoid_: Global storage, base inventory, production facility hopper
 
 **Logistics Leg**:
-One directed hauler movement along the material chain: source stockpile to sink stockpile, or sink stockpile to a terminal. Legs are ranked downstream-first so terminals are fed before buffers are filled.
+One directed hauler movement along the material chain: source stockpile to sink stockpile, or source or sink stockpile to a terminal. Legs are ranked downstream-first so terminals are fed before buffers are filled.
 _Avoid_: Transport step, conveyor segment
 
 **Logistics Reservation**:

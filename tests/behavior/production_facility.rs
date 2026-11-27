@@ -293,7 +293,7 @@ fn run_allocation_period(app: &mut App) {
 }
 
 #[test]
-fn delivery_window_follows_the_nearest_usable_stocked_sink() {
+fn delivery_window_follows_the_nearest_usable_stocked_pickup() {
     use top_down_2d_rts_prototype_nano_swarm::nanobot::delivery_window;
     use top_down_2d_rts_prototype_nano_swarm::resources::Stockpile;
 
@@ -312,12 +312,13 @@ fn delivery_window_follows_the_nearest_usable_stocked_sink() {
         .world_mut()
         .spawn((busy, OwnerSwarm(swarm), Transform::from_xyz(0.0, 0.0, 0.0)))
         .id();
+    // Terminals draw from Sources and Sinks alike, so either can be nearest.
     let near = common::spawn_sink_stockpile(&mut app, Vec2::new(600.0, 0.0), 30, 60);
-    let far = common::spawn_sink_stockpile(&mut app, Vec2::new(-3_000.0, 0.0), 30, 60);
-    for sink in [near, far] {
-        app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
+    let far = common::spawn_stockpile(&mut app, Vec2::new(-3_000.0, 0.0), 30, 60);
+    for pickup in [near, far] {
+        app.world_mut().entity_mut(pickup).insert(OwnerSwarm(swarm));
     }
-    // Nearer Sinks Haulers cannot draw from: a rival's and a broken one.
+    // Nearer pickups Haulers cannot draw from: a rival's and a broken one.
     let foreign = common::spawn_sink_stockpile(&mut app, Vec2::new(100.0, 0.0), 30, 60);
     app.world_mut()
         .entity_mut(foreign)
@@ -349,12 +350,12 @@ fn delivery_window_follows_the_nearest_usable_stocked_sink() {
     assert_eq!(
         window(&app),
         far_window,
-        "deliveries now come from the far Sink"
+        "deliveries now come from the far Source"
     );
 
     app.world_mut().get_mut::<Stockpile>(far).unwrap().amount = 0;
     run_allocation_period(&mut app);
-    assert_eq!(window(&app), 0, "no usable stocked Sink");
+    assert_eq!(window(&app), 0, "no usable stocked pickup");
     let state = app.world().get::<ProductionFacility>(facility).unwrap();
     assert_eq!(
         state.claimable_capacity(&tuning),

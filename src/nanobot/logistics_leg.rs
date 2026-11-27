@@ -15,9 +15,14 @@ pub(super) struct Destination {
     pub kind: ResourceKind,
     pub role: DestinationRole,
     pub free_space: u32,
+    /// False for a Sink that no longer repays its Maintenance: it takes no
+    /// new material, though returning cargo may still land there.
+    pub accepts_fill: bool,
 }
 
 impl Destination {
+    /// Minerals a pickup could move here. Sinks are filled only from Sources;
+    /// terminals draw from Sources and Sinks alike.
     pub fn projected_amount(
         self,
         source_owner: Option<SwarmId>,
@@ -27,10 +32,10 @@ impl Destination {
     ) -> u32 {
         let valid_tier = match self.role {
             DestinationRole::Stockpile(StockpileRole::Source) => false,
-            DestinationRole::Stockpile(StockpileRole::Sink) => source_role == StockpileRole::Source,
-            DestinationRole::ProductionFacility | DestinationRole::Charger => {
-                source_role == StockpileRole::Sink
+            DestinationRole::Stockpile(StockpileRole::Sink) => {
+                source_role == StockpileRole::Source && self.accepts_fill
             }
+            DestinationRole::ProductionFacility | DestinationRole::Charger => true,
         };
         if valid_tier && source_owner.is_some_and(|owner| self.accepts(owner, source_kind)) {
             source_amount.min(self.free_space)
@@ -43,15 +48,14 @@ impl Destination {
         self,
         owner: SwarmId,
         cargo: Cargo,
-        source_role: StockpileRole,
         returning: bool,
         incoming: u32,
     ) -> bool {
         let valid_tier = match self.role {
-            DestinationRole::Stockpile(role) => returning || role == StockpileRole::Sink,
-            DestinationRole::ProductionFacility | DestinationRole::Charger => {
-                source_role == StockpileRole::Sink
+            DestinationRole::Stockpile(role) => {
+                returning || (role == StockpileRole::Sink && self.accepts_fill)
             }
+            DestinationRole::ProductionFacility | DestinationRole::Charger => true,
         };
         valid_tier
             && cargo.amount > 0

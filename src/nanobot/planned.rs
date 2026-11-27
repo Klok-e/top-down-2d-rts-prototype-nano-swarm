@@ -5,7 +5,7 @@
 //! they do not mutate lifecycle progress or complete structures.
 
 use crate::navigation::Obstacle;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
@@ -13,10 +13,11 @@ use super::structure_lifecycle::*;
 
 use crate::GAMEPLAY_SPRITE_Z;
 use crate::intent::{IntentGrid, IntentKind};
+use crate::nanobot::SupportCondition;
 use crate::nanobot::components::{Swarm, SwarmId};
 use crate::nanobot::gather::world_to_cell;
 use crate::nanobot::production::{OwnerSwarm, ProductionFacility};
-use crate::resources::{ResourceDeposit, Stockpile, StockpileRole};
+use crate::resources::{ResourceDeposit, SinkUpkeep, Stockpile, StockpileRole};
 use crate::structure_sprites::{StructureSprites, StructureVisual, StructureVisualState};
 
 /// Local sprite size shared by planned and completed visuals. The aligned
@@ -163,33 +164,52 @@ pub(crate) fn sink_stockpile_zone_cells(
     zone_cells
 }
 
-/// Plan Sink Stockpiles only when sink-side storage has a real
-/// nearby consumer. Raw Build paint is only a placement constraint:
-/// it does not create construction demand by itself. A pending or
-/// completed Production Facility in a Build cell asks for one Sink
-/// Stockpile in its same-owner local 3x3 Build zone, without overlapping
-/// deposits or other support structures. Chargers accept direct delivery and
-/// do not create Sink demand.
+/// A pending or completed Production Facility that may ask for a Sink.
+struct SinkDemandSite {
+    cell: IVec2,
+    owner: Entity,
+    facility: Entity,
+    transform: Transform,
+}
+
+/// Plan Sink Stockpiles only where one would repay its Maintenance, and record
+/// on every Sink whether it still does. Raw Build paint is only a placement
+/// constraint: it does not create construction demand by itself. A pending or
+/// completed Production Facility in a Build cell may get one Sink in its
+/// same-owner local 3x3 Build zone, at the valid spot nearest the facility,
+/// without overlapping deposits or other support structures. Terminals also
+/// draw directly from Source Stockpiles, so the Sink is planned only when its
+/// delivery path to the facility beats the nearest own Source's by
+/// [`super::sink_break_even_margin`]. A Sink pays while it does so for at least
+/// one own facility whose zone contains it; one that pays for none gets no
+/// Maintenance or new material and decays. A Planned Sink is still built.
+/// Chargers accept direct delivery and do not create Sink demand. Runs on the
+/// allocation cadence because it computes walking paths.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn sink_stockpile_demand_system(
     mut commands: Commands,
     access: super::construction_access::ConstructionAccess,
+    mut payoff: super::SinkPayoff,
     grid: Res<IntentGrid>,
     structure_sprites: Res<StructureSprites>,
     tuning: Res<crate::tuning::Tuning>,
-    planned: Query<(&PlannedStructure, &Transform, Option<&OwnerSwarm>)>,
-    stockpiles: Query<(
+    planned: Query<(Entity, &PlannedStructure, &Transform, Option<&OwnerSwarm>)>,
+    mut stockpiles: Query<(
+        Entity,
         &Stockpile,
         &Transform,
         Option<&StockpileRole>,
         Option<&OwnerSwarm>,
+        Option<&SupportCondition>,
+        Option<&mut SinkUpkeep>,
     )>,
-    facilities: Query<(&Transform, Option<&OwnerSwarm>), With<ProductionFacility>>,
+    facilities: Query<(Entity, &Transform, Option<&OwnerSwarm>), With<ProductionFacility>>,
     chargers: Query<(&Transform, Option<&OwnerSwarm>), With<crate::nanobot::Charger>>,
     deposits: Query<(&ResourceDeposit, &Transform)>,
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,
 ) {
     let mut access_layout = access.snapshot();
+    let margin = super::sink_break_even_margin(&tuning);
     let swarm_by_id: HashMap<SwarmId, Entity> = swarms.iter().map(|(e, id)| (*id, e)).collect();
     let mut obstacles: Vec<Obstacle> = deposits
         .iter()
@@ -197,95 +217,130 @@ pub fn sink_stockpile_demand_system(
             Obstacle::deposit(transform.translation.truncate(), deposit.radius)
         })
         .collect();
-    for (_, transform, _, _) in &stockpiles {
+    for (_, _, transform, ..) in &stockpiles {
         obstacles.push(Obstacle::structure(transform));
     }
     // Planned Structures of any kind are in the obstacle
     // list so a fresh Sink Stockpile cannot overlap a
     // pending Production Facility or Charger plan. Only
-    // Production Facility plans satisfy sink-side demand:
+    // Production Facility plans create sink-side demand:
     // chargers are direct-delivery terminals and do not
     // auto-plan Sink Stockpiles (ADR-0005).
-    let mut demand_sites: Vec<(IVec2, Entity)> = Vec::new();
-    for (planned_structure, transform, owner) in &planned {
+    let mut demand_sites: Vec<SinkDemandSite> = Vec::new();
+    for (entity, planned_structure, transform, owner) in &planned {
         obstacles.push(Obstacle::structure(transform));
         if planned_structure.kind == PlannedKind::ProductionFacility
             && let Some(owner) = owner
         {
-            demand_sites.push((world_to_cell(transform.translation.truncate()), owner.0));
+            demand_sites.push(SinkDemandSite {
+                cell: world_to_cell(transform.translation.truncate()),
+                owner: owner.0,
+                facility: entity,
+                transform: *transform,
+            });
         }
     }
-    for (transform, _) in &facilities {
+    for (entity, transform, owner) in &facilities {
         obstacles.push(Obstacle::structure(transform));
-    }
-    for (transform, _) in &chargers {
-        obstacles.push(Obstacle::structure(transform));
-    }
-
-    for (transform, owner) in &facilities {
         if let Some(owner) = owner {
-            demand_sites.push((world_to_cell(transform.translation.truncate()), owner.0));
+            demand_sites.push(SinkDemandSite {
+                cell: world_to_cell(transform.translation.truncate()),
+                owner: owner.0,
+                facility: entity,
+                transform: *transform,
+            });
         }
     }
     // Chargers are direct-delivery terminals fed by haulers;
     // they deliberately do not create Sink Stockpile demand.
     // They stay in the obstacle list above so facility-side
     // sink plans cannot overlap them.
-    demand_sites.sort_by_key(|(cell, _)| (cell.x, cell.y));
-    demand_sites.dedup();
+    for (transform, _) in &chargers {
+        obstacles.push(Obstacle::structure(transform));
+    }
+    demand_sites.sort_by_key(|site| (site.cell.x, site.cell.y, site.facility));
 
+    let mut paying = HashSet::new();
     let mut newly_planned: Vec<Vec2> = Vec::new();
-    for (cell, owner) in demand_sites {
-        let Ok((_, placement_swarm)) = swarms.get(owner) else {
+    for site in demand_sites {
+        let Ok((_, placement_swarm)) = swarms.get(site.owner) else {
             continue;
         };
         let placement_swarm = *placement_swarm;
-        let sink_owner_matches = |candidate: Option<&OwnerSwarm>| match candidate {
+        let owned = |candidate: Option<&OwnerSwarm>| match candidate {
             Some(owner) => swarms
                 .get(owner.0)
                 .is_ok_and(|(_, id)| *id == placement_swarm),
             None => false,
         };
-        let zone_cells = sink_stockpile_zone_cells(&grid, cell, owner, &swarm_by_id);
+        let zone_cells = sink_stockpile_zone_cells(&grid, site.cell, site.owner, &swarm_by_id);
         if zone_cells.is_empty() {
             continue;
         }
-        let in_zone = |cell: IVec2| zone_cells.contains(&cell);
-        let sink_exists = stockpiles
+        let in_zone = |position: Vec2| zone_cells.contains(&world_to_cell(position));
+        let mut path_to_facility = |from: &Transform| {
+            payoff.delivery_path(&grid, placement_swarm, from, site.facility, &site.transform)
+        };
+        // Only a Source terminals can draw from competes with a Sink.
+        let nearest_source = stockpiles
             .iter()
-            .any(|(_, transform, role, stockpile_owner)| {
-                matches!(role, Some(StockpileRole::Sink))
-                    && in_zone(world_to_cell(transform.translation.truncate()))
-                    && sink_owner_matches(stockpile_owner)
+            .filter(|(_, _, _, role, owner, condition, _)| {
+                !matches!(role, Some(StockpileRole::Sink))
+                    && owned(*owner)
+                    && condition.is_none_or(|condition| condition.is_operational())
             })
-            || planned
-                .iter()
-                .any(|(planned_structure, transform, plan_owner)| {
-                    planned_structure.kind == PlannedKind::SinkStockpile
-                        && in_zone(world_to_cell(transform.translation.truncate()))
-                        && sink_owner_matches(plan_owner)
-                });
-        if sink_exists {
+            .filter_map(|(_, _, transform, ..)| path_to_facility(transform))
+            .fold(f32::INFINITY, f32::min);
+        let pays = |path: Option<f32>| path.is_some_and(|path| path + margin < nearest_source);
+
+        let mut served = false;
+        for (entity, _, transform, role, owner, ..) in &stockpiles {
+            if matches!(role, Some(StockpileRole::Sink))
+                && owned(owner)
+                && in_zone(transform.translation.truncate())
+                && pays(path_to_facility(transform))
+            {
+                paying.insert(entity);
+                served = true;
+            }
+        }
+        let plan_pending = planned.iter().any(|(_, plan, transform, owner)| {
+            plan.kind == PlannedKind::SinkStockpile
+                && in_zone(transform.translation.truncate())
+                && owned(owner)
+        }) || newly_planned.iter().any(|position| in_zone(*position));
+        if served || plan_pending {
             continue;
         }
+
         let mut local_obstacles = obstacles.clone();
         local_obstacles.extend(newly_planned.iter().map(|pos| Obstacle::planned(*pos)));
+        let mut sorted_cells = zone_cells.clone();
+        sorted_cells.sort_unstable_by_key(|cell| (cell.x, cell.y));
+        // Sites come nearest-first. Payoff is checked before access, from
+        // cached paths: a farther site saves even less, so the first reachable
+        // site that does not pay ends the search, and so does a Pending access
+        // answer.
         let Some((placement_cell, placement_pos)) =
-            crate::nanobot::placement::find_build_zone_placement_accepting(
-                &zone_cells,
-                &local_obstacles,
-                PlannedKind::SinkStockpile.footprint_half_extent(),
-                26,
-                |position| {
-                    access.accepts(
-                        &access_layout,
-                        &grid,
-                        placement_swarm,
-                        PlannedKind::SinkStockpile,
-                        position,
-                    )
-                },
-            )
+            crate::nanobot::placement::SiteLattice::build(&sorted_cells, &local_obstacles)
+                .find_nearest(site.transform.translation.truncate(), |position| {
+                    let spot = PlannedKind::SinkStockpile.footprint_transform(position.extend(0.0));
+                    let Some(path) = path_to_facility(&spot) else {
+                        return Some(false);
+                    };
+                    if !pays(Some(path)) {
+                        return None;
+                    }
+                    (!access_layout.is_pending()).then(|| {
+                        access.accepts(
+                            &access_layout,
+                            &grid,
+                            placement_swarm,
+                            PlannedKind::SinkStockpile,
+                            position,
+                        )
+                    })
+                })
         else {
             continue;
         };
@@ -305,7 +360,24 @@ pub fn sink_stockpile_demand_system(
                 placement_pos,
             ),
         ));
-        entity_commands.insert(OwnerSwarm(owner));
+        entity_commands.insert(OwnerSwarm(site.owner));
+    }
+
+    for (entity, _, _, role, _, _, upkeep) in &mut stockpiles {
+        if !matches!(role, Some(StockpileRole::Sink)) {
+            continue;
+        }
+        let upkeep_now = SinkUpkeep {
+            pays: paying.contains(&entity),
+        };
+        match upkeep {
+            Some(mut upkeep) => {
+                upkeep.set_if_neq(upkeep_now);
+            }
+            None => {
+                commands.entity(entity).insert(upkeep_now);
+            }
+        }
     }
 }
 

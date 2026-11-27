@@ -34,7 +34,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
         HaulerAssignment, OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructureClaim,
         PlannedStructureProgress, ProductionFacility, SwarmId, completed_visual_color,
     },
-    resources::{ResourceKind, Stockpile, StockpileRole},
+    navigation::CELL_WIDTH,
+    resources::{ResourceKind, SinkUpkeep, Stockpile, StockpileRole},
 };
 
 #[path = "../common/mod.rs"]
@@ -558,5 +559,148 @@ fn idle_worker_at_planned_sink_stockpile_claims_and_works() {
     assert!(
         progress.is_some(),
         "worker at exterior work reach must be in progress after a few ticks"
+    );
+}
+
+/// Allocation passes for the Sink demand system to judge every Sink.
+const UPKEEP_TICK_BUDGET: u32 = 30;
+
+/// Distance from a facility's center to a one-cell structure set just beyond
+/// its 3x3 footprint, where the nearest Sink spot also lies.
+fn beside_facility() -> f32 {
+    PlannedKind::ProductionFacility.footprint_half_extent() + CELL_WIDTH
+}
+
+/// A completed own Production Facility with its 3x3 footprint in a
+/// Build-painted cell, plus a Worker that can reach planned sites.
+fn spawn_built_facility(app: &mut App, owner: Entity, cell: IVec2) -> Vec2 {
+    paint_build(app, cell);
+    let center = common::cell_world_center(cell);
+    let facility = common::spawn_facility_at(app, owner, center);
+    app.world_mut()
+        .entity_mut(facility)
+        .insert(PlannedKind::ProductionFacility.footprint_transform(center.extend(0.0)));
+    common::spawn_worker_at(app, center - Vec2::new(0.0, 200.0));
+    center
+}
+
+fn spawn_owned_stockpile(
+    app: &mut App,
+    owner: Entity,
+    role: StockpileRole,
+    position: Vec2,
+) -> Entity {
+    let stockpile = common::spawn_stockpile(app, position, 0, 60);
+    app.world_mut().entity_mut(stockpile).insert((
+        role,
+        OwnerSwarm(owner),
+        PlannedKind::SourceStockpile.footprint_transform(position.extend(0.0)),
+    ));
+    stockpile
+}
+
+fn planned_sink_positions(app: &mut App) -> Vec<Vec2> {
+    let world = app.world_mut();
+    world
+        .query::<(&PlannedStructure, &Transform)>()
+        .iter(world)
+        .filter(|(planned, _)| planned.kind == PlannedKind::SinkStockpile)
+        .map(|(_, transform)| transform.translation.truncate())
+        .collect()
+}
+
+#[test]
+fn facility_far_from_its_sources_plans_a_sink_beside_it() {
+    let mut app = build_app();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let center = spawn_built_facility(&mut app, swarm, IVec2::ZERO);
+    spawn_owned_stockpile(
+        &mut app,
+        swarm,
+        StockpileRole::Source,
+        center + Vec2::new(1_000.0, 0.0),
+    );
+
+    for _ in 0..DEMAND_TICK_BUDGET {
+        app.update();
+        if !planned_sink_positions(&mut app).is_empty() {
+            break;
+        }
+    }
+
+    let sinks = planned_sink_positions(&mut app);
+    assert_eq!(
+        sinks.len(),
+        1,
+        "a distant Source leaves a Sink worth its upkeep"
+    );
+    assert!(
+        sinks[0].distance(center) <= beside_facility() * std::f32::consts::SQRT_2,
+        "the Sink takes the valid spot nearest its facility, got {} away",
+        sinks[0].distance(center)
+    );
+}
+
+#[test]
+fn facility_beside_its_own_source_plans_no_sink() {
+    let mut app = build_app();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let center = spawn_built_facility(&mut app, swarm, IVec2::ZERO);
+    spawn_owned_stockpile(
+        &mut app,
+        swarm,
+        StockpileRole::Source,
+        center + Vec2::new(beside_facility(), 0.0),
+    );
+
+    for _ in 0..DEMAND_TICK_BUDGET {
+        app.update();
+    }
+
+    assert!(
+        planned_sink_positions(&mut app).is_empty(),
+        "a Sink no nearer than the Source cannot repay its Maintenance"
+    );
+}
+
+#[test]
+fn sink_stops_paying_once_a_source_is_as_near_its_facility() {
+    let mut app = build_app();
+    let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    let center = spawn_built_facility(&mut app, swarm, IVec2::ZERO);
+    let sink = spawn_owned_stockpile(
+        &mut app,
+        swarm,
+        StockpileRole::Sink,
+        center + Vec2::new(0.0, beside_facility()),
+    );
+    let pays = |app: &App| {
+        app.world()
+            .get::<SinkUpkeep>(sink)
+            .map(|upkeep| upkeep.pays)
+    };
+
+    for _ in 0..UPKEEP_TICK_BUDGET {
+        app.update();
+    }
+    assert_eq!(
+        pays(&app),
+        Some(true),
+        "with no Source, the Sink shortens every delivery"
+    );
+
+    spawn_owned_stockpile(
+        &mut app,
+        swarm,
+        StockpileRole::Source,
+        center + Vec2::new(beside_facility(), 0.0),
+    );
+    for _ in 0..UPKEEP_TICK_BUDGET {
+        app.update();
+    }
+    assert_eq!(
+        pays(&app),
+        Some(false),
+        "a Source as near as the Sink leaves it nothing to save"
     );
 }

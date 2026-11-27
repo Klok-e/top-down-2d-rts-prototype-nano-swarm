@@ -465,7 +465,7 @@ pub fn regional_allocation_acquisition_system(
             let reserved = reserved_source.get(&source).copied().unwrap_or_default();
             let unclaimed = stockpile.amount.saturating_sub(reserved);
             // A refilling sliver serves only Charger emergencies, so it must
-            // not pin terminals away from Sinks that hold full loads.
+            // not pin terminals away from pickups that hold full loads.
             let inbound = reserved_destination
                 .get(&source)
                 .copied()
@@ -871,8 +871,9 @@ fn refilling_sliver(unclaimed: u32, inbound: u32, hauler_capacity: u32) -> bool 
 /// Charger emergencies that sustain committed Defenders.
 const STARTABLE_PRODUCTION_URGENCY: u8 = 3;
 
-/// How much farther than a terminal's nearest stocked Sink Stockpile another
-/// pickup may be: two cells, so near-equal Sinks share the load.
+/// How much farther than a terminal's nearest stocked Source or Sink
+/// Stockpile another pickup may be: two cells, so near-equal pickups share the
+/// load.
 const NEAREST_TERMINAL_SOURCE_SLACK: f32 = 2.0 * crate::navigation::CELL_WIDTH;
 
 /// Strict tier: urgency, waiting-age fairness, then proportional deficit.
@@ -985,9 +986,10 @@ fn choose_terminal_logistics_work(
             } else {
                 continue;
             };
-            // A terminal draws from its nearest stocked Sink Stockpiles. A far
-            // pickup would hold the terminal's claim for the whole long trip
-            // while haulers beside a nearer stocked Sink find nothing to claim.
+            // A terminal draws from its nearest stocked Source or Sink
+            // Stockpiles. A far pickup would hold the terminal's claim for the
+            // whole long trip while haulers beside a nearer stocked pickup find
+            // nothing to claim.
             if let Some(nearest) = nearest_terminal_source.get(&sink) {
                 let delivery = source_transform
                     .translation

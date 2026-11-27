@@ -18,7 +18,9 @@ use crate::nanobot::{
     logistics_leg::{Destination, DestinationRole},
 };
 use crate::navigation::{ConnectivityStatus, Navigation, RouteGoal};
-use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole};
+use crate::resources::{
+    ResourceDeposit, ResourceKind, ResourceLedger, SinkUpkeep, Stockpile, StockpileRole,
+};
 
 /// Backwards-compatible name for the shared cargo carried by a Hauler.
 /// Cargo exists during gradual loading and remains after loading completes.
@@ -351,7 +353,6 @@ fn reservation_covers_destination(
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn valid_destination_region(
     destination: Entity,
-    source_role: StockpileRole,
     returning: bool,
     cargo: Cargo,
     swarm: SwarmId,
@@ -362,6 +363,7 @@ fn valid_destination_region(
         &Transform,
         Option<&StockpileRole>,
         Option<&OwnerSwarm>,
+        Option<&SinkUpkeep>,
     )>,
     facilities: &Query<(Entity, &ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
     chargers: &Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
@@ -373,13 +375,14 @@ fn valid_destination_region(
         return None;
     }
     let (endpoint, transform, capacity) =
-        if let Ok((_, stockpile, transform, role, owner)) = stockpiles.get(destination) {
+        if let Ok((_, stockpile, transform, role, owner, upkeep)) = stockpiles.get(destination) {
             (
                 Destination {
                     kind: stockpile.kind,
                     role: DestinationRole::Stockpile(role.copied().unwrap_or_default()),
                     free_space: stockpile.free_space(),
                     owner: logistics_owner(owner, swarms),
+                    accepts_fill: SinkUpkeep::paid(upkeep),
                 },
                 transform,
                 stockpile.capacity,
@@ -391,6 +394,7 @@ fn valid_destination_region(
                     role: DestinationRole::ProductionFacility,
                     free_space: facility.claimable_space(tuning),
                     owner: logistics_owner(owner, swarms),
+                    accepts_fill: true,
                 },
                 transform,
                 facility.claimable_capacity(tuning),
@@ -402,6 +406,7 @@ fn valid_destination_region(
                     role: DestinationRole::Charger,
                     free_space: charger.free_space(),
                     owner: logistics_owner(owner, swarms),
+                    accepts_fill: true,
                 },
                 transform,
                 charger.capacity,
@@ -416,7 +421,6 @@ fn valid_destination_region(
                 amount: cargo.amount.min(capacity),
                 ..cargo
             },
-            source_role,
             returning,
             incoming_claims,
         )
@@ -446,6 +450,7 @@ pub fn hauler_reroute_system(
         &Transform,
         Option<&StockpileRole>,
         Option<&OwnerSwarm>,
+        Option<&SinkUpkeep>,
     )>,
     facilities: Query<(Entity, &ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
     chargers: Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
@@ -484,7 +489,6 @@ pub fn hauler_reroute_system(
                 );
             valid_destination_region(
                 candidate,
-                role,
                 is_return,
                 Cargo { amount, ..*cargo },
                 swarm_member.0,
@@ -644,6 +648,7 @@ pub fn hauler_carry_assign_system(
         &Transform,
         Option<&StockpileRole>,
         Option<&OwnerSwarm>,
+        Option<&SinkUpkeep>,
     )>,
     facilities: Query<(Entity, &ProductionFacility, &Transform, Option<&OwnerSwarm>)>,
     chargers: Query<(Entity, &Charger, &Transform, Option<&OwnerSwarm>)>,
@@ -665,7 +670,6 @@ pub fn hauler_carry_assign_system(
         let incoming = reserved_destination_capacity(&reservations, assignment.sink, Some(entity));
         let Some(sink) = valid_destination_region(
             assignment.sink,
-            assignment.pickup_role,
             returning.is_some(),
             Cargo {
                 amount: reservations
@@ -727,6 +731,7 @@ pub fn hauler_delivery_system(
         &Transform,
         Option<&StockpileRole>,
         Option<&OwnerSwarm>,
+        Option<&SinkUpkeep>,
     )>,
     mut facilities: Query<(
         Entity,
@@ -764,7 +769,6 @@ pub fn hauler_delivery_system(
             .saturating_sub(own_claim);
         let Some(endpoint) = valid_destination_region(
             assignment.sink,
-            assignment.pickup_role,
             returning.is_some(),
             Cargo {
                 amount: reservation.map_or(load.amount, |reservation| {
@@ -802,7 +806,7 @@ pub fn hauler_delivery_system(
             .amount
             .min(tuning.logistics.hauler_transfer_per_pulse)
             .min(reservation.map_or(u32::MAX, |reservation| reservation.destination_remaining));
-        let actual = if let Ok((_, mut stockpile, _, _, _)) = stockpiles.get_mut(assignment.sink) {
+        let actual = if let Ok((_, mut stockpile, ..)) = stockpiles.get_mut(assignment.sink) {
             let actual = transfer_limit.min(stockpile.free_space());
             stockpile.amount += actual;
             actual

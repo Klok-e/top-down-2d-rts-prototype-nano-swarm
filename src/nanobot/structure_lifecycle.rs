@@ -674,6 +674,7 @@ fn promote_planned_to_completion(
             commands.entity(planned_entity).insert((
                 empty_mineral_stockpile(tuning.logistics.sink_capacity),
                 StockpileRole::Sink,
+                crate::resources::SinkUpkeep::default(),
                 visual,
             ));
         }
@@ -684,8 +685,8 @@ fn promote_planned_to_completion(
             // A completed facility is a terminal consumer:
             // it owns its own input hopper (on
             // `ProductionFacility`) and is NOT a `Stockpile`.
-            // Haulers fill the hopper via logistics leg 3
-            // (sink stockpile -> facility); production
+            // Haulers fill the hopper from Source or Sink
+            // Stockpiles; production
             // consumes exclusively from it. Keeping the
             // `Stockpile` component off the facility means
             // it never enters stockpile queries, so a
@@ -759,7 +760,8 @@ impl Plugin for PlannedStructurePlugin {
             .add_systems(
                 FixedUpdate,
                 (
-                    sink_stockpile_demand_system,
+                    sink_stockpile_demand_system
+                        .run_if(crate::nanobot::allocation::allocation_tick_due),
                     worker_planned_structure_arrive_system,
                     worker_planned_structure_work_system,
                     clear_finished_structures_system,
