@@ -71,7 +71,11 @@ mod raid_readiness {
     use super::*;
     use top_down_2d_rts_prototype_nano_swarm::{
         SIMULATION_HZ,
-        nanobot::{Charge, ChargerAssignment, DefenderResponse, Health, OwnerSwarm, SwarmMember},
+        nanobot::{
+            Charge, ChargerAssignment, DefenderResponse, DefenderStagingAssignments,
+            DirectMovementComponent, Health, OwnerSwarm, SwarmMember,
+        },
+        navigation_runtime::NavigationBudget,
         strategic_runtime::ControllerTelemetry,
         terrain::RockFormation,
         tuning::Tuning,
@@ -82,8 +86,7 @@ mod raid_readiness {
     const TARGET: IVec2 = IVec2::new(9, 0);
     const REVIEW_TICKS: u64 = 5;
 
-    fn raid_fixture() -> (App, [Entity; 2]) {
-        let mut app = common::minimal_app();
+    fn raid_fixture<const N: usize>(mut app: App) -> (App, [Entity; N]) {
         app.insert_resource(IntentGrid::new(64, 64));
         app.add_plugins(StrategicControllerPlugin);
         let home = common::cell_world_center(IVec2::ZERO);
@@ -157,7 +160,7 @@ mod raid_readiness {
 
     #[test]
     fn too_few_available_charged_defenders_leave_a_high_scoring_raid_ineligible() {
-        let (mut app, [_, defender]) = raid_fixture();
+        let (mut app, [_, defender]) = raid_fixture(common::minimal_app());
         let charger = app.world_mut().spawn_empty().id();
         app.world_mut()
             .entity_mut(defender)
@@ -222,7 +225,7 @@ mod raid_readiness {
 
     #[test]
     fn guards_along_the_approach_and_at_the_target_change_raid_eligibility() {
-        let (mut app, _) = raid_fixture();
+        let (mut app, _) = raid_fixture::<2>(common::minimal_app());
         let on_route = common::spawn_stationary_defender_at(
             &mut app,
             common::cell_world_center(IVec2::new(4, 0)),
@@ -261,7 +264,7 @@ mod raid_readiness {
 
     #[test]
     fn raid_holds_during_a_brief_recharge_and_withdraws_after_sustained_readiness_loss() {
-        let (mut app, defenders) = raid_fixture();
+        let (mut app, defenders) = raid_fixture::<2>(common::sim_app());
         review(&mut app);
         let first = forward_defend_cells(&app);
         let first_point = IVec2::new(3, 0);
@@ -301,8 +304,89 @@ mod raid_readiness {
     }
 
     #[test]
+    fn staging_counts_pending_assignments_and_ignores_defenders_passing_through() {
+        let (mut app, defenders) = raid_fixture::<7>(common::sim_app());
+        app.insert_resource(NavigationBudget(0));
+        let rock = RockFormation::Rectangle {
+            half: Vec2::new(1_024.0, 128.0),
+        };
+        let rock_transform =
+            Transform::from_translation(common::cell_world_center(IVec2::new(0, 3)).extend(0.0));
+        let reachability = SwarmReachabilityMap::new(
+            app.world().resource::<IntentGrid>(),
+            [rock.obstacle(&rock_transform)],
+            [
+                (OWNER, common::cell_world_center(IVec2::ZERO)),
+                (ENEMY, common::cell_world_center(TARGET + 4 * IVec2::X)),
+            ],
+        )
+        .unwrap();
+        app.insert_resource(reachability);
+        app.world_mut().spawn((rock, rock_transform));
+
+        let move_defender = |app: &mut App, defender, cell| {
+            app.world_mut()
+                .get_mut::<Transform>(defender)
+                .unwrap()
+                .translation = common::cell_world_center(cell).extend(0.0);
+        };
+        for &defender in &defenders[4..] {
+            move_defender(&mut app, defender, IVec2::new(-2, 6));
+        }
+        let first_point = IVec2::new(3, 0);
+        let charger = app.world_mut().spawn_empty().id();
+        for _ in 0..3 {
+            let passing = common::spawn_stationary_defender_at(
+                &mut app,
+                common::cell_world_center(first_point),
+                OWNER,
+            );
+            app.world_mut()
+                .entity_mut(passing)
+                .insert(ChargerAssignment { charger });
+        }
+
+        review(&mut app);
+        let first = forward_defend_cells(&app);
+        assert!(first.contains(&first_point), "{}", explanation(&app));
+        let assignments = app.world().resource::<DefenderStagingAssignments>();
+        for defender in defenders {
+            assert!(
+                assignments
+                    .destination(defender)
+                    .is_some_and(|cell| first.contains(&cell))
+            );
+        }
+        for &defender in &defenders[4..] {
+            assert!(
+                app.world()
+                    .get::<DirectMovementComponent>(defender)
+                    .is_none()
+            );
+        }
+
+        for &defender in &defenders[..4] {
+            move_defender(&mut app, defender, first_point);
+        }
+        review(&mut app);
+        assert_eq!(
+            forward_defend_cells(&app),
+            first,
+            "four arrivals out of seven assignments must hold even with passing Defenders"
+        );
+
+        move_defender(&mut app, defenders[4], first_point);
+        review(&mut app);
+        assert!(
+            !owns_defend(&app, first_point),
+            "five arrivals out of seven assignments must advance"
+        );
+        assert!(owns_defend(&app, IVec2::new(6, 0)));
+    }
+
+    #[test]
     fn raid_withdraws_when_an_obstacle_closes_the_target_approach() {
-        let (mut app, _) = raid_fixture();
+        let (mut app, _) = raid_fixture::<2>(common::minimal_app());
         review(&mut app);
         let first = forward_defend_cells(&app);
         let first_point = IVec2::new(3, 0);

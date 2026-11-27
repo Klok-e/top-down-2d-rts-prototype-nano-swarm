@@ -14,13 +14,13 @@ use crate::{
     intent::IntentGrid,
     nanobot::{
         Cargo, Charge, Charger, ChargerAssignment, ChargerProgress, ClearingEvacuation, Commitment,
-        DefenderDisengagement, DefenderResponse, DefenderRout, DirectMovementComponent,
-        DropOffArea, ExtractProgress, GatherAssignment, GatherQuotas, HaulQuotas, HaulerAssignment,
-        HaulerLoading, Health, InteractionRegion, LogisticsReservation, MaintenanceAssignment,
-        MaintenanceProgress, MatchOutcome, Nanobot, NanobotType, OwnerSwarm, PlannedStructure,
-        PlannedStructureClaim, PopulationDemand, ProductionFacility, RegionalAllocationSet,
-        ReturningToStockpile, Structure, Swarm, SwarmId, SwarmMember, WorkBlocked,
-        gather_worker_slots,
+        DefenderDisengagement, DefenderResponse, DefenderRout, DefenderStagingAssignments,
+        DirectMovementComponent, DropOffArea, ExtractProgress, GatherAssignment, GatherQuotas,
+        HaulQuotas, HaulerAssignment, HaulerLoading, Health, InteractionRegion,
+        LogisticsReservation, MaintenanceAssignment, MaintenanceProgress, MatchOutcome, Nanobot,
+        NanobotType, OwnerSwarm, PlannedStructure, PlannedStructureClaim, PopulationDemand,
+        ProductionFacility, RegionalAllocationSet, ReturningToStockpile, Structure, Swarm, SwarmId,
+        SwarmMember, WorkBlocked, gather_worker_slots,
     },
     navigation::{Navigation, Obstacle, RouteGoal, RouteOutcome},
     reachability::{IntentWriteAction, SwarmReachabilityMap, apply_reachable_intent},
@@ -274,7 +274,7 @@ fn strategic_intent_system(
     ledger: Res<ResourceLedger>,
     mut grid: ResMut<IntentGrid>,
     reachability: Res<SwarmReachabilityMap>,
-    navigation: Res<Navigation>,
+    (navigation, staging_assignments): (Res<Navigation>, Option<Res<DefenderStagingAssignments>>),
     time: Res<Time<Fixed>>,
     economy: (
         Option<Res<MatchOutcome>>,
@@ -369,18 +369,22 @@ fn strategic_intent_system(
                     || evacuating
                 {
                     DefenderDuty::Unavailable
-                } else {
-                    let response_position = response.and_then(|response| {
-                        bots.get(response.target)
-                            .map(|(_, _, _, transform, ..)| transform.translation.truncate())
-                            .or_else(|_| {
-                                structures
-                                    .get(response.target)
-                                    .map(|(_, transform, ..)| transform.translation.truncate())
-                            })
-                            .ok()
-                    });
+                } else if let Some(response) = response {
+                    let response_position = bots
+                        .get(response.target)
+                        .map(|(_, _, _, transform, ..)| transform.translation.truncate())
+                        .or_else(|_| {
+                            structures
+                                .get(response.target)
+                                .map(|(_, transform, ..)| transform.translation.truncate())
+                        })
+                        .ok();
                     response_position.map_or(DefenderDuty::Available, DefenderDuty::RespondingTo)
+                } else {
+                    staging_assignments
+                        .as_ref()
+                        .and_then(|assignments| assignments.destination(entity))
+                        .map_or(DefenderDuty::Available, DefenderDuty::StagingAt)
                 };
                 BotState {
                     id: entity.to_bits(),
