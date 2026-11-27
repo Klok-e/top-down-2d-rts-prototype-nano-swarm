@@ -34,6 +34,7 @@ impl BattleProcess {
         let child = Command::new(env!("CARGO_BIN_EXE_top-down-2d-rts-prototype-nano-swarm"))
             .args(arguments)
             .args(["--scenario", "ai-battle", "--seed", "42"])
+            .args(["--layout", "standard"])
             .args(["--max-ticks", &MAX_TICKS.to_string()])
             .current_dir(root.join("cwd"))
             .env("XDG_RUNTIME_DIR", root.join("run"))
@@ -123,9 +124,17 @@ fn assert_serves_final_statistics_until_shutdown(arguments: &[&str]) {
     assert_eq!(stats["summary"]["termination_reason"], "tick_limit");
     assert_eq!(stats["summary"]["seed"], 42);
     let last = stats["samples"].as_array().unwrap().last().unwrap();
-    for swarm in last["swarms"].as_array().unwrap() {
+    let swarms = last["swarms"].as_array().unwrap();
+    assert_eq!(swarms.len(), 2);
+    for swarm in swarms {
         assert_eq!(swarm["fixed_tick"], MAX_TICKS);
         assert!(swarm["controller_reviews"].as_u64().unwrap() > 0);
+        assert!(
+            swarm["controller_intent_edits"].as_u64().unwrap() > 0,
+            "Standard controller {} issued no intent edits by tick {MAX_TICKS}: {}",
+            swarm["swarm"],
+            swarm["controller_last_explanation"]
+        );
     }
 
     process.command(&["wait", "--frames", "30"]);

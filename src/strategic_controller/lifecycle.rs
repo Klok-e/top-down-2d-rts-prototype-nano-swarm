@@ -59,6 +59,22 @@ impl WorkBudget {
         }
     }
 
+    pub(super) fn optional_probe(
+        &mut self,
+        max_work: usize,
+        probe: impl FnOnce(&mut Self) -> bool,
+    ) -> bool {
+        let limit = self.used.saturating_add(max_work);
+        // Leave planning room for required paint after a full optional probe.
+        if self.exhausted || self.limit.saturating_sub(limit) < max_work {
+            return false;
+        }
+        let mut probe_budget = Self { limit, ..*self };
+        let result = probe(&mut probe_budget);
+        self.used = probe_budget.used;
+        result
+    }
+
     fn call_work(&self) -> usize {
         self.used.saturating_sub(self.call_start)
     }
