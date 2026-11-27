@@ -271,22 +271,34 @@ mod tests {
     }
 
     #[test]
-    fn retired_tuning_field_is_read_once_and_other_unknown_fields_stay_invalid() {
+    fn retired_tuning_fields_are_discarded_and_other_unknown_fields_stay_invalid() {
         let directory = TestDirectory::new();
         let store = directory.store();
         let current = Tuning::default();
         store.save(&current).unwrap();
         let new_tuning = fs::read_to_string(store.path()).unwrap();
-        let retired = "strategy_production_mineral_threshold";
-        let with_retired =
-            new_tuning.replacen("autonomy: (", &format!("autonomy: ({retired}: 90,"), 1);
+        let retired = [
+            ("strategy_production_mineral_threshold", "90"),
+            ("strategy_hunt_remnant_base", "500.0"),
+            ("strategy_hunt_force_weight", "0.04"),
+        ];
+        let mut autonomy = String::from("autonomy: (");
+        for (field, value) in retired {
+            autonomy.push_str(&format!("{field}: {value},"));
+        }
+        let with_retired = new_tuning.replacen("autonomy: (", &autonomy, 1);
         fs::write(store.path(), with_retired).unwrap();
         let (_, loaded) = TuningStore::load(store.path()).unwrap();
         assert_eq!(current, loaded);
-        assert!(loaded.get(&format!("autonomy.{retired}")).is_none());
+        for (field, _) in retired {
+            let key = format!("autonomy.{field}");
+            assert!(loaded.get(&key).is_none());
+            assert!(loaded.with_value(&key, 1.0).is_err());
+            assert!(Tuning::fields().iter().all(|field| field.key != key));
+        }
 
         store.save(&loaded).unwrap();
-        assert!(!fs::read_to_string(store.path()).unwrap().contains(retired));
+        assert_eq!(fs::read_to_string(store.path()).unwrap(), new_tuning);
         let unknown = new_tuning.replacen("autonomy: (", "autonomy: (unknown_option: 90,", 1);
         fs::write(store.path(), unknown).unwrap();
         assert!(
