@@ -60,6 +60,10 @@ _Avoid_: Mineral node, mineral patch, resource pile
 A Resource Deposit a Strategic Controller commits to mining and supporting across reviews. Ownership describes its swarm’s economic intent, and neutral deposits remain open to any swarm that can reach them.
 _Avoid_: Captured territory, exclusive mining rights
 
+**Mine Saturation**:
+An Owned Resource Deposit is saturated when Workers use all the gathering capacity its Source Stockpiles can sustain, within the number of Workers who fit around the deposit.
+_Avoid_: Full work ring, full Source Stockpile
+
 **Rock Formation**:
 Permanent, impassable terrain that shapes base entrances, travel routes, and mineral pockets. Rock Formations cannot be destroyed or harvested and enclose the default map's playable area.
 _Avoid_: Destructible rock, Resource Deposit

@@ -1,8 +1,10 @@
 ---
-status: accepted
+status: superseded in part by ADR-0036 and ADR-0038
 ---
 
 # Maintain a persistent economy at owned Resource Deposits
+
+[Mine Saturation](0038-gate-expansion-on-mine-saturation.md) revises the admission rules for new mines. The [objective eligibility decision](0036-check-strategic-objective-eligibility.md) defines when expansion and military objectives can proceed together.
 
 Keep the Strategic Controller's mining commitments across military reviews and expansion. Adding a neutral Resource Deposit increases the number of operating mines. Exhaustion, loss of access, or loss of the Resource Deposit removes that site's support while other mines stay active. A surviving mine keeps Gather paint, an adjacent Build Zone and compact Defend coverage, and a Logistics Corridor along the navigable connection home.
 
