@@ -132,8 +132,8 @@ pub fn reserve_weight(tuning: &Tuning, consumer_distance: Option<f32>) -> f32 {
     let Some(distance) = consumer_distance else {
         return 0.0;
     };
-    let lead_seconds =
-        crate::nanobot::estimated_lead_ticks(tuning, distance) / crate::SIMULATION_HZ as f32;
+    let lead_seconds = crate::nanobot::estimated_lead_ticks(&tuning.logistics, distance)
+        / crate::SIMULATION_HZ as f32;
     let horizon = tuning.production.reserve_seconds.max(1.0);
     if lead_seconds <= horizon {
         1.0
