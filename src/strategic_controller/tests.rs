@@ -3,6 +3,38 @@ static DEFAULT_CHARGE: std::sync::LazyLock<ChargeTuning> =
 
 use super::*;
 
+static DEFAULT_LOGISTICS: std::sync::LazyLock<LogisticsTuning> =
+    std::sync::LazyLock::new(LogisticsTuning::default);
+
+fn supply_gap(owner: SwarmId, delivered_rate: f32) -> BTreeMap<SwarmId, EconomyObservation> {
+    BTreeMap::from([(
+        owner,
+        EconomyObservation {
+            gather: SwarmEconomy {
+                spending_capacity: 5.0,
+                reserve_target: 50,
+                gather_rate: 0.3,
+                ..Default::default()
+            },
+            haul: Some(HaulEconomy {
+                spending_capacity: 5.0,
+                delivered_rate,
+                haul_rate: 1.0,
+                ..Default::default()
+            }),
+            low_reserve_ticks: crate::nanobot::HAUL_WINDOW_TICKS,
+            ..Default::default()
+        },
+    )])
+}
+
+fn supply_state(economies: &BTreeMap<SwarmId, EconomyObservation>) -> SupplyState<'_> {
+    SupplyState {
+        economies,
+        logistics: &DEFAULT_LOGISTICS,
+    }
+}
+
 fn direct_attack_tuning() -> AutonomyTuning {
     AutonomyTuning {
         strategy_staging_spacing_cells: 64,
@@ -36,6 +68,7 @@ fn empty_state<'a>(grid: &'a IntentGrid, tick: u64) -> GameState<'a> {
         reachability: None,
         route_query: None,
         mine_query: None,
+        supply: None,
         build_footprints: &[],
         tick,
         finished: false,
@@ -63,7 +96,7 @@ fn corridor_paint_follows_the_supplied_deposit_route() {
     }];
     let deposits = [DepositState {
         id: 1,
-        owner: None,
+        owner: Some(owner),
         position: world(IVec2::new(4, 0)),
         amount: 72_000,
         radius: 80.0,
@@ -118,7 +151,7 @@ fn corridor_paint_without_routing_follows_a_straight_cell_line() {
     }];
     let deposits = [DepositState {
         id: 1,
-        owner: None,
+        owner: Some(owner),
         position: world(IVec2::new(6, 2)),
         amount: 72_000,
         radius: 80.0,
@@ -163,6 +196,7 @@ fn a_neutral_deposit_is_not_claimed_when_no_corridor_reaches_it() {
         &AutonomyTuning::default(),
         &GameState {
             swarms: &swarms,
+            bots: &mature_economy_bots(owner, swarms[0].home),
             deposits: &deposits,
             terrain: &terrain,
             charge: &DEFAULT_CHARGE,
@@ -190,7 +224,7 @@ fn corridor_search_spends_planning_work_and_keeps_existing_paint_on_exhaustion()
     }];
     let deposit = DepositState {
         id: 1,
-        owner: None,
+        owner: Some(owner),
         position: world(IVec2::new(4, 0)),
         amount: 72_000,
         radius: 80.0,
@@ -261,6 +295,7 @@ fn expansion_rejects_a_deposit_whose_corridor_exceeds_paint_capacity() {
         &tuning,
         &GameState {
             swarms: &swarms,
+            bots: &mature_economy_bots(owner, swarms[0].home),
             deposits: &deposits,
             ..empty_state(&grid, 0)
         },
@@ -316,7 +351,7 @@ fn changed_plan_erases_superseded_paint_beyond_the_cleanup_cursor() {
     };
     let deposit = DepositState {
         id: 20,
-        owner: None,
+        owner: Some(owner),
         position: world(IVec2::new(0, 8)),
         amount: 72_000,
         radius: 80.0,
@@ -410,6 +445,7 @@ fn controller_erases_legacy_intent_and_never_paints_across_permanent_terrain() {
         reachability: Some(&reachability),
         route_query: None,
         mine_query: None,
+        supply: None,
         build_footprints: &[],
         tick: 0,
         finished: false,
@@ -670,7 +706,7 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
     ];
     let deposits = [DepositState {
         id: 20,
-        owner: None,
+        owner: Some(owner),
         position: world(IVec2::new(2, 0)),
         amount: 500,
         radius: 100.0,
@@ -686,6 +722,7 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
         reachability: None,
         route_query: None,
         mine_query: None,
+        supply: None,
         build_footprints: &[],
         tick: 0,
         finished: false,
@@ -776,6 +813,7 @@ fn profitable_neutral_expansion_preserves_a_viable_raid() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 0,
             finished: false,
@@ -860,6 +898,7 @@ fn profitable_neutral_expansion_preserves_a_viable_raid() {
             reachability: None,
             route_query: None,
             mine_query: Some(&empty_source),
+            supply: Some(supply_state(&supply_gap(owner, 1.0))),
             build_footprints: &[],
             tick: WORK_WINDOW_TICKS,
             finished: false,
@@ -957,6 +996,7 @@ fn advantaged_raid_paints_enemy_logistics_and_keeps_home_economy() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 0,
             finished: false,
@@ -1059,6 +1099,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 0,
             finished: false,
@@ -1095,6 +1136,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: WORK_WINDOW_TICKS,
             finished: false,
@@ -1199,6 +1241,7 @@ fn losing_a_mine_keeps_a_progressing_attack_front() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 0,
             finished: false,
@@ -1239,6 +1282,7 @@ fn losing_a_mine_keeps_a_progressing_attack_front() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 1,
             finished: false,
@@ -1302,6 +1346,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 0,
             finished: false,
@@ -1322,6 +1367,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: WORK_WINDOW_TICKS - 1,
             finished: false,
@@ -1343,6 +1389,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: WORK_WINDOW_TICKS,
             finished: false,
@@ -1408,6 +1455,7 @@ fn expansion_waits_for_every_retained_mine_to_saturate_and_keeps_its_support() {
                 bots: &bots,
                 deposits: &deposits,
                 mine_query: Some(&observations),
+                supply: Some(supply_state(&supply_gap(owner, 2.0))),
                 ..empty_state(&grid, review * WORK_WINDOW_TICKS)
             },
         );
@@ -1648,6 +1696,7 @@ fn income_lead_adds_a_home_push_without_abandoning_the_mine() {
                 defender_duty: Default::default(),
             })
         })
+        .chain(mature_economy_bots(owner, initial_swarms[0].home))
         .collect::<Vec<_>>();
     let deposit = [DepositState {
         id: 20,
@@ -1680,6 +1729,7 @@ fn income_lead_adds_a_home_push_without_abandoning_the_mine() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 0,
             finished: false,
@@ -1712,6 +1762,7 @@ fn income_lead_adds_a_home_push_without_abandoning_the_mine() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: WORK_WINDOW_TICKS,
             finished: false,
@@ -1795,6 +1846,7 @@ fn expansion_prefers_income_after_hauling_and_exposure_costs() {
             tuning,
             &GameState {
                 swarms: &swarms,
+                bots: &mature_economy_bots(owner, swarms[0].home),
                 deposits: &deposits,
                 terrain: &terrain,
                 route_query: Some(&route),
@@ -1893,6 +1945,7 @@ fn authored_terrain_leaves_budget_for_a_coordinated_plan() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 0,
             finished: false,
@@ -2005,6 +2058,7 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
             reachability: None,
             route_query: Some(&route),
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 0,
             finished: false,
@@ -2095,6 +2149,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 0,
             finished: false,
@@ -2127,6 +2182,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 1,
             finished: false,
@@ -2148,6 +2204,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: WORK_WINDOW_TICKS,
             finished: false,
@@ -2238,6 +2295,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 0,
             finished: false,
@@ -2266,6 +2324,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 1,
             finished: false,
@@ -2286,6 +2345,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: WORK_WINDOW_TICKS,
             finished: false,
@@ -2306,6 +2366,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: WORK_WINDOW_TICKS * 2,
             finished: false,
@@ -2381,6 +2442,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 0,
             finished: false,
@@ -2416,6 +2478,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 1,
             finished: false,
@@ -2452,6 +2515,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 2,
             finished: false,
@@ -2545,6 +2609,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 0,
             finished: false,
@@ -2574,6 +2639,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 1,
             finished: false,
@@ -2594,6 +2660,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: WORK_WINDOW_TICKS,
             finished: false,
@@ -2613,6 +2680,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: WORK_WINDOW_TICKS * 2,
             finished: false,
@@ -2634,6 +2702,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: WORK_WINDOW_TICKS * 3,
             finished: false,
@@ -2654,6 +2723,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: WORK_WINDOW_TICKS * 4,
             finished: false,
@@ -2674,6 +2744,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: WORK_WINDOW_TICKS * 5,
             finished: false,
@@ -2739,6 +2810,7 @@ fn hunt_paint_holds_until_the_target_leaves_its_block() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 0,
             finished: false,
@@ -2889,6 +2961,7 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
             reachability: None,
             route_query: None,
             mine_query: None,
+            supply: None,
             build_footprints: &[],
             tick: 0,
             finished: false,
@@ -2939,6 +3012,7 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
             structures: &[primary_chain[0], primary_chain[1], enemy_facility],
             deposits: &deposits,
             mine_query: Some(&stocked_source),
+            supply: Some(supply_state(&supply_gap(owner, 1.0))),
             ..empty_state(&grid, WORK_WINDOW_TICKS)
         },
     );
@@ -2957,6 +3031,7 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
                 reachability: None,
                 route_query: None,
                 mine_query: None,
+                supply: None,
                 build_footprints: &[],
                 tick: review * WORK_WINDOW_TICKS,
                 finished: false,
@@ -3667,12 +3742,17 @@ fn a_contest_keeps_an_established_mine_and_claims_a_different_free_deposit() {
     );
 
     let mine = mine_at(owner, deposits[0].position, saturated_mine());
+    let bots = mature_economy_bots(owner, Vec2::ZERO)
+        .into_iter()
+        .chain(approaching)
+        .collect::<Vec<_>>();
     let expanded = controller.decide(
         &tuning,
         &GameState {
             deposits: &deposits,
-            bots: &approaching,
+            bots: &bots,
             mine_query: Some(&mine),
+            supply: Some(supply_state(&supply_gap(owner, 1.0))),
             ..empty_state(&grid, WORK_WINDOW_TICKS)
         },
     );
@@ -4066,6 +4146,7 @@ fn military_priorities_protect_expansion_before_attacking_home() {
                 structures,
                 bots,
                 mine_query: Some(&stocked_source),
+                supply: Some(supply_state(&supply_gap(owner, 1.0))),
                 ..empty_state(&grid, 0)
             },
         )
@@ -4147,7 +4228,11 @@ fn military_priorities_protect_expansion_before_attacking_home() {
             .any(|edit| { edit.kind == IntentKind::Gather && edit.cell == neutral })
     );
 
-    let expansion = decide(&deposits, &structures, &[leaving]);
+    let expansion_bots = mature_economy_bots(owner, swarms[0].home)
+        .into_iter()
+        .chain([leaving])
+        .collect::<Vec<_>>();
+    let expansion = decide(&deposits, &structures, &expansion_bots);
     assert!(
         expansion
             .explanation

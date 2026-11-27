@@ -1028,6 +1028,7 @@ fn strategic_opening_keeps_neutral_gather_pending_through_the_first_extraction_p
             },
         )
     });
+    app.world_mut().entity_mut(mine).insert(OwnerSwarm(swarm));
     let source = common::spawn_stockpile(
         &mut app,
         common::cell_world_center(opening) - Vec2::X * 140.0,
@@ -1092,8 +1093,11 @@ fn strategic_retarget_erases_superseded_corridor_in_the_same_tick() {
     app.insert_resource(grid)
         .add_plugins(StrategicControllerPlugin);
     install_empty_reachability(&mut app);
-    let swarm =
-        common::spawn_swarm_with_nanobots(&mut app, common::cell_world_center(IVec2::ZERO), &[]);
+    let swarm = common::spawn_swarm_with_nanobots(
+        &mut app,
+        common::cell_world_center(IVec2::ZERO),
+        &[(NanobotType::Worker, 2), (NanobotType::Hauler, 1)],
+    );
     app.world_mut()
         .entity_mut(swarm)
         .insert(StrategicController::new(owner));

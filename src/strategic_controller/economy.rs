@@ -6,7 +6,10 @@ use super::{
     },
     *,
 };
-use crate::nanobot::{InteractionRegion, cell_overlaps_circle, deposit_candidate_cells};
+use crate::nanobot::{
+    HAUL_WINDOW_TICKS, InteractionRegion, cell_overlaps_circle, deposit_candidate_cells,
+    estimated_lead_ticks, throughput_quota,
+};
 use bevy::prelude::Transform;
 use std::collections::HashMap;
 
@@ -265,6 +268,48 @@ pub(super) fn plan_economy(
             return None;
         }
     }
+    if unchecked.is_empty() {
+        return Some(economy);
+    }
+    let establishing_supply = economy.owned_deposits.is_empty() || replacing_lost_mine;
+    let observation = state
+        .supply
+        .and_then(|supply| supply.economies.get(&owner))
+        .copied()
+        .unwrap_or_default();
+    if !establishing_supply && observation.low_reserve_ticks < HAUL_WINDOW_TICKS {
+        return Some(economy);
+    }
+    let mut retained = Vec::with_capacity(economy.owned_deposits.len());
+    for mine in &economy.owned_deposits {
+        let deposit = find_deposit(mine.id, state, budget).ok()??;
+        let mine = mine_observation(owner, deposit, mine.gather_cell, state, budget)?;
+        if !establishing_supply && !mine.is_saturated() {
+            return Some(economy);
+        }
+        retained.push(mine);
+    }
+    if !establishing_supply && !needs_more_extraction(observation, &retained) {
+        return Some(economy);
+    }
+    let capacity = expansion_capacity(owner, state, observation, &retained, budget)?;
+    if capacity.workers == 0 || capacity.haulers == 0 {
+        return Some(economy);
+    }
+    let haul_overhead = if economy.owned_deposits.len() > 1 {
+        if !budget.spend(economy.owned_deposits.len()) {
+            return None;
+        }
+        economy
+            .owned_deposits
+            .iter()
+            .map(|mine| mine.haul_distance)
+            .sum::<f32>()
+            / capacity.total_haulers as f32
+    } else {
+        0.0
+    };
+
     // Start with the cheapest plausible routes so distant candidates usually
     // need only an optimistic value bound, even when the map has many deposits.
     let opportunities_count = unchecked.len();
@@ -278,20 +323,6 @@ pub(super) fn plan_economy(
             .total_cmp(&home.distance_squared(b.position))
             .then_with(|| a.id.cmp(&b.id))
     });
-    let (spare_workers, haul_overhead) =
-        if !unchecked.is_empty() && economy.owned_deposits.len() > 1 {
-            expansion_capacity(owner, state, &economy.owned_deposits, budget)?
-        } else {
-            (usize::MAX, 0.0)
-        };
-    if !unchecked.is_empty()
-        && (spare_workers == 0
-            || (!replacing_lost_mine
-                && !all_mines_saturated(owner, state, &economy.owned_deposits, budget)?))
-    {
-        return (!budget.exhausted).then_some(economy);
-    }
-
     let mut best: Option<(OwnedDeposit, f32)> = None;
     for deposit in unchecked {
         let terrain_exposure = route_exposure(home, deposit.position, state.terrain, budget);
@@ -334,9 +365,10 @@ pub(super) fn plan_economy(
         };
         let score = value - distance / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_haul_cost;
         if score > best.as_ref().map_or(0.0, |(_, score)| *score)
-            && (spare_workers > 1
-                || mine_observation(owner, deposit, mine.gather_cell, state, budget)?.has_space)
             && economy.can_fit(&mine, ECONOMY_EXPANSION_PAINT_LIMIT, budget)
+            && capacity.can_deliver(state.supply.map(|supply| supply.logistics), distance)
+            && (capacity.workers > 1
+                || mine_observation(owner, deposit, mine.gather_cell, state, budget)?.has_source)
         {
             best = Some((mine, score));
         }
@@ -345,19 +377,55 @@ pub(super) fn plan_economy(
     (!budget.exhausted).then_some(economy)
 }
 
-fn all_mines_saturated(
-    owner: SwarmId,
-    state: &GameState<'_>,
-    mines: &[OwnedDeposit],
-    budget: &mut WorkBudget,
-) -> Option<bool> {
-    for mine in mines {
-        let deposit = find_deposit(mine.id, state, budget).ok()??;
-        if !mine_observation(owner, deposit, mine.gather_cell, state, budget)?.is_saturated() {
-            return Some(false);
-        }
+fn mine_supply(mines: &[MineObservation]) -> f32 {
+    mines
+        .iter()
+        .filter(|mine| mine.observation_ticks > 0)
+        .map(|mine| {
+            mine.delivered_minerals as f32 * crate::SIMULATION_HZ as f32
+                / mine.observation_ticks as f32
+        })
+        .sum()
+}
+
+fn needs_more_extraction(observation: EconomyObservation, retained: &[MineObservation]) -> bool {
+    let Some(haul) = observation.haul else {
+        return false;
+    };
+    let supply = mine_supply(retained);
+    // Mine activity and Haul Quotas use different windows. Allow a small
+    // mismatch from loads and terminal consumption crossing a window boundary.
+    if haul.haul_rate <= 0.0 || haul.delivered_rate < 0.75 * supply {
+        return false;
     }
-    Some(true)
+    let spending = observation
+        .gather
+        .spending_capacity
+        .min(haul.spending_capacity);
+    let observation_seconds = HAUL_WINDOW_TICKS as f32 / crate::SIMULATION_HZ as f32;
+    (spending - supply.max(haul.delivered_rate)) * observation_seconds >= 1.0
+}
+
+pub(super) struct ExpansionCapacity {
+    workers: u32,
+    haulers: u32,
+    total_haulers: u32,
+    worker_rate: f32,
+    measured_haul_rate: Option<f32>,
+}
+
+impl ExpansionCapacity {
+    pub(super) fn can_deliver(&self, logistics: Option<&LogisticsTuning>, distance: f32) -> bool {
+        let Some(logistics) = logistics else {
+            return true;
+        };
+        let haul_rate = logistics.hauler_carry_capacity.max(1) as f32 * crate::SIMULATION_HZ as f32
+            / estimated_lead_ticks(logistics, distance).max(1.0);
+        let haul_rate = self
+            .measured_haul_rate
+            .map_or(haul_rate, |measured| haul_rate.min(measured));
+        haul_rate * self.haulers as f32 >= self.worker_rate
+    }
 }
 
 fn reachable_position(
@@ -372,14 +440,15 @@ fn reachable_position(
     })
 }
 
-fn expansion_capacity(
+pub(super) fn expansion_capacity(
     owner: SwarmId,
     state: &GameState<'_>,
-    mines: &[OwnedDeposit],
+    observation: EconomyObservation,
+    retained: &[MineObservation],
     budget: &mut WorkBudget,
-) -> Option<(usize, f32)> {
-    let mut workers = 0usize;
-    let mut haulers = 0usize;
+) -> Option<ExpansionCapacity> {
+    let mut workers = 0u32;
+    let mut haulers = 0u32;
     for bot in state.bots {
         if !budget.spend(1) {
             return None;
@@ -399,28 +468,28 @@ fn expansion_capacity(
             NanobotType::Defender => {}
         }
     }
-    if haulers == 0 {
-        return Some((0, 0.0));
+    if !budget.spend(retained.len().saturating_mul(2)) {
+        return None;
     }
-
-    // Reserve one Worker for shared upkeep, then keep an extractor and any
-    // needed Source Stockpile builder at each existing mine.
-    let mut assigned_workers = 1;
-    let mut haul_distance = 0.0;
-    for mine in mines {
-        if !budget.spend(1) {
-            return None;
-        }
-        let deposit = find_deposit(mine.id, state, budget).ok()??;
-        assigned_workers += 1 + usize::from(
-            !mine_observation(owner, deposit, mine.gather_cell, state, budget)?.has_space,
-        );
-        haul_distance += mine.haul_distance;
-    }
-    Some((
-        workers.saturating_sub(assigned_workers),
-        haul_distance / haulers as f32,
-    ))
+    let mine_workers = retained.iter().fold(0u32, |workers, mine| {
+        workers.saturating_add(mine.active_workers.max(mine.worker_capacity))
+    });
+    let gathering = mine_workers.max(observation.gather.gathering_workers);
+    let haul_commitments = observation.haul.map_or(0, |haul| {
+        let existing_flow = mine_supply(retained).max(haul.delivered_rate);
+        haul.haul_quota
+            .max(throughput_quota(existing_flow, haul.haul_rate))
+    });
+    Some(ExpansionCapacity {
+        workers: workers.saturating_sub(gathering.saturating_add(observation.upkeep_workers)),
+        haulers: haulers.saturating_sub(haul_commitments.max(observation.committed_haulers)),
+        total_haulers: haulers,
+        worker_rate: observation.gather.gather_rate,
+        measured_haul_rate: observation
+            .haul
+            .map(|haul| haul.haul_rate)
+            .filter(|rate| *rate > 0.0),
+    })
 }
 
 pub(super) fn mine_observation(
