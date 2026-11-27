@@ -317,7 +317,7 @@ pub(super) fn plan_economy(
             Some(economy.owned_deposits[index].id),
             budget,
         )?;
-        let mine = &mut economy.owned_deposits[index];
+        let mine = &economy.owned_deposits[index];
         let deposit = find_deposit(mine.id, state, budget).ok()??;
         let mut service =
             if previous.is_some() || observation.low_reserve_ticks >= HAUL_WINDOW_TICKS {
@@ -333,7 +333,7 @@ pub(super) fn plan_economy(
             } else {
                 MineObservation::default()
             };
-        mine.blocked_since = (service.source_path != Some(true)).then(|| {
+        let mut blocked_since = (service.source_path != Some(true)).then(|| {
             let last_dropoff = service
                 .ticks_since_dropoff
                 .map_or(0, |elapsed| state.tick.saturating_sub(elapsed));
@@ -342,9 +342,9 @@ pub(super) fn plan_economy(
                 .unwrap_or(state.tick)
                 .max(last_dropoff)
         });
-        let stalled = mine
-            .blocked_since
-            .is_some_and(|since| state.tick - since >= MINE_OBSERVATION_TICKS);
+        let stalled =
+            blocked_since.is_some_and(|since| state.tick - since >= MINE_OBSERVATION_TICKS);
+        let mut rerouted_mine = None;
         if stalled
             && (!opportunities.is_empty()
                 || deposit_candidate_cells(state.grid, deposit.position, deposit.radius)
@@ -383,14 +383,30 @@ pub(super) fn plan_economy(
                             state,
                             budget,
                         )?;
-                        Some(alternate_service.source_path == Some(true))
+                        if alternate_service.source_path != Some(true) {
+                            return Some(false);
+                        }
+                        if !budget.spend(other_gather.len() + 1) {
+                            return None;
+                        }
+                        let mut proposed_gather = other_gather.clone();
+                        proposed_gather.push(gather_cell);
+                        preserves_mine_sources(
+                            owner,
+                            state,
+                            &economy.owned_deposits,
+                            None,
+                            mine.id,
+                            &proposed_gather,
+                            budget,
+                        )
                     },
                 );
                 if budget.exhausted {
                     return None;
                 }
                 if let Ok(Some((rerouted, _))) = alternate {
-                    *mine = rerouted;
+                    rerouted_mine = Some(rerouted);
                     service = alternate_service;
                     rerouted_any = true;
                 } else if failed_mine.is_none() && economy.recovery.vacancies == 0 {
@@ -398,10 +414,15 @@ pub(super) fn plan_economy(
                 }
             }
             if service.source_path == Some(true) {
-                mine.blocked_since = None;
+                blocked_since = None;
             }
         }
         retained.push((mine.id, service));
+        let mine = &mut economy.owned_deposits[index];
+        if let Some(rerouted) = rerouted_mine {
+            *mine = rerouted;
+        }
+        mine.blocked_since = blocked_since;
     }
 
     if rerouted_any {
@@ -612,7 +633,7 @@ pub(super) fn plan_economy(
                 owner,
                 state,
                 &economy.owned_deposits,
-                &retained,
+                Some(&retained),
                 replacement.retires,
                 &other_gather,
                 budget,
@@ -629,23 +650,48 @@ fn preserves_mine_sources(
     owner: SwarmId,
     state: &GameState<'_>,
     mines: &[OwnedDeposit],
-    previous: &[MineObservation],
-    retires: u64,
+    previous: Option<&[MineObservation]>,
+    withdrawing: u64,
     gather: &[IVec2],
     budget: &mut WorkBudget,
 ) -> Option<bool> {
     if !budget.spend(mines.len().saturating_mul(2).saturating_add(gather.len())) {
         return None;
     }
-    let retired_cell = mines.iter().find(|mine| mine.id == retires)?.gather_cell;
-    if gather.contains(&retired_cell) {
+    let old_cell = mines
+        .iter()
+        .find(|mine| mine.id == withdrawing)?
+        .gather_cell;
+    if gather.contains(&old_cell) {
         return Some(true);
     }
-    for (mine, service) in mines.iter().filter(|mine| mine.id != retires).zip(previous) {
+    let old_gather = if previous.is_none() {
+        gather_support(mines, None, budget)?
+    } else {
+        Vec::new()
+    };
+    for (index, mine) in mines
+        .iter()
+        .filter(|mine| mine.id != withdrawing)
+        .enumerate()
+    {
+        let deposit = find_deposit(mine.id, state, budget).ok()??;
+        let service = if let Some(previous) = previous {
+            previous[index]
+        } else {
+            mine_observation(
+                owner,
+                deposit,
+                mine.gather_cell,
+                &old_gather,
+                false,
+                state,
+                budget,
+            )?
+        };
         if service.source_path != Some(true) {
             continue;
         }
-        let deposit = find_deposit(mine.id, state, budget).ok()??;
         let projected = mine_observation(
             owner,
             deposit,
