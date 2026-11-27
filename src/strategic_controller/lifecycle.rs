@@ -59,6 +59,22 @@ impl WorkBudget {
         }
     }
 
+    pub(super) fn optional_probe(
+        &mut self,
+        max_work: usize,
+        probe: impl FnOnce(&mut Self) -> bool,
+    ) -> bool {
+        let limit = self.used.saturating_add(max_work);
+        // Leave planning room for required paint after a full optional probe.
+        if self.exhausted || self.limit.saturating_sub(limit) < max_work {
+            return false;
+        }
+        let mut probe_budget = Self { limit, ..*self };
+        let result = probe(&mut probe_budget);
+        self.used = probe_budget.used;
+        result
+    }
+
     fn call_work(&self) -> usize {
         self.used.saturating_sub(self.call_start)
     }
@@ -78,6 +94,14 @@ impl Controller {
 
     pub fn owner(&self) -> SwarmId {
         self.owner
+    }
+
+    pub(crate) fn retained_mine_cells(&self) -> impl Iterator<Item = (u64, [IVec2; 2])> + '_ {
+        self.state.current.iter().flat_map(|plan| {
+            plan.owned_deposits
+                .iter()
+                .map(|mine| (mine.id, [mine.gather_cell, mine.build_cell]))
+        })
     }
 
     pub fn decide(&mut self, tuning: &AutonomyTuning, state: &GameState<'_>) -> Decision {

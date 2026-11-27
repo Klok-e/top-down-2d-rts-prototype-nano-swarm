@@ -213,6 +213,15 @@ pub(super) fn generate_candidates(
     }
     let forces = estimate_forces(tuning, owner, state, budget);
     let own_income = owner_state.map_or(0.0, |swarm| swarm.mineral_income_per_second);
+    if !budget.spend(economy.owned_deposits.len().saturating_mul(2)) {
+        return candidates;
+    }
+    // Shared Defender responses already handle Nanobots inside the mine's support.
+    let own_mine_cells: HashSet<_> = economy
+        .owned_deposits
+        .iter()
+        .flat_map(|mine| [mine.gather_cell, mine.build_cell])
+        .collect();
     let mut hostile_bots = BTreeSet::new();
     let mut recoverable = BTreeSet::new();
     let mut completed_structures = BTreeMap::<SwarmId, usize>::new();
@@ -220,7 +229,10 @@ pub(super) fn generate_candidates(
         if !budget.spend(1) {
             return candidates;
         }
-        if bot.owner != owner && bot.health > 0 {
+        if bot.owner != owner
+            && bot.health > 0
+            && !own_mine_cells.contains(&world_to_intent_cell(bot.position))
+        {
             hostile_bots.insert(bot.owner);
         }
     }
@@ -370,7 +382,10 @@ pub(super) fn generate_candidates(
         if !budget.spend(1) {
             return candidates;
         }
-        if bot.owner == owner || bot.health == 0 {
+        if bot.owner == owner
+            || bot.health == 0
+            || own_mine_cells.contains(&world_to_intent_cell(bot.position))
+        {
             continue;
         }
         nearby_mines.clear();
