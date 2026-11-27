@@ -30,18 +30,25 @@ pub(super) fn materialize_plan(
     let swarm = state.swarms.iter().find(|swarm| swarm.id == owner);
     let home = swarm.map_or(Vec2::ZERO, |swarm| swarm.home);
     let home_cell = world_to_intent_cell(home);
+    let replacement = economy
+        .expansion
+        .as_ref()
+        .and_then(|claim| claim.replacement.as_ref());
+    let base_paint =
+        replacement.map_or(&economy.desired, |replacement| &replacement.retained_paint);
     let mines = economy
         .owned_deposits
         .iter()
-        .chain(economy.expansion.iter());
+        .filter(|mine| replacement.is_none_or(|replacement| replacement.retires != mine.id))
+        .chain(economy.expansion.iter().map(|claim| &claim.mine));
     let extra_paint = economy
         .expansion
         .as_ref()
-        .map_or(&[][..], |mine| &mine.desired);
-    if !budget.spend(economy.desired.len() + extra_paint.len()) {
+        .map_or(&[][..], |claim| &claim.mine.desired);
+    if !budget.spend(base_paint.len() + extra_paint.len()) {
         return None;
     }
-    let mut desired = economy.desired.clone();
+    let mut desired = base_paint.clone();
     desired.extend(extra_paint.iter().copied());
 
     push_desired(
@@ -148,9 +155,19 @@ pub(super) fn materialize_plan(
         front.block = block;
         front
     });
+    if !budget.spend(economy.recovery.retired.len()) {
+        return None;
+    }
+    let mut mine_recovery = economy.recovery.clone();
+    if let Some(replacement) = replacement {
+        mine_recovery.retired.insert(replacement.retires);
+    } else if economy.expansion.is_some() {
+        mine_recovery.vacancies = mine_recovery.vacancies.saturating_sub(1);
+    }
     let plan = IntentPlan {
         objective,
         owned_deposits,
+        mine_recovery,
         attack,
         staging,
         key_charger,

@@ -30,6 +30,86 @@ fn install_empty_reachability(app: &mut App) {
 }
 
 #[test]
+fn strategic_economy_replaces_a_depleted_mine_when_a_hauler_arrives_later() {
+    use top_down_2d_rts_prototype_nano_swarm::resources::{ResourceDeposit, Stockpile};
+
+    let mut app = common::sim_app_with_gather_haul();
+    app.insert_resource(IntentGrid::new(16, 16))
+        .add_plugins(StrategicControllerPlugin);
+    let owner = SwarmId::PLAYER;
+    let home = common::cell_world_center(IVec2::ZERO);
+    let swarm = common::spawn_swarm_with_nanobots(&mut app, home, &[(NanobotType::Worker, 9)]);
+    app.world_mut()
+        .entity_mut(swarm)
+        .insert(StrategicController::new(owner));
+    install_empty_reachability(&mut app);
+    let old = IVec2::X;
+    let retained = IVec2::NEG_X;
+    let next = IVec2::Y;
+    let [(old_mine, _), _, (next_mine, next_source)] = [old, retained, next].map(|cell| {
+        let position = common::cell_world_center(cell);
+        let amount = if cell == old { 4 } else { 72_000 };
+        let deposit = common::spawn_deposit(
+            &mut app,
+            common::DepositFixture {
+                world_pos: position,
+                amount,
+                capacity: amount,
+                radius: 64.0,
+            },
+        );
+        if cell != next {
+            app.world_mut()
+                .entity_mut(deposit)
+                .insert(OwnerSwarm(swarm));
+        }
+        let source = common::spawn_stockpile(&mut app, position + 144.0 * Vec2::X, 0, 4);
+        (deposit, source)
+    });
+    let sink = common::spawn_sink_stockpile(&mut app, home - 180.0 * Vec2::Y, 0, 2_000);
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
+    let gather = |app: &App, cell| {
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(cell)
+            .is_some_and(|paint| paint.has_owned(IntentKind::Gather, owner))
+    };
+    app.update();
+    assert!(gather(&app, old));
+    for _ in 0..960 {
+        app.update();
+        assert!(gather(&app, retained));
+        assert!(!gather(&app, next));
+    }
+    assert_eq!(
+        app.world().get::<ResourceDeposit>(old_mine).unwrap().amount,
+        0
+    );
+    assert!(!gather(&app, old));
+
+    common::spawn_hauler_at(&mut app, home);
+    for _ in 0..960 {
+        app.update();
+        assert!(gather(&app, retained));
+        if app.world().get::<Stockpile>(next_source).unwrap().amount > 0 {
+            assert!(gather(&app, next));
+            return;
+        }
+    }
+    let next_resource = app.world().get::<ResourceDeposit>(next_mine).unwrap();
+    let telemetry = app
+        .world()
+        .resource::<top_down_2d_rts_prototype_nano_swarm::strategic_runtime::ControllerTelemetry>(
+    );
+    panic!(
+        "Workers did not deliver from the replacement mine. Gather: {}, amount: {}, controller: {:?}",
+        gather(&app, next),
+        next_resource.amount,
+        telemetry.profiles(),
+    );
+}
+
+#[test]
 fn strategic_intent_finishes_a_remnant_away_from_its_former_home() {
     use std::time::Duration;
 

@@ -197,11 +197,8 @@ impl PlannerState {
             };
         }
 
-        let previous_deposits = self
-            .current
-            .as_ref()
-            .map_or(&[][..], |plan| plan.owned_deposits.as_slice());
-        let Some(mut economy) = plan_economy(tuning, owner, state, previous_deposits, &mut budget)
+        let Some(mut economy) =
+            plan_economy(tuning, owner, state, self.current.as_ref(), &mut budget)
         else {
             self.tuning_review_requested |= tuning_review;
             self.work_used = budget.used;
@@ -492,8 +489,18 @@ impl PlannerState {
             && !attack_progressed
             && (stall_grace || self.covered_stall_grace_used);
         self.denied_deposits = denied_deposits;
-        if let Some(mine) = economy.expansion {
-            explanation.push_str(&format!(", claimed neutral Resource Deposit {}", mine.id));
+        if let Some(claim) = economy.expansion {
+            if let Some(replacement) = claim.replacement {
+                explanation.push_str(&format!(
+                    ", replaced stalled Resource Deposit {} with {}",
+                    replacement.retires, claim.mine.id
+                ));
+            } else {
+                explanation.push_str(&format!(
+                    ", claimed neutral Resource Deposit {}",
+                    claim.mine.id
+                ));
+            }
         }
         selected.append_context(&mut explanation);
         self.current = Some(selected);
