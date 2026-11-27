@@ -189,17 +189,7 @@ pub(super) fn generate_candidates(
     });
     let home = owner_state.map_or(Vec2::ZERO, |swarm| swarm.home);
     let home_cell = world_to_intent_cell(home);
-    let base = PlanCandidate {
-        objective: economy
-            .expansion
-            .map_or(Objective::HoldHome, Objective::SecureDeposit),
-        attack: None,
-        anchor: home_cell,
-        attack_target: None,
-        approach: None,
-        score: 0.0,
-        protected_home: None,
-    };
+    let base = PlanCandidate::hold_home(home_cell);
     let mut candidates = vec![base.clone()];
     if let Some((deposit, target)) = economy.threatened {
         candidates.push(PlanCandidate {
@@ -219,10 +209,6 @@ pub(super) fn generate_candidates(
             ..base
         });
     }
-    if economy.free_deposit_exists || !economy.contested_deposits.is_empty() {
-        return candidates;
-    }
-
     let forces = estimate_forces(tuning, owner, state, budget);
     let own_income = owner_state.map_or(0.0, |swarm| swarm.mineral_income_per_second);
     if !budget.spend(economy.owned_deposits.len().saturating_mul(2)) {

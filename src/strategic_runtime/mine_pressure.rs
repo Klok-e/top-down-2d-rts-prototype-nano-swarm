@@ -205,7 +205,9 @@ impl MinePressureHistory {
         allow_work: &mut dyn FnMut() -> bool,
     ) -> Option<MinePressure> {
         let mut pressure = MinePressure::default();
-        if let Some(presence) = self.presence.get(&(owner, deposit.id)) {
+        if let Some(presence) = self.presence.get(&(owner, deposit.id))
+            && presence.gather_cell == cells[0]
+        {
             pressure.armed_defenders = presence.count;
             pressure.armed_presence_ticks = tick.saturating_sub(presence.first_tick) + 1;
             pressure.ticks_since_attack_during_presence =

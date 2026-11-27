@@ -339,13 +339,13 @@ fn a_stall_with_a_defender_outside_the_painted_work_area_stays_economic() {
     fixture.deliver_minerals(OUTPOST);
     common::spawn_stationary_defender_at(&mut fixture.app, center + Vec2::X * 180.0, fixture.enemy);
     fixture.advance(6 * SIMULATION_HZ as u64 + REVIEW_TICKS);
-    assert!(!fixture.owns_defend(OUTPOST - IVec2::Y));
+    assert!(!fixture.owns_defend(OUTPOST - IVec2::ONE));
 }
 
 #[test]
 fn an_attack_that_prevents_the_first_dropoff_holds_defense_during_occupation() {
     let mut fixture = Fixture::new(false);
-    let (victim, _) = fixture.attack(OUTPOST, 1);
+    let (victim, occupying_force) = fixture.attack(OUTPOST, 1);
     let mine = fixture.deposit(OUTPOST);
     fixture.app.world_mut().entity_mut(victim).insert((
         GatherAssignment::new(OUTPOST, mine),
@@ -366,4 +366,11 @@ fn an_attack_that_prevents_the_first_dropoff_holds_defense_during_occupation() {
     fixture.advance(3 * SIMULATION_HZ as u64);
     assert!(fixture.has_front(OUTPOST));
     assert!(!fixture.has_front(FRONT));
+
+    for defender in occupying_force {
+        fixture.app.world_mut().despawn(defender);
+    }
+    fixture.advance(REVIEW_TICKS);
+    assert!(fixture.has_front(FRONT));
+    assert!(!fixture.has_front(OUTPOST));
 }
