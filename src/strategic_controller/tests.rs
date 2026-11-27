@@ -3742,6 +3742,21 @@ fn an_undefended_enemy_mine_is_raided_until_arrival_then_can_be_raided_again() {
         ..direct_attack_tuning()
     };
     let decide = |controller: &mut Controller, grid: &IntentGrid, bots: &[BotState], tick| {
+        let mine = mine_at(
+            owner,
+            world(home_mine),
+            MineObservation {
+                pressure: MinePressure {
+                    recent_damage: if tick == 4 * WORK_WINDOW_TICKS {
+                        [10, 0]
+                    } else {
+                        [0; 2]
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
         controller.decide(
             &tuning,
             &GameState {
@@ -3749,6 +3764,7 @@ fn an_undefended_enemy_mine_is_raided_until_arrival_then_can_be_raided_again() {
                 deposits: &deposits,
                 structures: &structures,
                 bots,
+                mine_query: Some(&mine),
                 ..empty_state(grid, tick)
             },
         )
@@ -4053,8 +4069,22 @@ fn military_priorities_protect_expansion_before_attacking_home() {
         strategy_raid_distance_cost: 1_000.0,
         ..direct_attack_tuning()
     };
-    let stocked_source = mine_at(owner, main_deposit.position, saturated_mine());
     let decide = |deposits: &[DepositState], structures: &[StructureState], bots: &[BotState]| {
+        let mine = mine_at(
+            owner,
+            main_deposit.position,
+            MineObservation {
+                pressure: MinePressure {
+                    recent_damage: if bots.contains(&intruder) {
+                        [0, 10]
+                    } else {
+                        [0; 2]
+                    },
+                    ..Default::default()
+                },
+                ..saturated_mine()
+            },
+        );
         Controller::new(owner).decide(
             &tuning,
             &GameState {
@@ -4062,7 +4092,7 @@ fn military_priorities_protect_expansion_before_attacking_home() {
                 deposits,
                 structures,
                 bots,
-                mine_query: Some(&stocked_source),
+                mine_query: Some(&mine),
                 ..empty_state(&grid, 0)
             },
         )

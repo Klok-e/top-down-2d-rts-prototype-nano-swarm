@@ -80,6 +80,14 @@ impl Controller {
         self.owner
     }
 
+    pub(crate) fn retained_mine_cells(&self) -> impl Iterator<Item = (u64, [IVec2; 2])> + '_ {
+        self.state.current.iter().flat_map(|plan| {
+            plan.owned_deposits
+                .iter()
+                .map(|mine| (mine.id, [mine.gather_cell, mine.build_cell]))
+        })
+    }
+
     pub fn decide(&mut self, tuning: &AutonomyTuning, state: &GameState<'_>) -> Decision {
         if state.finished {
             return Decision::idle("match finished");

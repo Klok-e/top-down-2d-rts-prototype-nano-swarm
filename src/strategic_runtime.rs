@@ -541,7 +541,13 @@ fn strategic_intent_system(
         })
         .collect();
     deposit_states.sort_by_key(|deposit| deposit.id);
-    mine_pressure.update_presence(tick, &deposit_states, tuning.combat.attack_range);
+    let retained_mines = controllers.iter().flat_map(|(_, owner, controller)| {
+        controller
+            .planner
+            .retained_mine_cells()
+            .map(move |(id, cells)| (*owner, id, cells))
+    });
+    mine_pressure.update_presence(tick, retained_mines, &deposit_states, &tuning);
     let terrain: Vec<_> = rocks
         .iter()
         .map(|(rock, transform)| rock.obstacle(transform))

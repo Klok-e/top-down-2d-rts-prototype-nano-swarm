@@ -132,6 +132,7 @@ pub struct MinePressure {
     pub ongoing_damage: u64,
     pub armed_defenders: u32,
     pub armed_presence_ticks: u64,
+    pub ticks_since_attack_during_presence: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]

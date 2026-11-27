@@ -131,7 +131,7 @@ impl Fixture {
             .map(|index| {
                 let intruder = common::spawn_stationary_defender_at(
                     &mut self.app,
-                    position + Vec2::X * (30.0 + index as f32 * 12.0),
+                    position + Vec2::new(88.0 + index as f32 * 12.0, 90.0),
                     self.enemy,
                 );
                 self.app
@@ -322,5 +322,48 @@ fn pressure_covering_the_same_mine_continues_across_a_cell_edge() {
         .translation = (center + Vec2::new(130.0, 80.0)).extend(0.0);
     fixture.advance(3 * SIMULATION_HZ as u64 + REVIEW_TICKS);
     assert!(fixture.owns_defend(OUTPOST - IVec2::Y));
+    assert!(!fixture.has_front(FRONT));
+}
+
+#[test]
+fn a_stall_with_a_defender_outside_the_painted_work_area_stays_economic() {
+    let mut fixture = Fixture::new(false);
+    let center = common::cell_world_center(OUTPOST) + Vec2::X * 220.0;
+    let deposit = fixture.deposit(OUTPOST);
+    fixture
+        .app
+        .world_mut()
+        .get_mut::<Transform>(deposit)
+        .unwrap()
+        .translation = center.extend(0.0);
+    fixture.deliver_minerals(OUTPOST);
+    common::spawn_stationary_defender_at(&mut fixture.app, center + Vec2::X * 180.0, fixture.enemy);
+    fixture.advance(6 * SIMULATION_HZ as u64 + REVIEW_TICKS);
+    assert!(!fixture.owns_defend(OUTPOST - IVec2::Y));
+}
+
+#[test]
+fn an_attack_that_prevents_the_first_dropoff_holds_defense_during_occupation() {
+    let mut fixture = Fixture::new(false);
+    let (victim, _) = fixture.attack(OUTPOST, 1);
+    let mine = fixture.deposit(OUTPOST);
+    fixture.app.world_mut().entity_mut(victim).insert((
+        GatherAssignment::new(OUTPOST, mine),
+        ExtractProgress::default(),
+    ));
+    fixture
+        .app
+        .world_mut()
+        .get_mut::<Health>(victim)
+        .unwrap()
+        .current = 1;
+    fixture.advance(REVIEW_TICKS);
+    assert_eq!(
+        fixture.app.world().get::<Health>(victim).unwrap().current,
+        0
+    );
+    assert!(fixture.has_front(OUTPOST));
+    fixture.advance(3 * SIMULATION_HZ as u64);
+    assert!(fixture.has_front(OUTPOST));
     assert!(!fixture.has_front(FRONT));
 }

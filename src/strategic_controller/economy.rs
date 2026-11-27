@@ -500,11 +500,20 @@ fn threatened_deposit(
         )?;
         let pressure = observation.pressure;
         let damage = pressure.recent_damage.into_iter().sum::<u64>();
-        let disrupted = pressure.armed_presence_ticks >= DISRUPTION_TICKS
-            && observation.ticks_since_dropoff.is_some_and(|elapsed| {
-                elapsed >= DISRUPTION_TICKS
-                    && elapsed <= pressure.armed_presence_ticks + DROPOFF_GRACE_TICKS
-            });
+        let hostile_denial =
+            pressure
+                .ticks_since_attack_during_presence
+                .is_some_and(|since_attack| {
+                    observation
+                        .ticks_since_dropoff
+                        .is_none_or(|since_delivery| since_delivery >= since_attack)
+                });
+        let disrupted = hostile_denial
+            || pressure.armed_presence_ticks >= DISRUPTION_TICKS
+                && observation.ticks_since_dropoff.is_some_and(|elapsed| {
+                    elapsed >= DISRUPTION_TICKS
+                        && elapsed <= pressure.armed_presence_ticks + DROPOFF_GRACE_TICKS
+                });
         if damage == 0 && !disrupted {
             continue;
         }
