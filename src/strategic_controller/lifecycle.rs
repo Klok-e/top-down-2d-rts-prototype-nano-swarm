@@ -147,6 +147,7 @@ impl PlannerState {
             covered_attack,
             covered_attack_movement,
         } = validation;
+        let invalidated = invalidation.is_some() || lost_deposit.is_some();
         let tuning_review = std::mem::take(&mut self.tuning_review_requested);
         let regular_review = tuning_review
             || self.last_review_tick.is_none_or(|last| {
@@ -176,7 +177,7 @@ impl PlannerState {
             .current
             .as_ref()
             .map_or(&[][..], |plan| plan.owned_deposits.as_slice());
-        let Some(economy) = plan_economy(tuning, owner, state, previous_deposits, &mut budget)
+        let Some(mut economy) = plan_economy(tuning, owner, state, previous_deposits, &mut budget)
         else {
             self.tuning_review_requested |= tuning_review;
             self.work_used = budget.used;
@@ -236,6 +237,10 @@ impl PlannerState {
             RaidForces::default()
         };
         let current = self.current.as_ref();
+        let current_raid = current
+            .map(|plan| plan.objective)
+            .filter(|objective| objective.requires_raid_readiness());
+        let mut incumbent_stage = None;
         let mut secured_mine = None;
         let mut stage_candidate = |candidate: &PlanCandidate| {
             if candidate.attack_target.is_none() {
@@ -272,6 +277,9 @@ impl PlannerState {
             {
                 secured_mine = Some(id);
                 return None;
+            }
+            if current_raid == Some(candidate.objective) && incumbent_stage.is_none() {
+                incumbent_stage = Some(front.clone());
             }
             Some(Some(front))
         };
@@ -368,36 +376,80 @@ impl PlannerState {
                 work_units: budget.call_work(),
             };
         }
-        if let Some(id) = lost_deposit {
-            explanation.push_str(&format!(
-                ", owned Resource Deposit {id} was exhausted, lost, or unreachable"
-            ));
-        }
-        let keeps_objective = self
-            .current
-            .as_ref()
-            .is_some_and(|current| current.objective == selected.objective);
-        let selected = materialize_plan(
-            selected.clone(),
-            economy,
-            staging,
+        let mut plan = materialize_plan(
+            selected,
+            &economy,
+            staging.as_ref(),
             owner,
             state,
             tuning,
             &mut budget,
         );
-        if budget.exhausted || !budget.spend(selected.desired.len()) || !selected.is_coordinated() {
+        let replace_invalid_plan = invalidated
+            || current_raid.is_some_and(|objective| {
+                objective.priority() >= selected.objective.priority() && incumbent_stage.is_none()
+            });
+        let urgent_defense = matches!(selected.objective, Objective::DefendDeposit(_));
+        if plan.is_none()
+            && (urgent_defense || (current.is_some() && replace_invalid_plan))
+            && !budget.exhausted
+            && economy.expansion.take().is_some()
+        {
+            plan = materialize_plan(
+                selected,
+                &economy,
+                staging.as_ref(),
+                owner,
+                state,
+                tuning,
+                &mut budget,
+            );
+            explanation.push_str(", deferred the new claim to complete the military plan");
+        }
+        if plan.is_none()
+            && (current.is_none() || replace_invalid_plan)
+            && !budget.exhausted
+            && (selected.objective != Objective::HoldHome || economy.expansion.is_some())
+        {
+            economy.expansion = None;
+            plan = materialize_plan(
+                &PlanCandidate::hold_home(selected.anchor),
+                &economy,
+                None,
+                owner,
+                state,
+                tuning,
+                &mut budget,
+            );
+            explanation =
+                "selected hold the home economy because the proposed paint did not fit".to_string();
+        }
+        let Some(selected) = plan else {
+            if let Some(held) = self.current.as_mut().and_then(|plan| plan.staging.as_mut())
+                && let Some(reviewed) = incumbent_stage.as_ref()
+            {
+                held.observe_readiness_from(reviewed);
+            }
             self.tuning_review_requested |= tuning_review && budget.exhausted;
             self.work_used = budget.used;
             return Decision {
                 edits: Vec::new(),
-                explanation: self.describe_active_plan(
-                    "planning allowance exhausted during paint fulfillment, so the current Intent Plan was retained",
-                ),
+                explanation: self.describe_active_plan(if budget.exhausted {
+                    "planning allowance exhausted during paint fulfillment"
+                } else {
+                    "coordinated paint could not be fulfilled within the review limits"
+                }),
                 reviewed: true,
                 work_units: budget.call_work(),
             };
+        };
+        if let Some(id) = lost_deposit {
+            explanation.push_str(&format!(
+                ", owned Resource Deposit {id} was exhausted, lost, or unreachable"
+            ));
         }
+        let keeps_objective =
+            current.is_some_and(|current| current.objective == selected.objective);
         let previous = self.current.as_ref().map(|plan| &plan.desired);
         budget.release_edit_reserve(previous.map_or(0, HashSet::len) + selected.desired.len());
         let edits = intent_edits(
@@ -416,6 +468,9 @@ impl PlannerState {
             && !attack_progressed
             && (stall_grace || self.covered_stall_grace_used);
         self.denied_deposits = denied_deposits;
+        if let Some(mine) = economy.expansion {
+            explanation.push_str(&format!(", claimed neutral Resource Deposit {}", mine.id));
+        }
         selected.append_context(&mut explanation);
         self.current = Some(selected);
         Decision {

@@ -763,7 +763,7 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
 }
 
 #[test]
-fn profitable_neutral_expansion_preempts_a_viable_raid() {
+fn profitable_neutral_expansion_preserves_a_viable_raid() {
     let mut grid = IntentGrid::new(32, 32);
     let owner = SwarmId(4);
     let enemy = SwarmId(9);
@@ -910,7 +910,7 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
             && edit.kind == IntentKind::Gather
             && edit.cell == IVec2::new(4, 0)
     }));
-    assert!(!expansion.edits.iter().any(|edit| {
+    assert!(expansion.edits.iter().any(|edit| {
         edit.action == IntentEditAction::Paint
             && edit.kind == IntentKind::Defend
             && edit.cell == IVec2::new(8, 1)
@@ -1735,7 +1735,11 @@ fn income_lead_adds_a_home_push_without_abandoning_the_mine() {
             finished: false,
         },
     );
-    assert!(initial.explanation.contains("secure Resource Deposit"));
+    assert!(
+        initial
+            .explanation
+            .contains("claimed neutral Resource Deposit 20")
+    );
     apply(&mut grid, owner, &initial);
 
     let supplied_swarms = [
@@ -2036,6 +2040,10 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
         .into_iter()
         .map(|(rock, transform)| rock.obstacle(&transform))
         .collect::<Vec<_>>();
+    let navigation = crate::navigation::Navigation::new(&grid, terrain.clone());
+    let route = |start, goal, allow_work: &mut dyn FnMut() -> bool| {
+        navigation.route_without_paint(start, goal, allow_work)
+    };
 
     let decision = Controller::new(owner).decide(
         &direct_attack_tuning(),
@@ -2048,7 +2056,7 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
             terrain: &terrain,
             charge: &DEFAULT_CHARGE,
             reachability: None,
-            route_query: None,
+            route_query: Some(&route),
             mine_query: None,
             supply: None,
             build_footprints: &[],
@@ -2060,7 +2068,8 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
     assert!(
         decision
             .explanation
-            .contains("raid enemy Resource Deposit 21")
+            .contains("raid enemy Resource Deposit 21"),
+        "{decision:?}"
     );
     assert!(decision.edits.iter().any(|edit| {
         edit.action == IntentEditAction::Paint
@@ -4225,7 +4234,9 @@ fn military_priorities_protect_expansion_before_attacking_home() {
         .collect::<Vec<_>>();
     let expansion = decide(&deposits, &structures, &expansion_bots);
     assert!(
-        expansion.explanation.contains("secure Resource Deposit 30"),
+        expansion
+            .explanation
+            .contains("claimed neutral Resource Deposit 30"),
         "{expansion:?}"
     );
 
@@ -4248,16 +4259,18 @@ fn military_priorities_protect_expansion_before_attacking_home() {
             .any(|edit| { edit.kind == IntentKind::Defend && edit.cell == enemy_home })
     );
 
-    let blocked_approach = |_, goal, _: &mut dyn FnMut() -> bool| {
-        Some(match goal {
+    let blocked_approach = |start, goal, _: &mut dyn FnMut() -> bool| {
+        let end = match goal {
             RouteGoal::Range { center, .. } if center == raid_target.position => {
-                RouteOutcome::Unreachable
+                return Some(RouteOutcome::Unreachable);
             }
-            _ => RouteOutcome::Found(crate::navigation::Route {
-                waypoints: vec![],
-                cost: 0.0,
-            }),
-        })
+            RouteGoal::Range { center, .. } | RouteGoal::Point(center) => center,
+            RouteGoal::Interaction(region) => region.approach(start),
+        };
+        Some(RouteOutcome::Found(crate::navigation::Route {
+            waypoints: vec![end],
+            cost: end.distance(start),
+        }))
     };
     let reachable_home = Controller::new(owner).decide(
         &tuning,
