@@ -13,11 +13,12 @@ use std::{
 use crate::{
     intent::IntentGrid,
     nanobot::{
-        Cargo, Charge, Charger, DirectMovementComponent, DropOffArea, ExtractProgress,
-        GatherAssignment, Health, InteractionRegion, LogisticsReservation, MatchOutcome, Nanobot,
-        NanobotType, OwnerSwarm, PlannedStructure, ProductionFacility, RegionalAllocationSet,
-        ReturningToStockpile, Structure, Swarm, SwarmId, SwarmMember, WorkBlocked,
-        gather_worker_slots,
+        Cargo, Charge, Charger, ChargerAssignment, ChargerProgress, ClearingEvacuation, Commitment,
+        DefenderDisengagement, DefenderResponse, DefenderRout, DirectMovementComponent,
+        DropOffArea, ExtractProgress, GatherAssignment, Health, InteractionRegion,
+        LogisticsReservation, MatchOutcome, Nanobot, NanobotType, OwnerSwarm, PlannedStructure,
+        ProductionFacility, RegionalAllocationSet, ReturningToStockpile, Structure, Swarm, SwarmId,
+        SwarmMember, WorkBlocked, gather_worker_slots,
     },
     navigation::{Navigation, Obstacle, RouteGoal, RouteOutcome},
     reachability::{IntentWriteAction, SwarmReachabilityMap, apply_reachable_intent},
@@ -26,8 +27,8 @@ use crate::{
         buffered_minerals,
     },
     strategic_controller::{
-        BotState, BuildFootprint, Controller, DepositState, GameState, IntentEditAction,
-        StructureKind, StructureState, SwarmState,
+        BotState, BuildFootprint, Controller, DefenderDuty, DepositState, GameState,
+        IntentEditAction, StructureKind, StructureState, SwarmState,
     },
     terrain::RockFormation,
 };
@@ -226,6 +227,15 @@ fn strategic_intent_system(
                 Has<DirectMovementComponent>,
                 Has<WorkBlocked>,
             ),
+            (
+                Option<&Commitment>,
+                Has<ChargerAssignment>,
+                Has<ChargerProgress>,
+                Has<DefenderDisengagement>,
+                Has<DefenderRout>,
+                Has<ClearingEvacuation>,
+                Option<&DefenderResponse>,
+            ),
         ),
         With<Nanobot>,
     >,
@@ -283,7 +293,25 @@ fn strategic_intent_system(
     let mut bot_states: Vec<_> = bots
         .iter()
         .map(
-            |(entity, owner, kind, transform, health, charge, cargo, gathering)| {
+            |(
+                entity,
+                owner,
+                kind,
+                transform,
+                health,
+                charge,
+                cargo,
+                gathering,
+                (
+                    commitment,
+                    assigned_charger,
+                    charging,
+                    disengaging,
+                    routing,
+                    evacuating,
+                    response,
+                ),
+            )| {
                 let (assignment, reservation, extracting, returning, moving, blocked) = gathering;
                 if *kind == NanobotType::Worker && health.current > 0 && !blocked {
                     let deposit = if returning && cargo.is_some_and(|cargo| cargo.amount > 0) {
@@ -301,6 +329,29 @@ fn strategic_intent_system(
                 let previous = previous_positions
                     .insert(entity, position)
                     .unwrap_or(position);
+                let defender_duty = if *kind != NanobotType::Defender {
+                    DefenderDuty::Available
+                } else if commitment.is_some_and(|task| *task != Commitment::Idle)
+                    || assigned_charger
+                    || charging
+                    || disengaging
+                    || routing
+                    || evacuating
+                {
+                    DefenderDuty::Unavailable
+                } else {
+                    let response_position = response.and_then(|response| {
+                        bots.get(response.target)
+                            .map(|(_, _, _, transform, ..)| transform.translation.truncate())
+                            .or_else(|_| {
+                                structures
+                                    .get(response.target)
+                                    .map(|(_, transform, ..)| transform.translation.truncate())
+                            })
+                            .ok()
+                    });
+                    response_position.map_or(DefenderDuty::Available, DefenderDuty::RespondingTo)
+                };
                 BotState {
                     id: entity.to_bits(),
                     owner: owner.0,
@@ -308,10 +359,11 @@ fn strategic_intent_system(
                     position,
                     health: health.current,
                     max_health: health.max,
-                    charge: charge.map_or(1.0, |c| c.current),
-                    max_charge: charge.map_or(1.0, |c| c.max),
+                    charge: charge.map_or(0.0, |c| c.current),
+                    max_charge: charge.map_or(0.0, |c| c.max),
                     cargo: cargo.map_or(0, |c| c.amount),
                     displacement: position - previous,
+                    defender_duty,
                 }
             },
         )
