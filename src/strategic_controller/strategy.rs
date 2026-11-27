@@ -69,6 +69,7 @@ pub(super) fn validate_plan(
                 && structure.owner == owner
                 && structure.kind == StructureKind::Charger
                 && structure.health > 0
+                && structure.position.is_some()
             {
                 operational = true;
                 break;
@@ -145,10 +146,11 @@ pub(super) fn observe_attack_target(
                     && structure.owner != owner
                     && structure.health > 0
                     && structure.kind != StructureKind::Planned
-                    && is_target_reachable(owner, state, structure.position, budget)?
+                    && let Some(position) = structure.position
+                    && is_target_reachable(owner, state, position, budget)?
                 {
                     return Ok(Some(AttackObligation {
-                        cell: world_to_intent_cell(structure.position),
+                        cell: world_to_intent_cell(position),
                         health: structure.health,
                         ..target
                     }));
@@ -246,7 +248,10 @@ pub(super) fn generate_candidates(
         if structure.owner != owner && structure.kind.counts_for_elimination() {
             *completed_structures.entry(structure.owner).or_default() += 1;
         }
-        if structure.health == 0 || structure.kind == StructureKind::Planned {
+        if structure.health == 0
+            || structure.kind == StructureKind::Planned
+            || structure.position.is_none()
+        {
             continue;
         }
         if structure.owner != owner {
@@ -313,10 +318,13 @@ pub(super) fn generate_candidates(
         {
             continue;
         }
+        let Some(position) = structure.position else {
+            continue;
+        };
         let attack = AttackObligation {
             kind: AttackTargetKind::Structure,
             id: structure.id,
-            cell: world_to_intent_cell(structure.position),
+            cell: world_to_intent_cell(position),
             health: structure.health,
         };
         nearby_mines.clear();
@@ -324,7 +332,7 @@ pub(super) fn generate_candidates(
             economy,
             owner,
             structure.owner,
-            structure.position,
+            position,
             state,
             &mut nearby_mines,
             budget,
@@ -341,7 +349,7 @@ pub(super) fn generate_candidates(
         } else {
             continue;
         };
-        let Ok(reachable) = is_target_reachable(owner, state, structure.position, budget) else {
+        let Ok(reachable) = is_target_reachable(owner, state, position, budget) else {
             return candidates;
         };
         if !reachable {
@@ -354,7 +362,7 @@ pub(super) fn generate_candidates(
             StructureKind::Facility => tuning.strategy_raid_facility_value,
             StructureKind::Planned | StructureKind::Other => 0.0,
         };
-        let distance = home.distance(structure.position) / crate::ZONE_BLOCK_SIZE;
+        let distance = home.distance(position) / crate::ZONE_BLOCK_SIZE;
         let elimination_bonus = if finishes_match {
             SWARM_ELIMINATION_BONUS
         } else {
@@ -371,7 +379,7 @@ pub(super) fn generate_candidates(
             objective,
             attack: Some(attack),
             attack_target: Some(attack.cell),
-            approach: Some(attack_approach(structure.position)),
+            approach: Some(attack_approach(position)),
             score,
             protected_home: mine.and_then(|(_, home_cell)| home_cell),
             ..base
@@ -519,7 +527,7 @@ fn home_has_targets(swarm: &SwarmState, state: &GameState<'_>, budget: &mut Work
             structure.owner == swarm.id
                 && structure.health > 0
                 && structure.kind != StructureKind::Planned
-                && near_home(structure.position)
+                && structure.position.is_some_and(near_home)
         })
         || state
             .bots

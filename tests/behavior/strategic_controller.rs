@@ -145,7 +145,7 @@ mod raid_readiness {
         stockpile
     }
 
-    fn neutral_deposit(app: &mut App, cell: IVec2) {
+    fn neutral_deposit(app: &mut App, cell: IVec2) -> Entity {
         common::spawn_deposit(
             app,
             common::DepositFixture {
@@ -154,7 +154,7 @@ mod raid_readiness {
                 capacity: 72_000,
                 radius: 80.0,
             },
-        );
+        )
     }
 
     fn add_claim_crew(app: &mut App) {
@@ -490,7 +490,7 @@ mod raid_readiness {
         assert!(!forward_defend_cells(&app).is_empty());
     }
 
-    fn finishing_fixture<const N: usize>() -> (App, Entity) {
+    fn finishing_fixture<const N: usize>() -> (App, Entity, Entity) {
         use top_down_2d_rts_prototype_nano_swarm::nanobot::{
             PlannedKind, ProductionFacility, Structure, StructureKind,
         };
@@ -500,7 +500,7 @@ mod raid_readiness {
             .add_plugins(StrategicControllerPlugin);
         let home = common::cell_world_center(IVec2::ZERO);
         let target = common::cell_world_center(TARGET);
-        let enemy_home = common::cell_world_center(TARGET + IVec2::Y * 4);
+        let enemy_home = common::cell_world_center(TARGET + IVec2::Y * 8);
         app.world_mut().spawn((
             Swarm {},
             OWNER,
@@ -515,16 +515,20 @@ mod raid_readiness {
                 Transform::from_translation(enemy_home.extend(0.0)),
             ))
             .id();
-        app.world_mut().spawn((
-            ProductionFacility::new(),
-            OwnerSwarm(enemy),
-            Structure {
-                paint_suspended: true,
-                ..Structure::new(StructureKind::Basic)
-            },
-            Transform::from_translation(target.extend(0.0)),
-        ));
-        let worker = common::spawn_worker_at(&mut app, enemy_home);
+        let facility = app
+            .world_mut()
+            .spawn((
+                ProductionFacility::new(),
+                OwnerSwarm(enemy),
+                Structure {
+                    paint_suspended: true,
+                    ..Structure::new(StructureKind::Basic)
+                },
+                Transform::from_translation(target.extend(0.0)),
+            ))
+            .id();
+        let worker =
+            common::spawn_worker_at(&mut app, common::cell_world_center(TARGET + IVec2::Y * 4));
         app.world_mut()
             .entity_mut(worker)
             .insert(SwarmMember(ENEMY));
@@ -546,25 +550,30 @@ mod raid_readiness {
         let mut tuning = app.world_mut().resource_mut::<Tuning>();
         tuning.autonomy.controller_review_period_ticks = REVIEW_TICKS;
         tuning.autonomy.strategy_staging_spacing_cells = 64;
-        (app, enemy)
+        (app, enemy, facility)
     }
 
     #[test]
     fn ready_force_finishes_an_inactive_facility_despite_a_worker_and_idle_neutral_site() {
-        let (mut app, _) = finishing_fixture::<2>();
+        let (mut app, enemy, _) = finishing_fixture::<2>();
         let neutral = IVec2::new(-4, 0);
         neutral_deposit(&mut app, neutral);
+        let worker_cell = TARGET + IVec2::Y * 4;
+        let enemy_mine = neutral_deposit(&mut app, worker_cell);
+        app.world_mut()
+            .entity_mut(enemy_mine)
+            .insert(OwnerSwarm(enemy));
 
         review(&mut app);
 
         assert!(owns_defend(&app, TARGET), "{}", explanation(&app));
-        assert!(!owns_defend(&app, TARGET + IVec2::Y * 4));
+        assert!(!owns_defend(&app, worker_cell));
         assert!(!owns_intent(&app, neutral, IntentKind::Gather));
     }
 
     #[test]
     fn final_structure_requires_defenders_that_can_take_the_entire_approach() {
-        let (mut guarded, _) = finishing_fixture::<2>();
+        let (mut guarded, _, _) = finishing_fixture::<2>();
         for cell in [IVec2::new(3, 0), IVec2::new(4, 0)] {
             common::spawn_stationary_defender_at(
                 &mut guarded,
@@ -572,7 +581,7 @@ mod raid_readiness {
                 ENEMY,
             );
         }
-        let (mut unstaffed, _) = finishing_fixture::<0>();
+        let (mut unstaffed, _, _) = finishing_fixture::<0>();
         for app in [&mut guarded, &mut unstaffed] {
             review(app);
             assert!(forward_defend_cells(app).is_empty(), "{}", explanation(app));
@@ -587,37 +596,12 @@ mod raid_readiness {
             (1_000, false, false),
             (100, true, false),
         ] {
-            let (mut app, enemy) = finishing_fixture::<2>();
+            let (mut app, enemy, _) = finishing_fixture::<2>();
             if extra_complete {
-                let stockpile = common::spawn_stockpile(
-                    &mut app,
-                    common::cell_world_center(TARGET + IVec2::Y * 40),
-                    0,
-                    150,
-                );
                 app.world_mut()
-                    .entity_mut(stockpile)
-                    .insert(OwnerSwarm(enemy));
+                    .spawn((Stockpile::default(), OwnerSwarm(enemy)));
             }
-            let raided_swarm = app
-                .world_mut()
-                .spawn((
-                    Swarm {},
-                    SwarmId(8),
-                    Transform::from_xyz(-4_000.0, 4_000.0, 0.0),
-                ))
-                .id();
-            let stockpile = add_enemy_mine(&mut app, raided_swarm, raid_target);
-            {
-                let mut pile = app.world_mut().get_mut::<Stockpile>(stockpile).unwrap();
-                pile.amount = stock;
-                pile.capacity = stock;
-            }
-            common::spawn_facility_at(
-                &mut app,
-                raided_swarm,
-                common::cell_world_center(IVec2::new(-13, 10)),
-            );
+            add_competing_raid(&mut app, raid_target, stock);
 
             review(&mut app);
 
@@ -630,6 +614,93 @@ mod raid_readiness {
             assert_eq!(
                 owns_defend(&app, raid_target),
                 !finishing,
+                "{}",
+                explanation(&app)
+            );
+        }
+    }
+
+    fn add_competing_raid(app: &mut App, raid_target: IVec2, stock: u32) {
+        let raided_swarm = app
+            .world_mut()
+            .spawn((
+                Swarm {},
+                SwarmId(8),
+                Transform::from_xyz(-4_000.0, 4_000.0, 0.0),
+            ))
+            .id();
+        let stockpile = add_enemy_mine(app, raided_swarm, raid_target);
+        {
+            let mut pile = app.world_mut().get_mut::<Stockpile>(stockpile).unwrap();
+            pile.amount = stock;
+            pile.capacity = stock;
+        }
+        common::spawn_facility_at(
+            app,
+            raided_swarm,
+            common::cell_world_center(IVec2::new(-13, 10)),
+        );
+    }
+
+    #[test]
+    fn a_new_finishing_approach_checks_guards_behind_the_previous_staging_point() {
+        let (mut app, _, facility) = finishing_fixture::<2>();
+        let decoy_point = TARGET + IVec2::X * 6;
+        add_competing_raid(&mut app, decoy_point, 100);
+        let move_facility = |app: &mut App, cell| {
+            app.world_mut()
+                .get_mut::<Transform>(facility)
+                .unwrap()
+                .translation = common::cell_world_center(cell).extend(0.0);
+        };
+        move_facility(&mut app, TARGET + IVec2::Y * 40);
+        review(&mut app);
+        assert!(owns_defend(&app, decoy_point), "{}", explanation(&app));
+
+        for cell in [IVec2::new(3, 0), IVec2::new(4, 0)] {
+            common::spawn_stationary_defender_at(&mut app, common::cell_world_center(cell), ENEMY);
+        }
+        move_facility(&mut app, TARGET);
+        review(&mut app);
+
+        assert!(!owns_defend(&app, TARGET), "{}", explanation(&app));
+    }
+
+    #[test]
+    fn only_a_ready_force_at_the_staging_point_skips_approach_guards() {
+        for stationed_at_front in [1, 2] {
+            let (mut app, _, _) = finishing_fixture::<2>();
+            review(&mut app);
+            assert!(owns_defend(&app, TARGET), "{}", explanation(&app));
+
+            let world = app.world_mut();
+            let mut defenders = world.query::<(&SwarmMember, &Charge, &mut Transform)>();
+            for (_, _, mut transform) in defenders
+                .iter_mut(world)
+                .filter(|(member, _, _)| member.0 == OWNER)
+                .take(stationed_at_front)
+            {
+                transform.translation = common::cell_world_center(TARGET + IVec2::Y).extend(0.0);
+            }
+            for cell in [IVec2::new(3, 0), IVec2::new(4, 0)] {
+                common::spawn_stationary_defender_at(
+                    &mut app,
+                    common::cell_world_center(cell),
+                    ENEMY,
+                );
+            }
+            review(&mut app);
+            assert!(
+                owns_defend(&app, TARGET),
+                "the active point has a grace period"
+            );
+            for _ in 0..6 * SIMULATION_HZ as u64 {
+                app.update();
+            }
+
+            assert_eq!(
+                owns_defend(&app, TARGET),
+                stationed_at_front == 2,
                 "{}",
                 explanation(&app)
             );
@@ -1210,7 +1281,7 @@ fn controller_urgently_replans_when_key_support_is_lost() {
     let charger = [StructureState {
         id: 42,
         owner,
-        position: world(IVec2::new(1, 0)),
+        position: Some(world(IVec2::new(1, 0))),
         kind: StructureKind::Charger,
         operational: true,
         health: 100,
@@ -1317,7 +1388,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
     let charger = StructureState {
         id: 42,
         owner,
-        position: world(IVec2::new(1, 0)),
+        position: Some(world(IVec2::new(1, 0))),
         kind: StructureKind::Charger,
         operational: true,
         health: 100,
@@ -1352,7 +1423,7 @@ fn regular_and_urgent_reviews_share_one_public_work_allowance() {
         .map(|id| StructureState {
             id: 1_000 + id,
             owner,
-            position: swarms[0].home,
+            position: Some(swarms[0].home),
             kind: StructureKind::Planned,
             operational: false,
             health: 100,
@@ -2163,7 +2234,7 @@ fn economic_defend_paint_changes_real_defender_population_demand() {
     let primary = StructureState {
         id: 1,
         owner,
-        position: home,
+        position: Some(home),
         kind: StructureKind::Charger,
         operational: true,
         health: 100,
@@ -2174,7 +2245,7 @@ fn economic_defend_paint_changes_real_defender_population_demand() {
         primary,
         StructureState {
             id: primary.id + 1,
-            position: home + Vec2::Y * top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE,
+            position: Some(home + Vec2::Y * top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE),
             ..primary
         },
     ];

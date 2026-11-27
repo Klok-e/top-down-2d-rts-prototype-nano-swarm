@@ -82,7 +82,7 @@ impl StructureKind {
 pub struct StructureState {
     pub id: u64,
     pub owner: SwarmId,
-    pub position: Vec2,
+    pub position: Option<Vec2>,
     pub kind: StructureKind,
     pub operational: bool,
     pub health: u32,

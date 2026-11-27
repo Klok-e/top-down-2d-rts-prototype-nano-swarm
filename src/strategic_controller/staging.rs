@@ -215,25 +215,35 @@ pub(super) fn plan_staging(
 
     let route = if requires_readiness || reusable.is_none() {
         let active_raid = requires_readiness && continuing.is_some();
-        let route = staging_route(candidate, previous, active_raid, owner, state, budget)?;
-        let response_supports_front = |position| {
+        let route_start = if requires_readiness {
             continuing
-                .is_some_and(|front| front.covers(world_to_intent_cell(position), owner, state))
+        } else {
+            previous
         };
-        let target_position = match candidate.approach {
-            Some(RouteGoal::Range { center, .. }) => center,
-            _ => intent_cell_center(target),
-        };
-        if requires_readiness
-            && !raid_forces.ready(&route, target_position, response_supports_front, budget)?
-        {
-            let mut held = continuing?.clone();
-            let shortfall_started = held.readiness_shortfall_started.unwrap_or(state.tick);
-            if state.tick.saturating_sub(shortfall_started) >= READINESS_GRACE_TICKS {
-                return None;
+        let route = staging_route(candidate, route_start, active_raid, owner, state, budget)?;
+        if requires_readiness {
+            let target_position = match candidate.approach {
+                Some(RouteGoal::Range { center, .. }) => center,
+                _ => intent_cell_center(target),
+            };
+            let ready = attack_route_is_ready(
+                continuing,
+                owner,
+                state,
+                raid_forces,
+                &route,
+                target_position,
+                budget,
+            )?;
+            if !ready {
+                let mut held = continuing?.clone();
+                let shortfall_started = held.readiness_shortfall_started.unwrap_or(state.tick);
+                if state.tick.saturating_sub(shortfall_started) >= READINESS_GRACE_TICKS {
+                    return None;
+                }
+                held.readiness_shortfall_started = Some(shortfall_started.min(state.tick));
+                return Some(held);
             }
-            held.readiness_shortfall_started = Some(shortfall_started.min(state.tick));
-            return Some(held);
         }
         Some(route)
     } else {
@@ -291,6 +301,65 @@ pub(super) fn plan_staging(
     Some(staging)
 }
 
+fn attack_route_is_ready(
+    continuing: Option<&StagingFront>,
+    owner: SwarmId,
+    state: &GameState<'_>,
+    raid_forces: &RaidForces<'_>,
+    route: &[Vec2],
+    target_position: Vec2,
+    budget: &mut WorkBudget,
+) -> Option<bool> {
+    if !raid_forces.can_launch() {
+        return Some(false);
+    }
+    let covers = |position| {
+        continuing.is_some_and(|front| front.covers(world_to_intent_cell(position), owner, state))
+    };
+    let contributes = |bot: &BotState| match bot.defender_duty {
+        DefenderDuty::RespondingTo(position) => covers(position),
+        _ => true,
+    };
+    if continuing.is_none() {
+        return raid_forces.ready(route, target_position, contributes, budget);
+    }
+    if raid_forces.ready(
+        route,
+        target_position,
+        |bot| contributes(bot) && covers(bot.position),
+        budget,
+    )? {
+        return Some(true);
+    }
+
+    let home = staging_home(owner, state, budget);
+    let stage = *route.first()?;
+    let mut approach = vec![home];
+    if state.route_query.is_some() {
+        let goal = RouteGoal::Range {
+            center: stage,
+            radius: crate::ZONE_BLOCK_SIZE / 2.0,
+        };
+        let Some(prefix) = query_route(state, home, goal, budget) else {
+            return (!budget.exhausted).then_some(false);
+        };
+        approach.extend(prefix.waypoints);
+    }
+    if !budget.spend(route.len()) {
+        return None;
+    }
+    approach.extend_from_slice(route);
+    raid_forces.ready(&approach, target_position, contributes, budget)
+}
+
+fn staging_home(owner: SwarmId, state: &GameState<'_>, budget: &mut WorkBudget) -> Vec2 {
+    state
+        .swarms
+        .iter()
+        .find(|swarm| budget.spend(1) && swarm.id == owner)
+        .map_or(Vec2::ZERO, |swarm| swarm.home)
+}
+
 fn staging_route(
     candidate: &PlanCandidate,
     previous: Option<&StagingFront>,
@@ -299,11 +368,7 @@ fn staging_route(
     state: &GameState<'_>,
     budget: &mut WorkBudget,
 ) -> Option<Arc<[Vec2]>> {
-    let home = state
-        .swarms
-        .iter()
-        .find(|swarm| budget.spend(1) && swarm.id == owner)
-        .map_or(Vec2::ZERO, |swarm| swarm.home);
+    let home = staging_home(owner, state, budget);
     let start = previous.map_or(home, |previous| {
         let cell = previous.point();
         ground(owner, state, cell, budget).unwrap_or_else(|| intent_cell_center(cell))
