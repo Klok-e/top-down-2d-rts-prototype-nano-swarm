@@ -61,6 +61,18 @@ impl DefenderStaging {
     }
 }
 
+/// Destinations chosen by shared allocation, including assignments awaiting a route.
+#[derive(Default, Resource)]
+pub struct DefenderStagingAssignments {
+    by_defender: EntityHashMap<IVec2>,
+}
+
+impl DefenderStagingAssignments {
+    pub fn destination(&self, defender: Entity) -> Option<IVec2> {
+        self.by_defender.get(&defender).copied()
+    }
+}
+
 /// Cache of the current owner-scoped Defender staging layout.
 #[derive(Debug, Default, Resource)]
 pub(super) struct DefenderStagingLayouts {
@@ -645,6 +657,7 @@ pub(super) fn reconcile_defender_staging_system(
     territory: Res<TerritorySnapshot>,
     reachability: Option<Res<SwarmReachabilityMap>>,
     mut layouts: ResMut<DefenderStagingLayouts>,
+    mut published: ResMut<DefenderStagingAssignments>,
     // Per Defender, its last search and how many leading candidates failed the geometry test.
     mut roaming_misses: Local<EntityHashMap<(RoamingSearch, u64)>>,
     mut defenders: Query<
@@ -712,7 +725,8 @@ pub(super) fn reconcile_defender_staging_system(
     }
 
     snapshots.sort_by_key(|defender| (defender.swarm, defender.entity.to_bits()));
-    let mut assignments = EntityHashMap::default();
+    let assignments = &mut published.by_defender;
+    assignments.clear();
     let mut seen_swarms = HashSet::new();
     let mut start = 0;
     while start < snapshots.len() {

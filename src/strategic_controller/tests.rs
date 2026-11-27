@@ -3259,7 +3259,7 @@ fn a_compact_front_leads_the_army_and_waits_for_most_defenders() {
     );
 
     for defender in &mut defenders {
-        defender.position = world(IVec2::new(1, 3));
+        defender.position = world(IVec2::new(min_x, min_y));
     }
     review(
         &mut controller,
@@ -3268,10 +3268,14 @@ fn a_compact_front_leads_the_army_and_waits_for_most_defenders() {
         &defenders,
         WORK_WINDOW_TICKS,
     );
-    assert_eq!(owned_defend_cells(&grid, owner), first);
+    assert_eq!(
+        owned_defend_cells(&grid, owner),
+        first,
+        "an unassigned force in the block must hold"
+    );
 
-    for defender in &mut defenders[..2] {
-        defender.position = world(IVec2::new(min_x, min_y));
+    for defender in &mut defenders {
+        defender.defender_duty = DefenderDuty::StagingAt(IVec2::new(min_x, min_y));
     }
     for defender in &mut defenders[2..] {
         defender.position = world(IVec2::new(1, -3));
@@ -3425,6 +3429,7 @@ fn a_rerouted_raid_advances_on_the_approach_used_for_readiness() {
     let mut force: Vec<_> = ready
         .map(|bot| BotState {
             position: world(first),
+            defender_duty: DefenderDuty::StagingAt(first),
             ..bot
         })
         .into();
@@ -3543,6 +3548,7 @@ fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
         &tuning,
         BotState {
             position: world(IVec2::new(0, -4)),
+            defender_duty: DefenderDuty::StagingAt(IVec2::new(0, -4)),
             ..defender
         },
         2 * WORK_WINDOW_TICKS,
@@ -3574,6 +3580,7 @@ fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
         &tuning,
         BotState {
             position: world(IVec2::new(2, -6)),
+            defender_duty: DefenderDuty::StagingAt(IVec2::new(2, -6)),
             ..defender
         },
         3 * WORK_WINDOW_TICKS + 1,
@@ -3751,7 +3758,7 @@ fn an_undefended_enemy_mine_is_raided_until_arrival_then_can_be_raided_again() {
         max_charge: 1.0,
         cargo: 0,
         displacement: Vec2::ZERO,
-        defender_duty: Default::default(),
+        defender_duty: DefenderDuty::StagingAt(enemy_mine),
     };
     let second = BotState { id: 52, ..arrived };
     let assembled = [arrived, second];
