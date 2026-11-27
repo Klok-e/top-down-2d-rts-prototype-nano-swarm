@@ -237,6 +237,10 @@ impl PlannerState {
             RaidForces::default()
         };
         let current = self.current.as_ref();
+        let current_raid = current
+            .map(|plan| plan.objective)
+            .filter(|objective| objective.requires_raid_readiness());
+        let mut incumbent_stage = None;
         let mut secured_mine = None;
         let mut stage_candidate = |candidate: &PlanCandidate| {
             if candidate.attack_target.is_none() {
@@ -273,6 +277,9 @@ impl PlannerState {
             {
                 secured_mine = Some(id);
                 return None;
+            }
+            if current_raid == Some(candidate.objective) && incumbent_stage.is_none() {
+                incumbent_stage = Some(front.clone());
             }
             Some(Some(front))
         };
@@ -379,9 +386,8 @@ impl PlannerState {
             &mut budget,
         );
         let replace_invalid_plan = invalidated
-            || current.is_some_and(|plan| {
-                plan.objective.requires_raid_readiness()
-                    && plan.objective.priority() > selected.objective.priority()
+            || current_raid.is_some_and(|objective| {
+                objective.priority() >= selected.objective.priority() && incumbent_stage.is_none()
             });
         let urgent_defense = matches!(selected.objective, Objective::DefendDeposit(_));
         if plan.is_none()
@@ -419,9 +425,8 @@ impl PlannerState {
                 "selected hold the home economy because the proposed paint did not fit".to_string();
         }
         let Some(selected) = plan else {
-            if let Some(current) = self.current.as_mut()
-                && current.objective == selected.objective
-                && let Some((held, reviewed)) = current.staging.as_mut().zip(staging.as_ref())
+            if let Some(held) = self.current.as_mut().and_then(|plan| plan.staging.as_mut())
+                && let Some(reviewed) = incumbent_stage.as_ref()
             {
                 held.observe_readiness_from(reviewed);
             }

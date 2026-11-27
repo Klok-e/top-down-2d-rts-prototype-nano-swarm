@@ -88,21 +88,8 @@ mod raid_readiness {
                 Transform::from_translation(enemy_home.extend(0.0)),
             ))
             .id();
-        let position = common::cell_world_center(target);
-        let mine = common::spawn_deposit(
-            &mut app,
-            common::DepositFixture {
-                world_pos: position,
-                amount: 72_000,
-                capacity: 72_000,
-                radius: 80.0,
-            },
-        );
-        let stockpile = common::spawn_stockpile(&mut app, position, 80, 100);
+        add_enemy_mine(&mut app, enemy, target);
         common::spawn_facility_at(&mut app, enemy, enemy_home);
-        for entity in [mine, stockpile] {
-            app.world_mut().entity_mut(entity).insert(OwnerSwarm(enemy));
-        }
         let force =
             std::array::from_fn(|_| common::spawn_stationary_defender_at(&mut app, home, OWNER));
         install_empty_reachability(&mut app, [OWNER, ENEMY]);
@@ -110,6 +97,23 @@ mod raid_readiness {
         tuning.autonomy.controller_review_period_ticks = REVIEW_TICKS;
         tuning.autonomy.strategy_raid_base = 10_000.0;
         (app, force)
+    }
+
+    fn add_enemy_mine(app: &mut App, enemy: Entity, cell: IVec2) {
+        let position = common::cell_world_center(cell);
+        let mine = common::spawn_deposit(
+            app,
+            common::DepositFixture {
+                world_pos: position,
+                amount: 72_000,
+                capacity: 72_000,
+                radius: 80.0,
+            },
+        );
+        let stockpile = common::spawn_stockpile(app, position, 80, 100);
+        for entity in [mine, stockpile] {
+            app.world_mut().entity_mut(entity).insert(OwnerSwarm(enemy));
+        }
     }
 
     fn neutral_deposit(app: &mut App, cell: IVec2) {
@@ -281,7 +285,7 @@ mod raid_readiness {
             }
         };
         let wait_three_seconds = |app: &mut App| {
-            for _ in 0..3 * SIMULATION_HZ {
+            for _ in 0..3 * SIMULATION_HZ as u64 {
                 app.update();
             }
         };
@@ -304,12 +308,49 @@ mod raid_readiness {
 
     fn over_budget_raid_and_claim_fixture() -> (App, [Entity; 2]) {
         let (mut app, force) = raid_fixture_at(common::minimal_app(), DISTANT_TARGET, 128);
-        add_claim_crew(&mut app);
+        prepare_distant_claim(&mut app);
+        (app, force)
+    }
+
+    fn prepare_distant_claim(app: &mut App) {
+        add_claim_crew(app);
         let mut tuning = app.world_mut().resource_mut::<Tuning>();
         tuning.autonomy.strategy_staging_spacing_cells = 64;
         tuning.autonomy.strategy_expansion_travel_cost = 0.0;
         tuning.autonomy.strategy_expansion_haul_cost = 0.0;
-        (app, force)
+    }
+
+    #[test]
+    fn paint_overflow_can_replace_an_ineligible_raid_with_one_of_equal_priority() {
+        let guarded_target = IVec2::new(100, 0);
+        let open_target = IVec2::new(55, -10);
+        let (mut app, _) = raid_fixture_at::<2>(common::minimal_app(), guarded_target, 256);
+        prepare_distant_claim(&mut app);
+        review(&mut app);
+        assert!(owns_defend(&app, DISTANT_TARGET), "{}", explanation(&app));
+
+        let enemy = {
+            let world = app.world_mut();
+            world
+                .query::<(Entity, &SwarmId)>()
+                .iter(world)
+                .find_map(|(entity, &owner)| (owner == ENEMY).then_some(entity))
+                .unwrap()
+        };
+        add_enemy_mine(&mut app, enemy, open_target);
+        neutral_deposit(&mut app, DISTANT_NEUTRAL);
+        for cell in [guarded_target, guarded_target - IVec2::X] {
+            common::spawn_stationary_defender_at(&mut app, common::cell_world_center(cell), ENEMY);
+        }
+        review(&mut app);
+        assert!(owns_defend(&app, DISTANT_TARGET), "{}", explanation(&app));
+
+        for _ in 0..6 * SIMULATION_HZ as u64 {
+            app.update();
+        }
+        assert!(owns_defend(&app, open_target), "{}", explanation(&app));
+        assert!(owns_intent(&app, open_target, IntentKind::Corridor));
+        assert!(!owns_intent(&app, DISTANT_NEUTRAL, IntentKind::Gather));
     }
 
     #[test]
