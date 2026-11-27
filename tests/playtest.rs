@@ -61,3 +61,6 @@ mod headless_pacing;
 
 #[path = "playtest/tuning_panel.rs"]
 mod tuning_panel;
+
+#[path = "playtest/structure_paint.rs"]
+mod structure_paint;

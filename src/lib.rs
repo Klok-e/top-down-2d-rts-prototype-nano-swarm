@@ -226,6 +226,7 @@ fn build_app_with_logging(
     if renders {
         app.add_plugins(NanobotPresentationPlugin);
     }
+    nanobot::structure_lifecycle::configure_structure_paint(&mut app);
     app
         // GatherPlugin must come after NanobotPlugin: the gather
         // chain orders itself behind `move_velocity_system`, which

@@ -97,6 +97,14 @@ impl PlannedKind {
         PlannedKind::Charger,
     ];
 
+    pub(crate) const fn placement_intent(self) -> IntentKind {
+        match self {
+            Self::SourceStockpile => IntentKind::Gather,
+            Self::SinkStockpile | Self::ProductionFacility => IntentKind::Build,
+            Self::Charger => IntentKind::Defend,
+        }
+    }
+
     /// Whole cells along each side of this kind's Building Footprint, shared by
     /// planned, built, and authored starting structures.
     pub const fn footprint_cells(self) -> u32 {
@@ -203,7 +211,15 @@ pub fn sink_stockpile_demand_system(
         Option<&SupportCondition>,
         Option<&mut SinkUpkeep>,
     )>,
-    facilities: Query<(Entity, &Transform, Option<&OwnerSwarm>), With<ProductionFacility>>,
+    facilities: Query<
+        (
+            Entity,
+            &Transform,
+            Option<&OwnerSwarm>,
+            Option<&SupportCondition>,
+        ),
+        With<ProductionFacility>,
+    >,
     chargers: Query<(&Transform, Option<&OwnerSwarm>), With<crate::nanobot::Charger>>,
     deposits: Query<(&ResourceDeposit, &Transform)>,
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,
@@ -240,9 +256,11 @@ pub fn sink_stockpile_demand_system(
             });
         }
     }
-    for (entity, transform, owner) in &facilities {
+    for (entity, transform, owner, condition) in &facilities {
         obstacles.push(Obstacle::structure(transform));
-        if let Some(owner) = owner {
+        if condition.is_none_or(SupportCondition::is_operational)
+            && let Some(owner) = owner
+        {
             demand_sites.push(SinkDemandSite {
                 cell: world_to_cell(transform.translation.truncate()),
                 owner: owner.0,
@@ -294,9 +312,10 @@ pub fn sink_stockpile_demand_system(
         let pays = |path: Option<f32>| path.is_some_and(|path| path + margin < nearest_source);
 
         let mut served = false;
-        for (entity, _, transform, role, owner, ..) in &stockpiles {
+        for (entity, _, transform, role, owner, condition, _) in &stockpiles {
             if matches!(role, Some(StockpileRole::Sink))
                 && owned(owner)
+                && condition.is_none_or(SupportCondition::is_operational)
                 && in_zone(transform.translation.truncate())
                 && pays(path_to_facility(transform))
             {

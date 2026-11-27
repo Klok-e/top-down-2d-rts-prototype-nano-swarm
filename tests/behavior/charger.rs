@@ -1890,14 +1890,15 @@ fn charger_requires_logistics_support_via_physical_resources() {
 
 #[test]
 fn hauler_delivers_minerals_to_a_charger_with_free_space() {
-    // Physical logistics can fill owner-compatible Charger capacity without
-    // Defend paint; paint independently controls Defender service eligibility.
     let mut app = build_app();
     let swarm = common::spawn_swarm_at(&mut app, Vec2::ZERO);
-    let source_pos = Vec2::new(100.0, 0.0);
+    let source_pos = Vec2::new(108.0, 36.0);
     let cell = IVec2::new(2, 0);
-    // Terminal leg source: a sink stockpile. Chargers cannot
-    // bypass shared staging by drawing from source stockpiles.
+    {
+        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
+        grid.paint(IVec2::ZERO, IntentKind::Build, SwarmId::PLAYER);
+        grid.paint(cell, IntentKind::Defend, SwarmId::PLAYER);
+    }
     let source = common::spawn_sink_stockpile(&mut app, source_pos, 1000, 1000);
     let charger = common::spawn_operational_charger_at(&mut app, cell, 0);
     app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
@@ -1905,11 +1906,6 @@ fn hauler_delivers_minerals_to_a_charger_with_free_space() {
         .entity_mut(charger)
         .insert(OwnerSwarm(swarm));
     let _hauler = common::spawn_hauler_at(&mut app, source_pos + Vec2::X * 68.0);
-    // Drive enough ticks for the hauler to load and unload at the shipped
-    // 75-tick material cadence, then walk from the deposit at
-    // (100, 0) to the charger at the cell (2, 0) center
-    // (~1280, 256). Distance ~ 1200 world units; at
-    // bot_speed 5.0 = ~240 ticks. 4,000 ticks cover both transfer phases.
     for _ in 0..4_000 {
         app.update();
     }

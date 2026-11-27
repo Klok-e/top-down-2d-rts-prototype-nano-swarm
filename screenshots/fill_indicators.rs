@@ -4,10 +4,12 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z,
     fly_camera::CameraZoom2d,
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         Charger, HaulerLoad, MaintenanceProgress, Nanobot, NanobotType, OwnerSwarm, PlannedKind,
-        PlannedStructure, ProductionFacility, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD, Structure,
-        StructureKind, Swarm, SwarmId, SwarmMember, completed_visual_color, planned_visual_color,
+        PlannedStructure, ProductionFacility, SUPPORT_OPERATIONAL_HEALTH_THRESHOLD,
+        StrategicController, Structure, StructureKind, Swarm, SwarmId, SwarmMember,
+        completed_visual_color, planned_visual_color,
     },
     navigation::STRUCTURE_SPRITE_SIZE,
     resources::{ResourceDeposit, ResourceKind, Stockpile, StockpileRole},
@@ -113,6 +115,11 @@ fn spawn_focused_scene(world: &mut World) -> FillIndicatorTargets {
     ] {
         insert_fixture_art(world, entity, StructureVisual::completed(kind), owner);
     }
+    let opponent_id = *world.get::<SwarmId>(opponent).unwrap();
+    world.entity_mut(opponent).remove::<StrategicController>();
+    world
+        .resource_mut::<IntentGrid>()
+        .paint(IVec2::ONE, IntentKind::Defend, opponent_id);
     insert_fixture_art(
         world,
         planned,

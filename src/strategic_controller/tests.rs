@@ -556,6 +556,7 @@ fn funded_primary_chain(owner: SwarmId, home: Vec2, primary: DepositState) -> [S
             owner,
             position: primary.position + Vec2::new(96.0, 0.0),
             kind: StructureKind::Source,
+            operational: true,
             health: 100,
             max_health: 100,
             minerals: 40,
@@ -565,6 +566,7 @@ fn funded_primary_chain(owner: SwarmId, home: Vec2, primary: DepositState) -> [S
             owner,
             position: home,
             kind: StructureKind::Facility,
+            operational: true,
             health: 100,
             max_health: 100,
             minerals: 20,
@@ -637,6 +639,7 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
             owner,
             position: swarms[0].home,
             kind: StructureKind::Facility,
+            operational: true,
             health: 100,
             max_health: 100,
             minerals: 0,
@@ -646,6 +649,7 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
             owner: enemy,
             position: world(IVec2::new(7, 0)),
             kind: StructureKind::Sink,
+            operational: true,
             health: 100,
             max_health: 100,
             minerals: 80,
@@ -810,6 +814,7 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
         owner: enemy,
         position: world(IVec2::new(8, 1)),
         kind: StructureKind::Sink,
+        operational: true,
         health: 20,
         max_health: 100,
         minerals: 100,
@@ -927,6 +932,7 @@ fn advantaged_raid_paints_enemy_logistics_and_keeps_home_economy() {
         owner: enemy,
         position: world(IVec2::new(7, 0)),
         kind: StructureKind::Sink,
+        operational: true,
         health: 20,
         max_health: 100,
         minerals: 80,
@@ -1012,6 +1018,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
         owner: enemy,
         position: world(IVec2::new(6, 2)),
         kind: StructureKind::Charger,
+        operational: true,
         health: 1,
         max_health: 100,
         minerals: 1_000,
@@ -1147,6 +1154,7 @@ fn losing_a_mine_keeps_a_progressing_attack_front() {
         owner,
         position: world(IVec2::new(1, 0)),
         kind: StructureKind::Charger,
+        operational: true,
         health: 100,
         max_health: 100,
         minerals: 100,
@@ -1156,6 +1164,7 @@ fn losing_a_mine_keeps_a_progressing_attack_front() {
         owner: enemy,
         position: world(IVec2::new(12, 0)),
         kind: StructureKind::Sink,
+        operational: true,
         health: 100,
         max_health: 100,
         minerals: 0,
@@ -1203,6 +1212,7 @@ fn losing_a_mine_keeps_a_progressing_attack_front() {
         owner: enemy,
         position: world(IVec2::new(3, 5)),
         kind: StructureKind::Charger,
+        operational: true,
         health: 100,
         max_health: 100,
         minerals: 1_000,
@@ -1786,6 +1796,7 @@ fn income_lead_adds_a_home_push_without_abandoning_the_mine() {
         owner: enemy,
         position: initial_swarms[1].home,
         kind: StructureKind::Facility,
+        operational: true,
         health: 100,
         max_health: 100,
         minerals: 0,
@@ -2098,6 +2109,7 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
         owner: enemy,
         position: crate::scenario::cell_origin(crate::scenario::OPPONENT_DEPOSIT_CELL),
         kind: StructureKind::Source,
+        operational: true,
         health: 20,
         max_health: 100,
         minerals: 100,
@@ -2329,6 +2341,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
         owner: enemy,
         position: world(alternative_cell),
         kind: StructureKind::Charger,
+        operational: true,
         health: 1,
         max_health: 100,
         minerals: 1_000,
@@ -2537,6 +2550,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
         owner: enemy,
         position: world(IVec2::new(2, 7)),
         kind: StructureKind::Charger,
+        operational: true,
         health: 1,
         max_health: 100,
         minerals: 1_000,
@@ -2627,6 +2641,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
         owner: enemy,
         position: world(alternative_cell),
         kind: StructureKind::Charger,
+        operational: true,
         health: 1,
         max_health: 100,
         minerals: 3_000,
@@ -2965,6 +2980,7 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
         owner: enemy,
         position: enemy_home,
         kind: StructureKind::Facility,
+        operational: true,
         health: 100,
         max_health: 100,
         minerals: 0,
@@ -3202,6 +3218,7 @@ fn wounded_target_priority_uses_the_edited_health_maximum() {
         owner: enemy,
         position: world(IVec2::new(6, 0)),
         kind: StructureKind::Facility,
+        operational: true,
         health: 100,
         max_health: 100,
         minerals: 0,
@@ -3299,6 +3316,7 @@ fn a_compact_front_leads_the_army_and_waits_for_most_defenders() {
         owner: SwarmId(9),
         position: world(IVec2::new(9, 0)),
         kind: StructureKind::Sink,
+        operational: true,
         health: 100,
         max_health: 100,
         minerals: 0,
@@ -3449,6 +3467,7 @@ fn staging_follows_the_supplied_approach_and_keeps_its_flank() {
         owner: SwarmId(9),
         position: world(IVec2::new(12, 0)),
         kind: StructureKind::Sink,
+        operational: true,
         health: 100,
         max_health: 100,
         minerals: 0,
@@ -3704,6 +3723,7 @@ fn an_undefended_enemy_mine_is_raided_until_arrival_then_can_be_raided_again() {
         owner: enemy,
         position: world(enemy_home),
         kind: StructureKind::Facility,
+        operational: true,
         health: 100,
         max_health: 100,
         minerals: 40,
@@ -3875,6 +3895,7 @@ fn a_hostile_near_an_unreachable_mine_does_not_preempt_an_income_backed_home_pus
         owner: enemy,
         position: enemy_home,
         kind: StructureKind::Facility,
+        operational: true,
         health: 100,
         max_health: 100,
         minerals: 100,
@@ -3970,6 +3991,7 @@ fn military_priorities_protect_expansion_before_attacking_home() {
         owner: enemy,
         position: world(enemy_mine + IVec2::Y),
         kind: StructureKind::Source,
+        operational: true,
         health: 80,
         max_health: 100,
         minerals: 40,
@@ -4233,6 +4255,7 @@ fn healthy_enemy_home_requires_a_live_tuned_income_lead() {
         owner: enemy,
         position: world(enemy_home),
         kind: StructureKind::Facility,
+        operational: true,
         health: 100,
         max_health: 100,
         minerals: 0,
@@ -4300,6 +4323,86 @@ fn healthy_enemy_home_requires_a_live_tuned_income_lead() {
 }
 
 #[test]
+fn charger_support_requires_room_for_its_entire_footprint() {
+    use super::{
+        lifecycle::WorkBudget,
+        spending::{DefenderBudget, keep_charger_support},
+    };
+    use crate::nanobot::PlannedKind;
+
+    let owner = SwarmId::PLAYER;
+    let left = IVec2::new(5, 4);
+    let right = left + IVec2::X;
+    let edge = world(left) + Vec2::X * crate::ZONE_BLOCK_SIZE / 2.0;
+    let position = PlannedKind::Charger
+        .footprint_transform(edge.extend(0.0))
+        .translation
+        .truncate();
+    let mut grid = IntentGrid::new(24, 24);
+    assert!(grid.paint(left, IntentKind::Defend, owner));
+    let tuning = AutonomyTuning::default();
+    let charger = StructureState {
+        id: 27,
+        owner,
+        position,
+        kind: StructureKind::Charger,
+        operational: false,
+        health: 100,
+        max_health: 100,
+        minerals: tuning.strategy_charger_reserve,
+    };
+    let state = GameState {
+        structures: &[charger],
+        ..empty_state(&grid, 0)
+    };
+    let mut budget = WorkBudget::planning(0);
+    let defense = DefenderBudget::estimate(&tuning, owner, None, &state, &mut budget);
+    let mut desired = HashSet::new();
+    let mut support_with_capacity = |paint_capacity, desired: &mut HashSet<_>| {
+        keep_charger_support(
+            &defense,
+            tuning.strategy_charger_reserve,
+            owner,
+            &state,
+            desired,
+            paint_capacity,
+            &mut budget,
+        )
+    };
+
+    assert_eq!(support_with_capacity(1, &mut desired), (None, 0.0));
+    assert!(
+        desired.is_empty(),
+        "an incomplete footprint requests no paint"
+    );
+
+    assert_eq!(
+        support_with_capacity(3, &mut desired),
+        (
+            Some(charger.id),
+            state.charge.max_defenders_per_charger as f32
+        )
+    );
+    assert_eq!(
+        desired,
+        HashSet::from([
+            DesiredIntent {
+                cell: left,
+                kind: IntentKind::Defend
+            },
+            DesiredIntent {
+                cell: right,
+                kind: IntentKind::Defend
+            },
+            DesiredIntent {
+                cell: left,
+                kind: IntentKind::Corridor
+            },
+        ]),
+    );
+}
+
+#[test]
 fn defend_paint_follows_income_and_preserves_chargers_when_reserves_fall() {
     let owner = SwarmId::PLAYER;
     let home = IVec2::ZERO;
@@ -4319,6 +4422,7 @@ fn defend_paint_follows_income_and_preserves_chargers_when_reserves_fall() {
         owner,
         position: world(charger_cell),
         kind: StructureKind::Charger,
+        operational: true,
         health: 100,
         max_health: 100,
         minerals: tuning.strategy_charger_reserve,
@@ -4428,6 +4532,7 @@ fn empty_chargers_do_not_create_demand_for_an_unaffordable_army() {
             owner,
             position: world(IVec2::new(8, row)),
             kind: StructureKind::Charger,
+            operational: true,
             health: 100,
             max_health: 100,
             minerals: 0,

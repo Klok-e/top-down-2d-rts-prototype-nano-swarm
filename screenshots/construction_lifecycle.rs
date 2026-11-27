@@ -4,11 +4,11 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::structure_overlay::CancelledPlanVisual;
 use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
-    intent::IntentGrid,
+    intent::{IntentGrid, IntentKind},
     nanobot::{
-        Commitment, Health, Nanobot, NanobotType, PlannedKind, PlannedStructure,
-        StrategicController, Structure, StructureClearing, StructureKind, SwarmId, SwarmMember,
-        VelocityComponent,
+        Commitment, Health, Nanobot, NanobotType, OwnerSwarm, PlannedKind, PlannedStructure,
+        StrategicController, Structure, StructureClearing, StructureKind, Swarm, SwarmId,
+        SwarmMember, VelocityComponent,
     },
     resources::Stockpile,
     structure_sprites::{StructureSprites, StructureVisual, StructureVisualState},
@@ -38,7 +38,9 @@ fn prepare(world: &mut World, cancel: bool) {
     for entity in controllers {
         world.entity_mut(entity).remove::<StrategicController>();
     }
-    world.insert_resource(IntentGrid::new(8, 8));
+    let mut grid = IntentGrid::new(8, 8);
+    grid.paint(IVec2::ZERO, IntentKind::Build, SwarmId::PLAYER);
+    world.insert_resource(grid);
     for (mut transform, mut projection, mut zoom) in world
         .query::<(&mut Transform, &mut Projection, &mut CameraZoom2d)>()
         .iter_mut(world)
@@ -55,9 +57,15 @@ fn prepare(world: &mut World, cancel: bool) {
         .resource::<StructureSprites>()
         .sprite(kind, StructureVisualState::Planned);
     sprite.custom_size = Some(Vec2::splat(64.));
+    let owner = world
+        .query_filtered::<(Entity, &SwarmId), With<Swarm>>()
+        .iter(world)
+        .find_map(|(entity, id)| (*id == SwarmId::PLAYER).then_some(entity))
+        .expect("full app must retain the player swarm");
     let plan = world
         .spawn((
             PlannedStructure::new(kind, IVec2::ZERO),
+            OwnerSwarm(owner),
             sprite,
             StructureVisual::planned(kind),
             Transform::from_xyz(252., 252., 1.).with_scale(Vec3::new(2.25, 2.25, 1.)),

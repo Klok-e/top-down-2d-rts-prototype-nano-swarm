@@ -163,6 +163,14 @@ pub fn hauler_load_system(
                 reservation.destination_remaining = carried;
             }
         };
+        if !endpoint_is_operational(assignment.source, &conditions)
+            || !endpoint_is_operational(assignment.sink, &conditions)
+        {
+            finish_reservation(reservation.as_deref_mut(), cargo.amount);
+            commands.entity(entity).remove::<DirectMovementComponent>();
+            transition_to_carrying(&mut commands, entity, cargo.amount);
+            continue;
+        }
         if cargo.amount >= target_amount {
             finish_reservation(reservation.as_deref_mut(), cargo.amount);
             transition_to_carrying(&mut commands, entity, cargo.amount);
@@ -177,7 +185,7 @@ pub fn hauler_load_system(
         } else if let Ok((stockpile, target)) = source_stockpiles.get(assignment.source) {
             (
                 Some(InteractionRegion::structure(target)),
-                stockpile.amount > 0 && endpoint_is_operational(assignment.source, &conditions),
+                stockpile.amount > 0,
             )
         } else {
             (
@@ -256,11 +264,6 @@ pub fn hauler_load_system(
             continue;
         }
 
-        if !endpoint_is_operational(assignment.source, &conditions) {
-            finish_reservation(reservation.as_deref_mut(), cargo.amount);
-            transition_to_carrying(&mut commands, entity, cargo.amount);
-            continue;
-        }
         if let Ok((mut stockpile, _)) = source_stockpiles.get_mut(assignment.source) {
             if stockpile.amount == 0 {
                 finish_reservation(reservation.as_deref_mut(), cargo.amount);

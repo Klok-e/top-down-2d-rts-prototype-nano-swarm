@@ -3,6 +3,7 @@ use super::{
     materialize::{push_desired, world_to_intent_cell},
     *,
 };
+use crate::nanobot::{PlannedKind, footprint_intent_cells};
 
 pub(super) struct DefenderBudget {
     baseline: f32,
@@ -93,6 +94,7 @@ pub(super) fn keep_charger_support(
     budget: &mut WorkBudget,
 ) -> (Option<u64>, f32) {
     let mut chargers = Vec::new();
+    let half_extent = Vec2::splat(PlannedKind::Charger.footprint_half_extent());
     for structure in state.structures {
         if !budget.spend(1) {
             return (None, 0.0);
@@ -117,15 +119,19 @@ pub(super) fn keep_charger_support(
             }
         }
         let supplied = structure.minerals.min(charger_reserve);
-        let already_painted = state
-            .grid
-            .cell(cell)
-            .is_some_and(|intent| intent.has_owned(IntentKind::Defend, owner));
+        let footprint = footprint_intent_cells(structure.position, half_extent).collect::<Vec<_>>();
+        let already_painted = footprint.iter().all(|&cell| {
+            state
+                .grid
+                .cell(cell)
+                .is_some_and(|intent| intent.has_owned(IntentKind::Defend, owner))
+        });
         chargers.push((
             std::cmp::Reverse((supplied, already_painted)),
             structure.id,
             cell,
             supplied,
+            footprint,
         ));
     }
     chargers.sort_by_key(|&(priority, id, ..)| (priority, id));
@@ -133,11 +139,7 @@ pub(super) fn keep_charger_support(
     let mut kept = 0;
     let mut supplied = 0.0;
     let mut kept_for_recovery = 0;
-    for (_, id, cell, buffer) in chargers {
-        let defend = DesiredIntent {
-            cell,
-            kind: IntentKind::Defend,
-        };
+    for (_, id, cell, buffer, footprint) in chargers {
         let requires_recovery_paint = buffer < charger_reserve
             && !IntentKind::ALL
                 .into_iter()
@@ -145,10 +147,27 @@ pub(super) fn keep_charger_support(
         if requires_recovery_paint && kept_for_recovery >= defense.recovery_chargers {
             continue;
         }
-        if !desired.contains(&defend)
-            && (desired.len() >= paint_capacity
-                || !push_desired(desired, owner, defend, state, true, budget))
-        {
+        let mut added = Vec::new();
+        let supported = footprint.into_iter().all(|cell| {
+            let defend = DesiredIntent {
+                cell,
+                kind: IntentKind::Defend,
+            };
+            if desired.contains(&defend) {
+                return true;
+            }
+            if desired.len() >= paint_capacity
+                || !push_desired(desired, owner, defend, state, true, budget)
+            {
+                return false;
+            }
+            added.push(defend);
+            true
+        });
+        if !supported {
+            for defend in added {
+                desired.remove(&defend);
+            }
             continue;
         }
         key_charger.get_or_insert(id);

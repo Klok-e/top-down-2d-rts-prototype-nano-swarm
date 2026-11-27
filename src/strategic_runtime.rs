@@ -296,7 +296,8 @@ fn strategic_intent_system(
                     StructureKind::Other
                 };
                 let minerals = buffered_minerals(facility, stockpile, charger);
-                if plan.is_none() && condition.is_none_or(Structure::is_operational) {
+                let operational = plan.is_none() && condition.is_none_or(Structure::is_operational);
+                if operational {
                     let economy = economies.entry(owner).or_default();
                     economy.banked_minerals = economy.banked_minerals.saturating_add(minerals);
                     economy.has_idle_facility |= facility
@@ -321,6 +322,7 @@ fn strategic_intent_system(
                     owner,
                     position: transform.translation.truncate(),
                     kind,
+                    operational,
                     health: condition.map_or(tuning.construction.max_health, |c| c.health),
                     max_health: tuning.construction.max_health,
                     minerals,

@@ -361,6 +361,14 @@ fn stockpile_owned_by(
     }
 }
 
+type SourceStockpileCapacity<'a> = (
+    &'a Stockpile,
+    &'a Transform,
+    Option<&'a StockpileRole>,
+    Option<&'a OwnerSwarm>,
+    Option<&'a SupportCondition>,
+);
+
 /// Whether nearby built Source Stockpile capacity satisfies planning demand.
 /// The configured proximity radius governs planning; gatherers drop off only
 /// within their deposit's [`DropOffArea`], which contains this radius.
@@ -378,21 +386,19 @@ pub(crate) fn has_usable_built_source_stockpile(
     proximity_radius: f32,
     deposit_pos: Vec2,
     demand_swarm: SwarmId,
-    stockpiles: &Query<(
-        &Stockpile,
-        &Transform,
-        Option<&StockpileRole>,
-        Option<&OwnerSwarm>,
-    )>,
+    stockpiles: &Query<SourceStockpileCapacity>,
     swarms: &Query<&SwarmId, With<Swarm>>,
 ) -> bool {
-    stockpiles.iter().any(|(s, t, role, owner)| {
-        s.kind == ResourceKind::Minerals
-            && s.free_space() > 0
-            && !matches!(role, Some(StockpileRole::Sink))
-            && stockpile_owned_by(owner, demand_swarm, swarms)
-            && t.translation.truncate().distance(deposit_pos) <= proximity_radius
-    })
+    stockpiles
+        .iter()
+        .any(|(stockpile, transform, role, owner, condition)| {
+            stockpile.kind == ResourceKind::Minerals
+                && stockpile.free_space() > 0
+                && !matches!(role, Some(StockpileRole::Sink))
+                && stockpile_owned_by(owner, demand_swarm, swarms)
+                && condition.is_none_or(SupportCondition::is_operational)
+                && transform.translation.truncate().distance(deposit_pos) <= proximity_radius
+        })
 }
 
 /// True when a built Source Stockpile (per
@@ -438,12 +444,7 @@ pub(crate) fn has_any_near_source_stockpile(
     proximity_radius: f32,
     deposit_pos: Vec2,
     demand_swarm: SwarmId,
-    stockpiles: &Query<(
-        &Stockpile,
-        &Transform,
-        Option<&StockpileRole>,
-        Option<&OwnerSwarm>,
-    )>,
+    stockpiles: &Query<SourceStockpileCapacity>,
     planned: &Query<(&PlannedStructure, &Transform, Option<&OwnerSwarm>)>,
     newly_planned: &[Vec2],
     swarms: &Query<&SwarmId, With<Swarm>>,
@@ -578,12 +579,7 @@ pub fn source_stockpile_demand_system(
     structure_sprites: Res<StructureSprites>,
     gather_assignments: Query<(&GatherAssignment, &SwarmMember)>,
     deposits: Query<(&ResourceDeposit, &Transform)>,
-    stockpiles: Query<(
-        &Stockpile,
-        &Transform,
-        Option<&StockpileRole>,
-        Option<&OwnerSwarm>,
-    )>,
+    stockpiles: Query<SourceStockpileCapacity>,
     planned: Query<(&PlannedStructure, &Transform, Option<&OwnerSwarm>)>,
     facility_obstacles: Query<&Transform, With<crate::nanobot::production::ProductionFacility>>,
     charger_obstacles: Query<&Transform, With<crate::nanobot::Charger>>,
@@ -634,7 +630,7 @@ pub fn source_stockpile_demand_system(
                 .iter()
                 .map(|(deposit, t)| Obstacle::deposit(t.translation.truncate(), deposit.radius)),
         );
-        obstacles.extend(stockpiles.iter().map(|(_, t, _, _)| Obstacle::structure(t)));
+        obstacles.extend(stockpiles.iter().map(|(_, t, ..)| Obstacle::structure(t)));
         obstacles.extend(planned.iter().map(|(_, t, _)| Obstacle::structure(t)));
         obstacles.extend(facility_obstacles.iter().map(Obstacle::structure));
         obstacles.extend(charger_obstacles.iter().map(Obstacle::structure));

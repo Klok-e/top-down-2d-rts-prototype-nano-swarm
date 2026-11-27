@@ -62,7 +62,7 @@ use super::combat_presentation::{NonCombatDestruction, StructureCollapsed};
 /// Shared condition carried by every completed support structure.
 pub type SupportCondition = Structure;
 
-/// Completed support structures operate at any positive health.
+/// Minimum health for a completed support structure to operate.
 pub const SUPPORT_OPERATIONAL_HEALTH_THRESHOLD: u32 = 1;
 
 fn attach_support_condition(
@@ -112,13 +112,14 @@ impl Structure {
     /// damaged and is below max health. The maintenance
     /// assignment system uses this to filter the world query.
     pub fn needs_maintenance(&self, tuning: &Tuning) -> bool {
-        self.ticks_since_maintained >= tuning.maintenance.needs_threshold
-            || self.health < tuning.construction.max_health
+        self.is_operational()
+            && (self.ticks_since_maintained >= tuning.maintenance.needs_threshold
+                || self.health < tuning.construction.max_health)
     }
 
     /// Whether this structure can currently perform its gameplay function.
     pub fn is_operational(&self) -> bool {
-        self.health >= SUPPORT_OPERATIONAL_HEALTH_THRESHOLD
+        self.health >= SUPPORT_OPERATIONAL_HEALTH_THRESHOLD && !self.paint_suspended
     }
 }
 
@@ -317,25 +318,32 @@ fn find_nearest_needy_structure(
 pub fn worker_maintenance_arrive_system(
     mut commands: Commands,
     workers: Query<
-        (Entity, &Transform, &MaintenanceAssignment),
+        (
+            Entity,
+            &Transform,
+            &MaintenanceAssignment,
+            Has<DirectMovementComponent>,
+        ),
         (
             Without<super::WorkBlocked>,
             With<Nanobot>,
-            With<MaintenanceAssignment>,
-            Without<DirectMovementComponent>,
             Without<MaintenanceProgress>,
         ),
     >,
-    structures: Query<&Transform, With<Structure>>,
+    structures: Query<(&Transform, &Structure)>,
 ) {
-    for (entity, transform, assignment) in &workers {
-        let Ok(target_transform) = structures.get(assignment.target) else {
-            // Target collapsed between assignment and arrival,
-            // or was otherwise removed. Release the slot and
-            // drop the assignment; the worker idles.
-            commands.entity(entity).remove::<MaintenanceAssignment>();
+    for (entity, transform, assignment, moving) in &workers {
+        let Ok((target_transform, structure)) = structures.get(assignment.target) else {
+            release_unavailable_maintenance(&mut commands, entity);
             continue;
         };
+        if !structure.is_operational() {
+            release_unavailable_maintenance(&mut commands, entity);
+            continue;
+        }
+        if moving {
+            continue;
+        }
         let region = InteractionRegion::structure(target_transform);
         let position = transform.translation.truncate();
         if region.contains(position) {
@@ -387,13 +395,13 @@ pub fn worker_maintenance_work_system(
 ) {
     for (entity, transform, mut progress, lease) in &mut workers {
         let Ok((mut structure, target_transform)) = structures.get_mut(progress.target) else {
-            // Target collapsed between arrival and work (e.g.
-            // a previous test or a future system despawned it).
-            // Release the worker; the cell becomes a valid
-            // build site again on the next auto-creation tick.
-            release_maintenance_worker(&mut commands, entity);
+            release_unavailable_maintenance(&mut commands, entity);
             continue;
         };
+        if !structure.is_operational() {
+            release_unavailable_maintenance(&mut commands, entity);
+            continue;
+        }
 
         let region = InteractionRegion::structure(target_transform);
         let position = transform.translation.truncate();
@@ -421,6 +429,14 @@ pub fn worker_maintenance_work_system(
             release_maintenance_worker(&mut commands, entity);
         }
     }
+}
+
+fn release_unavailable_maintenance(commands: &mut Commands, entity: Entity) {
+    release_maintenance_worker(commands, entity);
+    commands
+        .entity(entity)
+        .remove::<(super::RegionalLease, DirectMovementComponent)>()
+        .insert(Commitment::Idle);
 }
 
 /// Clear maintenance lifecycle markers.

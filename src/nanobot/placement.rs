@@ -184,11 +184,14 @@ fn snap_candidate(pos: Vec2) -> Vec2 {
         .truncate()
 }
 
+pub(crate) fn footprint_intent_cells(center: Vec2, half: Vec2) -> impl Iterator<Item = IVec2> {
+    let min = world_to_cell(center - half);
+    let max = world_to_cell(center + half - Vec2::splat(0.001));
+    (min.x..=max.x).flat_map(move |x| (min.y..=max.y).map(move |y| IVec2::new(x, y)))
+}
+
 fn footprint_inside_zone(pos: Vec2, half_extent: f32, cells: &[IVec2]) -> bool {
-    let half = Vec2::splat(half_extent);
-    let min = world_to_cell(pos - half);
-    let max = world_to_cell(pos + half - Vec2::splat(0.001));
-    (min.x..=max.x).all(|x| (min.y..=max.y).all(|y| cells.contains(&IVec2::new(x, y))))
+    footprint_intent_cells(pos, Vec2::splat(half_extent)).all(|cell| cells.contains(&cell))
 }
 
 /// Score a candidate for the haul-direction bias. The

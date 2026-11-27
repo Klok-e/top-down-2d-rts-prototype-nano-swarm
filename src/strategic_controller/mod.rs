@@ -67,6 +67,7 @@ pub struct StructureState {
     pub owner: SwarmId,
     pub position: Vec2,
     pub kind: StructureKind,
+    pub operational: bool,
     pub health: u32,
     pub max_health: u32,
     pub minerals: u32,

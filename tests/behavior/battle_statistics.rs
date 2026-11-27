@@ -698,6 +698,7 @@ fn battle_unspent_minerals_drop_when_a_stockpile_collapses() {
         health: 1,
         ticks_since_maintained: maintenance.buffer_ticks + maintenance.degradation_interval_ticks
             - 1,
+        paint_suspended: false,
     };
     world.entity_mut(stockpile).insert(condition);
     for _ in 0..60 {

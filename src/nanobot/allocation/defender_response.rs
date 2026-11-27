@@ -452,7 +452,7 @@ pub fn reconcile_defender_responses_system(
             });
         }
         let (transform, owner, structure, identity) = structure_targets.get(entity).ok()?;
-        if !structure.is_operational() {
+        if structure.is_collapsed() {
             return None;
         }
         let position = transform.translation.truncate();

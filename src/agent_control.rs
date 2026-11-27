@@ -34,7 +34,7 @@ use crate::{
     intent::{BrushSelection, IntentGrid, IntentKind},
     nanobot::{
         Health, MatchOutcome, Nanobot, NanobotType, OpponentSwarm, OwnerSwarm, PopulationDemand,
-        ProductionFacility, Swarm, SwarmEliminationState, SwarmId, SwarmMember,
+        ProductionFacility, Structure, Swarm, SwarmEliminationState, SwarmId, SwarmMember,
     },
     perf::RecordedHitches,
     reachability::SwarmReachabilityMap,
@@ -1545,10 +1545,14 @@ fn collect_agent_state(
         .production
         .ticks_per_bot;
     let facilities = {
-        let mut query = world.query::<(&ProductionFacility, &OwnerSwarm)>();
+        let mut query = world.query::<(&ProductionFacility, &OwnerSwarm, Option<&Structure>)>();
         query
             .iter(world)
-            .map(|(facility, owner)| (owner.0, facility.is_busy(production_ticks)))
+            .map(|(facility, owner, condition)| {
+                let active = condition.is_none_or(Structure::is_operational)
+                    && facility.is_busy(production_ticks);
+                (owner.0, active)
+            })
             .collect::<Vec<_>>()
     };
     let ledger = world.get_resource::<ResourceLedger>().cloned();

@@ -330,6 +330,7 @@ fn delivery_window_follows_the_nearest_usable_stocked_pickup() {
             kind: StructureKind::Basic,
             health: SUPPORT_OPERATIONAL_HEALTH_THRESHOLD - 1,
             ticks_since_maintained: 0,
+            paint_suspended: false,
         },
     ));
     let tuning = app.world().resource::<Tuning>().clone();

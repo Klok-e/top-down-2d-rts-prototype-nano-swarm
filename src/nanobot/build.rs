@@ -85,6 +85,7 @@ pub struct Structure {
     pub kind: StructureKind,
     pub health: u32,
     pub ticks_since_maintained: u32,
+    pub paint_suspended: bool,
 }
 
 impl Structure {
@@ -99,6 +100,7 @@ impl Structure {
             kind,
             health: tuning.construction.max_health,
             ticks_since_maintained: 0,
+            paint_suspended: false,
         }
     }
 

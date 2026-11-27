@@ -252,10 +252,12 @@ pub(super) fn generate_candidates(
             {
                 recoverable.insert(structure.owner);
             }
-        } else if matches!(
-            structure.kind,
-            StructureKind::Source | StructureKind::Sink | StructureKind::Charger
-        ) {
+        } else if structure.operational
+            && matches!(
+                structure.kind,
+                StructureKind::Source | StructureKind::Sink | StructureKind::Charger
+            )
+        {
             supply += structure.minerals as f32 * tuning.strategy_buffer_supply_weight;
         }
     }
