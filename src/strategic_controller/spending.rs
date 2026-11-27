@@ -105,21 +105,21 @@ pub(super) fn keep_charger_support(
         {
             continue;
         }
-        let cell = world_to_intent_cell(structure.position);
+        let Some(position) = structure.position else {
+            continue;
+        };
+        let cell = world_to_intent_cell(position);
         if let Some(map) = state.reachability {
-            match map.position_is_reachable_with_budget(
-                owner,
-                structure.position,
-                state.grid,
-                &mut || budget.spend(1),
-            ) {
+            match map.position_is_reachable_with_budget(owner, position, state.grid, &mut || {
+                budget.spend(1)
+            }) {
                 Ok(true) => {}
                 Ok(false) => continue,
                 Err(()) => return (None, 0.0),
             }
         }
         let supplied = structure.minerals.min(charger_reserve);
-        let footprint = footprint_intent_cells(structure.position, half_extent).collect::<Vec<_>>();
+        let footprint = footprint_intent_cells(position, half_extent).collect::<Vec<_>>();
         let already_painted = footprint.iter().all(|&cell| {
             state
                 .grid

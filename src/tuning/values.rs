@@ -184,13 +184,11 @@ tuning_schema! {
         strategy_hunt_hauler_value: f32 = 25.0 => ("hunt hauler value", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_hunt_worker_value: f32 = 15.0 => ("hunt worker value", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_hunt_vulnerability_weight: f32 = 0.5 => ("hunt vulnerability weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_hunt_remnant_base: f32 = 500.0 => ("hunt remnant base", "", 1.0, 0.05, 0.0, 1_000_000.0);
-        strategy_hunt_force_weight: f32 = 0.04 => ("hunt force weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_hunt_distance_cost: f32 = 2.0 => ("hunt distance cost", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_force_base_weight: f32 = 0.35 => ("force base weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
         strategy_force_charge_weight: f32 = 0.65 => ("force charge weight", "", 1.0, 0.05, 0.0, 1_000_000.0);
     }
-    => ignore [strategy_production_mineral_threshold]
+    => ignore [strategy_production_mineral_threshold, strategy_hunt_remnant_base, strategy_hunt_force_weight]
     presentation: PresentationTuning {
         effects_intensity: f32 = 1.0 => ("Combat effects intensity", "", 1.0, 0.1, 0.0, 4.0);
         bloom_intensity: f32 = 0.3 => ("Bloom intensity", "", 1.0, 0.05, 0.0, 1.2);

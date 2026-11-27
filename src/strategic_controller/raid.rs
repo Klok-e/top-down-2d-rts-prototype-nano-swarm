@@ -54,7 +54,7 @@ impl<'a> RaidForces<'a> {
         &self,
         approach: &[Vec2],
         target: Vec2,
-        response_supports_front: impl Fn(Vec2) -> bool,
+        contributes: impl Fn(&BotState) -> bool,
         budget: &mut WorkBudget,
     ) -> Option<bool> {
         if !self.can_launch() {
@@ -66,9 +66,7 @@ impl<'a> RaidForces<'a> {
             if !budget.spend(1) {
                 return None;
             }
-            if let DefenderDuty::RespondingTo(position) = bot.defender_duty
-                && !response_supports_front(position)
-            {
+            if !contributes(bot) {
                 continue;
             }
             available += 1;

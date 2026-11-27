@@ -70,11 +70,20 @@ pub enum StructureKind {
     Other,
 }
 
+impl StructureKind {
+    fn counts_for_elimination(self) -> bool {
+        matches!(
+            self,
+            Self::Facility | Self::Source | Self::Sink | Self::Charger
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StructureState {
     pub id: u64,
     pub owner: SwarmId,
-    pub position: Vec2,
+    pub position: Option<Vec2>,
     pub kind: StructureKind,
     pub operational: bool,
     pub health: u32,
@@ -299,22 +308,31 @@ enum Objective {
     RaidDeposit { deposit: u64, target: u64 },
     DenyDeposit(u64),
     PushHome(SwarmId),
-    FinishStructure(u64),
+    AttackStructure(u64),
     HuntRemnant(u64),
 }
 
 impl Objective {
-    fn requires_raid_readiness(self) -> bool {
-        matches!(self, Self::RaidDeposit { .. } | Self::DenyDeposit(_))
+    fn needs_ready_force(self) -> bool {
+        matches!(
+            self,
+            Self::RaidDeposit { .. }
+                | Self::DenyDeposit(_)
+                | Self::PushHome(_)
+                | Self::AttackStructure(_)
+                | Self::HuntRemnant(_)
+        )
     }
 
     fn priority(self) -> u8 {
         match self {
             Self::DefendDeposit(_) => 6,
             Self::ContestDeposit(_) => 5,
-            Self::RaidDeposit { .. } | Self::DenyDeposit(_) => 3,
-            Self::PushHome(_) => 2,
-            Self::FinishStructure(_) | Self::HuntRemnant(_) => 1,
+            Self::RaidDeposit { .. }
+            | Self::DenyDeposit(_)
+            | Self::PushHome(_)
+            | Self::AttackStructure(_)
+            | Self::HuntRemnant(_) => 3,
             Self::HoldHome => 0,
         }
     }
@@ -329,7 +347,7 @@ impl Objective {
             }
             Self::DenyDeposit(id) => format!("raid enemy Resource Deposit {id}"),
             Self::PushHome(swarm) => format!("push enemy home of Swarm {}", swarm.0),
-            Self::FinishStructure(id) => format!("finish remaining structure {id}"),
+            Self::AttackStructure(id) => format!("attack remaining structure {id}"),
             Self::HuntRemnant(id) => format!("hunt remaining Nanobot {id}"),
         }
     }

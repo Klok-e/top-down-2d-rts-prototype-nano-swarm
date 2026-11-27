@@ -262,7 +262,7 @@ fn strategic_intent_system(
     structures: Query<
         (
             Entity,
-            &Transform,
+            Option<&Transform>,
             Option<&OwnerSwarm>,
             Option<&Structure>,
             Option<&ProductionFacility>,
@@ -419,15 +419,17 @@ fn strategic_intent_system(
                 {
                     DefenderDuty::Unavailable
                 } else if let Some(response) = response {
-                    let response_position = bots
-                        .get(response.target)
-                        .map(|(_, _, _, transform, ..)| transform.translation.truncate())
-                        .or_else(|_| {
-                            structures
-                                .get(response.target)
-                                .map(|(_, transform, ..)| transform.translation.truncate())
-                        })
-                        .ok();
+                    let response_position =
+                        bots.get(response.target)
+                            .ok()
+                            .map(|(_, _, _, transform, ..)| transform.translation.truncate())
+                            .or_else(|| {
+                                structures.get(response.target).ok().and_then(
+                                    |(_, transform, ..)| {
+                                        transform.map(|transform| transform.translation.truncate())
+                                    },
+                                )
+                            });
                     response_position.map_or(DefenderDuty::Available, DefenderDuty::RespondingTo)
                 } else {
                     staging_assignments
@@ -536,14 +538,17 @@ fn strategic_intent_system(
                     StructureKind::Other
                 };
                 let minerals = buffered_minerals(facility, stockpile, charger);
-                let operational = plan.is_none() && condition.is_none_or(Structure::is_operational);
+                let operational = transform.is_some()
+                    && plan.is_none()
+                    && condition.is_none_or(Structure::is_operational);
                 let stockpile_source = stockpile.filter(|stockpile| {
                     kind == StructureKind::Source
                         && stockpile.kind == ResourceKind::Minerals
                         && stockpile.capacity > 0
                 });
-                if stockpile_source.is_some()
-                    || plan.is_some_and(|plan| plan.kind == PlannedKind::SourceStockpile)
+                if let Some(transform) = transform
+                    && (stockpile_source.is_some()
+                        || plan.is_some_and(|plan| plan.kind == PlannedKind::SourceStockpile))
                 {
                     sources.push(SourceObservation {
                         id: entity,
@@ -572,7 +577,10 @@ fn strategic_intent_system(
                     }
                     _ => false,
                 };
-                if health > 0 && needs_build {
+                if let Some(transform) = transform
+                    && health > 0
+                    && needs_build
+                {
                     let (center, half) = Obstacle::structure(transform).bounds();
                     build_footprints.push(BuildFootprint {
                         owner,
@@ -587,7 +595,7 @@ fn strategic_intent_system(
                 Some(StructureState {
                     id: entity.to_bits(),
                     owner,
-                    position: transform.translation.truncate(),
+                    position: transform.map(|transform| transform.translation.truncate()),
                     kind,
                     operational,
                     health,
@@ -800,7 +808,7 @@ fn strategic_intent_system(
                                     || charger.is_some()
                                     || plan.is_some()
                             })
-                            .map(|(_, transform, ..)| Obstacle::structure(transform)),
+                            .filter_map(|(_, transform, ..)| transform.map(Obstacle::structure)),
                     )
                     .collect::<Vec<_>>()
             });

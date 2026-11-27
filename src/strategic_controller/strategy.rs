@@ -6,6 +6,8 @@ use super::{
 };
 use crate::nanobot::{cell_overlaps_circle, deposit_candidate_cells};
 
+const SWARM_ELIMINATION_BONUS: f32 = 80.0;
+
 fn is_target_reachable(
     owner: SwarmId,
     state: &GameState<'_>,
@@ -67,6 +69,7 @@ pub(super) fn validate_plan(
                 && structure.owner == owner
                 && structure.kind == StructureKind::Charger
                 && structure.health > 0
+                && structure.position.is_some()
             {
                 operational = true;
                 break;
@@ -143,10 +146,11 @@ pub(super) fn observe_attack_target(
                     && structure.owner != owner
                     && structure.health > 0
                     && structure.kind != StructureKind::Planned
-                    && is_target_reachable(owner, state, structure.position, budget)?
+                    && let Some(position) = structure.position
+                    && is_target_reachable(owner, state, position, budget)?
                 {
                     return Ok(Some(AttackObligation {
-                        cell: world_to_intent_cell(structure.position),
+                        cell: world_to_intent_cell(position),
                         health: structure.health,
                         ..target
                     }));
@@ -222,6 +226,7 @@ pub(super) fn generate_candidates(
         .collect();
     let mut hostile_bots = BTreeSet::new();
     let mut recoverable = BTreeSet::new();
+    let mut completed_structures = BTreeMap::<SwarmId, usize>::new();
     for bot in state.bots {
         if !budget.spend(1) {
             return candidates;
@@ -240,7 +245,13 @@ pub(super) fn generate_candidates(
         if !budget.spend(1) {
             return candidates;
         }
-        if structure.health == 0 || structure.kind == StructureKind::Planned {
+        if structure.owner != owner && structure.kind.counts_for_elimination() {
+            *completed_structures.entry(structure.owner).or_default() += 1;
+        }
+        if structure.health == 0
+            || structure.kind == StructureKind::Planned
+            || structure.position.is_none()
+        {
             continue;
         }
         if structure.owner != owner {
@@ -258,6 +269,13 @@ pub(super) fn generate_candidates(
             supply += structure.minerals as f32 * tuning.strategy_buffer_supply_weight;
         }
     }
+    let readiness_penalty = (tuning.strategy_readiness_supply_target - supply).max(0.0)
+        * tuning.strategy_readiness_penalty_weight;
+    let offensive_value = tuning.strategy_raid_base
+        + supply.min(tuning.strategy_raid_supply_cap) * tuning.strategy_raid_supply_weight
+        + forces.friendly_strength * tuning.strategy_raid_force_weight
+        - forces.enemy_strength * tuning.strategy_raid_enemy_weight
+        - readiness_penalty;
     for swarm in state.swarms {
         if !budget.spend(1) {
             return candidates;
@@ -280,21 +298,14 @@ pub(super) fn generate_candidates(
             candidates.push(PlanCandidate {
                 objective: Objective::PushHome(swarm.id),
                 attack_target: Some(world_to_intent_cell(swarm.home)),
-                score: -home.distance(swarm.home) / crate::ZONE_BLOCK_SIZE,
+                score: offensive_value
+                    - home.distance(swarm.home) / crate::ZONE_BLOCK_SIZE
+                        * tuning.strategy_raid_distance_cost,
                 ..base
             });
         }
     }
 
-    let readiness_penalty = (tuning.strategy_readiness_supply_target - supply).max(0.0)
-        * tuning.strategy_readiness_penalty_weight;
-    let raid_value = tuning.strategy_raid_base
-        + supply.min(tuning.strategy_raid_supply_cap) * tuning.strategy_raid_supply_weight
-        + forces.friendly_strength * tuning.strategy_raid_force_weight
-        - forces.enemy_strength * tuning.strategy_raid_enemy_weight
-        - readiness_penalty;
-    let hunt_value = tuning.strategy_hunt_remnant_base
-        + forces.friendly_strength * tuning.strategy_hunt_force_weight;
     let mut occupied_mines = BTreeSet::new();
     let mut nearby_mines = Vec::new();
     for structure in state.structures {
@@ -307,10 +318,13 @@ pub(super) fn generate_candidates(
         {
             continue;
         }
+        let Some(position) = structure.position else {
+            continue;
+        };
         let attack = AttackObligation {
             kind: AttackTargetKind::Structure,
             id: structure.id,
-            cell: world_to_intent_cell(structure.position),
+            cell: world_to_intent_cell(position),
             health: structure.health,
         };
         nearby_mines.clear();
@@ -318,22 +332,24 @@ pub(super) fn generate_candidates(
             economy,
             owner,
             structure.owner,
-            structure.position,
+            position,
             state,
             &mut nearby_mines,
             budget,
         );
+        let finishes_match = structure.kind.counts_for_elimination()
+            && completed_structures.get(&structure.owner) == Some(&1);
         let objective = if let Some((deposit, _)) = mine {
             Objective::RaidDeposit {
                 deposit,
                 target: structure.id,
             }
-        } else if !recoverable.contains(&structure.owner) {
-            Objective::FinishStructure(structure.id)
+        } else if finishes_match || !recoverable.contains(&structure.owner) {
+            Objective::AttackStructure(structure.id)
         } else {
             continue;
         };
-        let Ok(reachable) = is_target_reachable(owner, state, structure.position, budget) else {
+        let Ok(reachable) = is_target_reachable(owner, state, position, budget) else {
             return candidates;
         };
         if !reachable {
@@ -346,9 +362,15 @@ pub(super) fn generate_candidates(
             StructureKind::Facility => tuning.strategy_raid_facility_value,
             StructureKind::Planned | StructureKind::Other => 0.0,
         };
-        let distance = home.distance(structure.position) / crate::ZONE_BLOCK_SIZE;
-        let score = raid_value
+        let distance = home.distance(position) / crate::ZONE_BLOCK_SIZE;
+        let elimination_bonus = if finishes_match {
+            SWARM_ELIMINATION_BONUS
+        } else {
+            0.0
+        };
+        let score = offensive_value
             + strategic_value
+            + elimination_bonus
             + health_deficit(structure.health, structure.max_health)
                 * tuning.strategy_raid_vulnerability_weight
             + structure.minerals as f32 * tuning.strategy_raid_cargo_weight
@@ -357,6 +379,7 @@ pub(super) fn generate_candidates(
             objective,
             attack: Some(attack),
             attack_target: Some(attack.cell),
+            approach: Some(attack_approach(position)),
             score,
             protected_home: mine.and_then(|(_, home_cell)| home_cell),
             ..base
@@ -412,11 +435,8 @@ pub(super) fn generate_candidates(
             NanobotType::Worker => tuning.strategy_hunt_worker_value,
         };
         let distance = home.distance(bot.position) / crate::ZONE_BLOCK_SIZE;
-        let score = if mine.is_some() {
-            raid_value
-        } else {
-            hunt_value
-        } + danger
+        let score = offensive_value
+            + danger
             + health_deficit(bot.health, bot.max_health)
                 * tuning.strategy_hunt_vulnerability_weight
             - distance * tuning.strategy_hunt_distance_cost;
@@ -424,6 +444,7 @@ pub(super) fn generate_candidates(
             objective,
             attack: Some(attack),
             attack_target: Some(attack.cell),
+            approach: Some(attack_approach(bot.position)),
             score,
             protected_home: mine.and_then(|(_, home_cell)| home_cell),
             ..base
@@ -477,7 +498,7 @@ pub(super) fn generate_candidates(
                 objective: Objective::DenyDeposit(deposit.id),
                 attack_target: Some(cell),
                 approach: Some(RouteGoal::Interaction(interaction)),
-                score: raid_value
+                score: offensive_value
                     - home_cell.as_vec2().distance(cell.as_vec2())
                         * tuning.strategy_raid_distance_cost,
                 protected_home,
@@ -486,6 +507,13 @@ pub(super) fn generate_candidates(
         }
     }
     candidates
+}
+
+fn attack_approach(position: Vec2) -> RouteGoal {
+    RouteGoal::Range {
+        center: position,
+        radius: crate::ZONE_BLOCK_SIZE / 2.0,
+    }
 }
 
 fn home_has_targets(swarm: &SwarmState, state: &GameState<'_>, budget: &mut WorkBudget) -> bool {
@@ -499,7 +527,7 @@ fn home_has_targets(swarm: &SwarmState, state: &GameState<'_>, budget: &mut Work
             structure.owner == swarm.id
                 && structure.health > 0
                 && structure.kind != StructureKind::Planned
-                && near_home(structure.position)
+                && structure.position.is_some_and(near_home)
         })
         || state
             .bots
