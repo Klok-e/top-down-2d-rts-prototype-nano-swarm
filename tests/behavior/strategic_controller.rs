@@ -65,14 +65,13 @@ mod raid_readiness {
             Transform::from_translation(home.extend(0.0)),
             StrategicController::new(OWNER),
         ));
+        let enemy_home = common::cell_world_center(TARGET + 4 * IVec2::X);
         let enemy = app
             .world_mut()
             .spawn((
                 Swarm {},
                 ENEMY,
-                Transform::from_translation(
-                    common::cell_world_center(TARGET + 4 * IVec2::X).extend(0.0),
-                ),
+                Transform::from_translation(enemy_home.extend(0.0)),
             ))
             .id();
         let position = common::cell_world_center(TARGET);
@@ -86,6 +85,7 @@ mod raid_readiness {
             },
         );
         let stockpile = common::spawn_stockpile(&mut app, position, 80, 100);
+        common::spawn_facility_at(&mut app, enemy, enemy_home);
         for entity in [mine, stockpile] {
             app.world_mut().entity_mut(entity).insert(OwnerSwarm(enemy));
         }
@@ -172,7 +172,12 @@ mod raid_readiness {
             ENEMY,
         );
         review(&mut app);
-        assert!(staging_cell(&app).is_none(), "{}", explanation(&app));
+        let guarded = explanation(&app);
+        assert!(
+            !guarded.contains("raid enemy Resource Deposit"),
+            "{guarded}"
+        );
+        assert!(!owns_defend(&app, TARGET));
 
         for (guard, cell) in [
             (on_route, IVec2::new(4, 6)),
@@ -184,7 +189,12 @@ mod raid_readiness {
                 .translation = common::cell_world_center(cell).extend(0.0);
         }
         review(&mut app);
-        assert!(staging_cell(&app).is_some(), "{}", explanation(&app));
+        let undefended = explanation(&app);
+        assert!(
+            undefended.contains("raid enemy Resource Deposit"),
+            "{undefended}"
+        );
+        assert!(staging_cell(&app).is_some());
     }
 
     #[test]
@@ -223,16 +233,15 @@ mod raid_readiness {
     }
 
     #[test]
-    fn raid_withdraws_when_a_wall_severs_the_approach() {
+    fn raid_withdraws_when_an_obstacle_closes_the_target_approach() {
         let (mut app, _) = raid_fixture();
         review(&mut app);
         let first = staging_cell(&app).expect("ready force stages");
-        let wall = RockFormation::Rectangle {
-            half: Vec2::new(128.0, 100_000.0),
-        };
         app.world_mut().spawn((
-            wall,
-            Transform::from_translation(common::cell_world_center(IVec2::new(6, 0)).extend(0.0)),
+            RockFormation::Rectangle {
+                half: Vec2::splat(384.0),
+            },
+            Transform::from_translation(common::cell_world_center(TARGET).extend(0.0)),
         ));
         review(&mut app);
         assert!(staging_cell(&app).is_none(), "{}", explanation(&app));

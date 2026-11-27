@@ -469,6 +469,7 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
     use top_down_2d_rts_prototype_nano_swarm::{
         nanobot::{Charge, PlannedKind, Structure, StructureKind},
         resources::{ResourceKind, ResourceLedger},
+        strategic_runtime::ControllerTelemetry,
     };
 
     // Movement and allocation execute normally; omitting combat keeps the objective alive.
@@ -534,11 +535,9 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
     app.world_mut().entity_mut(deposit).insert(OwnerSwarm(own));
     let target_cell = IVec2::new(9, 0);
     let target_position = common::cell_world_center(target_cell);
-    let enemy = common::spawn_opponent_swarm_with_nanobots(
-        &mut app,
-        common::cell_world_center(target_cell + 4 * IVec2::X),
-        &[],
-    );
+    let enemy_home = common::cell_world_center(target_cell + 4 * IVec2::X);
+    let enemy = common::spawn_opponent_swarm_with_nanobots(&mut app, enemy_home, &[]);
+    common::spawn_facility_at(&mut app, enemy, enemy_home);
     let target_mine = common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -564,6 +563,7 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
         }
     }
     app.update();
+    let opening = app.world().resource::<ControllerTelemetry>().profiles();
     assert!(
         !app.world()
             .resource::<IntentGrid>()
@@ -571,7 +571,8 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
             .any(|(cell, intent)| {
                 cell.x >= 2 && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)
             }),
-        "an exhausted force must stay at home"
+        "an exhausted force must stay at home ({})",
+        opening[&SwarmId::PLAYER.0].last_explanation
     );
 
     {
@@ -637,9 +638,7 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
         }
     }
     let world = app.world();
-    let profiles = world
-        .resource::<top_down_2d_rts_prototype_nano_swarm::strategic_runtime::ControllerTelemetry>()
-        .profiles();
+    let profiles = world.resource::<ControllerTelemetry>().profiles();
     assert!(
         advanced_defenders >= 4,
         "shared movement must advance the main force, got {advanced_defenders} ({})",
