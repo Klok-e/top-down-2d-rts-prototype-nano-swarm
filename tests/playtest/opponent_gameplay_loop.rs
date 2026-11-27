@@ -642,7 +642,7 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
         },
     );
     app.world_mut().entity_mut(deposit).insert(OwnerSwarm(own));
-    let target_cell = IVec2::new(9, 0);
+    let target_cell = IVec2::new(11, 0);
     let target_position = common::cell_world_center(target_cell);
     let enemy_home = common::cell_world_center(target_cell + 4 * IVec2::X);
     let enemy = common::spawn_opponent_swarm_with_nanobots(&mut app, enemy_home, &[]);
@@ -772,9 +772,9 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
     for _ in 0..5_400 {
         app.update();
         let world = app.world_mut();
+        let grid = world.resource::<IntentGrid>();
         if !left_first_stage
-            && !world
-                .resource::<IntentGrid>()
+            && !grid
                 .cell(first_stage)
                 .unwrap()
                 .has_owned(IntentKind::Defend, SwarmId::PLAYER)
@@ -783,10 +783,22 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
                 first_arrivals(world) as f32 >= 0.6 * front_force.len() as f32,
                 "the first block must stay painted until its assigned force arrives"
             );
+            let mut columns = grid.iter_active_cells().filter_map(|(cell, intent)| {
+                (cell.x >= 2 && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER))
+                    .then_some(cell.x)
+            });
+            let first_column = columns.next().expect("the next fixed point is painted");
+            let (left, right) = columns.fold((first_column, first_column), |(left, right), x| {
+                (left.min(x), right.max(x))
+            });
+            assert_eq!(
+                (left + right + 1) / 2,
+                5,
+                "the second staging point stays where the original approach placed it"
+            );
             left_first_stage = true;
         }
-        let target_support = world
-            .resource::<IntentGrid>()
+        let target_support = grid
             .cell(target_cell)
             .is_some_and(|cell| cell.has_owned(IntentKind::Defend, SwarmId::PLAYER));
         if !target_support {
@@ -841,6 +853,56 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
         grid.cell(target_cell)
             .unwrap()
             .has_owned(IntentKind::Defend, SwarmId::PLAYER)
+    );
+
+    let (front, rear) = {
+        let world = app.world_mut();
+        let mut defenders = world.query::<(Entity, &SwarmMember, &NanobotType)>();
+        let assignments = world.resource::<DefenderStagingAssignments>();
+        defenders
+            .iter(world)
+            .filter(|(_, member, kind)| {
+                member.0 == SwarmId::PLAYER && **kind == NanobotType::Defender
+            })
+            .filter_map(|(entity, _, _)| assignments.destination(entity).map(|cell| (entity, cell)))
+            .partition::<Vec<_>, _>(|(_, cell)| cell.x >= 2)
+    };
+    assert!(front.len() >= 2 && !rear.is_empty());
+    let ready = std::iter::once(front[0].0)
+        .chain(rear.iter().map(|(entity, _)| *entity))
+        .collect::<HashSet<_>>();
+    {
+        let world = app.world_mut();
+        let mut defenders = world.query::<(Entity, &SwarmMember, &mut Charge)>();
+        for (entity, member, mut charge) in defenders.iter_mut(world) {
+            if member.0 == SwarmId::PLAYER {
+                charge.current = if ready.contains(&entity) {
+                    charge.max
+                } else {
+                    0.1
+                };
+            }
+        }
+    }
+    let target_is_painted = |app: &App| {
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(target_cell)
+            .is_some_and(|cell| cell.has_owned(IntentKind::Defend, SwarmId::PLAYER))
+    };
+    let mut withdrew = false;
+    for _ in 0..6 * top_down_2d_rts_prototype_nano_swarm::SIMULATION_HZ as u64 + review_ticks {
+        app.update();
+        if !target_is_painted(&app) {
+            withdrew = true;
+            break;
+        }
+    }
+    assert!(
+        withdrew,
+        "rear garrisons cannot sustain the weakened raid ({})",
+        app.world().resource::<ControllerTelemetry>().profiles()[&SwarmId::PLAYER.0]
+            .last_explanation
     );
 }
 

@@ -489,7 +489,8 @@ fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     }
     p.distance(a + delta * ((p - a).dot(delta) / length).clamp(0.0, 1.0))
 }
-fn segment_box(a: Vec2, b: Vec2, min: Vec2, max: Vec2) -> bool {
+/// Whether the segment enters the interior of the axis-aligned box.
+pub(crate) fn segment_box(a: Vec2, b: Vec2, min: Vec2, max: Vec2) -> bool {
     let delta = b - a;
     let mut lo: f32 = 0.0;
     let mut hi: f32 = 1.0;

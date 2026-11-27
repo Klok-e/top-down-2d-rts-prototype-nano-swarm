@@ -4,7 +4,10 @@
 //! return edits which the runtime applies only for [`Controller::owner`]. The
 //! module never writes ECS state or chooses work for individual nanobots.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashSet},
+    sync::Arc,
+};
 
 use crate::tuning::{AutonomyTuning, ChargeTuning, LogisticsTuning};
 
@@ -253,6 +256,7 @@ struct IntentPlan {
     mine_recovery: economy::MineRecovery,
     attack: Option<AttackObligation>,
     staging: Option<staging::StagingFront>,
+    primary_defend_cells: Arc<HashSet<IVec2>>,
     key_charger: Option<u64>,
     desired: HashSet<DesiredIntent>,
     reachability: Option<SwarmReachabilityMap>,

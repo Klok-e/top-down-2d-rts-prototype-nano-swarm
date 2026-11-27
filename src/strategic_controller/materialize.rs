@@ -113,7 +113,16 @@ pub(super) fn materialize_plan(
             .flatten()
             .map(|point| (anchor, point))
     });
-    paint_defend_block(minimum, anchor_ground, owner, state, &mut desired, budget);
+    let mut primary_defend_cells = HashSet::new();
+    paint_defend_block(
+        minimum,
+        anchor_ground,
+        owner,
+        state,
+        &mut desired,
+        &mut primary_defend_cells,
+        budget,
+    );
     if !desired.contains(&DesiredIntent {
         cell: anchor,
         kind: IntentKind::Defend,
@@ -143,7 +152,15 @@ pub(super) fn materialize_plan(
         budget,
     );
     if block != minimum {
-        paint_defend_block(block, anchor_ground, owner, state, &mut desired, budget);
+        paint_defend_block(
+            block,
+            anchor_ground,
+            owner,
+            state,
+            &mut desired,
+            &mut primary_defend_cells,
+            budget,
+        );
     }
     if budget.exhausted || desired.len() > paint_capacity || !budget.spend(desired.len()) {
         return None;
@@ -151,8 +168,9 @@ pub(super) fn materialize_plan(
     let owned_deposits = mines
         .map(|mine| budget.spend(mine.desired.len() + 1).then(|| mine.clone()))
         .collect::<Option<Vec<_>>>()?;
+    let primary_defend_cells = Arc::new(primary_defend_cells);
     let staging = staging.cloned().map(|mut front| {
-        front.block = block;
+        front.defend_cells = Arc::clone(&primary_defend_cells);
         front
     });
     if !budget.spend(economy.recovery.retired.len() + economy.recovery.source_gather.len()) {
@@ -170,6 +188,7 @@ pub(super) fn materialize_plan(
         mine_recovery,
         attack,
         staging,
+        primary_defend_cells,
         key_charger,
         desired,
         reachability: state.reachability.cloned(),
@@ -278,20 +297,17 @@ fn paint_defend_block(
     owner: SwarmId,
     state: &GameState<'_>,
     desired: &mut HashSet<DesiredIntent>,
+    primary_defend_cells: &mut HashSet<IVec2>,
     budget: &mut WorkBudget,
 ) {
     let mut paint = |cell, budget: &mut WorkBudget| {
-        push_desired(
-            desired,
-            owner,
-            DesiredIntent {
-                cell,
-                kind: IntentKind::Defend,
-            },
-            state,
-            true,
-            budget,
-        );
+        let intent = DesiredIntent {
+            cell,
+            kind: IntentKind::Defend,
+        };
+        if push_desired(desired, owner, intent, state, true, budget) || desired.contains(&intent) {
+            primary_defend_cells.insert(cell);
+        }
     };
     let (Some(map), Some((anchor, ground))) = (state.reachability, anchor_ground) else {
         for cell in block.cells() {

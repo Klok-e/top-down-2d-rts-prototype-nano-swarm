@@ -14,7 +14,25 @@ pub(super) struct RaidForces<'a> {
 }
 
 impl<'a> RaidForces<'a> {
-    pub(super) fn observe(owner: SwarmId, state: &GameState<'a>, budget: &mut WorkBudget) -> Self {
+    pub(super) fn observe(
+        owner: SwarmId,
+        state: &GameState<'a>,
+        current: Option<&IntentPlan>,
+        budget: &mut WorkBudget,
+    ) -> Self {
+        let is_rear_garrison = |cell| {
+            current.is_some_and(|plan| {
+                !plan.primary_defend_cells.contains(&cell)
+                    && plan.desired.contains(&DesiredIntent {
+                        cell,
+                        kind: IntentKind::Defend,
+                    })
+                    && state
+                        .grid
+                        .cell(cell)
+                        .is_some_and(|intent| intent.has_owned(IntentKind::Defend, owner))
+            })
+        };
         let mut forces = Self::default();
         for bot in state.bots {
             if !budget.spend(1) {
@@ -34,6 +52,7 @@ impl<'a> RaidForces<'a> {
                 if bot.charge > state.charge.low_threshold
                     && strength > 0.0
                     && bot.defender_duty != DefenderDuty::Unavailable
+                    && !matches!(bot.defender_duty, DefenderDuty::StagingAt(cell) if is_rear_garrison(cell))
                 {
                     forces.friendly.push((bot, strength));
                     forces.potential_strength += strength;
@@ -105,18 +124,19 @@ fn near_approach(
         if !budget.spend(1) {
             return None;
         }
-        let start = segment[0];
-        let offset = segment[1] - start;
-        let length_squared = offset.length_squared();
-        let closest = if length_squared > 0.0 {
-            let fraction = ((position - start).dot(offset) / length_squared).clamp(0.0, 1.0);
-            start + fraction * offset
-        } else {
-            start
-        };
-        if position.distance_squared(closest) <= radius_squared {
+        if distance_squared_to_segment(position, segment[0], segment[1]) <= radius_squared {
             return Some(true);
         }
     }
     Some(false)
+}
+
+pub(super) fn distance_squared_to_segment(position: Vec2, start: Vec2, end: Vec2) -> f32 {
+    let offset = end - start;
+    let length_squared = offset.length_squared();
+    if length_squared == 0.0 {
+        return position.distance_squared(start);
+    }
+    let fraction = ((position - start).dot(offset) / length_squared).clamp(0.0, 1.0);
+    position.distance_squared(start + fraction * offset)
 }

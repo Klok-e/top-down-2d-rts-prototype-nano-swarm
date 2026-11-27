@@ -759,6 +759,112 @@ mod raid_readiness {
     }
 
     #[test]
+    fn rear_mine_garrisons_do_not_sustain_a_raid_with_only_one_ready_defender() {
+        assert_raid_withdraws_with_rear_garrison(false);
+    }
+
+    #[test]
+    fn a_rock_disconnected_garrison_inside_the_nominal_front_is_still_rear_defense() {
+        assert_raid_withdraws_with_rear_garrison(true);
+    }
+
+    fn assert_raid_withdraws_with_rear_garrison(clip_front: bool) {
+        let (mut app, [front, replacement]) = raid_fixture::<2>(common::sim_app());
+        app.world_mut()
+            .resource_mut::<Tuning>()
+            .autonomy
+            .strategy_staging_spacing_cells = 64;
+        let own_swarm = {
+            let world = app.world_mut();
+            world
+                .query_filtered::<Entity, With<StrategicController>>()
+                .single(world)
+                .unwrap()
+        };
+        let (mine_cell, support_offset) = if clip_front {
+            let rock = RockFormation::Rectangle {
+                half: Vec2::new(
+                    2.0 * top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE,
+                    32.0,
+                ),
+            };
+            let mut wall = common::cell_world_center(TARGET);
+            wall.y += top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE / 2.0;
+            let transform = Transform::from_translation(wall.extend(0.0));
+            let reachability = SwarmReachabilityMap::new(
+                app.world().resource::<IntentGrid>(),
+                [rock.obstacle(&transform)],
+                [
+                    (OWNER, common::cell_world_center(IVec2::ZERO)),
+                    (ENEMY, common::cell_world_center(TARGET + 4 * IVec2::X)),
+                ],
+            )
+            .unwrap();
+            app.insert_resource(reachability);
+            app.world_mut().spawn((rock, transform));
+            (TARGET + IVec2::Y, -IVec2::X)
+        } else {
+            (IVec2::new(-7, 0), IVec2::X)
+        };
+        let mine = neutral_deposit(&mut app, mine_cell);
+        app.world_mut()
+            .entity_mut(mine)
+            .insert(OwnerSwarm(own_swarm));
+        for (defender, offset) in [(front, IVec2::ZERO), (replacement, -IVec2::Y)] {
+            app.world_mut()
+                .get_mut::<Transform>(defender)
+                .unwrap()
+                .translation = common::cell_world_center(TARGET + offset).extend(0.0);
+        }
+        review(&mut app);
+        assert!(owns_defend(&app, TARGET), "{}", explanation(&app));
+
+        let rear_cells = [mine_cell, mine_cell + support_offset];
+        let garrison = rear_cells.map(|cell| {
+            common::spawn_stationary_defender_at(&mut app, common::cell_world_center(cell), OWNER)
+        });
+        app.world_mut().despawn(replacement);
+        for _ in 0..8 {
+            let exhausted = common::spawn_stationary_defender_at(
+                &mut app,
+                common::cell_world_center(TARGET),
+                OWNER,
+            );
+            app.world_mut()
+                .get_mut::<Charge>(exhausted)
+                .unwrap()
+                .current = 0.1;
+        }
+        review(&mut app);
+        let assignments = app.world().resource::<DefenderStagingAssignments>();
+        assert!(
+            assignments
+                .destination(front)
+                .is_some_and(|cell| forward_defend_cells(&app).contains(&cell))
+        );
+        for defender in garrison {
+            assert!(
+                assignments
+                    .destination(defender)
+                    .is_some_and(|cell| rear_cells.contains(&cell)),
+                "the Defender must be assigned to the rear mine, got {:?} ({})",
+                assignments.destination(defender),
+                explanation(&app)
+            );
+        }
+        assert!(
+            owns_defend(&app, TARGET),
+            "the shortfall has a grace period"
+        );
+
+        for _ in 0..6 * SIMULATION_HZ as u64 {
+            app.update();
+        }
+        assert!(!owns_defend(&app, TARGET), "{}", explanation(&app));
+        assert!(owns_defend(&app, mine_cell));
+    }
+
+    #[test]
     fn staging_counts_pending_assignments_and_ignores_defenders_passing_through() {
         let (mut app, defenders) = raid_fixture::<7>(common::sim_app());
         app.insert_resource(NavigationBudget(0));
