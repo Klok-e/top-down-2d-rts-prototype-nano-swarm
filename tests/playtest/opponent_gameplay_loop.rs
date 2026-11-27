@@ -300,6 +300,7 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
     use top_down_2d_rts_prototype_nano_swarm::{
         nanobot::{ChargePlugin, Structure, StructureKind},
         resources::{ResourceKind, ResourceLedger},
+        strategic_runtime::ControllerTelemetry,
         tuning::Tuning,
     };
 
@@ -417,12 +418,20 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
                     .is_some_and(|intent| intent.has_owned(IntentKind::Gather, SwarmId::PLAYER)),
                 "the tiny neutral deposit should remain unclaimed"
             );
+            let controller = app.world().resource::<ControllerTelemetry>();
+            let review = &controller.profiles()[&SwarmId::PLAYER.0];
+            assert!(
+                review
+                    .last_explanation
+                    .contains("raid enemy Resource Deposit"),
+                "the ignored neutral deposit must leave the raid available: {review:?}"
+            );
             assert!(
                 app.world()
                     .resource::<IntentGrid>()
                     .iter_active_cells()
                     .any(|(cell, intent)| {
-                        (0..target_cell.x).contains(&cell.x)
+                        (2..target_cell.x).contains(&cell.x)
                             && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)
                     }),
                 "the ignored neutral deposit must not block staging the raid on the producer"

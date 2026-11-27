@@ -1988,9 +1988,6 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
         .map(|(rock, transform)| rock.obstacle(&transform))
         .collect::<Vec<_>>();
     let navigation = crate::navigation::Navigation::new(&grid, terrain.clone());
-    let reachable =
-        SwarmReachabilityMap::new(&grid, terrain.iter().copied(), [(owner, swarms[0].home)])
-            .unwrap();
     let route = |start, goal, allow_work: &mut dyn FnMut() -> bool| {
         navigation.route_without_paint(start, goal, allow_work)
     };
@@ -2005,7 +2002,7 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
             deposits: &deposits,
             terrain: &terrain,
             charge: &DEFAULT_CHARGE,
-            reachability: Some(&reachable),
+            reachability: None,
             route_query: Some(&route),
             mine_query: None,
             build_footprints: &[],
