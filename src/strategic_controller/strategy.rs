@@ -180,7 +180,6 @@ pub(super) fn generate_candidates(
     owner: SwarmId,
     state: &GameState<'_>,
     economy: &EconomyPlan,
-    current: Option<&IntentPlan>,
     denied_deposits: &mut BTreeSet<(u64, SwarmId)>,
     budget: &mut WorkBudget,
 ) -> Vec<PlanCandidate> {
@@ -429,21 +428,6 @@ pub(super) fn generate_candidates(
             ..base
         });
     }
-    let secured_mine = current.and_then(|plan| {
-        let Objective::DenyDeposit(id) = plan.objective else {
-            return None;
-        };
-        (!occupied_mines.contains(&id)
-            && plan.staging.as_ref().is_some_and(|front| {
-                front.destination_secured(
-                    owner,
-                    state,
-                    tuning.strategy_staging_arrival_fraction,
-                    budget,
-                )
-            }))
-        .then_some(id)
-    });
     for (deposit, enemy) in &economy.enemy_deposits {
         if !budget.spend(1) {
             return candidates;
@@ -487,10 +471,6 @@ pub(super) fn generate_candidates(
                         Err(()) => return candidates,
                     }
                 }
-            }
-            if secured_mine == Some(deposit.id) {
-                denied_deposits.insert(claim);
-                break;
             }
             candidates.push(PlanCandidate {
                 objective: Objective::DenyDeposit(deposit.id),

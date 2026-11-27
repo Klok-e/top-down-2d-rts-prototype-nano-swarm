@@ -1,6 +1,7 @@
 use super::{
     economy::plan_economy,
     materialize::{intent_edits, materialize_plan},
+    raid::RaidForces,
     staging::plan_staging,
     strategy::{generate_candidates, validate_plan},
     *,
@@ -202,7 +203,6 @@ impl PlannerState {
             owner,
             state,
             &economy,
-            self.current.as_ref(),
             &mut denied_deposits,
             &mut budget,
         );
@@ -227,87 +227,128 @@ impl PlannerState {
                 .cmp(&right.objective.priority())
                 .then_with(|| left.score.total_cmp(&right.score))
         });
-        let best = candidates
-            .last()
-            .expect("the home economy is a candidate")
-            .clone();
+        let raid_forces = if candidates
+            .iter()
+            .any(|candidate| candidate.objective.requires_raid_readiness())
+        {
+            RaidForces::observe(owner, state, &mut budget)
+        } else {
+            RaidForces::default()
+        };
+        let current = self.current.as_ref();
+        let mut secured_mine = None;
+        let mut stage_candidate = |candidate: &PlanCandidate| {
+            if candidate.attack_target.is_none() {
+                return Some(None);
+            }
+            if budget.exhausted
+                || matches!(candidate.objective, Objective::DenyDeposit(id) if secured_mine == Some(id))
+            {
+                return None;
+            }
+            let front = plan_staging(
+                tuning,
+                candidate,
+                current,
+                owner,
+                state,
+                &raid_forces,
+                &mut budget,
+            )?;
+            if let Objective::DenyDeposit(id) = candidate.objective
+                && !front.waiting_for_readiness()
+                && current
+                    .filter(|plan| plan.objective == candidate.objective)
+                    .and_then(|plan| plan.staging.as_ref())
+                    .is_some_and(|previous| {
+                        previous.point() == front.point()
+                            && previous.destination_secured(
+                                owner,
+                                state,
+                                tuning.strategy_staging_arrival_fraction,
+                                &mut budget,
+                            )
+                    })
+            {
+                secured_mine = Some(id);
+                return None;
+            }
+            Some(Some(front))
+        };
+
+        let (best, best_staging) = candidates
+            .iter()
+            .rev()
+            .find_map(|candidate| stage_candidate(candidate).map(|staging| (candidate, staging)))
+            .expect("the home economy is eligible");
 
         let progressing_attack = attack_progressed && !tuning_review;
-        let refreshed = self.current.as_ref().and_then(|current| {
-            candidates
-                .iter()
-                .rev()
-                .find(|candidate| candidate.objective == current.objective)
-        });
-        let (mut selected, mut explanation) = if let Some(refreshed) = refreshed
-            && refreshed.objective.priority() == best.objective.priority()
-            && (progressing_attack
-                || invalidation.is_none()
-                    && (stall_grace
-                        || best.score
-                            <= refreshed.score
-                                + refreshed.score.abs() * (tuning.controller_switch_margin - 1.0)
-                                + tuning.controller_switch_bias))
-        {
-            let label = refreshed.objective.label();
-            let explanation = if progressing_attack {
+        let retained = current
+            .filter(|plan| plan.objective.priority() == best.objective.priority())
+            .and_then(|plan| {
+                candidates.iter().rev().find_map(|candidate| {
+                    if candidate.objective != plan.objective {
+                        return None;
+                    }
+                    let normal_retention = progressing_attack
+                        || invalidation.is_none()
+                            && (stall_grace
+                                || best.score
+                                    <= candidate.score
+                                        + candidate.score.abs()
+                                            * (tuning.controller_switch_margin - 1.0)
+                                        + tuning.controller_switch_bias);
+                    if !normal_retention && !candidate.objective.requires_raid_readiness() {
+                        return None;
+                    }
+                    let staging = if std::ptr::eq(candidate, best) {
+                        best_staging.clone()
+                    } else {
+                        stage_candidate(candidate)?
+                    };
+                    let waiting = staging
+                        .as_ref()
+                        .is_some_and(|front| front.waiting_for_readiness());
+                    (normal_retention || waiting).then_some((candidate, staging))
+                })
+            });
+        if let Some(id) = secured_mine {
+            for (deposit, enemy) in &economy.enemy_deposits {
+                if !budget.spend(1) {
+                    break;
+                }
+                if deposit.id == id {
+                    denied_deposits.insert((id, *enemy));
+                    break;
+                }
+            }
+        }
+        let (selected, staging, mut explanation) = if let Some((retained, staging)) = retained {
+            let label = retained.objective.label();
+            let explanation = if staging
+                .as_ref()
+                .is_some_and(|front| front.waiting_for_readiness())
+            {
+                format!("held {label} while the raid force recovers")
+            } else if progressing_attack {
                 format!("retained {label}; attack is progressing")
             } else if stall_grace {
                 format!("retained {label}; covered attack is in its stall grace review")
             } else {
                 format!("retained viable {label}; no alternative was clearly better")
             };
-            (refreshed.clone(), explanation)
+            (retained, staging, explanation)
         } else {
             let label = best.objective.label();
             let explanation = if let Some(reason) = invalidation {
                 format!("{reason}; selected {label} after urgent review")
-            } else if self.current.is_some() {
+            } else if current.is_some() {
                 format!("selected {label} because it is clearly better than the current plan")
             } else {
                 format!("selected {label} from economic, support, and combat alternatives")
             };
-            (best, explanation)
+            (best, best_staging, explanation)
         };
-        let mut staging = plan_staging(
-            tuning,
-            &selected,
-            self.current.as_ref(),
-            owner,
-            state,
-            &mut budget,
-        );
-        if selected.attack_target.is_some() && staging.is_none() && !budget.exhausted {
-            for alternative in candidates.iter().rev() {
-                if alternative.objective == selected.objective
-                    && alternative.attack_target == selected.attack_target
-                    && alternative.protected_home == selected.protected_home
-                {
-                    continue;
-                }
-                let approach = plan_staging(
-                    tuning,
-                    alternative,
-                    self.current.as_ref(),
-                    owner,
-                    state,
-                    &mut budget,
-                );
-                if budget.exhausted {
-                    break;
-                }
-                if alternative.attack_target.is_none() || approach.is_some() {
-                    explanation = format!(
-                        "selected {} because {} lacked a reachable approach",
-                        alternative.objective.label(),
-                        selected.objective.label(),
-                    );
-                    selected = alternative.clone();
-                    staging = approach;
-                    break;
-                }
-            }
-        }
         if budget.exhausted {
             self.tuning_review_requested |= tuning_review;
             self.work_used = budget.used;
@@ -330,7 +371,7 @@ impl PlannerState {
             .as_ref()
             .is_some_and(|current| current.objective == selected.objective);
         let selected = materialize_plan(
-            selected,
+            selected.clone(),
             economy,
             staging,
             owner,

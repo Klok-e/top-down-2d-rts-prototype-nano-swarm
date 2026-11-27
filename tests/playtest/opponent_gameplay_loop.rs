@@ -467,7 +467,7 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
 
     use bevy::time::TimeUpdateStrategy;
     use top_down_2d_rts_prototype_nano_swarm::{
-        nanobot::{PlannedKind, Structure, StructureKind},
+        nanobot::{Charge, PlannedKind, Structure, StructureKind},
         resources::{ResourceKind, ResourceLedger},
     };
 
@@ -534,14 +534,60 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
     app.world_mut().entity_mut(deposit).insert(OwnerSwarm(own));
     let target_cell = IVec2::new(9, 0);
     let target_position = common::cell_world_center(target_cell);
-    let enemy = common::spawn_opponent_swarm_with_nanobots(&mut app, target_position, &[]);
+    let enemy = common::spawn_opponent_swarm_with_nanobots(
+        &mut app,
+        common::cell_world_center(target_cell + 4 * IVec2::X),
+        &[],
+    );
+    let target_mine = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: target_position,
+            amount: 72_000,
+            capacity: 72_000,
+            radius: 64.0,
+        },
+    );
+    app.world_mut()
+        .entity_mut(target_mine)
+        .insert(OwnerSwarm(enemy));
     let sink = common::spawn_empty_completed_structure(&mut app, enemy, PlannedKind::SinkStockpile);
     app.world_mut().entity_mut(sink).insert((
         Structure::new(StructureKind::Basic),
         Transform::from_translation(target_position.extend(0.0)),
     ));
 
+    {
+        let world = app.world_mut();
+        for mut charge in world.query::<&mut Charge>().iter_mut(world) {
+            charge.current = 0.1;
+        }
+    }
     app.update();
+    assert!(
+        !app.world()
+            .resource::<IntentGrid>()
+            .iter_active_cells()
+            .any(|(cell, intent)| {
+                cell.x >= 2 && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)
+            }),
+        "an exhausted force must stay at home"
+    );
+
+    {
+        let world = app.world_mut();
+        for mut charge in world.query::<&mut Charge>().iter_mut(world) {
+            charge.current = charge.max;
+        }
+    }
+    let review_ticks = app
+        .world()
+        .resource::<Tuning>()
+        .autonomy
+        .controller_review_period_ticks;
+    for _ in 0..review_ticks {
+        app.update();
+    }
     let first_stage = {
         let grid = app.world().resource::<IntentGrid>();
         let first = grid

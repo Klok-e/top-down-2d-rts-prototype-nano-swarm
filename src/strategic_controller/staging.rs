@@ -3,6 +3,7 @@ use std::sync::Arc;
 use super::{
     lifecycle::WorkBudget,
     materialize::{intent_cell_center, query_route, world_to_intent_cell},
+    raid::{READINESS_GRACE_TICKS, RaidForces},
     *,
 };
 
@@ -17,6 +18,7 @@ pub(super) struct StagingFront {
     points: Vec<StagingPoint>,
     active: usize,
     spacing_cells: u32,
+    readiness_shortfall_started: Option<u64>,
     pub(super) block: DefendBlock,
 }
 
@@ -29,6 +31,10 @@ struct StagingPoint {
 impl StagingFront {
     pub(super) fn point(&self) -> IVec2 {
         self.points[self.active].cell
+    }
+
+    pub(super) fn waiting_for_readiness(&self) -> bool {
+        self.readiness_shortfall_started.is_some()
     }
 
     pub(super) fn covers(&self, target: IVec2, owner: SwarmId, state: &GameState<'_>) -> bool {
@@ -169,20 +175,53 @@ pub(super) fn plan_staging(
     current: Option<&IntentPlan>,
     owner: SwarmId,
     state: &GameState<'_>,
+    raid_forces: &RaidForces<'_>,
     budget: &mut WorkBudget,
 ) -> Option<StagingFront> {
     let target = candidate.attack_target?;
     let previous = current.and_then(|plan| plan.staging.as_ref());
     let same_objective = current.is_some_and(|plan| plan.objective == candidate.objective);
+    let continuing = previous.filter(|front| {
+        same_objective
+            && stageable(
+                owner,
+                state,
+                candidate.protected_home,
+                front.point(),
+                budget,
+            )
+    });
+    let requires_readiness = candidate.objective.requires_raid_readiness();
+    if requires_readiness && continuing.is_none() && !raid_forces.can_launch() {
+        return None;
+    }
+    let reusable = continuing.filter(|front| {
+        front.destination_contains(target, owner, state)
+            && front.points[front.active + 1..]
+                .iter()
+                .all(|point| stageable(owner, state, candidate.protected_home, point.cell, budget))
+    });
+
+    let route = if requires_readiness || reusable.is_none() {
+        let active_raid = requires_readiness && continuing.is_some();
+        let route = staging_route(candidate, previous, active_raid, owner, state, budget)?;
+        if requires_readiness && !raid_forces.ready(&route, intent_cell_center(target), budget)? {
+            let mut held = continuing?.clone();
+            let shortfall_started = held.readiness_shortfall_started.unwrap_or(state.tick);
+            if state.tick.saturating_sub(shortfall_started) >= READINESS_GRACE_TICKS {
+                return None;
+            }
+            held.readiness_shortfall_started = Some(shortfall_started.min(state.tick));
+            return Some(held);
+        }
+        Some(route)
+    } else {
+        None
+    };
+
     let spacing = tuning.strategy_staging_spacing_cells;
     let arrival_fraction = tuning.strategy_staging_arrival_fraction;
-    if let Some(previous) = previous
-        && same_objective
-        && previous.destination_contains(target, owner, state)
-        && previous.points[previous.active..]
-            .iter()
-            .all(|point| stageable(owner, state, candidate.protected_home, point.cell, budget))
-    {
+    if let Some(previous) = reusable {
         let mut retained = previous.clone();
         if previous.spacing_cells != spacing && previous.active + 1 < previous.points.len() {
             retained.points = staging_points(
@@ -201,49 +240,13 @@ pub(super) fn plan_staging(
             retained.active = 0;
         }
         retained.spacing_cells = spacing;
+        retained.readiness_shortfall_started = None;
         retained.advance_if_arrived(owner, state, arrival_fraction, budget);
         return Some(retained);
     }
 
-    if budget.exhausted {
-        return None;
-    }
-    let home = state
-        .swarms
-        .iter()
-        .find(|swarm| budget.spend(1) && swarm.id == owner)
-        .map_or(Vec2::ZERO, |swarm| swarm.home);
-    let mut start = previous.map_or(home, |previous| {
-        let cell = previous.point();
-        ground(owner, state, cell, budget).unwrap_or_else(|| intent_cell_center(cell))
-    });
-    let destination = ground(owner, state, target, budget)?;
-    if budget.exhausted {
-        return None;
-    }
-    let waypoints = if state.route_query.is_some() {
-        let goal = candidate.approach.unwrap_or(RouteGoal::Range {
-            center: destination,
-            // Leave room to route beside a structure at the tile center.
-            radius: crate::ZONE_BLOCK_SIZE / 2.0,
-        });
-        let route = query_route(state, start, goal, budget).or_else(|| {
-            if start == home || budget.exhausted {
-                return None;
-            }
-            start = home;
-            query_route(state, start, goal, budget)
-        })?;
-        route.waypoints
-    } else {
-        vec![destination]
-    };
-    let route = Arc::from(std::iter::once(start).chain(waypoints).collect::<Vec<_>>());
-    let held_stage = previous.filter(|previous| {
-        same_objective
-            && previous.active + 1 < previous.points.len()
-            && ground(owner, state, previous.point(), budget).is_some()
-    });
+    let route = route?;
+    let held_stage = continuing.filter(|old| old.active + 1 < old.points.len());
     let first = held_stage.map(|stage| StagingPoint {
         cell: stage.point(),
         distance: 0.0,
@@ -258,12 +261,57 @@ pub(super) fn plan_staging(
         points,
         active: 0,
         spacing_cells: spacing,
+        readiness_shortfall_started: None,
         block: held_stage.map_or_else(|| DefendBlock::new(target, 1), |stage| stage.block),
     };
     if held_stage.is_some() {
         staging.advance_if_arrived(owner, state, arrival_fraction, budget);
     }
     Some(staging)
+}
+
+fn staging_route(
+    candidate: &PlanCandidate,
+    previous: Option<&StagingFront>,
+    active_raid: bool,
+    owner: SwarmId,
+    state: &GameState<'_>,
+    budget: &mut WorkBudget,
+) -> Option<Arc<[Vec2]>> {
+    let home = state
+        .swarms
+        .iter()
+        .find(|swarm| budget.spend(1) && swarm.id == owner)
+        .map_or(Vec2::ZERO, |swarm| swarm.home);
+    let start = previous.map_or(home, |previous| {
+        let cell = previous.point();
+        ground(owner, state, cell, budget).unwrap_or_else(|| intent_cell_center(cell))
+    });
+    let destination = ground(owner, state, candidate.attack_target?, budget)?;
+    if budget.exhausted {
+        return None;
+    }
+    if state.route_query.is_none() {
+        return Some(Arc::from([start, destination]));
+    }
+    let goal = candidate.approach.unwrap_or(RouteGoal::Range {
+        center: destination,
+        // Leave room to route beside a structure at the tile center.
+        radius: crate::ZONE_BLOCK_SIZE / 2.0,
+    });
+    let (start, route) = if let Some(route) = query_route(state, start, goal, budget) {
+        (start, route)
+    } else {
+        if active_raid || start == home || budget.exhausted {
+            return None;
+        }
+        (home, query_route(state, home, goal, budget)?)
+    };
+    Some(Arc::from(
+        std::iter::once(start)
+            .chain(route.waypoints)
+            .collect::<Vec<_>>(),
+    ))
 }
 
 fn stageable(

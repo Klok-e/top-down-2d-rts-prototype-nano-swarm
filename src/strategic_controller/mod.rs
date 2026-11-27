@@ -49,6 +49,15 @@ pub struct BotState {
     pub max_charge: f32,
     pub cargo: u32,
     pub displacement: Vec2,
+    pub defender_duty: DefenderDuty,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub enum DefenderDuty {
+    #[default]
+    Available,
+    Unavailable,
+    RespondingTo(Vec2),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,6 +228,10 @@ enum Objective {
 }
 
 impl Objective {
+    fn requires_raid_readiness(self) -> bool {
+        matches!(self, Self::RaidDeposit { .. } | Self::DenyDeposit(_))
+    }
+
     fn priority(self) -> u8 {
         match self {
             Self::DefendDeposit(_) => 6,
@@ -291,6 +304,7 @@ struct ForceEstimate {
 mod economy;
 mod lifecycle;
 mod materialize;
+mod raid;
 mod spending;
 mod staging;
 mod strategy;
