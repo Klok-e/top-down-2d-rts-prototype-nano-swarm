@@ -214,6 +214,20 @@ struct PlanCandidate {
     protected_home: Option<IVec2>,
 }
 
+impl PlanCandidate {
+    fn hold_home(anchor: IVec2) -> Self {
+        Self {
+            objective: Objective::HoldHome,
+            anchor,
+            attack: None,
+            attack_target: None,
+            approach: None,
+            score: 0.0,
+            protected_home: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AttackTargetKind {
     Structure,

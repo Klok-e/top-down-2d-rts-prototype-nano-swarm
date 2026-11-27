@@ -147,6 +147,7 @@ impl PlannerState {
             covered_attack,
             covered_attack_movement,
         } = validation;
+        let replace_invalid_plan = invalidation.is_some() || lost_deposit.is_some();
         let tuning_review = std::mem::take(&mut self.tuning_review_requested);
         let regular_review = tuning_review
             || self.last_review_tick.is_none_or(|last| {
@@ -368,29 +369,40 @@ impl PlannerState {
                 work_units: budget.call_work(),
             };
         }
-        if let Some(id) = lost_deposit {
-            explanation.push_str(&format!(
-                ", owned Resource Deposit {id} was exhausted, lost, or unreachable"
-            ));
-        }
         let mut plan = materialize_plan(
-            selected.clone(),
+            selected,
             &economy,
-            staging,
+            staging.as_ref(),
             owner,
             state,
             tuning,
             &mut budget,
         );
+        let urgent_defense = matches!(selected.objective, Objective::DefendDeposit(_));
         if plan.is_none()
-            && current.is_none()
+            && (urgent_defense || (current.is_some() && replace_invalid_plan))
+            && !budget.exhausted
+            && economy.expansion.take().is_some()
+        {
+            plan = materialize_plan(
+                selected,
+                &economy,
+                staging.as_ref(),
+                owner,
+                state,
+                tuning,
+                &mut budget,
+            );
+            explanation.push_str(", deferred the new claim to complete the military plan");
+        }
+        if plan.is_none()
+            && (current.is_none() || replace_invalid_plan)
             && !budget.exhausted
             && (selected.objective != Objective::HoldHome || economy.expansion.is_some())
         {
             economy.expansion = None;
-            let hold_home = &candidates[0];
             plan = materialize_plan(
-                hold_home.clone(),
+                &PlanCandidate::hold_home(selected.anchor),
                 &economy,
                 None,
                 owner,
@@ -415,6 +427,11 @@ impl PlannerState {
                 work_units: budget.call_work(),
             };
         };
+        if let Some(id) = lost_deposit {
+            explanation.push_str(&format!(
+                ", owned Resource Deposit {id} was exhausted, lost, or unreachable"
+            ));
+        }
         let keeps_objective =
             current.is_some_and(|current| current.objective == selected.objective);
         let previous = self.current.as_ref().map(|plan| &plan.desired);

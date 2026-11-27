@@ -9,9 +9,9 @@ use crate::{nanobot::footprint_intent_cells, navigation::Route};
 use std::collections::VecDeque;
 
 pub(super) fn materialize_plan(
-    candidate: PlanCandidate,
+    candidate: &PlanCandidate,
     economy: &EconomyPlan,
-    mut staging: Option<StagingFront>,
+    staging: Option<&StagingFront>,
     owner: SwarmId,
     state: &GameState<'_>,
     tuning: &AutonomyTuning,
@@ -25,8 +25,8 @@ pub(super) fn materialize_plan(
         approach: _,
         score: _,
         protected_home,
-    } = candidate;
-    let anchor = staging.as_ref().map_or(anchor, StagingFront::point);
+    } = *candidate;
+    let anchor = staging.map_or(anchor, StagingFront::point);
     let swarm = state.swarms.iter().find(|swarm| swarm.id == owner);
     let home = swarm.map_or(Vec2::ZERO, |swarm| swarm.home);
     let home_cell = world_to_intent_cell(home);
@@ -135,9 +135,6 @@ pub(super) fn materialize_plan(
         paint_capacity,
         budget,
     );
-    if let Some(front) = staging.as_mut() {
-        front.block = block;
-    }
     if block != minimum {
         paint_defend_block(block, anchor_ground, owner, state, &mut desired, budget);
     }
@@ -147,6 +144,10 @@ pub(super) fn materialize_plan(
     let owned_deposits = mines
         .map(|mine| budget.spend(mine.desired.len() + 1).then(|| mine.clone()))
         .collect::<Option<Vec<_>>>()?;
+    let staging = staging.cloned().map(|mut front| {
+        front.block = block;
+        front
+    });
     let plan = IntentPlan {
         objective,
         owned_deposits,
@@ -588,11 +589,12 @@ fn paint_corridor(
         .ok()??,
         None => return None,
     };
-    if !budget.spend(cells.len())
-        || !cells.contains(&target)
-        || protected_home.is_some_and(|home| cells.contains(&home))
-    {
+    if !budget.spend(cells.len()) || !cells.contains(&target) {
         return None;
+    }
+    if protected_home.is_some_and(|home| cells.contains(&home)) {
+        // An approach to a mine may cross the opposing home, which its raid leaves unpainted.
+        return Some(());
     }
     for cell in cells {
         let intent = DesiredIntent {
@@ -629,7 +631,10 @@ pub(super) fn corridor_route(
         route
     } else {
         start = intent_cell_center(world_to_intent_cell(start));
-        let end = intent_cell_center(target);
+        let end = match goal {
+            RouteGoal::Point(point) => point,
+            _ => intent_cell_center(target),
+        };
         for obstacle in state.terrain {
             if !budget.spend(1) || !obstacle.segment_clear(start, end) {
                 return Ok(None);

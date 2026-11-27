@@ -189,15 +189,7 @@ pub(super) fn generate_candidates(
     });
     let home = owner_state.map_or(Vec2::ZERO, |swarm| swarm.home);
     let home_cell = world_to_intent_cell(home);
-    let base = PlanCandidate {
-        objective: Objective::HoldHome,
-        attack: None,
-        anchor: home_cell,
-        attack_target: None,
-        approach: None,
-        score: 0.0,
-        protected_home: None,
-    };
+    let base = PlanCandidate::hold_home(home_cell);
     let mut candidates = vec![base.clone()];
     if let Some((deposit, target)) = economy.threatened {
         candidates.push(PlanCandidate {
@@ -205,6 +197,7 @@ pub(super) fn generate_candidates(
             attack_target: Some(target),
             ..base
         });
+        return candidates;
     }
 
     for &(deposit, cell, approach) in &economy.contested_deposits {

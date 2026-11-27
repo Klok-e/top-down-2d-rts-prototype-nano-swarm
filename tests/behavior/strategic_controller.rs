@@ -157,6 +157,7 @@ mod raid_readiness {
     #[test]
     fn an_unprofitable_neutral_deposit_leaves_the_raid_available() {
         let (mut app, _) = raid_fixture();
+        add_claim_crew(&mut app);
         let neutral = IVec2::new(-4, 0);
         neutral_deposit(&mut app, neutral);
         app.world_mut()
