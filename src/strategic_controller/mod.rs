@@ -246,6 +246,7 @@ struct IntentPlan {
     mine_recovery: economy::MineRecovery,
     attack: Option<AttackObligation>,
     staging: Option<staging::StagingFront>,
+    primary_defend_block: staging::DefendBlock,
     key_charger: Option<u64>,
     desired: HashSet<DesiredIntent>,
     reachability: Option<SwarmReachabilityMap>,

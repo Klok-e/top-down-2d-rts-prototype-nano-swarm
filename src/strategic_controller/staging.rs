@@ -3,7 +3,7 @@ use std::sync::Arc;
 use super::{
     lifecycle::WorkBudget,
     materialize::{intent_cell_center, query_route, world_to_intent_cell},
-    raid::{READINESS_GRACE_TICKS, RaidForces},
+    raid::{READINESS_GRACE_TICKS, RaidForces, distance_squared_to_segment},
     *,
 };
 
@@ -75,6 +75,27 @@ impl StagingFront {
             .cell
     }
 
+    fn same_remaining_route(&self, route: &[Vec2], budget: &mut WorkBudget) -> bool {
+        if !budget.spend(self.route.len()) {
+            return false;
+        }
+        let distance = self.points[self.active].distance;
+        let mut traveled = 0.0;
+        for (index, segment) in self.route.windows(2).enumerate() {
+            let length = segment[0].distance(segment[1]);
+            if length > 0.0 && distance <= traveled + length {
+                let start = segment[0].lerp(segment[1], (distance - traveled) / length);
+                let mut remaining = Vec::with_capacity(self.route.len() - index);
+                remaining.push(start);
+                remaining.extend_from_slice(&self.route[index + 1..]);
+                return follows_route(&remaining, route, budget)
+                    && follows_route(route, &remaining, budget);
+            }
+            traveled += length;
+        }
+        false
+    }
+
     fn advance_if_arrived(
         &mut self,
         owner: SwarmId,
@@ -126,6 +147,28 @@ impl StagingFront {
         }
         assigned > 0 && arrived as f32 >= assigned as f32 * fraction
     }
+}
+
+fn follows_route(checkpoints: &[Vec2], route: &[Vec2], budget: &mut WorkBudget) -> bool {
+    // Allow the offset between a sample and its cell center when the next search
+    // starts from the active staging cell.
+    let radius_squared = crate::ZONE_BLOCK_SIZE.powi(2) / 2.0;
+    let mut segments = route.windows(2).peekable();
+    for &point in checkpoints {
+        loop {
+            let Some(segment) = segments.peek() else {
+                return false;
+            };
+            if !budget.spend(1) {
+                return false;
+            }
+            if distance_squared_to_segment(point, segment[0], segment[1]) <= radius_squared {
+                break;
+            }
+            segments.next();
+        }
+    }
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,7 +231,45 @@ pub(super) fn plan_staging(
     raid_forces: &RaidForces<'_>,
     budget: &mut WorkBudget,
 ) -> Option<StagingFront> {
-    let target = candidate.attack_target?;
+    review_staging(
+        tuning,
+        candidate,
+        current,
+        owner,
+        state,
+        raid_forces,
+        budget,
+    )
+    .ok()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum StageFailure {
+    Ineligible,
+    WorkExhausted,
+    SustainedReadinessLoss,
+}
+
+impl StageFailure {
+    fn unavailable(budget: &WorkBudget) -> Self {
+        if budget.exhausted {
+            Self::WorkExhausted
+        } else {
+            Self::Ineligible
+        }
+    }
+}
+
+pub(super) fn review_staging(
+    tuning: &AutonomyTuning,
+    candidate: &PlanCandidate,
+    current: Option<&IntentPlan>,
+    owner: SwarmId,
+    state: &GameState<'_>,
+    raid_forces: &RaidForces<'_>,
+    budget: &mut WorkBudget,
+) -> Result<StagingFront, StageFailure> {
+    let target = candidate.attack_target.ok_or(StageFailure::Ineligible)?;
     let previous = current.and_then(|plan| plan.staging.as_ref());
     let same_objective = current.is_some_and(|plan| plan.objective == candidate.objective);
     let continuing = previous.filter(|front| {
@@ -203,11 +284,10 @@ pub(super) fn plan_staging(
     });
     let requires_readiness = candidate.objective.needs_ready_force();
     if requires_readiness && continuing.is_none() && !raid_forces.can_launch() {
-        return None;
+        return Err(StageFailure::unavailable(budget));
     }
     let reusable = continuing.filter(|front| {
-        (!requires_readiness || front.at_destination())
-            && front.destination_contains(target, owner, state)
+        front.destination_contains(target, owner, state)
             && front.points[front.active + 1..]
                 .iter()
                 .all(|point| stageable(owner, state, candidate.protected_home, point.cell, budget))
@@ -220,7 +300,8 @@ pub(super) fn plan_staging(
         } else {
             previous
         };
-        let route = staging_route(candidate, route_start, active_raid, owner, state, budget)?;
+        let route = staging_route(candidate, route_start, active_raid, owner, state, budget)
+            .ok_or_else(|| StageFailure::unavailable(budget))?;
         if requires_readiness {
             let target_position = match candidate.approach {
                 Some(RouteGoal::Range { center, .. }) => center,
@@ -234,15 +315,16 @@ pub(super) fn plan_staging(
                 &route,
                 target_position,
                 budget,
-            )?;
+            )
+            .ok_or_else(|| StageFailure::unavailable(budget))?;
             if !ready {
-                let mut held = continuing?.clone();
+                let mut held = continuing.ok_or(StageFailure::Ineligible)?.clone();
                 let shortfall_started = held.readiness_shortfall_started.unwrap_or(state.tick);
                 if state.tick.saturating_sub(shortfall_started) >= READINESS_GRACE_TICKS {
-                    return None;
+                    return Err(StageFailure::SustainedReadinessLoss);
                 }
                 held.readiness_shortfall_started = Some(shortfall_started.min(state.tick));
-                return Some(held);
+                return Ok(held);
             }
         }
         Some(route)
@@ -252,7 +334,11 @@ pub(super) fn plan_staging(
 
     let spacing = tuning.strategy_staging_spacing_cells;
     let arrival_fraction = tuning.strategy_staging_arrival_fraction;
-    if let Some(previous) = reusable {
+    if let Some(previous) = reusable.filter(|previous| {
+        route.as_ref().is_none_or(|route| {
+            previous.at_destination() || previous.same_remaining_route(route, budget)
+        })
+    }) {
         let mut retained = previous.clone();
         if previous.spacing_cells != spacing && !previous.at_destination() {
             retained.points = staging_points(
@@ -261,31 +347,33 @@ pub(super) fn plan_staging(
                 previous.destination(),
                 spacing,
                 budget,
-            )?;
+            )
+            .ok_or_else(|| StageFailure::unavailable(budget))?;
             retained.points.retain(|point| {
                 stageable(owner, state, candidate.protected_home, point.cell, budget)
             });
             if retained.points.is_empty() || budget.exhausted {
-                return None;
+                return Err(StageFailure::unavailable(budget));
             }
             retained.active = 0;
         }
         retained.spacing_cells = spacing;
         retained.readiness_shortfall_started = None;
         retained.advance_if_arrived(owner, state, arrival_fraction, budget);
-        return Some(retained);
+        return Ok(retained);
     }
 
-    let route = route?;
+    let route = route.ok_or_else(|| StageFailure::unavailable(budget))?;
     let held_stage = continuing.filter(|old| !old.at_destination());
     let first = held_stage.map(|stage| StagingPoint {
         cell: stage.point(),
         distance: 0.0,
     });
-    let mut points = staging_points(&route, first, target, spacing, budget)?;
+    let mut points = staging_points(&route, first, target, spacing, budget)
+        .ok_or_else(|| StageFailure::unavailable(budget))?;
     points.retain(|point| stageable(owner, state, candidate.protected_home, point.cell, budget));
     if points.is_empty() || budget.exhausted {
-        return None;
+        return Err(StageFailure::unavailable(budget));
     }
     let mut staging = StagingFront {
         route,
@@ -298,7 +386,7 @@ pub(super) fn plan_staging(
     if held_stage.is_some() {
         staging.advance_if_arrived(owner, state, arrival_fraction, budget);
     }
-    Some(staging)
+    Ok(staging)
 }
 
 fn attack_route_is_ready(

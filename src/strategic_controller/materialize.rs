@@ -170,6 +170,7 @@ pub(super) fn materialize_plan(
         mine_recovery,
         attack,
         staging,
+        primary_defend_block: block,
         key_charger,
         desired,
         reachability: state.reachability.cloned(),

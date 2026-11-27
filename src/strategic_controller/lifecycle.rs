@@ -253,7 +253,7 @@ impl PlannerState {
             .iter()
             .any(|candidate| candidate.objective.needs_ready_force())
         {
-            RaidForces::observe(owner, state, &mut budget)
+            RaidForces::observe(owner, state, self.current.as_ref(), &mut budget)
         } else {
             RaidForces::default()
         };
