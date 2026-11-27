@@ -34,8 +34,8 @@ use crate::{
     },
     strategic_controller::{
         BotState, BuildFootprint, Controller, DefenderDuty, DepositState, EconomyObservation,
-        GameState, IntentEditAction, MineObservationAt, StructureKind, StructureState, SupplyState,
-        SwarmState,
+        GameState, IntentEditAction, MineObservationAt, SourceCheck, StructureKind, StructureState,
+        SupplyState, SwarmState,
     },
     terrain::RockFormation,
 };
@@ -336,6 +336,7 @@ fn strategic_intent_system(
     active_workers.clear();
     unladen_gatherers.clear();
     let mut supply = BTreeMap::<SwarmId, EconomyObservation>::new();
+    let mut reserved_room = HashMap::<Entity, u32>::new();
     let mut bot_states: Vec<_> = bots
         .iter()
         .map(
@@ -360,6 +361,10 @@ fn strategic_intent_system(
                 ),
             )| {
                 let (assignment, reservation, extracting, returning, moving, blocked) = gathering;
+                if let Some(reservation) = reservation.filter(|r| r.destination_remaining > 0) {
+                    let room = reserved_room.entry(reservation.destination).or_default();
+                    *room = room.saturating_add(reservation.destination_remaining);
+                }
                 if *kind == NanobotType::Worker
                     && health.current > 0
                     && !returning
@@ -679,12 +684,12 @@ fn strategic_intent_system(
             .get(&(owner, Entity::from_bits(deposit.id)))
             .copied()
             .unwrap_or(0);
-        let (gather_cell, other_gather, check_placement) = match location {
+        let (gather_cell, other_gather, source_check) = match location {
             MineObservationAt::Service {
                 gather,
                 other_gather,
-                check_placement,
-            } => (gather, other_gather, check_placement),
+                source_check,
+            } => (gather, other_gather, source_check),
             MineObservationAt::Defense(cells) => {
                 observation.pressure =
                     mine_pressure.observe(tick, owner, deposit, cells, &tuning, allow_work)?;
@@ -712,9 +717,11 @@ fn strategic_intent_system(
             )
         };
         let mut gather_approach = None;
-        let mut source_path = false;
+        let mut reachable_source = false;
+        let mut reachable_plan = false;
         let mut existing_source_blocks_placement = false;
         let mut free_room = 0u32;
+        let mut available_room = 0u32;
         let mut total_capacity = 0u32;
         let ring_limit = gather_worker_slots(deposit.radius);
         let carry_capacity = tuning.logistics.worker_carry_capacity.max(1);
@@ -750,15 +757,19 @@ fn strategic_intent_system(
                 || source.operational && source.room > 0)
                 && source.position.distance(deposit.position)
                     <= tuning.logistics.source_proximity_radius;
-            let start = if let Some(start) = gather_approach {
-                start
-            } else {
-                let Some(start) = gather_start(allow_work)? else {
-                    observation.source_path = Some(false);
-                    return Some(observation);
-                };
-                gather_approach = Some(start);
-                start
+            if source.operational || source.planned {
+                observation.covered_sources = observation.covered_sources.saturating_add(1);
+            }
+            let approach = match gather_approach {
+                Some(approach) => approach,
+                None => {
+                    let approach = gather_start(allow_work)?;
+                    gather_approach = Some(approach);
+                    approach
+                }
+            };
+            let Some(start) = approach else {
+                continue;
             };
             if navigation
                 .connected_interaction_with_budget(start, source.interaction, allow_work)
@@ -767,22 +778,39 @@ fn strategic_intent_system(
             {
                 continue;
             }
-            source_path = true;
+            reachable_source = true;
+            reachable_plan |= source.planned;
             if source.operational {
                 free_room = free_room.saturating_add(source.room);
                 total_capacity = total_capacity.saturating_add(source.capacity);
+                if matches!(source_check, SourceCheck::Claim { .. }) {
+                    let reserved = reserved_room.get(&source.id).copied().unwrap_or_default();
+                    available_room =
+                        available_room.saturating_add(source.room.saturating_sub(reserved));
+                }
             }
-            if free_room.div_ceil(carry_capacity) >= ring_limit {
+            if match source_check {
+                SourceCheck::Claim { allow_construction } => {
+                    available_room > 0 || allow_construction && reachable_plan
+                }
+                _ => free_room.div_ceil(carry_capacity) >= ring_limit,
+            } {
                 break;
             }
         }
-        observation.has_source = total_capacity > 0;
-        observation.has_space = free_room > 0;
+        let (mut source_path, check_placement) = match source_check {
+            SourceCheck::Existing => (reachable_source, false),
+            SourceCheck::Restore => (reachable_source, true),
+            SourceCheck::Claim { allow_construction } => (
+                available_room > 0 || allow_construction && reachable_plan,
+                allow_construction,
+            ),
+        };
         if !source_path
             && !existing_source_blocks_placement
             && check_placement
             && let Some(start) = match gather_approach {
-                Some(start) => Some(start),
+                Some(approach) => approach,
                 None => gather_start(allow_work)?,
             }
         {
@@ -847,9 +875,11 @@ fn strategic_intent_system(
                 return None;
             }
         }
-        observation.source_path =
-            (source_path || existing_source_blocks_placement || check_placement)
-                .then_some(source_path);
+        observation.source_path = (source_path
+            || existing_source_blocks_placement
+            || gather_approach == Some(None)
+            || !matches!(source_check, SourceCheck::Existing))
+        .then_some(source_path);
         // Reservations use physical room. Recent deliveries also show how much room
         // hauling can turn over in one Worker cycle even when the buffer is now full.
         let usable_room = free_room.max(delivery_room).min(total_capacity);

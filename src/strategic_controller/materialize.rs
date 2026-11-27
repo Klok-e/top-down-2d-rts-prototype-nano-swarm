@@ -155,7 +155,7 @@ pub(super) fn materialize_plan(
         front.block = block;
         front
     });
-    if !budget.spend(economy.recovery.retired.len()) {
+    if !budget.spend(economy.recovery.retired.len() + economy.recovery.source_gather.len()) {
         return None;
     }
     let mut mine_recovery = economy.recovery.clone();

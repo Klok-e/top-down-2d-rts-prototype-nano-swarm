@@ -594,8 +594,6 @@ fn saturated_mine() -> MineObservation {
         completed_dropoffs: 3,
         observation_ticks: 12 * crate::SIMULATION_HZ as u64,
         ticks_since_dropoff: Some(0),
-        has_source: true,
-        has_space: true,
         sustained_dropoffs: true,
         ..Default::default()
     }
@@ -611,11 +609,21 @@ fn mine_at(
     MineObservationAt<'_>,
     &mut dyn FnMut() -> bool,
 ) -> Option<MineObservation> {
-    move |swarm, site, _, allow_work| {
+    move |swarm, site, at, allow_work| {
         allow_work().then_some(if owner == swarm && deposit == site.position {
             observation
         } else {
-            MineObservation::default()
+            MineObservation {
+                source_path: matches!(
+                    at,
+                    MineObservationAt::Service {
+                        source_check: SourceCheck::Claim { .. },
+                        ..
+                    }
+                )
+                .then_some(true),
+                ..Default::default()
+            }
         })
     }
 }
@@ -1464,14 +1472,26 @@ fn expansion_waits_for_every_retained_mine_to_saturate_and_keeps_its_support() {
     ] {
         let observations = |swarm,
                             deposit: &DepositState,
-                            _: MineObservationAt<'_>,
+                            at: MineObservationAt<'_>,
                             allow_work: &mut dyn FnMut() -> bool| {
-            allow_work().then_some(
+            let prospect = matches!(
+                at,
+                MineObservationAt::Service {
+                    source_check: SourceCheck::Claim { .. },
+                    ..
+                }
+            );
+            allow_work().then_some(if prospect {
+                MineObservation {
+                    source_path: Some(true),
+                    ..Default::default()
+                }
+            } else {
                 deposits[..2]
                     .iter()
                     .position(|site| swarm == owner && site.id == deposit.id)
-                    .map_or_else(MineObservation::default, |index| existing_mines[index]),
-            )
+                    .map_or_else(MineObservation::default, |index| existing_mines[index])
+            })
         };
         let decision = controller.decide(
             &tuning,
