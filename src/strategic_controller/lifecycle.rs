@@ -1,6 +1,6 @@
 use super::{
     economy::{EconomyPlan, choose_claim, observe_contested, plan_economy},
-    materialize::{intent_edits, materialize_plan, world_to_intent_cell},
+    materialize::{intent_edits, materialize_plan, materialize_withdrawal, world_to_intent_cell},
     raid::RaidForces,
     staging::{StageFailure, review_staging},
     strategy::{generate_candidates, validate_plan},
@@ -167,6 +167,7 @@ impl PlannerState {
         let PlanValidation {
             lost_deposit,
             invalidation,
+            can_reuse_economic_paint,
             attack_progressed,
             covered_attack,
             covered_attack_movement,
@@ -197,32 +198,31 @@ impl PlannerState {
             };
         }
 
-        let Some((mut economy, mut expansion)) =
-            plan_economy(owner, state, self.current.as_ref(), &mut budget)
-        else {
-            self.tuning_review_requested |= tuning_review;
-            self.work_used = budget.used;
-            return Decision {
-                edits: Vec::new(),
-                explanation: self.describe_active_plan(if budget.exhausted {
+        let current = self.current.as_ref();
+        let withdrawal = current
+            .filter(|_| can_reuse_economic_paint)
+            .and_then(|plan| materialize_withdrawal(plan, state, &mut budget));
+        let mut incumbent_stage = None;
+        let mut denied_deposits = None;
+        let mut claim = None;
+        let (plan, mut explanation) = 'review: {
+            let Some((mut economy, mut expansion)) =
+                plan_economy(owner, state, current, &mut budget)
+            else {
+                self.tuning_review_requested |= tuning_review;
+                let reason = if budget.exhausted {
                     "planning allowance exhausted while reviewing owned Resource Deposits"
                 } else {
                     "owned Resource Deposit support would exceed available paint"
-                }),
-                reviewed: true,
-                work_units: budget.call_work(),
+                };
+                break 'review with_fallback(withdrawal, reason);
             };
-        };
-        let current = self.current.as_ref();
-        let home_candidate = PlanCandidate::hold_home(world_to_intent_cell(expansion.home));
-        let mut incumbent_stage = None;
-        let mut denied_deposits = None;
-        let materialize_home = |economy: &EconomyPlan, budget: &mut WorkBudget| {
-            materialize_plan(&home_candidate, economy, None, owner, state, tuning, budget)
-        };
-        let (plan, mut explanation) = 'review: {
+            let home_candidate = PlanCandidate::hold_home(world_to_intent_cell(expansion.home));
+            let materialize_home = |economy: &EconomyPlan, budget: &mut WorkBudget| {
+                materialize_plan(&home_candidate, economy, None, owner, state, tuning, budget)
+            };
             let mut fallback = if invalidated || current.is_none() {
-                materialize_home(&economy, &mut budget)
+                materialize_home(&economy, &mut budget).or(withdrawal)
             } else {
                 None
             };
@@ -514,7 +514,6 @@ impl PlannerState {
                 )
             };
             if plan.is_none() {
-                economy.expansion = None;
                 let reason = if budget.exhausted {
                     "planning allowance exhausted during paint fulfillment"
                 } else {
@@ -522,6 +521,7 @@ impl PlannerState {
                 };
                 break 'review with_fallback(fallback, reason);
             }
+            claim = economy.expansion;
             (plan, explanation)
         };
         let Some(selected) = plan else {
@@ -549,7 +549,7 @@ impl PlannerState {
         }
         let keeps_objective =
             current.is_some_and(|current| current.objective == selected.objective);
-        let previous = self.current.as_ref().map(|plan| &plan.desired);
+        let previous = current.map(|plan| plan.desired.as_ref());
         budget.release_edit_reserve(previous.map_or(0, HashSet::len) + selected.desired.len());
         let edits = intent_edits(
             owner,
@@ -569,7 +569,7 @@ impl PlannerState {
         if let Some(denials) = denied_deposits {
             self.denied_deposits = denials;
         }
-        if let Some(claim) = economy.expansion {
+        if let Some(claim) = claim {
             if let Some(replacement) = claim.replacement {
                 explanation.push_str(&format!(
                     ", replaced stalled Resource Deposit {} with {}",

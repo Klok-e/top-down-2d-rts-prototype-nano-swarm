@@ -99,6 +99,32 @@ pub(super) fn materialize_plan(
         paint_capacity.saturating_sub(1),
         budget,
     );
+    let withdrawal = if attack.is_some()
+        && desired.len() < paint_capacity
+        && [IntentKind::Build, IntentKind::Corridor]
+            .into_iter()
+            .all(|kind| {
+                desired.contains(&DesiredIntent {
+                    cell: home_cell,
+                    kind,
+                })
+            }) {
+        if !budget.spend(desired.len() + 1) {
+            return None;
+        }
+        // Snapshot the shared support before the military objective adds paint.
+        let mut desired = desired.clone();
+        desired.insert(DesiredIntent {
+            cell: home_cell,
+            kind: IntentKind::Defend,
+        });
+        Some(WithdrawalPaint {
+            home: home_cell,
+            desired: Arc::new(desired),
+        })
+    } else {
+        None
+    };
     let minimum_cells = if staging.is_some() {
         super::staging::MINIMUM_STAGING_BLOCK_CELLS
     } else {
@@ -190,11 +216,53 @@ pub(super) fn materialize_plan(
         staging,
         primary_defend_cells,
         key_charger,
-        desired,
+        desired: Arc::new(desired),
+        withdrawal,
         reachability: state.reachability.cloned(),
         grid_size: IVec2::new(state.grid.width(), state.grid.height()),
     };
     plan.is_coordinated().then_some(plan)
+}
+
+pub(super) fn materialize_withdrawal(
+    previous: &IntentPlan,
+    state: &GameState<'_>,
+    budget: &mut WorkBudget,
+) -> Option<IntentPlan> {
+    let withdrawal = previous.withdrawal.as_ref()?;
+    let mine_work = previous
+        .owned_deposits
+        .iter()
+        .map(|mine| mine.desired.len() + 1)
+        .sum::<usize>();
+    if !budget.spend(
+        mine_work
+            + previous.mine_recovery.retired.len()
+            + previous.mine_recovery.source_gather.len()
+            + withdrawal.desired.len(),
+    ) {
+        return None;
+    }
+    if !withdrawal
+        .desired
+        .iter()
+        .all(|intent| state.grid.in_bounds(intent.cell))
+    {
+        return None;
+    }
+    Some(IntentPlan {
+        objective: Objective::HoldHome,
+        owned_deposits: previous.owned_deposits.clone(),
+        mine_recovery: previous.mine_recovery.clone(),
+        attack: None,
+        staging: None,
+        primary_defend_cells: Arc::new(HashSet::from([withdrawal.home])),
+        key_charger: previous.key_charger,
+        desired: Arc::clone(&withdrawal.desired),
+        withdrawal: None,
+        reachability: state.reachability.cloned(),
+        grid_size: IVec2::new(state.grid.width(), state.grid.height()),
+    })
 }
 
 pub(super) fn retain_build_footprints(

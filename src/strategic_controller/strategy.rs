@@ -27,6 +27,7 @@ pub(super) fn validate_plan(
     budget: &mut WorkBudget,
 ) -> Result<PlanValidation, ()> {
     let mut unreachable = HashSet::new();
+    let mut withdrawal_reachable = plan.withdrawal.is_some();
     if let Some(map) = state.reachability
         && (plan.grid_size != IVec2::new(state.grid.width(), state.grid.height())
             || plan
@@ -37,13 +38,17 @@ pub(super) fn validate_plan(
         if !budget.spend(plan.desired.len()) {
             return Err(());
         }
-        for &intent in &plan.desired {
+        for &intent in plan.desired.iter() {
             if !map.contains_with_budget(owner, intent.cell, state.grid, &mut || budget.spend(1))? {
+                withdrawal_reachable &= plan
+                    .withdrawal
+                    .as_ref()
+                    .is_some_and(|withdrawal| !withdrawal.desired.contains(&intent));
                 unreachable.insert(intent);
             }
         }
     }
-    let validation = PlanValidation {
+    let mut validation = PlanValidation {
         lost_deposit: validate_owned_deposits(
             &plan.owned_deposits,
             owner,
@@ -53,17 +58,23 @@ pub(super) fn validate_plan(
         )?,
         ..PlanValidation::default()
     };
+    let withdrawal_supported = withdrawal_reachable && validation.lost_deposit.is_none();
     if !unreachable.is_empty() {
-        return Ok(PlanValidation {
-            invalidation: Some("existing Intent Plan left the swarm-reachable map".to_string()),
-            ..validation
-        });
+        validation.invalidation =
+            Some("existing Intent Plan left the swarm-reachable map".to_string());
+        if !withdrawal_supported {
+            return Ok(validation);
+        }
     }
     if let Some(id) = plan.key_charger {
         let mut operational = false;
         for structure in state.structures {
             if !budget.spend(1) {
-                return Err(());
+                return if validation.invalidation.is_some() {
+                    Ok(validation)
+                } else {
+                    Err(())
+                };
             }
             if structure.id == id
                 && structure.owner == owner
@@ -82,6 +93,10 @@ pub(super) fn validate_plan(
             });
         }
     }
+    if validation.invalidation.is_some() {
+        validation.can_reuse_economic_paint = withdrawal_supported;
+        return Ok(validation);
+    }
     let Some(target) = plan.attack else {
         return Ok(validation);
     };
@@ -92,6 +107,7 @@ pub(super) fn validate_plan(
                 target.label(),
                 target.id
             )),
+            can_reuse_economic_paint: withdrawal_supported,
             ..validation
         });
     };

@@ -258,15 +258,23 @@ struct IntentPlan {
     staging: Option<staging::StagingFront>,
     primary_defend_cells: Arc<HashSet<IVec2>>,
     key_charger: Option<u64>,
-    desired: HashSet<DesiredIntent>,
+    desired: Arc<HashSet<DesiredIntent>>,
+    withdrawal: Option<WithdrawalPaint>,
     reachability: Option<SwarmReachabilityMap>,
     grid_size: IVec2,
+}
+
+#[derive(Debug, Clone)]
+struct WithdrawalPaint {
+    home: IVec2,
+    desired: Arc<HashSet<DesiredIntent>>,
 }
 
 #[derive(Debug, Default)]
 struct PlanValidation {
     lost_deposit: Option<u64>,
     invalidation: Option<String>,
+    can_reuse_economic_paint: bool,
     attack_progressed: bool,
     covered_attack: bool,
     covered_attack_movement: bool,
@@ -382,7 +390,7 @@ impl IntentPlan {
 
     fn is_coordinated(&self) -> bool {
         let mut kinds = [false; IntentKind::COUNT];
-        for intent in &self.desired {
+        for intent in self.desired.iter() {
             kinds[intent.kind.index()] = true;
         }
         kinds[IntentKind::Build.index()]

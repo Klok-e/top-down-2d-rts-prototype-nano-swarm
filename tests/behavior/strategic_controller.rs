@@ -1841,6 +1841,207 @@ fn exhausted_reviews_keep_viable_raids_and_remove_invalid_fronts() {
 }
 
 #[test]
+fn lost_target_withdraws_when_required_mine_routing_exhausts_the_review() {
+    assert_withdrawal_under_required_route_exhaustion(false);
+}
+
+#[test]
+fn unreachable_front_withdraws_when_required_mine_routing_exhausts_the_review() {
+    assert_withdrawal_under_required_route_exhaustion(true);
+}
+
+fn assert_withdrawal_under_required_route_exhaustion(block_target: bool) {
+    use std::cell::Cell;
+    use top_down_2d_rts_prototype_nano_swarm::{
+        SIMULATION_HZ, ZONE_BLOCK_SIZE,
+        nanobot::NanobotType,
+        navigation::{Obstacle, Route, RouteGoal, RouteOutcome},
+        strategic_controller::{
+            BotState, BuildFootprint, Controller, DepositState, GameState, PLANNING_WORK_BUDGET,
+            StructureKind, StructureState, SwarmState,
+        },
+        tuning::AutonomyTuning,
+    };
+
+    let owner = SwarmId::PLAYER;
+    let enemy = SwarmId(9);
+    let home_cell = IVec2::ZERO;
+    let mine_cell = IVec2::new(7, 0);
+    let target_cell = IVec2::new(8, 0);
+    let swarms = [
+        SwarmState {
+            id: owner,
+            home: common::cell_world_center(home_cell),
+            minerals: 100,
+            mineral_income_per_second: 0.0,
+        },
+        SwarmState {
+            id: enemy,
+            home: common::cell_world_center(IVec2::new(12, 0)),
+            minerals: 0,
+            mineral_income_per_second: 0.0,
+        },
+    ];
+    let crew = spawnable_crew(owner, swarms[0].home);
+    let defender = BotState {
+        kind: NanobotType::Defender,
+        charge: 1.0,
+        max_charge: 1.0,
+        ..crew[0]
+    };
+    let bots = [
+        crew[0],
+        crew[1],
+        crew[2],
+        BotState { id: 3, ..defender },
+        BotState { id: 4, ..defender },
+    ];
+    let mine = DepositState {
+        id: 30,
+        owner: Some(owner),
+        position: common::cell_world_center(mine_cell),
+        amount: 72_000,
+        radius: 80.0,
+    };
+    let target = StructureState {
+        id: 20,
+        owner: enemy,
+        position: Some(common::cell_world_center(target_cell)),
+        kind: StructureKind::Source,
+        operational: true,
+        health: 100,
+        max_health: 100,
+        minerals: 0,
+    };
+    let footprint_right = if block_target { mine_cell } else { target_cell };
+    let footprint = BuildFootprint {
+        owner,
+        center: common::cell_world_center(footprint_right) - Vec2::X * (ZONE_BLOCK_SIZE / 2.0),
+        half: Vec2::splat(8.0),
+    };
+    let exhaust_mine = Cell::new(false);
+    let exhausted_routes = Cell::new(0);
+    let route = |start: Vec2, goal, allow_work: &mut dyn FnMut() -> bool| {
+        let end = match goal {
+            RouteGoal::Interaction(_) if exhaust_mine.get() => {
+                while allow_work() {}
+                exhausted_routes.set(exhausted_routes.get() + 1);
+                return None;
+            }
+            RouteGoal::Interaction(_) => mine.position,
+            RouteGoal::Point(point) | RouteGoal::Range { center: point, .. } => point,
+        };
+        Some(RouteOutcome::Found(Route {
+            waypoints: vec![end],
+            cost: start.distance(end),
+        }))
+    };
+    let tuning = AutonomyTuning {
+        controller_review_period_ticks: SIMULATION_HZ as u64,
+        strategy_staging_spacing_cells: 64,
+        ..AutonomyTuning::default()
+    };
+    let review = |controller: &mut Controller,
+                  grid: &IntentGrid,
+                  structures: &[_],
+                  reachability: Option<&SwarmReachabilityMap>,
+                  tick| {
+        controller.decide(
+            &tuning,
+            &GameState {
+                grid,
+                swarms: &swarms,
+                bots: &bots,
+                structures,
+                deposits: &[mine],
+                terrain: &[],
+                charge: &DEFAULT_CHARGE,
+                reachability,
+                route_query: Some(&route),
+                mine_query: None,
+                supply: None,
+                build_footprints: &[footprint],
+                tick,
+                finished: false,
+            },
+        )
+    };
+    let mut controller = Controller::new(owner);
+    let mut grid = IntentGrid::new(64, 64);
+    let home = [(owner, swarms[0].home)];
+    let clear = SwarmReachabilityMap::new(&grid, [], home).unwrap();
+    for kind in [IntentKind::Defend, IntentKind::Corridor] {
+        grid.paint(target_cell, kind, enemy);
+    }
+    let holds = |grid: &IntentGrid, cell, kind, swarm| {
+        grid.cell(cell)
+            .is_some_and(|intent| intent.has_owned(kind, swarm))
+    };
+    let retained = [
+        (home_cell, IntentKind::Build),
+        (home_cell, IntentKind::Corridor),
+        (mine_cell, IntentKind::Gather),
+        (mine_cell, IntentKind::Defend),
+        (mine_cell, IntentKind::Corridor),
+        (mine_cell - IVec2::X, IntentKind::Build),
+        (footprint_right - IVec2::X, IntentKind::Build),
+        (footprint_right, IntentKind::Build),
+    ];
+    let initial = review(&mut controller, &grid, &[target], Some(&clear), 0);
+    apply_decision(&mut grid, owner, &initial);
+    assert!(
+        holds(&grid, target_cell, IntentKind::Defend, owner),
+        "{}",
+        initial.explanation
+    );
+    assert!(holds(&grid, target_cell, IntentKind::Corridor, owner));
+    for (cell, kind) in retained {
+        assert!(
+            holds(&grid, cell, kind, owner),
+            "missing {kind:?} at {cell}"
+        );
+    }
+
+    let wall = Obstacle::Rectangle {
+        center: common::cell_world_center(target_cell) + Vec2::X * ZONE_BLOCK_SIZE,
+        half: Vec2::new(ZONE_BLOCK_SIZE * 1.5, ZONE_BLOCK_SIZE * 32.0),
+    };
+    let blocked = SwarmReachabilityMap::new(&grid, [wall], home).unwrap();
+    let (structures, reachability) = if block_target {
+        assert!(!blocked.contains(owner, target_cell, &grid));
+        (std::slice::from_ref(&target), &blocked)
+    } else {
+        (&[][..], &clear)
+    };
+    exhaust_mine.set(true);
+    let withdrawn = review(
+        &mut controller,
+        &grid,
+        structures,
+        Some(reachability),
+        SIMULATION_HZ as u64 / 2,
+    );
+    assert_eq!(exhausted_routes.get(), 1);
+    assert!(withdrawn.reviewed && withdrawn.work_units <= PLANNING_WORK_BUDGET);
+    apply_decision(&mut grid, owner, &withdrawn);
+    for kind in [IntentKind::Defend, IntentKind::Corridor] {
+        assert!(
+            !holds(&grid, target_cell, kind, owner),
+            "{}",
+            withdrawn.explanation
+        );
+        assert!(holds(&grid, target_cell, kind, enemy));
+    }
+    assert!(holds(&grid, home_cell, IntentKind::Defend, owner));
+    for (cell, kind) in retained {
+        assert!(
+            holds(&grid, cell, kind, owner),
+            "missing {kind:?} at {cell}"
+        );
+    }
+}
+
+#[test]
 fn strategic_adapter_waits_for_mine_saturation_despite_a_stocked_source() {
     use top_down_2d_rts_prototype_nano_swarm::{
         nanobot::{NanobotType, OwnerSwarm},
