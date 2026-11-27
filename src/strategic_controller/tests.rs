@@ -1821,7 +1821,11 @@ fn income_lead_adds_a_home_push_without_abandoning_the_mine() {
             finished: false,
         },
     );
-    assert!(initial.explanation.contains("secure Resource Deposit"));
+    assert!(
+        initial
+            .explanation
+            .contains("claimed neutral Resource Deposit 20")
+    );
     apply(&mut grid, owner, &initial);
 
     let supplied_swarms = [
@@ -4283,7 +4287,9 @@ fn military_priorities_protect_expansion_before_attacking_home() {
 
     let expansion = decide(&deposits, &structures, &[leaving]);
     assert!(
-        expansion.explanation.contains("secure Resource Deposit 30"),
+        expansion
+            .explanation
+            .contains("claimed neutral Resource Deposit 30"),
         "{expansion:?}"
     );
 

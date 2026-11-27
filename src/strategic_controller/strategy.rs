@@ -190,9 +190,7 @@ pub(super) fn generate_candidates(
     let home = owner_state.map_or(Vec2::ZERO, |swarm| swarm.home);
     let home_cell = world_to_intent_cell(home);
     let base = PlanCandidate {
-        objective: economy
-            .expansion
-            .map_or(Objective::HoldHome, Objective::SecureDeposit),
+        objective: Objective::HoldHome,
         attack: None,
         anchor: home_cell,
         attack_target: None,
@@ -207,7 +205,6 @@ pub(super) fn generate_candidates(
             attack_target: Some(target),
             ..base
         });
-        return candidates;
     }
 
     for &(deposit, cell, approach) in &economy.contested_deposits {
@@ -219,10 +216,6 @@ pub(super) fn generate_candidates(
             ..base
         });
     }
-    if economy.free_deposit_exists || !economy.contested_deposits.is_empty() {
-        return candidates;
-    }
-
     let forces = estimate_forces(tuning, owner, state, budget);
     let own_income = owner_state.map_or(0.0, |swarm| swarm.mineral_income_per_second);
     let mut hostile_bots = BTreeSet::new();

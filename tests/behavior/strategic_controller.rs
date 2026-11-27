@@ -55,8 +55,12 @@ mod raid_readiness {
     const REVIEW_TICKS: u64 = 5;
 
     fn raid_fixture() -> (App, [Entity; 2]) {
+        raid_fixture_at(TARGET, 64)
+    }
+
+    fn raid_fixture_at(target: IVec2, grid_width: i32) -> (App, [Entity; 2]) {
         let mut app = common::minimal_app();
-        app.insert_resource(IntentGrid::new(64, 64));
+        app.insert_resource(IntentGrid::new(grid_width, 64));
         app.add_plugins(StrategicControllerPlugin);
         let home = common::cell_world_center(IVec2::ZERO);
         app.world_mut().spawn((
@@ -65,7 +69,7 @@ mod raid_readiness {
             Transform::from_translation(home.extend(0.0)),
             StrategicController::new(OWNER),
         ));
-        let enemy_home = common::cell_world_center(TARGET + 4 * IVec2::X);
+        let enemy_home = common::cell_world_center(target + 4 * IVec2::X);
         let enemy = app
             .world_mut()
             .spawn((
@@ -74,7 +78,7 @@ mod raid_readiness {
                 Transform::from_translation(enemy_home.extend(0.0)),
             ))
             .id();
-        let position = common::cell_world_center(TARGET);
+        let position = common::cell_world_center(target);
         let mine = common::spawn_deposit(
             &mut app,
             common::DepositFixture {
@@ -98,6 +102,18 @@ mod raid_readiness {
         (app, force)
     }
 
+    fn neutral_deposit(app: &mut App, cell: IVec2) {
+        common::spawn_deposit(
+            app,
+            common::DepositFixture {
+                world_pos: common::cell_world_center(cell),
+                amount: 72_000,
+                capacity: 72_000,
+                radius: 80.0,
+            },
+        );
+    }
+
     fn review(app: &mut App) {
         for _ in 0..REVIEW_TICKS {
             app.update();
@@ -115,16 +131,87 @@ mod raid_readiness {
     }
 
     fn owns_defend(app: &App, cell: IVec2) -> bool {
+        owns_intent(app, cell, IntentKind::Defend)
+    }
+
+    fn owns_intent(app: &App, cell: IVec2, kind: IntentKind) -> bool {
         app.world()
             .resource::<IntentGrid>()
             .cell(cell)
-            .is_some_and(|intent| intent.has_owned(IntentKind::Defend, OWNER))
+            .is_some_and(|intent| intent.has_owned(kind, OWNER))
     }
 
     fn explanation(app: &App) -> String {
         app.world().resource::<ControllerTelemetry>().profiles()[&OWNER.0]
             .last_explanation
             .clone()
+    }
+
+    #[test]
+    fn an_unprofitable_neutral_deposit_leaves_the_raid_available() {
+        let (mut app, _) = raid_fixture();
+        let neutral = IVec2::new(-4, 0);
+        neutral_deposit(&mut app, neutral);
+        app.world_mut()
+            .resource_mut::<Tuning>()
+            .autonomy
+            .strategy_expansion_income_weight = 0.0;
+
+        review(&mut app);
+
+        assert!(!owns_intent(&app, neutral, IntentKind::Gather));
+        assert!(owns_defend(&app, IVec2::new(3, 0)), "{}", explanation(&app));
+    }
+
+    #[test]
+    fn a_viable_neutral_claim_keeps_the_active_raid_staging_point() {
+        let (mut app, _) = raid_fixture();
+        review(&mut app);
+        let front = forward_defend_cells(&app);
+        let staging_point = IVec2::new(3, 0);
+        assert!(front.contains(&staging_point), "{}", explanation(&app));
+
+        let neutral = IVec2::new(-4, 0);
+        neutral_deposit(&mut app, neutral);
+        review(&mut app);
+
+        assert!(
+            owns_intent(&app, neutral, IntentKind::Gather),
+            "{}",
+            explanation(&app)
+        );
+        assert!(owns_intent(&app, neutral + IVec2::X, IntentKind::Build));
+        assert!(owns_intent(&app, neutral, IntentKind::Corridor));
+        assert!(owns_intent(&app, staging_point, IntentKind::Corridor));
+        assert_eq!(forward_defend_cells(&app), front, "{}", explanation(&app));
+    }
+
+    #[test]
+    fn a_combined_claim_and_raid_that_exceeds_the_paint_budget_keeps_the_complete_raid() {
+        let target = IVec2::new(50, 0);
+        let neutral = IVec2::new(-50, 0);
+        let (mut app, _) = raid_fixture_at(target, 128);
+        {
+            let mut tuning = app.world_mut().resource_mut::<Tuning>();
+            tuning.autonomy.strategy_staging_spacing_cells = 64;
+            tuning.autonomy.strategy_expansion_travel_cost = 0.0;
+            tuning.autonomy.strategy_expansion_haul_cost = 0.0;
+        }
+        review(&mut app);
+        let revision = app.world().resource::<IntentGrid>().revision();
+        assert!(owns_defend(&app, target), "{}", explanation(&app));
+        assert!(owns_intent(&app, target, IntentKind::Corridor));
+
+        neutral_deposit(&mut app, neutral);
+        review(&mut app);
+
+        assert_eq!(
+            app.world().resource::<IntentGrid>().revision(),
+            revision,
+            "a paint-limited review must leave the whole previously applied plan intact: {}",
+            explanation(&app)
+        );
+        assert!(explanation(&app).contains("paint"), "{}", explanation(&app));
     }
 
     #[test]

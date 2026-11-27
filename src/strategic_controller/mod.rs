@@ -224,7 +224,6 @@ struct AttackObligation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Objective {
     HoldHome,
-    SecureDeposit(u64),
     DefendDeposit(u64),
     ContestDeposit(u64),
     RaidDeposit { deposit: u64, target: u64 },
@@ -243,7 +242,6 @@ impl Objective {
         match self {
             Self::DefendDeposit(_) => 6,
             Self::ContestDeposit(_) => 5,
-            Self::SecureDeposit(_) => 4,
             Self::RaidDeposit { .. } | Self::DenyDeposit(_) => 3,
             Self::PushHome(_) => 2,
             Self::FinishStructure(_) | Self::HuntRemnant(_) => 1,
@@ -254,7 +252,6 @@ impl Objective {
     fn label(self) -> String {
         match self {
             Self::HoldHome => "hold the home economy".to_string(),
-            Self::SecureDeposit(id) => format!("secure Resource Deposit {id}"),
             Self::DefendDeposit(id) => format!("defend owned Resource Deposit {id}"),
             Self::ContestDeposit(id) => format!("contest neutral Resource Deposit {id}"),
             Self::RaidDeposit { deposit, target } => {

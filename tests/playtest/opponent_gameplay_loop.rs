@@ -321,6 +321,16 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
     let home = common::cell_world_center(IVec2::ZERO);
     let target_cell = IVec2::new(6, 0);
     let target = common::cell_world_center(target_cell);
+    let neutral = IVec2::new(-8, 0);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: common::cell_world_center(neutral),
+            amount: 1,
+            capacity: 1,
+            radius: 80.0,
+        },
+    );
     let own = common::spawn_swarm_with_nanobots(&mut app, home, &[(NanobotType::Defender, 8)]);
     app.world_mut().resource_mut::<ResourceLedger>().add_for(
         SwarmId::PLAYER,
@@ -401,6 +411,13 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
         app.update();
         if tick == 1 {
             assert!(
+                !app.world()
+                    .resource::<IntentGrid>()
+                    .cell(neutral)
+                    .is_some_and(|intent| intent.has_owned(IntentKind::Gather, SwarmId::PLAYER)),
+                "the tiny neutral deposit should remain unclaimed"
+            );
+            assert!(
                 app.world()
                     .resource::<IntentGrid>()
                     .iter_active_cells()
@@ -408,7 +425,7 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
                         (0..target_cell.x).contains(&cell.x)
                             && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)
                     }),
-                "the attack on the producer needs a reachable staging block"
+                "the ignored neutral deposit must not block staging the raid on the producer"
             );
         }
 

@@ -377,6 +377,7 @@ impl PlannerState {
             .current
             .as_ref()
             .is_some_and(|current| current.objective == selected.objective);
+        let expansion = economy.expansion;
         let selected = materialize_plan(
             selected.clone(),
             economy,
@@ -386,18 +387,22 @@ impl PlannerState {
             tuning,
             &mut budget,
         );
-        if budget.exhausted || !budget.spend(selected.desired.len()) || !selected.is_coordinated() {
+        let Some(selected) = selected.filter(|plan| {
+            !budget.exhausted && budget.spend(plan.desired.len()) && plan.is_coordinated()
+        }) else {
             self.tuning_review_requested |= tuning_review && budget.exhausted;
             self.work_used = budget.used;
             return Decision {
                 edits: Vec::new(),
-                explanation: self.describe_active_plan(
-                    "planning allowance exhausted during paint fulfillment, so the current Intent Plan was retained",
-                ),
+                explanation: self.describe_active_plan(if budget.exhausted {
+                    "planning allowance exhausted during paint fulfillment"
+                } else {
+                    "coordinated paint could not be fulfilled within the review limits"
+                }),
                 reviewed: true,
                 work_units: budget.call_work(),
             };
-        }
+        };
         let previous = self.current.as_ref().map(|plan| &plan.desired);
         budget.release_edit_reserve(previous.map_or(0, HashSet::len) + selected.desired.len());
         let edits = intent_edits(
@@ -416,6 +421,9 @@ impl PlannerState {
             && !attack_progressed
             && (stall_grace || self.covered_stall_grace_used);
         self.denied_deposits = denied_deposits;
+        if let Some(id) = expansion {
+            explanation.push_str(&format!(", claimed neutral Resource Deposit {id}"));
+        }
         selected.append_context(&mut explanation);
         self.current = Some(selected);
         Decision {

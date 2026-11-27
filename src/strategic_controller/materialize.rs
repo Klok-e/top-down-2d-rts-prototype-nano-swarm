@@ -16,7 +16,7 @@ pub(super) fn materialize_plan(
     state: &GameState<'_>,
     tuning: &AutonomyTuning,
     budget: &mut WorkBudget,
-) -> IntentPlan {
+) -> Option<IntentPlan> {
     let PlanCandidate {
         objective,
         attack,
@@ -33,6 +33,7 @@ pub(super) fn materialize_plan(
     let EconomyPlan {
         owned_deposits,
         mut desired,
+        expansion,
         ..
     } = economy;
 
@@ -66,9 +67,13 @@ pub(super) fn materialize_plan(
         &mut desired,
         budget,
     );
-    let paint_capacity = EXPANSION_PLAN_CELLS
-        .max(desired.len() + SUPPORT_PAINT_RESERVE)
-        .min(MAX_PLAN_CELLS);
+    let paint_capacity = if expansion.is_some() {
+        EXPANSION_PLAN_CELLS
+    } else {
+        EXPANSION_PLAN_CELLS
+            .max(desired.len() + SUPPORT_PAINT_RESERVE)
+            .min(MAX_PLAN_CELLS)
+    };
 
     let defense = DefenderBudget::estimate(tuning, owner, swarm, state, budget);
     let (key_charger, supplied_slots) = keep_charger_support(
@@ -95,6 +100,12 @@ pub(super) fn materialize_plan(
             .map(|point| (anchor, point))
     });
     paint_defend_block(minimum, anchor_ground, owner, state, &mut desired, budget);
+    if !desired.contains(&DesiredIntent {
+        cell: anchor,
+        kind: IntentKind::Defend,
+    }) {
+        return None;
+    }
 
     if anchor != home_cell && owned_deposits.iter().all(|mine| mine.gather_cell != anchor) {
         paint_corridor(
@@ -104,8 +115,9 @@ pub(super) fn materialize_plan(
             budget,
             home,
             anchor,
+            anchor_ground.map(|(_, ground)| ground),
             protected_home,
-        );
+        )?;
     }
 
     let block = fit_defend_block(
@@ -123,7 +135,7 @@ pub(super) fn materialize_plan(
     if block != minimum {
         paint_defend_block(block, anchor_ground, owner, state, &mut desired, budget);
     }
-    IntentPlan {
+    (desired.len() <= paint_capacity).then_some(IntentPlan {
         objective,
         owned_deposits,
         attack,
@@ -132,7 +144,7 @@ pub(super) fn materialize_plan(
         desired,
         reachability: state.reachability.cloned(),
         grid_size: IVec2::new(state.grid.width(), state.grid.height()),
-    }
+    })
 }
 
 pub(super) fn retain_build_footprints(
@@ -543,16 +555,30 @@ fn paint_corridor(
     budget: &mut WorkBudget,
     start: Vec2,
     target: IVec2,
+    target_ground: Option<Vec2>,
     protected_home: Option<IVec2>,
-) {
-    let goal = RouteGoal::Point(intent_cell_center(target));
-    let Ok(Some((cells, _))) = corridor_route(owner, state, budget, start, target, goal) else {
-        return;
+) -> Option<()> {
+    let center = intent_cell_center(target);
+    let goal = RouteGoal::Point(target_ground.unwrap_or(center));
+    let (cells, _) = match corridor_route(owner, state, budget, start, target, goal).ok()? {
+        Some(route) => route,
+        None if state.route_query.is_some() && !budget.exhausted => corridor_route(
+            owner,
+            state,
+            budget,
+            start,
+            target,
+            RouteGoal::Range {
+                center,
+                radius: crate::ZONE_BLOCK_SIZE * 0.49,
+            },
+        )
+        .ok()??,
+        None => return None,
     };
     if !budget.spend(cells.len()) || protected_home.is_some_and(|home| cells.contains(&home)) {
-        return;
+        return None;
     }
-    let mut added = Vec::new();
     for cell in cells {
         let intent = DesiredIntent {
             cell,
@@ -564,13 +590,10 @@ fn paint_corridor(
         if desired.len() >= EXPANSION_PLAN_CELLS
             || !push_desired(desired, owner, intent, state, false, budget)
         {
-            for intent in added {
-                desired.remove(&intent);
-            }
-            return;
+            return None;
         }
-        added.push(intent);
     }
+    Some(())
 }
 
 #[derive(Debug)]
