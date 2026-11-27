@@ -15,14 +15,15 @@ use crate::{
         NanobotType, OwnerSwarm, PlannedStructure, ProductionFacility, RegionalAllocationSet,
         Structure, Swarm, SwarmId, SwarmMember,
     },
-    navigation::{Navigation, RouteGoal, RouteOutcome},
+    navigation::{Navigation, Obstacle, RouteGoal, RouteOutcome},
     reachability::{IntentWriteAction, SwarmReachabilityMap, apply_reachable_intent},
     resources::{
-        ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole, buffered_minerals,
+        ResourceDeposit, ResourceKind, ResourceLedger, SinkUpkeep, Stockpile, StockpileRole,
+        buffered_minerals,
     },
     strategic_controller::{
-        BotState, Controller, DefenderDuty, DepositState, GameState, IntentEditAction, SourceNeed,
-        SourceSupport, StructureKind, StructureState, SwarmState,
+        BotState, BuildFootprint, Controller, DefenderDuty, DepositState, GameState,
+        IntentEditAction, SourceNeed, SourceSupport, StructureKind, StructureState, SwarmState,
     },
     terrain::RockFormation,
 };
@@ -185,7 +186,6 @@ struct StrategicObservations {
 #[derive(Default, Clone, Copy)]
 struct EconomyObservation {
     banked_minerals: u32,
-    has_idle_facility: bool,
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
@@ -225,6 +225,7 @@ fn strategic_intent_system(
             Option<&StockpileRole>,
             Option<&Charger>,
             Option<&PlannedStructure>,
+            Option<&SinkUpkeep>,
         ),
         Or<(
             With<Structure>,
@@ -328,10 +329,22 @@ fn strategic_intent_system(
     bot_states.sort_by_key(|bot| bot.id);
     let mut economies = BTreeMap::<SwarmId, EconomyObservation>::new();
     let mut operational_sources = Vec::new();
+    let mut build_footprints = Vec::new();
     let mut structure_states: Vec<_> = structures
         .iter()
         .filter_map(
-            |(entity, transform, owner, condition, facility, stockpile, role, charger, plan)| {
+            |(
+                entity,
+                transform,
+                owner,
+                condition,
+                facility,
+                stockpile,
+                role,
+                charger,
+                plan,
+                upkeep,
+            )| {
                 let owner = owner.and_then(|owner| owners.get(&owner.0)).copied()?;
                 let kind = if plan.is_some() {
                     StructureKind::Planned
@@ -348,13 +361,31 @@ fn strategic_intent_system(
                 } else {
                     StructureKind::Other
                 };
+                let health = condition.map_or(tuning.construction.max_health, |c| c.health);
+                let needs_build = match kind {
+                    StructureKind::Planned => plan.is_some_and(|plan| {
+                        plan.kind.placement_intent() == crate::intent::IntentKind::Build
+                    }),
+                    StructureKind::Facility => true,
+                    StructureKind::Sink => {
+                        SinkUpkeep::paid(upkeep)
+                            || stockpile.is_some_and(|stockpile| stockpile.amount > 0)
+                    }
+                    _ => false,
+                };
+                if health > 0 && needs_build {
+                    let (center, half) = Obstacle::structure(transform).bounds();
+                    build_footprints.push(BuildFootprint {
+                        owner,
+                        center,
+                        half,
+                    });
+                }
                 let minerals = buffered_minerals(facility, stockpile, charger);
                 let operational = plan.is_none() && condition.is_none_or(Structure::is_operational);
                 if operational {
                     let economy = economies.entry(owner).or_default();
                     economy.banked_minerals = economy.banked_minerals.saturating_add(minerals);
-                    economy.has_idle_facility |= facility
-                        .is_some_and(|facility| !facility.is_busy(tuning.production.ticks_per_bot));
                     if kind == StructureKind::Source
                         && let Some(stockpile) =
                             stockpile.filter(|stockpile| stockpile.kind == ResourceKind::Minerals)
@@ -376,7 +407,7 @@ fn strategic_intent_system(
                     position: transform.translation.truncate(),
                     kind,
                     operational,
-                    health: condition.map_or(tuning.construction.max_health, |c| c.health),
+                    health,
                     max_health: tuning.construction.max_health,
                     minerals,
                 })
@@ -397,7 +428,6 @@ fn strategic_intent_system(
                     .entry(entity)
                     .or_default()
                     .per_second(tick, ledger.extracted_minerals_for(*id)),
-                production_saturated: !economy.has_idle_facility,
             }
         })
         .collect();
@@ -472,6 +502,7 @@ fn strategic_intent_system(
         swarms: &swarm_states,
         bots: &bot_states,
         structures: &structure_states,
+        build_footprints: &build_footprints,
         deposits: &deposit_states,
         terrain: &terrain,
         charge: &tuning.charge,

@@ -93,7 +93,6 @@
         strategy_defender_baseline: 4,
         strategy_income_spending_weight: 0.8,
         strategy_bank_spending_seconds: 45.0,
-        strategy_production_mineral_threshold: 90,
         strategy_production_room_cells: 2,
         strategy_raid_charger_value: 95.0,
         strategy_raid_stockpile_value: 80.0,

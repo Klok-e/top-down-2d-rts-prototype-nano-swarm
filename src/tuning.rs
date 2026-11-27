@@ -271,6 +271,32 @@ mod tests {
     }
 
     #[test]
+    fn retired_tuning_field_is_read_once_and_other_unknown_fields_stay_invalid() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let current = Tuning::default();
+        store.save(&current).unwrap();
+        let new_tuning = fs::read_to_string(store.path()).unwrap();
+        let retired = "strategy_production_mineral_threshold";
+        let with_retired =
+            new_tuning.replacen("autonomy: (", &format!("autonomy: ({retired}: 90,"), 1);
+        fs::write(store.path(), with_retired).unwrap();
+        let (_, loaded) = TuningStore::load(store.path()).unwrap();
+        assert_eq!(current, loaded);
+        assert!(loaded.get(&format!("autonomy.{retired}")).is_none());
+
+        store.save(&loaded).unwrap();
+        assert!(!fs::read_to_string(store.path()).unwrap().contains(retired));
+        let unknown = new_tuning.replacen("autonomy: (", "autonomy: (unknown_option: 90,", 1);
+        fs::write(store.path(), unknown).unwrap();
+        assert!(
+            TuningStore::load(store.path())
+                .unwrap_err()
+                .contains("unknown_option")
+        );
+    }
+
+    #[test]
     fn store_requires_complete_valid_configuration() {
         let directory = TestDirectory::new();
         let store = directory.store();

@@ -2,7 +2,7 @@ use super::{
     lifecycle::WorkBudget,
     materialize::{
         CorridorPaintLimit, cell_is_reachable, corridor_route, intent_cell_center, query_route,
-        route_exposure, world_to_intent_cell,
+        retain_build_footprints, route_exposure, world_to_intent_cell,
     },
     *,
 };
@@ -183,7 +183,10 @@ pub(super) fn plan_economy(
                 .total_cmp(&home.distance_squared(b.home))
         })
         .map(|swarm| swarm.home);
-    let mut economy = EconomyPlan::default();
+    let mut economy = EconomyPlan {
+        desired: retain_build_footprints(owner, state, ECONOMY_RETENTION_PAINT_LIMIT, budget)?,
+        ..Default::default()
+    };
     for mine in previous {
         let Some(deposit) = find_deposit(mine.id, state, budget)
             .ok()?
