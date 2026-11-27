@@ -6,9 +6,9 @@ use top_down_2d_rts_prototype_nano_swarm::{
     SIMULATION_HZ,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Cargo, CombatPlugin, DefenderAttackCooldown, ExtractProgress, GatherAssignment, Health,
-        InteractionRegion, LogisticsReservation, OwnerSwarm, PlannedKind, ReturningToStockpile,
-        Structure, StructureKind, SwarmId, SwarmMember, worker_gather_delivery_system,
+        CombatPlugin, DefenderAttackCooldown, ExtractProgress, GatherAssignment, Health,
+        InteractionRegion, LogisticsReservation, OwnerSwarm, PlannedKind, Structure, StructureKind,
+        SwarmId, SwarmMember, worker_gather_delivery_system,
     },
     reachability::SwarmReachabilityMap,
     resources::{ResourceKind, Stockpile},
@@ -162,17 +162,8 @@ impl Fixture {
             InteractionRegion::structure(self.app.world().get::<Transform>(source).unwrap())
                 .approach(position);
         let worker = common::spawn_worker_at(&mut self.app, approach);
-        let mut reservation =
-            LogisticsReservation::new(self.deposit(cell), source, ResourceKind::Minerals, 4);
-        reservation.source_remaining = 0;
-        self.app.world_mut().entity_mut(worker).insert((
-            ReturningToStockpile { stockpile: source },
-            reservation,
-            Cargo {
-                kind: ResourceKind::Minerals,
-                amount: 4,
-            },
-        ));
+        let deposit = self.deposit(cell);
+        common::prepare_mineral_dropoff(&mut self.app, worker, deposit, source, 4);
         self.advance(4);
         assert_eq!(self.app.world().get::<Stockpile>(source).unwrap().amount, 4);
         self.app.world_mut().despawn(worker);

@@ -594,8 +594,6 @@ fn saturated_mine() -> MineObservation {
         completed_dropoffs: 3,
         observation_ticks: 12 * crate::SIMULATION_HZ as u64,
         ticks_since_dropoff: Some(0),
-        has_source: true,
-        has_space: true,
         sustained_dropoffs: true,
         ..Default::default()
     }
@@ -611,11 +609,21 @@ fn mine_at(
     MineObservationAt<'_>,
     &mut dyn FnMut() -> bool,
 ) -> Option<MineObservation> {
-    move |swarm, site, _, allow_work| {
+    move |swarm, site, at, allow_work| {
         allow_work().then_some(if owner == swarm && deposit == site.position {
             observation
         } else {
-            MineObservation::default()
+            MineObservation {
+                source_path: matches!(
+                    at,
+                    MineObservationAt::Service {
+                        source_check: SourceCheck::Claim { .. },
+                        ..
+                    }
+                )
+                .then_some(true),
+                ..Default::default()
+            }
         })
     }
 }
@@ -1464,14 +1472,26 @@ fn expansion_waits_for_every_retained_mine_to_saturate_and_keeps_its_support() {
     ] {
         let observations = |swarm,
                             deposit: &DepositState,
-                            _: MineObservationAt<'_>,
+                            at: MineObservationAt<'_>,
                             allow_work: &mut dyn FnMut() -> bool| {
-            allow_work().then_some(
+            let prospect = matches!(
+                at,
+                MineObservationAt::Service {
+                    source_check: SourceCheck::Claim { .. },
+                    ..
+                }
+            );
+            allow_work().then_some(if prospect {
+                MineObservation {
+                    source_path: Some(true),
+                    ..Default::default()
+                }
+            } else {
                 deposits[..2]
                     .iter()
                     .position(|site| swarm == owner && site.id == deposit.id)
-                    .map_or_else(MineObservation::default, |index| existing_mines[index]),
-            )
+                    .map_or_else(MineObservation::default, |index| existing_mines[index])
+            })
         };
         let decision = controller.decide(
             &tuning,
@@ -1620,7 +1640,6 @@ fn depleted_and_unreachable_deposits_are_removed_without_abandoning_the_others()
                 .has_owned(IntentKind::Gather, owner)
         );
     }
-    deposits[0].amount = 0;
     let blocked = InteractionRegion::deposit(
         &bevy::prelude::Transform::from_translation(deposits[1].position.extend(0.0)),
         deposits[1].radius,
@@ -1638,6 +1657,22 @@ fn depleted_and_unreachable_deposits_are_removed_without_abandoning_the_others()
             _ => RouteOutcome::Unreachable,
         })
     };
+    let interrupted = controller.decide(
+        &tuning,
+        &GameState {
+            swarms: &swarms,
+            deposits: &deposits,
+            route_query: Some(&route),
+            ..empty_state(&grid, WORK_WINDOW_TICKS)
+        },
+    );
+    apply(&mut grid, owner, &interrupted);
+    assert!(
+        grid.cell(cells[1])
+            .unwrap()
+            .has_owned(IntentKind::Gather, owner)
+    );
+    deposits[0].amount = 0;
     let terrain = [Obstacle::Rectangle {
         center: world(cells[1]),
         half: Vec2::splat(crate::ZONE_BLOCK_SIZE / 2.0),
@@ -1651,7 +1686,7 @@ fn depleted_and_unreachable_deposits_are_removed_without_abandoning_the_others()
             terrain: &terrain,
             reachability: Some(&reachability),
             route_query: Some(&route),
-            ..empty_state(&grid, WORK_WINDOW_TICKS)
+            ..empty_state(&grid, 2 * WORK_WINDOW_TICKS)
         },
     );
     apply(&mut grid, owner, &revised);

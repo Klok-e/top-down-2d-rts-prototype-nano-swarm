@@ -32,6 +32,7 @@ pub(super) struct OwnedDeposit {
 pub(super) struct MineRecovery {
     pub(super) vacancies: usize,
     pub(super) retired: BTreeSet<u64>,
+    pub(super) source_gather: Vec<IVec2>,
 }
 
 pub(super) struct MineClaim {
@@ -182,12 +183,13 @@ pub(super) fn plan_economy(
                 .total_cmp(&home.distance_squared(b.home))
         })
         .map(|swarm| swarm.home);
-    let footprints = retain_build_footprints(owner, state, ECONOMY_RETENTION_PAINT_LIMIT, budget)?;
-    if !budget.spend(footprints.len()) {
+    let mut structural_support =
+        retain_build_footprints(owner, state, ECONOMY_RETENTION_PAINT_LIMIT, budget)?;
+    if !budget.spend(structural_support.len()) {
         return None;
     }
     let mut economy = EconomyPlan {
-        desired: footprints.clone(),
+        desired: structural_support.clone(),
         ..Default::default()
     };
     for mine in previous_mines {
@@ -204,7 +206,14 @@ pub(super) fn plan_economy(
             home,
             Some(mine.gather_cell),
             budget,
-            |_, _| Some(true),
+            |candidate, budget| {
+                if candidate.gather_cell == mine.gather_cell || deposit.position != mine.position {
+                    Some(true)
+                } else {
+                    cell_is_reachable(owner, state, mine.gather_cell, budget)
+                        .map(|reachable| !reachable)
+                }
+            },
         ) {
             Ok(Some((supported, _))) => supported,
             _ if budget.exhausted => return None,
@@ -303,17 +312,37 @@ pub(super) fn plan_economy(
         .saturating_add(previous_mines.len())
         .saturating_sub(economy.owned_deposits.len());
 
+    if let Some(previous) = previous {
+        economy.recovery.source_gather =
+            retain_source_gather(owner, state, previous, &economy.owned_deposits, budget)?;
+        if !budget.spend(2 * economy.recovery.source_gather.len()) {
+            return None;
+        }
+        for &cell in &economy.recovery.source_gather {
+            let paint = DesiredIntent {
+                cell,
+                kind: IntentKind::Gather,
+            };
+            structural_support.insert(paint);
+            economy.desired.insert(paint);
+        }
+        if economy.desired.len() > ECONOMY_RETENTION_PAINT_LIMIT {
+            return None;
+        }
+    }
+
     let mut observation = state
         .supply
         .and_then(|supply| supply.economies.get(&owner))
         .copied()
         .unwrap_or_default();
-    let mut retained = Vec::with_capacity(economy.owned_deposits.len());
+    let mut retained = BTreeMap::new();
     let mut failed_mine = None;
     let mut rerouted_any = false;
     for index in 0..economy.owned_deposits.len() {
         let other_gather = gather_support(
             &economy.owned_deposits,
+            &economy.recovery.source_gather,
             Some(economy.owned_deposits[index].id),
             budget,
         )?;
@@ -326,7 +355,7 @@ pub(super) fn plan_economy(
                     deposit,
                     mine.gather_cell,
                     &other_gather,
-                    false,
+                    SourceCheck::Existing,
                     state,
                     budget,
                 )?
@@ -356,7 +385,7 @@ pub(super) fn plan_economy(
                     deposit,
                     mine.gather_cell,
                     &other_gather,
-                    true,
+                    SourceCheck::Restore,
                     state,
                     budget,
                 )?;
@@ -370,7 +399,8 @@ pub(super) fn plan_economy(
                     home,
                     None,
                     budget,
-                    |gather_cell, budget| {
+                    |candidate, budget| {
+                        let gather_cell = candidate.gather_cell;
                         if gather_cell == mine.gather_cell {
                             return Some(false);
                         }
@@ -379,7 +409,7 @@ pub(super) fn plan_economy(
                             deposit,
                             gather_cell,
                             &other_gather,
-                            true,
+                            SourceCheck::Restore,
                             state,
                             budget,
                         )?;
@@ -391,12 +421,20 @@ pub(super) fn plan_economy(
                         }
                         let mut proposed_gather = other_gather.clone();
                         proposed_gather.push(gather_cell);
+                        let old_gather = gather_support(
+                            &economy.owned_deposits,
+                            &economy.recovery.source_gather,
+                            None,
+                            budget,
+                        )?;
                         preserves_mine_sources(
                             owner,
                             state,
-                            &economy.owned_deposits,
-                            None,
-                            mine.id,
+                            economy
+                                .owned_deposits
+                                .iter()
+                                .filter(|other| other.id != mine.id),
+                            SourceBaseline::Gather(&old_gather),
                             &proposed_gather,
                             budget,
                         )
@@ -417,7 +455,7 @@ pub(super) fn plan_economy(
                 blocked_since = None;
             }
         }
-        retained.push((mine.id, service));
+        retained.insert(mine.id, service);
         let mine = &mut economy.owned_deposits[index];
         if let Some(rerouted) = rerouted_mine {
             *mine = rerouted;
@@ -426,10 +464,15 @@ pub(super) fn plan_economy(
     }
 
     if rerouted_any {
-        if !budget.spend(footprints.len()) {
+        if !budget.spend(structural_support.len()) {
             return None;
         }
-        economy.desired = mine_paint(footprints.clone(), &economy.owned_deposits, None, budget)?;
+        economy.desired = mine_paint(
+            structural_support.clone(),
+            &economy.owned_deposits,
+            None,
+            budget,
+        )?;
     }
     economy.threatened = threatened_deposit(&economy.owned_deposits, owner, state, budget)?;
 
@@ -472,12 +515,18 @@ pub(super) fn plan_economy(
     if !establishing_supply && observation.low_reserve_ticks < HAUL_WINDOW_TICKS {
         return Some(economy);
     }
-    let other_gather = gather_support(&economy.owned_deposits, failed_mine, budget)?;
+    let other_gather = gather_support(
+        &economy.owned_deposits,
+        &economy.recovery.source_gather,
+        failed_mine,
+        budget,
+    )?;
     let mut workers_released_at = None;
-    if let Some((id, service)) = retained.iter().find(|(id, _)| Some(*id) == failed_mine)
+    if let Some(id) = failed_mine
+        && let Some(service) = retained.remove(&id)
         && service.unladen_gatherers > 0
     {
-        let deposit = find_deposit(*id, state, budget).ok()??;
+        let deposit = find_deposit(id, state, budget).ok()??;
         if !budget.spend(other_gather.len()) {
             return None;
         }
@@ -492,19 +541,16 @@ pub(super) fn plan_economy(
                 .saturating_sub(service.unladen_gatherers);
         }
     }
-    let retained = retained
-        .into_iter()
-        .filter_map(|(id, service)| (Some(id) != failed_mine).then_some(service))
-        .collect::<Vec<_>>();
+    let retained_services: Vec<_> = retained.values().copied().collect();
     if !establishing_supply
-        && (retained
+        && (retained_services
             .iter()
             .any(|mine| mine.source_path == Some(false) || !mine.is_saturated())
-            || !needs_more_extraction(observation, &retained))
+            || !needs_more_extraction(observation, &retained_services))
     {
         return Some(economy);
     }
-    let capacity = expansion_capacity(owner, state, observation, &retained, budget)?;
+    let capacity = expansion_capacity(owner, state, observation, &retained_services, budget)?;
     if capacity.workers == 0 || capacity.haulers == 0 {
         return Some(economy);
     }
@@ -526,7 +572,12 @@ pub(super) fn plan_economy(
     let replacement = if let Some(retires) = failed_mine {
         Some(MineReplacement {
             retires,
-            retained_paint: mine_paint(footprints, &economy.owned_deposits, Some(retires), budget)?,
+            retained_paint: mine_paint(
+                structural_support,
+                &economy.owned_deposits,
+                Some(retires),
+                budget,
+            )?,
         })
     } else {
         None
@@ -589,28 +640,42 @@ pub(super) fn plan_economy(
             home,
             None,
             budget,
-            |gather_cell, budget| {
-                if workers_released_at.is_some_and(|site| {
-                    cell_overlaps_circle(gather_cell, site.position, site.radius)
-                }) {
+            |candidate, budget| {
+                let score = value
+                    - candidate.haul_distance / crate::ZONE_BLOCK_SIZE
+                        * tuning.strategy_expansion_haul_cost;
+                if score <= best.as_ref().map_or(0.0, |(_, best_score)| *best_score)
+                    || !capacity.can_deliver(
+                        state.supply.map(|supply| supply.logistics),
+                        candidate.haul_distance,
+                    )
+                    || !can_fit(
+                        retained_paint,
+                        candidate,
+                        ECONOMY_EXPANSION_PAINT_LIMIT,
+                        budget,
+                    )
+                    || workers_released_at.is_some_and(|site| {
+                        cell_overlaps_circle(candidate.gather_cell, site.position, site.radius)
+                    })
+                {
                     return Some(false);
                 }
-                if !recovering && capacity.workers > 1 {
-                    return Some(true);
+                if state.mine_query.is_none() {
+                    return Some(capacity.workers > 1);
                 }
                 let service = mine_observation(
                     owner,
                     deposit,
-                    gather_cell,
+                    candidate.gather_cell,
                     &other_gather,
-                    recovering && capacity.workers > 1,
+                    SourceCheck::Claim {
+                        allow_construction: capacity.workers > 1,
+                    },
                     state,
                     budget,
                 )?;
-                Some(
-                    service.source_path != Some(false)
-                        && (capacity.workers > 1 || service.has_source),
-                )
+                Some(service.source_path == Some(true))
             },
         );
         let (mine, distance) = match support {
@@ -620,21 +685,18 @@ pub(super) fn plan_economy(
             Err(_) => continue,
         };
         let score = value - distance / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_haul_cost;
-        if score > best.as_ref().map_or(0.0, |(_, score)| *score)
-            && can_fit(retained_paint, &mine, ECONOMY_EXPANSION_PAINT_LIMIT, budget)
-            && capacity.can_deliver(state.supply.map(|supply| supply.logistics), distance)
-        {
-            best = Some((mine, score));
-        }
+        best = Some((mine, score));
     }
     if let Some((mine, _)) = best {
         if let Some(replacement) = &replacement
             && !preserves_mine_sources(
                 owner,
                 state,
-                &economy.owned_deposits,
-                Some(&retained),
-                replacement.retires,
+                economy
+                    .owned_deposits
+                    .iter()
+                    .filter(|mine| mine.id != replacement.retires),
+                SourceBaseline::Observed(&retained),
                 &other_gather,
                 budget,
             )?
@@ -646,50 +708,109 @@ pub(super) fn plan_economy(
     (!budget.exhausted).then_some(economy)
 }
 
-fn preserves_mine_sources(
+fn retain_source_gather(
     owner: SwarmId,
     state: &GameState<'_>,
+    previous: &IntentPlan,
     mines: &[OwnedDeposit],
-    previous: Option<&[MineObservation]>,
-    withdrawing: u64,
-    gather: &[IVec2],
     budget: &mut WorkBudget,
-) -> Option<bool> {
-    if !budget.spend(mines.len().saturating_mul(2).saturating_add(gather.len())) {
+) -> Option<Vec<IVec2>> {
+    if mines.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut gather = gather_support(mines, &[], None, budget)?;
+    let active = gather.len();
+    if !budget.spend(active) {
         return None;
     }
-    let old_cell = mines
+    let mut seen: HashSet<_> = gather.iter().copied().collect();
+    for cell in previous
+        .mine_recovery
+        .source_gather
         .iter()
-        .find(|mine| mine.id == withdrawing)?
-        .gather_cell;
-    if gather.contains(&old_cell) {
-        return Some(true);
-    }
-    let old_gather = if previous.is_none() {
-        gather_support(mines, None, budget)?
-    } else {
-        Vec::new()
-    };
-    for (index, mine) in mines
-        .iter()
-        .filter(|mine| mine.id != withdrawing)
-        .enumerate()
+        .copied()
+        .chain(previous.owned_deposits.iter().map(|mine| mine.gather_cell))
     {
+        if !budget.spend(1) {
+            return None;
+        }
+        if seen.insert(cell) && cell_is_reachable(owner, state, cell, budget)? {
+            gather.push(cell);
+        }
+    }
+    if gather.len() == active {
+        return Some(Vec::new());
+    }
+    let mut baseline = BTreeMap::new();
+    for mine in mines {
+        if !budget.spend(1) {
+            return None;
+        }
         let deposit = find_deposit(mine.id, state, budget).ok()??;
-        let service = if let Some(previous) = previous {
-            previous[index]
-        } else {
+        baseline.insert(
+            mine.id,
             mine_observation(
                 owner,
                 deposit,
                 mine.gather_cell,
-                &old_gather,
-                false,
+                &gather,
+                SourceCheck::Existing,
                 state,
                 budget,
-            )?
+            )?,
+        );
+    }
+    let mut index = active;
+    while index < gather.len() {
+        let cell = gather.swap_remove(index);
+        if !preserves_mine_sources(
+            owner,
+            state,
+            mines.iter(),
+            SourceBaseline::Observed(&baseline),
+            &gather,
+            budget,
+        )? {
+            gather.push(cell);
+            let last = gather.len() - 1;
+            gather.swap(index, last);
+            index += 1;
+        }
+    }
+    Some(gather.split_off(active))
+}
+
+enum SourceBaseline<'a> {
+    Observed(&'a BTreeMap<u64, MineObservation>),
+    Gather(&'a [IVec2]),
+}
+
+fn preserves_mine_sources<'a>(
+    owner: SwarmId,
+    state: &GameState<'_>,
+    mines: impl Iterator<Item = &'a OwnedDeposit>,
+    baseline: SourceBaseline<'_>,
+    gather: &[IVec2],
+    budget: &mut WorkBudget,
+) -> Option<bool> {
+    for mine in mines {
+        if !budget.spend(1) {
+            return None;
+        }
+        let deposit = find_deposit(mine.id, state, budget).ok()??;
+        let service = match baseline {
+            SourceBaseline::Observed(observations) => *observations.get(&mine.id)?,
+            SourceBaseline::Gather(old_gather) => mine_observation(
+                owner,
+                deposit,
+                mine.gather_cell,
+                old_gather,
+                SourceCheck::Existing,
+                state,
+                budget,
+            )?,
         };
-        if service.source_path != Some(true) {
+        if service.source_path != Some(true) && service.covered_sources == 0 {
             continue;
         }
         let projected = mine_observation(
@@ -697,13 +818,18 @@ fn preserves_mine_sources(
             deposit,
             mine.gather_cell,
             gather,
-            false,
+            SourceCheck::Existing,
             state,
             budget,
         )?;
-        if projected.source_path != Some(true)
-            || projected.worker_capacity < service.worker_capacity
-        {
+        let preserves_service = if service.source_path == Some(true) {
+            projected.source_path == Some(true)
+                && projected.worker_capacity >= service.worker_capacity
+        } else {
+            projected.source_path == Some(true)
+                || projected.covered_sources >= service.covered_sources
+        };
+        if !preserves_service {
             return Some(false);
         }
     }
@@ -711,7 +837,7 @@ fn preserves_mine_sources(
 }
 
 fn mine_paint(
-    mut footprints: HashSet<DesiredIntent>,
+    mut desired: HashSet<DesiredIntent>,
     mines: &[OwnedDeposit],
     retired: Option<u64>,
     budget: &mut WorkBudget,
@@ -720,20 +846,22 @@ fn mine_paint(
         if !budget.spend(mine.desired.len() + 1) {
             return None;
         }
-        footprints.extend(mine.desired.iter().copied());
+        desired.extend(mine.desired.iter().copied());
     }
-    (footprints.len() <= ECONOMY_RETENTION_PAINT_LIMIT).then_some(footprints)
+    (desired.len() <= ECONOMY_RETENTION_PAINT_LIMIT).then_some(desired)
 }
 
 fn gather_support(
     mines: &[OwnedDeposit],
+    source_gather: &[IVec2],
     excluded: Option<u64>,
     budget: &mut WorkBudget,
 ) -> Option<Vec<IVec2>> {
-    budget.spend(mines.len()).then(|| {
+    budget.spend(mines.len() + source_gather.len()).then(|| {
         mines
             .iter()
             .filter_map(|mine| (Some(mine.id) != excluded).then_some(mine.gather_cell))
+            .chain(source_gather.iter().copied())
             .collect()
     })
 }
@@ -858,7 +986,7 @@ pub(super) fn mine_observation(
     deposit: &DepositState,
     gather_cell: IVec2,
     other_gather: &[IVec2],
-    check_placement: bool,
+    source_check: SourceCheck,
     state: &GameState<'_>,
     budget: &mut WorkBudget,
 ) -> Option<MineObservation> {
@@ -871,7 +999,7 @@ pub(super) fn mine_observation(
                 MineObservationAt::Service {
                     gather: gather_cell,
                     other_gather,
-                    check_placement,
+                    source_check,
                 },
                 &mut || budget.spend(1),
             )
@@ -1005,7 +1133,7 @@ fn mine_support_where(
     home: Vec2,
     preferred_gather: Option<IVec2>,
     budget: &mut WorkBudget,
-    mut eligible: impl FnMut(IVec2, &mut WorkBudget) -> Option<bool>,
+    mut eligible: impl FnMut(&OwnedDeposit, &mut WorkBudget) -> Option<bool>,
 ) -> Result<Option<(OwnedDeposit, f32)>, CorridorPaintLimit> {
     let center = world_to_intent_cell(deposit.position);
     let region = deposit_region(deposit);
@@ -1081,11 +1209,6 @@ fn mine_support_where(
         let Some(build_cell) = build_cell else {
             continue;
         };
-        match eligible(gather_cell, budget) {
-            Some(true) => {}
-            Some(false) => continue,
-            None => return Ok(None),
-        }
         let mut desired = vec![
             DesiredIntent {
                 cell: gather_cell,
@@ -1108,18 +1231,20 @@ fn mine_support_where(
             cell,
             kind: IntentKind::Corridor,
         }));
-        return Ok(Some((
-            OwnedDeposit {
-                id: deposit.id,
-                position: deposit.position,
-                haul_distance: distance,
-                gather_cell,
-                build_cell,
-                desired,
-                blocked_since: None,
-            },
-            distance,
-        )));
+        let mine = OwnedDeposit {
+            id: deposit.id,
+            position: deposit.position,
+            haul_distance: distance,
+            gather_cell,
+            build_cell,
+            desired,
+            blocked_since: None,
+        };
+        match eligible(&mine, budget) {
+            Some(true) => return Ok(Some((mine, distance))),
+            Some(false) => continue,
+            None => return Ok(None),
+        }
     }
     if exceeds_paint_limit {
         Err(CorridorPaintLimit)

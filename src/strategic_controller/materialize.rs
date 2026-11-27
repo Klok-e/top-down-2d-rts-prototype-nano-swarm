@@ -173,7 +173,7 @@ pub(super) fn materialize_plan(
         front.defend_cells = Arc::clone(&primary_defend_cells);
         front
     });
-    if !budget.spend(economy.recovery.retired.len()) {
+    if !budget.spend(economy.recovery.retired.len() + economy.recovery.source_gather.len()) {
         return None;
     }
     let mut mine_recovery = economy.recovery.clone();
