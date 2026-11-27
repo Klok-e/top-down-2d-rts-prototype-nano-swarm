@@ -868,12 +868,21 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
             .partition::<Vec<_>, _>(|(_, cell)| cell.x >= 2)
     };
     assert!(front.len() >= 2 && !rear.is_empty());
-    for &(entity, _) in &front[1..] {
-        app.world_mut().get_mut::<Charge>(entity).unwrap().current = 0.1;
-    }
-    for &(entity, _) in &rear {
-        let mut charge = app.world_mut().get_mut::<Charge>(entity).unwrap();
-        charge.current = charge.max;
+    let ready = std::iter::once(front[0].0)
+        .chain(rear.iter().map(|(entity, _)| *entity))
+        .collect::<HashSet<_>>();
+    {
+        let world = app.world_mut();
+        let mut defenders = world.query::<(Entity, &SwarmMember, &mut Charge)>();
+        for (entity, member, mut charge) in defenders.iter_mut(world) {
+            if member.0 == SwarmId::PLAYER {
+                charge.current = if ready.contains(&entity) {
+                    charge.max
+                } else {
+                    0.1
+                };
+            }
+        }
     }
     let target_is_painted = |app: &App| {
         app.world()

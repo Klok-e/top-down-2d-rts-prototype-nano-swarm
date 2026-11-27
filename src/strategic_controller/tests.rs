@@ -3690,6 +3690,132 @@ fn a_rerouted_raid_advances_on_the_approach_used_for_readiness() {
 }
 
 #[test]
+fn a_raid_resamples_when_only_the_fresh_approach_clears_nearby_guards() {
+    let next = review_grazing_raid_reroute(true, 3);
+    assert!(
+        next.contains(&(5, 2)) && !next.contains(&(5, -1)),
+        "{next:?}"
+    );
+}
+
+#[test]
+fn live_staging_spacing_resamples_the_fresh_approach() {
+    let next = review_grazing_raid_reroute(false, 4);
+    assert!(
+        next.contains(&(7, 2)) && !next.contains(&(7, -1)),
+        "{next:?}"
+    );
+}
+
+fn review_grazing_raid_reroute(guarded: bool, new_spacing: u32) -> BTreeSet<(i32, i32)> {
+    use crate::navigation::Route;
+    use std::cell::Cell;
+
+    let owner = SwarmId::PLAYER;
+    let enemy = SwarmId(9);
+    let target_cell = IVec2::new(11, 0);
+    let tile = crate::ZONE_BLOCK_SIZE;
+    let home = world(IVec2::ZERO);
+    let target_position = world(target_cell);
+    let swarms = [SwarmState {
+        id: owner,
+        home,
+        minerals: 100,
+        mineral_income_per_second: 0.0,
+    }];
+    let target = StructureState {
+        id: 20,
+        owner: enemy,
+        position: Some(target_position),
+        kind: StructureKind::Sink,
+        operational: true,
+        health: 100,
+        max_health: 100,
+        minerals: 0,
+    };
+    let bends = [
+        Vec2::new(4.5, 1.17),
+        Vec2::new(5.9, 0.99),
+        Vec2::new(6.3, 1.17),
+        Vec2::new(8.9, 0.99),
+        Vec2::new(9.4, 1.17),
+    ];
+    let rerouted = Cell::new(false);
+    let route = |_, goal, _: &mut dyn FnMut() -> bool| {
+        let waypoints = match goal {
+            RouteGoal::Range { center, .. } if center == target_position => {
+                let end = Vec2::new(11.0, 0.5) * tile;
+                if rerouted.get() {
+                    bends.iter().map(|bend| *bend * tile).chain([end]).collect()
+                } else {
+                    vec![end]
+                }
+            }
+            RouteGoal::Range { center, .. } | RouteGoal::Point(center) => vec![center],
+            RouteGoal::Interaction(_) => unreachable!(),
+        };
+        Some(RouteOutcome::Found(Route {
+            waypoints,
+            cost: 0.0,
+        }))
+    };
+    let mut grid = IntentGrid::new(32, 32);
+    let mut controller = Controller::new(owner);
+    let mut tuning = AutonomyTuning::default();
+    let review = |controller: &mut Controller,
+                  grid: &mut IntentGrid,
+                  tuning: &AutonomyTuning,
+                  bots: &[BotState],
+                  tick| {
+        let decision = controller.decide(
+            tuning,
+            &GameState {
+                swarms: &swarms,
+                structures: &[target],
+                bots,
+                route_query: Some(&route),
+                ..empty_state(grid, tick)
+            },
+        );
+        apply(grid, owner, &decision);
+    };
+    let first = IVec2::new(3, 0);
+    review(
+        &mut controller,
+        &mut grid,
+        &tuning,
+        &ready_defenders(owner, home),
+        0,
+    );
+    assert!(owned_defend_cells(&grid, owner).contains(&(first.x, first.y)));
+
+    let mut force = ready_defenders(owner, world(first)).to_vec();
+    for bot in &mut force {
+        bot.defender_duty = DefenderDuty::StagingAt(first);
+    }
+    if guarded {
+        let mut guards = ready_defenders(enemy, Vec2::new(5.01, -0.04) * tile);
+        guards[0].id += 2;
+        guards[1].id += 2;
+        guards[1].position.x += 0.05 * tile;
+        force.extend(guards);
+    }
+    if tuning.strategy_staging_spacing_cells != new_spacing {
+        tuning.strategy_staging_spacing_cells = new_spacing;
+        controller.request_tuning_review();
+    }
+    rerouted.set(true);
+    review(
+        &mut controller,
+        &mut grid,
+        &tuning,
+        &force,
+        WORK_WINDOW_TICKS,
+    );
+    owned_defend_cells(&grid, owner)
+}
+
+#[test]
 fn staging_follows_the_supplied_approach_when_spacing_changes() {
     use crate::navigation::Route;
 

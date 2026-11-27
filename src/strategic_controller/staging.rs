@@ -75,9 +75,9 @@ impl StagingFront {
             .cell
     }
 
-    fn same_remaining_route(&self, route: &[Vec2], budget: &mut WorkBudget) -> bool {
+    fn reusable_route(&self, route: &[Vec2], budget: &mut WorkBudget) -> Option<Vec<Vec2>> {
         if !budget.spend(self.route.len()) {
-            return false;
+            return None;
         }
         let distance = self.points[self.active].distance;
         let mut traveled = 0.0;
@@ -85,19 +85,23 @@ impl StagingFront {
             let length = segment[0].distance(segment[1]);
             if length > 0.0 && distance <= traveled + length {
                 let start = segment[0].lerp(segment[1], (distance - traveled) / length);
-                let mut remaining = Vec::with_capacity(self.route.len() - index);
+                let mut remaining = Vec::with_capacity(self.route.len() - index + 1);
                 remaining.push(start);
                 remaining.extend_from_slice(&self.route[index + 1..]);
                 let remaining_stages = &self.points[self.active + 1..self.points.len() - 1];
-                return follows_route(&remaining, route, budget)
+                let reusable = follows_route(&remaining, route, budget)
                     && follows_route(route, &remaining, budget)
                     && remaining_stages
                         .iter()
                         .all(|point| route_crosses_cell(route, point.cell, budget));
+                if reusable && route[0] != start {
+                    remaining.insert(0, route[0]);
+                }
+                return reusable.then_some(remaining);
             }
             traveled += length;
         }
-        false
+        None
     }
 
     fn advance_if_arrived(
@@ -298,11 +302,13 @@ pub(super) fn review_staging(
             )
     });
     let requires_readiness = candidate.objective.needs_ready_force();
+    let spacing = tuning.strategy_staging_spacing_cells;
     if requires_readiness && continuing.is_none() && !raid_forces.can_launch() {
         return Err(StageFailure::unavailable(budget));
     }
-    let reusable = continuing.filter(|front| {
-        front.destination_contains(target, owner, state)
+    let mut reusable = continuing.filter(|front| {
+        (!requires_readiness || front.at_destination() || front.spacing_cells == spacing)
+            && front.destination_contains(target, owner, state)
             && front.points[front.active + 1..]
                 .iter()
                 .all(|point| stageable(owner, state, candidate.protected_home, point.cell, budget))
@@ -322,17 +328,19 @@ pub(super) fn review_staging(
                 Some(RouteGoal::Range { center, .. }) => center,
                 _ => intent_cell_center(target),
             };
-            let ready = attack_route_is_ready(
-                continuing,
-                owner,
-                state,
-                raid_forces,
-                &route,
-                target_position,
-                budget,
-            )
-            .ok_or_else(|| StageFailure::unavailable(budget))?;
-            if !ready {
+            let attack_ready = |route: &[Vec2], budget: &mut WorkBudget| {
+                attack_route_is_ready(
+                    continuing,
+                    owner,
+                    state,
+                    raid_forces,
+                    route,
+                    target_position,
+                    budget,
+                )
+                .ok_or_else(|| StageFailure::unavailable(budget))
+            };
+            if !attack_ready(&route, budget)? {
                 let mut held = continuing.ok_or(StageFailure::Ineligible)?.clone();
                 let shortfall_started = held.readiness_shortfall_started.unwrap_or(state.tick);
                 if state.tick.saturating_sub(shortfall_started) >= READINESS_GRACE_TICKS {
@@ -341,19 +349,23 @@ pub(super) fn review_staging(
                 held.readiness_shortfall_started = Some(shortfall_started.min(state.tick));
                 return Ok(held);
             }
+            // A fresh route can clear guards even where it crosses the old staging cells.
+            if let Some(front) = reusable.filter(|front| !front.at_destination()) {
+                reusable = match front.reusable_route(&route, budget) {
+                    Some(prior_route) => (prior_route.as_slice() == route.as_ref()
+                        || attack_ready(&prior_route, budget)?)
+                    .then_some(front),
+                    None => None,
+                };
+            }
         }
         Some(route)
     } else {
         None
     };
 
-    let spacing = tuning.strategy_staging_spacing_cells;
     let arrival_fraction = tuning.strategy_staging_arrival_fraction;
-    if let Some(previous) = reusable.filter(|previous| {
-        route.as_ref().is_none_or(|route| {
-            previous.at_destination() || previous.same_remaining_route(route, budget)
-        })
-    }) {
+    if let Some(previous) = reusable {
         let mut retained = previous.clone();
         if previous.spacing_cells != spacing && !previous.at_destination() {
             retained.points = staging_points(
@@ -614,6 +626,6 @@ mod tests {
             Vec2::new(9.5, 1.17) * tile,
             destination,
         ];
-        assert!(!front.same_remaining_route(&reroute, &mut budget));
+        assert!(front.reusable_route(&reroute, &mut budget).is_none());
     }
 }
