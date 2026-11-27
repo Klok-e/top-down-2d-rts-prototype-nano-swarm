@@ -35,7 +35,7 @@ fn empty_state<'a>(grid: &'a IntentGrid, tick: u64) -> GameState<'a> {
         charge: &DEFAULT_CHARGE,
         reachability: None,
         route_query: None,
-        source_query: None,
+        mine_query: None,
         tick,
         finished: false,
     }
@@ -414,7 +414,7 @@ fn controller_erases_legacy_intent_and_never_paints_across_permanent_terrain() {
         charge: &DEFAULT_CHARGE,
         reachability: Some(&reachability),
         route_query: None,
-        source_query: None,
+        mine_query: None,
         tick: 0,
         finished: false,
     };
@@ -535,16 +535,30 @@ fn mature_economy_bots(owner: SwarmId, home: Vec2) -> Vec<BotState> {
         .collect()
 }
 
-fn source_at(
+fn saturated_mine() -> MineObservation {
+    MineObservation {
+        worker_capacity: 1,
+        active_workers: 1,
+        delivered_minerals: 12,
+        completed_dropoffs: 3,
+        observation_ticks: 12 * crate::SIMULATION_HZ as u64,
+        ticks_since_dropoff: Some(0),
+        has_source: true,
+        has_space: true,
+        sustained_dropoffs: true,
+    }
+}
+
+fn mine_at(
     owner: SwarmId,
     deposit: Vec2,
-    support: SourceSupport,
-) -> impl Fn(SwarmId, Vec2, SourceNeed, &mut dyn FnMut() -> bool) -> Option<SourceSupport> {
-    move |swarm, position, _, allow_work| {
-        allow_work().then_some(if owner == swarm && deposit == position {
-            support
+    observation: MineObservation,
+) -> impl Fn(SwarmId, &DepositState, IVec2, &mut dyn FnMut() -> bool) -> Option<MineObservation> {
+    move |swarm, site, _, allow_work| {
+        allow_work().then_some(if owner == swarm && deposit == site.position {
+            observation
         } else {
-            SourceSupport::default()
+            MineObservation::default()
         })
     }
 }
@@ -672,7 +686,7 @@ fn controller_coordinates_economy_support_and_combat_on_first_review() {
         charge: &DEFAULT_CHARGE,
         reachability: None,
         route_query: None,
-        source_query: None,
+        mine_query: None,
         tick: 0,
         finished: false,
     };
@@ -762,7 +776,7 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 0,
             finished: false,
         },
@@ -829,14 +843,7 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
             ..primary_chain[1]
         },
     ];
-    let empty_source = source_at(
-        owner,
-        deposits[0].position,
-        SourceSupport {
-            has_space: true,
-            stocked: false,
-        },
-    );
+    let empty_source = mine_at(owner, deposits[0].position, saturated_mine());
     let expansion = controller.decide(
         &direct_attack_tuning(),
         &GameState {
@@ -853,7 +860,7 @@ fn profitable_neutral_expansion_preempts_a_viable_raid() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: Some(&empty_source),
+            mine_query: Some(&empty_source),
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -950,7 +957,7 @@ fn advantaged_raid_paints_enemy_logistics_and_keeps_home_economy() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 0,
             finished: false,
         },
@@ -1051,7 +1058,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 0,
             finished: false,
         },
@@ -1086,7 +1093,7 @@ fn progressing_nanobot_front_is_not_abandoned_for_fresh_targets() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -1190,7 +1197,7 @@ fn losing_a_mine_keeps_a_progressing_attack_front() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 0,
             finished: false,
         },
@@ -1229,7 +1236,7 @@ fn losing_a_mine_keeps_a_progressing_attack_front() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 1,
             finished: false,
         },
@@ -1292,7 +1299,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 0,
             finished: false,
         },
@@ -1311,7 +1318,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: WORK_WINDOW_TICKS - 1,
             finished: false,
         },
@@ -1331,7 +1338,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -1343,7 +1350,7 @@ fn viable_plan_is_quiet_between_reviews_and_retained_at_regular_review() {
 }
 
 #[test]
-fn expansion_waits_for_extraction_and_keeps_existing_mine_supported() {
+fn expansion_waits_for_every_retained_mine_to_saturate_and_keeps_its_support() {
     let owner = SwarmId::PLAYER;
     let mut grid = IntentGrid::new(32, 32);
     let swarms = [SwarmState {
@@ -1353,215 +1360,71 @@ fn expansion_waits_for_extraction_and_keeps_existing_mine_supported() {
         mineral_income_per_second: 0.0,
         production_saturated: false,
     }];
-    let mut deposits = [
-        DepositState {
-            id: 20,
-            owner: None,
-            position: world(IVec2::new(4, 0)),
-            amount: 72_000,
-            radius: 80.0,
-        },
-        DepositState {
-            id: 21,
-            owner: None,
-            position: world(IVec2::new(0, 6)),
-            amount: 72_000,
-            radius: 80.0,
-        },
-        DepositState {
-            id: 22,
-            owner: None,
-            position: world(IVec2::new(-8, 0)),
-            amount: 72_000,
-            radius: 80.0,
-        },
-    ];
-    let tuning = AutonomyTuning::default();
-    let mut controller = Controller::new(owner);
-    let initial = controller.decide(
-        &tuning,
-        &GameState {
-            swarms: &swarms,
-            deposits: &deposits,
-            ..empty_state(&grid, 0)
-        },
-    );
-    apply(&mut grid, owner, &initial);
-    let pending = controller.decide(
-        &tuning,
-        &GameState {
-            swarms: &swarms,
-            deposits: &deposits,
-            ..empty_state(&grid, WORK_WINDOW_TICKS)
-        },
-    );
-    apply(&mut grid, owner, &pending);
-    assert!(
-        !grid
-            .cell(IVec2::new(0, 6))
-            .unwrap()
-            .has_owned(IntentKind::Gather, owner),
-        "expansion should wait while the first mine is getting started"
-    );
-
-    deposits[0].amount -= 4;
-    let expanded = controller.decide(
-        &tuning,
-        &GameState {
-            swarms: &swarms,
-            deposits: &deposits,
-            ..empty_state(&grid, 2 * WORK_WINDOW_TICKS)
-        },
-    );
-    apply(&mut grid, owner, &expanded);
-
-    for (gather, build) in [
-        (IVec2::new(4, 0), IVec2::new(3, 0)),
-        (IVec2::new(0, 6), IVec2::new(0, 5)),
-    ] {
-        for (cell, kind) in [
-            (gather, IntentKind::Gather),
-            (gather, IntentKind::Defend),
-            (build, IntentKind::Build),
-            (build, IntentKind::Defend),
-            (build, IntentKind::Corridor),
-        ] {
-            assert!(
-                grid.cell(cell)
-                    .is_some_and(|intent| intent.has_owned(kind, owner)),
-                "mine at {gather} lacks {kind:?} at {cell}"
-            );
-        }
-    }
-
-    let crew = mature_economy_bots(owner, swarms[0].home);
-    for (tick, ready_sites, should_expand) in [
-        (3 * WORK_WINDOW_TICKS, &deposits[..2], false),
-        (4 * WORK_WINDOW_TICKS, &deposits[..], true),
-    ] {
-        let source_query =
-            |_: SwarmId, position, _: SourceNeed, allow_work: &mut dyn FnMut() -> bool| {
-                for site in ready_sites {
-                    if !allow_work() {
-                        return None;
-                    }
-                    if position == site.position {
-                        return Some(SourceSupport {
-                            has_space: true,
-                            stocked: false,
-                        });
-                    }
-                }
-                Some(SourceSupport::default())
-            };
-        let decision = controller.decide(
-            &tuning,
-            &GameState {
-                swarms: &swarms,
-                bots: &crew,
-                deposits: &deposits,
-                source_query: Some(&source_query),
-                ..empty_state(&grid, tick)
-            },
-        );
-        apply(&mut grid, owner, &decision);
-        assert_eq!(
-            grid.cell(IVec2::new(-8, 0))
-                .unwrap()
-                .has_owned(IntentKind::Gather, owner),
-            should_expand,
-            "the third mine must leave both operating mines staffed",
-        );
-        for cell in [IVec2::new(4, 0), IVec2::new(0, 6)] {
-            assert!(
-                grid.cell(cell)
-                    .unwrap()
-                    .has_owned(IntentKind::Gather, owner),
-                "existing mines must stay marked"
-            );
-        }
-    }
-}
-
-#[test]
-fn opening_expands_when_the_crew_can_staff_both_mines_or_the_grace_expires() {
-    let owner = SwarmId::PLAYER;
-    let home = world(IVec2::ZERO);
-    let swarms = [SwarmState {
-        id: owner,
-        home,
-        minerals: 0,
-        mineral_income_per_second: 0.0,
-        production_saturated: false,
-    }];
-    let opening = IVec2::new(2, 0);
-    let expansion = IVec2::new(4, 0);
-    let deposits = [opening, expansion].map(|cell| DepositState {
+    let cells = [IVec2::new(4, 0), IVec2::new(0, 6), IVec2::new(-8, 0)];
+    let deposits = cells.map(|cell| DepositState {
         id: cell.x as u64,
         owner: None,
         position: world(cell),
         amount: 72_000,
         radius: 80.0,
     });
+    let mut bots = mature_economy_bots(owner, swarms[0].home);
+    bots.push(BotState { id: 100, ..bots[0] });
     let tuning = AutonomyTuning::default();
-    let mut crew = mature_economy_bots(owner, home);
-    crew.push(BotState { id: 100, ..crew[0] });
-    let mut reduced_crew = crew.clone();
-    reduced_crew.last_mut().unwrap().health = 0;
-    let no_source = SourceSupport::default();
-    let empty_source = SourceSupport {
-        has_space: true,
-        stocked: false,
-    };
-    let stocked_source = SourceSupport {
-        has_space: false,
-        stocked: true,
-    };
-    for (bots, support, review, should_expand) in [
-        (crew.as_slice(), no_source, WORK_WINDOW_TICKS, true),
-        (reduced_crew.as_slice(), no_source, WORK_WINDOW_TICKS, false),
+    let mut controller = Controller::new(owner);
+    for (review, existing_mines, expected_claims) in [
+        (0, [MineObservation::default(); 2], 1),
+        (1, [saturated_mine(), MineObservation::default()], 2),
         (
-            reduced_crew.as_slice(),
-            empty_source,
-            WORK_WINDOW_TICKS,
-            true,
-        ),
-        (&crew[..1], empty_source, WORK_WINDOW_TICKS, false),
-        (&crew[..1], stocked_source, WORK_WINDOW_TICKS, true),
-        (
-            reduced_crew.as_slice(),
-            no_source,
-            30 * crate::SIMULATION_HZ as u64,
-            true,
-        ),
-    ] {
-        let source_query = source_at(owner, deposits[0].position, support);
-        let mut grid = IntentGrid::new(16, 16);
-        let mut controller = Controller::new(owner);
-        for tick in [0, review] {
-            let decision = controller.decide(
-                &tuning,
-                &GameState {
-                    swarms: &swarms,
-                    bots,
-                    source_query: (tick != 0).then_some(&source_query as &SourceQuery<'_>),
-                    deposits: &deposits,
-                    ..empty_state(&grid, tick)
+            2,
+            [
+                saturated_mine(),
+                MineObservation {
+                    worker_capacity: 2,
+                    ..saturated_mine()
                 },
-            );
-            apply(&mut grid, owner, &decision);
+            ],
+            2,
+        ),
+        (3, [saturated_mine(); 2], 3),
+    ] {
+        let observations =
+            |swarm, deposit: &DepositState, _, allow_work: &mut dyn FnMut() -> bool| {
+                allow_work().then_some(
+                    deposits[..2]
+                        .iter()
+                        .position(|site| swarm == owner && site.id == deposit.id)
+                        .map_or_else(MineObservation::default, |index| existing_mines[index]),
+                )
+            };
+        let decision = controller.decide(
+            &tuning,
+            &GameState {
+                swarms: &swarms,
+                bots: &bots,
+                deposits: &deposits,
+                mine_query: Some(&observations),
+                ..empty_state(&grid, review * WORK_WINDOW_TICKS)
+            },
+        );
+        apply(&mut grid, owner, &decision);
+
+        for (index, cell) in cells.into_iter().enumerate() {
+            let claimed = index < expected_claims;
+            for (target, intent) in [
+                (cell, IntentKind::Gather),
+                (cell, IntentKind::Defend),
+                (cell - cell.signum(), IntentKind::Build),
+                (cell - cell.signum(), IntentKind::Corridor),
+            ] {
+                assert_eq!(
+                    grid.cell(target)
+                        .is_some_and(|entry| entry.has_owned(intent, owner)),
+                    claimed,
+                    "review {review}: {intent:?} at {target} for {cell}, {decision:?}"
+                );
+            }
         }
-        assert!(
-            grid.cell(opening)
-                .unwrap()
-                .has_owned(IntentKind::Gather, owner)
-        );
-        assert_eq!(
-            grid.cell(expansion)
-                .unwrap()
-                .has_owned(IntentKind::Gather, owner),
-            should_expand,
-        );
     }
 }
 
@@ -1814,7 +1677,7 @@ fn income_lead_adds_a_home_push_without_abandoning_the_mine() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 0,
             finished: false,
         },
@@ -1841,7 +1704,7 @@ fn income_lead_adds_a_home_push_without_abandoning_the_mine() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -2023,7 +1886,7 @@ fn authored_terrain_leaves_budget_for_a_coordinated_plan() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 0,
             finished: false,
         },
@@ -2131,7 +1994,7 @@ fn authored_terrain_advantaged_raid_reaches_target_and_preserves_gather() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 0,
             finished: false,
         },
@@ -2219,7 +2082,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 0,
             finished: false,
         },
@@ -2250,7 +2113,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 1,
             finished: false,
         },
@@ -2270,7 +2133,7 @@ fn progressing_target_within_owned_defend_coverage_keeps_existing_paint() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -2359,7 +2222,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 0,
             finished: false,
         },
@@ -2386,7 +2249,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 1,
             finished: false,
         },
@@ -2405,7 +2268,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -2424,7 +2287,7 @@ fn covered_movement_without_damage_gets_one_grace_before_reassessment() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: WORK_WINDOW_TICKS * 2,
             finished: false,
         },
@@ -2498,7 +2361,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 0,
             finished: false,
         },
@@ -2532,7 +2395,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 1,
             finished: false,
         },
@@ -2567,7 +2430,7 @@ fn progressing_target_that_exits_owned_defend_coverage_is_followed() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 2,
             finished: false,
         },
@@ -2659,7 +2522,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 0,
             finished: false,
         },
@@ -2687,7 +2550,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 1,
             finished: false,
         },
@@ -2706,7 +2569,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: WORK_WINDOW_TICKS,
             finished: false,
         },
@@ -2724,7 +2587,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: WORK_WINDOW_TICKS * 2,
             finished: false,
         },
@@ -2744,7 +2607,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: WORK_WINDOW_TICKS * 3,
             finished: false,
         },
@@ -2763,7 +2626,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: WORK_WINDOW_TICKS * 4,
             finished: false,
         },
@@ -2782,7 +2645,7 @@ fn renewed_covered_progress_resets_the_stall_grace() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: WORK_WINDOW_TICKS * 5,
             finished: false,
         },
@@ -2847,7 +2710,7 @@ fn hunt_paint_holds_until_the_target_leaves_its_block() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 0,
             finished: false,
         },
@@ -2998,7 +2861,7 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
             charge: &DEFAULT_CHARGE,
             reachability: None,
             route_query: None,
-            source_query: None,
+            mine_query: None,
             tick: 0,
             finished: false,
         },
@@ -3037,14 +2900,7 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
             displacement: Vec2::ZERO,
         }))
         .collect::<Vec<_>>();
-    let stocked_source = source_at(
-        owner,
-        deposits[0].position,
-        SourceSupport {
-            has_space: true,
-            stocked: true,
-        },
-    );
+    let stocked_source = mine_at(owner, deposits[0].position, saturated_mine());
     let expansion = controller.decide(
         &AutonomyTuning::default(),
         &GameState {
@@ -3053,7 +2909,7 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
             bots: &bots,
             structures: &[primary_chain[0], primary_chain[1], enemy_facility],
             deposits: &deposits,
-            source_query: Some(&stocked_source),
+            mine_query: Some(&stocked_source),
             ..empty_state(&grid, WORK_WINDOW_TICKS)
         },
     );
@@ -3071,7 +2927,7 @@ fn mature_funded_force_retains_attack_and_mining_after_expansion() {
                 charge: &DEFAULT_CHARGE,
                 reachability: None,
                 route_query: None,
-                source_query: None,
+                mine_query: None,
                 tick: review * WORK_WINDOW_TICKS,
                 finished: false,
             },
@@ -3653,13 +3509,13 @@ fn a_contest_keeps_an_established_mine_and_claims_a_different_free_deposit() {
         "first mine is still starting"
     );
 
-    let mut producing_deposits = deposits;
-    producing_deposits[0].amount -= 1;
+    let mine = mine_at(owner, deposits[0].position, saturated_mine());
     let expanded = controller.decide(
         &tuning,
         &GameState {
-            deposits: &producing_deposits,
+            deposits: &deposits,
             bots: &approaching,
+            mine_query: Some(&mine),
             ..empty_state(&grid, WORK_WINDOW_TICKS)
         },
     );
@@ -4035,14 +3891,7 @@ fn military_priorities_protect_expansion_before_attacking_home() {
         strategy_raid_distance_cost: 1_000.0,
         ..direct_attack_tuning()
     };
-    let stocked_source = source_at(
-        owner,
-        main_deposit.position,
-        SourceSupport {
-            has_space: true,
-            stocked: true,
-        },
-    );
+    let stocked_source = mine_at(owner, main_deposit.position, saturated_mine());
     let decide = |deposits: &[DepositState], structures: &[StructureState], bots: &[BotState]| {
         Controller::new(owner).decide(
             &tuning,
@@ -4051,7 +3900,7 @@ fn military_priorities_protect_expansion_before_attacking_home() {
                 deposits,
                 structures,
                 bots,
-                source_query: Some(&stocked_source),
+                mine_query: Some(&stocked_source),
                 ..empty_state(&grid, 0)
             },
         )

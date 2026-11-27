@@ -853,6 +853,83 @@ fn f3_shows_and_hides_the_fps_counter() {
 }
 
 #[test]
+fn strategic_opening_keeps_neutral_gather_pending_through_the_first_extraction_pulse() {
+    use top_down_2d_rts_prototype_nano_swarm::resources::{ResourceDeposit, Stockpile};
+
+    let mut app = common::sim_app_with_gather_haul();
+    app.insert_resource(IntentGrid::new(16, 16))
+        .add_plugins(StrategicControllerPlugin);
+    install_empty_reachability(&mut app);
+
+    let owner = SwarmId::PLAYER;
+    let home = common::cell_world_center(IVec2::ZERO);
+    let swarm = common::spawn_swarm_with_nanobots(
+        &mut app,
+        home,
+        &[(NanobotType::Worker, 4), (NanobotType::Hauler, 2)],
+    );
+    app.world_mut()
+        .entity_mut(swarm)
+        .insert(StrategicController::new(owner));
+
+    let opening = IVec2::new(2, 0);
+    let neutral = IVec2::new(5, 0);
+    let [mine, _] = [opening, neutral].map(|cell| {
+        common::spawn_deposit(
+            &mut app,
+            common::DepositFixture {
+                world_pos: common::cell_world_center(cell),
+                amount: 72_000,
+                capacity: 72_000,
+                radius: 64.0,
+            },
+        )
+    });
+    let source = common::spawn_stockpile(
+        &mut app,
+        common::cell_world_center(opening) - Vec2::X * 140.0,
+        0,
+        60,
+    );
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
+
+    let load = app
+        .world()
+        .resource::<Tuning>()
+        .logistics
+        .worker_carry_capacity;
+    let mut observed_extraction = false;
+    for _ in 0..900 {
+        app.update();
+        let world = app.world();
+        let grid = world.resource::<IntentGrid>();
+        assert!(
+            grid.cell(opening)
+                .unwrap()
+                .has_owned(IntentKind::Gather, owner),
+            "the opening mine must keep its Gather intent"
+        );
+        assert!(
+            !grid
+                .cell(neutral)
+                .is_some_and(|cell| cell.has_owned(IntentKind::Gather, owner)),
+            "a neutral claim appeared before a Worker finished bringing minerals to its Source"
+        );
+        let deposit = world.get::<ResourceDeposit>(mine).unwrap();
+        let stockpile = world.get::<Stockpile>(source).unwrap();
+        observed_extraction |= deposit.amount < deposit.capacity && stockpile.amount == 0;
+        if stockpile.amount >= load {
+            assert!(
+                observed_extraction,
+                "extraction must precede the first delivery"
+            );
+            return;
+        }
+    }
+    panic!("the opening never produced a real Worker delivery");
+}
+
+#[test]
 fn strategic_retarget_erases_superseded_corridor_in_the_same_tick() {
     use top_down_2d_rts_prototype_nano_swarm::resources::ResourceDeposit;
 

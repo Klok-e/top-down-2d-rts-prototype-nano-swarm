@@ -1,6 +1,9 @@
 //! Read-only world observation and owner-scoped application of strategic intent.
 
+mod mines;
+
 use bevy::prelude::*;
+use mines::MineHistory;
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
@@ -10,9 +13,11 @@ use std::{
 use crate::{
     intent::IntentGrid,
     nanobot::{
-        Cargo, Charge, Charger, Health, MatchOutcome, Nanobot, NanobotType, OwnerSwarm,
-        PlannedStructure, ProductionFacility, RegionalAllocationSet, Structure, Swarm, SwarmId,
-        SwarmMember,
+        Cargo, Charge, Charger, DirectMovementComponent, DropOffArea, ExtractProgress,
+        GatherAssignment, Health, InteractionRegion, LogisticsReservation, MatchOutcome, Nanobot,
+        NanobotType, OwnerSwarm, PlannedStructure, ProductionFacility, RegionalAllocationSet,
+        ReturningToStockpile, Structure, Swarm, SwarmId, SwarmMember, WorkBlocked,
+        gather_worker_slots,
     },
     navigation::{Navigation, RouteGoal, RouteOutcome},
     reachability::{IntentWriteAction, SwarmReachabilityMap, apply_reachable_intent},
@@ -20,8 +25,8 @@ use crate::{
         ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole, buffered_minerals,
     },
     strategic_controller::{
-        BotState, Controller, DepositState, GameState, IntentEditAction, SourceNeed, SourceSupport,
-        StructureKind, StructureState, SwarmState,
+        BotState, Controller, DepositState, GameState, IntentEditAction, StructureKind,
+        StructureState, SwarmState,
     },
     terrain::RockFormation,
 };
@@ -179,6 +184,18 @@ impl MineralIncomeHistory {
 struct StrategicObservations {
     routes: StrategicRouteCache,
     previous_positions: HashMap<Entity, Vec2>,
+    mines: HashMap<(SwarmId, Entity), MineHistory>,
+    active_workers: HashMap<(SwarmId, Entity), u32>,
+}
+
+#[derive(Clone, Copy)]
+struct SourceObservation {
+    id: Entity,
+    owner: Option<SwarmId>,
+    position: Vec2,
+    interaction: InteractionRegion,
+    room: u32,
+    capacity: u32,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -201,6 +218,14 @@ fn strategic_intent_system(
             &Health,
             Option<&Charge>,
             Option<&Cargo>,
+            (
+                Option<&GatherAssignment>,
+                Option<&LogisticsReservation>,
+                Has<ExtractProgress>,
+                Has<ReturningToStockpile>,
+                Has<DirectMovementComponent>,
+                Has<WorkBlocked>,
+            ),
         ),
         With<Nanobot>,
     >,
@@ -246,32 +271,64 @@ fn strategic_intent_system(
     let StrategicObservations {
         routes,
         previous_positions,
+        mines,
+        active_workers,
     } = &mut *observations;
     let owners: BTreeMap<_, _> = swarms.iter().map(|(entity, id, _)| (entity, *id)).collect();
     let tick = (time.elapsed_secs_f64() * crate::SIMULATION_HZ).round() as u64;
     income_history.retain(|entity, _| owners.contains_key(entity));
     previous_positions.retain(|entity, _| bots.get(*entity).is_ok());
+    active_workers.clear();
     let mut bot_states: Vec<_> = bots
         .iter()
-        .map(|(entity, owner, kind, transform, health, charge, cargo)| {
-            let position = transform.translation.truncate();
-            let previous = previous_positions
-                .insert(entity, position)
-                .unwrap_or(position);
-            BotState {
-                id: entity.to_bits(),
-                owner: owner.0,
-                kind: *kind,
-                position,
-                health: health.current,
-                max_health: health.max,
-                charge: charge.map_or(1.0, |c| c.current),
-                max_charge: charge.map_or(1.0, |c| c.max),
-                cargo: cargo.map_or(0, |c| c.amount),
-                displacement: position - previous,
-            }
-        })
+        .map(
+            |(entity, owner, kind, transform, health, charge, cargo, gathering)| {
+                let (assignment, reservation, extracting, returning, moving, blocked) = gathering;
+                if *kind == NanobotType::Worker && health.current > 0 && !blocked {
+                    let deposit = if returning && cargo.is_some_and(|cargo| cargo.amount > 0) {
+                        reservation.map(|reservation| reservation.source)
+                    } else if extracting || moving {
+                        assignment.map(|assignment| assignment.deposit)
+                    } else {
+                        None
+                    };
+                    if let Some(deposit) = deposit.filter(|&deposit| deposits.contains(deposit)) {
+                        *active_workers.entry((owner.0, deposit)).or_default() += 1;
+                    }
+                }
+                let position = transform.translation.truncate();
+                let previous = previous_positions
+                    .insert(entity, position)
+                    .unwrap_or(position);
+                BotState {
+                    id: entity.to_bits(),
+                    owner: owner.0,
+                    kind: *kind,
+                    position,
+                    health: health.current,
+                    max_health: health.max,
+                    charge: charge.map_or(1.0, |c| c.current),
+                    max_charge: charge.map_or(1.0, |c| c.max),
+                    cargo: cargo.map_or(0, |c| c.amount),
+                    displacement: position - previous,
+                }
+            },
+        )
         .collect();
+    for &key in active_workers.keys() {
+        mines.entry(key).or_default();
+    }
+    mines.retain(|&(owner, deposit), history| {
+        let Ok((_, _, _, exclusive)) = deposits.get(deposit) else {
+            return false;
+        };
+        if !swarm_exists(&owners, owner, exclusive) {
+            return false;
+        }
+        let workers = active_workers.get(&(owner, deposit)).copied().unwrap_or(0);
+        history.observe(tick, workers, ledger.worker_deliveries_for(owner, deposit));
+        true
+    });
     bot_states.sort_by_key(|bot| bot.id);
     let mut economies = BTreeMap::<SwarmId, EconomyObservation>::new();
     let mut operational_sources = Vec::new();
@@ -279,7 +336,10 @@ fn strategic_intent_system(
         .iter()
         .filter_map(
             |(entity, transform, owner, condition, facility, stockpile, role, charger, plan)| {
-                let owner = owner.and_then(|owner| owners.get(&owner.0)).copied()?;
+                let owner = match owner {
+                    Some(owner) => Some(*owners.get(&owner.0)?),
+                    None => None,
+                };
                 let kind = if plan.is_some() {
                     StructureKind::Planned
                 } else if facility.is_some() {
@@ -297,25 +357,27 @@ fn strategic_intent_system(
                 };
                 let minerals = buffered_minerals(facility, stockpile, charger);
                 let operational = plan.is_none() && condition.is_none_or(Structure::is_operational);
+                if operational
+                    && kind == StructureKind::Source
+                    && let Some(stockpile) = stockpile.filter(|stockpile| {
+                        stockpile.kind == ResourceKind::Minerals && stockpile.capacity > 0
+                    })
+                {
+                    operational_sources.push(SourceObservation {
+                        id: entity,
+                        owner,
+                        position: transform.translation.truncate(),
+                        interaction: InteractionRegion::structure(transform),
+                        room: stockpile.free_space(),
+                        capacity: stockpile.capacity,
+                    });
+                }
+                let owner = owner?;
                 if operational {
                     let economy = economies.entry(owner).or_default();
                     economy.banked_minerals = economy.banked_minerals.saturating_add(minerals);
                     economy.has_idle_facility |= facility
                         .is_some_and(|facility| !facility.is_busy(tuning.production.ticks_per_bot));
-                    if kind == StructureKind::Source
-                        && let Some(stockpile) =
-                            stockpile.filter(|stockpile| stockpile.kind == ResourceKind::Minerals)
-                    {
-                        operational_sources.push((
-                            entity.to_bits(),
-                            owner,
-                            transform.translation.truncate(),
-                            SourceSupport {
-                                has_space: stockpile.free_space() > 0,
-                                stocked: stockpile.amount > 0,
-                            },
-                        ));
-                    }
                 }
                 Some(StructureState {
                     id: entity.to_bits(),
@@ -331,7 +393,7 @@ fn strategic_intent_system(
         )
         .collect();
     structure_states.sort_by_key(|structure| structure.id);
-    operational_sources.sort_by_key(|&(id, _, _, _)| id);
+    operational_sources.sort_by_key(|source| source.id.to_bits());
     let mut swarm_states: Vec<_> = swarms
         .iter()
         .map(|(entity, id, position)| {
@@ -382,37 +444,77 @@ fn strategic_intent_system(
             .borrow_mut()
             .query(&navigation, start, goal, allow_work)
     };
-    let source_radius_squared = tuning.logistics.source_proximity_radius.powi(2);
-    let source_query = |owner: SwarmId,
-                        position: Vec2,
-                        need: SourceNeed,
-                        allow_work: &mut dyn FnMut() -> bool| {
-        let mut support = SourceSupport::default();
-        for &(_, source_owner, source_position, observed) in &operational_sources {
+    let mine_query = |owner: SwarmId,
+                      deposit: &DepositState,
+                      gather_cell,
+                      allow_work: &mut dyn FnMut() -> bool| {
+        if !allow_work() {
+            return None;
+        }
+        let (mut observation, delivery_room) = mines
+            .get(&(owner, Entity::from_bits(deposit.id)))
+            .map_or_else(Default::default, |history| history.recent(tick));
+        let drop_off_area = DropOffArea::for_deposit(deposit.position, deposit.radius, &tuning);
+        let deposit_region = InteractionRegion::deposit(
+            &Transform::from_translation(deposit.position.extend(0.0)),
+            deposit.radius,
+        )
+        .within_cell(gather_cell);
+        let mut gather_approach = None;
+        let mut free_room = 0u32;
+        let mut total_capacity = 0u32;
+        let ring_limit = gather_worker_slots(deposit.radius);
+        let carry_capacity = tuning.logistics.worker_carry_capacity.max(1);
+        for source in &operational_sources {
             if !allow_work() {
                 return None;
             }
-            let adds_evidence = match need {
-                SourceNeed::Space => observed.has_space,
-                SourceNeed::Opening => {
-                    observed.stocked || (!support.has_space && observed.has_space)
-                }
-            };
-            if owner == source_owner
-                && adds_evidence
-                && position.distance_squared(source_position) <= source_radius_squared
-                && reachability
-                    .position_is_reachable_with_budget(owner, source_position, &grid, allow_work)
-                    .ok()?
+            if source
+                .owner
+                .is_some_and(|source_owner| source_owner != owner)
+                || !drop_off_area.contains(source.position)
             {
-                support.has_space |= observed.has_space;
-                support.stocked = observed.stocked;
-                if matches!(need, SourceNeed::Space) || support.stocked {
+                continue;
+            }
+            let start = if let Some(start) = gather_approach {
+                start
+            } else {
+                let swarm = swarm_states
+                    .binary_search_by_key(&owner, |swarm| swarm.id)
+                    .ok()?;
+                let home = swarm_states[swarm].home;
+                let RouteOutcome::Found(route) =
+                    route_query(home, RouteGoal::Interaction(deposit_region), allow_work)?
+                else {
                     break;
-                }
+                };
+                let start = route.waypoints.last().copied().unwrap_or(home);
+                gather_approach = Some(start);
+                start
+            };
+            if !matches!(
+                route_query(
+                    start,
+                    RouteGoal::Interaction(source.interaction),
+                    allow_work
+                )?,
+                RouteOutcome::Found(_)
+            ) {
+                continue;
+            }
+            free_room = free_room.saturating_add(source.room);
+            total_capacity = total_capacity.saturating_add(source.capacity);
+            if free_room.div_ceil(carry_capacity) >= ring_limit {
+                break;
             }
         }
-        Some(support)
+        observation.has_source = total_capacity > 0;
+        observation.has_space = free_room > 0;
+        // Reservations use physical room. Recent deliveries also show how much room
+        // hauling can turn over in one Worker cycle even when the buffer is now full.
+        let usable_room = free_room.max(delivery_room).min(total_capacity);
+        observation.worker_capacity = ring_limit.min(usable_room.div_ceil(carry_capacity));
+        Some(observation)
     };
     let state = GameState {
         grid: &grid,
@@ -424,7 +526,7 @@ fn strategic_intent_system(
         charge: &tuning.charge,
         reachability: Some(&reachability),
         route_query: Some(&route_query),
-        source_query: Some(&source_query),
+        mine_query: Some(&mine_query),
         tick,
         finished: false,
     };
@@ -472,6 +574,17 @@ fn strategic_intent_system(
                 log::error!("Strategic Controller emitted rejected intent edit: {error}");
             }
         }
+    }
+}
+
+fn swarm_exists(
+    owners: &BTreeMap<Entity, SwarmId>,
+    owner: SwarmId,
+    exclusive: Option<&OwnerSwarm>,
+) -> bool {
+    match exclusive {
+        Some(exclusive) => owners.get(&exclusive.0) == Some(&owner),
+        None => owners.values().any(|&current| current == owner),
     }
 }
 
