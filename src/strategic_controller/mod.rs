@@ -56,6 +56,7 @@ pub enum DefenderDuty {
     Available,
     Unavailable,
     RespondingTo(Vec2),
+    StagingAt(IVec2),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
