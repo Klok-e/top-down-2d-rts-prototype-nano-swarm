@@ -889,7 +889,12 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
             break;
         }
     }
-    assert!(withdrew, "rear garrisons cannot sustain the weakened raid");
+    assert!(
+        withdrew,
+        "rear garrisons cannot sustain the weakened raid ({})",
+        app.world().resource::<ControllerTelemetry>().profiles()[&SwarmId::PLAYER.0]
+            .last_explanation
+    );
 }
 
 #[test]

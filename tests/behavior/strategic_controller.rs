@@ -749,30 +749,16 @@ mod raid_readiness {
     }
 
     #[test]
-    fn an_unchanged_raid_approach_keeps_its_next_fixed_staging_point() {
-        let target = IVec2::new(11, 0);
-        let (mut app, defenders) = raid_fixture_at::<2>(common::sim_app(), target, 64);
-        review(&mut app);
-        let first = IVec2::new(3, 0);
-        assert!(owns_defend(&app, first), "{}", explanation(&app));
-        for defender in defenders {
-            app.world_mut()
-                .get_mut::<Transform>(defender)
-                .unwrap()
-                .translation = common::cell_world_center(first).extend(0.0);
-        }
-        review(&mut app);
-
-        let next_block = forward_defend_cells(&app);
-        assert!(
-            next_block.contains(&IVec2::new(4, 0)) && !next_block.contains(&IVec2::new(7, 0)),
-            "the second block stays centered at (5, 0): {}",
-            explanation(&app)
-        );
+    fn rear_mine_garrisons_do_not_sustain_a_raid_with_only_one_ready_defender() {
+        assert_raid_withdraws_with_rear_garrison(false);
     }
 
     #[test]
-    fn rear_mine_garrisons_do_not_sustain_a_raid_with_only_one_ready_defender() {
+    fn a_rock_disconnected_garrison_inside_the_nominal_front_is_still_rear_defense() {
+        assert_raid_withdraws_with_rear_garrison(true);
+    }
+
+    fn assert_raid_withdraws_with_rear_garrison(clip_front: bool) {
         let (mut app, [front, replacement]) = raid_fixture::<2>(common::sim_app());
         app.world_mut()
             .resource_mut::<Tuning>()
@@ -785,12 +771,36 @@ mod raid_readiness {
                 .single(world)
                 .unwrap()
         };
-        let mine_cell = IVec2::new(-7, 0);
+        let (mine_cell, support_offset) = if clip_front {
+            let rock = RockFormation::Rectangle {
+                half: Vec2::new(
+                    2.0 * top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE,
+                    32.0,
+                ),
+            };
+            let mut wall = common::cell_world_center(TARGET);
+            wall.y += top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE / 2.0;
+            let transform = Transform::from_translation(wall.extend(0.0));
+            let reachability = SwarmReachabilityMap::new(
+                app.world().resource::<IntentGrid>(),
+                [rock.obstacle(&transform)],
+                [
+                    (OWNER, common::cell_world_center(IVec2::ZERO)),
+                    (ENEMY, common::cell_world_center(TARGET + 4 * IVec2::X)),
+                ],
+            )
+            .unwrap();
+            app.insert_resource(reachability);
+            app.world_mut().spawn((rock, transform));
+            (TARGET + IVec2::Y, -IVec2::X)
+        } else {
+            (IVec2::new(-7, 0), IVec2::X)
+        };
         let mine = neutral_deposit(&mut app, mine_cell);
         app.world_mut()
             .entity_mut(mine)
             .insert(OwnerSwarm(own_swarm));
-        for (defender, offset) in [(front, IVec2::Y), (replacement, -IVec2::Y)] {
+        for (defender, offset) in [(front, IVec2::ZERO), (replacement, -IVec2::Y)] {
             app.world_mut()
                 .get_mut::<Transform>(defender)
                 .unwrap()
@@ -799,7 +809,7 @@ mod raid_readiness {
         review(&mut app);
         assert!(owns_defend(&app, TARGET), "{}", explanation(&app));
 
-        let rear_cells = [mine_cell, mine_cell + IVec2::X];
+        let rear_cells = [mine_cell, mine_cell + support_offset];
         let garrison = rear_cells.map(|cell| {
             common::spawn_stationary_defender_at(&mut app, common::cell_world_center(cell), OWNER)
         });

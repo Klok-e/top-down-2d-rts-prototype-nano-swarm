@@ -7,7 +7,7 @@ use super::{
     *,
 };
 
-use crate::navigation::RouteGoal;
+use crate::navigation::{RouteGoal, segment_box};
 
 const MAX_STAGING_POINTS: usize = 6;
 pub(super) const MINIMUM_STAGING_BLOCK_CELLS: usize = 9;
@@ -19,7 +19,7 @@ pub(super) struct StagingFront {
     active: usize,
     spacing_cells: u32,
     readiness_shortfall_started: Option<u64>,
-    pub(super) block: DefendBlock,
+    pub(super) defend_cells: Arc<HashSet<IVec2>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -42,7 +42,7 @@ impl StagingFront {
     }
 
     pub(super) fn covers(&self, target: IVec2, owner: SwarmId, state: &GameState<'_>) -> bool {
-        self.block.contains(target)
+        self.defend_cells.contains(&target)
             && state
                 .grid
                 .cell(target)
@@ -88,8 +88,12 @@ impl StagingFront {
                 let mut remaining = Vec::with_capacity(self.route.len() - index);
                 remaining.push(start);
                 remaining.extend_from_slice(&self.route[index + 1..]);
+                let remaining_stages = &self.points[self.active + 1..self.points.len() - 1];
                 return follows_route(&remaining, route, budget)
-                    && follows_route(route, &remaining, budget);
+                    && follows_route(route, &remaining, budget)
+                    && remaining_stages
+                        .iter()
+                        .all(|point| route_crosses_cell(route, point.cell, budget));
             }
             traveled += length;
         }
@@ -169,6 +173,17 @@ fn follows_route(checkpoints: &[Vec2], route: &[Vec2], budget: &mut WorkBudget) 
         }
     }
     true
+}
+
+fn route_crosses_cell(route: &[Vec2], cell: IVec2, budget: &mut WorkBudget) -> bool {
+    let min = cell.as_vec2() * crate::ZONE_BLOCK_SIZE;
+    let max = (cell + IVec2::ONE).as_vec2() * crate::ZONE_BLOCK_SIZE;
+    // Intent cells include their lower edge. The segment test uses an open box.
+    let min = Vec2::new(min.x.next_down(), min.y.next_down());
+    route
+        .windows(2)
+        .take_while(|_| budget.spend(1))
+        .any(|segment| segment_box(segment[0], segment[1], min, max))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -381,7 +396,7 @@ pub(super) fn review_staging(
         active: 0,
         spacing_cells: spacing,
         readiness_shortfall_started: None,
-        block: held_stage.map_or_else(|| DefendBlock::new(target, 1), |stage| stage.block),
+        defend_cells: held_stage.map_or_else(Arc::default, |stage| Arc::clone(&stage.defend_cells)),
     };
     if held_stage.is_some() {
         staging.advance_if_arrived(owner, state, arrival_fraction, budget);
@@ -570,4 +585,35 @@ fn staging_points(
         distance: length,
     });
     Some(points)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_nearby_reroute_bypasses_the_old_staging_cell() {
+        let tile = crate::ZONE_BLOCK_SIZE;
+        let target = IVec2::new(11, 0);
+        let destination = Vec2::new(11.0, 0.5) * tile;
+        let route = Arc::from([Vec2::new(0.5, 0.5) * tile, destination]);
+        let mut budget = WorkBudget::planning(0);
+        let points = staging_points(&route, None, target, 3, &mut budget).unwrap();
+        assert_eq!(points[1].cell, IVec2::new(5, 0));
+        let front = StagingFront {
+            route,
+            points,
+            active: 0,
+            spacing_cells: 3,
+            readiness_shortfall_started: None,
+            defend_cells: Arc::default(),
+        };
+        let reroute = [
+            Vec2::new(3.5, 0.5) * tile,
+            Vec2::new(4.5, 1.17) * tile,
+            Vec2::new(9.5, 1.17) * tile,
+            destination,
+        ];
+        assert!(!front.same_remaining_route(&reroute, &mut budget));
+    }
 }
