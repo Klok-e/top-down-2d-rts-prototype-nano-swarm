@@ -1958,7 +1958,9 @@ fn review_expansion(
         let grid = app.world().resource::<IntentGrid>();
         assert!(
             grid.cell(opening)
-                .is_some_and(|cell| cell.has_owned(IntentKind::Gather, owner))
+                .is_some_and(|cell| cell.has_owned(IntentKind::Gather, owner)),
+            "opening mine lost Gather at tick {tick}, split={split_work_ring}, situation={supply:?}, telemetry={:?}",
+            app.world().resource::<top_down_2d_rts_prototype_nano_swarm::strategic_runtime::ControllerTelemetry>().profiles()
         );
         let expanded = grid
             .cell(expansion)
@@ -1997,6 +1999,245 @@ fn review_expansion(
                 "one active Worker with {transfers} completed drop-offs can sustain a four-unit reachable Source with its capacity reserved (split work ring {split_work_ring}): {profiles:?}"
             );
         }
+    }
+}
+
+mod mine_recovery {
+    use super::*;
+    use top_down_2d_rts_prototype_nano_swarm::{
+        SIMULATION_HZ,
+        nanobot::{
+            Cargo, ExtractProgress, GatherAssignment, InteractionRegion, LogisticsReservation,
+            NanobotType, OwnerSwarm, ReturningToStockpile, deterministic_jitter,
+            worker_gather_delivery_system,
+        },
+        navigation::align_structure,
+        resources::{ResourceDeposit, Stockpile},
+        terrain::RockFormation,
+        tuning::Tuning,
+    };
+
+    const OWNER: SwarmId = SwarmId::PLAYER;
+    const FAILED: IVec2 = IVec2::new(3, 0);
+    const SURVIVOR: IVec2 = IVec2::new(-3, 0);
+    const REPLACEMENT: IVec2 = IVec2::new(0, 3);
+    const RADIUS: f32 = 80.0;
+
+    fn fixture(blocked: bool) -> (App, Entity, Entity) {
+        let mut app = common::minimal_app();
+        app.insert_resource(IntentGrid::new(16, 16))
+            .add_plugins(StrategicControllerPlugin)
+            .add_systems(FixedUpdate, worker_gather_delivery_system);
+        app.world_mut()
+            .resource_mut::<Tuning>()
+            .logistics
+            .hauler_transfer_per_pulse = 4;
+        let home = common::cell_world_center(IVec2::ZERO);
+        let swarm = common::spawn_swarm_with_nanobots(&mut app, home, &[(NanobotType::Worker, 4)]);
+        app.world_mut()
+            .entity_mut(swarm)
+            .insert(StrategicController::new(OWNER));
+        for cell in [SURVIVOR, REPLACEMENT] {
+            let mine = deposit(&mut app, cell);
+            if cell == SURVIVOR {
+                app.world_mut().entity_mut(mine).insert(OwnerSwarm(swarm));
+            }
+            source(&mut app, cell);
+        }
+        let mine = deposit(&mut app, FAILED);
+        app.world_mut().entity_mut(mine).insert(OwnerSwarm(swarm));
+        let source = source(&mut app, FAILED);
+        let mut rocks = Vec::new();
+        if blocked {
+            let center = common::cell_world_center(FAILED);
+            for index in 0..8 {
+                let angle = index as f32 * std::f32::consts::TAU / 8.0;
+                let transform = align_structure(Transform::from_translation(
+                    (center
+                        + 164.0 * Vec2::from_angle(angle)
+                        + deterministic_jitter(index, FAILED, 16.0))
+                    .extend(0.0),
+                ));
+                let rock = RockFormation::Rectangle {
+                    half: Vec2::splat(12.0),
+                };
+                rocks.push(rock.obstacle(&transform));
+                app.world_mut().spawn((rock, transform));
+            }
+        }
+        let reachability =
+            SwarmReachabilityMap::new(app.world().resource::<IntentGrid>(), rocks, [(OWNER, home)])
+                .unwrap();
+        app.insert_resource(reachability);
+        app.update();
+        assert!(owns(&app, FAILED, IntentKind::Gather));
+        assert_support(&app, SURVIVOR, SURVIVOR + IVec2::X);
+        drop_off(&mut app, mine, source);
+        (app, mine, source)
+    }
+
+    fn deposit(app: &mut App, cell: IVec2) -> Entity {
+        common::spawn_deposit(
+            app,
+            common::DepositFixture {
+                world_pos: common::cell_world_center(cell),
+                amount: 72_000,
+                capacity: 72_000,
+                radius: RADIUS,
+            },
+        )
+    }
+
+    fn source(app: &mut App, cell: IVec2) -> Entity {
+        let offset = if cell == SURVIVOR { 330.0 } else { -330.0 };
+        common::spawn_stockpile(
+            app,
+            common::cell_world_center(cell) + offset * Vec2::Y,
+            0,
+            4,
+        )
+    }
+
+    fn drop_off(app: &mut App, mine: Entity, source: Entity) {
+        let mine_pos = app
+            .world()
+            .get::<Transform>(mine)
+            .unwrap()
+            .translation
+            .truncate();
+        let approach = InteractionRegion::structure(app.world().get::<Transform>(source).unwrap())
+            .approach(mine_pos);
+        let worker = common::spawn_worker_at(app, approach);
+        let mut reservation = LogisticsReservation::new(mine, source, ResourceKind::Minerals, 4);
+        reservation.source_remaining = 0;
+        app.world_mut().entity_mut(worker).insert((
+            GatherAssignment::new(FAILED, mine),
+            ExtractProgress::default(),
+        ));
+        app.update();
+        app.world_mut()
+            .entity_mut(worker)
+            .insert((
+                ReturningToStockpile { stockpile: source },
+                reservation,
+                Cargo {
+                    kind: ResourceKind::Minerals,
+                    amount: 4,
+                },
+            ))
+            .remove::<ExtractProgress>();
+        app.update();
+        assert_eq!(app.world().get::<Stockpile>(source).unwrap().amount, 4);
+        app.world_mut().despawn(worker);
+        app.update();
+    }
+
+    fn run_ticks(app: &mut App, seconds: u32) {
+        for _ in 0..seconds * SIMULATION_HZ as u32 {
+            app.update();
+            assert_support(app, SURVIVOR, SURVIVOR + IVec2::X);
+        }
+    }
+
+    fn add_hauler(app: &mut App) -> Entity {
+        common::spawn_hauler_at(app, common::cell_world_center(IVec2::ZERO))
+    }
+
+    fn owns(app: &App, cell: IVec2, kind: IntentKind) -> bool {
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(cell)
+            .is_some_and(|intent| intent.has_owned(kind, OWNER))
+    }
+
+    fn assert_support(app: &App, gather: IVec2, build: IVec2) {
+        assert!(owns(app, gather, IntentKind::Gather), "Gather at {gather}");
+        assert!(owns(app, gather, IntentKind::Defend), "Defend at {gather}");
+        assert!(owns(app, build, IntentKind::Build), "Build at {build}");
+        assert!(
+            owns(app, build, IntentKind::Corridor),
+            "Corridor at {build}"
+        );
+    }
+
+    #[test]
+    fn replaces_a_proven_stall_only_after_a_staffed_replacement_is_ready() {
+        let (mut app, _, source) = fixture(true);
+        app.world_mut().despawn(source);
+        let hauler = add_hauler(&mut app);
+        run_ticks(&mut app, 8);
+        assert_support(&app, FAILED, FAILED - IVec2::X);
+        assert!(!owns(&app, REPLACEMENT, IntentKind::Gather));
+        app.world_mut().despawn(hauler);
+
+        run_ticks(&mut app, 10);
+        assert_support(&app, FAILED, FAILED - IVec2::X);
+        assert!(!owns(&app, REPLACEMENT, IntentKind::Gather));
+
+        add_hauler(&mut app);
+        run_ticks(&mut app, 2);
+        assert_support(&app, REPLACEMENT, REPLACEMENT - IVec2::Y);
+        assert!(!owns(&app, FAILED, IntentKind::Gather));
+        assert!(!owns(&app, FAILED, IntentKind::Corridor));
+        run_ticks(&mut app, 2);
+        assert!(!owns(&app, FAILED, IntentKind::Gather));
+    }
+
+    #[test]
+    fn an_exhausted_mine_leaves_a_vacancy_across_reviews() {
+        let (mut app, mine, _) = fixture(false);
+        app.world_mut()
+            .get_mut::<ResourceDeposit>(mine)
+            .unwrap()
+            .amount = 0;
+        run_ticks(&mut app, 2);
+        assert!(!owns(&app, FAILED, IntentKind::Gather));
+        assert!(!owns(&app, REPLACEMENT, IntentKind::Gather));
+
+        add_hauler(&mut app);
+        run_ticks(&mut app, 2);
+        assert_support(&app, REPLACEMENT, REPLACEMENT - IVec2::Y);
+    }
+
+    #[test]
+    fn a_disconnected_empty_source_can_prevent_automatic_restoration() {
+        let (mut app, _, source) = fixture(false);
+        app.world_mut().get_mut::<Stockpile>(source).unwrap().amount = 0;
+        app.world_mut().spawn((
+            RockFormation::Rectangle {
+                half: Vec2::new(
+                    8.0 * top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE,
+                    24.0,
+                ),
+            },
+            Transform::default(),
+        ));
+        add_hauler(&mut app);
+        run_ticks(&mut app, 16);
+        assert_support(&app, REPLACEMENT, REPLACEMENT - IVec2::Y);
+        assert!(!owns(&app, FAILED, IntentKind::Gather));
+    }
+
+    #[test]
+    fn keeps_a_full_or_restorable_source_path_supported_until_worker_deliveries_resume() {
+        let (mut app, mine, old_source) = fixture(false);
+        add_hauler(&mut app);
+        run_ticks(&mut app, 18);
+        assert_support(&app, FAILED, FAILED - IVec2::X);
+        assert!(!owns(&app, REPLACEMENT, IntentKind::Gather));
+        app.world_mut()
+            .get_mut::<Stockpile>(old_source)
+            .unwrap()
+            .amount = 0;
+        drop_off(&mut app, mine, old_source);
+
+        app.world_mut().despawn(old_source);
+        run_ticks(&mut app, 18);
+        assert_support(&app, FAILED, FAILED - IVec2::X);
+        assert!(!owns(&app, REPLACEMENT, IntentKind::Gather));
+        let new_source = source(&mut app, FAILED);
+        drop_off(&mut app, mine, new_source);
+        assert_support(&app, FAILED, FAILED - IVec2::X);
     }
 }
 

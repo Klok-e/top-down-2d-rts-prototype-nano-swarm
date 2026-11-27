@@ -25,13 +25,31 @@ pub(super) struct OwnedDeposit {
     pub(super) gather_cell: IVec2,
     pub(super) build_cell: IVec2,
     pub(super) desired: Vec<DesiredIntent>,
+    blocked_since: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct MineRecovery {
+    pub(super) vacancies: usize,
+    pub(super) retired: BTreeSet<u64>,
+}
+
+pub(super) struct MineClaim {
+    pub(super) mine: OwnedDeposit,
+    pub(super) replacement: Option<MineReplacement>,
+}
+
+pub(super) struct MineReplacement {
+    pub(super) retires: u64,
+    pub(super) retained_paint: HashSet<DesiredIntent>,
 }
 
 #[derive(Default)]
 pub(super) struct EconomyPlan {
     pub(super) owned_deposits: Vec<OwnedDeposit>,
     pub(super) desired: HashSet<DesiredIntent>,
-    pub(super) expansion: Option<OwnedDeposit>,
+    pub(super) expansion: Option<MineClaim>,
+    pub(super) recovery: MineRecovery,
     pub(super) threatened: Option<(u64, IVec2)>,
     pub(super) contested_deposits: Vec<(u64, IVec2, RouteGoal)>,
     pub(super) enemy_deposits: Vec<(DepositState, SwarmId)>,
@@ -39,27 +57,6 @@ pub(super) struct EconomyPlan {
 }
 
 impl EconomyPlan {
-    fn can_fit(&self, mine: &OwnedDeposit, limit: usize, budget: &mut WorkBudget) -> bool {
-        let Some(mut room) = limit.checked_sub(self.desired.len()) else {
-            return false;
-        };
-        if mine.desired.len() <= room {
-            return true;
-        }
-        for intent in &mine.desired {
-            if !budget.spend(1) {
-                return false;
-            }
-            if !self.desired.contains(intent) {
-                let Some(remaining) = room.checked_sub(1) else {
-                    return false;
-                };
-                room = remaining;
-            }
-        }
-        true
-    }
-
     fn add(&mut self, mine: OwnedDeposit, budget: &mut WorkBudget) -> bool {
         if !budget.spend(mine.desired.len()) {
             return false;
@@ -68,6 +65,32 @@ impl EconomyPlan {
         self.owned_deposits.push(mine);
         true
     }
+}
+
+fn can_fit(
+    desired: &HashSet<DesiredIntent>,
+    mine: &OwnedDeposit,
+    limit: usize,
+    budget: &mut WorkBudget,
+) -> bool {
+    let Some(mut room) = limit.checked_sub(desired.len()) else {
+        return false;
+    };
+    if mine.desired.len() <= room {
+        return true;
+    }
+    for intent in &mine.desired {
+        if !budget.spend(1) {
+            return false;
+        }
+        if !desired.contains(intent) {
+            let Some(remaining) = room.checked_sub(1) else {
+                return false;
+            };
+            room = remaining;
+        }
+    }
+    true
 }
 
 fn available(deposit: &DepositState, owner: SwarmId) -> bool {
@@ -132,15 +155,16 @@ pub(super) fn plan_economy(
     tuning: &AutonomyTuning,
     owner: SwarmId,
     state: &GameState<'_>,
-    previous: &[OwnedDeposit],
+    previous: Option<&IntentPlan>,
     budget: &mut WorkBudget,
 ) -> Option<EconomyPlan> {
+    let previous_mines = previous.map_or(&[][..], |plan| plan.owned_deposits.as_slice());
     if !budget.spend(
         state
             .swarms
             .len()
             .saturating_mul(2)
-            .saturating_add(previous.len()),
+            .saturating_add(previous_mines.len()),
     ) {
         return None;
     }
@@ -158,40 +182,76 @@ pub(super) fn plan_economy(
                 .total_cmp(&home.distance_squared(b.home))
         })
         .map(|swarm| swarm.home);
+    let footprints = retain_build_footprints(owner, state, ECONOMY_RETENTION_PAINT_LIMIT, budget)?;
+    if !budget.spend(footprints.len()) {
+        return None;
+    }
     let mut economy = EconomyPlan {
-        desired: retain_build_footprints(owner, state, ECONOMY_RETENTION_PAINT_LIMIT, budget)?,
+        desired: footprints.clone(),
         ..Default::default()
     };
-    for mine in previous {
+    for mine in previous_mines {
         let Some(deposit) = find_deposit(mine.id, state, budget)
             .ok()?
             .filter(|d| available(d, owner))
         else {
             continue;
         };
-        match mine_support(owner, deposit, state, home, budget).ok()? {
-            Some((supported, _)) => {
-                if !economy.can_fit(&supported, ECONOMY_RETENTION_PAINT_LIMIT, budget)
-                    || !economy.add(supported, budget)
-                {
+        let mut supported = match mine_support_where(
+            owner,
+            deposit,
+            state,
+            home,
+            Some(mine.gather_cell),
+            budget,
+            |_, _| Some(true),
+        ) {
+            Ok(Some((supported, _))) => supported,
+            _ if budget.exhausted => return None,
+            _ if deposit.position == mine.position
+                && cell_is_reachable(owner, state, mine.gather_cell, budget)? =>
+            {
+                if !budget.spend(mine.desired.len()) {
                     return None;
                 }
+                let mut supported = mine.clone();
+                supported.desired.retain(|intent| {
+                    cell_is_reachable(owner, state, intent.cell, budget) == Some(true)
+                });
+                supported
             }
-            None if budget.exhausted => return None,
-            None => {}
+            _ => continue,
+        };
+        supported.blocked_since = mine.blocked_since.filter(|_| {
+            supported.position == mine.position && supported.gather_cell == mine.gather_cell
+        });
+        if !can_fit(
+            &economy.desired,
+            &supported,
+            ECONOMY_RETENTION_PAINT_LIMIT,
+            budget,
+        ) || !economy.add(supported, budget)
+        {
+            return None;
         }
     }
 
-    let replacing_lost_mine = economy.owned_deposits.len() < previous.len();
     let mut opportunities = Vec::new();
-
-    let previous_ids: HashSet<_> = previous.iter().map(|mine| mine.id).collect();
+    let previous_ids: HashSet<_> = previous_mines.iter().map(|mine| mine.id).collect();
     for deposit in state.deposits {
         if !budget.spend(1) {
             return None;
         }
-        if deposit.amount == 0 || (available(deposit, owner) && previous_ids.contains(&deposit.id))
-        {
+        if deposit.amount == 0 {
+            continue;
+        }
+        if previous.is_some_and(|plan| plan.mine_recovery.retired.contains(&deposit.id)) {
+            economy.recovery.retired.insert(deposit.id);
+            if available(deposit, owner) {
+                continue;
+            }
+        }
+        if available(deposit, owner) && previous_ids.contains(&deposit.id) {
             continue;
         }
         let (reachable, gather_owners) = deposit_access(owner, deposit, state, budget)?;
@@ -207,7 +267,12 @@ pub(super) fn plan_economy(
         }
         if gather_owners.contains(&owner) || deposit.owner == Some(owner) {
             if let Ok(Some((mine, _))) = mine_support(owner, deposit, state, home, budget)
-                && economy.can_fit(&mine, ECONOMY_EXPANSION_PAINT_LIMIT, budget)
+                && can_fit(
+                    &economy.desired,
+                    &mine,
+                    ECONOMY_EXPANSION_PAINT_LIMIT,
+                    budget,
+                )
                 && !economy.add(mine, budget)
             {
                 return None;
@@ -233,6 +298,118 @@ pub(super) fn plan_economy(
         return None;
     }
 
+    economy.recovery.vacancies = previous
+        .map_or(0, |plan| plan.mine_recovery.vacancies)
+        .saturating_add(previous_mines.len())
+        .saturating_sub(economy.owned_deposits.len());
+
+    let mut observation = state
+        .supply
+        .and_then(|supply| supply.economies.get(&owner))
+        .copied()
+        .unwrap_or_default();
+    let mut retained = Vec::with_capacity(economy.owned_deposits.len());
+    let mut failed_mine = None;
+    let mut rerouted_any = false;
+    for index in 0..economy.owned_deposits.len() {
+        let other_gather = gather_support(
+            &economy.owned_deposits,
+            Some(economy.owned_deposits[index].id),
+            budget,
+        )?;
+        let mine = &mut economy.owned_deposits[index];
+        let deposit = find_deposit(mine.id, state, budget).ok()??;
+        let mut service =
+            if previous.is_some() || observation.low_reserve_ticks >= HAUL_WINDOW_TICKS {
+                mine_observation(
+                    owner,
+                    deposit,
+                    mine.gather_cell,
+                    &other_gather,
+                    false,
+                    state,
+                    budget,
+                )?
+            } else {
+                MineObservation::default()
+            };
+        mine.blocked_since = (service.source_path != Some(true)).then(|| {
+            let last_dropoff = service
+                .ticks_since_dropoff
+                .map_or(0, |elapsed| state.tick.saturating_sub(elapsed));
+            mine.blocked_since
+                .filter(|since| *since <= state.tick)
+                .unwrap_or(state.tick)
+                .max(last_dropoff)
+        });
+        let stalled = mine
+            .blocked_since
+            .is_some_and(|since| state.tick - since >= MINE_OBSERVATION_TICKS);
+        if stalled
+            && (!opportunities.is_empty()
+                || deposit_candidate_cells(state.grid, deposit.position, deposit.radius)
+                    .any(|cell| cell != mine.gather_cell))
+        {
+            if service.source_path.is_none() {
+                service = mine_observation(
+                    owner,
+                    deposit,
+                    mine.gather_cell,
+                    &other_gather,
+                    true,
+                    state,
+                    budget,
+                )?;
+            }
+            if service.source_path == Some(false) {
+                let mut alternate_service = MineObservation::default();
+                let alternate = mine_support_where(
+                    owner,
+                    deposit,
+                    state,
+                    home,
+                    None,
+                    budget,
+                    |gather_cell, budget| {
+                        if gather_cell == mine.gather_cell {
+                            return Some(false);
+                        }
+                        alternate_service = mine_observation(
+                            owner,
+                            deposit,
+                            gather_cell,
+                            &other_gather,
+                            true,
+                            state,
+                            budget,
+                        )?;
+                        Some(alternate_service.source_path == Some(true))
+                    },
+                );
+                if budget.exhausted {
+                    return None;
+                }
+                if let Ok(Some((rerouted, _))) = alternate {
+                    *mine = rerouted;
+                    service = alternate_service;
+                    rerouted_any = true;
+                } else if failed_mine.is_none() && economy.recovery.vacancies == 0 {
+                    failed_mine = Some(mine.id);
+                }
+            }
+            if service.source_path == Some(true) {
+                mine.blocked_since = None;
+            }
+        }
+        retained.push((mine.id, service));
+    }
+
+    if rerouted_any {
+        if !budget.spend(footprints.len()) {
+            return None;
+        }
+        economy.desired = mine_paint(footprints.clone(), &economy.owned_deposits, None, budget)?;
+    }
     economy.threatened = threatened_deposit(&economy.owned_deposits, owner, state, budget)?;
 
     let mut unchecked = Vec::new();
@@ -269,44 +446,61 @@ pub(super) fn plan_economy(
     if unchecked.is_empty() {
         return Some(economy);
     }
-    let establishing_supply = economy.owned_deposits.is_empty() || replacing_lost_mine;
-    let observation = state
-        .supply
-        .and_then(|supply| supply.economies.get(&owner))
-        .copied()
-        .unwrap_or_default();
+    let establishing_supply = economy.owned_deposits.is_empty()
+        || economy.recovery.vacancies > 0
+        || failed_mine.is_some();
     if !establishing_supply && observation.low_reserve_ticks < HAUL_WINDOW_TICKS {
         return Some(economy);
     }
-    let mut retained = Vec::with_capacity(economy.owned_deposits.len());
-    for mine in &economy.owned_deposits {
-        let deposit = find_deposit(mine.id, state, budget).ok()??;
-        let mine = mine_observation(owner, deposit, mine.gather_cell, state, budget)?;
-        if !establishing_supply && !mine.is_saturated() {
-            return Some(economy);
-        }
-        retained.push(mine);
+    if let Some((_, service)) = retained.iter().find(|(id, _)| Some(*id) == failed_mine) {
+        observation.gather.gathering_workers = observation
+            .gather
+            .gathering_workers
+            .saturating_sub(service.unladen_gatherers);
     }
-    if !establishing_supply && !needs_more_extraction(observation, &retained) {
+    let retained = retained
+        .into_iter()
+        .filter_map(|(id, service)| (Some(id) != failed_mine).then_some(service))
+        .collect::<Vec<_>>();
+    if !establishing_supply
+        && (retained
+            .iter()
+            .any(|mine| mine.source_path == Some(false) || !mine.is_saturated())
+            || !needs_more_extraction(observation, &retained))
+    {
         return Some(economy);
     }
     let capacity = expansion_capacity(owner, state, observation, &retained, budget)?;
     if capacity.workers == 0 || capacity.haulers == 0 {
         return Some(economy);
     }
-    let haul_overhead = if economy.owned_deposits.len() > 1 {
+    let haul_overhead = if retained.len() > 1 {
         if !budget.spend(economy.owned_deposits.len()) {
             return None;
         }
         economy
             .owned_deposits
             .iter()
+            .filter(|mine| Some(mine.id) != failed_mine)
             .map(|mine| mine.haul_distance)
             .sum::<f32>()
             / capacity.total_haulers as f32
     } else {
         0.0
     };
+
+    let replacement = if let Some(retires) = failed_mine {
+        Some(MineReplacement {
+            retires,
+            retained_paint: mine_paint(footprints, &economy.owned_deposits, Some(retires), budget)?,
+        })
+    } else {
+        None
+    };
+    let retained_paint = replacement
+        .as_ref()
+        .map_or(&economy.desired, |replacement| &replacement.retained_paint);
+    let other_gather = gather_support(&economy.owned_deposits, failed_mine, budget)?;
 
     // Start with the cheapest plausible routes so distant candidates usually
     // need only an optimistic value bound, even when the map has many deposits.
@@ -355,7 +549,33 @@ pub(super) fn plan_economy(
         if optimistic <= best.as_ref().map_or(0.0, |(_, score)| *score) {
             continue;
         }
-        let (mine, distance) = match mine_support(owner, deposit, state, home, budget) {
+        let support = mine_support_where(
+            owner,
+            deposit,
+            state,
+            home,
+            None,
+            budget,
+            |gather_cell, budget| {
+                if !establishing_supply && capacity.workers > 1 {
+                    return Some(true);
+                }
+                let service = mine_observation(
+                    owner,
+                    deposit,
+                    gather_cell,
+                    &other_gather,
+                    establishing_supply && capacity.workers > 1,
+                    state,
+                    budget,
+                )?;
+                Some(
+                    service.source_path != Some(false)
+                        && (capacity.workers > 1 || service.has_source),
+                )
+            },
+        );
+        let (mine, distance) = match support {
             Ok(Some(support)) => support,
             Ok(None) if budget.exhausted => return None,
             Ok(None) => continue,
@@ -363,16 +583,42 @@ pub(super) fn plan_economy(
         };
         let score = value - distance / crate::ZONE_BLOCK_SIZE * tuning.strategy_expansion_haul_cost;
         if score > best.as_ref().map_or(0.0, |(_, score)| *score)
-            && economy.can_fit(&mine, ECONOMY_EXPANSION_PAINT_LIMIT, budget)
+            && can_fit(retained_paint, &mine, ECONOMY_EXPANSION_PAINT_LIMIT, budget)
             && capacity.can_deliver(state.supply.map(|supply| supply.logistics), distance)
-            && (capacity.workers > 1
-                || mine_observation(owner, deposit, mine.gather_cell, state, budget)?.has_source)
         {
             best = Some((mine, score));
         }
     }
-    economy.expansion = best.map(|(mine, _)| mine);
+    economy.expansion = best.map(|(mine, _)| MineClaim { mine, replacement });
     (!budget.exhausted).then_some(economy)
+}
+
+fn mine_paint(
+    mut footprints: HashSet<DesiredIntent>,
+    mines: &[OwnedDeposit],
+    retired: Option<u64>,
+    budget: &mut WorkBudget,
+) -> Option<HashSet<DesiredIntent>> {
+    for mine in mines.iter().filter(|mine| Some(mine.id) != retired) {
+        if !budget.spend(mine.desired.len() + 1) {
+            return None;
+        }
+        footprints.extend(mine.desired.iter().copied());
+    }
+    (footprints.len() <= ECONOMY_RETENTION_PAINT_LIMIT).then_some(footprints)
+}
+
+fn gather_support(
+    mines: &[OwnedDeposit],
+    excluded: Option<u64>,
+    budget: &mut WorkBudget,
+) -> Option<Vec<IVec2>> {
+    budget.spend(mines.len()).then(|| {
+        mines
+            .iter()
+            .filter_map(|mine| (Some(mine.id) != excluded).then_some(mine.gather_cell))
+            .collect()
+    })
 }
 
 fn mine_supply(mines: &[MineObservation]) -> f32 {
@@ -494,6 +740,8 @@ pub(super) fn mine_observation(
     owner: SwarmId,
     deposit: &DepositState,
     gather_cell: IVec2,
+    other_gather: &[IVec2],
+    check_placement: bool,
     state: &GameState<'_>,
     budget: &mut WorkBudget,
 ) -> Option<MineObservation> {
@@ -503,7 +751,11 @@ pub(super) fn mine_observation(
             query(
                 owner,
                 deposit,
-                MineObservationAt::Service(gather_cell),
+                MineObservationAt::Service {
+                    gather: gather_cell,
+                    other_gather,
+                    check_placement,
+                },
                 &mut || budget.spend(1),
             )
         })
@@ -626,12 +878,27 @@ fn mine_support(
     home: Vec2,
     budget: &mut WorkBudget,
 ) -> Result<Option<(OwnedDeposit, f32)>, CorridorPaintLimit> {
+    mine_support_where(owner, deposit, state, home, None, budget, |_, _| Some(true))
+}
+
+fn mine_support_where(
+    owner: SwarmId,
+    deposit: &DepositState,
+    state: &GameState<'_>,
+    home: Vec2,
+    preferred_gather: Option<IVec2>,
+    budget: &mut WorkBudget,
+    mut eligible: impl FnMut(IVec2, &mut WorkBudget) -> Option<bool>,
+) -> Result<Option<(OwnedDeposit, f32)>, CorridorPaintLimit> {
     let center = world_to_intent_cell(deposit.position);
     let region = deposit_region(deposit);
-    let cells = std::iter::once(center).chain(
-        deposit_candidate_cells(state.grid, deposit.position, deposit.radius)
-            .filter(|cell| *cell != center),
-    );
+    let cells = preferred_gather
+        .into_iter()
+        .chain(std::iter::once(center).filter(|cell| Some(*cell) != preferred_gather))
+        .chain(
+            deposit_candidate_cells(state.grid, deposit.position, deposit.radius)
+                .filter(|cell| *cell != center && Some(*cell) != preferred_gather),
+        );
     let mut exceeds_paint_limit = false;
     for gather_cell in cells {
         if !budget.spend(1) {
@@ -697,6 +964,11 @@ fn mine_support(
         let Some(build_cell) = build_cell else {
             continue;
         };
+        match eligible(gather_cell, budget) {
+            Some(true) => {}
+            Some(false) => continue,
+            None => return Ok(None),
+        }
         let mut desired = vec![
             DesiredIntent {
                 cell: gather_cell,
@@ -727,6 +999,7 @@ fn mine_support(
                 gather_cell,
                 build_cell,
                 desired,
+                blocked_since: None,
             },
             distance,
         )));

@@ -608,7 +608,7 @@ fn mine_at(
 ) -> impl Fn(
     SwarmId,
     &DepositState,
-    MineObservationAt,
+    MineObservationAt<'_>,
     &mut dyn FnMut() -> bool,
 ) -> Option<MineObservation> {
     move |swarm, site, _, allow_work| {
@@ -1462,15 +1462,17 @@ fn expansion_waits_for_every_retained_mine_to_saturate_and_keeps_its_support() {
         ),
         (3, [saturated_mine(); 2], 3),
     ] {
-        let observations =
-            |swarm, deposit: &DepositState, _, allow_work: &mut dyn FnMut() -> bool| {
-                allow_work().then_some(
-                    deposits[..2]
-                        .iter()
-                        .position(|site| swarm == owner && site.id == deposit.id)
-                        .map_or_else(MineObservation::default, |index| existing_mines[index]),
-                )
-            };
+        let observations = |swarm,
+                            deposit: &DepositState,
+                            _: MineObservationAt<'_>,
+                            allow_work: &mut dyn FnMut() -> bool| {
+            allow_work().then_some(
+                deposits[..2]
+                    .iter()
+                    .position(|site| swarm == owner && site.id == deposit.id)
+                    .map_or_else(MineObservation::default, |index| existing_mines[index]),
+            )
+        };
         let decision = controller.decide(
             &tuning,
             &GameState {
@@ -1563,11 +1565,18 @@ fn depleted_and_unreachable_deposits_are_removed_without_abandoning_the_others()
             _ => RouteOutcome::Unreachable,
         })
     };
+    let terrain = [Obstacle::Rectangle {
+        center: world(cells[1]),
+        half: Vec2::splat(crate::ZONE_BLOCK_SIZE / 2.0),
+    }];
+    let reachability = SwarmReachabilityMap::new(&grid, terrain, [(owner, home)]).unwrap();
     let revised = controller.decide(
         &tuning,
         &GameState {
             swarms: &swarms,
             deposits: &deposits,
+            terrain: &terrain,
+            reachability: Some(&reachability),
             route_query: Some(&route),
             ..empty_state(&grid, WORK_WINDOW_TICKS)
         },
@@ -1579,7 +1588,7 @@ fn depleted_and_unreachable_deposits_are_removed_without_abandoning_the_others()
                 .cell(cell)
                 .unwrap()
                 .has_owned(IntentKind::Gather, owner),
-            "unavailable deposit at {cell} retained Gather"
+            "unavailable deposit at {cell} retained Gather: {revised:?}"
         );
     }
     assert!(
