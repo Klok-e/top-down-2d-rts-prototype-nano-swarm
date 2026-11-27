@@ -1620,7 +1620,6 @@ fn depleted_and_unreachable_deposits_are_removed_without_abandoning_the_others()
                 .has_owned(IntentKind::Gather, owner)
         );
     }
-    deposits[0].amount = 0;
     let blocked = InteractionRegion::deposit(
         &bevy::prelude::Transform::from_translation(deposits[1].position.extend(0.0)),
         deposits[1].radius,
@@ -1638,6 +1637,22 @@ fn depleted_and_unreachable_deposits_are_removed_without_abandoning_the_others()
             _ => RouteOutcome::Unreachable,
         })
     };
+    let interrupted = controller.decide(
+        &tuning,
+        &GameState {
+            swarms: &swarms,
+            deposits: &deposits,
+            route_query: Some(&route),
+            ..empty_state(&grid, WORK_WINDOW_TICKS)
+        },
+    );
+    apply(&mut grid, owner, &interrupted);
+    assert!(
+        grid.cell(cells[1])
+            .unwrap()
+            .has_owned(IntentKind::Gather, owner)
+    );
+    deposits[0].amount = 0;
     let terrain = [Obstacle::Rectangle {
         center: world(cells[1]),
         half: Vec2::splat(crate::ZONE_BLOCK_SIZE / 2.0),
@@ -1651,7 +1666,7 @@ fn depleted_and_unreachable_deposits_are_removed_without_abandoning_the_others()
             terrain: &terrain,
             reachability: Some(&reachability),
             route_query: Some(&route),
-            ..empty_state(&grid, WORK_WINDOW_TICKS)
+            ..empty_state(&grid, 2 * WORK_WINDOW_TICKS)
         },
     );
     apply(&mut grid, owner, &revised);

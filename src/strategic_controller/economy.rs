@@ -204,7 +204,14 @@ pub(super) fn plan_economy(
             home,
             Some(mine.gather_cell),
             budget,
-            |_, _| Some(true),
+            |cell, budget| {
+                if cell == mine.gather_cell || deposit.position != mine.position {
+                    Some(true)
+                } else {
+                    cell_is_reachable(owner, state, mine.gather_cell, budget)
+                        .map(|reachable| !reachable)
+                }
+            },
         ) {
             Ok(Some((supported, _))) => supported,
             _ if budget.exhausted => return None,
