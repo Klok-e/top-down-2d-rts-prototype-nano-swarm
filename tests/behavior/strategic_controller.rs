@@ -899,10 +899,15 @@ fn strategic_adapter_uses_sustained_local_dropoffs_and_reachable_source_capacity
                 );
                 break;
             }
-            assert!(
-                tick < 959 || !should_expand,
-                "one active Worker with {transfers} completed drop-offs can sustain a four-unit reachable Source with its capacity reserved (split work ring {split_work_ring})"
-            );
+            if tick == 959 && should_expand {
+                let profiles = app
+                    .world()
+                    .resource::<top_down_2d_rts_prototype_nano_swarm::strategic_runtime::ControllerTelemetry>()
+                    .profiles();
+                panic!(
+                    "one active Worker with {transfers} completed drop-offs can sustain a four-unit reachable Source with its capacity reserved (split work ring {split_work_ring}): {profiles:?}"
+                );
+            }
         }
     }
 }

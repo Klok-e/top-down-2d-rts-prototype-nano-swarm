@@ -522,14 +522,11 @@ fn strategic_intent_system(
                 gather_approach = Some(start);
                 start
             };
-            if !matches!(
-                route_query(
-                    start,
-                    RouteGoal::Interaction(source.interaction),
-                    allow_work
-                )?,
-                RouteOutcome::Found(_)
-            ) {
+            if navigation
+                .connected_interaction_with_budget(start, source.interaction, allow_work)
+                .ok()?
+                .is_none()
+            {
                 continue;
             }
             free_room = free_room.saturating_add(source.room);
