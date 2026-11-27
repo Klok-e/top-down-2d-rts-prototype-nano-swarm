@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 
-use bevy::prelude::{Component, Resource};
+use bevy::prelude::{Component, Entity, Resource};
 
 /// Kinds of resources the simulation knows about. The first
 /// implementation only models [`ResourceKind::Minerals`]; adding
@@ -169,6 +169,12 @@ pub(crate) fn buffered_minerals(
         )
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct WorkerDeliveryTotals {
+    pub(crate) minerals: u64,
+    pub(crate) completed: u64,
+}
+
 /// Resource totals partitioned by owning swarm.
 ///
 /// `total` and legacy `add`/`remove` expose aggregate/player-compatible
@@ -179,6 +185,7 @@ pub struct ResourceLedger {
     swarm_totals: HashMap<crate::nanobot::SwarmId, HashMap<ResourceKind, u32>>,
     extracted_minerals: HashMap<crate::nanobot::SwarmId, u64>,
     consumed_minerals: HashMap<crate::nanobot::SwarmId, u64>,
+    worker_deliveries: HashMap<(crate::nanobot::SwarmId, Entity), WorkerDeliveryTotals>,
 }
 
 impl ResourceLedger {
@@ -233,6 +240,29 @@ impl ResourceLedger {
 
     pub(crate) fn extracted_minerals_for(&self, swarm: crate::nanobot::SwarmId) -> u64 {
         self.extracted_minerals.get(&swarm).copied().unwrap_or(0)
+    }
+
+    pub(crate) fn record_worker_delivery(
+        &mut self,
+        swarm: crate::nanobot::SwarmId,
+        deposit: Entity,
+        amount: u32,
+        completed: bool,
+    ) {
+        let totals = self.worker_deliveries.entry((swarm, deposit)).or_default();
+        totals.minerals += u64::from(amount);
+        totals.completed += u64::from(completed);
+    }
+
+    pub(crate) fn worker_deliveries_for(
+        &self,
+        swarm: crate::nanobot::SwarmId,
+        deposit: Entity,
+    ) -> WorkerDeliveryTotals {
+        self.worker_deliveries
+            .get(&(swarm, deposit))
+            .copied()
+            .unwrap_or_default()
     }
 
     /// Spend resources at a terminal: a production cycle or a Charger pulse.
