@@ -23,6 +23,8 @@ pub const HAUL_WINDOW_TICKS: u64 = 20 * TICKS_PER_SECOND;
 /// One swarm's hauling as the Haul Quota saw it at the end of the last window.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct HaulEconomy {
+    /// Mean Spending Capacity over the same window as the delivery rate.
+    pub spending_capacity: f32,
     /// Minerals per second there are to deliver: income plus stock above the
     /// Reserve Target spread over `reserve_seconds`, at most Spending Capacity.
     pub target_flow: f32,
@@ -64,6 +66,7 @@ struct HaulWindow {
     extracted_at_start: u64,
     hauler_ticks: u64,
     busy_hauler_ticks: u64,
+    spending_capacity_ticks: f32,
     guard: GrowthGuard,
     economy: Option<HaulEconomy>,
 }
@@ -76,6 +79,7 @@ impl HaulWindow {
             extracted_at_start: extracted,
             hauler_ticks: 0,
             busy_hauler_ticks: 0,
+            spending_capacity_ticks: 0.0,
             guard: GrowthGuard::default(),
             economy: None,
         }
@@ -88,6 +92,7 @@ impl HaulWindow {
         self.extracted_at_start = extracted;
         self.hauler_ticks = 0;
         self.busy_hauler_ticks = 0;
+        self.spending_capacity_ticks = 0.0;
     }
 }
 
@@ -238,6 +243,8 @@ pub fn haul_quota_system(
         window.hauler_ticks += u64::from(haulers) * SAMPLE_TICKS;
         window.busy_hauler_ticks +=
             u64::from(busy.get(&swarm).copied().unwrap_or_default()) * SAMPLE_TICKS;
+        let economy = gather.economy(swarm).unwrap_or_default();
+        window.spending_capacity_ticks += economy.spending_capacity * SAMPLE_TICKS as f32;
         let elapsed = tick - window.started;
         if elapsed < HAUL_WINDOW_TICKS {
             continue;
@@ -255,7 +262,6 @@ pub fn haul_quota_system(
                 0.0
             },
         };
-        let economy = gather.economy(swarm).unwrap_or_default();
         let target_flow = target_flow(
             income,
             economy.reserve_stock,
@@ -267,6 +273,7 @@ pub fn haul_quota_system(
             .guard
             .update(tick, sample, haulers, &tuning.logistics);
         window.economy = Some(HaulEconomy {
+            spending_capacity: window.spending_capacity_ticks / elapsed as f32,
             target_flow,
             delivered_rate: sample.delivered_rate,
             haul_rate: sample.haul_rate,
@@ -303,6 +310,7 @@ mod tests {
     fn a_new_session_forgets_the_previous_quota() {
         let mut window = HaulWindow::new(0, 500, 900);
         window.economy = Some(HaulEconomy {
+            spending_capacity: 0.0,
             haul_quota: 30,
             ..default()
         });
