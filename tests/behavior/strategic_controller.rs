@@ -44,6 +44,7 @@ mod raid_readiness {
     use top_down_2d_rts_prototype_nano_swarm::{
         SIMULATION_HZ,
         nanobot::{Charge, ChargerAssignment, DefenderResponse, Health, OwnerSwarm, SwarmMember},
+        resources::Stockpile,
         strategic_runtime::ControllerTelemetry,
         terrain::RockFormation,
         tuning::Tuning,
@@ -196,7 +197,7 @@ mod raid_readiness {
     }
 
     #[test]
-    fn a_combined_claim_and_raid_that_exceeds_the_paint_budget_keeps_the_complete_raid() {
+    fn paint_overflow_keeps_a_viable_raid_and_replaces_it_after_its_target_is_lost() {
         let (mut app, target, neutral) = over_budget_raid_and_claim_fixture();
         review(&mut app);
         let revision = app.world().resource::<IntentGrid>().revision();
@@ -213,6 +214,27 @@ mod raid_readiness {
             explanation(&app)
         );
         assert!(explanation(&app).contains("paint"), "{}", explanation(&app));
+
+        let stockpile = {
+            let world = app.world_mut();
+            world
+                .query_filtered::<Entity, With<Stockpile>>()
+                .single(world)
+                .expect("the raid fixture has one target Stockpile")
+        };
+        let enemy = app.world().get::<OwnerSwarm>(stockpile).unwrap().0;
+        app.world_mut().despawn(stockpile);
+        let replacement = target + IVec2::Y;
+        let next_target =
+            common::spawn_stockpile(&mut app, common::cell_world_center(replacement), 80, 100);
+        app.world_mut()
+            .entity_mut(next_target)
+            .insert(OwnerSwarm(enemy));
+        review(&mut app);
+
+        assert!(owns_defend(&app, replacement), "{}", explanation(&app));
+        assert!(owns_intent(&app, replacement, IntentKind::Corridor));
+        assert!(!owns_intent(&app, neutral, IntentKind::Gather));
     }
 
     #[test]
