@@ -1506,6 +1506,79 @@ fn expansion_waits_for_every_retained_mine_to_saturate_and_keeps_its_support() {
 }
 
 #[test]
+fn replacing_a_stalled_mine_keeps_the_source_that_serves_another_mine() {
+    let owner = SwarmId::PLAYER;
+    let home = world(IVec2::ZERO);
+    let swarms = [SwarmState {
+        id: owner,
+        home,
+        minerals: 0,
+        mineral_income_per_second: 0.0,
+    }];
+    let bots = mature_economy_bots(owner, home);
+    let cells = [IVec2::new(0, 3), IVec2::new(3, 0), IVec2::new(-3, 0)];
+    let deposits = std::array::from_fn::<_, 3, _>(|index| DepositState {
+        id: index as u64,
+        owner: (index < 2).then_some(owner),
+        position: world(cells[index]),
+        amount: 72_000,
+        radius: 80.0,
+    });
+    let mut grid = IntentGrid::new(16, 16);
+    let mut controller = Controller::new(owner);
+    let tuning = AutonomyTuning::default();
+    for (tick, independent_source) in [
+        (0, false),
+        (MINE_OBSERVATION_TICKS, false),
+        (MINE_OBSERVATION_TICKS + WORK_WINDOW_TICKS, true),
+    ] {
+        let observe =
+            |_, site: &DepositState, at: MineObservationAt<'_>, work: &mut dyn FnMut() -> bool| {
+                let available = match at {
+                    MineObservationAt::Service { other_gather, .. } => {
+                        site.id == 2
+                            || site.id == 0
+                                && (independent_source || other_gather.contains(&cells[1]))
+                    }
+                    MineObservationAt::Defense(_) => false,
+                };
+                work().then_some(if available {
+                    MineObservation {
+                        source_path: Some(true),
+                        ..saturated_mine()
+                    }
+                } else {
+                    MineObservation {
+                        source_path: Some(false),
+                        ..Default::default()
+                    }
+                })
+            };
+        let decision = controller.decide(
+            &tuning,
+            &GameState {
+                swarms: &swarms,
+                bots: &bots,
+                deposits: &deposits,
+                mine_query: Some(&observe),
+                ..empty_state(&grid, tick)
+            },
+        );
+        apply(&mut grid, owner, &decision);
+        let gather = cells.map(|cell| {
+            grid.cell(cell)
+                .unwrap()
+                .has_owned(IntentKind::Gather, owner)
+        });
+        assert_eq!(
+            gather,
+            [true, !independent_source, independent_source],
+            "{decision:?}"
+        );
+    }
+}
+
+#[test]
 fn depleted_and_unreachable_deposits_are_removed_without_abandoning_the_others() {
     use crate::{nanobot::InteractionRegion, navigation::Route};
 
