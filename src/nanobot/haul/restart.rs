@@ -6,7 +6,7 @@ use crate::{
         Cargo, DirectMovementComponent, InteractionRegion, LogisticsReservation,
         MaterialWorkProgress, RemainingTravel,
     },
-    navigation::{ConnectivityStatus, Navigation, RouteGoal},
+    navigation::{Navigation, PhysicalRouteStatus},
 };
 use bevy::prelude::*;
 
@@ -219,7 +219,7 @@ impl RestartForecast {
         (self.remaining_starts * self.cycle_cost).saturating_sub(self.buffered)
     }
 
-    fn funded_by_due_tick(&self) -> bool {
+    pub fn funded_by_due_tick(&self) -> bool {
         let due = self.next_start + u64::from(self.remaining_starts - 1) * self.cycle_ticks;
         self.baseline.is_some_and(|funded| funded <= due)
     }
@@ -321,17 +321,25 @@ impl InboundHauler<'_> {
         let carried = self.cargo.map_or(0, |cargo| cargo.amount);
         let work_progress = self.work.map_or(0, |work| work.ticks_elapsed);
         let loading = self.loading || self.cargo.is_none();
-        let route_to_pickup = pickup
-            .filter(|(_, available)| {
-                loading && *available > 0 && self.reservation.source_remaining > 0
-            })
-            .and_then(|(region, amount)| {
-                let (endpoint, distance) = self.travel(self.position, region, navigation, true)?;
-                Some((region, endpoint, distance, amount))
-            });
-
+        let pickup = pickup.filter(|(_, available)| {
+            loading
+                && *available > 0
+                && self.reservation.source_remaining > 0
+                && carried < logistics.hauler_carry_capacity
+        });
+        let pickup_travel = if let Some((region, available)) = pickup {
+            match self.travel(self.position, region, navigation, true) {
+                PhysicalRouteStatus::Found { endpoint, distance } => {
+                    Some((region, endpoint, distance, available))
+                }
+                PhysicalRouteStatus::Pending => return None,
+                PhysicalRouteStatus::Unreachable => None,
+            }
+        } else {
+            None
+        };
         let (departure, load_ticks, amount) =
-            if let Some((region, position, distance, available)) = route_to_pickup {
+            if let Some((region, position, distance, available)) = pickup_travel {
                 let load = self
                     .reservation
                     .source_remaining
@@ -353,7 +361,11 @@ impl InboundHauler<'_> {
         if amount == 0 {
             return None;
         }
-        let (_, distance) = self.travel(departure, facility, navigation, !loading)?;
+        let PhysicalRouteStatus::Found { distance, .. } =
+            self.travel(departure, facility, navigation, !loading)
+        else {
+            return None;
+        };
         let already_unloading =
             !loading && self.movement.is_none() && facility.contains(self.position);
         let arrival = load_ticks
@@ -373,22 +385,24 @@ impl InboundHauler<'_> {
         goal: InteractionRegion,
         navigation: &Navigation,
         current_leg: bool,
-    ) -> Option<(Vec2, f32)> {
+    ) -> PhysicalRouteStatus {
         if goal.contains(from) {
-            return Some((from, 0.0));
+            return PhysicalRouteStatus::Found {
+                endpoint: from,
+                distance: 0.0,
+            };
         }
         if current_leg
             && let (Some(movement), Some(remaining)) = (self.movement, self.remaining_travel)
             && movement.interaction == Some(goal)
             && goal.contains(movement.xy)
+            && navigation.point_clear(movement.xy)
         {
-            return Some((movement.xy, remaining.0.max(from.distance(movement.xy))));
+            return PhysicalRouteStatus::Found {
+                endpoint: movement.xy,
+                distance: remaining.0.max(from.distance(movement.xy)),
+            };
         }
-        let endpoint = match navigation.query_connectivity(from, RouteGoal::Interaction(goal)) {
-            ConnectivityStatus::Connected { endpoint } => endpoint,
-            ConnectivityStatus::Pending => goal.approach(from),
-            ConnectivityStatus::Unreachable => return None,
-        };
-        Some((endpoint, from.distance(endpoint)))
+        navigation.query_physical_route(from, goal)
     }
 }

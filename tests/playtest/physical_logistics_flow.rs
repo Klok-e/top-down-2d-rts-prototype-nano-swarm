@@ -905,6 +905,268 @@ fn faster_refill_restarts_an_empty_or_stocked_facility_before_the_slow_claim() {
     }
 }
 
+fn add_restart_rock_wall(app: &mut App, half_height: f32) {
+    use top_down_2d_rts_prototype_nano_swarm::terrain::RockFormation;
+
+    app.world_mut().spawn((
+        Transform::from_xyz(-54.0, 36.0, 0.0),
+        RockFormation::Rectangle {
+            half: Vec2::new(18.0, half_height),
+        },
+    ));
+}
+
+#[test]
+fn a_detour_changes_which_pickup_funds_the_restart_first() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        intent::IntentGrid,
+        nanobot::{Commitment, InteractionRegion},
+        navigation::{ConnectivityStatus, Navigation, RouteGoal},
+        navigation_runtime::NavigationBudget,
+    };
+
+    let mut fixture = RestartRefill::new(0, RESTART_COST, RESTART_COST, Vec2::new(1800.0, 200.0));
+    // The light pickup has a shorter straight-line round trip, but a rock
+    // forces a long detour to reach it and carry its minerals back.
+    add_restart_rock_wall(&mut fixture.app, 540.0);
+    fixture
+        .app
+        .world_mut()
+        .get_mut::<Transform>(fixture.full_pickup)
+        .unwrap()
+        .translation
+        .x = 345.0;
+    fixture
+        .app
+        .world_mut()
+        .entity_mut(fixture.fast_hauler)
+        .insert(Commitment::Working);
+    assert!(fixture.cycle_starts(1).is_empty());
+    {
+        let world = fixture.app.world();
+        let navigation = world.resource::<Navigation>();
+        let grid = world.resource::<IntentGrid>();
+        let budget = world.resource::<NavigationBudget>().0;
+        let start = world
+            .get::<Transform>(fixture.fast_hauler)
+            .unwrap()
+            .translation
+            .truncate();
+        let connect = |origin, target| {
+            let region = InteractionRegion::structure(world.get::<Transform>(target).unwrap());
+            for _ in 0..60 {
+                match navigation.query_connectivity(origin, RouteGoal::Interaction(region)) {
+                    ConnectivityStatus::Connected { endpoint } => return endpoint,
+                    ConnectivityStatus::Pending => {
+                        navigation.advance(grid, budget);
+                    }
+                    ConnectivityStatus::Unreachable => break,
+                }
+            }
+            panic!("both pickup trips should be reachable")
+        };
+        for source in [fixture.light_pickup, fixture.full_pickup] {
+            let pickup_position = connect(start, source);
+            connect(pickup_position, fixture.facility);
+        }
+    }
+    fixture
+        .app
+        .world_mut()
+        .entity_mut(fixture.fast_hauler)
+        .insert(Commitment::Idle);
+    fixture.return_defender_demand();
+
+    assert!(fixture.cycle_starts(40).is_empty());
+    assert_eq!(fixture.picked_source(), Some(fixture.full_pickup));
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .get::<LogisticsReservation>(fixture.fast_hauler)
+            .unwrap()
+            .amount,
+        RESTART_COST,
+    );
+    assert_eq!(fixture.cycle_starts(285).len(), 1);
+    assert_eq!(
+        stockpile_amount(&fixture.app, fixture.light_pickup),
+        RESTART_COST
+    );
+    assert_eq!(
+        cargo_amount(&fixture.app, fixture.slow_hauler),
+        RESTART_COST
+    );
+}
+
+#[test]
+fn an_inbound_refill_across_a_detour_does_not_hide_a_timely_pickup() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::InteractionRegion;
+
+    for (wall, expected_pickup) in [(false, 2 * RESTART_COST), (true, RESTART_COST)] {
+        let pickup_position = Vec2::new(-152.0, 36.0);
+        let mut fixture =
+            RestartRefill::new(2 * RESTART_COST, RESTART_COST - 1, 1, pickup_position);
+        fixture
+            .app
+            .world_mut()
+            .get_mut::<Transform>(fixture.light_pickup)
+            .unwrap()
+            .translation
+            .x = -220.0;
+        if wall {
+            add_restart_rock_wall(&mut fixture.app, 840.0);
+        }
+        fixture
+            .app
+            .world_mut()
+            .resource_mut::<Tuning>()
+            .production
+            .ticks_per_bot = 125;
+
+        let world = fixture.app.world_mut();
+        let pickup =
+            InteractionRegion::structure(world.get::<Transform>(fixture.light_pickup).unwrap());
+        assert!(pickup.contains(pickup_position));
+        let mut claim = LogisticsReservation::new(
+            fixture.light_pickup,
+            fixture.facility,
+            ResourceKind::Minerals,
+            RESTART_COST,
+        );
+        claim.source_remaining = 1;
+        world.entity_mut(fixture.slow_hauler).insert((
+            HaulerAssignment {
+                source: fixture.light_pickup,
+                sink: fixture.facility,
+                pickup_role: StockpileRole::Source,
+            },
+            claim,
+            HaulerLoading,
+            MaterialWorkProgress { ticks_elapsed: 0 },
+        ));
+        fixture.return_defender_demand();
+
+        assert_eq!(fixture.cycle_starts(18), vec![1]);
+        assert_eq!(fixture.picked_source(), Some(fixture.full_pickup));
+        let claim = fixture
+            .app
+            .world()
+            .get::<LogisticsReservation>(fixture.fast_hauler)
+            .unwrap();
+        assert_eq!(claim.amount, expected_pickup, "rock wall present: {wall}");
+        assert_eq!(fixture.cycle_starts(247).len(), 2);
+        if wall {
+            assert_eq!(
+                cargo_amount(&fixture.app, fixture.slow_hauler),
+                RESTART_COST
+            );
+        }
+    }
+}
+
+#[test]
+fn charger_emergency_precedes_a_restart_refill() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{Charge, ChargerAssignment};
+
+    let mut fixture = RestartRefill::new(0, RESTART_COST, RESTART_COST, Vec2::new(1800.0, 200.0));
+    add_restart_rock_wall(&mut fixture.app, 540.0);
+    let owner = *fixture
+        .app
+        .world()
+        .get::<OwnerSwarm>(fixture.facility)
+        .unwrap();
+    let charger = common::spawn_operational_charger_at(&mut fixture.app, IVec2::new(1, -1), 0);
+    fixture.app.world_mut().entity_mut(charger).insert(owner);
+    let defender = common::spawn_defender_at(&mut fixture.app, Vec2::new(700.0, -250.0));
+    fixture.app.world_mut().entity_mut(defender).insert((
+        Charge {
+            current: 0.0,
+            max: 1.0,
+        },
+        ChargerAssignment { charger },
+    ));
+    fixture.return_defender_demand();
+
+    assert!(fixture.cycle_starts(40).is_empty());
+    let production = fixture
+        .app
+        .world()
+        .get::<ProductionFacility>(fixture.facility)
+        .unwrap();
+    assert!(production.demand_waiting && production.input_amount == 0);
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .get::<HaulerAssignment>(fixture.fast_hauler)
+            .map(|assignment| assignment.sink),
+        Some(charger),
+    );
+}
+
+#[test]
+fn growing_demand_keeps_the_restart_boundary_during_the_funded_burst() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        intent::{IntentGrid, IntentKind},
+        nanobot::{Commitment, NanobotType, PopulationDemand},
+    };
+
+    let mut fixture = RestartRefill::new(
+        2 * RESTART_COST,
+        RESTART_COST,
+        RESTART_COST,
+        Vec2::new(1800.0, 200.0),
+    );
+    fixture
+        .app
+        .world_mut()
+        .entity_mut(fixture.fast_hauler)
+        .insert(Commitment::Working);
+    for x in 0..4 {
+        assert!(fixture.app.world_mut().resource_mut::<IntentGrid>().paint(
+            IVec2::new(x, 0),
+            IntentKind::Defend,
+            SwarmId::PLAYER,
+        ));
+    }
+    assert_eq!(fixture.cycle_starts(12).len(), 1);
+    assert_eq!(
+        fixture
+            .app
+            .world()
+            .resource::<PopulationDemand>()
+            .desired_for(SwarmId::PLAYER, NanobotType::Defender),
+        2
+    );
+    assert_eq!(
+        facility_amount(&fixture.app, fixture.facility),
+        RESTART_COST
+    );
+    assert!(fixture.picked_source().is_none());
+
+    for x in 0..2 {
+        assert!(fixture.app.world_mut().resource_mut::<IntentGrid>().paint(
+            IVec2::new(x, 1),
+            IntentKind::Defend,
+            SwarmId::PLAYER,
+        ));
+    }
+    fixture
+        .app
+        .world_mut()
+        .entity_mut(fixture.fast_hauler)
+        .insert(Commitment::Idle);
+
+    assert!(fixture.cycle_starts(28).is_empty());
+    assert_eq!(fixture.picked_source(), Some(fixture.light_pickup));
+    assert_eq!(fixture.cycle_starts(230).len(), 2);
+    assert_eq!(
+        cargo_amount(&fixture.app, fixture.slow_hauler),
+        RESTART_COST
+    );
+}
+
 #[test]
 fn the_restart_can_use_minerals_from_two_individually_insufficient_unloads() {
     use top_down_2d_rts_prototype_nano_swarm::nanobot::InteractionRegion;
