@@ -2,14 +2,12 @@
 
 This document defines repo-specific testing conventions.
 
-For test design and review, follow the `testing-on-the-toilet` skill.
-
 ## Required test review
 
 When writing or reviewing tests, inspect the tests in scope and nearby coverage of the same behavior. This is a local review, not a required audit of the entire suite.
 
-- Apply the skill's change-detector gate to weak tests and check for redundant coverage across tests.
-- When edits are authorized, perform the cleanup within that scope. Before deleting or consolidating duplicate coverage, name the retained test and behavior, and apply the skill's test-refactoring failure proof.
+- Look for redundant coverage and assertions that mirror implementation details without checking behavior.
+- When edits are authorized, clean up redundant coverage within scope. Before removing or consolidating duplicate coverage, name the behavior and the test that will still cover it. Run the retained test after cleanup.
 - In read-only reviews, report concrete cleanup recommendations and retained coverage without editing files or temporarily mutating production code.
 - In the handoff, summarize removed or consolidated coverage, retained protection, and verification performed.
 

@@ -8,7 +8,7 @@ Constraints not explicitly confirmed by the user may be relaxed to simplify code
 
 On every implementation task, look for ways to improve the code you change and the repository code it directly depends on. Use your judgment to make worthwhile improvements that preserve behavior and fit the task's scope. Examples include renaming functions to reflect what they do and variables to reflect what they represent, removing unused symbols, simplifying and making code more elegant.
 
-If a broader refactor is worth surfacing, mention it and its expected benefit in the final response.
+In the final response for each implementation task, name any significant refactor you deferred and explain its expected benefit.
 
 ## Change Verification
 
