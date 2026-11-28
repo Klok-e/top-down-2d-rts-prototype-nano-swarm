@@ -786,18 +786,9 @@ impl RestartRefill {
             tuning.logistics.hauler_transfer_per_pulse = 1;
             tuning.logistics.material_work_ticks = RESTART_TRANSFER_TICKS;
         }
-        let tuning = app.world().resource::<Tuning>().clone();
-        let owner = common::spawn_swarm_at(&mut app, Vec2::new(36.0, 36.0));
-        let mut production = ProductionFacility::with_tuning(&tuning);
-        production.input_amount = hopper;
-        let facility = app
-            .world_mut()
-            .spawn((
-                production,
-                OwnerSwarm(owner),
-                Transform::from_xyz(36.0, 36.0, 0.0),
-            ))
-            .id();
+        let facility_pos = Vec2::new(36.0, 36.0);
+        let owner = common::spawn_swarm_at(&mut app, facility_pos);
+        let facility = common::spawn_facility_with_hopper(&mut app, owner, facility_pos, hopper);
         let slow_hauler = common::spawn_hauler_at(&mut app, slow_position);
         let fast_hauler = common::spawn_hauler_at(&mut app, Vec2::new(36.0, -120.0));
         app.update();

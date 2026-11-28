@@ -7,9 +7,9 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         ActionableProjection, Cargo, Commitment, GatherAssignment, GatherQuotas, HaulPlugin,
-        LogisticsReservation, NanobotType, OpportunityTarget, OwnerSwarm, PlannedKind,
-        PlannedStructure, PopulationDemand, PopulationDemandPlugin, ProductionFacility,
-        ProductionPlugin, RegionalLease, SwarmId, SwarmMember,
+        LogisticsReservation, MaintenanceAssignment, NanobotType, OpportunityTarget, OwnerSwarm,
+        PlannedKind, PlannedStructure, PopulationDemand, PopulationDemandPlugin, ProductionPlugin,
+        RegionalLease, SpareGathering, Structure, SwarmId, SwarmMember, gather_worker_slots,
     },
     resources::{ResourceDeposit, Stockpile},
     tuning::Tuning,
@@ -209,11 +209,7 @@ impl SpareGatherFixture {
         );
         let sink = common::spawn_sink_stockpile(&mut app, center - Vec2::Y * 200.0, 1000, 1100);
         app.world_mut().entity_mut(sink).insert(OwnerSwarm(owner));
-        app.world_mut().spawn((
-            ProductionFacility::new(),
-            OwnerSwarm(owner),
-            Transform::from_translation((center - Vec2::Y * 360.0).extend(0.0)),
-        ));
+        common::spawn_facility_with_hopper(&mut app, owner, center - Vec2::Y * 360.0, 0);
         assert!(app.world_mut().resource_mut::<IntentGrid>().paint(
             cell,
             IntentKind::Gather,
@@ -505,6 +501,144 @@ fn an_empty_spare_gatherer_yields_to_reachable_construction() {
         Some(mine.spare_worker)
     );
     assert!(mine.spare_reservation().is_none());
+}
+
+#[test]
+fn an_empty_spare_gatherer_takes_maintenance_when_construction_is_unreachable() {
+    let mut mine = SpareGatherFixture::with_layout(
+        SwarmId::PLAYER,
+        IVec2::new(-1, 0),
+        Vec2::new(-175.0, 256.0),
+        Vec2::Y * 160.0,
+        15,
+        -Vec2::Y * 83.0,
+    );
+    mine.divide_navigation();
+    mine.advance(30);
+    mine.start_spare_worker();
+    mine.advance(12);
+    assert!(
+        mine.spare_reservation().is_some(),
+        "{}",
+        mine.worker_states()
+    );
+    assert_eq!(mine.spare_cargo(), 0);
+
+    let plan = common::spawn_planned_charger_at_cell(&mut mine.app, IVec2::ZERO);
+    let structure = common::spawn_structure_at(&mut mine.app, Vec2::new(-390.0, 256.0));
+    mine.app
+        .world_mut()
+        .entity_mut(plan)
+        .insert(OwnerSwarm(mine.owner));
+    mine.app
+        .world_mut()
+        .entity_mut(structure)
+        .insert(OwnerSwarm(mine.owner));
+    mine.app
+        .world_mut()
+        .get_mut::<Structure>(structure)
+        .unwrap()
+        .ticks_since_maintained = Tuning::default().maintenance.needs_threshold;
+    mine.advance(12);
+
+    let world = mine.app.world();
+    assert!(
+        world
+            .resource::<ActionableProjection>()
+            .iter_regions()
+            .any(
+                |(_, work)| work.iter().any(|opportunity| matches!(opportunity.target,
+                    OpportunityTarget::PlannedBuild { structure, .. } if structure == plan
+                ))
+            )
+    );
+    assert_eq!(
+        world.get::<PlannedStructure>(plan).unwrap().active_worker(),
+        None
+    );
+    assert_eq!(
+        world
+            .get::<MaintenanceAssignment>(mine.spare_worker)
+            .map(|assignment| assignment.target),
+        Some(structure)
+    );
+    assert!(mine.spare_reservation().is_none());
+}
+
+#[test]
+fn a_rising_quota_reclaims_empty_spare_positions_on_a_full_ring() {
+    let mut mine = SpareGatherFixture::new(SwarmId::PLAYER, 15, -Vec2::Y * 190.0 + Vec2::X * 90.0);
+    let radius = 8.0;
+    mine.app
+        .world_mut()
+        .get_mut::<ResourceDeposit>(mine.deposit)
+        .unwrap()
+        .radius = radius;
+    let workers = [
+        mine.spare_worker,
+        common::spawn_worker_at(&mut mine.app, mine.center + Vec2::X * 190.0),
+    ];
+    mine.app
+        .world_mut()
+        .entity_mut(workers[1])
+        .insert(Commitment::Working);
+    mine.start_spare_worker();
+    mine.app
+        .world_mut()
+        .entity_mut(workers[1])
+        .insert(Commitment::Idle);
+    mine.advance(12);
+    {
+        let world = mine.app.world();
+        let economy = world
+            .resource::<GatherQuotas>()
+            .economy(SwarmId::PLAYER)
+            .unwrap();
+        assert_eq!(economy.gather_quota, 1);
+        assert_eq!(economy.gathering_workers, gather_worker_slots(radius));
+        for worker in workers {
+            assert!(world.get::<SpareGathering>(worker).is_some());
+            assert_eq!(
+                world
+                    .get::<GatherAssignment>(worker)
+                    .map(|gather| gather.deposit),
+                Some(mine.deposit)
+            );
+            assert!(
+                world
+                    .get::<Cargo>(worker)
+                    .is_none_or(|cargo| cargo.amount == 0)
+            );
+        }
+    }
+
+    // Higher charge upkeep brings the required staffing up to the ring limit.
+    mine.app
+        .world_mut()
+        .resource_mut::<Tuning>()
+        .charge
+        .material_per_pulse = 1000;
+    common::spawn_defender_at(&mut mine.app, mine.center - Vec2::Y * 250.0);
+    mine.advance(6);
+
+    let world = mine.app.world();
+    let economy = world
+        .resource::<GatherQuotas>()
+        .economy(SwarmId::PLAYER)
+        .unwrap();
+    assert_eq!(economy.gather_quota, gather_worker_slots(radius));
+    for worker in workers {
+        assert!(
+            world.get::<SpareGathering>(worker).is_none(),
+            "{worker} remained a spare after the quota rose"
+        );
+        assert_eq!(
+            world
+                .get::<GatherAssignment>(worker)
+                .map(|gather| gather.deposit),
+            Some(mine.deposit)
+        );
+    }
 }
 
 #[test]
