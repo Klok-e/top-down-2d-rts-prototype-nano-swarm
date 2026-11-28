@@ -5,3 +5,5 @@ Production capacity grows through stable, owner-scoped commitments rather than B
 [ADR-0017](0017-construction-preserves-friendly-access.md) defines access cancellation and releases the unfinished commitment immediately.
 
 [ADR-0019](0019-demand-driven-automatic-production.md) removes Production Priority while retaining pressure from every typed shortage.
+
+The Production Pressure requirement for swarms with operational facilities has been revised. [ADR-0041](0041-require-funded-production-and-spare-delivery-for-expansion.md)

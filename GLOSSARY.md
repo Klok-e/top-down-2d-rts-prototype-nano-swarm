@@ -101,7 +101,7 @@ A shared stockpile placed in a build zone that stages material near terminal con
 _Avoid_: Global storage, base inventory, production facility hopper
 
 **Logistics Leg**:
-One directed hauler movement along the material chain: source stockpile to sink stockpile, or source or sink stockpile to a terminal. Legs are ranked downstream-first so terminals are fed before buffers are filled.
+A Hauler trip that moves minerals from a Source Stockpile to a Sink Stockpile or from either kind of Stockpile to a Terminal Consumer.
 _Avoid_: Transport step, conveyor segment
 
 **Logistics Reservation**:
@@ -238,7 +238,7 @@ The number of Haulers a swarm wants so they can deliver the minerals it has to i
 _Avoid_: Hauler cap, haul demand
 
 **Production Pressure**:
-Consecutive unmet Population Demand of any type while every operational Production Facility remains busy producing, or while no Production Facility is operational; waiting for exit space does not qualify as busy production. Resolved demand or idle operational capacity clears it, while brief demand spikes and a facility's internal cycle progress do not establish it.
+Evidence that unmet Population Demand warrants another Production Facility. It comes from sustained funded production and spare mineral delivery capacity, or from a swarm's need to recover when no Production Facility is operational.
 _Avoid_: Build-zone size, instantaneous deficit
 
 **Production Facility**:
