@@ -1155,45 +1155,49 @@ fn completed_facility_uses_the_same_art_as_the_starting_facility() {
 }
 
 #[test]
-fn emerging_facility_has_the_starting_facility_footprint() {
+fn recovery_plan_has_the_starting_facility_footprint() {
     use top_down_2d_rts_prototype_nano_swarm::{nanobot::ProductionFacility, navigation::Obstacle};
 
     let mut app = default_headless_app();
     let (_, tuning) = TuningStore::load(TuningStore::default_path())
         .expect("the authored economy uses the shipped balance");
+    let recovery_ticks = tuning.production.pressure_ticks + 300;
     app.insert_resource(tuning);
     app.update();
     let world = app.world_mut();
-    let starting = world
-        .query_filtered::<(&OwnerSwarm, &Transform), With<ProductionFacility>>()
+    let (facility, owner, starting) = world
+        .query_filtered::<(Entity, &OwnerSwarm, &Transform), With<ProductionFacility>>()
         .iter(world)
-        .find(|(owner, _)| world.get::<SwarmId>(owner.0) == Some(&SwarmId::PLAYER))
-        .map(|(_, transform)| Obstacle::structure(transform))
+        .find(|(_, owner, _)| world.get::<SwarmId>(owner.0) == Some(&SwarmId::PLAYER))
+        .map(|(entity, owner, transform)| (entity, owner.0, Obstacle::structure(transform)))
         .expect("the player starts with a Production Facility");
-
-    let mut planned = None;
-    // The shipped balance first plans one after about 1,700 ticks.
-    for _ in 0..6_000 {
-        app.update();
-        let world = app.world_mut();
-        planned = world
-            .query::<(&PlannedStructure, &OwnerSwarm, &Transform)>()
-            .iter(world)
-            .find(|(plan, owner, _)| {
-                plan.kind == PlannedKind::ProductionFacility
-                    && world.get::<SwarmId>(owner.0) == Some(&SwarmId::PLAYER)
-            })
-            .map(|(_, _, transform)| Obstacle::structure(transform));
-        if planned.is_some() {
-            break;
+    world
+        .get_mut::<Structure>(facility)
+        .unwrap()
+        .paint_suspended = true;
+    {
+        let mut grid = world.resource_mut::<IntentGrid>();
+        for x in 2..=5 {
+            assert!(grid.paint(IVec2::new(x, 1), IntentKind::Defend, SwarmId::PLAYER));
         }
     }
+
+    let mut plans = world.query::<(&PlannedStructure, &OwnerSwarm, &Transform)>();
+    let planned = (0..recovery_ticks).find_map(|_| {
+        app.update();
+        plans
+            .iter(app.world())
+            .find(|(plan, plan_owner, _)| {
+                plan.kind == PlannedKind::ProductionFacility && plan_owner.0 == owner
+            })
+            .map(|(_, _, transform)| Obstacle::structure(transform))
+    });
 
     let Obstacle::Rectangle { half: starting, .. } = starting else {
         unreachable!("structures are rectangles")
     };
     let Some(Obstacle::Rectangle { half: planned, .. }) = planned else {
-        panic!("growing demand must plan a second Production Facility");
+        panic!("unmet demand must plan a replacement Production Facility");
     };
     assert!(
         (planned - starting).length() < 0.001,
