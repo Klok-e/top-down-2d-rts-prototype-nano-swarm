@@ -3,6 +3,8 @@ use serde::{Deserialize, Deserializer, Serialize, de::IgnoredAny};
 
 use super::TuningField;
 
+const MAX_CHARGE_AMOUNT: f64 = 3_600.0;
+
 macro_rules! tuning_schema {
     ($( $section:ident: $section_type:ident { $( $field:ident: $ty:ty = $default:expr => ($label:literal, $unit:literal, $scale:expr, $step:expr, $min:expr, $max:expr); )* } $(=> ignore [$($retired:ident),+])? )*) => {
         #[derive(Resource, Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -132,14 +134,14 @@ tuning_schema! {
         base_defense: f32 = 10.0 => ("Base defense", "", 1.0, 1.0, 0.0, 1_000_000.0);
     }
     charge: ChargeTuning {
-        max_charge: f32 = 1.0 => ("Max charge", "", 1.0, 0.05, 0.000001, 100.0);
+        max_charge: f32 = 1.0 => ("Max charge", "", 1.0, 0.05, 0.000001, MAX_CHARGE_AMOUNT);
         drain_per_tick: f32 = 0.000125 => ("Charge drain", "/s", 60.0, 0.001, 0.0, 1.0);
         pulse_interval_ticks: u16 = 150 => ("Charging interval", "s", 1.0 / 60.0, 1.0 / 60.0, 1.0, 65535.0);
-        per_pulse: f32 = 0.03 => ("Per pulse", "", 1.0, 0.01, 0.000001, 100.0);
+        per_pulse: f32 = 0.03 => ("Per pulse", "", 1.0, 0.01, 0.000001, MAX_CHARGE_AMOUNT);
         material_per_pulse: u32 = 2 => ("Material per pulse", "", 1.0, 1.0, 1.0, 1_000_000.0);
-        weakened_threshold: f32 = 0.3 => ("Weakened threshold", "", 1.0, 0.05, 0.0, 100.0);
+        weakened_threshold: f32 = 0.3 => ("Weakened threshold", "", 1.0, 0.05, 0.0, MAX_CHARGE_AMOUNT);
         weakened_strength_floor: f32 = 0.4 => ("Weakened strength floor", "", 1.0, 0.05, 0.0, 2.0);
-        low_threshold: f32 = 0.5 => ("Low threshold", "", 1.0, 0.05, 0.0, 100.0);
+        low_threshold: f32 = 0.5 => ("Low threshold", "", 1.0, 0.05, 0.0, MAX_CHARGE_AMOUNT);
         empty_damage_interval_ticks: u8 = 6 => ("Empty charge damage interval", "s", 1.0 / 60.0, 1.0 / 60.0, 1.0, 255.0);
         empty_health_damage: u32 = 1 => ("Empty health damage", "", 1.0, 1.0, 1.0, 1_000_000.0);
         charger_capacity: u32 = 120 => ("Charger capacity", "", 1.0, 1.0, 1.0, 1_000_000.0);
