@@ -56,7 +56,7 @@
         empty_damage_interval_ticks: 6,
         empty_health_damage: 1,
         charger_capacity: 10,
-        max_defenders_per_charger: 3,
+        max_defenders_per_charger: 10,
     ),
     maintenance: (
         buffer_ticks: 3600,
