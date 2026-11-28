@@ -609,6 +609,20 @@ pub fn spawn_stockpile(app: &mut App, world_pos: Vec2, amount: u32, capacity: u3
         .id()
 }
 
+pub fn spawn_owned_source(
+    app: &mut App,
+    owner: Entity,
+    position: Vec2,
+    amount: u32,
+    capacity: u32,
+) -> Entity {
+    let source = spawn_stockpile(app, position, amount, capacity);
+    app.world_mut()
+        .entity_mut(source)
+        .insert((OwnerSwarm(owner), StockpileRole::Source));
+    source
+}
+
 /// Spawn a [`Stockpile`] stamped [`StockpileRole::Sink`] at
 /// `world_pos` -- the build-zone buffer a hauler fills in leg 2 and
 /// drains in leg 3. Mirrors [`spawn_stockpile`] for the data shape;

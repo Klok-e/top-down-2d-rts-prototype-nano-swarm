@@ -15,6 +15,7 @@ mod consts;
 mod debug;
 mod elimination;
 mod engagement;
+mod expansion_supply;
 mod gather;
 mod gather_quota;
 mod haul;
@@ -230,6 +231,7 @@ pub(crate) fn reset_session(world: &mut World) {
     reset_resource::<GatherQuotas>(world);
     reset_resource::<HaulQuotas>(world);
     reset_resource::<ProductionPressure>(world);
+    reset_resource::<expansion_supply::ExpansionHistory>(world);
     reset_resource::<FacilityClaimTimes>(world);
     reset_resource::<construction_access::CancelledSites>(world);
     allocation::reset_session(world);

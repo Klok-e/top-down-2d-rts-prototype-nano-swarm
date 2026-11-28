@@ -341,7 +341,7 @@ fn find_dense_build_zone_placement(
     obstacles: &[Obstacle],
     half_extent: f32,
     kind_seed: u32,
-    accepts: &mut impl FnMut(Vec2) -> bool,
+    accepts: &mut impl FnMut(Vec2) -> Option<bool>,
 ) -> Option<(IVec2, Vec2)> {
     let side = dense_build_zone_side();
     let candidate_count = side * side;
@@ -365,7 +365,7 @@ fn find_dense_build_zone_placement(
             }
             if footprint_inside_zone(pos, half_extent, build_cells)
                 && !overlaps_any_obstacle(pos, half_extent, BUILDING_FOOTPRINT_PADDING, obstacles)
-                && accepts(pos)
+                && accepts(pos)?
             {
                 return Some((cell, pos));
             }
@@ -407,10 +407,23 @@ pub fn find_build_zone_placement_accepting(
     kind_seed: u32,
     mut accepts: impl FnMut(Vec2) -> bool,
 ) -> Option<(IVec2, Vec2)> {
+    find_build_zone_placement_until(build_cells, obstacles, half_extent, kind_seed, |pos| {
+        Some(accepts(pos))
+    })
+}
+
+/// Stop at the first pending site so an unresolved candidate keeps its priority.
+pub(crate) fn find_build_zone_placement_until(
+    build_cells: &[IVec2],
+    obstacles: &[Obstacle],
+    half_extent: f32,
+    kind_seed: u32,
+    mut accepts: impl FnMut(Vec2) -> Option<bool>,
+) -> Option<(IVec2, Vec2)> {
     for (_, cell, pos) in seeded_build_zone_candidates(build_cells, half_extent, kind_seed) {
         if footprint_inside_zone(pos, half_extent, build_cells)
             && !overlaps_any_obstacle(pos, half_extent, BUILDING_FOOTPRINT_PADDING, obstacles)
-            && accepts(pos)
+            && accepts(pos)?
         {
             return Some((cell, pos));
         }

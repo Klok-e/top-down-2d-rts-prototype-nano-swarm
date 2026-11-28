@@ -228,6 +228,88 @@ fn assert_custody_and_ledger(app: &App, source: Entity, hauler: Entity, terminal
 }
 
 #[test]
+fn a_single_physical_delivery_does_not_commit_another_facility() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        intent::{IntentGrid, IntentKind},
+        nanobot::{
+            Nanobot, NanobotType, PlannedKind, PlannedStructure, PlannedStructurePlugin,
+            PopulationDemand, PopulationDemandPlugin, ProductionPlugin,
+        },
+    };
+
+    let mut app = common::sim_app_with_gather_haul();
+    app.add_plugins((
+        PopulationDemandPlugin,
+        ProductionPlugin,
+        PlannedStructurePlugin,
+    ));
+    let cost = 5;
+    {
+        let mut tuning = app.world_mut().resource_mut::<Tuning>();
+        tuning.production.cost_per_bot = cost;
+        tuning.production.ticks_per_bot = 120;
+        tuning.logistics.material_work_ticks = 24;
+    }
+    let owner = common::spawn_swarm_at(&mut app, Vec2::ZERO);
+    common::spawn_worker_at(&mut app, Vec2::new(440.0, 0.0));
+    let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-120.0, 0.0));
+    let terminal = spawn_trip_terminal(&mut app, owner);
+    let source = common::spawn_owned_source(&mut app, owner, Vec2::new(-200.0, 0.0), cost, 100);
+    app.world_mut().resource_mut::<ResourceLedger>().add_for(
+        SwarmId::PLAYER,
+        ResourceKind::Minerals,
+        cost,
+    );
+    {
+        let mut grid = app.world_mut().resource_mut::<IntentGrid>();
+        assert!(grid.paint(IVec2::ZERO, IntentKind::Build, SwarmId::PLAYER));
+        for cell in [IVec2::X, IVec2::Y] {
+            assert!(grid.paint(cell, IntentKind::Defend, SwarmId::PLAYER));
+        }
+    }
+
+    let mut plans = app.world_mut().query::<&PlannedStructure>();
+    let mut saw_production = false;
+    let mut waited_for_minerals = false;
+    for _ in 0..1_200 {
+        app.update();
+        let world = app.world();
+        assert!(
+            plans
+                .iter(world)
+                .all(|plan| plan.kind != PlannedKind::ProductionFacility),
+            "one delivered cycle cannot justify another facility"
+        );
+        let facility = world.get::<ProductionFacility>(terminal).unwrap();
+        saw_production |= facility.current_target == Some(NanobotType::Defender);
+        if saw_production && facility.current_target.is_none() && facility.demand_waiting {
+            waited_for_minerals = true;
+            break;
+        }
+    }
+
+    assert!(waited_for_minerals, "the facility runs once and starves");
+    assert_eq!(stockpile_amount(&app, source), 0);
+    assert_eq!(cargo_amount(&app, hauler), 0);
+    assert_eq!(facility_amount(&app, terminal), 0);
+    assert_eq!(
+        app.world()
+            .resource::<PopulationDemand>()
+            .desired_for(SwarmId::PLAYER, NanobotType::Defender),
+        2
+    );
+    let world = app.world_mut();
+    assert_eq!(
+        world
+            .query_filtered::<&NanobotType, With<Nanobot>>()
+            .iter(world)
+            .filter(|&&kind| kind == NanobotType::Defender)
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn losing_either_endpoint_during_empty_pickup_allows_reassignment() {
     for lose_pickup in [true, false] {
         let (mut app, owner, mut source, mut terminal, hauler) = terminal_trip();

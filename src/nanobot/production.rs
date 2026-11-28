@@ -1,8 +1,8 @@
 //! Demand-driven production facilities.
 //!
 //! Production facilities consume delivered resources and fill typed workload
-//! shortages. Additional facilities emerge from demand pressure when existing
-//! capacity is too busy.
+//! shortages. Expansion requires sustained funded output and spare delivery
+//! capacity. Swarms without an operational facility can plan a replacement.
 //!
 //! ## State machine
 //!
@@ -21,7 +21,7 @@
 //!         reset to Idle
 //! ```
 //!
-//! Material flow: the facility pulls the full the configured cost from
+//! Material flow: the facility pulls the full configured cost from
 //! its input hopper at the start of a production cycle. Haulers physically fill
 //! that hopper through the final logistics leg, and production consumes the
 //! committed material up front.
@@ -48,7 +48,9 @@ use crate::nanobot::{CombatIdentity, NanobotBundle, PlannedStructure, combat_key
 use crate::resources::{ResourceDeposit, ResourceKind, ResourceLedger, Stockpile};
 use crate::structure_sprites::StructureSprites;
 
-/// Owner-scoped Production Pressure accumulated by each swarm.
+use super::expansion_supply::{ExpansionHistory, ExpansionSupply, observe_expansion_supply};
+
+/// How long each swarm has needed a recovery facility.
 #[derive(Debug, Default, Resource)]
 pub struct ProductionPressure {
     ticks_by_swarm: HashMap<SwarmId, u32>,
@@ -68,14 +70,6 @@ impl ProductionPressure {
     }
 }
 
-fn next_production_pressure_ticks(current: u32, pressure_continues: bool, threshold: u32) -> u32 {
-    if pressure_continues {
-        current.saturating_add(1).min(threshold)
-    } else {
-        0
-    }
-}
-
 /// Marker for a [`crate::nanobot::Swarm`] that is driven by
 /// prepainted intent. Opponent nanobots still run
 /// through the same scoring, logistics, and production systems
@@ -90,12 +84,20 @@ pub struct OpponentSwarm {}
 #[derive(Debug, Component, Clone, Copy)]
 pub struct OwnerSwarm(pub Entity);
 
+/// Consecutive funded starts, including the cycle in progress. Each later
+/// start confirms that the previous output was released and its handoff funded.
+#[derive(Component, Default)]
+pub struct FundedProduction(u8);
+
+const STARTS_REQUIRED_FOR_EXPANSION: u8 = 4;
+
 /// An automatic production facility. Spawned by
 /// `production_facility_auto_creation_system` near a swarm that
 /// has unmet production demand. The facility's own state is
 /// carried on this component so multiple facilities can run
 /// independently.
 #[derive(Debug, Component, Clone)]
+#[require(FundedProduction)]
 pub struct ProductionFacility {
     /// Tick counter within the current production cycle. Reset
     /// to 0 when a new cycle starts; reaches
@@ -162,9 +164,7 @@ impl ProductionFacility {
         }
     }
 
-    /// True when the facility is currently producing a nanobot.
-    /// Used by the auto-creation system to detect "all existing
-    /// facilities are too busy".
+    /// True while the facility is producing, before output can be released.
     pub fn is_busy(&self, ticks_per_bot: u32) -> bool {
         self.current_target.is_some() && self.progress < ticks_per_bot
     }
@@ -255,29 +255,7 @@ pub fn count_swarm_nanobots_by_type(
     counts
 }
 
-/// Plan a new production facility from typed workload demand pressure. For
-/// each swarm in the world, a [`PlannedStructure`] of
-/// [`PlannedKind::ProductionFacility`] emerges when:
-///
-/// 1. the swarm has a typed population shortage, AND
-/// 2. every operational facility that belongs to this swarm stays busy for
-///    the configured pressure window consecutive ticks, AND
-/// 3. the swarm owns at least one `Build`-painted cell that
-///    does not already host a planned or completed
-///    structure. The Build Zone is the placement constraint
-///    (issue #27 acceptance: "Planned Production Facility
-///    placement is constrained to an owned Build Zone").
-///
-/// The plan itself does NOT consume any material: build work is
-/// worker-time-only in v1, so a Worker can build the plan
-/// even when the swarm is short on minerals. The completed
-/// `ProductionFacility` chooses from current demand after physical funding.
-///
-/// Acceptance: "No new Production Facility is planned when
-/// no suitable Build Zone exists." A swarm without any
-/// owned Build cells cannot plan a Production Facility, so
-/// the auto-creation is a no-op for that swarm. This is the
-/// "Build Zone constrains placement" half of the contract.
+/// Plan a facility when unmet Population Demand justifies recovery or supplied expansion.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn production_facility_auto_creation_system(
     mut commands: Commands,
@@ -287,12 +265,14 @@ pub fn production_facility_auto_creation_system(
     tuning: Res<Tuning>,
     population_demand: Res<crate::nanobot::PopulationDemand>,
     mut pressure: ResMut<ProductionPressure>,
+    mut supply: ExpansionSupply,
     nanobots: Query<(&NanobotType, &crate::nanobot::components::SwarmMember), With<Nanobot>>,
-    facilities: Query<(
-        Entity,
+    mut facilities: Query<(
         &ProductionFacility,
+        &Transform,
         &OwnerSwarm,
         Option<&SupportCondition>,
+        &mut FundedProduction,
     )>,
     existing_targets: Query<
         &Transform,
@@ -307,98 +287,110 @@ pub fn production_facility_auto_creation_system(
     deposits: Query<(&ResourceDeposit, &Transform)>,
     swarms: Query<(Entity, &SwarmId), With<Swarm>>,
 ) {
-    let mut access_layout = access.snapshot();
-    let mut obstacles: Vec<Obstacle> = deposits
-        .iter()
-        .map(|(deposit, transform)| {
-            Obstacle::deposit(transform.translation.truncate(), deposit.radius)
-        })
-        .collect();
-    for transform in &existing_targets {
-        obstacles.push(Obstacle::structure(transform));
-    }
-    // Physical footprints constrain placement within every swarm-owned Build cell.
-    let mut build_cells_by_swarm: HashMap<SwarmId, Vec<IVec2>> = HashMap::new();
-    for (cell, intent_cell) in grid.iter_active_cells() {
-        if !intent_cell.has(IntentKind::Build) {
-            continue;
-        }
-        for owner_id in intent_cell.owners(IntentKind::Build) {
-            build_cells_by_swarm.entry(owner_id).or_default().push(cell);
-        }
-    }
+    supply.begin_search();
+    let mut placement = None;
+    let kind = PlannedKind::ProductionFacility;
     for (swarm_entity, swarm_id) in &swarms {
-        let has_pending_facility = planned_facilities.iter().any(|(planned, owner)| {
-            planned.kind == PlannedKind::ProductionFacility && owner.0 == swarm_entity
-        });
-        if has_pending_facility {
-            pressure.set_ticks(*swarm_id, 0);
-            continue;
-        }
+        let pending = planned_facilities
+            .iter()
+            .any(|(planned, owner)| planned.kind == kind && owner.0 == swarm_entity);
+        let owned = |owner: &OwnerSwarm| owner.0 == swarm_entity;
         let mut counts = count_swarm_nanobots_by_type(*swarm_id, &nanobots);
-        let mut all_busy = true;
-        for (_, facility, _, _) in facilities.iter().filter(|(_, _, owner, condition)| {
-            owner.0 == swarm_entity && condition.is_none_or(SupportCondition::is_operational)
-        }) {
-            if let Some(kind) = facility.current_target {
-                *counts.entry(kind).or_default() += 1;
+        let mut operational = Vec::new();
+        let mut sustained = true;
+        for (facility, transform, owner, condition, streak) in &mut facilities {
+            if owned(owner) && condition.is_none_or(SupportCondition::is_operational) {
+                operational.push(*transform);
+                if let Some(kind) = facility.current_target {
+                    *counts.entry(kind).or_default() += 1;
+                }
+                sustained &= streak.0 >= STARTS_REQUIRED_FOR_EXPANSION;
             }
-            all_busy &= facility.is_busy(tuning.production.ticks_per_bot);
         }
-        let target = population_demand.most_underfilled_type(*swarm_id, &counts);
-        let pressure_continues = target.is_some() && all_busy;
-        let pressure_ticks = next_production_pressure_ticks(
-            pressure.ticks_for(*swarm_id),
-            pressure_continues,
-            tuning.production.pressure_ticks,
-        );
-        pressure.set_ticks(*swarm_id, pressure_ticks);
-        if pressure_ticks < tuning.production.pressure_ticks {
+
+        if pending || !population_demand.has_shortage(*swarm_id, &counts) {
+            pressure.set_ticks(*swarm_id, 0);
+            for (_, _, owner, _, mut streak) in &mut facilities {
+                if owned(owner) && streak.0 > 0 {
+                    streak.0 = 0;
+                }
+            }
             continue;
         }
-        if target.is_none() {
-            continue;
-        }
-        // Build-Zone constrained placement. The swarm must
-        // own at least one free Build cell. Without it,
-        // the swarm cannot plan a new facility and the
-        // system is a no-op for this swarm this tick.
+
+        let budget = if operational.is_empty() {
+            let delay = tuning.production.pressure_ticks;
+            let ticks = pressure.ticks_for(*swarm_id).saturating_add(1).min(delay);
+            pressure.set_ticks(*swarm_id, ticks);
+            if ticks < delay {
+                continue;
+            }
+            None
+        } else {
+            pressure.set_ticks(*swarm_id, 0);
+            if !sustained {
+                continue;
+            }
+            let Some(budget) = supply.budget(swarm_entity, *swarm_id, &operational, &grid, &tuning)
+            else {
+                continue;
+            };
+            Some(budget)
+        };
+
+        let (access_layout, obstacles, build_cells_by_swarm) = placement.get_or_insert_with(|| {
+            let mut obstacles: Vec<Obstacle> = deposits
+                .iter()
+                .map(|(deposit, transform)| {
+                    Obstacle::deposit(transform.translation.truncate(), deposit.radius)
+                })
+                .collect();
+            obstacles.extend(existing_targets.iter().map(Obstacle::structure));
+            let mut build_cells_by_swarm = HashMap::<SwarmId, Vec<IVec2>>::new();
+            for (cell, intent_cell) in grid.iter_active_cells() {
+                for owner in intent_cell.owners(IntentKind::Build) {
+                    build_cells_by_swarm.entry(owner).or_default().push(cell);
+                }
+            }
+            (access.snapshot(), obstacles, build_cells_by_swarm)
+        });
         let Some((build_cell, placement_pos)) =
             build_cells_by_swarm.get(swarm_id).and_then(|cells| {
-                crate::nanobot::placement::find_build_zone_placement_accepting(
+                crate::nanobot::placement::find_build_zone_placement_until(
                     cells,
-                    &obstacles,
-                    PlannedKind::ProductionFacility.footprint_half_extent(),
+                    obstacles,
+                    kind.footprint_half_extent(),
                     27,
                     |position| {
-                        access.accepts(
-                            &access_layout,
-                            &grid,
-                            *swarm_id,
-                            PlannedKind::ProductionFacility,
-                            position,
-                        )
+                        if !access.accepts(access_layout, &grid, *swarm_id, kind, position) {
+                            return (!access_layout.is_pending()).then_some(false);
+                        }
+                        let Some(budget) = &budget else {
+                            return Some(true);
+                        };
+                        let footprint = kind.footprint_transform(position.extend(0.0));
+                        supply.supplies_site(budget, &footprint)
                     },
                 )
             })
         else {
             continue;
         };
-        access_layout.reserve(
-            *swarm_id,
-            PlannedKind::ProductionFacility.footprint_transform(placement_pos.extend(0.0)),
-        );
+        let footprint = kind.footprint_transform(placement_pos.extend(0.0));
+        access_layout.reserve(*swarm_id, footprint);
+        obstacles.push(Obstacle::structure(&footprint));
         commands.spawn((
-            PlannedStructure::new(PlannedKind::ProductionFacility, build_cell)
+            PlannedStructure::new(kind, build_cell)
                 .with_work_budget(tuning.construction.work_ticks),
             OwnerSwarm(swarm_entity),
-            planned_visual_components(
-                PlannedKind::ProductionFacility,
-                &structure_sprites,
-                placement_pos,
-            ),
+            planned_visual_components(kind, &structure_sprites, placement_pos),
         ));
         pressure.set_ticks(*swarm_id, 0);
+        for (_, _, owner, _, mut streak) in &mut facilities {
+            if owned(owner) && streak.0 > 0 {
+                streak.0 = 0;
+            }
+        }
     }
 }
 
@@ -425,6 +417,7 @@ pub fn production_facility_pick_target_system(
             &mut ProductionFacility,
             &OwnerSwarm,
             Option<&SupportCondition>,
+            &mut FundedProduction,
         )>,
     )>,
     mut ledger: ResMut<ResourceLedger>,
@@ -454,7 +447,7 @@ pub fn production_facility_pick_target_system(
             .or_default() += 1;
     }
 
-    for (mut facility, owner, condition) in &mut facility_queries.p1() {
+    for (mut facility, owner, condition, mut streak) in &mut facility_queries.p1() {
         if condition.is_some_and(|condition| !condition.is_operational()) {
             continue;
         }
@@ -481,6 +474,9 @@ pub fn production_facility_pick_target_system(
             continue;
         };
         if facility.input_amount < tuning.production.cost_per_bot {
+            if streak.0 > 0 {
+                streak.0 = 0;
+            }
             if let Some(counters) = counters.as_deref_mut() {
                 counters.record(owner_id, BattleEvent::MineralStarvedFacilityTick);
             }
@@ -497,6 +493,9 @@ pub fn production_facility_pick_target_system(
                 owner_id,
                 BattleEvent::Consumed(tuning.production.cost_per_bot),
             );
+        }
+        if streak.0 < STARTS_REQUIRED_FOR_EXPANSION {
+            streak.0 += 1;
         }
         facility.current_target = Some(kind);
         facility.progress = 0;
@@ -520,6 +519,7 @@ pub fn production_facility_work_system(
         &OwnerSwarm,
         Option<&SupportCondition>,
         Option<&CombatIdentity>,
+        &mut FundedProduction,
     )>,
     swarms: Query<&SwarmId, With<Swarm>>,
     nanobots: Query<&Transform, With<Nanobot>>,
@@ -537,8 +537,14 @@ pub fn production_facility_work_system(
     let mut occupied: Vec<_> = nanobots.iter().map(|t| t.translation.truncate()).collect();
     let geometry = physical.snapshot();
     let mut ready = Vec::new();
-    for (entity, mut facility, _, _, condition, identity) in &mut facilities {
-        if condition.is_some_and(|c| !c.is_operational()) || facility.current_target.is_none() {
+    for (entity, mut facility, _, _, condition, identity, mut streak) in &mut facilities {
+        if condition.is_some_and(|c| !c.is_operational()) {
+            if streak.0 > 0 {
+                streak.0 = 0;
+            }
+            continue;
+        }
+        if facility.current_target.is_none() {
             continue;
         }
         facility.progress = facility
@@ -552,7 +558,8 @@ pub fn production_facility_work_system(
     }
     ready.sort_unstable_by_key(|(finished, key, entity)| (*finished, *key, entity.to_bits()));
     for (_, _, entity) in ready {
-        let Ok((_, mut facility, transform, owner, ..)) = facilities.get_mut(entity) else {
+        let Ok((_, mut facility, transform, owner, _, _, mut streak)) = facilities.get_mut(entity)
+        else {
             continue;
         };
         let Ok(swarm_id) = swarms.get(owner.0).copied() else {
@@ -582,6 +589,9 @@ pub fn production_facility_work_system(
             }
         }
         let Some(position) = exit else {
+            if streak.0 > 0 {
+                streak.0 = 0;
+            }
             continue;
         };
         let target = facility
@@ -648,32 +658,14 @@ pub(crate) fn reconcile_production_tuning(world: &mut World, old: &Tuning, new: 
     }
 }
 
-/// Plugin that wires the production systems into the Update
-/// schedule. The chain runs after `move_velocity_system` so the
-/// movement step has settled before production picks targets and
-/// spawns new nanobots. Auto-creation runs last in its own
-/// internal chain so it sees the post-pick / post-work state of
-/// the swarm and only spawns a new facility when the existing
-/// ones are all busy.
-///
-/// Cross-plugin ordering: the auto-creation system runs
-/// `before(sink_stockpile_demand_system)` so the production
-/// demand layer claims a Build cell *before* the
-/// sink-stockpile demand layer fills every Build cell with
-/// a Sink Stockpile plan. Without this ordering, a swarm
-/// with high unmet demand and a single Build cell would
-/// never plan a Production Facility -- the Sink Stockpile
-/// demand layer would claim the only cell first. The
-/// production facility now gets first pick of any free
-/// Build cell; the sink-stockpile demand layer then fills
-/// the remaining cells, matching the "logistics follow
-/// production" build order in the PRD.
+/// Produces Nanobots and plans facilities after movement settles.
 pub struct ProductionPlugin;
 
 impl Plugin for ProductionPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Tuning>()
             .init_resource::<ProductionPressure>()
+            .init_resource::<ExpansionHistory>()
             .init_resource::<FacilityClaimTimes>()
             .add_systems(
                 FixedUpdate,
@@ -688,6 +680,10 @@ impl Plugin for ProductionPlugin {
                 (
                     production_facility_pick_target_system,
                     production_facility_work_system,
+                    observe_expansion_supply
+                        .after(super::gather::worker_gather_delivery_system)
+                        .after(super::haul::hauler_delivery_system)
+                        .after(super::RegionalAllocationSet::Acquire),
                     production_facility_auto_creation_system
                         .before(crate::nanobot::planned::sink_stockpile_demand_system),
                 )
@@ -891,35 +887,6 @@ mod tests {
     //! facility behavior tests.
 
     use super::*;
-
-    #[test]
-    fn production_pressure_requires_consecutive_ticks() {
-        let mut ticks = 0;
-        for _ in 0..Tuning::default().production.pressure_ticks - 1 {
-            ticks = next_production_pressure_ticks(
-                ticks,
-                true,
-                Tuning::default().production.pressure_ticks,
-            );
-        }
-        assert_eq!(ticks, Tuning::default().production.pressure_ticks - 1);
-        assert_eq!(
-            next_production_pressure_ticks(
-                ticks,
-                false,
-                Tuning::default().production.pressure_ticks
-            ),
-            0
-        );
-        assert_eq!(
-            next_production_pressure_ticks(
-                Tuning::default().production.pressure_ticks,
-                true,
-                Tuning::default().production.pressure_ticks
-            ),
-            Tuning::default().production.pressure_ticks,
-        );
-    }
 
     #[test]
     fn production_facility_starts_idle() {

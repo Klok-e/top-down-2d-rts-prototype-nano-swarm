@@ -6,4 +6,4 @@ Production capacity grows through stable, owner-scoped commitments rather than B
 
 [ADR-0019](0019-demand-driven-automatic-production.md) removes Production Priority while retaining pressure from every typed shortage.
 
-The Production Pressure requirement for swarms with operational facilities has been revised. [ADR-0041](0041-require-funded-production-and-spare-delivery-for-expansion.md)
+The busy-tick and fresh observation window rules for swarms with operational facilities were superseded by funded production streaks and a rolling supply window. [ADR-0041](0041-require-funded-production-and-spare-delivery-for-expansion.md)

@@ -50,12 +50,8 @@ pub enum PlannedKind {
     /// builds it through the same lifecycle as the Source
     /// Stockpile.
     SinkStockpile,
-    /// Completes into a [`ProductionFacility`]. The kind
-    /// emerges from production demand pressure (issue #27)
-    /// rather than from raw Build paint: the auto-creation
-    /// system plans one inside an owned Build Zone cell when
-    /// existing capacity is too busy. The completed facility
-    /// selects from current Population Demand after funding.
+    /// Completes into a [`ProductionFacility`]. The planner uses owned Build
+    /// paint for recovery or expansion justified by funding and spare delivery.
     ProductionFacility,
     /// Completes into a [`crate::nanobot::Charger`]. The
     /// kind emerges when a low-Charge Defender has no available

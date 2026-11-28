@@ -364,6 +364,32 @@ impl Navigation {
         }
         RouteOutcome::Unreachable
     }
+    async fn async_delivery_route(&self, start: Vec2, goal: RouteGoal) -> RouteOutcome {
+        let paint = PaintCosts::default();
+        let costs = RouteCosts::physical(&paint);
+        let RouteGoal::Interaction(destination) = goal else {
+            return self.async_solve(start, goal, costs, false).await;
+        };
+        let mut shortest = None::<Route>;
+        for dropoff in destination.candidates(start) {
+            WorkUnit::new().await;
+            // Candidates are ordered by straight-line distance, a lower bound for detours.
+            if shortest
+                .as_ref()
+                .is_some_and(|route| start.distance(dropoff) >= route.cost)
+            {
+                break;
+            }
+            if let RouteOutcome::Found(route) =
+                self.async_route_search(start, dropoff, costs, false).await
+                && shortest.as_ref().is_none_or(|best| route.cost < best.cost)
+            {
+                shortest = Some(route);
+            }
+        }
+        shortest.map_or(RouteOutcome::Unreachable, RouteOutcome::Found)
+    }
+
     async fn async_connectivity(&self, start: Vec2, goal: RouteGoal) -> RouteOutcome {
         if !self.async_point_clear(start).await {
             return RouteOutcome::Unreachable;
@@ -768,6 +794,7 @@ struct Request {
     movement_paint: Option<Arc<PaintCosts>>,
     result: RouteStatus,
     access: Option<Arc<AccessCheck>>,
+    delivery_footprint: Option<Obstacle>,
 }
 #[derive(Default)]
 pub(super) struct Scheduler {
@@ -880,10 +907,29 @@ impl Navigation {
                 movement_paint: None,
                 result: RouteStatus::Pending,
                 access: None,
+                delivery_footprint: None,
             },
         );
         id
     }
+    /// Refine a delivery path after hypothetical completion on the background budget.
+    pub(crate) fn request_delivery_route(
+        &self,
+        start: Vec2,
+        goal: RouteGoal,
+        footprint: Obstacle,
+    ) -> RouteRequestId {
+        let id = self.request(start, goal, SwarmId::PLAYER, false, RoutePriority::Routine);
+        let mut scheduler = self.scheduler.lock().unwrap();
+        let request = scheduler
+            .requests
+            .get_mut(&id)
+            .expect("route was just queued");
+        request.purpose = RequestPurpose::Connectivity;
+        request.delivery_footprint = Some(footprint);
+        id
+    }
+
     /// A committed route with diagnostic ownership and explicit cancellation by its caller.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn request_owned(
@@ -1103,6 +1149,15 @@ impl Navigation {
                 // Hypothetical construction geometry derives from the main hierarchy.
                 let snapshot = if request.access.is_some() {
                     Arc::new(self.shared_snapshot())
+                } else if let Some(footprint) = request.delivery_footprint {
+                    let obstacles = self
+                        .obstacles
+                        .iter()
+                        .chain(&self.clearing)
+                        .copied()
+                        .chain([footprint])
+                        .collect();
+                    Arc::new(self.variant(obstacles))
                 } else {
                     self.request_geometry(request.start)
                 };
@@ -1110,10 +1165,14 @@ impl Navigation {
                     (request.start, request.goal, request.swarm, request.hauler);
                 let access = request.access.clone();
                 let traffic = request.traffic.clone();
+                let delivery = request.delivery_footprint.is_some();
                 let connectivity = request.purpose == RequestPurpose::Connectivity;
                 request.future = Some(Box::pin(async move {
                     if let Some(check) = access {
                         return snapshot.async_access(&check, &paint, None).await;
+                    }
+                    if delivery {
+                        return snapshot.async_delivery_route(start, goal).await;
                     }
                     if connectivity {
                         return snapshot.async_connectivity(start, goal).await;
