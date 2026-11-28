@@ -13,7 +13,7 @@ use bevy::prelude::*;
 #[derive(Clone, Copy)]
 pub(in crate::nanobot) struct DeliveryEstimate {
     first_unload: u64,
-    amount: u32,
+    pub amount: u32,
 }
 
 fn travel_ticks(distance: f32, speed: f32) -> u64 {
@@ -44,18 +44,29 @@ impl DeliveryEstimate {
         }
     }
 
-    pub fn pickup(
-        amount: u32,
-        travel_to_pickup: f32,
-        travel_to_facility: f32,
-        logistics: &LogisticsTuning,
-    ) -> Self {
-        let arrival = travel_ticks(travel_to_pickup, logistics.bot_speed)
-            + transfer_ticks(amount, logistics)
-            + travel_ticks(travel_to_facility, logistics.bot_speed)
-            + 2;
-        Self::new(arrival, amount, 0, logistics)
+    fn unloaded_by(self, tick: u64, interval: u64, pulse: u32) -> u32 {
+        tick.checked_sub(self.first_unload).map_or(0, |elapsed| {
+            (1 + elapsed / interval)
+                .saturating_mul(u64::from(pulse))
+                .min(u64::from(self.amount)) as u32
+        })
     }
+}
+
+fn first_tick(limit: u64, reached: impl Fn(u64) -> bool) -> Option<u64> {
+    if !reached(limit) {
+        return None;
+    }
+    let (mut lower, mut upper) = (0, limit);
+    while lower < upper {
+        let mid = lower + (upper - lower) / 2;
+        if reached(mid) {
+            upper = mid;
+        } else {
+            lower = mid + 1;
+        }
+    }
+    Some(lower)
 }
 
 pub(in crate::nanobot) struct RestartForecast {
@@ -99,13 +110,126 @@ impl RestartForecast {
         self.baseline = self.funding_tick(None, logistics);
     }
 
-    pub fn funding_advancement(
+    pub fn best_pickup(
+        &self,
+        usual_amount: u32,
+        travel_to_pickup: f32,
+        travel_to_facility: f32,
+        logistics: &LogisticsTuning,
+    ) -> (DeliveryEstimate, Option<u64>) {
+        let travel = travel_ticks(travel_to_pickup, logistics.bot_speed)
+            + travel_ticks(travel_to_facility, logistics.bot_speed)
+            + 2;
+        let pickup = |amount| {
+            DeliveryEstimate::new(
+                travel + transfer_ticks(amount, logistics),
+                amount,
+                0,
+                logistics,
+            )
+        };
+        let usual = pickup(usual_amount);
+        let mut best = (usual, self.funding_advancement(usual, logistics));
+        let pulse = logistics.hauler_transfer_per_pulse;
+        let interval = u64::from(logistics.material_work_ticks);
+        let needed = self.shortfall();
+        let short_limit = needed.min((usual_amount.div_ceil(pulse) - 1) * pulse);
+        if short_limit == 0 || self.funded_by_due_tick() {
+            return best;
+        }
+
+        let incoming = |tick| {
+            self.deliveries.iter().fold(0u32, |sum, delivery| {
+                sum.saturating_add(delivery.unloaded_by(tick, interval, pulse))
+            })
+        };
+        let latest_unload = self
+            .deliveries
+            .iter()
+            .map(|delivery| {
+                delivery.first_unload + transfer_ticks(delivery.amount, logistics) - interval
+            })
+            .fold(
+                travel + 2 * transfer_ticks(short_limit, logistics),
+                u64::max,
+            );
+        let deadline = best
+            .1
+            .into_iter()
+            .chain(self.baseline)
+            .fold(latest_unload, |limit, tick| {
+                limit.min(tick.saturating_sub(1))
+            });
+        let Some(earliest) = first_tick(deadline, |tick| {
+            // Each full pulse delivered by this trip takes one load pulse and
+            // one unload pulse. Balance those phases to maximize its delivery.
+            let transfer_budget = tick.saturating_sub(travel) / interval;
+            let delivered =
+                ((transfer_budget / 2) * u64::from(pulse)).min(u64::from(short_limit)) as u32;
+            incoming(tick).saturating_add(delivered) >= needed
+        }) else {
+            return best;
+        };
+        let amount = needed.saturating_sub(incoming(earliest));
+        if amount > 0 {
+            let candidate = pickup(amount);
+            if let Some(tick) = self.funding_advancement(candidate, logistics)
+                && best.1.is_none_or(|best_tick| tick < best_tick)
+            {
+                best = (candidate, Some(tick));
+                if tick == earliest {
+                    return best;
+                }
+            }
+        }
+
+        // Unloads can lose pulses to a full hopper before the first already
+        // funded cycle starts. Search the remaining load pulse counts using the
+        // physical forecast whenever the unconstrained deadline cannot be met.
+        let mut ranges = vec![(1, short_limit.div_ceil(pulse))];
+        while let Some((first, last)) = ranges.pop() {
+            let first_unload = pickup((first - 1) * pulse + 1).first_unload;
+            let amount = short_limit.min(last.saturating_mul(pulse));
+            // Give the upper bound enough extra cargo to cover every pulse
+            // before the latest possible arrival in the range.
+            let upper_bound = DeliveryEstimate {
+                first_unload,
+                amount: amount.saturating_add((last - first).saturating_mul(pulse)),
+            };
+            let Some(tick) = self.funding_advancement(upper_bound, logistics) else {
+                continue;
+            };
+            if best.1.is_some_and(|best_tick| tick >= best_tick) {
+                continue;
+            }
+            if first == last {
+                best = (upper_bound, Some(tick));
+                if tick == earliest {
+                    break;
+                }
+            } else {
+                let mid = first + (last - first) / 2;
+                ranges.extend([(mid + 1, last), (first, mid)]);
+            }
+        }
+        best
+    }
+
+    fn shortfall(&self) -> u32 {
+        (self.remaining_starts * self.cycle_cost).saturating_sub(self.buffered)
+    }
+
+    fn funded_by_due_tick(&self) -> bool {
+        let due = self.next_start + u64::from(self.remaining_starts - 1) * self.cycle_ticks;
+        self.baseline.is_some_and(|funded| funded <= due)
+    }
+
+    fn funding_advancement(
         &self,
         candidate: DeliveryEstimate,
         logistics: &LogisticsTuning,
     ) -> Option<u64> {
-        let due = self.next_start + u64::from(self.remaining_starts - 1) * self.cycle_ticks;
-        if self.baseline.is_some_and(|funded| funded <= due) {
+        if self.funded_by_due_tick() {
             return None;
         }
         let funded = self.funding_tick(Some(candidate), logistics)?;
@@ -119,7 +243,7 @@ impl RestartForecast {
         candidate: Option<DeliveryEstimate>,
         logistics: &LogisticsTuning,
     ) -> Option<u64> {
-        let needed = (self.remaining_starts * self.cycle_cost).saturating_sub(self.buffered);
+        let needed = self.shortfall();
         let deliveries = self.deliveries.iter().copied().chain(candidate);
         if needed == 0 {
             return Some(0);
