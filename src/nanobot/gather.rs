@@ -353,6 +353,46 @@ pub(crate) fn find_nearest_stockpile(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(crate) fn find_reachable_drop_off(
+    kind: ResourceKind,
+    position: Vec2,
+    swarm: SwarmId,
+    minimum_capacity: u32,
+    navigation: &Navigation,
+    stockpiles: &GatherStockpiles,
+    swarms: &Query<&SwarmId, With<Swarm>>,
+    identities: &Query<&super::CombatIdentity>,
+    area: DropOffArea,
+    available_room: impl FnMut(Entity, &Stockpile) -> u32,
+) -> (Option<(Entity, u32)>, bool) {
+    let mut pending = false;
+    let target = find_nearest_stockpile(
+        kind,
+        position,
+        swarm,
+        minimum_capacity,
+        None,
+        stockpiles,
+        swarms,
+        identities,
+        Some(area),
+        available_room,
+        |transform| match navigation.query_connectivity(
+            position,
+            RouteGoal::Interaction(InteractionRegion::structure(transform)),
+        ) {
+            ConnectivityStatus::Connected { .. } => true,
+            ConnectivityStatus::Pending => {
+                pending = true;
+                false
+            }
+            ConnectivityStatus::Unreachable => false,
+        },
+    );
+    (target, pending)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn eligible_drop_off(
     kind: ResourceKind,
     worker_swarm: SwarmId,
@@ -966,11 +1006,11 @@ pub fn worker_gather_arrive_system(
             continue;
         }
 
-        let area = Some(DropOffArea::for_deposit(
+        let area = DropOffArea::for_deposit(
             deposit_transform.translation.truncate(),
             deposit.radius,
             &tuning,
-        ));
+        );
         if let Some((_, claim)) = claim {
             let Some((_, stockpile, transform, ..)) = stockpiles
                 .get(claim.destination)
@@ -985,7 +1025,7 @@ pub fn worker_gather_arrive_system(
                         *owner,
                         *condition,
                         &swarms,
-                        area,
+                        Some(area),
                     )
                 })
             else {
@@ -1014,13 +1054,12 @@ pub fn worker_gather_arrive_system(
             }
             continue;
         }
-        let mut pending_navigation = false;
-        let destination = find_nearest_stockpile(
+        let (destination, pending_navigation) = find_reachable_drop_off(
             deposit.kind,
             worker_pos,
             swarm_member.0,
             1,
-            None,
+            &navigation,
             &stockpiles,
             &swarms,
             &identities,
@@ -1034,17 +1073,6 @@ pub fn worker_gather_arrive_system(
                             .unwrap_or(0),
                     ),
                 )
-            },
-            |destination_transform| match navigation.query_connectivity(
-                worker_pos,
-                RouteGoal::Interaction(InteractionRegion::structure(destination_transform)),
-            ) {
-                ConnectivityStatus::Connected { .. } => true,
-                ConnectivityStatus::Pending => {
-                    pending_navigation = true;
-                    false
-                }
-                ConnectivityStatus::Unreachable => false,
             },
         );
         let Some((destination, destination_available)) = destination else {

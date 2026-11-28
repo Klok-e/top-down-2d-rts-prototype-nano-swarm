@@ -15,7 +15,7 @@ use crate::{
         Cargo, CombatIdentity, GatherAssignment, InteractionRegion, LogisticsReservation, Nanobot,
         NanobotType, PlannedStructure, SpareGathering, Swarm, SwarmId, SwarmMember,
         gather::{
-            DropOffArea, GatherStockpiles, eligible_drop_off, find_nearest_stockpile,
+            DropOffArea, GatherStockpiles, eligible_drop_off, find_reachable_drop_off,
             painted_gather_regions,
         },
         gather_worker_slots,
@@ -408,39 +408,22 @@ impl GatheringInputs<'_, '_> {
         min_room: u32,
         reserved: &BTreeMap<Entity, u32>,
     ) -> (Option<(Entity, u32)>, bool) {
-        let mut pending = false;
-        let target = find_nearest_stockpile(
+        find_reachable_drop_off(
             deposit.kind,
             position,
             swarm,
             min_room,
-            None,
+            navigation,
             &self.stockpiles,
             &self.swarms,
             &self.identities,
-            Some(DropOffArea::for_deposit(
-                transform.translation.truncate(),
-                deposit.radius,
-                tuning,
-            )),
+            DropOffArea::for_deposit(transform.translation.truncate(), deposit.radius, tuning),
             |entity, stockpile| {
                 let room = stockpile
                     .free_space()
                     .saturating_sub(reserved.get(&entity).copied().unwrap_or_default());
                 if room < min_room { 0 } else { room }
             },
-            |transform| match navigation.query_connectivity(
-                position,
-                RouteGoal::Interaction(InteractionRegion::structure(transform)),
-            ) {
-                ConnectivityStatus::Connected { .. } => true,
-                ConnectivityStatus::Pending => {
-                    pending = true;
-                    false
-                }
-                ConnectivityStatus::Unreachable => false,
-            },
-        );
-        (target, pending)
+        )
     }
 }

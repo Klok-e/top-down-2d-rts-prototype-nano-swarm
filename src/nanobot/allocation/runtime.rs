@@ -17,9 +17,9 @@ use gathering::{
 
 use super::{
     ActionableOpportunity, ActionableProjection, AllocationCandidate, AllocationClock,
-    AllocationRegion, CandidateBounds, CategoryEligibility, CategoryWeights, OpportunityCategory,
-    OpportunityTarget, RegionalLease, choose_bounded_candidate_from_ordered_regions_with_claims,
-    outward_pull_budgets, pressure_map,
+    AllocationRegion, CandidateBounds, CategoryEligibility, CategoryValues, CategoryWeights,
+    OpportunityCategory, OpportunityTarget, RegionalLease, RegionalPullBudget,
+    choose_bounded_candidate_from_ordered_regions_with_claims, outward_pull_budgets, pressure_map,
 };
 use crate::{
     nanobot::{
@@ -650,14 +650,13 @@ pub fn regional_allocation_acquisition_system(
                 swarm: swarm.0,
                 kind: *kind,
             };
-            if lease.is_some_and(|lease| lease.category == OpportunityCategory::Gather)
-                && terminal.gathering.active.get(entity).is_ok_and(
-                    |(_, _, _, _, cargo, _, spare)| {
-                        spare && cargo.is_none_or(|cargo| cargo.amount == 0)
-                    },
-                )
+            if let Some(lease) = lease
+                && lease.category == OpportunityCategory::Gather
+                && let Ok((_, _, _, Some(_), cargo, Some(reservation), true)) =
+                    terminal.gathering.active.get(entity)
+                && cargo.is_none_or(|cargo| cargo.amount == 0)
             {
-                spare_workers.push(bot);
+                spare_workers.push((bot, lease, reservation));
             }
             (lease.is_none() && !busy.contains(entity)).then_some(bot)
         })
@@ -679,8 +678,7 @@ pub fn regional_allocation_acquisition_system(
         .copied()
         .filter(|bot| bot.kind == NanobotType::Worker)
         .collect::<Vec<_>>();
-    spare_workers.sort_by_key(|bot| bot.entity.to_bits());
-    candidates.extend(spare_workers);
+    spare_workers.sort_by_key(|(bot, ..)| bot.entity.to_bits());
 
     let work_by_kind = NanobotType::ALL.map(|kind| {
         projection
@@ -695,8 +693,12 @@ pub fn regional_allocation_acquisition_system(
             })
             .collect::<Vec<_>>()
     });
-    let candidate_swarms = candidates
-        .iter()
+    let all_candidates = || {
+        candidates
+            .iter()
+            .chain(spare_workers.iter().map(|(bot, ..)| bot))
+    };
+    let candidate_swarms = all_candidates()
         .map(|bot| bot.swarm)
         .collect::<std::collections::BTreeSet<_>>();
     let mut spare_counts = BTreeMap::<SwarmId, u32>::new();
@@ -773,9 +775,10 @@ pub fn regional_allocation_acquisition_system(
     }
 
     let mut capacities = BTreeMap::<(SwarmId, AllocationRegion, usize), u32>::new();
-    let mut source_regions = std::collections::BTreeSet::new();
+    let source_regions = all_candidates()
+        .map(|bot| (bot.swarm, bot.region))
+        .collect::<std::collections::BTreeSet<_>>();
     for bot in &candidates {
-        source_regions.insert((bot.swarm, bot.region));
         let capacity = capacities
             .entry((bot.swarm, bot.region, kind_index(bot.kind)))
             .or_default();
@@ -796,17 +799,18 @@ pub fn regional_allocation_acquisition_system(
                     .iter()
                     .map(|work| {
                         let claims = claims_for(&claim_counts, *work);
-                        let available_work = if gather_ring_full(*work, claims, &deposits) {
-                            0
-                        } else {
-                            gather_quota_work(
-                                &gather_open,
-                                *swarm,
-                                *work,
-                                unclaimed_work(*work, claims, &tuning),
-                                &tuning,
-                            )
-                        };
+                        let available_work =
+                            if gather_ring_full(*work, &ring_claims, false, &deposits) {
+                                0
+                            } else {
+                                gather_quota_work(
+                                    &gather_open,
+                                    *swarm,
+                                    *work,
+                                    unclaimed_work(*work, claims, &tuning),
+                                    &tuning,
+                                )
+                            };
                         ActionableOpportunity {
                             available_work,
                             ..*work
@@ -867,20 +871,29 @@ pub fn regional_allocation_acquisition_system(
     let mut assigned_workers = std::collections::BTreeSet::new();
 
     let mut restart_refills = None;
-    for bot in candidates {
+    let ordinary = candidates.into_iter().map(|bot| (bot, None));
+    let preemptible = spare_workers
+        .into_iter()
+        .map(|(bot, lease, reservation)| (bot, Some((lease, reservation))));
+    for (bot, spare) in ordinary.chain(preemptible) {
         let bot_key = (bot.swarm, bot.region, kind_index(bot.kind));
-        let Some(pull) = pulls.get(&bot_key).copied() else {
-            continue;
+        // An empty spare can cover any reachable required job that remains
+        // after ordinary allocation, even if its region's pull is exhausted.
+        let pull = if spare.is_some() {
+            RegionalPullBudget {
+                source_region: bot.region,
+                categories: CategoryValues::new([1, 1, 1, 0]),
+            }
+        } else {
+            let Some(pull) = pulls.get(&bot_key).copied() else {
+                continue;
+            };
+            pull
         };
         let Some(ordered) = ordered_regions.get(&bot_key) else {
             continue;
         };
-        let (_, _, _, _, _, old_lease, rejected) = bots.get(bot.entity).unwrap();
-        let spare = old_lease.and_then(|lease| {
-            let (_, _, _, _, _, reservation, spare) =
-                terminal.gathering.active.get(bot.entity).ok()?;
-            spare.then_some((lease, reservation?))
-        });
+        let (_, _, _, _, _, _, rejected) = bots.get(bot.entity).unwrap();
         let work = if bot.kind == NanobotType::Hauler {
             let refills = restart_refills.get_or_insert_with(|| {
                 terminal
@@ -944,16 +957,9 @@ pub fn regional_allocation_acquisition_system(
                     });
                     let claims =
                         claims_for(&claim_counts, work).saturating_sub(usize::from(own_claim));
-                    if !target_available(
-                        &tuning,
-                        bot,
-                        work,
-                        claims,
-                        &planned_workers,
-                        &deposits,
-                        &structures,
-                        &stockpiles,
-                    ) {
+                    if claims >= opportunity_capacity(work, &tuning)
+                        || gather_ring_full(work, &ring_claims, own_claim, &deposits)
+                    {
                         return None;
                     }
                     let reachable = |region| {
@@ -979,6 +985,15 @@ pub fn regional_allocation_acquisition_system(
                             )?;
                             gather_approaches.insert(deposit, approach);
                             return Some(claims);
+                        }
+                        OpportunityTarget::PlannedBuild { structure, .. }
+                            if planned_workers
+                                .get(&structure.to_bits())
+                                .is_none_or(|worker| {
+                                    worker.is_some() && *worker != Some(bot.entity.to_bits())
+                                }) =>
+                        {
+                            None
                         }
                         OpportunityTarget::PlannedBuild { structure, .. }
                         | OpportunityTarget::Maintenance { structure } => structures
@@ -1064,7 +1079,9 @@ pub fn regional_allocation_acquisition_system(
         *claim_counts
             .entry(claim_key(work.target, lease_owner))
             .or_insert(0) += 1;
-        if let Some(pull) = pulls.get_mut(&bot_key) {
+        if spare.is_none()
+            && let Some(pull) = pulls.get_mut(&bot_key)
+        {
             let remaining = pull.categories.get(work.category).saturating_sub(1);
             pull.categories.set(work.category, remaining);
         }
@@ -1419,32 +1436,6 @@ fn allocation_candidate(bot: BotSnapshot) -> AllocationCandidate {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn target_available(
-    tuning: &crate::tuning::Tuning,
-    bot: BotSnapshot,
-    work: ActionableOpportunity,
-    claims: usize,
-    planned_workers: &BTreeMap<u64, Option<u64>>,
-    deposits: &Query<(&ResourceDeposit, &Transform)>,
-    structures: &Query<&Transform>,
-    stockpiles: &Query<(&Stockpile, &Transform, Option<&StockpileRole>)>,
-) -> bool {
-    if claims >= opportunity_capacity(work, tuning) {
-        return false;
-    }
-    match work.target {
-        OpportunityTarget::Gather { .. } => !gather_ring_full(work, claims, deposits),
-        OpportunityTarget::PlannedBuild { structure, .. } => planned_workers
-            .get(&structure.to_bits())
-            .is_some_and(|worker| worker.is_none() || *worker == Some(bot.entity.to_bits())),
-        OpportunityTarget::Maintenance { structure } => structures.get(structure).is_ok(),
-        OpportunityTarget::Haul { source, .. } => stockpiles
-            .get(source)
-            .is_ok_and(|(stockpile, _, _)| stockpile.amount > 0 && work.available_work > 0),
-    }
-}
-
 /// Gather work once the swarm's gatherers have reached its Gather Quota.
 fn gather_closed(
     gather_open: &BTreeMap<SwarmId, u32>,
@@ -1476,12 +1467,18 @@ fn gather_quota_work(
 /// deposit has no room at all.
 fn gather_ring_full(
     work: ActionableOpportunity,
-    claims: usize,
+    ring_claims: &BTreeMap<Entity, usize>,
+    reclaim: bool,
     deposits: &Query<(&ResourceDeposit, &Transform)>,
 ) -> bool {
     let OpportunityTarget::Gather { deposit, .. } = work.target else {
         return false;
     };
+    let claims = ring_claims
+        .get(&deposit)
+        .copied()
+        .unwrap_or_default()
+        .saturating_sub(usize::from(reclaim));
     deposits
         .get(deposit)
         .ok()
