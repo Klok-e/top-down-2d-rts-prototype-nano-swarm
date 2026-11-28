@@ -89,6 +89,24 @@ pub struct OwnerSwarm(pub Entity);
 #[derive(Component, Default)]
 pub struct FundedProduction(u8);
 
+/// Starts still due, including the first cycle that needed a delivery
+/// when the current demand returned.
+#[derive(Component, Default)]
+pub struct RestartCycles(pub(super) Option<u32>);
+
+impl RestartCycles {
+    fn update(&mut self, tuning: &Tuning, facility: &ProductionFacility, missing: u32) {
+        let cost = tuning.production.cost_per_bot;
+        let covered = facility.input_amount / cost;
+        self.0 = self
+            .0
+            .or_else(|| (!facility.demand_waiting).then(|| covered + 1))
+            .filter(|&starts| starts > covered)
+            .map(|starts| starts.min(covered + 1))
+            .filter(|&starts| starts <= missing);
+    }
+}
+
 const STARTS_REQUIRED_FOR_EXPANSION: u8 = 4;
 
 /// An automatic production facility. Spawned by
@@ -97,7 +115,7 @@ const STARTS_REQUIRED_FOR_EXPANSION: u8 = 4;
 /// carried on this component so multiple facilities can run
 /// independently.
 #[derive(Debug, Component, Clone)]
-#[require(FundedProduction)]
+#[require(FundedProduction, RestartCycles)]
 pub struct ProductionFacility {
     /// Tick counter within the current production cycle. Reset
     /// to 0 when a new cycle starts; reaches
@@ -126,9 +144,8 @@ pub struct ProductionFacility {
     /// queued space beyond it (see [`Self::claimable_capacity`]), but unload
     /// only into its real free space.
     pub input_capacity: u32,
-    /// The owner swarm had unmet Population Demand when targets were last
-    /// picked, so the next funded cycle starts as soon as the hopper holds its
-    /// cost. Lets haulers claim queued space even while the facility idles.
+    /// The owner swarm still has unmet Population Demand, so the next funded
+    /// cycle starts as soon as the hopper holds its cost. Lets haulers claim queued space even while the facility idles.
     pub demand_waiting: bool,
     /// Space beyond the hopper Haulers may claim while the facility is busy:
     /// what it consumes during one delivery's lead time, in whole Hauler
@@ -418,6 +435,7 @@ pub fn production_facility_pick_target_system(
             &OwnerSwarm,
             Option<&SupportCondition>,
             &mut FundedProduction,
+            &mut RestartCycles,
         )>,
     )>,
     mut ledger: ResMut<ResourceLedger>,
@@ -447,11 +465,8 @@ pub fn production_facility_pick_target_system(
             .or_default() += 1;
     }
 
-    for (mut facility, owner, condition, mut streak) in &mut facility_queries.p1() {
+    for (mut facility, owner, condition, mut streak, mut restart) in &mut facility_queries.p1() {
         if condition.is_some_and(|condition| !condition.is_operational()) {
-            continue;
-        }
-        if facility.current_target.is_some() {
             continue;
         }
 
@@ -466,11 +481,22 @@ pub fn production_facility_pick_target_system(
             .entry(owner_id)
             .or_insert_with(|| count_swarm_nanobots_by_type(owner_id, &nanobots));
         let target = population_demand.most_underfilled_type(owner_id, counts);
+        if !facility.demand_waiting || restart.0.is_some() {
+            let missing = NanobotType::ALL
+                .into_iter()
+                .map(|kind| {
+                    population_demand
+                        .desired_for(owner_id, kind)
+                        .saturating_sub(counts.get(&kind).copied().unwrap_or_default())
+                })
+                .sum();
+            restart.update(&tuning, &facility, missing);
+        }
         // Write only on change so haul projection is not invalidated every tick.
         if facility.demand_waiting != target.is_some() {
             facility.demand_waiting = target.is_some();
         }
-        let Some(kind) = target else {
+        let Some(kind) = target.filter(|_| facility.current_target.is_none()) else {
             continue;
         };
         if facility.input_amount < tuning.production.cost_per_bot {
@@ -499,6 +525,9 @@ pub fn production_facility_pick_target_system(
         }
         facility.current_target = Some(kind);
         facility.progress = 0;
+        if let Some(starts) = &mut restart.0 {
+            *starts -= 1;
+        }
         *counts.entry(kind).or_default() += 1;
     }
 }
@@ -672,6 +701,7 @@ impl Plugin for ProductionPlugin {
                 (facility_lead_time_system, facility_delivery_window_system)
                     .chain()
                     .after(crate::nanobot::RegionalAllocationSet::Invalidate)
+                    .after(production_facility_pick_target_system)
                     .before(crate::nanobot::RegionalAllocationSet::Acquire)
                     .run_if(crate::nanobot::allocation::allocation_tick_due),
             )

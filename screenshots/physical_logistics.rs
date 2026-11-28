@@ -6,9 +6,9 @@ use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Cargo, Charger, HaulerAssignment, Health, InteractionRegion, LogisticsReservation,
-        MaterialWorkProgress, Nanobot, NanobotType, OwnerSwarm, ProductionFacility, Swarm, SwarmId,
-        SwarmMember,
+        Cargo, Charger, HaulerAssignment, HaulerLoading, Health, InteractionRegion,
+        LogisticsReservation, MaterialWorkProgress, Nanobot, NanobotType, OwnerSwarm,
+        ProductionFacility, Swarm, SwarmId, SwarmMember,
     },
     resources::{ResourceKind, Stockpile, StockpileRole},
     structure_overlay::{
@@ -36,7 +36,7 @@ struct Delivery {
 
 pub fn physical_logistics(ctx: &mut TestContext) -> TestFlow {
     if ctx.frame == 2 {
-        focus_camera(ctx.world);
+        focus_camera(ctx.world, Vec2::ZERO, 0.45);
         clear_nanobots_and_sprite_entities(ctx.world);
         despawn_match_banner(ctx.world);
         let targets = spawn_scene(ctx.world);
@@ -144,14 +144,14 @@ fn assert_match_banner_absent(world: &mut World) {
     );
 }
 
-fn focus_camera(world: &mut World) {
+fn focus_camera(world: &mut World, center: Vec2, scale: f32) {
     let mut query = world.query::<(&mut Transform, &mut Projection, &mut CameraZoom2d)>();
     for (mut transform, mut projection, mut zoom) in query.iter_mut(world) {
-        transform.translation.x = 0.0;
-        transform.translation.y = 0.0;
+        transform.translation.x = center.x;
+        transform.translation.y = center.y;
         zoom.zoom = 1.0;
         if let Projection::Orthographic(ortho) = &mut *projection {
-            ortho.scale = 0.45;
+            ortho.scale = scale;
         }
     }
 }
@@ -309,5 +309,196 @@ fn assert_scene_indicators(world: &mut World) {
                 .is_some_and(|segment| segment.kind != StructureOverlaySegmentKind::Physical)
         );
         assert!(entity.get::<Sprite>().unwrap().custom_size.unwrap().x > 0.0);
+    }
+}
+
+#[derive(Resource)]
+struct RestartScene {
+    facility: Entity,
+    fast_pickup: Entity,
+    fast_hauler: Entity,
+    slow_hauler: Entity,
+    phase: RestartCapture,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RestartCapture {
+    AwaitingPickup,
+    Carrying,
+    Producing,
+    Finished,
+}
+
+pub fn restart_refill(ctx: &mut TestContext) -> TestFlow {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::StrategicController;
+
+    if ctx.frame == 2 {
+        focus_camera(ctx.world, Vec2::new(0.0, 48.0), 0.62);
+        clear_nanobots_and_sprite_entities(ctx.world);
+        despawn_match_banner(ctx.world);
+        let controllers = ctx
+            .world
+            .query_filtered::<Entity, With<StrategicController>>()
+            .iter(ctx.world)
+            .collect::<Vec<_>>();
+        for controller in controllers {
+            ctx.world
+                .entity_mut(controller)
+                .remove::<StrategicController>();
+        }
+        let mut grid = IntentGrid::new(16, 16);
+        grid.paint(IVec2::ZERO, IntentKind::Build, SwarmId::PLAYER);
+        for cell in [IVec2::NEG_X, IVec2::ZERO] {
+            grid.paint(cell, IntentKind::Gather, SwarmId::PLAYER);
+        }
+        ctx.world.insert_resource(grid);
+        let scene = spawn_restart_scene(ctx.world);
+        ctx.world.insert_resource(scene);
+    }
+    if ctx.frame <= 2 {
+        return TestFlow::Continue;
+    }
+    if ctx.frame == 3 {
+        let mut grid = ctx.world.resource_mut::<IntentGrid>();
+        for x in -2..=2 {
+            grid.paint(IVec2::new(x, 2), IntentKind::Defend, SwarmId::PLAYER);
+        }
+        return TestFlow::Continue;
+    }
+
+    let scene = ctx.world.resource::<RestartScene>();
+    let facility = ctx.world.get::<ProductionFacility>(scene.facility).unwrap();
+    let fast_claim = ctx.world.get::<LogisticsReservation>(scene.fast_hauler);
+    let fast_cargo = ctx
+        .world
+        .get::<Cargo>(scene.fast_hauler)
+        .map_or(0, |cargo| cargo.amount);
+    let slow_cargo = ctx
+        .world
+        .get::<Cargo>(scene.slow_hauler)
+        .map_or(0, |cargo| cargo.amount);
+    let (phase, screenshot) = match scene.phase {
+        RestartCapture::AwaitingPickup if fast_claim.is_some() => {
+            let claim = fast_claim.unwrap();
+            assert_eq!(claim.source, scene.fast_pickup);
+            assert_eq!(claim.destination, scene.facility);
+            assert_eq!(claim.amount, 5);
+            assert_eq!(facility.input_amount, 0);
+            assert_eq!(facility.current_target, None);
+            (RestartCapture::Carrying, "restart_refill_reserved")
+        }
+        RestartCapture::Carrying
+            if fast_cargo == 5 && ctx.world.get::<HaulerLoading>(scene.fast_hauler).is_none() =>
+        {
+            assert_eq!(facility.input_amount, 0);
+            assert_eq!(slow_cargo, 5);
+            (RestartCapture::Producing, "restart_refill_carrying")
+        }
+        RestartCapture::Producing
+            if facility.current_target == Some(NanobotType::Defender)
+                && facility.progress >= 24 =>
+        {
+            assert_eq!(fast_cargo, 0);
+            assert_eq!(slow_cargo, 5);
+            (RestartCapture::Finished, "restart_refill_producing")
+        }
+        RestartCapture::Finished => return TestFlow::Exit,
+        _ => {
+            assert!(
+                ctx.frame < 300,
+                "restart is stuck in {:?}: facility={facility:?}, fast={fast_claim:?}, slow cargo={slow_cargo}, demand={:?}, work={:?}",
+                scene.phase,
+                ctx.world.resource::<top_down_2d_rts_prototype_nano_swarm::nanobot::PopulationDemand>(),
+                ctx.world.resource::<top_down_2d_rts_prototype_nano_swarm::nanobot::ActionableProjection>(),
+            );
+            return TestFlow::Continue;
+        }
+    };
+    ctx.world.resource_mut::<RestartScene>().phase = phase;
+    TestFlow::Screenshot(screenshot.into())
+}
+
+fn spawn_restart_scene(world: &mut World) -> RestartScene {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{Commitment, PlannedKind, VelocityComponent},
+        resources::ResourceLedger,
+        structure_sprites::{StructureSprites, StructureVisual, StructureVisualState},
+    };
+
+    let owner = world
+        .query_filtered::<(Entity, &SwarmId), With<Swarm>>()
+        .iter(world)
+        .find(|(_, id)| **id == SwarmId::PLAYER)
+        .unwrap()
+        .0;
+    let mut tuning = world.resource_mut::<Tuning>();
+    tuning.production.cost_per_bot = 5;
+    tuning.production.input_capacity = 10;
+    tuning.production.ticks_per_bot = 120;
+    tuning.logistics.hauler_carry_capacity = 10;
+    tuning.logistics.hauler_transfer_per_pulse = 1;
+    tuning.logistics.material_work_ticks = 18;
+    let facility = ProductionFacility::with_tuning(&tuning);
+    let fast_pickup = spawn_stockpile(world, Vec2::new(-180.0, 36.0), 5, StockpileRole::Source);
+    let full_pickup = spawn_stockpile(world, Vec2::new(252.0, 36.0), 10, StockpileRole::Source);
+    let facility = world
+        .spawn((
+            facility,
+            OwnerSwarm(owner),
+            Transform::from_xyz(36.0, 36.0, GAMEPLAY_SPRITE_Z),
+        ))
+        .id();
+    for (entity, kind) in [
+        (facility, PlannedKind::ProductionFacility),
+        (fast_pickup, PlannedKind::SourceStockpile),
+        (full_pickup, PlannedKind::SourceStockpile),
+    ] {
+        let sprite = world
+            .resource::<StructureSprites>()
+            .sprite(kind, StructureVisualState::Completed);
+        world.entity_mut(entity).insert((
+            sprite,
+            StructureVisual::completed(kind),
+            OwnerSwarm(owner),
+        ));
+    }
+    let hauler = |world: &mut World, position: Vec2| {
+        world
+            .spawn((
+                Nanobot {},
+                NanobotType::Hauler,
+                Health::default(),
+                Commitment::Idle,
+                VelocityComponent::default(),
+                SwarmMember::new(SwarmId::PLAYER),
+                Transform::from_translation(position.extend(GAMEPLAY_SPRITE_Z)),
+            ))
+            .id()
+    };
+    let fast_hauler = hauler(world, Vec2::new(36.0, -120.0));
+    let slow_hauler = hauler(world, Vec2::new(1500.0, 200.0));
+    let mut claim = LogisticsReservation::new(full_pickup, facility, ResourceKind::Minerals, 5);
+    claim.source_remaining = 0;
+    world.entity_mut(slow_hauler).insert((
+        HaulerAssignment {
+            source: full_pickup,
+            sink: facility,
+            pickup_role: StockpileRole::Source,
+        },
+        Cargo {
+            kind: ResourceKind::Minerals,
+            amount: 5,
+        },
+        claim,
+    ));
+    world
+        .resource_mut::<ResourceLedger>()
+        .add_for(SwarmId::PLAYER, ResourceKind::Minerals, 20);
+    RestartScene {
+        facility,
+        fast_pickup,
+        fast_hauler,
+        slow_hauler,
+        phase: RestartCapture::AwaitingPickup,
     }
 }

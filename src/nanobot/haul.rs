@@ -6,6 +6,8 @@
 //! sources under the tiered logistics model; legacy manual hauler
 //! assignments can still drain them defensively for tests.
 
+pub(super) mod restart;
+
 use crate::battle_statistics::{BattleCounters, BattleEvent};
 use crate::{intent::IntentGrid, tuning::Tuning};
 use bevy::prelude::*;

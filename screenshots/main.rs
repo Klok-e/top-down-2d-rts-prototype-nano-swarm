@@ -223,6 +223,15 @@ fn main() -> std::process::ExitCode {
             run(physical_logistics::physical_logistics)
         })
         .with_ignored_flag(true),
+        Trial::test("restart_refill", || {
+            harness::run_screenshot_test_for_scenario(
+                physical_logistics::restart_refill,
+                top_down_2d_rts_prototype_nano_swarm::scenario_selection::Scenario::Sandbox,
+            )
+            .map(|_| ())
+            .map_err(Failed::from)
+        })
+        .with_ignored_flag(true),
         Trial::test("opponent_gameplay_loop", || {
             run(opponent_gameplay_loop::opponent_gameplay_loop)
         })
