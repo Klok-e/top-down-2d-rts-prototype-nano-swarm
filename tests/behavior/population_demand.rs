@@ -277,65 +277,6 @@ fn a_full_reserve_drops_gathering_to_one_per_deposit() {
 }
 
 #[test]
-fn idle_workers_beyond_the_gather_quota_do_not_gather() {
-    let mut app = common::sim_app_with_gather();
-    app.add_plugins(top_down_2d_rts_prototype_nano_swarm::nanobot::PopulationDemandPlugin);
-    let center = common::cell_world_center(IVec2::ZERO);
-    let swarm = common::spawn_swarm_at(&mut app, center);
-    common::spawn_deposit(
-        &mut app,
-        common::DepositFixture {
-            world_pos: center,
-            amount: 100_000,
-            capacity: 100_000,
-            radius: 64.0,
-        },
-    );
-    let stockpile = common::spawn_stockpile(&mut app, center + Vec2::new(0.0, 300.0), 0, 1_000);
-    app.world_mut()
-        .entity_mut(stockpile)
-        .insert(OwnerSwarm(swarm));
-    app.world_mut().resource_mut::<IntentGrid>().paint(
-        IVec2::ZERO,
-        IntentKind::Gather,
-        SwarmId::PLAYER,
-    );
-    let workers: Vec<_> = (0..5)
-        .map(|i| common::spawn_worker_at(&mut app, center + Vec2::new(-200.0, 40.0 * i as f32)))
-        .collect();
-    let gathering = |app: &App| {
-        workers
-            .iter()
-            .filter(|worker| app.world().get::<GatherAssignment>(**worker).is_some())
-            .count()
-    };
-    for _ in 0..30 {
-        app.update();
-    }
-    assert_eq!(
-        gathering(&app),
-        1,
-        "with nothing to spend on, one Worker keeps the deposit worked"
-    );
-
-    let mut facility = ProductionFacility::new();
-    facility.current_target = Some(NanobotType::Worker);
-    app.world_mut().spawn((
-        facility,
-        OwnerSwarm(swarm),
-        Transform::from_translation((center + Vec2::new(2_000.0, 0.0)).extend(0.0)),
-    ));
-    for _ in 0..30 {
-        app.update();
-    }
-    assert_eq!(
-        gathering(&app),
-        5,
-        "a producing facility raises the quota and idle Workers start gathering"
-    );
-}
-
-#[test]
 fn gatherers_are_capped_by_full_loads_of_source_room() {
     let (mut app, _, source) = gather_quota_app();
     let carry = Tuning::default().logistics.worker_carry_capacity;
@@ -395,7 +336,7 @@ fn a_deposit_takes_no_more_gatherers_than_fit_on_its_ring() {
 }
 
 #[test]
-fn workers_beyond_the_gather_quota_take_construction_or_idle() {
+fn construction_is_staffed_before_spare_gathering() {
     use top_down_2d_rts_prototype_nano_swarm::nanobot::{
         OpportunityCategory, PopulationDemandPlugin, RegionalLease,
     };
@@ -448,17 +389,28 @@ fn workers_beyond_the_gather_quota_take_construction_or_idle() {
         app.update();
     }
 
-    // With nothing to spend on, the quota is one gatherer: the third Worker
-    // idles instead of joining the deposit.
     let categories = leases(&app);
     let count = |category| categories.iter().filter(|c| **c == category).count();
-    assert_eq!(count(OpportunityCategory::Gather), 1, "{categories:?}");
+    assert_eq!(count(OpportunityCategory::Gather), 2, "{categories:?}");
     assert_eq!(
         count(OpportunityCategory::PlannedBuild),
         1,
         "{categories:?}"
     );
-    assert_eq!(categories.len(), 2, "{categories:?}");
+    assert_eq!(
+        app.world()
+            .resource::<GatherQuotas>()
+            .economy(SwarmId::PLAYER)
+            .unwrap()
+            .gather_quota,
+        1
+    );
+    assert_eq!(
+        app.world()
+            .resource::<PopulationDemand>()
+            .desired_for(SwarmId::PLAYER, NanobotType::Worker),
+        2
+    );
 }
 
 #[test]

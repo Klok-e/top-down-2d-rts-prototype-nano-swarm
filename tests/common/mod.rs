@@ -70,6 +70,17 @@ use top_down_2d_rts_prototype_nano_swarm::{
 pub const DEFAULT_GRID_WIDTH: i32 = 8;
 pub const DEFAULT_GRID_HEIGHT: i32 = 8;
 
+pub fn spawn_rock_rectangle(app: &mut App, position: Vec2, half: Vec2) -> Entity {
+    use top_down_2d_rts_prototype_nano_swarm::terrain::RockFormation;
+
+    app.world_mut()
+        .spawn((
+            Transform::from_translation(position.extend(0.0)),
+            RockFormation::Rectangle { half },
+        ))
+        .id()
+}
+
 /// Register deterministic fixed-tick movement and frame-driven debug drawing.
 /// Simulation plugins order their work after `move_velocity_system`.
 fn register_movement_systems(app: &mut App) {
@@ -722,16 +733,7 @@ pub fn spawn_operational_charger_at(app: &mut App, cell: IVec2, amount: u32) -> 
 /// fill it.
 pub fn spawn_idle_facility_at(app: &mut App, world_pos: Vec2) -> Entity {
     let owner = player_swarm_entity(app);
-    let entity = app
-        .world_mut()
-        .spawn((
-            ProductionFacility::new(),
-            OwnerSwarm(owner),
-            Transform::from_translation(world_pos.extend(0.0)),
-        ))
-        .id();
-    fill_facility_input(app, entity);
-    entity
+    spawn_facility_at(app, owner, world_pos)
 }
 
 /// Spawn a fresh [`Structure`] of kind `StructureKind::Basic` at
@@ -914,16 +916,32 @@ pub fn spawn_opponent_swarm_with_nanobots(
 /// `pos`. The owner marker is what tells the production
 /// systems to use the owner's population demand. The input hopper is pre-filled.
 pub fn spawn_facility_at(app: &mut App, owner: Entity, pos: Vec2) -> Entity {
-    let entity = app
-        .world_mut()
+    let entity = spawn_owned_facility(app, owner, pos, ProductionFacility::new());
+    fill_facility_input(app, entity);
+    entity
+}
+
+/// Spawn an idle facility with the app's tuned hopper capacity and the given
+/// starting stock. The caller accounts for the starting minerals in the ledger.
+pub fn spawn_facility_with_hopper(app: &mut App, owner: Entity, pos: Vec2, hopper: u32) -> Entity {
+    let mut facility = ProductionFacility::with_tuning(app.world().resource::<Tuning>());
+    facility.input_amount = hopper;
+    spawn_owned_facility(app, owner, pos, facility)
+}
+
+fn spawn_owned_facility(
+    app: &mut App,
+    owner: Entity,
+    pos: Vec2,
+    facility: ProductionFacility,
+) -> Entity {
+    app.world_mut()
         .spawn((
-            ProductionFacility::new(),
+            facility,
             OwnerSwarm(owner),
             Transform::from_translation(pos.extend(0.0)),
         ))
-        .id();
-    fill_facility_input(app, entity);
-    entity
+        .id()
 }
 
 /// Fill a facility's input hopper to capacity with minerals and

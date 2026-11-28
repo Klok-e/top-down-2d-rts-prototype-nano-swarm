@@ -8,7 +8,7 @@ pub use routing::{
     AccessCheck, AccessStatus, ConnectivityStatus, Navigation, NavigationWork, RequestPurpose,
     Route, RouteGoal, RouteOutcome, RoutePriority, RouteRequestId, RouteStatus,
 };
-pub(crate) use routing::{DirectRoutePolicy, MovementPlan, segment_box};
+pub(crate) use routing::{DirectRoutePolicy, MovementPlan, PhysicalRouteStatus, segment_box};
 pub(crate) use traffic::{RouteTraffic, TrafficSnapshot};
 
 /// A 68-unit body fits a 72-unit passage with two units of clearance per side.

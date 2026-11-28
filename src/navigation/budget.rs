@@ -747,10 +747,18 @@ pub enum ConnectivityStatus {
     Connected { endpoint: Vec2 },
     Unreachable,
 }
+#[derive(Clone, Copy)]
+pub(crate) enum PhysicalRouteStatus {
+    Pending,
+    Found { endpoint: Vec2, distance: f32 },
+    Unreachable,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestPurpose {
     Movement,
     Connectivity,
+    PhysicalRoute,
     Construction,
 }
 #[derive(Clone, Copy, Debug, Default)]
@@ -809,6 +817,7 @@ pub(super) struct Scheduler {
     corridor_cost_multiplier: Option<f32>,
     access_cached: HashMap<(u64, u64), (RouteRequestId, u64)>,
     connectivity_cached: HashMap<ConnectivityKey, (RouteRequestId, u64)>,
+    physical_routes: HashMap<PhysicalRouteKey, (RouteRequestId, u64)>,
 }
 /// A connectivity answer is shared by origins in one exact component, or else by one cell.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -821,6 +830,12 @@ struct ConnectivityKey {
 enum ConnectivityOrigin {
     Region(IVec2),
     Cell(IVec2),
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct PhysicalRouteKey {
+    revision: u64,
+    origin_cell: IVec2,
+    goal: GoalKey,
 }
 /// Exact bit identity of a goal.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -847,6 +862,7 @@ const PRUNE_LIMIT: usize = 64;
 enum CacheEntry {
     Access((u64, u64)),
     Connectivity(ConnectivityKey),
+    PhysicalRoute(PhysicalRouteKey),
 }
 #[derive(Default)]
 struct PaintCosts {
@@ -857,6 +873,44 @@ struct PaintCosts {
 impl PaintCosts {
     fn cell(&self, cell: IVec2) -> Option<&crate::intent::IntentCell> {
         self.cells.get(&cell)
+    }
+}
+
+impl Scheduler {
+    fn request(
+        &mut self,
+        revision: u64,
+        start: Vec2,
+        goal: RouteGoal,
+        swarm: SwarmId,
+        hauler: bool,
+        priority: RoutePriority,
+    ) -> RouteRequestId {
+        let id = RouteRequestId(self.next);
+        self.next += 1;
+        let tick = self.tick;
+        self.requests.insert(
+            id,
+            Request {
+                purpose: RequestPurpose::Movement,
+                owner: None,
+                last_served: tick,
+                start,
+                goal,
+                swarm,
+                hauler,
+                priority,
+                submitted: tick,
+                revision,
+                future: None,
+                traffic: None,
+                movement_paint: None,
+                result: RouteStatus::Pending,
+                access: None,
+                delivery_footprint: None,
+            },
+        );
+        id
     }
 }
 
@@ -886,32 +940,9 @@ impl Navigation {
             .scheduler
             .lock()
             .expect("navigation scheduler poisoned");
-        let id = RouteRequestId(scheduler.next);
-        scheduler.next += 1;
-        let tick = scheduler.tick;
-        scheduler.requests.insert(
-            id,
-            Request {
-                purpose: RequestPurpose::Movement,
-                owner: None,
-                last_served: tick,
-                start,
-                goal,
-                swarm,
-                hauler,
-                priority,
-                submitted: tick,
-                revision: self.revision,
-                future: None,
-                traffic: None,
-                movement_paint: None,
-                result: RouteStatus::Pending,
-                access: None,
-                delivery_footprint: None,
-            },
-        );
-        id
+        scheduler.request(self.revision, start, goal, swarm, hauler, priority)
     }
+
     /// Refine a delivery path after hypothetical completion on the background budget.
     pub(crate) fn request_delivery_route(
         &self,
@@ -1074,7 +1105,9 @@ impl Navigation {
                 purpose => {
                     work.oldest_background_ticks = work.oldest_background_ticks.max(age);
                     match purpose {
-                        RequestPurpose::Connectivity => work.connectivity_pending += 1,
+                        RequestPurpose::Connectivity | RequestPurpose::PhysicalRoute => {
+                            work.connectivity_pending += 1;
+                        }
                         RequestPurpose::Construction => work.construction_pending += 1,
                         RequestPurpose::Movement => unreachable!(),
                     }
@@ -1113,6 +1146,13 @@ impl Navigation {
                 })
                 .map(|(&key, &(id, touched))| (touched, id, CacheEntry::Connectivity(key))),
         );
+        stale.extend(
+            scheduler
+                .physical_routes
+                .iter()
+                .filter(|&(key, &(_, touched))| key.revision != self.revision || stale_age(touched))
+                .map(|(&key, &(id, touched))| (touched, id, CacheEntry::PhysicalRoute(key))),
+        );
         if stale.len() > PRUNE_LIMIT {
             stale.select_nth_unstable_by_key(PRUNE_LIMIT, |&(touched, id, _)| (touched, id.0));
         }
@@ -1121,6 +1161,7 @@ impl Navigation {
             match entry {
                 CacheEntry::Access(key) => scheduler.access_cached.remove(&key),
                 CacheEntry::Connectivity(key) => scheduler.connectivity_cached.remove(&key),
+                CacheEntry::PhysicalRoute(key) => scheduler.physical_routes.remove(&key),
             };
             scheduler.requests.remove(&id);
         }
@@ -1166,7 +1207,7 @@ impl Navigation {
                 let access = request.access.clone();
                 let traffic = request.traffic.clone();
                 let delivery = request.delivery_footprint.is_some();
-                let connectivity = request.purpose == RequestPurpose::Connectivity;
+                let purpose = request.purpose;
                 request.future = Some(Box::pin(async move {
                     if let Some(check) = access {
                         return snapshot.async_access(&check, &paint, None).await;
@@ -1174,8 +1215,13 @@ impl Navigation {
                     if delivery {
                         return snapshot.async_delivery_route(start, goal).await;
                     }
-                    if connectivity {
+                    if purpose == RequestPurpose::Connectivity {
                         return snapshot.async_connectivity(start, goal).await;
+                    }
+                    if purpose == RequestPurpose::PhysicalRoute {
+                        return snapshot
+                            .async_solve(start, goal, RouteCosts::physical(&paint), false)
+                            .await;
                     }
                     snapshot
                         .async_solve(
@@ -1637,6 +1683,61 @@ impl Navigation {
 }
 
 impl Navigation {
+    /// Estimate physical travel to a work region using the background route allowance.
+    pub(crate) fn query_physical_route(
+        &self,
+        start: Vec2,
+        region: crate::nanobot::InteractionRegion,
+    ) -> PhysicalRouteStatus {
+        let direct = if region.contains(start) {
+            start
+        } else {
+            region.approach(start)
+        };
+        if region.contains(direct) && self.movement_clear(start, direct) {
+            return PhysicalRouteStatus::Found {
+                endpoint: direct,
+                distance: start.distance(direct),
+            };
+        }
+
+        let goal = RouteGoal::Interaction(region);
+        let key = PhysicalRouteKey {
+            revision: self.revision,
+            origin_cell: Self::cell(start),
+            goal: goal.into(),
+        };
+        let mut scheduler = self.scheduler.lock().unwrap();
+        let tick = scheduler.tick;
+        if let Some(&(id, _)) = scheduler.physical_routes.get(&key) {
+            let request = &scheduler.requests[&id];
+            if start == request.start || self.movement_clear(start, request.start) {
+                let status = match &request.result {
+                    RouteStatus::Pending => PhysicalRouteStatus::Pending,
+                    RouteStatus::Found(route) => PhysicalRouteStatus::Found {
+                        endpoint: *route.waypoints.last().expect("physical route endpoint"),
+                        distance: start.distance(request.start) + route.cost,
+                    },
+                    RouteStatus::Unreachable => PhysicalRouteStatus::Unreachable,
+                };
+                scheduler.physical_routes.get_mut(&key).unwrap().1 = tick;
+                return status;
+            }
+            scheduler.requests.remove(&id);
+        }
+        let id = scheduler.request(
+            self.revision,
+            start,
+            goal,
+            SwarmId::PLAYER,
+            false,
+            RoutePriority::Routine,
+        );
+        scheduler.requests.get_mut(&id).unwrap().purpose = RequestPurpose::PhysicalRoute;
+        scheduler.physical_routes.insert(key, (id, tick));
+        PhysicalRouteStatus::Pending
+    }
+
     /// Establish static access without refining or returning a movement path.
     /// Moving origins share the exact fine-cell component already built in their chunk.
     /// Paint and nanobot occupancy cannot change this geometric answer.

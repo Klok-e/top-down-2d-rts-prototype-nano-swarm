@@ -105,6 +105,10 @@ impl GatherAssignment {
     }
 }
 
+/// Marks an optional gather trip from its initial reservation through delivery.
+#[derive(Debug, Component)]
+pub struct SpareGathering;
+
 /// In-flight extraction progress. Lives only while the worker is
 /// standing at the assigned deposit and pulling resources. The
 /// `collected` count caps at the configured Worker carry capacity; reaching
@@ -279,27 +283,32 @@ impl DropOffArea {
     }
 }
 
-#[allow(clippy::type_complexity, clippy::too_many_arguments)]
-fn find_nearest_stockpile(
+pub(crate) type GatherStockpiles<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static Stockpile,
+        &'static Transform,
+        Option<&'static StockpileRole>,
+        Option<&'static OwnerSwarm>,
+        Option<&'static SupportCondition>,
+    ),
+    Without<PlannedStructure>,
+>;
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn find_nearest_stockpile(
     kind: ResourceKind,
     worker_pos: Vec2,
     worker_swarm: SwarmId,
     minimum_capacity: u32,
-    excluding_worker: Option<Entity>,
     excluding_stockpile: Option<Entity>,
-    stockpiles: &Query<(
-        Entity,
-        &Stockpile,
-        &Transform,
-        Option<&StockpileRole>,
-        Option<&OwnerSwarm>,
-        Option<&SupportCondition>,
-    )>,
+    stockpiles: &GatherStockpiles,
     swarms: &Query<&SwarmId, With<Swarm>>,
-    reservations: &Query<(Entity, &LogisticsReservation)>,
-    same_tick_reserved: &std::collections::HashMap<Entity, u32>,
     identities: &Query<&super::CombatIdentity>,
     area: Option<DropOffArea>,
+    mut available_room: impl FnMut(Entity, &Stockpile) -> u32,
     mut reachable: impl FnMut(&Transform) -> bool,
 ) -> Option<(Entity, u32)> {
     let identity_key = |entity: Entity| {
@@ -311,19 +320,21 @@ fn find_nearest_stockpile(
     let mut best: Option<(f32, Entity, u32)> = None;
     for (entity, stockpile, transform, role, owner, condition) in stockpiles.iter() {
         if Some(entity) == excluding_stockpile
-            || stockpile.kind != kind
-            || matches!(role, Some(StockpileRole::Sink))
-            || !stockpile_owned_by(owner, worker_swarm, swarms)
-            || condition.is_some_and(|condition| !condition.is_operational())
+            || !eligible_drop_off(
+                kind,
+                worker_swarm,
+                stockpile,
+                transform,
+                role,
+                owner,
+                condition,
+                swarms,
+                area,
+            )
         {
             continue;
         }
-        if area.is_some_and(|area| !area.contains(transform.translation.truncate())) {
-            continue;
-        }
-        let reserved = reserved_destination_capacity(reservations, entity, excluding_worker)
-            .saturating_add(same_tick_reserved.get(&entity).copied().unwrap_or(0));
-        let available = stockpile.free_space().saturating_sub(reserved);
+        let available = available_room(entity, stockpile);
         if available < minimum_capacity.min(stockpile.capacity) || available == 0 {
             continue;
         }
@@ -339,6 +350,65 @@ fn find_nearest_stockpile(
         }
     }
     best.map(|(_, entity, available)| (entity, available))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn find_reachable_drop_off(
+    kind: ResourceKind,
+    position: Vec2,
+    swarm: SwarmId,
+    minimum_capacity: u32,
+    navigation: &Navigation,
+    stockpiles: &GatherStockpiles,
+    swarms: &Query<&SwarmId, With<Swarm>>,
+    identities: &Query<&super::CombatIdentity>,
+    area: DropOffArea,
+    available_room: impl FnMut(Entity, &Stockpile) -> u32,
+) -> (Option<(Entity, u32)>, bool) {
+    let mut pending = false;
+    let target = find_nearest_stockpile(
+        kind,
+        position,
+        swarm,
+        minimum_capacity,
+        None,
+        stockpiles,
+        swarms,
+        identities,
+        Some(area),
+        available_room,
+        |transform| match navigation.query_connectivity(
+            position,
+            RouteGoal::Interaction(InteractionRegion::structure(transform)),
+        ) {
+            ConnectivityStatus::Connected { .. } => true,
+            ConnectivityStatus::Pending => {
+                pending = true;
+                false
+            }
+            ConnectivityStatus::Unreachable => false,
+        },
+    );
+    (target, pending)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn eligible_drop_off(
+    kind: ResourceKind,
+    worker_swarm: SwarmId,
+    stockpile: &Stockpile,
+    transform: &Transform,
+    role: Option<&StockpileRole>,
+    owner: Option<&OwnerSwarm>,
+    condition: Option<&SupportCondition>,
+    swarms: &Query<&SwarmId, With<Swarm>>,
+    area: Option<DropOffArea>,
+) -> bool {
+    stockpile.kind == kind
+        && !matches!(role, Some(StockpileRole::Sink))
+        && stockpile_owned_by(owner, worker_swarm, swarms)
+        && condition.is_none_or(SupportCondition::is_operational)
+        && area.is_none_or(|area| area.contains(transform.translation.truncate()))
 }
 
 /// True when a stockpile (built or planned) is usable by
@@ -595,7 +665,7 @@ pub fn source_stockpile_demand_system(
     mut commands: Commands,
     access: super::construction_access::ConstructionAccess,
     structure_sprites: Res<StructureSprites>,
-    gather_assignments: Query<(&GatherAssignment, &SwarmMember)>,
+    gather_assignments: Query<(&GatherAssignment, &SwarmMember), Without<SpareGathering>>,
     deposits: Query<(&ResourceDeposit, &Transform)>,
     stockpiles: Query<SourceStockpileCapacity>,
     planned: Query<(&PlannedStructure, &Transform, Option<&OwnerSwarm>)>,
@@ -863,6 +933,7 @@ pub fn worker_gather_arrive_system(
             &GatherAssignment,
             &SwarmMember,
             Option<&mut super::RegionalLease>,
+            Option<(&SpareGathering, &LogisticsReservation)>,
         ),
         (
             Without<super::WorkBlocked>,
@@ -875,14 +946,7 @@ pub fn worker_gather_arrive_system(
         ),
     >,
     deposits: Query<(&ResourceDeposit, &Transform)>,
-    stockpiles: Query<(
-        Entity,
-        &Stockpile,
-        &Transform,
-        Option<&StockpileRole>,
-        Option<&OwnerSwarm>,
-        Option<&SupportCondition>,
-    )>,
+    stockpiles: GatherStockpiles,
     swarms: Query<&SwarmId, With<Swarm>>,
     planned_structures: Query<(&PlannedStructure, &Transform, Option<&OwnerSwarm>)>,
     reservations: Query<(Entity, &LogisticsReservation)>,
@@ -900,27 +964,36 @@ pub fn worker_gather_arrive_system(
     }));
     ordered.sort_unstable();
     for &(_, entity) in &*ordered {
-        let Ok((_, transform, assignment, swarm_member, lease)) = workers.get_mut(entity) else {
+        let Ok((_, transform, assignment, swarm_member, lease, claim)) = workers.get_mut(entity)
+        else {
             continue;
         };
+        let release = |commands: &mut Commands| {
+            if claim.is_some() {
+                transition_worker_to_carrying(commands, entity, 0);
+            } else {
+                commands.entity(entity).remove::<GatherAssignment>();
+            }
+        };
         if !assignment.has_paint_support(&grid, swarm_member.0) {
-            commands.entity(entity).remove::<GatherAssignment>();
+            release(&mut commands);
             continue;
         }
         let Ok((deposit, deposit_transform)) = deposits.get(assignment.deposit) else {
-            commands.entity(entity).remove::<GatherAssignment>();
+            release(&mut commands);
             continue;
         };
-        let source_reserved = reserved_source_amount(&reservations, assignment.deposit, None)
-            .saturating_add(
-                same_tick_sources
-                    .get(&assignment.deposit)
-                    .copied()
-                    .unwrap_or(0),
-            );
+        let source_reserved =
+            reserved_source_amount(&reservations, assignment.deposit, claim.map(|_| entity))
+                .saturating_add(
+                    same_tick_sources
+                        .get(&assignment.deposit)
+                        .copied()
+                        .unwrap_or(0),
+                );
         let source_available = deposit.amount.saturating_sub(source_reserved);
         if source_available == 0 {
-            commands.entity(entity).remove::<GatherAssignment>();
+            release(&mut commands);
             continue;
         }
 
@@ -933,34 +1006,73 @@ pub fn worker_gather_arrive_system(
             continue;
         }
 
-        let mut pending_navigation = false;
-        let destination = find_nearest_stockpile(
+        let area = DropOffArea::for_deposit(
+            deposit_transform.translation.truncate(),
+            deposit.radius,
+            &tuning,
+        );
+        if let Some((_, claim)) = claim {
+            let Some((_, stockpile, transform, ..)) = stockpiles
+                .get(claim.destination)
+                .ok()
+                .filter(|(_, stockpile, transform, role, owner, condition)| {
+                    eligible_drop_off(
+                        deposit.kind,
+                        swarm_member.0,
+                        stockpile,
+                        transform,
+                        *role,
+                        *owner,
+                        *condition,
+                        &swarms,
+                        Some(area),
+                    )
+                })
+            else {
+                release(&mut commands);
+                continue;
+            };
+            let other_claims =
+                reserved_destination_capacity(&reservations, claim.destination, Some(entity));
+            if stockpile.free_space().saturating_sub(other_claims) < claim.destination_remaining {
+                release(&mut commands);
+                continue;
+            }
+            match navigation.query_connectivity(
+                worker_pos,
+                RouteGoal::Interaction(InteractionRegion::structure(transform)),
+            ) {
+                ConnectivityStatus::Connected { .. } => {
+                    commands.entity(entity).insert((
+                        ExtractProgress::default(),
+                        super::MaterialWorkProgress::default(),
+                        Cargo::empty(deposit.kind),
+                    ));
+                }
+                ConnectivityStatus::Pending => {}
+                ConnectivityStatus::Unreachable => release(&mut commands),
+            }
+            continue;
+        }
+        let (destination, pending_navigation) = find_reachable_drop_off(
             deposit.kind,
             worker_pos,
             swarm_member.0,
             1,
-            None,
-            None,
+            &navigation,
             &stockpiles,
             &swarms,
-            &reservations,
-            &same_tick_destinations,
             &identities,
-            Some(DropOffArea::for_deposit(
-                deposit_transform.translation.truncate(),
-                deposit.radius,
-                &tuning,
-            )),
-            |destination_transform| match navigation.query_connectivity(
-                worker_pos,
-                RouteGoal::Interaction(InteractionRegion::structure(destination_transform)),
-            ) {
-                ConnectivityStatus::Connected { .. } => true,
-                ConnectivityStatus::Pending => {
-                    pending_navigation = true;
-                    false
-                }
-                ConnectivityStatus::Unreachable => false,
+            area,
+            |destination, stockpile| {
+                stockpile.free_space().saturating_sub(
+                    reserved_destination_capacity(&reservations, destination, None).saturating_add(
+                        same_tick_destinations
+                            .get(&destination)
+                            .copied()
+                            .unwrap_or(0),
+                    ),
+                )
             },
         );
         let Some((destination, destination_available)) = destination else {
@@ -1157,8 +1269,7 @@ pub(super) fn transition_worker_to_carrying(commands: &mut Commands, entity: Ent
     if amount == 0 {
         commands
             .entity(entity)
-            .remove::<Cargo>()
-            .remove::<LogisticsReservation>();
+            .remove::<(Cargo, LogisticsReservation, SpareGathering)>();
     }
 }
 
@@ -1182,14 +1293,7 @@ pub fn worker_gather_reroute_system(
         (With<Nanobot>, Without<ExtractProgress>),
     >,
     deposits: Query<(&ResourceDeposit, &Transform)>,
-    stockpiles: Query<(
-        Entity,
-        &Stockpile,
-        &Transform,
-        Option<&StockpileRole>,
-        Option<&OwnerSwarm>,
-        Option<&SupportCondition>,
-    )>,
+    stockpiles: GatherStockpiles,
     swarms: Query<&SwarmId, With<Swarm>>,
     reservations: Query<(Entity, &LogisticsReservation)>,
     identities: Query<&super::CombatIdentity>,
@@ -1246,14 +1350,17 @@ pub fn worker_gather_reroute_system(
             transform.translation.truncate(),
             swarm_member.0,
             cargo.amount,
-            Some(entity),
             (reservation.destination_remaining > 0).then_some(reservation.destination),
             &stockpiles,
             &swarms,
-            &reservations,
-            &same_tick_claims,
             &identities,
             DropOffArea::of(reservation.source, &deposits, &tuning),
+            |destination, stockpile| {
+                stockpile.free_space().saturating_sub(
+                    reserved_destination_capacity(&reservations, destination, Some(entity))
+                        .saturating_add(same_tick_claims.get(&destination).copied().unwrap_or(0)),
+                )
+            },
             |destination_transform| {
                 matches!(
                     navigation.query_connectivity(
@@ -1297,8 +1404,6 @@ pub fn worker_gather_reroute_system(
 pub fn worker_gather_carry_assign_system(
     mut commands: Commands,
     navigation: Res<Navigation>,
-    tuning: Res<Tuning>,
-    deposits: Query<(&ResourceDeposit, &Transform)>,
     workers: Query<
         (
             Entity,
@@ -1315,14 +1420,7 @@ pub fn worker_gather_carry_assign_system(
             Without<ExtractProgress>,
         ),
     >,
-    stockpiles: Query<(
-        Entity,
-        &Stockpile,
-        &Transform,
-        Option<&StockpileRole>,
-        Option<&OwnerSwarm>,
-        Option<&SupportCondition>,
-    )>,
+    stockpiles: GatherStockpiles,
     swarms: Query<&SwarmId, With<Swarm>>,
     reservations: Query<(Entity, &LogisticsReservation)>,
     identities: Query<&super::CombatIdentity>,
@@ -1379,15 +1477,18 @@ pub fn worker_gather_carry_assign_system(
                 swarm_member.0,
                 load.amount,
                 None,
-                None,
                 &stockpiles,
                 &swarms,
-                &reservations,
-                &same_tick_claims,
                 &identities,
-                reservation.and_then(|reservation| {
-                    DropOffArea::of(reservation.source, &deposits, &tuning)
-                }),
+                None,
+                |destination, stockpile| {
+                    stockpile.free_space().saturating_sub(
+                        reserved_destination_capacity(&reservations, destination, Some(entity))
+                            .saturating_add(
+                                same_tick_claims.get(&destination).copied().unwrap_or(0),
+                            ),
+                    )
+                },
                 |destination_transform| {
                     matches!(
                         navigation.query_connectivity(
@@ -1546,8 +1647,7 @@ pub fn worker_gather_delivery_system(
             commands
                 .entity(entity)
                 .remove::<ReturningToStockpile>()
-                .remove::<WorkerLoad>()
-                .remove::<LogisticsReservation>();
+                .remove::<(WorkerLoad, LogisticsReservation, SpareGathering)>();
         }
     }
 }
