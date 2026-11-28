@@ -163,7 +163,7 @@ fn prepare(world: &mut World) {
 }
 
 pub fn startup_formations(ctx: &mut TestContext) -> TestFlow {
-    ctx.world.resource_mut::<Time<Virtual>>().pause();
+    assert!(ctx.world.resource::<Time<Fixed>>().elapsed().is_zero());
     if ctx.frame == 0 {
         for (mut transform, mut projection, mut zoom) in ctx
             .world

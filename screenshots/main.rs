@@ -112,7 +112,9 @@ fn main() -> std::process::ExitCode {
         .with_ignored_flag(true),
         Trial::test("default_map", || run(default_map::default_map)).with_ignored_flag(true),
         Trial::test("startup_formations", || {
-            run(local_avoidance::startup_formations)
+            harness::run_screenshot_test_before_simulation(local_avoidance::startup_formations)
+                .map(|_| ())
+                .map_err(Failed::from)
         })
         .with_ignored_flag(true),
         Trial::test("production_exit", || run(production_exits::production_exit))
