@@ -615,7 +615,7 @@ pub fn move_velocity_system(
             }
             entry.connection_origin = None;
         }
-        let hauler = kind == Some(&super::NanobotType::Hauler);
+        let hauler = evacuation.is_none() && kind == Some(&super::NanobotType::Hauler);
         let direct = navigation.movement_clear(position, destination.xy)
             && (!hauler
                 || original.interaction.is_some_and(|region| {

@@ -1,7 +1,10 @@
-//! Full-game headless replay of deliveries through an occupied single-file passage.
+//! Full-game headless replays of deliveries and Structure Clearing.
 //!
 //! The replay driver uses two Corridor paints to pause on friendly passage and
-//! finished delivery. See docs/verification/navigation.md for the commands.
+//! the completed outcome. See docs/verification/navigation.md for the commands.
+#[path = "local_avoidance/clearing.rs"]
+mod clearing;
+
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z,
@@ -71,8 +74,12 @@ fn main() {
     app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
         std::time::Duration::from_secs_f64(1. / 60.),
     ));
-    app.add_systems(First, (prepare.run_if(run_once), release_phase).chain())
-        .add_systems(FixedPostUpdate, verify_tick);
+    if std::env::var_os("NANO_SWARM_REPLAY_SCENE").as_deref() == Some("clearing".as_ref()) {
+        clearing::configure(&mut app);
+    } else {
+        app.add_systems(First, (prepare.run_if(run_once), release_phase).chain())
+            .add_systems(FixedPostUpdate, verify_tick);
+    }
     app.run();
 }
 
@@ -264,7 +271,7 @@ fn segment_rectangle_distance(a: Vec2, b: Vec2, center: Vec2) -> f32 {
     distance
 }
 
-fn prepare(world: &mut World) {
+fn prepare_world(world: &mut World, camera: Vec2) -> Entity {
     for entity in world
         .query_filtered::<Entity, Or<(With<SessionEntity>, With<Sprite>, With<Node>, With<Mesh2d>)>>()
         .iter(world)
@@ -287,16 +294,20 @@ fn prepare(world: &mut World) {
         .query::<(&mut Transform, &mut Projection, &mut CameraZoom2d)>()
         .iter_mut(world)
     {
-        transform.translation.x = 504.;
-        transform.translation.y = 288.;
+        transform.translation.x = camera.x;
+        transform.translation.y = camera.y;
         zoom.zoom = 1.1;
         if let Projection::Orthographic(ortho) = &mut *projection {
             ortho.scale = 1.1;
         }
     }
-    let swarm = world
+    world
         .spawn((Swarm {}, SwarmId::PLAYER, Transform::default()))
-        .id();
+        .id()
+}
+
+fn prepare(world: &mut World) {
+    let swarm = prepare_world(world, Vec2::new(504., 288.));
     let wall_scale = Vec3::new(4.5, 1.125, 1.);
     let source = world
         .spawn((

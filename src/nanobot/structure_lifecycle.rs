@@ -308,7 +308,6 @@ pub fn clear_finished_structures_system(
         clearing.validation = ClearingValidation::Clearing {
             validated_layout: layout_key,
         };
-        let mut occupied = false;
         for (bot, position, evacuation, movement) in &occupants {
             let position = position.translation.truncate();
             if shape.admits_body(position) {
@@ -324,18 +323,9 @@ pub fn clear_finished_structures_system(
                 }
                 continue;
             }
-            occupied = true;
-            let free_exit = |goal: Vec2| {
-                occupants.iter().all(|(other, transform, _, _)| {
-                    other == bot
-                        || transform.translation.truncate().distance_squared(goal)
-                            >= (2.0 * crate::navigation::BODY_RADIUS).powi(2)
-                })
-            };
             if let Some(evacuation) = evacuation.filter(|evacuation| {
                 evacuation.structure == entity
                     && physical.can_occupy(evacuation.goal)
-                    && free_exit(evacuation.goal)
                     && physical.movement_clear(position, evacuation.goal)
             }) {
                 if movement.is_none() {
@@ -353,24 +343,19 @@ pub fn clear_finished_structures_system(
             };
             let min = ((center - half) / CELL_WIDTH).floor().as_ivec2() - IVec2::ONE;
             let max = ((center + half) / CELL_WIDTH).ceil().as_ivec2();
-            let mut candidates = Vec::new();
-            for y in min.y..=max.y {
-                for x in min.x..=max.x {
-                    let goal = (IVec2::new(x, y).as_vec2() + Vec2::splat(0.5)) * CELL_WIDTH;
-                    if shape.admits_body(goal)
-                        && free_exit(goal)
+            let exit = (min.y..=max.y)
+                .flat_map(|y| (min.x..=max.x).map(move |x| IVec2::new(x, y)))
+                .map(|cell| (cell.as_vec2() + Vec2::splat(0.5)) * CELL_WIDTH)
+                .filter(|&goal| {
+                    shape.admits_body(goal)
                         && physical.can_occupy(goal)
                         && physical.movement_clear(position, goal)
-                    {
-                        candidates.push(goal);
-                    }
-                }
-            }
-            candidates.sort_by(|a, b| {
-                a.distance_squared(position)
-                    .total_cmp(&b.distance_squared(position))
-            });
-            if let Some(&goal) = candidates.first() {
+                })
+                .min_by(|a, b| {
+                    a.distance_squared(position)
+                        .total_cmp(&b.distance_squared(position))
+                });
+            if let Some(goal) = exit {
                 commands.entity(bot).insert((
                     ClearingEvacuation {
                         structure: entity,
@@ -385,7 +370,7 @@ pub fn clear_finished_structures_system(
                 ));
             }
         }
-        if !occupied {
+        if !occupied_now {
             if let Some(counters) = counters.as_deref_mut() {
                 counters.record(swarm, BattleEvent::StructureBuilt);
             }

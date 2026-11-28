@@ -11,7 +11,7 @@
 | A plan cuts off friendly access or becomes solid around a bot | [Construction access](../../tests/behavior/construction_access.rs), [clearing](../../tests/behavior/structure_clearing.rs), and [cancellation](../../tests/playtest/construction_cancellation.rs) |
 | A facility loses or duplicates paid output while its exit is blocked | [Production exit playtests](../../tests/playtest/production_exits.rs) |
 
-## Replay gameplay and bottleneck traffic
+## Replay gameplay, bottleneck traffic, and Structure Clearing
 
 From the repository root, apply the [offscreen verifier setup](../agents/agent-control.md#offscreen-verifier-setup). The replay requires an offscreen GPU adapter. A fresh configuration directory selects Standard regardless of the player's saved scenario.
 
@@ -25,6 +25,8 @@ mkdir -p .tmp &&
 In `$replay_dir/normal/`, compare the `start`, `working`, `delivery`, and `later` captures. Look for Workers around the deposit, plans becoming solid structures, and Haulers working outside them. Compare the player's mineral balance and facility counts across the JSON snapshots for evidence of economy progress. Phase names mark timed samples. Screenshots and snapshots can show different ticks.
 
 Under `$replay_dir/bottleneck/`, compare `before.png`, `passing.png`, and `arrived.png` with their detailed state snapshots. Two loaded Haulers use the same lane in opposite directions, pass a Hauler loading at a Source Stockpile, and deliver to the facilities on the far sides. The [fixture](../../examples/local_avoidance.rs) checks swept wall clearance and loading progress on every tick. To drive it manually, paint Corridor at `-3 -3` to start and at `-2 -3` to continue after the `TRAFFIC passing` log. The driver checks process exit, socket removal, and lock release. Run `cargo test --example local_avoidance` to check the independent segment-to-rectangle clearance calculation.
+
+Under `$replay_dir/clearing/`, compare the `before`, `passing`, and `activated` captures and state snapshots. Two occupants take the same narrow exit through a stationary friendly Nanobot. At `passing`, one body remains in the footprint. At `activated`, both bodies have cleared it and the Source Stockpile is operational. The fixture checks swept wall clearance and checks that activation waits for the full footprint to clear. To replay this scene alone, pass `--scene clearing`. To advance it manually, paint Corridor at `-3 -3` to start and at `-2 -3` when the `CLEARING passing` log appears.
 
 ## Measure navigation at scale
 

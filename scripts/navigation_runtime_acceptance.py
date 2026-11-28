@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture normal gameplay and opposing deliveries using the external control client.
+"""Capture gameplay, delivery traffic, and Structure Clearing using the external control client.
 
 Build the binary and example first with `cargo build --bin
  top-down-2d-rts-prototype-nano-swarm --example local_avoidance`.
@@ -41,6 +41,7 @@ def run_scene(kind, output, runtime_dir=None):
             XDG_RUNTIME_DIR=str(runtime),
             XDG_CONFIG_HOME=env.get("XDG_CONFIG_HOME", str(output / "config")),
             NANO_SWARM_REPLAY_TUNING=str(tuning),
+            NANO_SWARM_REPLAY_SCENE=kind,
             BEVY_ASSET_ROOT=str(ROOT),
             LD_LIBRARY_PATH=os.pathsep.join([
                 str(target / "debug"),
@@ -49,7 +50,7 @@ def run_scene(kind, output, runtime_dir=None):
                 env.get("LD_LIBRARY_PATH", ""),
             ]),
         )
-        binary = "examples/local_avoidance" if kind == "bottleneck" else "top-down-2d-rts-prototype-nano-swarm"
+        binary = "examples/local_avoidance" if kind != "normal" else "top-down-2d-rts-prototype-nano-swarm"
         launch = [str(target / "debug" / binary)]
         if kind == "normal":
             launch += ["--headless", "--width", "1280", "--height", "720", "--tuning-file", str(tuning)]
@@ -89,14 +90,15 @@ def run_scene(kind, output, runtime_dir=None):
                         capture(name)
                 else:
                     capture("before")
-                    for phase, x in [("passing", "-3"), ("arrived", "-2")]:
+                    label, final_phase = ("CLEARING", "activated") if kind == "clearing" else ("TRAFFIC", "arrived")
+                    for phase, x in [("passing", "-3"), (final_phase, "-2")]:
                         call("paint", "corridor", x, "-3")
                         for _ in range(80):
                             call("wait", "--frames", "30")
-                            if f"TRAFFIC {phase}:" in (output / "process.log").read_text():
+                            if f"{label} {phase}:" in (output / "process.log").read_text():
                                 break
                         else:
-                            raise RuntimeError(f"traffic did not reach {phase}")
+                            raise RuntimeError(f"{kind} did not reach {phase}")
                         capture(phase)
                 call("shutdown")
                 exit_code = process.wait(timeout=30)
@@ -120,10 +122,10 @@ def run_scene(kind, output, runtime_dir=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "target/issue-66/runtime/replay")
-    parser.add_argument("--scene", action="append", choices=["normal", "bottleneck"])
+    parser.add_argument("--scene", action="append", choices=["normal", "bottleneck", "clearing"])
     parser.add_argument("--runtime-dir", type=Path, help="Existing private directory with space for the control socket")
     args = parser.parse_args()
-    for kind in args.scene or ["normal", "bottleneck"]:
+    for kind in args.scene or ["normal", "bottleneck", "clearing"]:
         run_scene(kind, args.output.resolve() / kind, args.runtime_dir)
 
 
