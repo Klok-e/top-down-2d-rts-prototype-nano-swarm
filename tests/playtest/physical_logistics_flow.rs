@@ -1117,12 +1117,30 @@ fn a_pending_inbound_refill_waits_even_at_an_aged_terminal_then_uses_the_usual_l
     world.resource_mut::<NavigationBudget>().0 = 0;
     fixture.return_defender_demand();
 
-    for _ in 0..4 {
+    fixture.acquire();
+    assert_eq!(fixture.picked_source(), None);
+    fixture
+        .app
+        .world_mut()
+        .entity_mut(fixture.fast_hauler)
+        .insert(Commitment::Working);
+    fixture.acquire();
+    assert_eq!(fixture.picked_source(), None);
+    fixture
+        .app
+        .world_mut()
+        .entity_mut(fixture.fast_hauler)
+        .insert(Commitment::Idle);
+    for _ in 0..3 {
         fixture.acquire();
         assert_eq!(fixture.picked_source(), None);
     }
     fixture.acquire();
-    assert_eq!(fixture.picked_source(), Some(fixture.full_pickup));
+    assert_eq!(
+        fixture.picked_source(),
+        Some(fixture.full_pickup),
+        "a busy pass must not restart the wait for the same pending delivery",
+    );
     let world = fixture.app.world();
     let fallback = world
         .get::<LogisticsReservation>(fixture.fast_hauler)
