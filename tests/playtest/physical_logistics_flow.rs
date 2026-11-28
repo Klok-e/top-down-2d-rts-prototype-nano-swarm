@@ -755,3 +755,243 @@ fn terminal_delivery_tries_another_terminal_before_returning_to_pickup_sink() {
     }
     assert_eq!(facility_amount(&app, alternate), 12);
 }
+
+const RESTART_COST: u32 = 5;
+const RESTART_CYCLE_TICKS: u32 = 50;
+const RESTART_TRANSFER_TICKS: u32 = 18;
+
+struct RestartRefill {
+    app: App,
+    slow_hauler: Entity,
+    fast_hauler: Entity,
+    light_pickup: Entity,
+    full_pickup: Entity,
+    facility: Entity,
+}
+
+impl RestartRefill {
+    fn new(hopper: u32, inbound: u32, light_stock: u32, slow_position: Vec2) -> Self {
+        use top_down_2d_rts_prototype_nano_swarm::nanobot::{
+            PopulationDemandPlugin, ProductionPlugin,
+        };
+
+        let mut app = common::sim_app_with_gather_haul();
+        app.add_plugins((PopulationDemandPlugin, ProductionPlugin));
+        {
+            let mut tuning = app.world_mut().resource_mut::<Tuning>();
+            tuning.production.cost_per_bot = RESTART_COST;
+            tuning.production.input_capacity = 2 * RESTART_COST;
+            tuning.production.ticks_per_bot = RESTART_CYCLE_TICKS;
+            tuning.logistics.hauler_carry_capacity = 2 * RESTART_COST;
+            tuning.logistics.hauler_transfer_per_pulse = 1;
+            tuning.logistics.material_work_ticks = RESTART_TRANSFER_TICKS;
+        }
+        let tuning = app.world().resource::<Tuning>().clone();
+        let owner = common::spawn_swarm_at(&mut app, Vec2::new(36.0, 36.0));
+        let mut production = ProductionFacility::with_tuning(&tuning);
+        production.input_amount = hopper;
+        let facility = app
+            .world_mut()
+            .spawn((
+                production,
+                OwnerSwarm(owner),
+                Transform::from_xyz(36.0, 36.0, 0.0),
+            ))
+            .id();
+        let slow_hauler = common::spawn_hauler_at(&mut app, slow_position);
+        let fast_hauler = common::spawn_hauler_at(&mut app, Vec2::new(36.0, -120.0));
+        app.update();
+        assert!(
+            !app.world()
+                .get::<ProductionFacility>(facility)
+                .unwrap()
+                .demand_waiting
+        );
+        let light_pickup =
+            common::spawn_owned_source(&mut app, owner, Vec2::new(-144.0, 36.0), light_stock, 100);
+        let full_pickup = common::spawn_owned_source(
+            &mut app,
+            owner,
+            Vec2::new(216.0, 36.0),
+            2 * RESTART_COST,
+            100,
+        );
+        let mut claim =
+            LogisticsReservation::new(full_pickup, facility, ResourceKind::Minerals, inbound);
+        claim.source_remaining = 0;
+        app.world_mut().entity_mut(slow_hauler).insert((
+            HaulerAssignment {
+                source: full_pickup,
+                sink: facility,
+                pickup_role: StockpileRole::Source,
+            },
+            claim,
+            Cargo {
+                kind: ResourceKind::Minerals,
+                amount: inbound,
+            },
+        ));
+        app.world_mut().resource_mut::<ResourceLedger>().add_for(
+            SwarmId::PLAYER,
+            ResourceKind::Minerals,
+            hopper + inbound + light_stock + 2 * RESTART_COST,
+        );
+        Self {
+            app,
+            slow_hauler,
+            fast_hauler,
+            light_pickup,
+            full_pickup,
+            facility,
+        }
+    }
+
+    fn return_defender_demand(&mut self) {
+        use top_down_2d_rts_prototype_nano_swarm::intent::{IntentGrid, IntentKind};
+
+        let mut grid = self.app.world_mut().resource_mut::<IntentGrid>();
+        for y in 0..3 {
+            for x in 0..4 {
+                assert!(grid.paint(IVec2::new(x, y), IntentKind::Defend, SwarmId::PLAYER));
+            }
+        }
+    }
+
+    fn cycle_starts(&mut self, ticks: u32) -> Vec<u32> {
+        use top_down_2d_rts_prototype_nano_swarm::nanobot::NanobotType;
+
+        let mut starts = Vec::new();
+        for tick in 1..=ticks {
+            self.app.update();
+            let production = self
+                .app
+                .world()
+                .get::<ProductionFacility>(self.facility)
+                .unwrap();
+            if production.current_target == Some(NanobotType::Defender) && production.progress == 1
+            {
+                starts.push(tick);
+            }
+        }
+        starts
+    }
+
+    fn picked_source(&self) -> Option<Entity> {
+        self.app
+            .world()
+            .get::<HaulerAssignment>(self.fast_hauler)
+            .map(|assignment| assignment.source)
+    }
+}
+
+#[test]
+fn faster_refill_restarts_an_empty_or_stocked_facility_before_the_slow_claim() {
+    for initial_cycles in [0, 2] {
+        let mut fixture = RestartRefill::new(
+            initial_cycles * RESTART_COST,
+            RESTART_COST,
+            RESTART_COST,
+            Vec2::new(1800.0, 200.0),
+        );
+        fixture.return_defender_demand();
+
+        let mut starts = fixture.cycle_starts(30);
+        assert_eq!(
+            fixture.picked_source(),
+            Some(fixture.light_pickup),
+            "the pickup with five minerals should fund the restart before the full pickup",
+        );
+        assert_eq!(
+            cargo_amount(&fixture.app, fixture.slow_hauler),
+            RESTART_COST
+        );
+        starts.extend(fixture.cycle_starts(240).into_iter().map(|tick| tick + 30));
+        assert_eq!(starts.len() as u32, initial_cycles + 1);
+        assert_eq!(
+            cargo_amount(&fixture.app, fixture.slow_hauler),
+            RESTART_COST
+        );
+    }
+}
+
+#[test]
+fn the_restart_can_use_minerals_from_two_individually_insufficient_unloads() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::InteractionRegion;
+
+    let mut fixture = RestartRefill::new(0, 2, 3, Vec2::new(36.0, 150.0));
+    let world = fixture.app.world_mut();
+    let position = InteractionRegion::structure(world.get::<Transform>(fixture.facility).unwrap())
+        .approach(Vec2::new(36.0, 150.0));
+    world.entity_mut(fixture.slow_hauler).insert((
+        Transform::from_translation(position.extend(0.0)),
+        MaterialWorkProgress {
+            ticks_elapsed: RESTART_TRANSFER_TICKS - 1,
+        },
+    ));
+    fixture.return_defender_demand();
+    assert!(fixture.cycle_starts(RESTART_TRANSFER_TICKS).is_empty());
+    assert_eq!(facility_amount(&fixture.app, fixture.facility), 1);
+    assert_eq!(cargo_amount(&fixture.app, fixture.slow_hauler), 1);
+    assert_eq!(fixture.picked_source(), Some(fixture.light_pickup));
+    assert!(fixture.cycle_starts(30 - RESTART_TRANSFER_TICKS).is_empty());
+    assert_eq!(facility_amount(&fixture.app, fixture.facility), 2);
+    assert_eq!(
+        stockpile_amount(&fixture.app, fixture.full_pickup),
+        2 * RESTART_COST
+    );
+    assert_eq!(fixture.cycle_starts(155).len(), 1);
+    assert_eq!(facility_amount(&fixture.app, fixture.facility), 0);
+}
+
+#[test]
+fn a_full_restart_window_preserves_the_slow_claim_until_physical_delivery() {
+    let load = 2 * RESTART_COST;
+    let mut fixture = RestartRefill::new(0, load, RESTART_COST, Vec2::new(1500.0, 180.0));
+    let second_hauler = common::spawn_hauler_at(&mut fixture.app, Vec2::new(1600.0, -120.0));
+    let mut claim = LogisticsReservation::new(
+        fixture.full_pickup,
+        fixture.facility,
+        ResourceKind::Minerals,
+        load,
+    );
+    claim.source_remaining = 0;
+    fixture.app.world_mut().entity_mut(second_hauler).insert((
+        HaulerAssignment {
+            source: fixture.full_pickup,
+            sink: fixture.facility,
+            pickup_role: StockpileRole::Source,
+        },
+        claim,
+        Cargo {
+            kind: ResourceKind::Minerals,
+            amount: load,
+        },
+    ));
+    fixture
+        .app
+        .world_mut()
+        .resource_mut::<ResourceLedger>()
+        .add_for(SwarmId::PLAYER, ResourceKind::Minerals, load);
+    {
+        let mut facility = fixture
+            .app
+            .world_mut()
+            .get_mut::<ProductionFacility>(fixture.facility)
+            .unwrap();
+        facility.queued_space = load;
+        facility.measured_lead_ticks = Some(1.0);
+    }
+    fixture.return_defender_demand();
+
+    assert!(fixture.cycle_starts(250).is_empty());
+    assert_eq!(fixture.picked_source(), None);
+    assert_eq!(facility_amount(&fixture.app, fixture.facility), 0);
+    for hauler in [fixture.slow_hauler, second_hauler] {
+        assert_eq!(
+            fixture.app.world().get::<LogisticsReservation>(hauler),
+            Some(&claim)
+        );
+        assert_eq!(cargo_amount(&fixture.app, hauler), load);
+    }
+    assert!(!fixture.cycle_starts(180).is_empty());
+}

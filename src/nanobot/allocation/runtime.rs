@@ -25,11 +25,13 @@ use crate::{
     nanobot::{
         Cargo, Commitment, DirectMovementComponent, ExtractProgress, GatherAssignment,
         GatherQuotas, HaulerAssignment, HaulerLoad, HaulerLoading, Health, InteractionRegion,
-        LogisticsReservation, MaintenanceAssignment, MaintenanceProgress, Nanobot, NanobotType,
-        PlannedStructure, PlannedStructureClaim, PlannedStructureProgress, ProductionFacility,
-        ReturningToStockpile, SpareGathering, SwarmId, SwarmMember, WorkerLoad,
+        LogisticsReservation, MaintenanceAssignment, MaintenanceProgress, MaterialWorkProgress,
+        Nanobot, NanobotType, PlannedStructure, PlannedStructureClaim, PlannedStructureProgress,
+        ProductionFacility, RemainingTravel, RestartCycles, ReturningToStockpile, SpareGathering,
+        SupportCondition, SwarmId, SwarmMember, WorkerLoad,
         charge::{Charge, Charger, ChargerAssignment, ChargerProgress, minerals_to_fully_charge},
         gather_worker_slots,
+        haul::restart::{DeliveryEstimate, InboundHauler, RestartForecast},
         logistics_leg::{DestinationRole, PickupBuffer},
     },
     navigation::{ConnectivityStatus, Navigation, RouteGoal},
@@ -222,12 +224,129 @@ pub struct AllocationInputs<'w, 's> {
         ),
     >,
     ages: ResMut<'w, TerminalDemandAges>,
+    restart_refills: RestartRefills<'w, 's>,
     travelling: TravellingWorkers<'w, 's>,
     gather_quotas: Option<Res<'w, GatherQuotas>>,
     gathering: GatheringInputs<'w, 's>,
 }
 
 type ClaimCounts = BTreeMap<(u8, u64, u64, u64, Option<SwarmId>), usize>;
+
+#[derive(SystemParam)]
+#[allow(clippy::type_complexity)]
+struct RestartRefills<'w, 's> {
+    facilities: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static ProductionFacility,
+            &'static Transform,
+            &'static RestartCycles,
+        ),
+    >,
+    inbound: Query<
+        'w,
+        's,
+        (
+            &'static HaulerAssignment,
+            &'static LogisticsReservation,
+            &'static Transform,
+            Option<&'static HaulerLoad>,
+            Has<HaulerLoading>,
+            Option<&'static MaterialWorkProgress>,
+            Option<&'static DirectMovementComponent>,
+            Option<&'static RemainingTravel>,
+        ),
+        With<Nanobot>,
+    >,
+    conditions: Query<'w, 's, &'static SupportCondition>,
+}
+
+impl RestartRefills<'_, '_> {
+    fn forecasts(
+        &self,
+        tuning: &crate::tuning::Tuning,
+        navigation: &Navigation,
+        stockpiles: &Query<(&Stockpile, &Transform, Option<&StockpileRole>)>,
+    ) -> BTreeMap<Entity, RestartForecast> {
+        let mut forecasts: BTreeMap<_, _> = self
+            .facilities
+            .iter()
+            .filter_map(|(entity, facility, _, cycles)| {
+                let starts = cycles.0?;
+                if self
+                    .conditions
+                    .get(entity)
+                    .is_ok_and(|condition| !condition.is_operational())
+                {
+                    return None;
+                }
+                Some((entity, RestartForecast::new(facility, starts, tuning)))
+            })
+            .collect();
+        if forecasts.is_empty() {
+            return forecasts;
+        }
+
+        for (
+            assignment,
+            reservation,
+            transform,
+            cargo,
+            loading,
+            work,
+            movement,
+            remaining_travel,
+        ) in &self.inbound
+        {
+            let Some(forecast) = forecasts.get_mut(&reservation.destination) else {
+                continue;
+            };
+            let (_, _, facility_transform, _) = self
+                .facilities
+                .get(reservation.destination)
+                .expect("forecasts are created for facilities");
+            if assignment.sink != reservation.destination || reservation.destination_remaining == 0
+            {
+                continue;
+            }
+
+            let pickup = stockpiles
+                .get(assignment.source)
+                .ok()
+                .filter(|_| {
+                    assignment.source == reservation.source
+                        && !self
+                            .conditions
+                            .get(assignment.source)
+                            .is_ok_and(|condition| !condition.is_operational())
+                })
+                .map(|(stock, position, _)| (InteractionRegion::structure(position), stock.amount));
+            let hauling = InboundHauler {
+                position: transform.translation.truncate(),
+                reservation,
+                cargo,
+                loading,
+                work,
+                movement,
+                remaining_travel,
+            };
+            if let Some(delivery) = hauling.delivery(
+                pickup,
+                InteractionRegion::structure(facility_transform),
+                navigation,
+                &tuning.logistics,
+            ) {
+                forecast.add_delivery(delivery);
+            }
+        }
+        for forecast in forecasts.values_mut() {
+            forecast.refresh_baseline(&tuning.logistics);
+        }
+        forecasts
+    }
+}
 
 /// Workers holding Maintenance or Planned Build work that have not reached it.
 type TravellingWorkers<'w, 's> = Query<
@@ -746,6 +865,8 @@ pub fn regional_allocation_acquisition_system(
     };
 
     let mut assigned_workers = std::collections::BTreeSet::new();
+
+    let mut restart_refills = None;
     for bot in candidates {
         let bot_key = (bot.swarm, bot.region, kind_index(bot.kind));
         let Some(pull) = pulls.get(&bot_key).copied() else {
@@ -761,6 +882,11 @@ pub fn regional_allocation_acquisition_system(
             spare.then_some((lease, reservation?))
         });
         let work = if bot.kind == NanobotType::Hauler {
+            let refills = restart_refills.get_or_insert_with(|| {
+                terminal
+                    .restart_refills
+                    .forecasts(&tuning, &navigation, &stockpiles)
+            });
             let Some(selection) = choose_terminal_logistics_work(
                 &tuning,
                 bot,
@@ -777,10 +903,17 @@ pub fn regional_allocation_acquisition_system(
                 &charger_demand,
                 &terminal.ages,
                 &nearest_terminal_source,
+                refills,
             ) else {
                 continue;
             };
             let reservation = selection.reservation;
+            if let Some(delivery) = selection.delivery
+                && let Some(forecast) = refills.get_mut(&reservation.destination)
+            {
+                forecast.add_delivery(delivery);
+                forecast.refresh_baseline(&tuning.logistics);
+            }
             commands.entity(bot.entity).insert((
                 HaulerAssignment {
                     source: reservation.source,
@@ -877,7 +1010,7 @@ pub fn regional_allocation_acquisition_system(
                     LogisticsReservation,
                     SpareGathering,
                     ExtractProgress,
-                    crate::nanobot::MaterialWorkProgress,
+                    MaterialWorkProgress,
                 )>();
                 if decision.opportunity.category != OpportunityCategory::Gather {
                     worker.remove::<GatherAssignment>();
@@ -1024,6 +1157,7 @@ struct SelectedHaul {
     pickup: InteractionRegion,
     pickup_role: StockpileRole,
     reservation: LogisticsReservation,
+    delivery: Option<DeliveryEstimate>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1043,12 +1177,14 @@ fn choose_terminal_logistics_work(
     charger_demand: &BTreeMap<Entity, (u8, u32)>,
     ages: &TerminalDemandAges,
     nearest_terminal_source: &BTreeMap<Entity, f32>,
+    restart_refills: &BTreeMap<Entity, RestartForecast>,
 ) -> Option<SelectedHaul> {
     if pull.categories.get(OpportunityCategory::Haul) == 0 {
         return None;
     }
     let mut examined = 0;
-    let mut best: Option<(TerminalLogisticsScore, SelectedHaul)> = None;
+    let mut terminals =
+        BTreeMap::<Entity, (Option<u64>, TerminalLogisticsScore, SelectedHaul)>::new();
     for (_, opportunities) in ordered.iter().take(bounds.max_regions) {
         for work in *opportunities {
             if examined == bounds.max_candidates {
@@ -1142,12 +1278,6 @@ fn choose_terminal_logistics_work(
             {
                 continue;
             }
-            let age = ages.waiting_ticks(sink);
-            let urgency = u32::from(quote.base_urgency)
-                .saturating_sub(age / tuning.autonomy.terminal_fairness_promotion_ticks.max(1))
-                as u8;
-            let deficit_ratio = u64::from(quote.unclaimed_space).saturating_mul(1_000_000)
-                / u64::from(buffer.capacity.max(1));
             let source_pos =
                 match navigation.query_connectivity(bot.position, RouteGoal::Interaction(pickup)) {
                     ConnectivityStatus::Connected { endpoint } => endpoint,
@@ -1164,8 +1294,38 @@ fn choose_terminal_logistics_work(
             if !estimated_cost.is_finite() {
                 continue;
             }
-            let strict = (quote.base_urgency < STARTABLE_PRODUCTION_URGENCY || urgency == 0)
-                .then_some((urgency, u32::MAX - age, u64::MAX - deficit_ratio));
+            let forecast = restart_refills.get(&sink);
+            let delivery = forecast.map(|_| {
+                DeliveryEstimate::pickup(
+                    quote.amount,
+                    if pickup.contains(bot.position) {
+                        0.0
+                    } else {
+                        bot.position.distance(source_pos)
+                    },
+                    source_pos.distance(sink_pos),
+                    &tuning.logistics,
+                )
+            });
+            let funding = forecast.zip(delivery).and_then(|(forecast, delivery)| {
+                forecast.funding_advancement(delivery, &tuning.logistics)
+            });
+            let base_urgency = match (forecast, funding) {
+                (_, Some(_)) => STARTABLE_PRODUCTION_URGENCY,
+                (Some(_), None) => STARTABLE_PRODUCTION_URGENCY + 1,
+                (None, None) => quote.base_urgency,
+            };
+            let age = ages.waiting_ticks(sink);
+            let urgency = u32::from(base_urgency)
+                .saturating_sub(age / tuning.autonomy.terminal_fairness_promotion_ticks.max(1))
+                as u8;
+            let deficit_ratio = u64::from(quote.unclaimed_space).saturating_mul(1_000_000)
+                / u64::from(buffer.capacity.max(1));
+            let strict = (base_urgency < STARTABLE_PRODUCTION_URGENCY || urgency == 0).then_some((
+                urgency,
+                u32::MAX - age,
+                u64::MAX - deficit_ratio,
+            ));
             let score = TerminalLogisticsScore {
                 strict,
                 weighted_cost: estimated_cost / quote.amount as f32
@@ -1174,23 +1334,42 @@ fn choose_terminal_logistics_work(
                 terminal: sink.to_bits(),
                 source: source.to_bits(),
             };
-            if best
-                .as_ref()
-                .is_none_or(|(current, _)| score.cmp(*current).is_lt())
+            let funding_rank = |funding: Option<u64>| (funding.is_none(), funding);
+            if terminals
+                .get(&sink)
+                .is_none_or(|(current_funding, current, _)| {
+                    funding_rank(funding)
+                        .cmp(&funding_rank(*current_funding))
+                        .then_with(|| score.cmp(*current))
+                        .is_lt()
+                })
             {
-                best = Some((
-                    score,
-                    SelectedHaul {
-                        work: *work,
-                        pickup,
-                        pickup_role: source_role.copied().unwrap_or_default(),
-                        reservation: LogisticsReservation::new(source, sink, kind, quote.amount),
-                    },
-                ));
+                terminals.insert(
+                    sink,
+                    (
+                        funding,
+                        score,
+                        SelectedHaul {
+                            work: *work,
+                            pickup,
+                            pickup_role: source_role.copied().unwrap_or_default(),
+                            reservation: LogisticsReservation::new(
+                                source,
+                                sink,
+                                kind,
+                                quote.amount,
+                            ),
+                            delivery,
+                        },
+                    ),
+                );
             }
         }
     }
-    best.map(|(_, work)| work)
+    terminals
+        .into_values()
+        .min_by(|(_, left, _), (_, right, _)| left.cmp(*right))
+        .map(|(_, _, work)| work)
 }
 
 fn kind_index(kind: NanobotType) -> usize {
