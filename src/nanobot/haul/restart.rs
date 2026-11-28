@@ -16,6 +16,12 @@ pub(in crate::nanobot) struct DeliveryEstimate {
     pub amount: u32,
 }
 
+pub(in crate::nanobot) enum InboundDelivery {
+    Estimated(DeliveryEstimate),
+    Pending,
+    Unavailable,
+}
+
 fn travel_ticks(distance: f32, speed: f32) -> u64 {
     (distance / speed).ceil() as u64
 }
@@ -77,6 +83,7 @@ pub(in crate::nanobot) struct RestartForecast {
     buffered: u32,
     capacity: u32,
     deliveries: Vec<DeliveryEstimate>,
+    pending_delivery: bool,
     baseline: Option<u64>,
 }
 
@@ -98,12 +105,21 @@ impl RestartForecast {
             buffered: facility.input_amount,
             capacity: facility.input_capacity,
             deliveries: Vec::new(),
+            pending_delivery: false,
             baseline: None,
         }
     }
 
-    pub fn add_delivery(&mut self, delivery: DeliveryEstimate) {
-        self.deliveries.push(delivery);
+    pub fn add_delivery(&mut self, delivery: InboundDelivery) {
+        match delivery {
+            InboundDelivery::Estimated(delivery) => self.deliveries.push(delivery),
+            InboundDelivery::Pending => self.pending_delivery = true,
+            InboundDelivery::Unavailable => (),
+        }
+    }
+
+    pub fn has_pending_delivery(&self) -> bool {
+        self.pending_delivery
     }
 
     pub fn refresh_baseline(&mut self, logistics: &LogisticsTuning) {
@@ -129,12 +145,15 @@ impl RestartForecast {
             )
         };
         let usual = pickup(usual_amount);
+        if self.has_pending_delivery() || self.funded_by_due_tick() {
+            return (usual, None);
+        }
         let mut best = (usual, self.funding_advancement(usual, logistics));
         let pulse = logistics.hauler_transfer_per_pulse;
         let interval = u64::from(logistics.material_work_ticks);
         let needed = self.shortfall();
         let short_limit = needed.min((usual_amount.div_ceil(pulse) - 1) * pulse);
-        if short_limit == 0 || self.funded_by_due_tick() {
+        if short_limit == 0 {
             return best;
         }
 
@@ -229,9 +248,6 @@ impl RestartForecast {
         candidate: DeliveryEstimate,
         logistics: &LogisticsTuning,
     ) -> Option<u64> {
-        if self.funded_by_due_tick() {
-            return None;
-        }
         let funded = self.funding_tick(Some(candidate), logistics)?;
         self.baseline
             .is_none_or(|baseline| funded < baseline)
@@ -317,7 +333,7 @@ impl InboundHauler<'_> {
         facility: InteractionRegion,
         navigation: &Navigation,
         logistics: &LogisticsTuning,
-    ) -> Option<DeliveryEstimate> {
+    ) -> InboundDelivery {
         let carried = self.cargo.map_or(0, |cargo| cargo.amount);
         let work_progress = self.work.map_or(0, |work| work.ticks_elapsed);
         let loading = self.loading || self.cargo.is_none();
@@ -332,7 +348,7 @@ impl InboundHauler<'_> {
                 PhysicalRouteStatus::Found { endpoint, distance } => {
                     Some((region, endpoint, distance, available))
                 }
-                PhysicalRouteStatus::Pending => return None,
+                PhysicalRouteStatus::Pending => return InboundDelivery::Pending,
                 PhysicalRouteStatus::Unreachable => None,
             }
         } else {
@@ -359,19 +375,19 @@ impl InboundHauler<'_> {
             };
         let amount = amount.min(self.reservation.destination_remaining);
         if amount == 0 {
-            return None;
+            return InboundDelivery::Unavailable;
         }
-        let PhysicalRouteStatus::Found { distance, .. } =
-            self.travel(departure, facility, navigation, !loading)
-        else {
-            return None;
+        let distance = match self.travel(departure, facility, navigation, !loading) {
+            PhysicalRouteStatus::Found { distance, .. } => distance,
+            PhysicalRouteStatus::Pending => return InboundDelivery::Pending,
+            PhysicalRouteStatus::Unreachable => return InboundDelivery::Unavailable,
         };
         let already_unloading =
             !loading && self.movement.is_none() && facility.contains(self.position);
         let arrival = load_ticks
             + travel_ticks(distance, logistics.bot_speed)
             + u64::from(!loading && (!already_unloading || self.work.is_none()));
-        Some(DeliveryEstimate::new(
+        InboundDelivery::Estimated(DeliveryEstimate::new(
             arrival,
             amount,
             if already_unloading { work_progress } else { 0 },

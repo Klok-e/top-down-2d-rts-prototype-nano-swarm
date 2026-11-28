@@ -4,9 +4,12 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::tuning::Tuning;
 use top_down_2d_rts_prototype_nano_swarm::{
     nanobot::{
-        Cargo, DirectMovementComponent, HaulerAssignment, HaulerLoading, LogisticsReservation,
-        MaterialWorkProgress, OwnerSwarm, ProductionFacility, SwarmId,
+        Cargo, Commitment, DirectMovementComponent, HaulerAssignment, HaulerLoading,
+        InteractionRegion, LogisticsReservation, MaterialWorkProgress, OwnerSwarm,
+        ProductionFacility, RegionalAllocationWake, SwarmId,
     },
+    navigation::{ConnectivityStatus, Navigation, RouteGoal},
+    navigation_runtime::NavigationBudget,
     resources::{ResourceKind, ResourceLedger, Stockpile, StockpileRole},
 };
 
@@ -873,6 +876,43 @@ impl RestartRefill {
             .get::<HaulerAssignment>(self.fast_hauler)
             .map(|assignment| assignment.source)
     }
+
+    fn warm_pickup_connectivity(&self, hauler: Entity, source: Entity) -> ConnectivityStatus {
+        use top_down_2d_rts_prototype_nano_swarm::intent::IntentGrid;
+
+        let world = self.app.world();
+        let navigation = world.resource::<Navigation>();
+        let grid = world.resource::<IntentGrid>();
+        let budget = world.resource::<NavigationBudget>().0;
+        let start = world
+            .get::<Transform>(hauler)
+            .unwrap()
+            .translation
+            .truncate();
+        let connect = |origin, target| {
+            let region = InteractionRegion::structure(world.get::<Transform>(target).unwrap());
+            for _ in 0..60 {
+                let status = navigation.query_connectivity(origin, RouteGoal::Interaction(region));
+                if status != ConnectivityStatus::Pending {
+                    return status;
+                }
+                navigation.advance(grid, budget);
+            }
+            panic!("pickup connectivity should resolve")
+        };
+        match connect(start, source) {
+            ConnectivityStatus::Connected { endpoint } => connect(endpoint, self.facility),
+            status => status,
+        }
+    }
+
+    fn acquire(&mut self) {
+        self.app
+            .world_mut()
+            .resource_mut::<RegionalAllocationWake>()
+            .request_current_pass();
+        self.app.update();
+    }
 }
 
 #[test]
@@ -906,25 +946,11 @@ fn faster_refill_restarts_an_empty_or_stocked_facility_before_the_slow_claim() {
 }
 
 fn add_restart_rock_wall(app: &mut App, half_height: f32) {
-    use top_down_2d_rts_prototype_nano_swarm::terrain::RockFormation;
-
-    app.world_mut().spawn((
-        Transform::from_xyz(-54.0, 36.0, 0.0),
-        RockFormation::Rectangle {
-            half: Vec2::new(18.0, half_height),
-        },
-    ));
+    common::spawn_rock_rectangle(app, Vec2::new(-54.0, 36.0), Vec2::new(18.0, half_height));
 }
 
 #[test]
 fn a_detour_changes_which_pickup_funds_the_restart_first() {
-    use top_down_2d_rts_prototype_nano_swarm::{
-        intent::IntentGrid,
-        nanobot::{Commitment, InteractionRegion},
-        navigation::{ConnectivityStatus, Navigation, RouteGoal},
-        navigation_runtime::NavigationBudget,
-    };
-
     let mut fixture = RestartRefill::new(0, RESTART_COST, RESTART_COST, Vec2::new(1800.0, 200.0));
     // The light pickup has a shorter straight-line round trip, but a rock
     // forces a long detour to reach it and carry its minerals back.
@@ -942,33 +968,11 @@ fn a_detour_changes_which_pickup_funds_the_restart_first() {
         .entity_mut(fixture.fast_hauler)
         .insert(Commitment::Working);
     assert!(fixture.cycle_starts(1).is_empty());
-    {
-        let world = fixture.app.world();
-        let navigation = world.resource::<Navigation>();
-        let grid = world.resource::<IntentGrid>();
-        let budget = world.resource::<NavigationBudget>().0;
-        let start = world
-            .get::<Transform>(fixture.fast_hauler)
-            .unwrap()
-            .translation
-            .truncate();
-        let connect = |origin, target| {
-            let region = InteractionRegion::structure(world.get::<Transform>(target).unwrap());
-            for _ in 0..60 {
-                match navigation.query_connectivity(origin, RouteGoal::Interaction(region)) {
-                    ConnectivityStatus::Connected { endpoint } => return endpoint,
-                    ConnectivityStatus::Pending => {
-                        navigation.advance(grid, budget);
-                    }
-                    ConnectivityStatus::Unreachable => break,
-                }
-            }
-            panic!("both pickup trips should be reachable")
-        };
-        for source in [fixture.light_pickup, fixture.full_pickup] {
-            let pickup_position = connect(start, source);
-            connect(pickup_position, fixture.facility);
-        }
+    for source in [fixture.light_pickup, fixture.full_pickup] {
+        assert!(matches!(
+            fixture.warm_pickup_connectivity(fixture.fast_hauler, source),
+            ConnectivityStatus::Connected { .. }
+        ));
     }
     fixture
         .app
@@ -997,6 +1001,192 @@ fn a_detour_changes_which_pickup_funds_the_restart_first() {
         cargo_amount(&fixture.app, fixture.slow_hauler),
         RESTART_COST
     );
+}
+
+#[test]
+fn a_restart_refill_dispatches_with_a_sealed_pickup_or_a_proven_advancement() {
+    for (wall_height, inbound, hopper, light_reachable, expected_amount) in [
+        (540.0, Vec2::new(1800.0, 200.0), 0, true, RESTART_COST),
+        (2100.0, Vec2::new(36.0, 125.0), 4, false, 2 * RESTART_COST),
+    ] {
+        let mut fixture = RestartRefill::new(hopper, RESTART_COST, RESTART_COST, inbound);
+        add_restart_rock_wall(&mut fixture.app, wall_height);
+        fixture
+            .app
+            .world_mut()
+            .entity_mut(fixture.fast_hauler)
+            .insert(Commitment::Working);
+        fixture.app.update();
+        assert!(matches!(
+            fixture.warm_pickup_connectivity(fixture.fast_hauler, fixture.full_pickup),
+            ConnectivityStatus::Connected { .. }
+        ));
+        assert_eq!(
+            matches!(
+                fixture.warm_pickup_connectivity(fixture.fast_hauler, fixture.light_pickup),
+                ConnectivityStatus::Connected { .. }
+            ),
+            light_reachable
+        );
+        fixture
+            .app
+            .world_mut()
+            .entity_mut(fixture.fast_hauler)
+            .insert(Commitment::Idle);
+        fixture.app.world_mut().resource_mut::<NavigationBudget>().0 = 0;
+        fixture.return_defender_demand();
+
+        fixture.acquire();
+        assert_eq!(
+            fixture.picked_source(),
+            Some(fixture.full_pickup),
+            "light pickup reachable: {light_reachable}",
+        );
+        assert_eq!(
+            fixture
+                .app
+                .world()
+                .get::<LogisticsReservation>(fixture.fast_hauler)
+                .unwrap()
+                .amount,
+            expected_amount,
+        );
+    }
+}
+
+#[test]
+fn a_pending_inbound_refill_waits_even_at_an_aged_terminal_then_uses_the_usual_load() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::TerminalDemandAges;
+
+    let mut fixture = RestartRefill::new(3, 4, 1, Vec2::new(1800.0, 200.0));
+    add_restart_rock_wall(&mut fixture.app, 840.0);
+    fixture
+        .app
+        .world_mut()
+        .get_mut::<Transform>(fixture.light_pickup)
+        .unwrap()
+        .translation
+        .x = -220.0;
+    fixture
+        .app
+        .world_mut()
+        .entity_mut(fixture.fast_hauler)
+        .insert(Commitment::Working);
+    assert!(fixture.cycle_starts(31).is_empty());
+    assert!(
+        fixture
+            .app
+            .world()
+            .resource::<TerminalDemandAges>()
+            .waiting_ticks(fixture.facility)
+            > 4
+    );
+    assert!(matches!(
+        fixture.warm_pickup_connectivity(fixture.fast_hauler, fixture.full_pickup),
+        ConnectivityStatus::Connected { .. }
+    ));
+    let world = fixture.app.world_mut();
+    let pickup_position = Vec2::new(-152.0, 36.0);
+    let pickup =
+        InteractionRegion::structure(world.get::<Transform>(fixture.light_pickup).unwrap());
+    assert!(pickup.contains(pickup_position));
+    let mut inbound = LogisticsReservation::new(
+        fixture.light_pickup,
+        fixture.facility,
+        ResourceKind::Minerals,
+        RESTART_COST,
+    );
+    inbound.source_remaining = 1;
+    world
+        .entity_mut(fixture.slow_hauler)
+        .remove::<DirectMovementComponent>()
+        .insert((
+            Transform::from_translation(pickup_position.extend(0.0)),
+            HaulerAssignment {
+                source: fixture.light_pickup,
+                sink: fixture.facility,
+                pickup_role: StockpileRole::Source,
+            },
+            inbound,
+            HaulerLoading,
+            MaterialWorkProgress { ticks_elapsed: 0 },
+        ));
+    world
+        .entity_mut(fixture.fast_hauler)
+        .insert(Commitment::Idle);
+    world.resource_mut::<NavigationBudget>().0 = 0;
+    fixture.return_defender_demand();
+
+    for _ in 0..4 {
+        fixture.acquire();
+        assert_eq!(fixture.picked_source(), None);
+    }
+    fixture.acquire();
+    assert_eq!(fixture.picked_source(), Some(fixture.full_pickup));
+    let world = fixture.app.world();
+    let fallback = world
+        .get::<LogisticsReservation>(fixture.fast_hauler)
+        .unwrap();
+    let facility = world.get::<ProductionFacility>(fixture.facility).unwrap();
+    let inbound = world
+        .get::<LogisticsReservation>(fixture.slow_hauler)
+        .unwrap();
+    assert_eq!(inbound.destination_remaining, RESTART_COST);
+    assert_eq!(fallback.amount, 2 * RESTART_COST);
+    assert!(fallback.amount > RESTART_COST - facility.input_amount);
+}
+
+#[test]
+fn an_untimed_dispatch_defers_timing_a_second_refill_in_the_same_pass() {
+    let mut fixture = RestartRefill::new(3, 0, RESTART_COST, Vec2::new(-152.0, 36.0));
+    add_restart_rock_wall(&mut fixture.app, 840.0);
+    fixture
+        .app
+        .world_mut()
+        .get_mut::<Transform>(fixture.light_pickup)
+        .unwrap()
+        .translation
+        .x = -220.0;
+    let world = fixture.app.world_mut();
+    world
+        .resource_mut::<Tuning>()
+        .autonomy
+        .terminal_fairness_promotion_ticks = 1;
+    world
+        .entity_mut(fixture.slow_hauler)
+        .remove::<(HaulerAssignment, LogisticsReservation, Cargo)>();
+    let mut haulers = [fixture.slow_hauler, fixture.fast_hauler];
+    haulers.sort_by_key(|hauler| hauler.to_bits());
+    let [first, second] = haulers;
+    world
+        .entity_mut(first)
+        .insert((Transform::from_xyz(-152.0, 36.0, 0.0), Commitment::Working));
+    world
+        .entity_mut(second)
+        .insert((Transform::from_xyz(36.0, -120.0, 0.0), Commitment::Working));
+    assert!(fixture.cycle_starts(31).is_empty());
+    for (hauler, source) in [(first, fixture.light_pickup), (second, fixture.full_pickup)] {
+        assert!(matches!(
+            fixture.warm_pickup_connectivity(hauler, source),
+            ConnectivityStatus::Connected { .. }
+        ));
+    }
+    let world = fixture.app.world_mut();
+    for hauler in haulers {
+        world.entity_mut(hauler).insert(Commitment::Idle);
+    }
+    world.resource_mut::<NavigationBudget>().0 = 0;
+    fixture.return_defender_demand();
+    fixture.acquire();
+
+    let world = fixture.app.world();
+    let first_claim = world.get::<LogisticsReservation>(first).unwrap();
+    assert_eq!(
+        (first_claim.source, first_claim.destination),
+        (fixture.light_pickup, fixture.facility)
+    );
+    assert_eq!(first_claim.amount, RESTART_COST);
+    assert!(world.get::<LogisticsReservation>(second).is_none());
 }
 
 #[test]
