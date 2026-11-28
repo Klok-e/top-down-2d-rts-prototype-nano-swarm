@@ -3,11 +3,13 @@
 use bevy::prelude::*;
 
 mod routing;
-pub(crate) use routing::segment_box;
+mod traffic;
 pub use routing::{
     AccessCheck, AccessStatus, ConnectivityStatus, Navigation, NavigationWork, RequestPurpose,
     Route, RouteGoal, RouteOutcome, RoutePriority, RouteRequestId, RouteStatus,
 };
+pub(crate) use routing::{DirectRoutePolicy, MovementPlan, segment_box};
+pub(crate) use traffic::{RouteTraffic, TrafficSnapshot};
 
 /// A 68-unit body fits a 72-unit passage with two units of clearance per side.
 pub const CELL_WIDTH: f32 = 72.0;

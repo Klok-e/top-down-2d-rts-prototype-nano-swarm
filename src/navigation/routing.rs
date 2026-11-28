@@ -1,4 +1,4 @@
-use super::{BODY_RADIUS, CELL_WIDTH, Obstacle};
+use super::{BODY_RADIUS, CELL_WIDTH, Obstacle, RouteTraffic, traffic::segment_cells};
 use crate::{
     ZONE_BLOCK_SIZE,
     intent::{IntentGrid, IntentKind},

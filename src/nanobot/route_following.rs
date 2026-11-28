@@ -28,7 +28,7 @@ impl RouteFollower {
         waypoints: &[Vec2],
         current: &mut usize,
         speed: f32,
-        hauler: bool,
+        preserve_turns: bool,
         navigation: &Navigation,
     ) -> Vec2 {
         if let Some(WaypointTarget {
@@ -73,7 +73,7 @@ impl RouteFollower {
         if self.target.is_none() {
             let end = (*current + 8).min(waypoints.len());
             for candidate in *current..end {
-                if hauler && candidate > *current {
+                if preserve_turns && candidate > *current {
                     let origin = if *current == 0 {
                         position
                     } else {

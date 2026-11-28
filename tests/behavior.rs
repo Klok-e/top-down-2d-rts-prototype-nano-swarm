@@ -132,6 +132,8 @@ mod independent_build_intent;
 #[path = "behavior/congestion.rs"]
 mod congestion;
 
+#[path = "behavior/direct_traffic.rs"]
+mod direct_traffic;
 #[path = "behavior/work_navigation.rs"]
 mod work_navigation;
 

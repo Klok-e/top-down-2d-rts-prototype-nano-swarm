@@ -279,9 +279,7 @@ impl Navigation {
         start: Vec2,
         center: Vec2,
         radius: f32,
-        grid: &PaintCosts,
-        swarm: SwarmId,
-        hauler: bool,
+        costs: RouteCosts<'_>,
     ) -> RouteOutcome {
         if !radius.is_finite() || radius < 0.0 || !center.is_finite() {
             return RouteOutcome::Unreachable;
@@ -292,9 +290,9 @@ impl Navigation {
                 cost: 0.0,
             });
         }
-        let nearest = center + (start - center).normalize_or_zero() * (radius - 0.5).max(0.0);
+        let nearest = range_approach(start, center, radius);
         if let RouteOutcome::Found(route) =
-            self.async_route(start, nearest, grid, swarm, hauler).await
+            self.async_route_search(start, nearest, costs, false).await
         {
             return RouteOutcome::Found(route);
         }
@@ -318,7 +316,7 @@ impl Navigation {
         for p in candidates {
             WorkUnit::new().await;
             if let RouteOutcome::Found(route) =
-                self.async_route(start, p, grid, swarm, hauler).await
+                self.async_route_search(start, p, costs, false).await
             {
                 return RouteOutcome::Found(route);
             }
@@ -331,9 +329,7 @@ impl Navigation {
         &self,
         start: Vec2,
         region: crate::nanobot::InteractionRegion,
-        grid: &PaintCosts,
-        swarm: SwarmId,
-        hauler: bool,
+        costs: RouteCosts<'_>,
         meter_probes: bool,
     ) -> RouteOutcome {
         let start_clear = self.async_point_clear(start).await;
@@ -361,7 +357,7 @@ impl Navigation {
                 continue;
             };
             if let RouteOutcome::Found(route) =
-                self.async_route(start, endpoint, grid, swarm, hauler).await
+                self.async_route_search(start, endpoint, costs, false).await
             {
                 return RouteOutcome::Found(route);
             }
@@ -400,8 +396,7 @@ impl Navigation {
                         cost: 0.0,
                     });
                 }
-                let mut points =
-                    vec![center + (start - center).normalize_or_zero() * (radius - 0.5).max(0.0)];
+                let mut points = vec![range_approach(start, center, radius)];
                 let min = Self::cell(center - Vec2::splat(radius));
                 let max = Self::cell(center + Vec2::splat(radius));
                 for y in min.y..=max.y {
@@ -439,7 +434,7 @@ impl Navigation {
                 continue;
             };
             if let result @ RouteOutcome::Found(_) = self
-                .async_route_search(start, endpoint, &paint, SwarmId::PLAYER, false, true)
+                .async_route_search(start, endpoint, RouteCosts::physical(&paint), true)
                 .await
             {
                 return result;
@@ -448,44 +443,31 @@ impl Navigation {
         RouteOutcome::Unreachable
     }
 
-    async fn async_route(
-        &self,
-        start: Vec2,
-        end: Vec2,
-        grid: &PaintCosts,
-        swarm: SwarmId,
-        hauler: bool,
-    ) -> RouteOutcome {
-        self.async_route_search(start, end, grid, swarm, hauler, false)
-            .await
-    }
     async fn async_route_search(
         &self,
         start: Vec2,
         end: Vec2,
-        grid: &PaintCosts,
-        swarm: SwarmId,
-        hauler: bool,
+        route_costs: RouteCosts<'_>,
         connectivity_only: bool,
     ) -> RouteOutcome {
         if !self.async_point_clear(start).await || !self.async_point_clear(end).await {
             return RouteOutcome::Unreachable;
         }
-        if (start.distance_squared(end) < 0.0001
-            || !hauler
-            || !grid.corridor_swarms.contains(&swarm))
-            && self.async_segment_clear(start, end).await
-        {
-            return RouteOutcome::Found(Route {
-                waypoints: vec![end],
-                cost: start.distance(end),
-            });
-        }
+        let RouteCosts {
+            paint: grid,
+            swarm,
+            hauler,
+            ..
+        } = route_costs;
         let direct = if self.async_segment_clear(start, end).await {
-            Some(Route {
-                waypoints: vec![end],
-                cost: Self::paint_segment_cost(start, end, grid, swarm, hauler).await,
-            })
+            let route = self.score_direct_route(start, end, route_costs).await;
+            if connectivity_only
+                || !route_costs.uses_corridors()
+                || start.distance_squared(end) < 0.0001
+            {
+                return RouteOutcome::Found(route);
+            }
+            Some(route)
         } else {
             None
         };
@@ -602,6 +584,10 @@ impl Navigation {
                 cost: start.distance(end),
             });
         }
+        let paint_costs = RouteCosts {
+            traffic: None,
+            ..route_costs
+        };
         // Every coarse edge represents an actual fine-grid edge. Restricting detail to
         // the connected regions on that chain therefore preserves reachability.
         open.clear();
@@ -614,8 +600,7 @@ impl Navigation {
                 .await
                 .is_some_and(|r| allowed.contains(&r))
             {
-                let cost =
-                    Self::paint_segment_cost(start, Self::center(c), grid, swarm, hauler).await;
+                let cost = paint_costs.segment_cost(start, Self::center(c)).await;
                 costs.insert(c, cost);
                 open.push(Visit {
                     score: cost + Self::center(c).distance(end) * scale,
@@ -636,8 +621,7 @@ impl Navigation {
             }
             self.expansions.fine.fetch_add(1, AtomicOrdering::Relaxed);
             if ends.contains(&node) {
-                let total = cost
-                    + Self::paint_segment_cost(Self::center(node), end, grid, swarm, hauler).await;
+                let total = cost + paint_costs.segment_cost(Self::center(node), end).await;
                 if total < best {
                     best = total;
                     finish = Some(node);
@@ -671,13 +655,13 @@ impl Navigation {
                 }
             }
         }
-        if let Some(route) = direct
+        if let Some(route) = &direct
             && route.cost <= best
         {
-            return RouteOutcome::Found(route);
+            return RouteOutcome::Found(route.clone());
         }
         let Some(mut node) = finish else {
-            return RouteOutcome::Unreachable;
+            return direct.map_or(RouteOutcome::Unreachable, RouteOutcome::Found);
         };
         let mut waypoints = vec![end, Self::center(node)];
         while let Some(&parent) = previous.get(&node) {
@@ -686,6 +670,23 @@ impl Navigation {
             waypoints.push(Self::center(node));
         }
         waypoints.reverse();
+        if let Some(route) = direct
+            && route_costs.traffic.is_some()
+        {
+            // Fine search still selects its Corridor route by paint. Compare that
+            // candidate with the direct alternatives on the same cost basis.
+            let mut cost = 0.0;
+            let mut from = start;
+            for &to in &waypoints {
+                WorkUnit::new().await;
+                cost += route_costs.segment_cost(from, to).await;
+                from = to;
+            }
+            if route.cost <= cost {
+                return RouteOutcome::Found(route);
+            }
+            best = cost;
+        }
         RouteOutcome::Found(Route {
             waypoints,
             cost: best,
@@ -699,6 +700,30 @@ pub enum RouteGoal {
     Range { center: Vec2, radius: f32 },
     Interaction(crate::nanobot::InteractionRegion),
 }
+impl RouteGoal {
+    pub(crate) fn direct_endpoint(self, start: Vec2) -> Option<Vec2> {
+        match self {
+            Self::Point(end) => Some(end),
+            Self::Range { center, radius } => Some(range_approach(start, center, radius)),
+            Self::Interaction(_) => None,
+        }
+    }
+}
+fn range_approach(start: Vec2, center: Vec2, radius: f32) -> Vec2 {
+    center + (start - center).normalize_or_zero() * (radius - 0.5).max(0.0)
+}
+
+pub(crate) enum MovementPlan {
+    Direct(Route),
+    Search { clear_fallback: Option<Vec2> },
+}
+
+pub(crate) enum DirectRoutePolicy {
+    Straight,
+    NearbyBends,
+    CompareCorridors,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RoutePriority {
     Routine,
@@ -763,6 +788,8 @@ struct Request {
     submitted: u64,
     revision: u64,
     future: Option<Search>,
+    traffic: Option<RouteTraffic>,
+    movement_paint: Option<Arc<PaintCosts>>,
     result: RouteStatus,
     access: Option<Arc<AccessCheck>>,
 }
@@ -772,6 +799,8 @@ pub(super) struct Scheduler {
     tick: u64,
     requests: HashMap<RouteRequestId, Request>,
     work: NavigationWork,
+    // Synchronous alternatives consume the allowance left after both lanes run.
+    spare_movement: usize,
     paint: Arc<PaintCosts>,
     paint_revision: Option<u64>,
     corridor_cost_multiplier: Option<f32>,
@@ -871,6 +900,8 @@ impl Navigation {
                 submitted: tick,
                 revision: self.revision,
                 future: None,
+                traffic: None,
+                movement_paint: None,
                 result: RouteStatus::Pending,
                 access: None,
             },
@@ -878,7 +909,8 @@ impl Navigation {
         id
     }
     /// A committed route with diagnostic ownership and explicit cancellation by its caller.
-    pub fn request_owned(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn request_owned(
         &self,
         start: Vec2,
         goal: RouteGoal,
@@ -886,15 +918,15 @@ impl Navigation {
         hauler: bool,
         priority: RoutePriority,
         owner: Entity,
+        traffic: Option<RouteTraffic>,
     ) -> RouteRequestId {
         let id = self.request(start, goal, swarm, hauler, priority);
-        self.scheduler
-            .lock()
-            .unwrap()
-            .requests
-            .get_mut(&id)
-            .unwrap()
-            .owner = Some(owner);
+        let mut scheduler = self.scheduler.lock().unwrap();
+        let paint = scheduler.paint.clone();
+        let request = scheduler.requests.get_mut(&id).unwrap();
+        request.owner = Some(owner);
+        request.traffic = traffic;
+        request.movement_paint = Some(paint);
         id
     }
     pub fn poll(&self, id: RouteRequestId) -> RouteStatus {
@@ -1032,6 +1064,7 @@ impl Navigation {
         work.coarse_expansions = after.coarse_expansions - before.coarse_expansions;
         work.fine_expansions = after.fine_expansions - before.fine_expansions;
         work.hierarchy_chunks = after.hierarchy_chunks - before.hierarchy_chunks;
+        scheduler.spare_movement = budget - work.work;
         scheduler.work = work;
         work
     }
@@ -1084,9 +1117,13 @@ impl Navigation {
             let Some(id) = queue.pop_front() else {
                 break;
             };
-            let paint = scheduler.paint.clone();
             let request = scheduler.requests.get_mut(&id).unwrap();
             if request.future.is_none() {
+                let paint = request
+                    .movement_paint
+                    .as_ref()
+                    .unwrap_or(&scheduler.paint)
+                    .clone();
                 // Hypothetical construction geometry derives from the main hierarchy.
                 let snapshot = if request.access.is_some() {
                     Arc::new(self.shared_snapshot())
@@ -1096,6 +1133,7 @@ impl Navigation {
                 let (start, goal, swarm, hauler) =
                     (request.start, request.goal, request.swarm, request.hauler);
                 let access = request.access.clone();
+                let traffic = request.traffic.clone();
                 let connectivity = request.purpose == RequestPurpose::Connectivity;
                 request.future = Some(Box::pin(async move {
                     if let Some(check) = access {
@@ -1105,7 +1143,17 @@ impl Navigation {
                         return snapshot.async_connectivity(start, goal).await;
                     }
                     snapshot
-                        .async_solve(start, goal, &paint, swarm, hauler, false)
+                        .async_solve(
+                            start,
+                            goal,
+                            RouteCosts {
+                                paint: &paint,
+                                swarm,
+                                hauler,
+                                traffic: traffic.as_ref(),
+                            },
+                            false,
+                        )
                         .await
                 }));
             }
@@ -1138,6 +1186,134 @@ impl Navigation {
     }
 }
 
+#[derive(Clone, Copy)]
+struct RouteCosts<'a> {
+    paint: &'a PaintCosts,
+    swarm: SwarmId,
+    hauler: bool,
+    traffic: Option<&'a RouteTraffic>,
+}
+
+impl<'a> RouteCosts<'a> {
+    fn physical(paint: &'a PaintCosts) -> Self {
+        Self {
+            paint,
+            swarm: SwarmId::PLAYER,
+            hauler: false,
+            traffic: None,
+        }
+    }
+
+    fn uses_corridors(self) -> bool {
+        self.hauler && self.paint.corridor_swarms.contains(&self.swarm)
+    }
+
+    fn multiplier(self, cell: IVec2) -> f32 {
+        Navigation::paint_multiplier(self.paint, self.swarm, self.hauler, cell)
+            + self.traffic.map_or(0.0, |traffic| traffic.surcharge(cell))
+    }
+
+    async fn segment_cost(self, start: Vec2, end: Vec2) -> f32 {
+        if self.traffic.is_none() && !self.uses_corridors() {
+            return start.distance(end);
+        }
+        let mut cost = 0.0;
+        for (cell, length) in segment_cells(start, end) {
+            WorkUnit::new().await;
+            cost += length * self.multiplier(cell);
+        }
+        cost
+    }
+}
+
+impl Navigation {
+    /// Direct travel is available even when the tick's planning allowance is exhausted.
+    /// A Hauler with Corridor paint can still ask the planner to compare a longer path.
+    pub(crate) fn direct_movement_route(
+        &self,
+        start: Vec2,
+        end: Vec2,
+        swarm: SwarmId,
+        hauler: bool,
+        policy: DirectRoutePolicy,
+        traffic: Option<&RouteTraffic>,
+    ) -> MovementPlan {
+        if !self.movement_clear(start, end) {
+            return MovementPlan::Search {
+                clear_fallback: None,
+            };
+        }
+        let straight = || Route {
+            waypoints: vec![end],
+            cost: start.distance(end),
+        };
+        if matches!(policy, DirectRoutePolicy::Straight) || (!hauler && traffic.is_none()) {
+            return MovementPlan::Direct(straight());
+        }
+        let mut scheduler = self.scheduler.lock().unwrap();
+        let costs = RouteCosts {
+            paint: &scheduler.paint,
+            swarm,
+            hauler,
+            traffic,
+        };
+        if costs.uses_corridors() && matches!(policy, DirectRoutePolicy::CompareCorridors) {
+            return MovementPlan::Search {
+                clear_fallback: Some(end),
+            };
+        }
+        let allowance = scheduler.spare_movement;
+        if traffic.is_some() && allowance > 0 {
+            let (result, used) = {
+                let mut future = std::pin::pin!(self.score_direct_route(start, end, costs));
+                poll_units(future.as_mut(), allowance)
+            };
+            scheduler.spare_movement -= used;
+            scheduler.work.work += used;
+            scheduler.work.movement_work += used;
+            if let Poll::Ready(route) = result {
+                return MovementPlan::Direct(route);
+            }
+        }
+        MovementPlan::Direct(straight())
+    }
+
+    async fn score_direct_route(&self, start: Vec2, end: Vec2, costs: RouteCosts<'_>) -> Route {
+        let mut best = Route {
+            waypoints: vec![end],
+            cost: costs.segment_cost(start, end).await,
+        };
+        let delta = end - start;
+        if costs.traffic.is_none()
+            || delta.length_squared() < 0.0001
+            || (!costs.uses_corridors() && best.cost <= delta.length() + 0.001)
+        {
+            return best;
+        }
+
+        let center = start.midpoint(end);
+        let normal = delta.perp().normalize_or_zero();
+        for offset in [0.5, -0.5, 1.0, -1.0] {
+            WorkUnit::new().await;
+            let bend = center + normal * (offset * CELL_WIDTH);
+            if self.async_point_clear(bend).await
+                && self.async_movement_clear(start, bend).await
+                && self.async_movement_clear(bend, end).await
+            {
+                let cost =
+                    costs.segment_cost(start, bend).await + costs.segment_cost(bend, end).await;
+                if cost + 0.001 < best.cost {
+                    best = Route {
+                        waypoints: vec![bend, end],
+                        cost,
+                    };
+                }
+            }
+        }
+        best
+    }
+}
+
 impl Navigation {
     fn paint_multiplier(grid: &PaintCosts, swarm: SwarmId, hauler: bool, cell: IVec2) -> f32 {
         if hauler
@@ -1149,40 +1325,6 @@ impl Navigation {
         } else {
             1.0
         }
-    }
-    async fn paint_segment_cost(
-        start: Vec2,
-        end: Vec2,
-        grid: &PaintCosts,
-        swarm: SwarmId,
-        hauler: bool,
-    ) -> f32 {
-        if !hauler {
-            return start.distance(end);
-        }
-        let delta = end - start;
-        let mut splits = vec![0.0, 1.0];
-        for axis in 0..2 {
-            if delta[axis].abs() < f32::EPSILON {
-                continue;
-            }
-            let lo = (start[axis].min(end[axis]) / CELL_WIDTH).floor() as i32 + 1;
-            let hi = (start[axis].max(end[axis]) / CELL_WIDTH).ceil() as i32;
-            for edge in lo..hi {
-                WorkUnit::new().await;
-                splits.push((edge as f32 * CELL_WIDTH - start[axis]) / delta[axis]);
-            }
-        }
-        splits.sort_by(f32::total_cmp);
-        let mut cost = 0.0;
-        for pair in splits.windows(2) {
-            WorkUnit::new().await;
-            let midpoint = start + delta * ((pair[0] + pair[1]) * 0.5);
-            cost += (pair[1] - pair[0])
-                * delta.length()
-                * Self::paint_multiplier(grid, swarm, hauler, Self::cell(midpoint));
-        }
-        cost
     }
 }
 
@@ -1272,13 +1414,13 @@ impl Navigation {
         let future = async {
             if self.async_point_clear(origin).await {
                 return self
-                    .async_solve(origin, goal, &paint, SwarmId::PLAYER, false, true)
+                    .async_solve(origin, goal, RouteCosts::physical(&paint), true)
                     .await;
             }
             for start in self.clear_origins_in_tile(origin).await {
                 WorkUnit::new().await;
                 if let RouteOutcome::Found(mut route) = self
-                    .async_solve(start, goal, &paint, SwarmId::PLAYER, false, true)
+                    .async_solve(start, goal, RouteCosts::physical(&paint), true)
                     .await
                 {
                     route.waypoints.insert(0, start);
@@ -1346,8 +1488,17 @@ impl Navigation {
         } else {
             PaintCosts::default()
         };
-        let mut future =
-            std::pin::pin!(self.async_solve(start, goal, &paint, swarm, hauler, false));
+        let mut future = std::pin::pin!(self.async_solve(
+            start,
+            goal,
+            RouteCosts {
+                paint: &paint,
+                swarm,
+                hauler,
+                traffic: None
+            },
+            false
+        ));
         loop {
             if let (Poll::Ready(outcome), _) = poll_units(future.as_mut(), usize::MAX) {
                 return outcome;
@@ -1358,19 +1509,17 @@ impl Navigation {
         &self,
         start: Vec2,
         goal: RouteGoal,
-        paint: &PaintCosts,
-        swarm: SwarmId,
-        hauler: bool,
+        costs: RouteCosts<'_>,
         meter_probes: bool,
     ) -> RouteOutcome {
         match goal {
-            RouteGoal::Point(end) => self.async_route(start, end, paint, swarm, hauler).await,
+            RouteGoal::Point(end) => self.async_route_search(start, end, costs, false).await,
             RouteGoal::Range { center, radius } => {
-                self.async_route_within_range(start, center, radius, paint, swarm, hauler)
+                self.async_route_within_range(start, center, radius, costs)
                     .await
             }
             RouteGoal::Interaction(region) => {
-                self.async_route_to_interaction(start, region, paint, swarm, hauler, meter_probes)
+                self.async_route_to_interaction(start, region, costs, meter_probes)
                     .await
             }
         }
@@ -1527,6 +1676,19 @@ impl Navigation {
         }
         true
     }
+    async fn async_movement_clear(&self, start: Vec2, end: Vec2) -> bool {
+        if !self.async_segment_clear(start, end).await {
+            return false;
+        }
+        for &shape in &self.clearing {
+            WorkUnit::new().await;
+            if shape.admits_body(start) && !shape.segment_clear(start, end) {
+                return false;
+            }
+        }
+        true
+    }
+
     async fn async_segment_clear(&self, a: Vec2, b: Vec2) -> bool {
         if !a.is_finite()
             || !b.is_finite()
@@ -1783,6 +1945,129 @@ mod tests {
             );
             assert_eq!(ALLOWANCE.get(), 0);
         }
+    }
+
+    #[test]
+    fn traffic_adds_to_corridor_cost_for_the_distance_inside_each_cell() {
+        use crate::navigation::TrafficSnapshot;
+        let swarm = SwarmId::PLAYER;
+        let owner = Entity::from_raw_u32(1).unwrap();
+        let a = Vec2::new(12., 36.);
+        let b = Vec2::new(110., 36.);
+        let mut traffic = TrafficSnapshot::default();
+        traffic.record_route(owner, swarm, a, &[b], 300., |_, _| true);
+        traffic.record_route(
+            Entity::from_raw_u32(2).unwrap(),
+            swarm,
+            b,
+            &[a, b, a],
+            300.,
+            |_, _| true,
+        );
+        for id in 3..8 {
+            traffic.record_route(
+                Entity::from_raw_u32(id).unwrap(),
+                swarm,
+                b,
+                &[a],
+                38.,
+                |_, _| true,
+            );
+        }
+        traffic.record_route(
+            Entity::from_raw_u32(8).unwrap(),
+            SwarmId(7),
+            a,
+            &[b],
+            300.,
+            |_, _| true,
+        );
+        let traffic = Arc::new(traffic).for_route(owner, swarm).unwrap();
+        let mut grid = IntentGrid::new(4, 4);
+        grid.paint(IVec2::ZERO, IntentKind::Corridor, swarm);
+        let paint = PaintCosts {
+            corridor_cost_multiplier: 0.60,
+            corridor_swarms: HashSet::from([swarm]),
+            cells: [(IVec2::ZERO, grid.cell(IVec2::ZERO).unwrap().clone())].into(),
+        };
+        let costs = RouteCosts {
+            paint: &paint,
+            swarm,
+            hauler: true,
+            traffic: Some(&traffic),
+        };
+        let score = poll_with_budget(
+            costs.segment_cost(Vec2::new(60., 36.), Vec2::new(100., 36.)),
+            &mut || true,
+        )
+        .unwrap();
+        assert!(
+            (score - (12. * 0.65 + 28. * 0.75)).abs() < 0.0001,
+            "{score}"
+        );
+    }
+
+    #[test]
+    fn busy_straight_route_stays_available_when_bends_enter_structure_clearing() {
+        use crate::navigation::TrafficSnapshot;
+        let grid = IntentGrid::new(8, 8);
+        let mut navigation = Navigation::new(&grid, vec![]);
+        let start = Vec2::new(180., 108.);
+        let end = Vec2::new(830., 108.);
+        let owner = Entity::from_raw_u32(1).unwrap();
+        let swarm = SwarmId::PLAYER;
+        let mut traffic = TrafficSnapshot::default();
+        for id in 2..4 {
+            traffic.record_route(
+                Entity::from_raw_u32(id).unwrap(),
+                swarm,
+                Vec2::new(665., 108.),
+                &[start],
+                300.,
+                |_, _| true,
+            );
+        }
+        let traffic = Arc::new(traffic).for_route(owner, swarm).unwrap();
+        navigation.advance(&grid, 3_000);
+        let MovementPlan::Direct(open) = navigation.direct_movement_route(
+            start,
+            end,
+            swarm,
+            false,
+            DirectRoutePolicy::NearbyBends,
+            Some(&traffic),
+        ) else {
+            panic!("the clear path should be available");
+        };
+        assert!(
+            open.waypoints
+                .iter()
+                .any(|point| (point.y - start.y).abs() > 60.)
+        );
+
+        navigation.refresh_clearing(
+            [36., 180.]
+                .map(|y| Obstacle::Rectangle {
+                    center: Vec2::new(505., y),
+                    half: Vec2::new(36., 9.),
+                })
+                .to_vec(),
+        );
+        navigation.advance(&grid, 3_000);
+        let MovementPlan::Direct(route) = navigation.direct_movement_route(
+            start,
+            end,
+            swarm,
+            false,
+            DirectRoutePolicy::NearbyBends,
+            Some(&traffic),
+        ) else {
+            panic!("the clear straight lane should be available");
+        };
+        assert_eq!(route.waypoints, [end]);
+        assert!(route.still_clear(&navigation, start));
+        assert!(navigation.work().movement_work > 0);
+        assert!(navigation.work().work <= 3_000);
     }
 
     #[test]

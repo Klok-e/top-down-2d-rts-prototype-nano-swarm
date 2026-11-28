@@ -155,9 +155,19 @@ pub struct ActiveRoute {
     follower: super::route_following::RouteFollower,
     revision: u64,
     pending: Option<crate::navigation::RouteRequestId>,
+    preserve_turns: bool,
+    forecast_distance: f32,
 }
 
 impl ActiveRoute {
+    fn destination_changed(&self, goal: Vec2, work_position: bool) -> bool {
+        self.destination != goal
+            && (work_position
+                || self.destination.distance_squared(goal) > crate::navigation::CELL_WIDTH.powi(2)
+                || (self.pending.is_none()
+                    && (self.waypoints.len() == 1 || self.current >= self.waypoints.len())))
+    }
+
     /// Preserve the reachable prefix so a replacement search does not freeze safe travel.
     fn trim_at_obstruction(
         &mut self,
@@ -223,7 +233,11 @@ pub fn move_velocity_system(
     time: Res<Time<Fixed>>,
     engagements: Option<Res<DefenderEngagements>>,
 ) {
-    use crate::navigation::{ConnectivityStatus, RouteGoal, RoutePriority, RouteStatus};
+    use crate::navigation::{
+        ConnectivityStatus, DirectRoutePolicy, MovementPlan, RouteGoal, RoutePriority, RouteStatus,
+        TrafficSnapshot,
+    };
+    use std::sync::Arc;
     let is_engaged = |entity| {
         engagements
             .as_ref()
@@ -315,6 +329,33 @@ pub fn move_velocity_system(
             entity.to_bits(),
         )
     });
+    let mut traffic = TrafficSnapshot::default();
+    for (&entity, route) in &*routes {
+        if route.forecast_distance <= 0.0 {
+            continue;
+        }
+        let Ok((_, order, transform, _, _, member, None, None, _)) = bots.get(entity) else {
+            continue;
+        };
+        if order.interaction != route.task
+            || order.stop_radius.max(STOP_THRESHOLD) != route.stop_radius
+            || (order.interaction.is_none() && route.destination_changed(order.xy, false))
+        {
+            continue;
+        }
+        let next = route.follower.target_index(route.current);
+        traffic.record_route(
+            entity,
+            member.map_or(super::SwarmId::PLAYER, |member| member.0),
+            transform.translation.truncate(),
+            &route.waypoints[next..],
+            route.forecast_distance,
+            |from, to| {
+                route.revision == navigation.revision() || navigation.movement_clear(from, to)
+            },
+        );
+    }
+    let traffic = Arc::new(traffic);
     let occupancy = Occupancy::new(bodies.iter().map(|(entity, transform, body)| Occupant {
         entity,
         position: transform.translation.truncate(),
@@ -337,6 +378,9 @@ pub fn move_velocity_system(
         else {
             continue;
         };
+        if let Some(route) = routes.get_mut(&entity) {
+            route.forecast_distance = 0.0;
+        }
         commands.entity(entity).remove::<RemainingTravel>();
         let keep_order_after_evacuation = evacuation.is_some_and(|evacuation| {
             destination.interaction.is_some() || destination.xy != evacuation.goal
@@ -616,41 +660,12 @@ pub fn move_velocity_system(
             entry.connection_origin = None;
         }
         let hauler = evacuation.is_none() && kind == Some(&super::NanobotType::Hauler);
-        let direct = navigation.movement_clear(position, destination.xy)
-            && (!hauler
-                || original.interaction.is_some_and(|region| {
-                    position.distance(region.approach(position))
-                        <= 2.0 * crate::navigation::CELL_WIDTH
-                }));
-        if direct
-            && routes.get(&entity).is_none_or(|route| {
-                route.pending.is_some()
-                    || route.task != original.interaction
-                    || route.current != 0
-                    || route.waypoints.as_slice() != [destination.xy]
-            })
-        {
-            if let Some(old) = routes.remove(&entity)
-                && let Some(id) = old.pending
-            {
-                navigation.cancel(id);
-            }
-            routes.insert(
-                entity,
-                ActiveRoute {
-                    destination: destination.xy,
-                    requested_start: position,
-                    task: original.interaction,
-                    stop_radius: stop,
-                    interaction: destination.interaction,
-                    waypoints: vec![destination.xy],
-                    current: 0,
-                    follower: Default::default(),
-                    revision: navigation.revision(),
-                    pending: None,
-                },
-            );
-        }
+        let nearby_hauler = hauler
+            && original.interaction.is_some_and(|region| {
+                position.distance(region.approach(position)) <= 2.0 * crate::navigation::CELL_WIDTH
+            });
+        let immediate_approach = evacuation.is_some()
+            || (nearby_hauler && loads.get(entity).is_ok_and(|cargo| cargo.amount > 0));
         let invalidated = routes.get_mut(&entity).is_some_and(|route| {
             if route.revision == navigation.revision() {
                 return false;
@@ -660,12 +675,7 @@ pub fn move_velocity_system(
         });
         let needs_route = invalidated
             || routes.get(&entity).is_none_or(|route| {
-                (route.pending.is_none()
-                    && route.destination != destination.xy
-                    && (original.interaction.is_some()
-                        || route.destination.distance(destination.xy)
-                            > crate::navigation::CELL_WIDTH
-                        || route.current >= route.waypoints.len()))
+                route.destination_changed(destination.xy, original.interaction.is_some())
                     || (route.pending.is_none()
                         && !route.waypoints.is_empty()
                         && route.current >= route.waypoints.len()
@@ -680,6 +690,9 @@ pub fn move_velocity_system(
                             .waypoints
                             .get(route.follower.target_index(route.current))
                             .is_some_and(|next| !navigation.movement_clear(position, *next))
+                    || (route.waypoints.is_empty()
+                        && (route.pending.is_none() || immediate_approach)
+                        && navigation.movement_clear(position, destination.xy))
             });
         if needs_route {
             let swarm = member.map_or(super::SwarmId::PLAYER, |member| member.0);
@@ -695,6 +708,11 @@ pub fn move_velocity_system(
             {
                 navigation.cancel(id);
             }
+            let route_traffic = if evacuation.is_none() {
+                traffic.for_route(entity, swarm)
+            } else {
+                None
+            };
             let goal = if let Some(region) = destination.interaction {
                 RouteGoal::Interaction(region)
             } else if stop > STOP_THRESHOLD {
@@ -705,28 +723,80 @@ pub fn move_velocity_system(
             } else {
                 RouteGoal::Point(destination.xy)
             };
-            let pending =
-                Some(navigation.request_owned(position, goal, swarm, hauler, priority, entity));
-            let (waypoints, current, follower) = routes
-                .get(&entity)
-                .filter(|route| {
-                    route.task == original.interaction
-                        && route.interaction == destination.interaction
-                        && route
-                            .waypoints
-                            .get(route.follower.target_index(route.current))
-                            .is_some_and(|next| navigation.movement_clear(position, *next))
-                })
-                .map_or_else(
-                    || {
-                        (
-                            Vec::new(),
-                            0,
-                            super::route_following::RouteFollower::default(),
-                        )
-                    },
-                    |route| (route.waypoints.clone(), route.current, route.follower),
-                );
+            let policy = if immediate_approach {
+                DirectRoutePolicy::Straight
+            } else if nearby_hauler {
+                DirectRoutePolicy::NearbyBends
+            } else {
+                DirectRoutePolicy::CompareCorridors
+            };
+            let plan = goal.direct_endpoint(position).map_or(
+                MovementPlan::Search {
+                    clear_fallback: None,
+                },
+                |end| {
+                    navigation.direct_movement_route(
+                        position,
+                        end,
+                        swarm,
+                        hauler,
+                        policy,
+                        route_traffic.as_ref(),
+                    )
+                },
+            );
+            let (waypoints, current, follower, preserve_turns, pending) = match plan {
+                MovementPlan::Direct(route) => {
+                    let preserve_turns = route.waypoints.len() > 1;
+                    (route.waypoints, 0, Default::default(), preserve_turns, None)
+                }
+                MovementPlan::Search { clear_fallback } => {
+                    let prefer_turns = route_traffic.is_some();
+                    let pending = navigation.request_owned(
+                        position,
+                        goal,
+                        swarm,
+                        hauler,
+                        priority,
+                        entity,
+                        route_traffic,
+                    );
+                    let prefix = routes.get(&entity).filter(|route| {
+                        clear_fallback.is_none()
+                            && route.task == original.interaction
+                            && route.interaction == destination.interaction
+                            && route
+                                .waypoints
+                                .get(route.follower.target_index(route.current))
+                                .is_some_and(|next| navigation.movement_clear(position, *next))
+                    });
+                    let (waypoints, current, follower, preserve_turns) = prefix.map_or_else(
+                        || {
+                            (
+                                clear_fallback.into_iter().collect(),
+                                0,
+                                Default::default(),
+                                false,
+                            )
+                        },
+                        |route| {
+                            (
+                                route.waypoints.clone(),
+                                route.current,
+                                route.follower,
+                                route.preserve_turns,
+                            )
+                        },
+                    );
+                    (
+                        waypoints,
+                        current,
+                        follower,
+                        preserve_turns || prefer_turns,
+                        Some(pending),
+                    )
+                }
+            };
             routes.insert(
                 entity,
                 ActiveRoute {
@@ -740,6 +810,8 @@ pub fn move_velocity_system(
                     follower,
                     revision: navigation.revision(),
                     pending,
+                    preserve_turns,
+                    forecast_distance: 0.0,
                 },
             );
         }
@@ -778,11 +850,15 @@ pub fn move_velocity_system(
             &route.waypoints,
             &mut route.current,
             speed,
-            hauler,
+            hauler || route.preserve_turns,
             &navigation,
         );
         let next_index = route.follower.target_index(route.current);
         if let Some(next) = route.waypoints.get(next_index) {
+            if step != Vec2::ZERO {
+                route.forecast_distance =
+                    speed.min(tuning.logistics.bot_speed) * crate::SIMULATION_HZ as f32;
+            }
             if let Some(mut lease) = lease
                 && evacuation.is_none()
                 && step != Vec2::ZERO

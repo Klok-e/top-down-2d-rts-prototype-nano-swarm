@@ -90,7 +90,11 @@ def run_scene(kind, output, runtime_dir=None):
                         capture(name)
                 else:
                     capture("before")
-                    label, final_phase = ("CLEARING", "activated") if kind == "clearing" else ("TRAFFIC", "arrived")
+                    label, final_phase = {
+                        "bottleneck": ("TRAFFIC", "arrived"),
+                        "clearing": ("CLEARING", "activated"),
+                        "direct": ("DIRECT", "arrived"),
+                    }[kind]
                     for phase, x in [("passing", "-3"), (final_phase, "-2")]:
                         call("paint", "corridor", x, "-3")
                         for _ in range(80):
@@ -122,10 +126,10 @@ def run_scene(kind, output, runtime_dir=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "target/issue-66/runtime/replay")
-    parser.add_argument("--scene", action="append", choices=["normal", "bottleneck", "clearing"])
+    parser.add_argument("--scene", action="append", choices=["normal", "bottleneck", "clearing", "direct"])
     parser.add_argument("--runtime-dir", type=Path, help="Existing private directory with space for the control socket")
     args = parser.parse_args()
-    for kind in args.scene or ["normal", "bottleneck", "clearing"]:
+    for kind in args.scene or ["normal", "bottleneck", "clearing", "direct"]:
         run_scene(kind, args.output.resolve() / kind, args.runtime_dir)
 
 
