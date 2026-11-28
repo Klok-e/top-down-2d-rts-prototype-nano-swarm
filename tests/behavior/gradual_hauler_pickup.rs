@@ -724,3 +724,73 @@ fn same_tick_reroutes_cannot_overbook_replacement_capacity() {
         "hauler with no replacement releases old destination claim",
     );
 }
+
+#[test]
+fn admitted_loader_finishes_a_material_pulse_during_friendly_transit_overlap() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{
+            Commitment, HaulerLoading, MaterialWorkProgress, NanobotSimulationSet,
+            hauler_load_system,
+        },
+        navigation::BODY_RADIUS,
+    };
+
+    let mut app = common::sim_app_with_movement();
+    app.add_systems(
+        FixedUpdate,
+        hauler_load_system.after(NanobotSimulationSet::Movement),
+    );
+    let source = common::spawn_stockpile(&mut app, Vec2::new(432., 252.), 20, 30);
+    let sink = common::spawn_sink_stockpile(&mut app, Vec2::new(700., 252.), 0, 30);
+    let loading_position = Vec2::new(432., 324.);
+    let loader = common::spawn_hauler_at(&mut app, loading_position);
+    let interval = app
+        .world()
+        .resource::<Tuning>()
+        .logistics
+        .material_work_ticks;
+    app.world_mut().get_mut::<Transform>(source).unwrap().scale = Vec3::new(4.5, 1.125, 1.);
+    app.world_mut().entity_mut(loader).insert((
+        Commitment::Working,
+        HaulerAssignment {
+            source,
+            sink,
+            pickup_role: StockpileRole::Source,
+        },
+        HaulerLoading,
+        Cargo::empty(ResourceKind::Minerals),
+        LogisticsReservation::new(source, sink, ResourceKind::Minerals, 4),
+        MaterialWorkProgress {
+            ticks_elapsed: interval - 1,
+        },
+    ));
+
+    let passer = common::spawn_worker_at(&mut app, loading_position - Vec2::X * 20.);
+    app.world_mut()
+        .entity_mut(passer)
+        .insert(DirectMovementComponent {
+            xy: loading_position + Vec2::X * 100.,
+            stop_radius: 0.,
+            interaction: None,
+            speed: None,
+        });
+    app.update();
+    let position = |bot| {
+        app.world()
+            .get::<Transform>(bot)
+            .unwrap()
+            .translation
+            .truncate()
+    };
+    assert!(position(passer).distance(loading_position) < 2. * BODY_RADIUS);
+    assert_eq!(position(loader), loading_position);
+    assert_eq!(app.world().get::<Cargo>(loader).unwrap().amount, 1);
+    assert_eq!(app.world().get::<Stockpile>(source).unwrap().amount, 19);
+    assert_eq!(
+        app.world()
+            .get::<LogisticsReservation>(loader)
+            .unwrap()
+            .source_remaining,
+        3,
+    );
+}

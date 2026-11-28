@@ -1,7 +1,10 @@
 //! Separate work positions and stable waiting priority at crowded goals.
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
-    nanobot::{Cargo, Commitment, DirectMovementComponent, InteractionRegion, WaitingForWork},
+    nanobot::{
+        Cargo, Commitment, DirectMovementComponent, InteractionRegion, LogisticsReservation,
+        WaitingForWork,
+    },
     resources::ResourceKind,
 };
 
@@ -12,6 +15,14 @@ mod common;
 fn oldest_loaded_waiter_gets_open_work_position_before_closer_newcomer() {
     let mut app = common::sim_app_with_movement();
     let center = Vec2::new(400.0, 0.0);
+    let source = app.world_mut().spawn_empty().id();
+    let destination = app.world_mut().spawn_empty().id();
+    let reservation = |amount| {
+        let mut reservation =
+            LogisticsReservation::new(source, destination, ResourceKind::Minerals, amount);
+        reservation.source_remaining = 0;
+        reservation
+    };
     let site = Transform::from_translation(center.extend(0.0));
     let region = InteractionRegion::structure(&site);
     let mut east_blocker = None;
@@ -39,6 +50,7 @@ fn oldest_loaded_waiter_gets_open_work_position_before_closer_newcomer() {
             kind: ResourceKind::Minerals,
             amount: 7,
         },
+        reservation(7),
         region.movement_from(Vec2::new(590.0, 0.0)),
     ));
     for _ in 0..3 {
@@ -51,17 +63,23 @@ fn oldest_loaded_waiter_gets_open_work_position_before_closer_newcomer() {
             kind: ResourceKind::Minerals,
             amount: 11,
         },
+        reservation(11),
         region.movement_from(Vec2::new(570.0, 110.0)),
     ));
     for _ in 0..3 {
         app.update();
     }
-    // Cooperatively moving aside must preserve the older bot's place.
+    // The younger bot is physically closer when the common destination opens.
     app.world_mut()
         .get_mut::<Transform>(oldest)
         .unwrap()
         .translation = Vec3::new(610.0, -20.0, 0.0);
+    assert!(app.world().get::<WaitingForWork>(newcomer).is_some());
     app.world_mut().despawn(east_blocker.unwrap());
+    app.world_mut()
+        .get_mut::<Transform>(newcomer)
+        .unwrap()
+        .translation = (center + Vec2::X * 68.).extend(0.0);
     let mut arrived = None;
     for _ in 0..500 {
         app.update();
@@ -85,6 +103,14 @@ fn oldest_loaded_waiter_gets_open_work_position_before_closer_newcomer() {
     );
     assert_eq!(app.world().get::<Cargo>(oldest).unwrap().amount, 7);
     assert_eq!(app.world().get::<Cargo>(newcomer).unwrap().amount, 11);
+    assert_eq!(
+        app.world().get::<LogisticsReservation>(oldest),
+        Some(&reservation(7))
+    );
+    assert_eq!(
+        app.world().get::<LogisticsReservation>(newcomer),
+        Some(&reservation(11))
+    );
 }
 
 #[test]

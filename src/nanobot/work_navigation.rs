@@ -1,3 +1,4 @@
+use super::move_system::{ActiveWork, AssignedWork, TransitBody, TransitMotion};
 use super::route_following::WAYPOINT_REACHED_DISTANCE;
 use super::{
     DefenderEngagements, DirectMovementComponent, ProgressChecker, STOP_THRESHOLD, TrafficYield,
@@ -27,11 +28,15 @@ pub struct WorkApproach {
     pub since: f64,
 }
 
-/// Distance along the remaining static route, used to recognize real travel progress.
+/// Distance along the remaining static route for movement braking.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct RemainingTravel(pub f32);
 
-/// Work effects are suspended while the body overlaps another body or recovers.
+/// The current standing position is reserved for work while a task needs it.
+#[derive(Component)]
+pub struct AdmittedToWork;
+
+/// Work effects are suspended until the bot can occupy an exclusive Work Position.
 #[derive(Component, Debug)]
 pub struct WorkBlocked;
 
@@ -49,11 +54,16 @@ pub fn work_standing_system(
         (
             Entity,
             &Transform,
-            Has<super::CongestionRecovery>,
+            TransitBody,
+            Has<AdmittedToWork>,
             Has<WorkBlocked>,
+            Option<&super::Commitment>,
         ),
         With<super::Nanobot>,
     >,
+    active_work: Query<(), ActiveWork>,
+    assigned_work: Query<(), AssignedWork>,
+    engagements: Option<Res<DefenderEngagements>>,
     mut rejected: Query<(Entity, &mut RejectedWorkGoal)>,
     time: Res<Time<Fixed>>,
 ) {
@@ -63,17 +73,52 @@ pub fn work_standing_system(
             commands.entity(entity).remove::<RejectedWorkGoal>();
         }
     }
-    let occupancy = Occupancy::new(
-        bots.iter()
-            .map(|(entity, transform, ..)| (entity, transform.translation.truncate())),
-    );
-    for (entity, transform, recovering, was_blocked) in &bots {
-        let blocked = recovering || !occupancy.space_free(entity, transform.translation.truncate());
-        // Only presence matters to readers, so unchanged markers need no command.
+    let occupants: Vec<_> = bots
+        .iter()
+        .map(|(entity, transform, body, admitted, _, commitment)| {
+            let motion = body.motion(entity, engagements.as_deref());
+            let has_work = active_work.contains(entity)
+                || assigned_work.contains(entity)
+                || commitment == Some(&super::Commitment::Working);
+            let standing = !body.has_movement_order() && !motion.combat_controlled;
+            let priority = if standing && has_work {
+                if admitted {
+                    StandingPriority::Admitted
+                } else {
+                    StandingPriority::Assigned
+                }
+            } else {
+                StandingPriority::Unassigned
+            };
+            Occupant {
+                entity,
+                position: transform.translation.truncate(),
+                motion,
+                priority,
+            }
+        })
+        .collect();
+    let occupancy = Occupancy::new(occupants.iter().copied());
+    for occupant in occupants {
+        let (_, _, body, admitted, was_blocked, _) = bots.get(occupant.entity).unwrap();
+        if admitted && occupant.priority != StandingPriority::Admitted {
+            commands.entity(occupant.entity).remove::<AdmittedToWork>();
+        }
+        // An existing work effect can retain its assignment while moving to a new standing point.
+        let moving_work =
+            active_work.contains(occupant.entity) && body.moving_in_work_region(occupant.position);
+        let blocked = moving_work
+            || !occupancy.clear_at(occupant.entity, occupant.position, |other| {
+                other.motion.can_pass(occupant.motion)
+                    || (occupant.priority != StandingPriority::Unassigned
+                        && occupant.motion.friendly_transit(other.motion)
+                        && (occupant.priority, occupant.entity.to_bits())
+                            < (other.priority, other.entity.to_bits()))
+            });
         if blocked && !was_blocked {
-            commands.entity(entity).insert(WorkBlocked);
+            commands.entity(occupant.entity).insert(WorkBlocked);
         } else if !blocked && was_blocked {
-            commands.entity(entity).remove::<WorkBlocked>();
+            commands.entity(occupant.entity).remove::<WorkBlocked>();
         }
     }
 }
@@ -91,6 +136,7 @@ pub struct WorkApproaches {
 struct ApproachEntry {
     region: super::InteractionRegion,
     since: f64,
+    waiting_since: Option<f64>,
     selected: Option<Vec2>,
     connection_origin: Option<Vec2>,
     nearby: bool,
@@ -169,7 +215,8 @@ pub fn move_velocity_system(
         Option<&TrafficYield>,
         Option<&mut super::RegionalLease>,
     )>,
-    bodies: Query<(Entity, &Transform, Has<super::CongestionRecovery>), With<super::Nanobot>>,
+    bodies: Query<(Entity, &Transform, TransitBody), With<super::Nanobot>>,
+    waiting: Query<&DirectMovementComponent, With<WaitingForWork>>,
     loads: Query<&super::Cargo>,
     tuning: Res<Tuning>,
     navigation: Res<crate::navigation::Navigation>,
@@ -206,17 +253,21 @@ pub fn move_velocity_system(
                 navigation.cancel(id);
             }
             if bodies.contains(*entity) {
-                commands
-                    .entity(*entity)
-                    .remove::<(RemainingTravel, WaitingForWork, WorkApproach)>();
+                commands.entity(*entity).remove::<RemainingTravel>();
             }
             false
         }
     });
     let now = time.elapsed_secs_f64();
-    approaches
-        .entries
-        .retain(|entity, _| bots.contains(*entity) && !is_engaged(*entity));
+    approaches.entries.retain(|entity, _| {
+        let active = bots.contains(*entity) && !is_engaged(*entity);
+        if !active && bodies.contains(*entity) {
+            commands
+                .entity(*entity)
+                .remove::<(RemainingTravel, WaitingForWork, WorkApproach)>();
+        }
+        active
+    });
 
     for (entity, destination, ..) in &bots {
         if is_engaged(entity) {
@@ -226,6 +277,7 @@ pub fn move_velocity_system(
             let entry = approaches.entries.entry(entity).or_insert(ApproachEntry {
                 region,
                 since: now,
+                waiting_since: None,
                 selected: None,
                 connection_origin: None,
                 nearby: false,
@@ -236,6 +288,7 @@ pub fn move_velocity_system(
                 *entry = ApproachEntry {
                     region,
                     since: now,
+                    waiting_since: None,
                     selected: None,
                     connection_origin: None,
                     nearby: false,
@@ -253,19 +306,21 @@ pub fn move_velocity_system(
         .filter_map(|(entity, ..)| (!is_engaged(entity)).then_some(entity))
         .collect();
     ordered.sort_by_key(|entity| {
+        let approach = approaches.entries.get(entity);
         (
-            approaches
-                .entries
-                .get(entity)
-                .map_or(u64::MAX, |entry| entry.since.to_bits()),
+            approach
+                .and_then(|entry| entry.waiting_since)
+                .map_or(u64::MAX, f64::to_bits),
+            approach.map_or(u64::MAX, |entry| entry.since.to_bits()),
             entity.to_bits(),
         )
     });
-    let occupancy = Occupancy::new(
-        bodies
-            .iter()
-            .map(|(entity, transform, _)| (entity, transform.translation.truncate())),
-    );
+    let occupancy = Occupancy::new(bodies.iter().map(|(entity, transform, body)| Occupant {
+        entity,
+        position: transform.translation.truncate(),
+        motion: body.motion(entity, engagements.as_deref()),
+        priority: StandingPriority::Unassigned,
+    }));
     let mut claims = FixedSpatialBuckets::new(2.0 * crate::navigation::BODY_RADIUS);
     for entity in ordered {
         let Ok((
@@ -323,11 +378,25 @@ pub fn move_velocity_system(
                 phase,
                 since: entry.since,
             });
+            let requester = bodies.get(entity).map_or(
+                TransitMotion {
+                    swarm: member.map_or(super::SwarmId::PLAYER, |member| member.0),
+                    travelling: true,
+                    combat_controlled: false,
+                },
+                |(_, _, body)| body.motion(entity, engagements.as_deref()),
+            );
+            let open_standing_position = |point| {
+                occupancy.clear_at(entity, point, |other| {
+                    other.motion.can_pass(requester)
+                        || (requester.friendly_transit(other.motion)
+                            && waiting
+                                .get(other.entity)
+                                .is_ok_and(|order| order.interaction == Some(region)))
+                }) && space_free(entity, point, &claims)
+            };
             let free = |point: Vec2| {
-                navigation.point_clear(point)
-                    && (!nearby
-                        || (occupancy.space_free(entity, point)
-                            && space_free(entity, point, &claims)))
+                navigation.point_clear(point) && (!nearby || open_standing_position(point))
             };
             if approaches.candidate_parts.len() > MAX_CACHED_CANDIDATE_REGIONS {
                 approaches.candidate_parts.clear();
@@ -341,7 +410,7 @@ pub fn move_velocity_system(
             if let Some(old) = entry.selected {
                 candidates.insert(0, old);
             }
-            // A separate position already in reach is useful immediately, even after yielding away from the intended approach.
+            // A clear position already in reach needs no further travel.
             if region.contains(position) {
                 candidates.insert(0, position);
             }
@@ -400,8 +469,13 @@ pub fn move_velocity_system(
                 }
             });
             if let Some(point) = selected {
+                work_ready = nearby
+                    && region.contains(position)
+                    && open_standing_position(position)
+                    && position.distance(point) <= STOP_THRESHOLD;
                 if nearby {
-                    claims.insert(point, (entity, point));
+                    let claimed_position = if work_ready { position } else { point };
+                    claims.insert(claimed_position, (entity, claimed_position));
                 }
                 let entry = approaches.entries.get_mut(&entity).unwrap();
                 if entry.selected != Some(point) {
@@ -411,22 +485,17 @@ pub fn move_velocity_system(
                 if connection_origin.is_some() {
                     entry.connection_origin = connection_origin;
                 }
-                selected_destination.xy = point;
                 // Route to the selected perimeter position, never the occupied nearest face.
+                selected_destination.xy = point;
                 selected_destination.interaction = None;
-                work_ready = nearby
-                    && region.contains(position)
-                    && occupancy.space_free(entity, position)
-                    && !bodies
-                        .get(entity)
-                        .is_ok_and(|(_, _, recovering)| recovering)
-                    && position.distance(point) <= STOP_THRESHOLD;
                 commands.entity(entity).remove::<WaitingForWork>();
             } else {
-                if loads.get(entity).is_ok_and(|cargo| cargo.amount > 0)
-                    || kind == Some(&super::NanobotType::Defender)
-                {
+                let carrying = loads.get(entity).is_ok_and(|cargo| cargo.amount > 0);
+                if carrying || kind == Some(&super::NanobotType::Defender) {
                     let entry = approaches.entries.get_mut(&entity).unwrap();
+                    if carrying && kind == Some(&super::NanobotType::Hauler) {
+                        entry.waiting_since.get_or_insert(now);
+                    }
                     phase = ApproachPhase::Waiting;
                     commands.entity(entity).insert((
                         WaitingForWork,
@@ -489,6 +558,9 @@ pub fn move_velocity_system(
             commands
                 .entity(entity)
                 .remove::<(ProgressChecker, WorkApproach, WaitingForWork)>();
+            if original.interaction.is_some() {
+                commands.entity(entity).insert(AdmittedToWork);
+            }
             if !keep_order_after_evacuation {
                 commands.entity(entity).remove::<DirectMovementComponent>();
             }
@@ -499,12 +571,12 @@ pub fn move_velocity_system(
             }
             continue;
         }
-        // A waypoint can be within travel tolerance while the bot is still outside the work tile.
+        // Take the last short step when the current position is outside the work tile or occupied.
         let last_step = destination.xy - position;
         if last_step.length_squared() < WAYPOINT_REACHED_DISTANCE.powi(2)
             && original
                 .interaction
-                .is_some_and(|region| !region.contains(position) && region.contains(destination.xy))
+                .is_some_and(|region| region.contains(destination.xy))
             && navigation.movement_clear(position, destination.xy)
         {
             commands
@@ -760,25 +832,45 @@ fn clear_of<'a>(
     })
 }
 
-/// Every body's position, built once per pass.
-struct Occupancy(PackedSpatialBuckets<(Entity, Vec2)>);
+#[derive(Clone, Copy)]
+struct Occupant {
+    entity: Entity,
+    position: Vec2,
+    motion: TransitMotion,
+    priority: StandingPriority,
+}
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+enum StandingPriority {
+    Admitted,
+    Assigned,
+    Unassigned,
+}
+
+struct Occupancy(PackedSpatialBuckets<Occupant>);
 
 impl Occupancy {
-    fn new(bodies: impl IntoIterator<Item = (Entity, Vec2)>) -> Self {
+    fn new(bodies: impl IntoIterator<Item = Occupant>) -> Self {
         Self(PackedSpatialBuckets::new(
             2.0 * crate::navigation::BODY_RADIUS,
-            bodies.into_iter().map(|body| (body.1, body)),
+            bodies.into_iter().map(|body| (body.position, body)),
         ))
     }
 
-    /// [`space_free`] against every body.
-    fn space_free(&self, entity: Entity, position: Vec2) -> bool {
-        clear_of(
-            entity,
-            position,
-            self.0
-                .neighbourhood_runs(self.0.bucket_for_position(position), 1)
-                .flatten(),
-        )
+    fn clear_at(
+        &self,
+        entity: Entity,
+        position: Vec2,
+        can_share: impl Fn(&Occupant) -> bool,
+    ) -> bool {
+        self.0
+            .neighbourhood_runs(self.0.bucket_for_position(position), 1)
+            .flatten()
+            .all(|other| {
+                other.entity == entity
+                    || position.distance_squared(other.position)
+                        >= (2.0 * crate::navigation::BODY_RADIUS - 0.001).powi(2)
+                    || can_share(other)
+            })
     }
 }

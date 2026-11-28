@@ -1,282 +1,195 @@
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-    CongestionRecovery, DirectMovementComponent, SwarmId, SwarmMember,
+    Cargo, Commitment, DirectMovementComponent, InteractionRegion, WaitingForWork, WorkBlocked,
 };
+use top_down_2d_rts_prototype_nano_swarm::{navigation::BODY_RADIUS, resources::ResourceKind};
 #[path = "../common/mod.rs"]
 mod common;
 
-#[test]
-fn friendly_traffic_recovers_in_a_sealed_single_file_passage() {
-    let mut app = common::sim_app_with_movement();
+fn position(app: &App, bot: Entity) -> Vec2 {
+    app.world()
+        .get::<Transform>(bot)
+        .unwrap()
+        .translation
+        .truncate()
+}
+
+fn single_file_lane(app: &mut App, offset: Vec2) {
     for (center, scale) in [
         (Vec2::new(432., 252.), Vec3::new(4.5, 1.125, 1.)),
         (Vec2::new(432., 396.), Vec3::new(4.5, 1.125, 1.)),
         (Vec2::new(252., 324.), Vec3::new(1.125, 3.375, 1.)),
         (Vec2::new(612., 324.), Vec3::new(1.125, 3.375, 1.)),
     ] {
-        let wall = common::spawn_structure_at(&mut app, center);
+        let wall = common::spawn_structure_at(app, center + offset);
         app.world_mut().get_mut::<Transform>(wall).unwrap().scale = scale;
     }
-    let left = common::spawn_worker_at(&mut app, Vec2::new(360., 324.));
-    let right = common::spawn_worker_at(&mut app, Vec2::new(504., 324.));
-    for (entity, xy) in [
-        (left, Vec2::new(504., 324.)),
-        (right, Vec2::new(360., 324.)),
-    ] {
-        app.world_mut().entity_mut(entity).insert((
-            SwarmMember(SwarmId::PLAYER),
-            DirectMovementComponent {
-                xy,
-                stop_radius: 0.,
-                interaction: None,
-                speed: None,
-            },
-        ));
-    }
-    let mut overlapped = false;
-    let mut previous = [Vec2::new(360., 324.), Vec2::new(504., 324.)];
-    for tick in 0..300 {
-        app.update();
-        let positions = [left, right].map(|entity| {
-            app.world()
-                .get::<Transform>(entity)
-                .unwrap()
-                .translation
-                .truncate()
+}
+
+fn travel_from(app: &mut App, bot: Entity, goal: Vec2) {
+    app.world_mut()
+        .entity_mut(bot)
+        .insert(DirectMovementComponent {
+            xy: goal,
+            stop_radius: 0.,
+            interaction: None,
+            speed: None,
         });
-        if positions[0].distance(positions[1]) < 67.999 {
-            assert!(tick >= 10, "overlap started before one simulation second");
-            overlapped = true;
-        }
+}
+
+#[test]
+fn a_loaded_hauler_passes_a_defender_on_its_way_to_a_charger_without_retreating() {
+    use top_down_2d_rts_prototype_nano_swarm::nanobot::{Charger, ChargerAssignment};
+
+    let mut app = common::sim_app_with_movement();
+    single_file_lane(&mut app, Vec2::ZERO);
+    let charger = common::spawn_structure_at(&mut app, Vec2::new(252., 324.));
+    let transform = app
+        .world_mut()
+        .get_mut::<Transform>(charger)
+        .unwrap()
+        .with_scale(Vec3::new(1.125, 3.375, 1.));
+    app.world_mut()
+        .entity_mut(charger)
+        .insert((transform, Charger::new(IVec2::ZERO)));
+    let left = common::spawn_hauler_at(&mut app, Vec2::new(359., 324.));
+    let right = common::spawn_defender_at(&mut app, Vec2::new(504., 324.));
+    let destination = Vec2::new(504., 324.);
+    let approach = InteractionRegion::structure(&transform);
+    travel_from(&mut app, left, destination);
+    app.world_mut().entity_mut(left).insert(Cargo {
+        kind: ResourceKind::Minerals,
+        amount: 7,
+    });
+    app.world_mut().entity_mut(right).insert((
+        approach.movement_from(Vec2::new(504., 324.)),
+        ChargerAssignment { charger },
+    ));
+
+    let mut crossed = false;
+    let mut previous = [position(&app, left), position(&app, right)];
+    for _ in 0..55 {
+        app.update();
+        let positions = [position(&app, left), position(&app, right)];
+        crossed |= positions[0].distance(positions[1]) < 2. * BODY_RADIUS;
+        assert!(
+            positions[0].x >= previous[0].x && positions[1].x <= previous[1].x,
+            "head-on travel retreated: {previous:?} -> {positions:?}"
+        );
         for i in 0..2 {
-            assert!(
-                (322.0..=542.0).contains(&positions[i].x)
-                    && (322.0..=326.0).contains(&positions[i].y),
-                "body crossed chamber walls: {:?}",
-                positions[i]
-            );
-            assert!(
-                positions[i].distance(previous[i]) <= 5.001,
-                "recovery teleported a body"
-            );
+            assert!((322.0..=326.0).contains(&positions[i].y));
+            assert!(positions[i].distance(previous[i]) <= 5.001);
         }
         previous = positions;
     }
-    assert!(
-        overlapped,
-        "sealed single-file traffic cannot pass without temporary overlap"
-    );
-    assert!(app.world().get::<CongestionRecovery>(left).is_none());
-    assert!(app.world().get::<CongestionRecovery>(right).is_none());
-    let positions = [left, right].map(|entity| {
-        app.world()
-            .get::<Transform>(entity)
-            .unwrap()
-            .translation
-            .truncate()
-    });
-    assert!(
-        positions[0].distance(Vec2::new(504., 324.)) < 3.
-            && positions[1].distance(Vec2::new(360., 324.)) < 3.,
-        "friendly traffic never recovered: {positions:?}"
-    );
+    assert!(crossed, "both trips must use the single lane");
+    assert!(position(&app, left).distance(destination) < 3.);
+    assert!(approach.contains(position(&app, right)));
+    assert!(app.world().get::<DirectMovementComponent>(right).is_none());
+    assert_eq!(app.world().get::<Cargo>(left).unwrap().amount, 7);
 }
 
 #[test]
-fn idle_friend_steps_aside_before_approaching_traffic_stalls() {
+fn a_hauler_passes_an_idle_friend_in_a_single_file_lane() {
     let mut app = common::sim_app_with_movement();
-    let mover = common::spawn_worker_at(&mut app, Vec2::new(200., 300.));
-    let idle = common::spawn_worker_at(&mut app, Vec2::new(400., 300.));
-    app.world_mut()
-        .entity_mut(mover)
-        .insert(DirectMovementComponent {
-            xy: Vec2::new(600., 300.),
-            stop_radius: 0.,
-            interaction: None,
-            speed: None,
-        });
-    let mut yielded_early = false;
-    for _ in 0..150 {
+    single_file_lane(&mut app, Vec2::ZERO);
+    let mover = common::spawn_hauler_at(&mut app, Vec2::new(360., 324.));
+    let idle_position = Vec2::new(432., 324.);
+    let idle = common::spawn_worker_at(&mut app, idle_position);
+    let goal = Vec2::new(504., 324.);
+    travel_from(&mut app, mover, goal);
+    let mut crossed = false;
+    for _ in 0..45 {
         app.update();
-        let a = app
-            .world()
-            .get::<Transform>(mover)
-            .unwrap()
-            .translation
-            .truncate();
-        let b = app
-            .world()
-            .get::<Transform>(idle)
-            .unwrap()
-            .translation
-            .truncate();
-        yielded_early |= b.y > 301. && a.x < 330.;
-        assert!(
-            a.distance(b) >= 67.999,
-            "ordinary yielding overlapped: {a:?}, {b:?}"
+        crossed |= position(&app, mover).distance(idle_position) < 10.;
+        assert_eq!(
+            position(&app, idle),
+            idle_position,
+            "an idle friend is not displaced by ordinary travel"
         );
     }
-    assert!(
-        yielded_early,
-        "idle friend waited until traffic was blocked before yielding"
-    );
-    let end = app
-        .world()
-        .get::<Transform>(mover)
-        .unwrap()
-        .translation
-        .truncate();
-    assert!(
-        end.distance(Vec2::new(600., 300.)) < 3.,
-        "passing traffic stalled at {end:?}"
-    );
+    assert!(crossed);
+    assert!(position(&app, mover).distance(goal) < 3.);
 }
 
 #[test]
-fn route_progress_away_from_goal_does_not_count_as_a_traffic_stall() {
+fn a_loaded_hauler_waiting_after_overlap_spreads_away_and_keeps_its_cargo() {
     use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-        Commitment, RemainingTravel, VelocityComponent, velocity_system,
+        RemainingTravel, VelocityComponent, separation_system, velocity_system,
+        work_standing_system,
     };
-    let mut app = common::minimal_app();
-    app.add_systems(FixedUpdate, velocity_system);
-    let traveller = common::spawn_worker_at(&mut app, Vec2::ZERO);
-    app.world_mut()
-        .entity_mut(traveller)
-        .insert(DirectMovementComponent {
-            xy: Vec2::new(400., 0.),
-            stop_radius: 0.,
-            interaction: None,
-            speed: None,
-        });
-    // The route first runs north around an obstacle: remaining route length falls
-    // while Euclidean distance to the eastward destination grows.
-    for tick in 0..30 {
-        app.world_mut().entity_mut(traveller).insert((
-            RemainingTravel(1000. - tick as f32 * 5.),
-            VelocityComponent {
-                value: Vec2::Y * 5.,
-            },
-        ));
-        app.update();
-    }
-    let blocker = common::spawn_worker_at(&mut app, Vec2::new(0., 220.));
-    app.world_mut()
-        .entity_mut(blocker)
-        .insert(Commitment::Working);
-    for _ in 0..9 {
-        app.world_mut().entity_mut(traveller).insert((
-            RemainingTravel(850.),
-            VelocityComponent {
-                value: Vec2::Y * 5.,
-            },
-        ));
-        app.update();
-        assert!(
-            app.world().get::<CongestionRecovery>(traveller).is_none(),
-            "a progressing detour must not accumulate recovery time before first contact"
-        );
-    }
-}
-
-#[test]
-fn queued_recovery_separates_from_a_working_body_without_losing_cargo() {
     for offset in [Vec2::ZERO, Vec2::X * 4320.0] {
-        check_queued_recovery(offset);
-    }
-}
-
-fn check_queued_recovery(offset: Vec2) {
-    use top_down_2d_rts_prototype_nano_swarm::intent::IntentGrid;
-    use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-        Cargo, Commitment, RemainingTravel, VelocityComponent, WaitingForWork, WorkBlocked,
-        separation_system, velocity_system, work_standing_system,
-    };
-    use top_down_2d_rts_prototype_nano_swarm::resources::ResourceKind;
-    let mut app = common::minimal_app();
-    app.insert_resource(IntentGrid::new(32, 32));
-    app.add_systems(
-        FixedUpdate,
-        (separation_system, velocity_system, work_standing_system).chain(),
-    );
-    for y in [252., 396.] {
-        let wall = common::spawn_structure_at(&mut app, Vec2::new(432., y) + offset);
-        app.world_mut().get_mut::<Transform>(wall).unwrap().scale = Vec3::new(4.5, 1.125, 1.);
-    }
-    let worker_position = Vec2::new(432., 324.) + offset;
-    let worker = common::spawn_worker_at(&mut app, worker_position);
-    app.world_mut()
-        .entity_mut(worker)
-        .insert(Commitment::Working);
-    let loaded = common::spawn_hauler_at(&mut app, Vec2::new(360., 324.) + offset);
-    app.world_mut().entity_mut(loaded).insert((
-        Cargo {
+        let mut app = common::minimal_app();
+        app.insert_resource(top_down_2d_rts_prototype_nano_swarm::intent::IntentGrid::new(32, 32));
+        app.add_systems(
+            FixedUpdate,
+            (separation_system, velocity_system, work_standing_system).chain(),
+        );
+        single_file_lane(&mut app, offset);
+        let worker_position = Vec2::new(432., 324.) + offset;
+        let worker = common::spawn_worker_at(&mut app, worker_position);
+        app.world_mut()
+            .entity_mut(worker)
+            .insert(Commitment::Working);
+        let loaded = common::spawn_hauler_at(&mut app, Vec2::new(360., 324.) + offset);
+        app.world_mut().entity_mut(loaded).insert(Cargo {
             kind: ResourceKind::Minerals,
             amount: 20,
-        },
-        DirectMovementComponent {
-            xy: Vec2::new(504., 324.) + offset,
-            stop_radius: 0.,
-            interaction: None,
-            speed: None,
-        },
-    ));
-    let mut crossed = false;
-    for _ in 0..180 {
-        let x = app.world().get::<Transform>(loaded).unwrap().translation.x;
-        app.world_mut().entity_mut(loaded).insert((
-            RemainingTravel(504. + offset.x - x),
-            VelocityComponent {
-                value: Vec2::X * 5.,
-            },
-        ));
-        app.update();
-        let position = app
-            .world()
-            .get::<Transform>(loaded)
-            .unwrap()
-            .translation
-            .truncate();
-        if position.distance(worker_position) <= 68.001 {
-            crossed = true;
-            break;
+        });
+        travel_from(&mut app, loaded, Vec2::new(504., 324.) + offset);
+
+        for _ in 0..15 {
+            app.world_mut()
+                .entity_mut(loaded)
+                .insert(VelocityComponent {
+                    value: Vec2::X * 5.,
+                });
+            app.update();
+            assert!(
+                app.world().get::<WorkBlocked>(worker).is_none(),
+                "friendly passage must leave the work position admitted"
+            );
         }
+        assert!(
+            position(&app, loaded).distance(worker_position) < 2. * BODY_RADIUS - 10.,
+            "fixture must enter transit overlap at {offset:?}, travelled to {:?}",
+            position(&app, loaded)
+        );
+        // Destination capacity disappears while the bots overlap.
+        app.world_mut()
+            .entity_mut(loaded)
+            .insert(WaitingForWork)
+            .remove::<RemainingTravel>();
+        for _ in 0..240 {
+            app.update();
+        }
+        assert!(position(&app, loaded).distance(worker_position) >= 2. * BODY_RADIUS - 0.002);
+        assert!(app.world().get::<WorkBlocked>(worker).is_none());
+        assert_eq!(position(&app, worker), worker_position);
+        assert_eq!(app.world().get::<Cargo>(loaded).unwrap().amount, 20);
     }
-    assert!(
-        crossed && app.world().get::<CongestionRecovery>(loaded).is_some(),
-        "fixture must enter transit overlap first"
-    );
-    // Destination capacity disappears during transit, leaving no route steering.
-    app.world_mut()
-        .entity_mut(loaded)
-        .insert(WaitingForWork)
-        .remove::<RemainingTravel>();
+}
+
+#[test]
+fn idle_friends_spread_after_arriving_at_the_same_destination() {
+    let mut app = common::sim_app_with_movement();
+    let goal = Vec2::new(400., 300.);
+    let bots = [
+        common::spawn_worker_at(&mut app, goal - Vec2::X * 130.),
+        common::spawn_hauler_at(&mut app, goal + Vec2::X * 130.),
+    ];
+    for bot in bots {
+        travel_from(&mut app, bot, goal);
+    }
+    let mut shared_destination = false;
     for _ in 0..240 {
         app.update();
+        shared_destination |= bots
+            .into_iter()
+            .all(|bot| position(&app, bot).distance(goal) < 3.);
     }
-    let position = app
-        .world()
-        .get::<Transform>(loaded)
-        .unwrap()
-        .translation
-        .truncate();
-    assert!(
-        position.distance(worker_position) >= 67.999,
-        "queued recovery remained embedded: {position:?}"
-    );
-    assert!(
-        app.world().get::<WorkBlocked>(worker).is_none(),
-        "transit must not suspend the worker indefinitely"
-    );
-    assert!(
-        app.world()
-            .get::<Transform>(worker)
-            .unwrap()
-            .translation
-            .truncate()
-            .distance(worker_position)
-            < 0.001
-    );
-    assert_eq!(app.world().get::<Cargo>(loaded).unwrap().amount, 20);
+    assert!(shared_destination);
+    assert!(position(&app, bots[0]).distance(position(&app, bots[1])) >= 2. * BODY_RADIUS - 0.002);
 }
 
 #[test]
@@ -338,15 +251,15 @@ fn loaded_worker_can_pass_an_occupied_intermediate_waypoint() {
                 .is_none(),
         "worker could not proceed around the occupied turn: {end:?}"
     );
-    assert!(closest_spacing >= 2.0 * BODY_RADIUS - 0.001);
+    assert!(closest_spacing < 2.0 * BODY_RADIUS);
     assert_eq!(app.world().get::<Cargo>(traveller).unwrap().amount, 4);
 }
 
 #[test]
-fn loaded_head_on_yield_resumes_when_both_detours_are_blocked() {
+fn loaded_head_on_trips_pass_through_a_bend_with_both_detours_blocked() {
     use top_down_2d_rts_prototype_nano_swarm::{
         nanobot::{Cargo, RemainingTravel, VelocityComponent, velocity_system},
-        navigation::{BODY_RADIUS, Navigation},
+        navigation::Navigation,
         resources::ResourceKind,
     };
 
@@ -422,13 +335,6 @@ fn loaded_head_on_yield_resumes_when_both_detours_are_blocked() {
             assert!(
                 navigation.point_clear(position(world, bot)),
                 "bot crossed the aisle wall"
-            );
-        }
-        if tick < 60 {
-            assert!(
-                position(world, worker).distance(position(world, hauler))
-                    >= 2. * BODY_RADIUS - 0.001,
-                "bots overlapped before the one-second recovery threshold"
             );
         }
     }

@@ -7,7 +7,7 @@
 | A bot clips a wall or deposit, loses a valid route after an unrelated edit, or ignores an owned Corridor on its next trip | [Shared navigation playtests](../../tests/playtest/shared_navigation.rs) |
 | Route requests starve, use stale geometry, or consume too much work in one update | [Budget and scheduling](../../src/navigation/budget.rs) and [integration tests](../../tests/behavior/navigation_budget.rs) |
 | A Worker or Hauler enters a structure to perform work, drops cargo on a blocked route, or fails to resume after access reopens | [Exterior work flow](../../tests/playtest/exterior_work_flow.rs), [route recovery](../../tests/behavior/worker_route_recovery.rs), and [physical deliveries](../../tests/playtest/physical_logistics_flow.rs) |
-| Opposing traffic wedges in a passage or a queue at a work site stops making deliveries | [Local avoidance](../../tests/behavior/local_avoidance.rs), [congestion recovery](../../tests/behavior/congestion.rs), and [sustained economy playtests](../../tests/playtest/congested_economy.rs) |
+| Opposing traffic wedges in a passage or a queue at a work site stops making deliveries | [Local avoidance](../../tests/behavior/local_avoidance.rs), [single-file transit](../../tests/behavior/congestion.rs), and [sustained economy playtests](../../tests/playtest/congested_economy.rs) |
 | A plan cuts off friendly access or becomes solid around a bot | [Construction access](../../tests/behavior/construction_access.rs), [clearing](../../tests/behavior/structure_clearing.rs), and [cancellation](../../tests/playtest/construction_cancellation.rs) |
 | A facility loses or duplicates paid output while its exit is blocked | [Production exit playtests](../../tests/playtest/production_exits.rs) |
 
@@ -24,7 +24,7 @@ mkdir -p .tmp &&
 
 In `$replay_dir/normal/`, compare the `start`, `working`, `delivery`, and `later` captures. Look for Workers around the deposit, plans becoming solid structures, and Haulers working outside them. Compare the player's mineral balance and facility counts across the JSON snapshots for evidence of economy progress. Phase names mark timed samples. Screenshots and snapshots can show different ticks.
 
-Under `$replay_dir/bottleneck/`, compare `before.png`, `retreat.png`, and `arrived.png`. Look for a bot yielding at the mouth of the passage and all four reaching their opposite-side goal markers. The [fixture](../../examples/local_avoidance.rs) checks swept structure clearance on every tick and body separation outside friendly congestion recovery. It documents the two paint commands for advancing the scene manually. The driver checks process exit, socket removal, and lock release for both scenes. To test the fixture’s independent segment-to-rectangle distance calculation, run `cargo test --example local_avoidance`.
+Under `$replay_dir/bottleneck/`, compare `before.png`, `passing.png`, and `arrived.png` with their detailed state snapshots. Two loaded Haulers use the same lane in opposite directions, pass a Hauler loading at a Source Stockpile, and deliver to the facilities on the far sides. The [fixture](../../examples/local_avoidance.rs) checks swept wall clearance and loading progress on every tick. To drive it manually, paint Corridor at `-3 -3` to start and at `-2 -3` to continue after the `TRAFFIC passing` log. The driver checks process exit, socket removal, and lock release. Run `cargo test --example local_avoidance` to check the independent segment-to-rectangle clearance calculation.
 
 ## Measure navigation at scale
 

@@ -1,11 +1,7 @@
-//! Real-process headless acceptance fixture for opposing bottleneck traffic.
+//! Full-game headless replay of deliveries through an occupied single-file passage.
 //!
-//! Run with a private XDG_RUNTIME_DIR and `BEVY_ASSET_ROOT="$PWD"`:
-//! `RUST_LOG=local_avoidance=info cargo run --example local_avoidance`.
-//! Use `scripts/nano_swarm_control.py screenshot --name before`, then
-//! `paint corridor -3 -3`. On the `TRAFFIC retreat` log, capture `retreat`,
-//! then `paint corridor -2 -3`. On `TRAFFIC arrived`, capture `arrived`, then
-//! `shutdown`. `wait --frames 2` synchronizes rendering while phases are paused.
+//! The replay driver uses two Corridor paints to pause on friendly passage and
+//! finished delivery. See docs/verification/navigation.md for the commands.
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z,
@@ -13,12 +9,16 @@ use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Commitment, CongestionRecovery, DirectMovementComponent, Health, Nanobot, NanobotType,
-        Structure, StructureKind, SwarmId, SwarmMember, VelocityComponent,
+        Cargo, Commitment, HaulerAssignment, HaulerLoading, Health, InteractionRegion,
+        LogisticsReservation, MaterialWorkProgress, Nanobot, NanobotType, OwnerSwarm,
+        ProductionFacility, Structure, StructureKind, Swarm, SwarmId, SwarmMember,
+        VelocityComponent, WorkBlocked,
     },
     reachability::SwarmReachabilityMap,
+    resources::{ResourceKind, ResourceLedger, Stockpile, StockpileRole},
     scenario_selection::Scenario,
     session_lifecycle::SessionEntity,
+    tuning::Tuning,
 };
 
 use top_down_2d_rts_prototype_nano_swarm::runtime::{RuntimeOptions, build_runtime_app};
@@ -27,18 +27,29 @@ use top_down_2d_rts_prototype_nano_swarm::runtime::{RuntimeOptions, build_runtim
 enum Phase {
     Before,
     Approaching,
-    Retreat,
+    Passing,
     Resuming,
     Arrived,
 }
 
+struct Delivery {
+    bot: Entity,
+    facility: Entity,
+    direction: f32,
+}
+
 #[derive(Resource)]
 struct TrafficScene {
-    bots: Vec<(Entity, Vec2)>,
-    previous: Vec<Vec2>,
+    deliveries: [Delivery; 2],
+    source: Entity,
+    loading: Entity,
+    previous: [Vec2; 2],
     phase: Phase,
     ticks: u32,
 }
+
+const LOADING_POSITION: Vec2 = Vec2::new(432., 324.);
+const SHIPMENT: u32 = 2;
 
 fn main() {
     let control = AgentControlConfig::from_environment().expect("agent control socket");
@@ -46,6 +57,10 @@ fn main() {
         RuntimeOptions {
             headless: true,
             scenario: Some(Scenario::Standard),
+            tuning_file: std::env::var_os("NANO_SWARM_REPLAY_TUNING").map_or_else(
+                top_down_2d_rts_prototype_nano_swarm::tuning::default_path,
+                Into::into,
+            ),
             width: 1280,
             height: 720,
             ..Default::default()
@@ -65,7 +80,7 @@ fn release_phase(world: &mut World) {
     let phase = world.resource::<TrafficScene>().phase;
     let (cell, next) = match phase {
         Phase::Before => (IVec2::new(-3, -3), Phase::Approaching),
-        Phase::Retreat => (IVec2::new(-2, -3), Phase::Resuming),
+        Phase::Passing => (IVec2::new(-2, -3), Phase::Resuming),
         _ => return,
     };
     if !world
@@ -76,15 +91,55 @@ fn release_phase(world: &mut World) {
         return;
     }
     if phase == Phase::Before {
-        let bots = world.resource::<TrafficScene>().bots.clone();
-        for (entity, xy) in bots {
-            world.entity_mut(entity).insert(DirectMovementComponent {
-                xy,
-                stop_radius: 0.,
-                interaction: None,
-                speed: None,
-            });
-        }
+        world.resource_scope(|world, scene: Mut<TrafficScene>| {
+            for delivery in &scene.deliveries {
+                let position = world
+                    .get::<Transform>(delivery.bot)
+                    .unwrap()
+                    .translation
+                    .truncate();
+                let region = InteractionRegion::structure(
+                    world.get::<Transform>(delivery.facility).unwrap(),
+                );
+                let mut reservation = LogisticsReservation::new(
+                    scene.source,
+                    delivery.facility,
+                    ResourceKind::Minerals,
+                    SHIPMENT,
+                );
+                reservation.source_remaining = 0;
+                world.entity_mut(delivery.bot).insert((
+                    HaulerAssignment {
+                        source: scene.source,
+                        sink: delivery.facility,
+                        pickup_role: StockpileRole::Source,
+                    },
+                    Cargo {
+                        kind: ResourceKind::Minerals,
+                        amount: SHIPMENT,
+                    },
+                    reservation,
+                    region.movement_from(position),
+                ));
+            }
+            let loading_capacity = world.resource::<Tuning>().logistics.hauler_carry_capacity;
+            world.entity_mut(scene.loading).insert((
+                HaulerAssignment {
+                    source: scene.source,
+                    sink: scene.deliveries[0].facility,
+                    pickup_role: StockpileRole::Source,
+                },
+                Cargo::empty(ResourceKind::Minerals),
+                MaterialWorkProgress::default(),
+                HaulerLoading,
+                LogisticsReservation::new(
+                    scene.source,
+                    scene.deliveries[0].facility,
+                    ResourceKind::Minerals,
+                    loading_capacity,
+                ),
+            ));
+        });
     }
     world.resource_mut::<TrafficScene>().phase = next;
     world.resource_mut::<Time<Virtual>>().unpause();
@@ -94,32 +149,30 @@ fn release_phase(world: &mut World) {
 fn verify_tick(
     mut scene: ResMut<TrafficScene>,
     positions: Query<&Transform>,
-    recovering: Query<(), With<CongestionRecovery>>,
+    loading: Query<(&Cargo, &MaterialWorkProgress, Has<WorkBlocked>), With<HaulerLoading>>,
+    facilities: Query<&ProductionFacility>,
+    tuning: Res<Tuning>,
     mut time: ResMut<Time<Virtual>>,
 ) {
-    let current: Vec<Vec2> = scene
-        .bots
-        .iter()
-        .map(|(entity, _)| positions.get(*entity).unwrap().translation.truncate())
-        .collect();
-    for (i, &end) in current.iter().enumerate() {
-        let start = scene.previous[i];
-        for j in i + 1..current.len() {
-            let separation = start - scene.previous[j];
-            let change = end - current[j] - separation;
-            let t = if change.length_squared() > 0. {
-                (-separation.dot(change) / change.length_squared()).clamp(0., 1.)
-            } else {
-                0.
-            };
-            assert!(
-                (separation + change * t).length() >= 67.99
-                    || recovering.contains(scene.bots[i].0)
-                    || recovering.contains(scene.bots[j].0),
-                "swept body overlap outside recovery at tick {} for pair {i}/{j}: {current:?}",
-                scene.ticks
-            );
-        }
+    if !matches!(scene.phase, Phase::Approaching | Phase::Resuming) {
+        return;
+    }
+    scene.ticks += 1;
+    let current = scene
+        .deliveries
+        .each_ref()
+        .map(|delivery| positions.get(delivery.bot).unwrap().translation.truncate());
+    let received = scene
+        .deliveries
+        .each_ref()
+        .map(|delivery| facilities.get(delivery.facility).unwrap().input_amount);
+    for (index, &end) in current.iter().enumerate() {
+        let start = scene.previous[index];
+        assert!(
+            (end.x - start.x) * scene.deliveries[index].direction >= -0.001,
+            "ordinary traffic retreated at tick {}: {start:?} -> {end:?}",
+            scene.ticks
+        );
         for center in [Vec2::new(432., 252.), Vec2::new(432., 396.)] {
             assert!(
                 segment_rectangle_distance(start, end, center) >= 33.99,
@@ -128,36 +181,43 @@ fn verify_tick(
             );
         }
     }
-    scene.previous = current.clone();
-    if !matches!(scene.phase, Phase::Approaching | Phase::Resuming) {
-        return;
-    }
-    scene.ticks += 1;
+    scene.previous = current;
+    let (cargo, material, blocked) = loading
+        .get(scene.loading)
+        .expect("working Hauler is still loading");
+    assert_eq!(
+        positions.get(scene.loading).unwrap().translation.truncate(),
+        LOADING_POSITION,
+        "passing traffic moved the loading Hauler"
+    );
+    assert!(!blocked, "passing traffic blocked loading");
+    assert_eq!(
+        cargo.amount * tuning.logistics.material_work_ticks + material.ticks_elapsed,
+        scene.ticks,
+        "loading must progress on every tick of the delivery"
+    );
+
     assert!(
-        scene.ticks < 2400,
-        "retained routes did not finish: {current:?}"
+        scene.ticks < 200,
+        "deliveries stalled: {current:?}, received {received:?}"
     );
     if scene.phase == Phase::Approaching
+        && current[0].x - current[1].x >= 44.
         && current
             .iter()
-            .any(|position| (position.y - 324.).abs() > 50.)
+            .all(|position| position.distance(LOADING_POSITION) < 34.)
     {
-        scene.phase = Phase::Retreat;
+        scene.phase = Phase::Passing;
         time.pause();
         info!(
-            "TRAFFIC retreat: tick {}, positions {current:?}; paint corridor -2 -3 to resume",
-            scene.ticks
+            "TRAFFIC passing: tick {}, positions {current:?}, loaded minerals {}, work ticks {}; paint corridor -2 -3 to resume",
+            scene.ticks, cargo.amount, material.ticks_elapsed
         );
-    } else if scene.phase == Phase::Resuming
-        && current
-            .iter()
-            .zip(&scene.bots)
-            .all(|(position, (_, goal))| position.distance(*goal) < 3.)
-    {
+    } else if scene.phase == Phase::Resuming && received == [SHIPMENT; 2] {
         scene.phase = Phase::Arrived;
         time.pause();
         info!(
-            "TRAFFIC arrived: tick {}, positions {current:?}; traffic and structure clearance checks passed every fixed tick",
+            "TRAFFIC arrived: tick {}, positions {current:?}, delivered {received:?}; loading and swept clearance checks passed every fixed tick",
             scene.ticks
         );
     }
@@ -214,7 +274,11 @@ fn prepare(world: &mut World) {
             world.despawn(entity);
         }
     }
-    let grid = IntentGrid::new(8, 8);
+    let mut grid = IntentGrid::new(8, 8);
+    for cell in [IVec2::ZERO, IVec2::X] {
+        grid.paint(cell, IntentKind::Gather, SwarmId::PLAYER);
+        grid.paint(cell, IntentKind::Build, SwarmId::PLAYER);
+    }
     let reachability = SwarmReachabilityMap::new(&grid, [], [(SwarmId::PLAYER, Vec2::ZERO)])
         .expect("the traffic fixture has open terrain around the player's home");
     world.insert_resource(grid);
@@ -230,58 +294,86 @@ fn prepare(world: &mut World) {
             ortho.scale = 1.1;
         }
     }
-    for y in [252., 396.] {
-        world.spawn((
+    let swarm = world
+        .spawn((Swarm {}, SwarmId::PLAYER, Transform::default()))
+        .id();
+    let wall_scale = Vec3::new(4.5, 1.125, 1.);
+    let source = world
+        .spawn((
+            Stockpile {
+                kind: ResourceKind::Minerals,
+                amount: 100,
+                capacity: 100,
+                radius: 36.,
+            },
+            StockpileRole::Source,
+            OwnerSwarm(swarm),
             Structure::new(StructureKind::Basic),
             Sprite::from_color(Color::srgb(0.55, 0.35, 0.2), Vec2::splat(64.)),
-            Transform::from_xyz(432., y, GAMEPLAY_SPRITE_Z).with_scale(Vec3::new(4.5, 1.125, 1.)),
-        ));
-    }
+            Transform::from_xyz(432., 252., GAMEPLAY_SPRITE_Z).with_scale(wall_scale),
+        ))
+        .id();
     world.spawn((
-        Text2d::new("OPPOSING TRAFFIC / ONE-CELL PASSAGE"),
-        TextFont {
-            font_size: 22.,
-            ..default()
-        },
-        Transform::from_xyz(504., 500., GAMEPLAY_SPRITE_Z),
+        Structure::new(StructureKind::Basic),
+        Sprite::from_color(Color::srgb(0.55, 0.35, 0.2), Vec2::splat(64.)),
+        Transform::from_xyz(432., 396., GAMEPLAY_SPRITE_Z).with_scale(wall_scale),
     ));
-    let mut bots = Vec::new();
-    for (start, goal) in [(340., 828.), (412., 900.), (484., 180.), (556., 108.)] {
-        let entity = world
+    world.resource_mut::<ResourceLedger>().add_for(
+        SwarmId::PLAYER,
+        ResourceKind::Minerals,
+        100 + 2 * SHIPMENT,
+    );
+    let deliveries = [(340., 684., 1.), (524., 180., -1.)].map(|(start, end, direction)| {
+        let facility = world
             .spawn((
-                Nanobot {},
-                NanobotType::Worker,
-                Commitment::Working,
-                Health::default(),
-                VelocityComponent::default(),
-                SwarmMember(SwarmId::PLAYER),
-                Transform::from_xyz(start, 324., GAMEPLAY_SPRITE_Z + 1.),
+                ProductionFacility::new(),
+                Structure::new(StructureKind::Basic),
+                OwnerSwarm(swarm),
+                Sprite::from_color(Color::srgb(0.2, 0.42, 0.6), Vec2::splat(64.)),
+                Transform::from_xyz(end, 252., GAMEPLAY_SPRITE_Z)
+                    .with_scale(Vec3::new(1.125, 1.125, 1.)),
             ))
             .id();
-        bots.push((entity, Vec2::new(goal, 324.)));
-        world.spawn((
-            Sprite::from_color(Color::srgb(0.2, 0.42, 0.6), Vec2::splat(8.)),
-            Transform::from_xyz(goal, 324., GAMEPLAY_SPRITE_Z),
-        ));
-    }
-    let previous = bots
-        .iter()
-        .map(|(entity, _)| {
-            world
-                .get::<Transform>(*entity)
-                .unwrap()
-                .translation
-                .truncate()
-        })
-        .collect();
+        Delivery {
+            bot: spawn_hauler(world, Vec2::new(start, 324.)),
+            facility,
+            direction,
+        }
+    });
+    let loading = spawn_hauler(world, LOADING_POSITION);
+    let previous = deliveries.each_ref().map(|delivery| {
+        world
+            .get::<Transform>(delivery.bot)
+            .unwrap()
+            .translation
+            .truncate()
+    });
     world.insert_resource(TrafficScene {
-        bots,
+        deliveries,
+        source,
+        loading,
         previous,
         phase: Phase::Before,
         ticks: 0,
     });
     world.resource_mut::<Time<Virtual>>().pause();
-    info!("TRAFFIC before: four bodies; paint corridor -3 -3 to start");
+    info!(
+        "TRAFFIC before: two opposing deliveries and one loading position; paint corridor -3 -3 to start"
+    );
+}
+
+fn spawn_hauler(world: &mut World, position: Vec2) -> Entity {
+    world
+        .spawn((
+            Nanobot {},
+            NanobotType::Hauler,
+            Commitment::Working,
+            Health::default(),
+            VelocityComponent::default(),
+            SwarmMember(SwarmId::PLAYER),
+            Transform::from_translation(position.extend(GAMEPLAY_SPRITE_Z + 1.)),
+        ))
+        .id()
 }
 
 #[cfg(test)]

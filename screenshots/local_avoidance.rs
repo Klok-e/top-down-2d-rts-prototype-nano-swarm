@@ -6,8 +6,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     fly_camera::CameraZoom2d,
     intent::IntentGrid,
     nanobot::{
-        Commitment, CongestionRecovery, DirectMovementComponent, Health, Nanobot, NanobotType,
-        StrategicController, Structure, StructureKind, SwarmId, SwarmMember, VelocityComponent,
+        Commitment, DirectMovementComponent, Health, Nanobot, NanobotType, StrategicController,
+        Structure, StructureKind, SwarmId, SwarmMember, VelocityComponent,
     },
 };
 
@@ -15,7 +15,7 @@ use top_down_2d_rts_prototype_nano_swarm::{
 struct TrafficScene {
     bots: Vec<(Entity, Vec2)>,
     started: bool,
-    yielded: bool,
+    passing: bool,
     arrived: bool,
 }
 
@@ -39,23 +39,18 @@ pub fn local_avoidance(ctx: &mut TestContext) -> TestFlow {
                 .truncate()
         })
         .collect();
-    for (index, position) in positions.iter().enumerate() {
+    for position in &positions {
         assert!(
             ctx.world
                 .resource::<top_down_2d_rts_prototype_nano_swarm::navigation::Navigation>()
                 .point_clear(*position)
         );
-        for (other_index, other) in positions.iter().enumerate().skip(index + 1) {
-            assert!(
-                position.distance(*other) >= 67.99
-                    || [bots[index].0, bots[other_index].0]
-                        .into_iter()
-                        .any(|bot| ctx.world.get::<CongestionRecovery>(bot).is_some()),
-                "rendered bodies overlap outside recovery: {positions:?}"
-            );
-        }
     }
-    // Arrived bodies may step aside for travellers still finishing their crossing.
+    let passing = positions.iter().enumerate().any(|(index, position)| {
+        positions[index + 1..]
+            .iter()
+            .any(|other| position.distance(*other) < 67.99)
+    });
     let arrived = scene.started
         && bots
             .iter()
@@ -76,20 +71,16 @@ pub fn local_avoidance(ctx: &mut TestContext) -> TestFlow {
                 });
         }
         ctx.world.resource_mut::<TrafficScene>().started = true;
-    } else if !scene.yielded
-        && positions
-            .iter()
-            .any(|position| (position.y - 324.).abs() > 50.)
-    {
-        ctx.world.resource_mut::<TrafficScene>().yielded = true;
-        return TestFlow::Screenshot("local_avoidance_yield".into());
+    } else if !scene.passing && passing {
+        ctx.world.resource_mut::<TrafficScene>().passing = true;
+        return TestFlow::Screenshot("local_avoidance_passing".into());
     } else if arrived {
-        assert!(scene.yielded);
+        assert!(scene.passing);
         ctx.world.resource_mut::<TrafficScene>().arrived = true;
         return TestFlow::Screenshot("local_avoidance_arrived".into());
     }
     assert!(
-        ctx.frame < 2400,
+        ctx.frame < 140,
         "traffic must resume retained routes: {positions:?}; orders={:?}; navigation={:?}",
         bots.iter()
             .map(|(entity, _)| ctx.world.get::<DirectMovementComponent>(*entity))
@@ -166,7 +157,7 @@ fn prepare(world: &mut World) {
     world.insert_resource(TrafficScene {
         bots,
         started: false,
-        yielded: false,
+        passing: false,
         arrived: false,
     });
 }

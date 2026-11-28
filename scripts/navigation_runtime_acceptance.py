@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture normal gameplay and paused traffic using the external control client.
+"""Capture normal gameplay and opposing deliveries using the external control client.
 
 Build the binary and example first with `cargo build --bin
  top-down-2d-rts-prototype-nano-swarm --example local_avoidance`.
@@ -7,6 +7,7 @@ Screenshots require visual inspection after this driver exits.
 """
 
 import argparse
+from contextlib import nullcontext
 import fcntl
 import json
 import os
@@ -21,26 +22,38 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_scene(kind, output):
+def run_scene(kind, output, runtime_dir=None):
     output.mkdir(parents=True, exist_ok=False)
     records = []
-    with tempfile.TemporaryDirectory(prefix=f"ns66-{kind}-") as runtime:
+    runtime_context = (
+        tempfile.TemporaryDirectory(prefix=f"ns-{kind}-")
+        if runtime_dir is None else nullcontext(runtime_dir)
+    )
+    with runtime_context as runtime:
         socket = Path(runtime) / "nano-swarm/control.sock"
+        if os.path.lexists(socket):
+            raise RuntimeError(f"Control socket path already exists: {socket}")
         env = os.environ.copy()
+        target = Path(env.get("CARGO_TARGET_DIR", ROOT / "target")).resolve()
+        tuning = output / "balance.ron"
+        shutil.copyfile(ROOT / "config/balance.ron", tuning)
         env.update(
-            XDG_RUNTIME_DIR=runtime,
+            XDG_RUNTIME_DIR=str(runtime),
+            XDG_CONFIG_HOME=env.get("XDG_CONFIG_HOME", str(output / "config")),
+            NANO_SWARM_REPLAY_TUNING=str(tuning),
             BEVY_ASSET_ROOT=str(ROOT),
             LD_LIBRARY_PATH=os.pathsep.join([
-                str(ROOT / "target/debug/deps"),
+                str(target / "debug"),
+                str(target / "debug/deps"),
                 subprocess.check_output(["rustc", "--print", "target-libdir"], text=True).strip(),
                 env.get("LD_LIBRARY_PATH", ""),
             ]),
         )
         binary = "examples/local_avoidance" if kind == "bottleneck" else "top-down-2d-rts-prototype-nano-swarm"
-        launch = [str(ROOT / "target/debug" / binary)]
+        launch = [str(target / "debug" / binary)]
         if kind == "normal":
-            launch += ["--headless", "--width", "1280", "--height", "720"]
-        (output / "launch.json").write_text(json.dumps({"argv": launch, "runtime": runtime}, indent=2))
+            launch += ["--headless", "--width", "1280", "--height", "720", "--tuning-file", str(tuning)]
+        (output / "launch.json").write_text(json.dumps({"argv": launch, "runtime": str(runtime)}, indent=2))
         with (output / "process.log").open("w") as log:
             process = subprocess.Popen(launch, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
             def call(*args):
@@ -55,7 +68,7 @@ def run_scene(kind, output):
                 call("wait", "--frames", "2")
                 response = call("screenshot", "--name", name)
                 shutil.copyfile(response["result"]["path"], output / f"{name}.png")
-                (output / f"{name}.json").write_text(json.dumps(call("state"), indent=2))
+                (output / f"{name}.json").write_text(json.dumps(call("state", "--details"), indent=2))
 
             try:
                 deadline = time.monotonic() + 60
@@ -76,7 +89,7 @@ def run_scene(kind, output):
                         capture(name)
                 else:
                     capture("before")
-                    for phase, x in [("retreat", "-3"), ("arrived", "-2")]:
+                    for phase, x in [("passing", "-3"), ("arrived", "-2")]:
                         call("paint", "corridor", x, "-3")
                         for _ in range(80):
                             call("wait", "--frames", "30")
@@ -107,9 +120,11 @@ def run_scene(kind, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "target/issue-66/runtime/replay")
+    parser.add_argument("--scene", action="append", choices=["normal", "bottleneck"])
+    parser.add_argument("--runtime-dir", type=Path, help="Existing private directory with space for the control socket")
     args = parser.parse_args()
-    for kind in ["normal", "bottleneck"]:
-        run_scene(kind, args.output.resolve() / kind)
+    for kind in args.scene or ["normal", "bottleneck"]:
+        run_scene(kind, args.output.resolve() / kind, args.runtime_dir)
 
 
 if __name__ == "__main__":
