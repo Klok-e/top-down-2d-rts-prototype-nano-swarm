@@ -115,8 +115,28 @@ pub fn run_screenshot_test_at_size(
     cb: fn(&mut TestContext) -> TestFlow,
     size: (u32, u32),
 ) -> Result<PathBuf, String> {
+    run_screenshot_test_with_state(cb, size, InitialSimulation::Running)
+}
+
+pub fn run_screenshot_test_before_simulation(
+    cb: fn(&mut TestContext) -> TestFlow,
+) -> Result<PathBuf, String> {
+    run_screenshot_test_with_state(cb, (WIDTH, HEIGHT), InitialSimulation::Paused)
+}
+
+fn run_screenshot_test_with_state(
+    cb: fn(&mut TestContext) -> TestFlow,
+    size: (u32, u32),
+    simulation: InitialSimulation,
+) -> Result<PathBuf, String> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_scenario_with_limits(cb, HarnessLimits::default(), Default::default(), size)
+        run_scenario_with_limits(
+            cb,
+            HarnessLimits::default(),
+            Default::default(),
+            size,
+            simulation,
+        )
     })) {
         Ok(result) => result,
         Err(payload) => Err(format!(
@@ -131,7 +151,13 @@ pub fn run_screenshot_test_for_scenario(
     scenario: top_down_2d_rts_prototype_nano_swarm::scenario_selection::Scenario,
 ) -> Result<PathBuf, String> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_scenario_with_limits(cb, HarnessLimits::default(), scenario, (WIDTH, HEIGHT))
+        run_scenario_with_limits(
+            cb,
+            HarnessLimits::default(),
+            scenario,
+            (WIDTH, HEIGHT),
+            InitialSimulation::Running,
+        )
     })) {
         Ok(result) => result,
         Err(payload) => Err(format!(
@@ -145,7 +171,19 @@ fn run_screenshot_test_with_limits(
     cb: fn(&mut TestContext) -> TestFlow,
     limits: HarnessLimits,
 ) -> Result<PathBuf, String> {
-    run_scenario_with_limits(cb, limits, Default::default(), (WIDTH, HEIGHT))
+    run_scenario_with_limits(
+        cb,
+        limits,
+        Default::default(),
+        (WIDTH, HEIGHT),
+        InitialSimulation::Running,
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InitialSimulation {
+    Running,
+    Paused,
 }
 
 fn run_scenario_with_limits(
@@ -153,6 +191,7 @@ fn run_scenario_with_limits(
     limits: HarnessLimits,
     scenario: top_down_2d_rts_prototype_nano_swarm::scenario_selection::Scenario,
     size: (u32, u32),
+    simulation: InitialSimulation,
 ) -> Result<PathBuf, String> {
     std::fs::create_dir_all(SCREENSHOT_DIR)
         .map_err(|err| format!("create {SCREENSHOT_DIR}: {err}"))?;
@@ -165,6 +204,10 @@ fn run_scenario_with_limits(
     app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_micros(
         16_667,
     )));
+
+    if simulation == InitialSimulation::Paused {
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+    }
 
     let exporter = image_export_adapter::OffscreenImageExporter::install(&mut app);
     let mut session = ScreenshotSession::new(app, exporter);
@@ -179,11 +222,13 @@ fn run_scenario_with_limits(
         .resource_mut::<Time<Virtual>>()
         .pause();
     prime_readback_path(&mut session)?;
-    session
-        .app
-        .world_mut()
-        .resource_mut::<Time<Virtual>>()
-        .unpause();
+    if simulation == InitialSimulation::Running {
+        session
+            .app
+            .world_mut()
+            .resource_mut::<Time<Virtual>>()
+            .unpause();
+    }
 
     session
         .app

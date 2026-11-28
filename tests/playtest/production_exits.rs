@@ -58,7 +58,7 @@ fn both_swarms_release_paid_output_once_when_movement_opens_the_shared_exit() {
     }
     for _ in 0..Tuning::default().production.ticks_per_bot {
         app.update();
-        assert_clear_bodies(app.world_mut());
+        assert_body_clearance(app.world_mut(), &[]);
     }
     assert_eq!(
         app.world_mut()
@@ -88,7 +88,6 @@ fn both_swarms_release_paid_output_once_when_movement_opens_the_shared_exit() {
     let mut released = Vec::new();
     for _ in 0..400 {
         app.update();
-        assert_clear_bodies(app.world_mut());
         let outputs: Vec<_> = app
             .world_mut()
             .query::<(Entity, &NanobotType, &SwarmMember, &Transform)>()
@@ -98,6 +97,11 @@ fn both_swarms_release_paid_output_once_when_movement_opens_the_shared_exit() {
                 (entity, *kind, member.0, transform.translation.truncate())
             })
             .collect();
+        let new_outputs = outputs
+            .iter()
+            .filter_map(|(entity, ..)| (!released.contains(entity)).then_some(*entity))
+            .collect::<Vec<_>>();
+        assert_body_clearance(app.world_mut(), &new_outputs);
         for (entity, kind, owner, position) in outputs {
             if released.contains(&entity) {
                 continue;
@@ -157,18 +161,21 @@ fn both_swarms_release_paid_output_once_when_movement_opens_the_shared_exit() {
     }
 }
 
-fn assert_clear_bodies(world: &mut World) {
+fn assert_body_clearance(world: &mut World, new_outputs: &[Entity]) {
     let positions: Vec<_> = world
-        .query_filtered::<&Transform, With<Nanobot>>()
+        .query_filtered::<(Entity, &Transform, &SwarmMember), With<Nanobot>>()
         .iter(world)
-        .map(|transform| transform.translation.truncate())
+        .map(|(entity, transform, owner)| (entity, transform.translation.truncate(), owner.0))
         .collect();
-    for (index, position) in positions.iter().enumerate() {
-        for other in &positions[index + 1..] {
-            assert!(
-                position.distance(*other) >= 67.99,
-                "bodies overlap: {position:?}, {other:?}"
-            );
+    for (index, (bot, position, owner)) in positions.iter().enumerate() {
+        for (other_bot, other, other_owner) in &positions[index + 1..] {
+            if owner != other_owner || new_outputs.contains(bot) || new_outputs.contains(other_bot)
+            {
+                assert!(
+                    position.distance(*other) >= 67.99,
+                    "birth or hostile bodies overlap: {position:?}, {other:?}"
+                );
+            }
         }
         for center in [Vec2::new(36., 36.), Vec2::new(180., 36.)] {
             let distance = ((*position - center).abs() - Vec2::splat(36.))

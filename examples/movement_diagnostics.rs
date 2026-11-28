@@ -5,9 +5,9 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     agent_control::AgentControlConfig,
     nanobot::{
-        ApproachPhase, Cargo, Commitment, CongestionRecovery, DirectMovementComponent,
-        ExtractProgress, HaulerLoading, Nanobot, NanobotType, RemainingTravel,
-        ReturningToStockpile, TrafficYield, WorkApproach, WorkBlocked,
+        ApproachPhase, Cargo, Commitment, DirectMovementComponent, ExtractProgress, HaulerLoading,
+        Nanobot, NanobotType, RemainingTravel, ReturningToStockpile, TrafficYield, WorkApproach,
+        WorkBlocked,
     },
     navigation::Navigation,
     runtime::{RuntimeOptions, build_runtime_app},
@@ -61,7 +61,6 @@ fn observe(
             &Cargo,
             Option<&WorkApproach>,
             Has<WorkBlocked>,
-            Has<CongestionRecovery>,
             Option<&RemainingTravel>,
             Option<&DirectMovementComponent>,
             Option<&TrafficYield>,
@@ -76,12 +75,12 @@ fn observe(
     observations.ticks += 1;
     observations.loaded.retain(|entity, _| {
         bots.get(*entity)
-            .is_ok_and(|(_, _, _, cargo, _, _, _, _, _, _, _, _, _, _)| cargo.amount > 0)
+            .is_ok_and(|(_, _, _, cargo, _, _, _, _, _, _, _, _, _)| cargo.amount > 0)
     });
     let mut phases = [0_u32; 4];
     let mut cargo_total = 0_u32;
     let mut stalled = 0_u32;
-    let mut stationary_causes = [0_u32; 8];
+    let mut stationary_causes = [0_u32; 7];
     let mut loaded_pending = 0_u32;
     let mut loaded_working = 0_u32;
     let summary_tick = observations.ticks.is_multiple_of(60);
@@ -92,7 +91,6 @@ fn observe(
         cargo,
         approach,
         blocked,
-        recovery,
         remaining,
         movement,
         yielding,
@@ -126,14 +124,12 @@ fn observe(
             ("body_blocked", 2)
         } else if yielding.is_some() {
             ("yielding", 3)
-        } else if recovery {
-            ("recovery", 4)
         } else if pending_ticks.is_some() {
-            ("pending_route", 5)
+            ("pending_route", 4)
         } else if movement.is_some() {
-            ("movement_without_pending_route", 6)
+            ("movement_without_pending_route", 5)
         } else {
-            ("no_movement_goal", 7)
+            ("no_movement_goal", 6)
         };
         let motion = observations.loaded.entry(entity).or_insert(Motion {
             position,
@@ -142,7 +138,7 @@ fn observe(
         if position.distance(motion.position) < 0.1 {
             stationary_causes[cause_index] += 1;
             motion.stationary_seconds += time.delta_secs();
-            if cause_index == 5 {
+            if cause_index == 4 {
                 motion.pending_stop_seconds += time.delta_secs();
             } else {
                 motion.pending_stop_seconds = 0.0;
@@ -150,7 +146,7 @@ fn observe(
         } else {
             if motion.reported {
                 info!(
-                    "MOVEMENT resumed entity={entity:?} kind={kind:?} seconds={:.3} position={position:?} cargo={} approach={approach:?} blocked={blocked} recovery={recovery}",
+                    "MOVEMENT resumed entity={entity:?} kind={kind:?} seconds={:.3} position={position:?} cargo={} approach={approach:?} blocked={blocked}",
                     motion.stationary_seconds, cargo.amount
                 );
             }
@@ -169,7 +165,7 @@ fn observe(
             stalled += 1;
             if !motion.reported || summary_tick {
                 info!(
-                    "MOVEMENT stalled cause={cause} pending_ticks={pending_ticks:?} entity={entity:?} kind={kind:?} position={position:?} cargo={} approach={approach:?} blocked={blocked} recovery={recovery} remaining={remaining:?} movement={movement:?} yielding={yielding:?} commitment={commitment:?} loading={loading} extracting={extracting} returning={returning:?} goal_clear={} navigation={:?}",
+                    "MOVEMENT stalled cause={cause} pending_ticks={pending_ticks:?} entity={entity:?} kind={kind:?} position={position:?} cargo={} approach={approach:?} blocked={blocked} remaining={remaining:?} movement={movement:?} yielding={yielding:?} commitment={commitment:?} loading={loading} extracting={extracting} returning={returning:?} goal_clear={} navigation={:?}",
                     cargo.amount,
                     movement
                         .is_some_and(|movement| navigation.segment_clear(position, movement.xy)),
@@ -186,7 +182,7 @@ fn observe(
     }
     if observations.ticks.is_multiple_of(60) {
         info!(
-            "MOVEMENT summary tick={} simulation_seconds={:.3} loaded={} cargo={cargo_total} travelling={} searching={} waiting={} other={} stationary_over_one_second={stalled} longest_stop={:.3} longest_pending_route_stop={:.3} direction_reversals={} loaded_pending={loaded_pending} loaded_working={loaded_working} stationary_working={} stationary_destination_waiting={} stationary_body_blocked={} stationary_yielding={} stationary_recovery={} stationary_pending_route={} stationary_without_pending_route={} stationary_without_goal={} navigation={:?}",
+            "MOVEMENT summary tick={} simulation_seconds={:.3} loaded={} cargo={cargo_total} travelling={} searching={} waiting={} other={} stationary_over_one_second={stalled} longest_stop={:.3} longest_pending_route_stop={:.3} direction_reversals={} loaded_pending={loaded_pending} loaded_working={loaded_working} stationary_working={} stationary_destination_waiting={} stationary_body_blocked={} stationary_yielding={} stationary_pending_route={} stationary_without_pending_route={} stationary_without_goal={} navigation={:?}",
             observations.ticks,
             time.elapsed_secs_f64(),
             observations.loaded.len(),
@@ -204,7 +200,6 @@ fn observe(
             stationary_causes[4],
             stationary_causes[5],
             stationary_causes[6],
-            stationary_causes[7],
             navigation.work()
         );
     }

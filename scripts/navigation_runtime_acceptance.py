@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture normal gameplay and paused traffic using the external control client.
+"""Capture gameplay, delivery traffic, and Structure Clearing using the external control client.
 
 Build the binary and example first with `cargo build --bin
  top-down-2d-rts-prototype-nano-swarm --example local_avoidance`.
@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -21,26 +22,49 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_scene(kind, output):
-    output.mkdir(parents=True, exist_ok=False)
+def run_scene(kind, output, runtime_parent=None):
     records = []
-    with tempfile.TemporaryDirectory(prefix=f"ns66-{kind}-") as runtime:
-        socket = Path(runtime) / "nano-swarm/control.sock"
+    if runtime_parent is not None:
+        try:
+            info = runtime_parent.lstat()
+        except OSError as error:
+            raise RuntimeError(f"Cannot inspect runtime parent directory: {runtime_parent}") from error
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_mode & (stat.S_IRWXG | stat.S_IRWXO)
+        ):
+            raise RuntimeError(f"Runtime parent must be a real, private directory owned by you: {runtime_parent}")
+        runtime_parent = runtime_parent.resolve()
+
+    with tempfile.TemporaryDirectory(prefix="ns-", dir=runtime_parent) as runtime:
+        runtime = Path(runtime).resolve()
+        socket = runtime / "nano-swarm/control.sock"
+        output.mkdir(parents=True, exist_ok=False)
+        config = output / "config"
+        config.mkdir(mode=0o700)
         env = os.environ.copy()
+        target = Path(env.get("CARGO_TARGET_DIR", ROOT / "target")).resolve()
+        tuning = output / "balance.ron"
+        shutil.copyfile(ROOT / "config/balance.ron", tuning)
         env.update(
-            XDG_RUNTIME_DIR=runtime,
+            XDG_RUNTIME_DIR=str(runtime),
+            XDG_CONFIG_HOME=str(config),
+            NANO_SWARM_REPLAY_TUNING=str(tuning),
+            NANO_SWARM_REPLAY_SCENE=kind,
             BEVY_ASSET_ROOT=str(ROOT),
             LD_LIBRARY_PATH=os.pathsep.join([
-                str(ROOT / "target/debug/deps"),
+                str(target / "debug"),
+                str(target / "debug/deps"),
                 subprocess.check_output(["rustc", "--print", "target-libdir"], text=True).strip(),
                 env.get("LD_LIBRARY_PATH", ""),
             ]),
         )
-        binary = "examples/local_avoidance" if kind == "bottleneck" else "top-down-2d-rts-prototype-nano-swarm"
-        launch = [str(ROOT / "target/debug" / binary)]
+        binary = "examples/local_avoidance" if kind != "normal" else "top-down-2d-rts-prototype-nano-swarm"
+        launch = [str(target / "debug" / binary)]
         if kind == "normal":
-            launch += ["--headless", "--width", "1280", "--height", "720"]
-        (output / "launch.json").write_text(json.dumps({"argv": launch, "runtime": runtime}, indent=2))
+            launch += ["--headless", "--width", "1280", "--height", "720", "--tuning-file", str(tuning)]
+        (output / "launch.json").write_text(json.dumps({"argv": launch, "runtime": str(runtime)}, indent=2))
         with (output / "process.log").open("w") as log:
             process = subprocess.Popen(launch, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
             def call(*args):
@@ -55,7 +79,7 @@ def run_scene(kind, output):
                 call("wait", "--frames", "2")
                 response = call("screenshot", "--name", name)
                 shutil.copyfile(response["result"]["path"], output / f"{name}.png")
-                (output / f"{name}.json").write_text(json.dumps(call("state"), indent=2))
+                (output / f"{name}.json").write_text(json.dumps(call("state", "--details"), indent=2))
 
             try:
                 deadline = time.monotonic() + 60
@@ -76,14 +100,20 @@ def run_scene(kind, output):
                         capture(name)
                 else:
                     capture("before")
-                    for phase, x in [("retreat", "-3"), ("arrived", "-2")]:
+                    label, final_phase = {
+                        "bottleneck": ("TRAFFIC", "arrived"),
+                        "clearing": ("CLEARING", "activated"),
+                        "direct": ("DIRECT", "arrived"),
+                        "searched": ("SEARCHED", "arrived"),
+                    }[kind]
+                    for phase, x in [("passing", "-3"), (final_phase, "-2")]:
                         call("paint", "corridor", x, "-3")
                         for _ in range(80):
                             call("wait", "--frames", "30")
-                            if f"TRAFFIC {phase}:" in (output / "process.log").read_text():
+                            if f"{label} {phase}:" in (output / "process.log").read_text():
                                 break
                         else:
-                            raise RuntimeError(f"traffic did not reach {phase}")
+                            raise RuntimeError(f"{kind} did not reach {phase}")
                         capture(phase)
                 call("shutdown")
                 exit_code = process.wait(timeout=30)
@@ -92,7 +122,7 @@ def run_scene(kind, output):
                 with Path(str(socket) + ".lock").open("r+") as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     fcntl.flock(lock, fcntl.LOCK_UN)
-                (output / "cleanup.json").write_text(json.dumps({"exit_code": exit_code, "socket_removed": True, "lock_released": True, "runtime_mode": oct(Path(runtime).stat().st_mode & 0o777)}, indent=2))
+                (output / "cleanup.json").write_text(json.dumps({"exit_code": exit_code, "socket_removed": True, "lock_released": True, "runtime_mode": oct(runtime.stat().st_mode & 0o777)}, indent=2))
             finally:
                 if process.poll() is None:
                     try:
@@ -107,9 +137,14 @@ def run_scene(kind, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "target/issue-66/runtime/replay")
+    parser.add_argument("--scene", action="append", choices=["normal", "bottleneck", "clearing", "direct", "searched"])
+    parser.add_argument(
+        "--runtime-dir", type=Path,
+        help="Existing private directory you own with a short path for per-scene temporary subdirectories",
+    )
     args = parser.parse_args()
-    for kind in ["normal", "bottleneck"]:
-        run_scene(kind, args.output.resolve() / kind)
+    for kind in args.scene or ["normal", "bottleneck", "clearing", "direct", "searched"]:
+        run_scene(kind, args.output.resolve() / kind, args.runtime_dir)
 
 
 if __name__ == "__main__":

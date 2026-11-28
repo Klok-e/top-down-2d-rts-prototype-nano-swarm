@@ -550,7 +550,7 @@ pub fn production_facility_work_system(
             ready.push((finished, combat_key(entity, identity), entity));
         }
     }
-    ready.sort_unstable_by_key(|(finished, key, _)| (*finished, *key));
+    ready.sort_unstable_by_key(|(finished, key, entity)| (*finished, *key, entity.to_bits()));
     for (_, _, entity) in ready {
         let Ok((_, mut facility, transform, owner, ..)) = facilities.get_mut(entity) else {
             continue;

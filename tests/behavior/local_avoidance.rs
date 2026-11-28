@@ -119,6 +119,11 @@ fn opposing_bodies_pass_without_swept_overlap_in_open_space() {
     let mut app = common::sim_app_with_movement();
     let a = common::spawn_worker_at(&mut app, Vec2::new(200., 300.));
     let b = common::spawn_worker_at(&mut app, Vec2::new(600., 300.));
+    app.world_mut().entity_mut(b).insert(
+        top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmMember(
+            top_down_2d_rts_prototype_nano_swarm::nanobot::SwarmId(1),
+        ),
+    );
     for (entity, xy) in [(a, Vec2::new(600., 300.)), (b, Vec2::new(200., 300.))] {
         app.world_mut()
             .entity_mut(entity)
@@ -260,7 +265,7 @@ fn wider_lanes_allow_side_by_side_passing_without_deflection() {
 }
 
 #[test]
-fn following_traffic_yields_with_the_front_bot_in_a_bottleneck() {
+fn friendly_streams_cross_a_bottleneck_without_retreating() {
     for spawn_order in [[0, 1, 2, 3], [1, 3, 0, 2], [3, 2, 1, 0]] {
         let mut app = common::sim_app_with_movement();
         for y in [252., 396.] {
@@ -295,7 +300,8 @@ fn following_traffic_yields_with_the_front_bot_in_a_bottleneck() {
         }
         let mut previous = starts;
         let mut reached = [false; 4];
-        for _ in 0..1500 {
+        let mut overlapped = false;
+        for _ in 0..120 {
             app.update();
             let now = bots.map(|entity| {
                 app.world()
@@ -311,23 +317,16 @@ fn following_traffic_yields_with_the_front_bot_in_a_bottleneck() {
                         .resource::<top_down_2d_rts_prototype_nano_swarm::navigation::Navigation>()
                         .segment_clear(previous[first], now[first])
                 );
+                let direction = (goals[first] - starts[first]).normalize();
+                assert!((now[first] - previous[first]).dot(direction) >= -0.001);
+                assert!((now[first].y - 324.).abs() < 0.01);
                 for second in first + 1..4 {
-                    let relative = previous[first] - previous[second];
-                    let travel = now[first] - previous[first] - (now[second] - previous[second]);
-                    let t = if travel.length_squared() > 0. {
-                        (-relative.dot(travel) / travel.length_squared()).clamp(0., 1.)
-                    } else {
-                        0.
-                    };
-                    assert!(
-                        (relative + travel * t).length() >= 67.99
-                            || [bots[first], bots[second]].into_iter().any(|bot| app.world().get::<top_down_2d_rts_prototype_nano_swarm::nanobot::CongestionRecovery>(bot).is_some()),
-                        "stream collision: {previous:?} -> {now:?}"
-                    );
+                    overlapped |= now[first].distance(now[second]) < 67.99;
                 }
             }
             previous = now;
         }
+        assert!(overlapped, "both streams must use the same passage");
         assert!(
             reached.into_iter().all(|arrived| arrived),
             "stream never reached its destinations: {previous:?}"
@@ -451,9 +450,9 @@ fn moving_destination_does_not_starve_a_pending_pursuit_route() {
 }
 
 #[test]
-fn following_bot_slows_smoothly_at_occupied_space() {
+fn following_bot_slows_smoothly_at_hostile_occupied_space() {
     use top_down_2d_rts_prototype_nano_swarm::nanobot::{
-        Commitment, VelocityComponent, velocity_system,
+        Commitment, SwarmId, SwarmMember, VelocityComponent, velocity_system,
     };
     for gap in [71.0, 69.5] {
         let mut app = common::minimal_app();
@@ -462,7 +461,7 @@ fn following_bot_slows_smoothly_at_occupied_space() {
         let working = common::spawn_worker_at(&mut app, Vec2::new(200. + gap, 300.));
         app.world_mut()
             .entity_mut(working)
-            .insert(Commitment::Working);
+            .insert((Commitment::Working, SwarmMember(SwarmId(1))));
         app.world_mut().entity_mut(follower).insert((
             DirectMovementComponent {
                 xy: Vec2::new(600., 300.),

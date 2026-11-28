@@ -614,3 +614,267 @@ fn unrelated_obstacle_removal_preserves_travel_with_search_budget_stopped() {
         "unrelated removal made valid travel wait for another search: {arrived:?}"
     );
 }
+
+#[test]
+fn searched_traffic_uses_the_quieter_opening_and_keeps_a_sole_opening_passable() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        intent::IntentGrid,
+        nanobot::Cargo,
+        navigation::{ConnectivityStatus, Navigation, RouteGoal},
+        navigation_runtime::NavigationBudget,
+        resources::ResourceKind,
+    };
+
+    let start = Vec2::new(108., 251.);
+    let goal = Vec2::new(468., 251.);
+    let westbound_goal = Vec2::new(108., 180.);
+    let budget = 1_024;
+    for (counterflow, upper_open, expected_lane) in
+        [(false, true, 180.), (true, true, 324.), (true, false, 180.)]
+    {
+        let mut app = common::sim_app_with_movement();
+        app.insert_resource(IntentGrid::new(4, 4));
+        app.world_mut().resource_mut::<NavigationBudget>().0 = budget;
+        // Both ends of the barrier extend beyond the 2,048-unit map.
+        for (bottom, top) in [(-1080., 144.), (216., 288.), (360., 1080.)]
+            .into_iter()
+            .chain((!upper_open).then_some((288., 360.)))
+        {
+            let wall = common::spawn_structure_at(&mut app, Vec2::new(288., (top + bottom) * 0.5));
+            app.world_mut().get_mut::<Transform>(wall).unwrap().scale =
+                Vec3::new(2.25, (top - bottom) / 64., 1.);
+        }
+
+        let travel = |xy| DirectMovementComponent {
+            xy,
+            stop_radius: 0.,
+            interaction: None,
+            speed: None,
+        };
+        let delivery = common::spawn_hauler_at(&mut app, start);
+        let mut returning = Vec::new();
+        if counterflow {
+            for x in [327., 366., 405.] {
+                let bot = common::spawn_hauler_at(&mut app, Vec2::new(x, 180.));
+                app.world_mut()
+                    .entity_mut(bot)
+                    .insert(travel(westbound_goal));
+                returning.push(bot);
+            }
+        }
+        app.update();
+        app.world_mut().entity_mut(delivery).insert((
+            travel(goal),
+            Cargo {
+                kind: ResourceKind::Minerals,
+                amount: 2,
+            },
+        ));
+
+        app.update();
+        let connectivity = |app: &App| {
+            app.world()
+                .resource::<Navigation>()
+                .query_connectivity(start, RouteGoal::Point(goal))
+        };
+        let navigation = app.world().resource::<Navigation>();
+        assert!(!navigation.segment_clear(start, goal));
+        assert_eq!(connectivity(&app), ConnectivityStatus::Pending);
+
+        let position = |app: &App, bot| {
+            app.world()
+                .get::<Transform>(bot)
+                .unwrap()
+                .translation
+                .truncate()
+        };
+        let mut previous = start;
+        let mut crossed_lane = None;
+        let mut background_finished = false;
+        let mut shared_during_counterflow = false;
+        let mut returning_arrived = vec![false; returning.len()];
+        for _ in 0..180 {
+            app.update();
+            let navigation = app.world().resource::<Navigation>();
+            let work = navigation.work();
+            assert!(
+                work.work <= budget,
+                "navigation spent {} of {budget}",
+                work.work
+            );
+            background_finished |=
+                matches!(connectivity(&app), ConnectivityStatus::Connected { .. });
+            let current = position(&app, delivery);
+            assert!(
+                navigation.segment_clear(previous, current),
+                "delivery crossed a wall: {previous:?} -> {current:?}"
+            );
+            if previous.x < 288. && current.x >= 288. {
+                crossed_lane = Some(
+                    previous
+                        .lerp(current, (288. - previous.x) / (current.x - previous.x))
+                        .y,
+                );
+            }
+            previous = current;
+            let mut returning_through_wall = false;
+            for (&bot, arrived) in returning.iter().zip(&mut returning_arrived) {
+                let point = position(&app, bot);
+                *arrived |= point.distance(westbound_goal) < 3.;
+                returning_through_wall |= (216.0..360.0).contains(&point.x);
+            }
+            shared_during_counterflow |=
+                returning_through_wall && work.movement_work > 0 && work.background_work > 0;
+        }
+        assert!(
+            crossed_lane.is_some_and(|lane| (lane - expected_lane).abs() < 2.),
+            "counterflow={counterflow}, upper_open={upper_open}: delivery crossed at {crossed_lane:?}, expected y={expected_lane}; final position {previous}"
+        );
+        assert!(
+            previous.distance(goal) < 3.,
+            "loaded delivery stopped at {previous}"
+        );
+        assert_eq!(app.world().get::<Cargo>(delivery).unwrap().amount, 2);
+        assert!(background_finished, "physical access probe never finished");
+        if counterflow {
+            assert!(
+                shared_during_counterflow,
+                "movement and background work never shared a tick with live counterflow"
+            );
+            assert!(
+                returning_arrived.into_iter().all(|arrived| arrived),
+                "returning traffic did not arrive"
+            );
+        }
+    }
+}
+
+#[test]
+fn routed_defenders_neither_create_nor_follow_the_ordinary_traffic_penalty() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        intent::{IntentGrid, IntentKind},
+        nanobot::{DefenderRout, Health, SwarmId},
+        tuning::Tuning,
+    };
+
+    let lane_y = 256.;
+    let west_goal = Vec2::new(256., lane_y);
+    let east_goal = Vec2::new(768., lane_y);
+    let start = Vec2::new(180., lane_y);
+    for (counterflow_routing, traveller_routing, starts_with_ordinary_route) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (false, true, true),
+    ] {
+        let mut app = common::sim_app_with_movement();
+        app.world_mut()
+            .resource_mut::<Tuning>()
+            .combat
+            .rout_confirm_ticks = 1;
+        let order = |xy| DirectMovementComponent {
+            xy,
+            stop_radius: 0.,
+            interaction: None,
+            speed: None,
+        };
+        if counterflow_routing {
+            app.world_mut().resource_mut::<IntentGrid>().paint(
+                IVec2::ZERO,
+                IntentKind::Defend,
+                SwarmId::PLAYER,
+            );
+            common::spawn_stationary_defender_at(&mut app, Vec2::new(880., lane_y), SwarmId(1));
+        }
+        let counterflow = [660., 735.].map(|x| {
+            let position = Vec2::new(x, lane_y);
+            if counterflow_routing {
+                let bot = common::spawn_defender_at(&mut app, position);
+                app.world_mut().get_mut::<Health>(bot).unwrap().current = 10;
+                bot
+            } else {
+                let bot = common::spawn_worker_at(&mut app, position);
+                app.world_mut().entity_mut(bot).insert(order(west_goal));
+                bot
+            }
+        });
+        for _ in 0..2 {
+            app.update();
+        }
+        let position = |app: &App, bot| {
+            app.world()
+                .get::<Transform>(bot)
+                .unwrap()
+                .translation
+                .truncate()
+        };
+        assert!(position(&app, counterflow[0]).x < 660.);
+        for bot in counterflow {
+            assert_eq!(
+                app.world().get::<DefenderRout>(bot).is_some(),
+                counterflow_routing
+            );
+            assert_eq!(
+                app.world().get::<DirectMovementComponent>(bot).unwrap().xy,
+                west_goal
+            );
+        }
+
+        let traveller = if traveller_routing {
+            let bot = common::spawn_defender_at(&mut app, start);
+            app.world_mut().get_mut::<Health>(bot).unwrap().current = 10;
+            if starts_with_ordinary_route {
+                app.world_mut().entity_mut(bot).insert(order(east_goal));
+                app.update();
+                assert!(
+                    (position(&app, bot).y - lane_y).abs() > 0.1,
+                    "the Defender first takes the same bend as any ordinary traveller"
+                );
+            }
+            app.world_mut().resource_mut::<IntentGrid>().paint(
+                IVec2::X,
+                IntentKind::Defend,
+                SwarmId::PLAYER,
+            );
+            common::spawn_stationary_defender_at(&mut app, Vec2::new(20., lane_y), SwarmId(1));
+            bot
+        } else {
+            let bot = common::spawn_worker_at(&mut app, start);
+            app.world_mut().entity_mut(bot).insert(order(east_goal));
+            bot
+        };
+        app.update();
+        assert_eq!(
+            app.world().get::<DefenderRout>(traveller).is_some(),
+            traveller_routing
+        );
+        assert_eq!(
+            app.world()
+                .get::<DirectMovementComponent>(traveller)
+                .unwrap()
+                .xy,
+            east_goal
+        );
+
+        if starts_with_ordinary_route {
+            for _ in 0..20 {
+                app.update();
+            }
+            let position = position(&app, traveller);
+            assert!(position.x > start.x + 40., "{position}");
+            assert!(
+                (position.y - lane_y).abs() < 2.,
+                "the rout continues to the same destination by a direct path: {position}"
+            );
+        } else {
+            // Measure the initial heading before a protected body can constrain movement.
+            let first_step = position(&app, traveller) - start;
+            assert!(first_step.x > 0.);
+            assert_eq!(
+                first_step.y.abs() > 0.1,
+                !counterflow_routing && !traveller_routing,
+                "routing counterflow={counterflow_routing}, routing traveller={traveller_routing}: {first_step}"
+            );
+        }
+    }
+}

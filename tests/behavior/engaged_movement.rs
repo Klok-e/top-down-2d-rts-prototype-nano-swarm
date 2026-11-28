@@ -202,7 +202,7 @@ fn an_engaged_defender_clears_a_completing_footprint() {
 }
 
 #[test]
-fn recovering_traffic_does_not_overlap_an_engaged_defender() {
+fn ordinary_traffic_does_not_overlap_an_engaged_defender() {
     let mut app = common::sim_app_with_movement();
     let mut tuning = app.world_mut().resource_mut::<Tuning>();
     tuning.combat.strafe_speed_fraction = 0.0;
@@ -235,9 +235,69 @@ fn recovering_traffic_does_not_overlap_an_engaged_defender() {
         let distance = position(&app, traveller).distance(position(&app, defender));
         assert!(
             distance >= 67.999,
-            "recovering traffic overlapped the front at distance {distance}"
+            "friendly traffic overlapped the engaged front at distance {distance}"
         );
         closest = closest.min(distance);
     }
     assert!(closest < 68.1, "traveller did not reach the blocked front");
+}
+
+#[test]
+fn newly_engaged_defender_fires_on_cooldown_while_restoring_spacing() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{DefenderAttackCooldown, Health},
+        navigation::BODY_RADIUS,
+    };
+    let mut app = common::sim_app_with_movement();
+    app.add_plugins(CombatPlugin);
+    let at = Vec2::new(300., 300.);
+    let defender = common::spawn_defender_at(&mut app, at);
+    let hauler = common::spawn_hauler_at(&mut app, at - Vec2::X * 72.);
+    app.world_mut()
+        .entity_mut(hauler)
+        .insert(DirectMovementComponent {
+            xy: at + Vec2::X * 200.,
+            stop_radius: 0.,
+            interaction: None,
+            speed: None,
+        });
+    for _ in 0..7 {
+        app.update();
+    }
+    let before_contact = position(&app, defender).distance(position(&app, hauler));
+    assert!(
+        before_contact < 2. * BODY_RADIUS - 2.,
+        "fixture needs ordinary transit overlap"
+    );
+
+    let attack_range = app.world().resource::<Tuning>().combat.attack_range;
+    let hostile = common::spawn_stationary_defender_at(
+        &mut app,
+        at + Vec2::Y * (attack_range - 9.),
+        SwarmId(1),
+    );
+    let health = app.world().get::<Health>(hostile).unwrap().current;
+    app.world_mut()
+        .entity_mut(defender)
+        .insert(DefenderAttackCooldown::new(0));
+    app.update();
+    assert!(app.world().get::<Health>(hostile).unwrap().current < health);
+    assert!(
+        position(&app, defender).distance(position(&app, hauler)) < 2. * BODY_RADIUS,
+        "the first shot should occur while spacing is still recovering"
+    );
+    let after_first_shot = app.world().get::<Health>(hostile).unwrap().current;
+    app.update();
+    assert_eq!(
+        app.world().get::<Health>(hostile).unwrap().current,
+        after_first_shot
+    );
+    for _ in 0..120 {
+        app.update();
+    }
+    let spacing = position(&app, defender).distance(position(&app, hauler));
+    assert!(
+        spacing >= 2. * BODY_RADIUS - 0.002,
+        "a new engagement must recover body spacing, got {spacing}"
+    );
 }
