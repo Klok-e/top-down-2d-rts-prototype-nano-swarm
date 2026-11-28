@@ -419,21 +419,29 @@ impl ExpansionSupply<'_, '_> {
 fn transfer_ticks(load: u32, tuning: &Tuning) -> f64 {
     let logistics = &tuning.logistics;
     let production = &tuning.production;
-    let transfer = logistics.hauler_transfer_per_pulse.max(1);
-    let hopper = production.input_capacity.max(1);
-    let work = f64::from(logistics.material_work_ticks);
-    let cycle = f64::from(production.ticks_per_bot.max(1));
-    let loading = f64::from(load.div_ceil(transfer)) * work;
-    let unloading = f64::from(load.div_ceil(transfer.min(hopper))) * work;
-    let starts = load
-        .saturating_sub(hopper)
-        .div_ceil(production.cost_per_bot.max(1));
+    let load = u64::from(load);
+    let transfer = u64::from(logistics.hauler_transfer_per_pulse.max(1));
+    let hopper = u64::from(production.input_capacity.max(1));
+    let work = u64::from(logistics.material_work_ticks.max(1));
+    let cycle = u64::from(production.ticks_per_bot.max(1));
+    let cost = u64::from(production.cost_per_bot.max(1));
+    let unload_pulse = transfer.min(hopper);
+    let loading = (load.div_ceil(transfer) * work) as f64;
+    let unloading = (load.div_ceil(unload_pulse) * work) as f64;
+    let needed_space = load.saturating_sub(hopper);
+    let starts = needed_space.div_ceil(cost);
     if starts == 0 {
         return loading + unloading;
     }
-    // If the hopper starts a cycle before the first delivery pulse, those queued
-    // minerals take up at least a cycle's worth of space and require one extra start.
-    let space_wait = f64::from(starts - 1) * cycle + work.min(cycle);
+
+    let last_space = needed_space - (starts - 1) * cost;
+    // Extra stock can help fund the first start but takes equal room after the
+    // last. Each end needs a pulse. The span can end on the first final pulse.
+    let endpoint_pulses = (cost + last_space).div_ceil(unload_pulse).max(2);
+    let cycle_pulses = ((starts - 1) * cycle).div_ceil(work);
+    let minimum_starts = (cycle_pulses + endpoint_pulses - 1) as f64 * work as f64;
+    let extra_start = ((starts * cycle).div_ceil(work) * work) as f64;
+    let space_wait = minimum_starts.min(extra_start);
     loading + unloading.max(space_wait)
 }
 
@@ -609,11 +617,11 @@ impl SiteRoutes<'_> {
             self.paths.estimate(
                 self.navigation,
                 self.footprint,
-                pickup,
                 PathProbe {
                     start: pickup,
                     goal: RouteGoal::Interaction(self.destination),
                 },
+                [pickup],
             )
         } else {
             RouteEstimate::Known(direct)
@@ -769,19 +777,18 @@ impl DeliveryPaths {
             return RouteEstimate::Missing;
         }
         let cell_center = ((position / CELL_WIDTH).floor() + Vec2::splat(0.5)) * CELL_WIDTH;
-        let start = if delivery_clear(navigation, footprint, position, cell_center) {
-            cell_center
-        } else {
-            position
-        };
+        let connectors = [0.0, -1.0, 1.0]
+            .into_iter()
+            .flat_map(|y| [0.0, -1.0, 1.0].map(|x| cell_center + Vec2::new(x, y) * CELL_WIDTH))
+            .filter(|&start| delivery_clear(navigation, footprint, position, start));
         self.estimate(
             navigation,
             footprint,
-            position,
             PathProbe {
-                start,
+                start: position,
                 goal: RouteGoal::Point(pickup),
             },
+            connectors,
         )
     }
 
@@ -789,23 +796,21 @@ impl DeliveryPaths {
         &self,
         navigation: &Navigation,
         footprint: Obstacle,
-        origin: Vec2,
         probe: PathProbe,
+        starts: impl IntoIterator<Item = Vec2>,
     ) -> RouteEstimate {
         let key = probe.key(footprint);
         let can_attach = |point| {
             probe.start == point
                 || (matches!(key.1, DeliveryGoal::Pickup(_))
-                    && delivery_clear(navigation, footprint, origin, point))
+                    && delivery_clear(navigation, footprint, probe.start, point))
         };
-        if let Some((_, result)) = self
-            .finished
-            .get(&key)
-            .into_iter()
-            .flatten()
-            .find(|(start, _)| can_attach(*start))
+        let finished = self.finished.get(&key).map_or(&[][..], Vec::as_slice);
+        if let Some(distance) = finished
+            .iter()
+            .find_map(|&(start, distance)| distance.filter(|_| can_attach(start)))
         {
-            return result.map_or(RouteEstimate::Missing, RouteEstimate::Known);
+            return RouteEstimate::Known(distance);
         }
         if let Some((active_key, active, _)) = self.pending
             && key == active_key
@@ -813,16 +818,25 @@ impl DeliveryPaths {
         {
             return RouteEstimate::Pending(active);
         }
-        // Disconnected paths in current geometry cannot be opened by the added footprint.
-        if matches!(probe.goal, RouteGoal::Point(point) if navigation.movement_clear(probe.start, point))
-        {
-            return RouteEstimate::Pending(probe);
+
+        for start in starts {
+            // Failure at one start only covers its grid connections.
+            if finished.contains(&(start, None)) {
+                continue;
+            }
+            let candidate = PathProbe { start, ..probe };
+            if matches!(probe.goal, RouteGoal::Point(point) if navigation.movement_clear(start, point))
+            {
+                return RouteEstimate::Pending(candidate);
+            }
+            // Disconnected paths in current geometry cannot be opened by the added footprint.
+            match navigation.query_connectivity(start, probe.goal) {
+                ConnectivityStatus::Connected { .. } => return RouteEstimate::Pending(candidate),
+                ConnectivityStatus::Unreachable => {}
+                ConnectivityStatus::Pending => return RouteEstimate::Connecting,
+            }
         }
-        match navigation.query_connectivity(probe.start, probe.goal) {
-            ConnectivityStatus::Connected { .. } => RouteEstimate::Pending(probe),
-            ConnectivityStatus::Unreachable => RouteEstimate::Missing,
-            ConnectivityStatus::Pending => RouteEstimate::Connecting,
-        }
+        RouteEstimate::Missing
     }
 
     fn request(&mut self, navigation: &Navigation, footprint: Obstacle, probe: PathProbe) {
@@ -913,6 +927,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_failed_pickup_probe_does_not_rule_out_a_moved_haulers_route() {
+        let grid = IntentGrid::new(8, 8);
+        let rock = Obstacle::Rectangle {
+            center: Vec2::new(36.0, 134.75),
+            half: Vec2::new(108.0, 65.25),
+        };
+        let navigation = Navigation::new(&grid, vec![rock]);
+        let footprint = Obstacle::Rectangle {
+            center: Vec2::new(36.0, -108.0),
+            half: Vec2::splat(108.0),
+        };
+        let pickup = Vec2::new(36.0, -254.0);
+        let original = Vec2::new(36.0, 35.0);
+        let moved = Vec2::new(181.0, 35.0);
+        let mut paths = DeliveryPaths::default();
+        paths.begin(&navigation);
+
+        let probe = PathProbe {
+            start: original,
+            goal: RouteGoal::Point(pickup),
+        };
+        paths.request(&navigation, footprint, probe);
+        for _ in 0..20 {
+            navigation.advance(&grid, 4096);
+            paths.begin(&navigation);
+            if paths.pending.is_none() {
+                break;
+            }
+        }
+        assert!(matches!(
+            paths.estimate(&navigation, footprint, probe, [original]),
+            RouteEstimate::Missing
+        ));
+        assert!(delivery_clear(&navigation, footprint, moved, original));
+
+        let mut estimate = paths.estimate_pickup(&navigation, footprint, moved, pickup);
+        for _ in 0..20 {
+            match estimate {
+                RouteEstimate::Known(_) | RouteEstimate::Missing => break,
+                RouteEstimate::Pending(probe) => paths.request(&navigation, footprint, probe),
+                RouteEstimate::Connecting => {}
+            }
+            navigation.advance(&grid, 4096);
+            paths.begin(&navigation);
+            estimate = paths.estimate_pickup(&navigation, footprint, moved, pickup);
+        }
+        assert!(matches!(estimate, RouteEstimate::Known(0.0)));
+    }
+
+    #[test]
+    fn a_full_hopper_needs_pulses_to_fund_the_first_start_and_finish_unloading() {
+        let mut tuning = Tuning::default();
+        tuning.production.cost_per_bot = 10;
+        tuning.production.input_capacity = 10;
+        tuning.production.ticks_per_bot = 120;
+        tuning.logistics.hauler_transfer_per_pulse = 2;
+        tuning.logistics.material_work_ticks = 4;
+
+        assert_eq!(transfer_ticks(100, &tuning), 200.0 + 996.0);
+    }
+
+    #[test]
     fn a_moving_hauler_reuses_pickup_access_when_its_cell_center_is_blocked() {
         let grid = IntentGrid::new(8, 8);
         let navigation =
@@ -945,7 +1021,7 @@ mod tests {
 
         assert!(matches!(
             paths.estimate_pickup(&navigation, footprint, moved, pickup),
-            RouteEstimate::Pending(probe) if probe.start == original
+            RouteEstimate::Pending(active) if active.start == probe.start
         ));
         for _ in 0..20 {
             navigation.advance(&grid, 4096);
