@@ -929,9 +929,12 @@ fn the_restart_can_use_minerals_from_two_individually_insufficient_unloads() {
         },
     ));
     fixture.return_defender_demand();
-    assert!(fixture.cycle_starts(30).is_empty());
-    assert_eq!(facility_amount(&fixture.app, fixture.facility), 2);
+    assert!(fixture.cycle_starts(RESTART_TRANSFER_TICKS).is_empty());
+    assert_eq!(facility_amount(&fixture.app, fixture.facility), 1);
+    assert_eq!(cargo_amount(&fixture.app, fixture.slow_hauler), 1);
     assert_eq!(fixture.picked_source(), Some(fixture.light_pickup));
+    assert!(fixture.cycle_starts(30 - RESTART_TRANSFER_TICKS).is_empty());
+    assert_eq!(facility_amount(&fixture.app, fixture.facility), 2);
     assert_eq!(
         stockpile_amount(&fixture.app, fixture.full_pickup),
         2 * RESTART_COST
