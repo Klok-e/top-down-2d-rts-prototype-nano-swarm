@@ -7,7 +7,6 @@ Screenshots require visual inspection after this driver exits.
 """
 
 import argparse
-from contextlib import nullcontext
 import fcntl
 import json
 import os
@@ -23,28 +22,24 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_scene(kind, output, runtime_dir=None):
+def run_scene(kind, output, runtime_parent=None):
     records = []
-    runtime_context = (
-        tempfile.TemporaryDirectory(prefix=f"ns-{kind}-")
-        if runtime_dir is None else nullcontext(runtime_dir)
-    )
-    with runtime_context as runtime:
-        runtime = Path(runtime)
+    if runtime_parent is not None:
         try:
-            info = runtime.lstat()
+            info = runtime_parent.lstat()
         except OSError as error:
-            raise RuntimeError(f"Cannot inspect runtime directory: {runtime}") from error
+            raise RuntimeError(f"Cannot inspect runtime parent directory: {runtime_parent}") from error
         if (
             not stat.S_ISDIR(info.st_mode)
             or info.st_uid != os.geteuid()
             or info.st_mode & (stat.S_IRWXG | stat.S_IRWXO)
         ):
-            raise RuntimeError(f"Runtime directory must be a real, private directory owned by you: {runtime}")
-        runtime = runtime.resolve()
+            raise RuntimeError(f"Runtime parent must be a real, private directory owned by you: {runtime_parent}")
+        runtime_parent = runtime_parent.resolve()
+
+    with tempfile.TemporaryDirectory(prefix="ns-", dir=runtime_parent) as runtime:
+        runtime = Path(runtime).resolve()
         socket = runtime / "nano-swarm/control.sock"
-        if os.path.lexists(socket):
-            raise RuntimeError(f"Control socket path already exists: {socket}")
         output.mkdir(parents=True, exist_ok=False)
         config = output / "config"
         config.mkdir(mode=0o700)
@@ -143,7 +138,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "target/issue-66/runtime/replay")
     parser.add_argument("--scene", action="append", choices=["normal", "bottleneck", "clearing", "direct", "searched"])
-    parser.add_argument("--runtime-dir", type=Path, help="Existing private directory with space for the control socket")
+    parser.add_argument(
+        "--runtime-dir", type=Path,
+        help="Existing private directory you own with a short path for per-scene temporary subdirectories",
+    )
     args = parser.parse_args()
     for kind in args.scene or ["normal", "bottleneck", "clearing", "direct", "searched"]:
         run_scene(kind, args.output.resolve() / kind, args.runtime_dir)

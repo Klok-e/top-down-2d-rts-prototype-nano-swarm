@@ -13,7 +13,7 @@
 
 ## Replay gameplay, delivery lanes, and Structure Clearing
 
-Apply the offscreen verifier setup. Each scene gets a fresh configuration directory under its output directory and starts in Standard. The driver creates a temporary runtime directory by default. To supply one with `--runtime-dir`, use a real directory you own with mode `0700` and a vacant `nano-swarm/control.sock` path. [Offscreen verifier setup](../agents/agent-control.md#offscreen-verifier-setup)
+Apply the offscreen verifier setup. Each scene gets a fresh configuration directory under its output directory and starts in Standard. The driver creates and removes a private temporary runtime directory for each scene. To choose its parent with `--runtime-dir`, use a real directory you own with mode `0700` and a short path so the control socket path fits the Unix limit. Concurrent runs can share this parent. [Offscreen verifier setup](../agents/agent-control.md#offscreen-verifier-setup)
 
 ```bash
 mkdir -p .tmp &&
