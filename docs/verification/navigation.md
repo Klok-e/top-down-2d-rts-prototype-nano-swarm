@@ -32,7 +32,7 @@ Under `$replay_dir/direct/` and `$replay_dir/searched/`, compare the `before`, `
 
 ## Compare crowded delivery across revisions
 
-Copy the same benchmark source into each checkout and use the same `config/balance.ron` and machine throughout. Save one report for each of pre-change pathing, Transit Overlap, and Transit Overlap with the Traffic Penalty. [Benchmark source](../../examples/crowded_delivery.rs)
+Use `5b61292` for pre-change pathing, `8247494` for Transit Overlap, and `03724b6` for Transit Overlap with the Traffic Penalty. Copy the same benchmark source into each checkout. Use the same `config/balance.ron` and machine throughout and save one report per variant. [Benchmark source](../../examples/crowded_delivery.rs)
 
 ```bash
 mkdir -p .tmp &&
@@ -42,7 +42,7 @@ mkdir -p .tmp &&
 
 Every run uses seeds 1, 11, 42, 73, and 117, a 48 × 48 map, 24 starting Haulers, one pickup stocked with 2,000 minerals, three empty Production Facilities, and two single-file lanes. Each seed advances 7,200 fixed ticks (120 simulated seconds). Deliveries count minerals in facility hoppers plus minerals already consumed in production. Births count releases into the world. Crossings count each Hauler passage by lane and direction. Timing covers the simulation update, excluding the crossing measurements.
 
-Subtract the pre-change result from the combined result for each seed. The median paired difference must be positive for both delivered minerals and released births. Compare crossings by lane and direction with Transit Overlap alone to measure the penalty's effect on lane use. Report p50 and p95 fixed tick wall time for every variant.
+Subtract the pre-change result from the combined result for each seed. The median paired difference must be positive for both delivered minerals and released births. For each matching seed, compare crossings by lane and direction between the combined variant and Transit Overlap alone. Report p50 and p95 fixed tick wall time for each seed and variant.
 
 ## Measure navigation at scale
 

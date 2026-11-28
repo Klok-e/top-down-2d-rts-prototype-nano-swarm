@@ -186,7 +186,7 @@ fn release_phase(world: &mut World) {
 fn verify_tick(world: &mut World) {
     let layout = *world.resource::<LaneLayout>();
     world.resource_scope(|world, mut scene: Mut<LaneScene>| {
-        if !matches!(scene.phase, Phase::Approaching | Phase::Resuming) {
+        if !matches!(scene.phase, Phase::Approaching | Phase::Passing | Phase::Resuming) {
             return;
         }
         scene.ticks += 1;

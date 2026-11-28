@@ -618,6 +618,7 @@ fn unrelated_obstacle_removal_preserves_travel_with_search_budget_stopped() {
 #[test]
 fn searched_traffic_uses_the_quieter_opening_and_keeps_a_sole_opening_passable() {
     use top_down_2d_rts_prototype_nano_swarm::{
+        intent::IntentGrid,
         nanobot::Cargo,
         navigation::{ConnectivityStatus, Navigation, RouteGoal},
         navigation_runtime::NavigationBudget,
@@ -632,13 +633,16 @@ fn searched_traffic_uses_the_quieter_opening_and_keeps_a_sole_opening_passable()
         [(false, true, 180.), (true, true, 324.), (true, false, 180.)]
     {
         let mut app = common::sim_app_with_movement();
+        app.insert_resource(IntentGrid::new(4, 4));
         app.world_mut().resource_mut::<NavigationBudget>().0 = budget;
-        for y in [108., 252., 396.]
+        // Both ends of the barrier extend beyond the 2,048-unit map.
+        for (bottom, top) in [(-1080., 144.), (216., 288.), (360., 1080.)]
             .into_iter()
-            .chain((!upper_open).then_some(324.))
+            .chain((!upper_open).then_some((288., 360.)))
         {
-            let wall = common::spawn_structure_at(&mut app, Vec2::new(288., y));
-            app.world_mut().get_mut::<Transform>(wall).unwrap().scale = Vec3::new(2.25, 1.125, 1.);
+            let wall = common::spawn_structure_at(&mut app, Vec2::new(288., (top + bottom) * 0.5));
+            app.world_mut().get_mut::<Transform>(wall).unwrap().scale =
+                Vec3::new(2.25, (top - bottom) / 64., 1.);
         }
 
         let travel = |xy| DirectMovementComponent {
