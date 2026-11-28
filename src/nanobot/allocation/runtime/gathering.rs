@@ -13,12 +13,13 @@ use crate::{
     intent::IntentGrid,
     nanobot::{
         Cargo, CombatIdentity, GatherAssignment, InteractionRegion, LogisticsReservation, Nanobot,
-        PlannedStructure, SpareGathering, Swarm, SwarmId, SwarmMember,
+        NanobotType, PlannedStructure, SpareGathering, Swarm, SwarmId, SwarmMember,
         gather::{
             DropOffArea, GatherStockpiles, eligible_drop_off, find_nearest_stockpile,
             painted_gather_regions,
         },
         gather_worker_slots,
+        work_access::{WorkAccess, WorkReachability},
     },
     navigation::{ConnectivityStatus, Navigation, RouteGoal},
     resources::ResourceDeposit,
@@ -28,6 +29,7 @@ use crate::{
 #[derive(SystemParam)]
 #[allow(clippy::type_complexity)]
 pub(super) struct GatheringInputs<'w, 's> {
+    access: WorkAccess<'w, 's>,
     stockpiles: GatherStockpiles<'w, 's>,
     swarms: Query<'w, 's, &'static SwarmId, With<Swarm>>,
     identities: Query<'w, 's, &'static CombatIdentity>,
@@ -37,6 +39,7 @@ pub(super) struct GatheringInputs<'w, 's> {
         (
             &'static Transform,
             &'static SwarmMember,
+            &'static NanobotType,
             &'static Cargo,
             &'static LogisticsReservation,
         ),
@@ -99,32 +102,35 @@ pub(super) fn assign_spare_gatherers(
     mut expected_pickups: BTreeMap<Entity, u32>,
     mut expected_dropoffs: BTreeMap<Entity, u32>,
 ) {
-    let mut unstaffed = BTreeSet::new();
-    for (_, work) in worker_regions {
-        for opportunity in work {
-            if opportunity.category != OpportunityCategory::Gather
-                && claims_for(claim_counts, *opportunity) == 0
-                && !matches!(opportunity.target, OpportunityTarget::PlannedBuild { structure, .. }
+    let unclaimed_required = worker_regions
+        .iter()
+        .flat_map(|(_, opportunities)| opportunities)
+        .filter(|work| {
+            work.category != OpportunityCategory::Gather
+                && claims_for(claim_counts, **work) == 0
+                && !matches!(work.target, OpportunityTarget::PlannedBuild { structure, .. }
                     if planned.get(structure).is_ok_and(|(_, plan, _)| plan.active_worker().is_some()))
-            {
-                unstaffed.insert(opportunity.owner);
-            }
-        }
-    }
-    if unstaffed.contains(&None) {
-        return;
-    }
+        })
+        .collect::<Vec<_>>();
+    let mut required_staffed = BTreeMap::new();
     let unused_workers = unused_workers
         .filter(|(bot, _)| {
-            gather_open.get(&bot.swarm) == Some(&0) && !unstaffed.contains(&Some(bot.swarm))
+            gather_open.get(&bot.swarm) == Some(&0)
+                && *required_staffed.entry(bot.swarm).or_insert_with(|| {
+                    !unclaimed_required.iter().any(|work| {
+                        work.owner.is_none_or(|owner| owner == bot.swarm)
+                            && gathering.access.opportunity(bot.swarm, work.target)
+                                != WorkReachability::Unreachable
+                    })
+                })
         })
         .collect::<Vec<_>>();
     if unused_workers.is_empty() {
         return;
     }
     let mut pending_required_routes = BTreeSet::new();
-    for (transform, member, cargo, claim) in &gathering.deliveries {
-        if cargo.amount == 0 {
+    for (transform, member, kind, cargo, claim) in &gathering.deliveries {
+        if *kind != NanobotType::Worker || cargo.amount == 0 {
             continue;
         }
         let Ok((deposit, deposit_transform)) = deposits.get(claim.source) else {

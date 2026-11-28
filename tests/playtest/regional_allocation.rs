@@ -6,10 +6,10 @@ use bevy::{math::Vec2, prelude::*};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        Cargo, Commitment, GatherAssignment, GatherQuotas, HaulPlugin, LogisticsReservation,
-        NanobotType, OwnerSwarm, PlannedKind, PlannedStructure, PopulationDemand,
-        PopulationDemandPlugin, ProductionFacility, ProductionPlugin, RegionalLease, SwarmId,
-        SwarmMember,
+        ActionableProjection, Cargo, Commitment, GatherAssignment, GatherQuotas, HaulPlugin,
+        LogisticsReservation, NanobotType, OpportunityTarget, OwnerSwarm, PlannedKind,
+        PlannedStructure, PopulationDemand, PopulationDemandPlugin, ProductionFacility,
+        ProductionPlugin, RegionalLease, SwarmId, SwarmMember,
     },
     resources::{ResourceDeposit, Stockpile},
     tuning::Tuning,
@@ -156,6 +156,7 @@ fn lone_idle_worker_gathers_while_distant_construction_is_claimed() {
 
 struct SpareGatherFixture {
     app: App,
+    owner: Entity,
     center: Vec2,
     deposit: Entity,
     source: Entity,
@@ -230,6 +231,7 @@ impl SpareGatherFixture {
             .insert(Commitment::Working);
         Self {
             app,
+            owner,
             center,
             deposit,
             source,
@@ -242,6 +244,18 @@ impl SpareGatherFixture {
         for _ in 0..ticks {
             self.app.update();
         }
+    }
+
+    fn divide_navigation(&mut self) -> Entity {
+        self.app.insert_resource(IntentGrid::new(2, 2));
+        paint_gather(&mut self.app, IVec2::new(-1, 0));
+        let wall = common::spawn_stockpile(&mut self.app, Vec2::ZERO, 0, 0);
+        self.app
+            .world_mut()
+            .get_mut::<Transform>(wall)
+            .unwrap()
+            .scale = Vec3::new(1.0, 40.0, 1.0);
+        wall
     }
 
     fn start_spare_worker(&mut self) {
@@ -398,18 +412,7 @@ fn spare_gathering_waits_for_a_reachable_local_source() {
         15,
         -Vec2::Y * 83.0,
     );
-    mine.app.insert_resource(IntentGrid::new(2, 2));
-    assert!(mine.app.world_mut().resource_mut::<IntentGrid>().paint(
-        IVec2::new(-1, 0),
-        IntentKind::Gather,
-        SwarmId::PLAYER
-    ));
-    let wall = common::spawn_stockpile(&mut mine.app, Vec2::ZERO, 0, 0);
-    mine.app
-        .world_mut()
-        .get_mut::<Transform>(wall)
-        .unwrap()
-        .scale = Vec3::new(1.0, 40.0, 1.0);
+    let wall = mine.divide_navigation();
 
     mine.start_spare_worker();
     mine.advance(36);
@@ -430,6 +433,49 @@ fn spare_gathering_waits_for_a_reachable_local_source() {
 
     mine.app.world_mut().despawn(wall);
     mine.advance(24);
+    assert_eq!(
+        mine.spare_reservation().map(|claim| claim.destination),
+        Some(mine.source)
+    );
+}
+
+#[test]
+fn unreachable_construction_does_not_block_spare_gathering() {
+    let mut mine = SpareGatherFixture::with_layout(
+        SwarmId::PLAYER,
+        IVec2::new(-1, 0),
+        Vec2::new(-175.0, 256.0),
+        Vec2::Y * 160.0,
+        15,
+        -Vec2::Y * 83.0,
+    );
+    mine.divide_navigation();
+    mine.advance(30);
+    let plan = common::spawn_planned_charger_at_cell(&mut mine.app, IVec2::ZERO);
+    mine.app
+        .world_mut()
+        .entity_mut(plan)
+        .insert(OwnerSwarm(mine.owner));
+    mine.advance(12);
+    mine.start_spare_worker();
+    mine.advance(36);
+
+    let world = mine.app.world();
+    assert!(world.resource::<ActionableProjection>().iter_regions().any(|(_, work)|
+        work.iter().any(|opportunity| matches!(
+            opportunity.target, OpportunityTarget::PlannedBuild { structure, .. } if structure == plan
+        ))
+    ));
+    assert_eq!(
+        world.get::<PlannedStructure>(plan).unwrap().active_worker(),
+        None
+    );
+    assert_eq!(
+        world
+            .resource::<PopulationDemand>()
+            .desired_for(SwarmId::PLAYER, NanobotType::Worker),
+        1
+    );
     assert_eq!(
         mine.spare_reservation().map(|claim| claim.destination),
         Some(mine.source)
