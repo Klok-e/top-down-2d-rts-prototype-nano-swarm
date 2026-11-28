@@ -8,6 +8,13 @@ use std::{
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
+mod gathering;
+
+use gathering::{
+    GatherApproach, GatheringInputs, RequiredGatherTrip, assign_spare_gatherers,
+    reachable_gather_approach,
+};
+
 use super::{
     ActionableOpportunity, ActionableProjection, AllocationCandidate, AllocationClock,
     AllocationRegion, CandidateBounds, CategoryEligibility, CategoryWeights, OpportunityCategory,
@@ -16,13 +23,12 @@ use super::{
 };
 use crate::{
     nanobot::{
-        Commitment, DirectMovementComponent, ExtractProgress, GatherAssignment, GatherQuotas,
-        HaulerAssignment, HaulerLoad, HaulerLoading, Health, InteractionRegion,
+        Cargo, Commitment, DirectMovementComponent, ExtractProgress, GatherAssignment,
+        GatherQuotas, HaulerAssignment, HaulerLoad, HaulerLoading, Health, InteractionRegion,
         LogisticsReservation, MaintenanceAssignment, MaintenanceProgress, Nanobot, NanobotType,
         PlannedStructure, PlannedStructureClaim, PlannedStructureProgress, ProductionFacility,
-        ReturningToStockpile, SwarmId, SwarmMember, WorkerLoad,
+        ReturningToStockpile, SpareGathering, SwarmId, SwarmMember, WorkerLoad,
         charge::{Charge, Charger, ChargerAssignment, ChargerProgress, minerals_to_fully_charge},
-        gather::painted_gather_regions,
         gather_worker_slots,
         logistics_leg::{DestinationRole, PickupBuffer},
     },
@@ -218,7 +224,10 @@ pub struct AllocationInputs<'w, 's> {
     ages: ResMut<'w, TerminalDemandAges>,
     travelling: TravellingWorkers<'w, 's>,
     gather_quotas: Option<Res<'w, GatherQuotas>>,
+    gathering: GatheringInputs<'w, 's>,
 }
+
+type ClaimCounts = BTreeMap<(u8, u64, u64, u64, Option<SwarmId>), usize>;
 
 /// Workers holding Maintenance or Planned Build work that have not reached it.
 type TravellingWorkers<'w, 's> = Query<
@@ -503,19 +512,17 @@ pub fn regional_allocation_acquisition_system(
         })
         .collect::<BTreeMap<_, _>>();
 
+    let mut spare_workers = Vec::new();
     let mut candidates = bots
         .iter()
         .filter_map(|(entity, transform, kind, commitment, swarm, lease, _)| {
             if *commitment != Commitment::Idle {
                 return None;
             }
-            if lease.is_some() {
+            if charge_busy.contains(entity) {
                 return None;
             }
-            if busy.contains(entity) || charge_busy.contains(entity) {
-                return None;
-            }
-            Some(BotSnapshot {
+            let bot = BotSnapshot {
                 entity,
                 position: transform.translation.truncate(),
                 region: AllocationRegion::for_cell(crate::nanobot::world_to_cell(
@@ -523,7 +530,17 @@ pub fn regional_allocation_acquisition_system(
                 )),
                 swarm: swarm.0,
                 kind: *kind,
-            })
+            };
+            if lease.is_some_and(|lease| lease.category == OpportunityCategory::Gather)
+                && terminal.gathering.active.get(entity).is_ok_and(
+                    |(_, _, _, _, cargo, _, spare)| {
+                        spare && cargo.is_none_or(|cargo| cargo.amount == 0)
+                    },
+                )
+            {
+                spare_workers.push(bot);
+            }
+            (lease.is_none() && !busy.contains(entity)).then_some(bot)
         })
         .collect::<Vec<_>>();
     candidates.sort_by_key(|bot| bot.entity.to_bits());
@@ -537,6 +554,14 @@ pub fn regional_allocation_acquisition_system(
         clock.tick(),
         tuning.autonomy.lease_no_progress_ttl_ticks,
     );
+
+    let mut unused_workers = candidates
+        .iter()
+        .copied()
+        .filter(|bot| bot.kind == NanobotType::Worker)
+        .collect::<Vec<_>>();
+    spare_workers.sort_by_key(|bot| bot.entity.to_bits());
+    candidates.extend(spare_workers);
 
     let work_by_kind = NanobotType::ALL.map(|kind| {
         projection
@@ -555,8 +580,31 @@ pub fn regional_allocation_acquisition_system(
         .iter()
         .map(|bot| bot.swarm)
         .collect::<std::collections::BTreeSet<_>>();
-    // Gather slots left under each swarm's Gather Quota. A swarm without a
-    // quota (no Population Demand in this app) gathers without a cap.
+    let mut spare_counts = BTreeMap::<SwarmId, u32>::new();
+    let mut ring_claims = BTreeMap::<Entity, usize>::new();
+    let mut required_trips = Vec::new();
+    for (worker, transform, member, assignment, _, reservation, spare) in &terminal.gathering.active
+    {
+        if spare {
+            *spare_counts.entry(member.0).or_default() += 1;
+        }
+        let Some(assignment) = assignment else {
+            continue;
+        };
+        *ring_claims.entry(assignment.deposit).or_default() += 1;
+        if !spare
+            && reservation.is_none()
+            && let Ok((deposit, deposit_transform)) = deposits.get(assignment.deposit)
+        {
+            required_trips.push(RequiredGatherTrip {
+                worker,
+                swarm: member.0,
+                deposit: assignment.deposit,
+                origin: transform.translation.truncate(),
+                region: assignment.interaction(deposit_transform, deposit.radius),
+            });
+        }
+    }
     let mut gather_open = terminal
         .gather_quotas
         .as_deref()
@@ -564,12 +612,9 @@ pub fn regional_allocation_acquisition_system(
             quotas
                 .iter()
                 .map(|(swarm, economy)| {
-                    (
-                        swarm,
-                        economy
-                            .gather_quota
-                            .saturating_sub(economy.gathering_workers),
-                    )
+                    let spare = spare_counts.get(&swarm).copied().unwrap_or_default();
+                    let required = economy.gathering_workers.saturating_sub(spare);
+                    (swarm, economy.gather_quota.saturating_sub(required))
                 })
                 .collect::<BTreeMap<_, _>>()
         })
@@ -700,6 +745,7 @@ pub fn regional_allocation_acquisition_system(
         max_candidates: RUNTIME_MAX_CANDIDATES,
     };
 
+    let mut assigned_workers = std::collections::BTreeSet::new();
     for bot in candidates {
         let bot_key = (bot.swarm, bot.region, kind_index(bot.kind));
         let Some(pull) = pulls.get(&bot_key).copied() else {
@@ -708,10 +754,12 @@ pub fn regional_allocation_acquisition_system(
         let Some(ordered) = ordered_regions.get(&bot_key) else {
             continue;
         };
-        let rejected = bots
-            .get(bot.entity)
-            .ok()
-            .and_then(|(_, _, _, _, _, _, rejected)| rejected);
+        let (_, _, _, _, _, old_lease, rejected) = bots.get(bot.entity).unwrap();
+        let spare = old_lease.and_then(|lease| {
+            let (_, _, _, _, _, reservation, spare) =
+                terminal.gathering.active.get(bot.entity).ok()?;
+            spare.then_some((lease, reservation?))
+        });
         let work = if bot.kind == NanobotType::Hauler {
             let Some(selection) = choose_terminal_logistics_work(
                 &tuning,
@@ -758,7 +806,11 @@ pub fn regional_allocation_acquisition_system(
                     if gather_closed(&gather_open, bot.swarm, work) {
                         return None;
                     }
-                    let claims = claims_for(&claim_counts, work);
+                    let own_claim = spare.is_some_and(|(lease, _)| {
+                        claim_key(lease.target, lease.owner) == claim_key(work.target, work.owner)
+                    });
+                    let claims =
+                        claims_for(&claim_counts, work).saturating_sub(usize::from(own_claim));
                     if !target_available(
                         &tuning,
                         bot,
@@ -783,23 +835,15 @@ pub fn regional_allocation_acquisition_system(
                     };
                     let region = match work.target {
                         OpportunityTarget::Gather { deposit, cell } => {
-                            let (state, transform) = deposits.get(deposit).ok()?;
-                            let preferred = InteractionRegion::deposit(transform, state.radius)
-                                .within_cell(cell);
-                            let approach = if reachable(preferred) {
-                                (cell, preferred)
-                            } else {
-                                painted_gather_regions(
-                                    &terminal.grid,
-                                    bot.swarm,
-                                    *transform,
-                                    state.radius,
-                                )
-                                .filter(|(candidate, region)| {
-                                    *candidate != cell && reachable(*region)
-                                })
-                                .min_by_key(|(candidate, _)| (candidate.x, candidate.y))?
-                            };
+                            let approach = reachable_gather_approach(
+                                bot,
+                                deposit,
+                                cell,
+                                &deposits,
+                                &terminal.grid,
+                                &navigation,
+                                rejected.map(|rejected| rejected.region),
+                            )?;
                             gather_approaches.insert(deposit, approach);
                             return Some(claims);
                         }
@@ -824,6 +868,44 @@ pub fn regional_allocation_acquisition_system(
                 &structures,
             ) {
                 continue;
+            }
+            assigned_workers.insert(bot.entity);
+            if let Some((old, reservation)) = spare {
+                let mut worker = commands.entity(bot.entity);
+                worker.remove::<(
+                    Cargo,
+                    LogisticsReservation,
+                    SpareGathering,
+                    ExtractProgress,
+                    crate::nanobot::MaterialWorkProgress,
+                )>();
+                if decision.opportunity.category != OpportunityCategory::Gather {
+                    worker.remove::<GatherAssignment>();
+                }
+                if let Some(count) = claim_counts.get_mut(&claim_key(old.target, old.owner)) {
+                    *count = count.saturating_sub(1);
+                }
+                if let OpportunityTarget::Gather { deposit, .. } = old.target
+                    && let Some(count) = ring_claims.get_mut(&deposit)
+                {
+                    *count = count.saturating_sub(1);
+                }
+                if let Some(room) = reserved_destination.get_mut(&reservation.destination) {
+                    *room = room.saturating_sub(reservation.destination_remaining);
+                }
+                if let Some(minerals) = reserved_source.get_mut(&reservation.source) {
+                    *minerals = minerals.saturating_sub(reservation.source_remaining);
+                }
+            }
+            if let OpportunityTarget::Gather { deposit, .. } = decision.opportunity.target {
+                *ring_claims.entry(deposit).or_default() += 1;
+                required_trips.push(RequiredGatherTrip {
+                    worker: bot.entity,
+                    swarm: bot.swarm,
+                    deposit,
+                    origin: bot.position,
+                    region: gather_approaches[&deposit].region,
+                });
             }
             decision.opportunity
         };
@@ -859,6 +941,35 @@ pub fn regional_allocation_acquisition_system(
             *open = open.saturating_sub(1);
         }
     }
+    unused_workers.retain(|bot| !assigned_workers.contains(&bot.entity));
+    if unused_workers.is_empty() {
+        return;
+    }
+    assign_spare_gatherers(
+        &mut commands,
+        clock.tick(),
+        &tuning,
+        &navigation,
+        &terminal.grid,
+        &terminal.gathering,
+        &work_by_kind[kind_index(NanobotType::Worker)],
+        &gather_open,
+        &claim_counts,
+        &planned,
+        &deposits,
+        unused_workers.into_iter().map(|bot| {
+            let rejected = bots
+                .get(bot.entity)
+                .unwrap()
+                .6
+                .map(|rejected| rejected.region);
+            (bot, rejected)
+        }),
+        required_trips,
+        ring_claims,
+        reserved_source,
+        reserved_destination,
+    );
 }
 
 /// A Sink other Haulers are refilling whose unclaimed stock is short of a
@@ -1221,18 +1332,18 @@ fn assign_worker_work(
     commands: &mut Commands,
     bot: BotSnapshot,
     work: ActionableOpportunity,
-    gather_approaches: &BTreeMap<Entity, (IVec2, InteractionRegion)>,
+    gather_approaches: &BTreeMap<Entity, GatherApproach>,
     planned: &mut Query<(Entity, &mut PlannedStructure, &Transform)>,
     structures: &Query<&Transform>,
 ) -> bool {
     match work.target {
         OpportunityTarget::Gather { deposit, .. } => {
-            let Some(&(cell, approach)) = gather_approaches.get(&deposit) else {
+            let Some(approach) = gather_approaches.get(&deposit) else {
                 return false;
             };
             commands.entity(bot.entity).insert((
-                GatherAssignment::from_paint(cell, deposit),
-                approach.movement_from(bot.position),
+                GatherAssignment::from_paint(approach.cell, deposit),
+                approach.region.movement_from(bot.position),
             ));
         }
         OpportunityTarget::PlannedBuild { structure, .. } => {
@@ -1270,10 +1381,7 @@ fn region_distance_key(left: AllocationRegion, right: AllocationRegion) -> u32 {
     left.x.abs_diff(right.x) + left.y.abs_diff(right.y)
 }
 
-fn claims_for(
-    claim_counts: &BTreeMap<(u8, u64, u64, u64, Option<SwarmId>), usize>,
-    work: ActionableOpportunity,
-) -> usize {
+fn claims_for(claim_counts: &ClaimCounts, work: ActionableOpportunity) -> usize {
     claim_counts
         .get(&claim_key(work.target, work.owner))
         .copied()

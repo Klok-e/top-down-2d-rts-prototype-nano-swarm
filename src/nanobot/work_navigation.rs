@@ -582,6 +582,7 @@ pub fn move_velocity_system(
                             DirectMovementComponent,
                             super::RegionalLease,
                             super::GatherAssignment,
+                            super::SpareGathering,
                             super::ExtractProgress,
                             super::PlannedStructureClaim,
                             super::PlannedStructureProgress,

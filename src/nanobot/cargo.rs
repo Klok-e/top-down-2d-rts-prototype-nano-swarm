@@ -183,21 +183,23 @@ pub fn reconcile_logistics_tuning(
             &LogisticsReservation,
             Option<&Cargo>,
             Option<&super::NanobotType>,
+            Has<super::SpareGathering>,
         )>()
         .iter(world)
-        .map(|(entity, reservation, cargo, kind)| {
-            (entity, *reservation, cargo.copied(), kind.copied())
+        .map(|(entity, reservation, cargo, kind, spare)| {
+            (
+                entity,
+                *reservation,
+                cargo.map_or(0, |cargo| cargo.amount),
+                kind.copied(),
+                spare,
+            )
         })
         .collect();
-    // Existing physical loads retain capacity before future pickups.
-    reservations.sort_by_key(|(entity, _, cargo, _)| {
-        (
-            cargo.is_none_or(|cargo| cargo.amount == 0),
-            entity.to_bits(),
-        )
+    reservations.sort_by_key(|(entity, _, carried, _, spare)| {
+        (*carried == 0, *carried == 0 && *spare, entity.to_bits())
     });
-    for (entity, mut reservation, cargo, kind) in reservations {
-        let carried = cargo.map_or(0, |cargo| cargo.amount);
+    for (entity, mut reservation, carried, kind, spare) in reservations {
         let carry_capacity = match kind {
             Some(super::NanobotType::Worker) => new.logistics.worker_carry_capacity,
             _ => new.logistics.hauler_carry_capacity,
@@ -206,10 +208,17 @@ pub fn reconcile_logistics_tuning(
         let pickup = reservation
             .source_remaining
             .min(carry_capacity.saturating_sub(carried));
-        let desired = carried.saturating_add(pickup);
-        let claimed = desired.min(*available);
+        let claimed = if spare && carried == 0 {
+            if pickup > 0 && *available >= carry_capacity {
+                carry_capacity
+            } else {
+                0
+            }
+        } else {
+            carried.saturating_add(pickup).min(*available)
+        };
         *available = available.saturating_sub(claimed);
-        reservation.source_remaining = claimed.saturating_sub(carried);
+        reservation.source_remaining = pickup.min(claimed.saturating_sub(carried));
         reservation.destination_remaining = claimed;
         reservation.amount = carried.saturating_add(reservation.source_remaining);
         let mut bot = world.entity_mut(entity);
@@ -218,6 +227,7 @@ pub fn reconcile_logistics_tuning(
                 LogisticsReservation,
                 Cargo,
                 super::GatherAssignment,
+                super::SpareGathering,
                 super::ExtractProgress,
                 super::HaulerAssignment,
                 super::HaulerLoading,

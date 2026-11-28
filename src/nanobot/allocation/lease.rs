@@ -170,9 +170,10 @@ pub fn maintain_regional_leases_system(
         Option<&Cargo>,
         Option<&LogisticsReservation>,
         Option<&GatherAssignment>,
+        Has<super::super::SpareGathering>,
     )>,
 ) {
-    for (entity, mut lease, cargo, reservation, gather) in &mut leases {
+    for (entity, mut lease, cargo, reservation, gather, spare) in &mut leases {
         // Physical loads outlive task leases; their delivery systems retain custody.
         if cargo.is_some_and(|cargo| cargo.amount > 0) {
             continue;
@@ -197,8 +198,15 @@ pub fn maintain_regional_leases_system(
             if approach == WorkReachability::Unreachable {
                 return approach;
             }
-            if let OpportunityTarget::Haul { sink, .. } = lease.target {
-                let Some(destination) = access.region(sink) else {
+            let delivery_target = match lease.target {
+                OpportunityTarget::Haul { sink, .. } => Some(sink),
+                OpportunityTarget::Gather { .. } if spare => {
+                    reservation.map(|claim| claim.destination)
+                }
+                _ => None,
+            };
+            if let Some(destination) = delivery_target {
+                let Some(destination) = access.region(destination) else {
                     return WorkReachability::Unreachable;
                 };
                 let delivery =
