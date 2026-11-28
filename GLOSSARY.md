@@ -168,6 +168,9 @@ _Avoid_: Unit micro, direct control
 A limited amount of useful work available at a resource, build site, or threat. Extra nanobots are less useful and may wait, crowd, or choose other work, but are not strictly forbidden from being nearby.
 _Avoid_: Hard assignment slot, infinite work stack
 
+**Work Position**:
+The exterior space one Nanobot occupies while performing work. Friendly Nanobots may pass through that space during ordinary travel.
+
 **Dumb Autonomy**:
 Nanobots are aware of player-painted intent globally, but execute it through simple scoring rather than optimal assignment. Their limitations create player-facing pressure through congestion, travel time, carrying capacity, production ordering, and over/under-painting rather than through failing to notice commands.
 _Avoid_: Perfect allocator, smart commander AI
@@ -199,6 +202,12 @@ _Avoid_: Global stockpile, teleporting resources
 **Logistics Corridor**:
 A player-painted movement intent for haulers that encourages resource transport along a path between stockpiles, facilities, chargers, or other resource needs. Owned Corridor cells apply a fixed route bias; their shape defines the preferred path, while cells without that swarm's Corridor paint give no benefit. Corridors do not create resource tasks by themselves and are special hauler guidance, not general direct movement commands.
 _Avoid_: Road, waypoint chain, manual route
+
+**Transit Overlap**:
+Shared space between Nanobots of the same swarm during ordinary travel or departure from Structure Clearing, including when a traveller passes an idle or working friend.
+
+**Traffic Penalty**:
+A soft route cost based on paths other Nanobots in the same swarm are currently following. A busy route remains usable.
 
 **Defender**:
 A nanobot that protects its swarm by firing on nearby hostiles and pursuing Threats across Swarm Tiles and their Pursuit Halo. It holds a fighting distance from nearby hostile Defenders and otherwise stages and roams in Defend Zones when free.

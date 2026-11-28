@@ -2,6 +2,8 @@
 
 All Nanobot Types use shared hierarchical pathfinding over a separate fine grid whose cells fit approximately one nanobot body plus clearance; structure footprints occupy whole cell rectangles matching their visible edges. A chunk connectivity graph includes structures and Resource Deposits and guides detailed routes, accepting modest detours to reduce search work while preserving accurate reachability. This replaces ADR-0008's Hauler-only intent-cell graph; Haulers retain the 0.35 owned/visible Corridor cost sampled beneath fine cells, while other types use ordinary distance.
 
+[ADR-0040](0040-friendly-transit-overlap-and-traffic-penalty.md) revises the friendly overlap, yielding, and route-cost rules recorded below.
+
 ## Consequences
 
 - Within 144 world units of a destination's work region, a Hauler may take a clear direct approach to an unloading position without waiting for Corridor route optimization. Immediate local progress takes priority over a potentially cheaper Corridor route on this final approach; longer journeys retain Corridor preference. Body clearance, clearing entry barriers, separate working space, and cargo conservation still apply.
