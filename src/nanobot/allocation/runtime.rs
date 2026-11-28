@@ -1046,6 +1046,7 @@ struct SelectedHaul {
     pickup_role: StockpileRole,
     reservation: LogisticsReservation,
     delivery: Option<DeliveryEstimate>,
+    shortened: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1183,8 +1184,8 @@ fn choose_terminal_logistics_work(
                 continue;
             }
             let forecast = restart_refills.get(&sink);
-            let delivery = forecast.map(|_| {
-                DeliveryEstimate::pickup(
+            let (delivery, funding) = forecast.map_or((None, None), |forecast| {
+                let (delivery, funding) = forecast.best_pickup(
                     quote.amount,
                     if pickup.contains(bot.position) {
                         0.0
@@ -1193,11 +1194,11 @@ fn choose_terminal_logistics_work(
                     },
                     source_pos.distance(sink_pos),
                     &tuning.logistics,
-                )
+                );
+                (Some(delivery), funding)
             });
-            let funding = forecast.zip(delivery).and_then(|(forecast, delivery)| {
-                forecast.funding_advancement(delivery, &tuning.logistics)
-            });
+            let amount = delivery.map_or(quote.amount, |delivery| delivery.amount);
+            let shortened = amount < quote.amount;
             let base_urgency = match (forecast, funding) {
                 (_, Some(_)) => STARTABLE_PRODUCTION_URGENCY,
                 (Some(_), None) => STARTABLE_PRODUCTION_URGENCY + 1,
@@ -1216,7 +1217,7 @@ fn choose_terminal_logistics_work(
             ));
             let score = TerminalLogisticsScore {
                 strict,
-                weighted_cost: estimated_cost / quote.amount as f32
+                weighted_cost: estimated_cost / amount as f32
                     + f32::from(urgency) * tuning.logistics.haul_urgency_cost,
                 estimated_cost,
                 terminal: sink.to_bits(),
@@ -1225,10 +1226,11 @@ fn choose_terminal_logistics_work(
             let funding_rank = |funding: Option<u64>| (funding.is_none(), funding);
             if terminals
                 .get(&sink)
-                .is_none_or(|(current_funding, current, _)| {
+                .is_none_or(|(current_funding, current_score, current)| {
                     funding_rank(funding)
                         .cmp(&funding_rank(*current_funding))
-                        .then_with(|| score.cmp(*current))
+                        .then_with(|| shortened.cmp(&current.shortened))
+                        .then_with(|| score.cmp(*current_score))
                         .is_lt()
                 })
             {
@@ -1241,13 +1243,9 @@ fn choose_terminal_logistics_work(
                             work: *work,
                             pickup,
                             pickup_role: source_role.copied().unwrap_or_default(),
-                            reservation: LogisticsReservation::new(
-                                source,
-                                sink,
-                                kind,
-                                quote.amount,
-                            ),
+                            reservation: LogisticsReservation::new(source, sink, kind, amount),
                             delivery,
+                            shortened,
                         },
                     ),
                 );
