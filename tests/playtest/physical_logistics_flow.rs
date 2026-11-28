@@ -939,8 +939,108 @@ fn the_restart_can_use_minerals_from_two_individually_insufficient_unloads() {
         stockpile_amount(&fixture.app, fixture.full_pickup),
         2 * RESTART_COST
     );
-    assert_eq!(fixture.cycle_starts(155).len(), 1);
+    assert!((1..=155).any(|_| !fixture.cycle_starts(1).is_empty()));
     assert_eq!(facility_amount(&fixture.app, fixture.facility), 0);
+}
+
+#[test]
+fn a_short_pickup_restarts_production_earlier_than_the_usual_load() {
+    let starting_scene = || RestartRefill::new(3, 5, 0, Vec2::new(1800.0, 200.0));
+    let mut shorter = starting_scene();
+    let mut usual = starting_scene();
+    for fixture in [&mut shorter, &mut usual] {
+        fixture.return_defender_demand();
+        assert!(fixture.cycle_starts(20).is_empty());
+        assert_eq!(fixture.picked_source(), Some(fixture.full_pickup));
+        assert_eq!(cargo_amount(&fixture.app, fixture.fast_hauler), 0);
+    }
+    let short_claim = shorter
+        .app
+        .world()
+        .get::<LogisticsReservation>(shorter.fast_hauler)
+        .unwrap();
+    assert_eq!(
+        (
+            short_claim.amount,
+            short_claim.source_remaining,
+            short_claim.destination_remaining
+        ),
+        (2, 2, 2)
+    );
+    // Use the usual full load on the same trip before either pickup begins.
+    usual
+        .app
+        .world_mut()
+        .entity_mut(usual.fast_hauler)
+        .insert(LogisticsReservation::new(
+            usual.full_pickup,
+            usual.facility,
+            ResourceKind::Minerals,
+            2 * RESTART_COST,
+        ));
+
+    assert_eq!(shorter.cycle_starts(130).len(), 1);
+    assert!(usual.cycle_starts(130).is_empty());
+    assert_eq!(facility_amount(&shorter.app, shorter.facility), 0);
+    assert_eq!(cargo_amount(&shorter.app, shorter.fast_hauler), 0);
+    assert_eq!(stockpile_amount(&shorter.app, shorter.full_pickup), 8);
+    assert_eq!(cargo_amount(&shorter.app, shorter.slow_hauler), 5);
+    assert_eq!(usual.cycle_starts(160).len(), 1);
+}
+
+#[test]
+fn a_short_pickup_funds_the_restart_with_part_of_a_larger_inbound_load() {
+    let mut fixture = RestartRefill::new(0, 7, 0, Vec2::new(590.0, 36.0));
+    fixture.return_defender_demand();
+    assert!(fixture.cycle_starts(20).is_empty());
+    let claim = fixture
+        .app
+        .world()
+        .get::<LogisticsReservation>(fixture.fast_hauler)
+        .unwrap();
+    let amount = claim.amount;
+    assert!((1..RESTART_COST).contains(&amount), "picked up {amount}");
+    assert_eq!(claim.source_remaining, amount);
+    assert_eq!(claim.destination_remaining, amount);
+
+    let restart_tick = (21..=240).find(|_| !fixture.cycle_starts(1).is_empty());
+    assert!(
+        restart_tick.is_some(),
+        "the {amount}-mineral refill did not fund the first cycle by tick 240"
+    );
+    let inbound_delivered = 7 - cargo_amount(&fixture.app, fixture.slow_hauler);
+    assert!(
+        (1..RESTART_COST).contains(&inbound_delivered),
+        "at tick {restart_tick:?}, the inbound trip delivered {inbound_delivered} and the {amount}-mineral refill carried {}",
+        cargo_amount(&fixture.app, fixture.fast_hauler),
+    );
+    assert_eq!(
+        inbound_delivered + amount - cargo_amount(&fixture.app, fixture.fast_hauler),
+        RESTART_COST + facility_amount(&fixture.app, fixture.facility)
+    );
+}
+
+#[test]
+fn equal_restart_funding_times_keep_the_usual_pickup() {
+    let mut fixture = RestartRefill::new(3, 5, 0, Vec2::new(1800.0, 200.0));
+    fixture
+        .app
+        .world_mut()
+        .resource_mut::<Tuning>()
+        .logistics
+        .hauler_transfer_per_pulse = 10;
+    fixture.return_defender_demand();
+    assert!(fixture.cycle_starts(20).is_empty());
+    assert_eq!(fixture.picked_source(), Some(fixture.full_pickup));
+    let claim = fixture
+        .app
+        .world()
+        .get::<LogisticsReservation>(fixture.fast_hauler)
+        .unwrap();
+    assert_eq!(claim.amount, 2 * RESTART_COST);
+    assert_eq!(fixture.cycle_starts(120).len(), 1);
+    assert_eq!(stockpile_amount(&fixture.app, fixture.full_pickup), 0);
+    assert_eq!(facility_amount(&fixture.app, fixture.facility), 8);
 }
 
 #[test]

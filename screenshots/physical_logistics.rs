@@ -382,17 +382,24 @@ pub fn restart_refill(ctx: &mut TestContext) -> TestFlow {
             let claim = fast_claim.unwrap();
             assert_eq!(claim.source, scene.fast_pickup);
             assert_eq!(claim.destination, scene.facility);
-            assert_eq!(claim.amount, 5);
-            assert_eq!(facility.input_amount, 0);
+            assert_eq!(claim.amount, 3);
+            assert_eq!(facility.input_amount, 2);
             assert_eq!(facility.current_target, None);
-            (RestartCapture::Carrying, "restart_refill_reserved")
+            (RestartCapture::Carrying, "restart_refill_short_reserved")
         }
         RestartCapture::Carrying
-            if fast_cargo == 5 && ctx.world.get::<HaulerLoading>(scene.fast_hauler).is_none() =>
+            if fast_cargo == 3 && ctx.world.get::<HaulerLoading>(scene.fast_hauler).is_none() =>
         {
-            assert_eq!(facility.input_amount, 0);
+            assert_eq!(facility.input_amount, 2);
+            assert_eq!(
+                ctx.world
+                    .get::<Stockpile>(scene.fast_pickup)
+                    .unwrap()
+                    .amount,
+                7
+            );
             assert_eq!(slow_cargo, 5);
-            (RestartCapture::Producing, "restart_refill_carrying")
+            (RestartCapture::Producing, "restart_refill_short_carrying")
         }
         RestartCapture::Producing
             if facility.current_target == Some(NanobotType::Defender)
@@ -400,7 +407,7 @@ pub fn restart_refill(ctx: &mut TestContext) -> TestFlow {
         {
             assert_eq!(fast_cargo, 0);
             assert_eq!(slow_cargo, 5);
-            (RestartCapture::Finished, "restart_refill_producing")
+            (RestartCapture::Finished, "restart_refill_short_producing")
         }
         RestartCapture::Finished => return TestFlow::Exit,
         _ => {
@@ -438,8 +445,9 @@ fn spawn_restart_scene(world: &mut World) -> RestartScene {
     tuning.logistics.hauler_carry_capacity = 10;
     tuning.logistics.hauler_transfer_per_pulse = 1;
     tuning.logistics.material_work_ticks = 18;
-    let facility = ProductionFacility::with_tuning(&tuning);
-    let fast_pickup = spawn_stockpile(world, Vec2::new(-180.0, 36.0), 5, StockpileRole::Source);
+    let mut facility = ProductionFacility::with_tuning(&tuning);
+    facility.input_amount = 2;
+    let fast_pickup = spawn_stockpile(world, Vec2::new(-180.0, 36.0), 10, StockpileRole::Source);
     let full_pickup = spawn_stockpile(world, Vec2::new(252.0, 36.0), 10, StockpileRole::Source);
     let facility = world
         .spawn((
@@ -475,7 +483,7 @@ fn spawn_restart_scene(world: &mut World) -> RestartScene {
             ))
             .id()
     };
-    let fast_hauler = hauler(world, Vec2::new(36.0, -120.0));
+    let fast_hauler = hauler(world, Vec2::new(-144.0, -48.0));
     let slow_hauler = hauler(world, Vec2::new(1500.0, 200.0));
     let mut claim = LogisticsReservation::new(full_pickup, facility, ResourceKind::Minerals, 5);
     claim.source_remaining = 0;
@@ -493,7 +501,7 @@ fn spawn_restart_scene(world: &mut World) -> RestartScene {
     ));
     world
         .resource_mut::<ResourceLedger>()
-        .add_for(SwarmId::PLAYER, ResourceKind::Minerals, 20);
+        .add_for(SwarmId::PLAYER, ResourceKind::Minerals, 27);
     RestartScene {
         facility,
         fast_pickup,
