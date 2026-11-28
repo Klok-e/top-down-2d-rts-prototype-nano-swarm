@@ -70,6 +70,17 @@ use top_down_2d_rts_prototype_nano_swarm::{
 pub const DEFAULT_GRID_WIDTH: i32 = 8;
 pub const DEFAULT_GRID_HEIGHT: i32 = 8;
 
+pub fn spawn_rock_rectangle(app: &mut App, position: Vec2, half: Vec2) -> Entity {
+    use top_down_2d_rts_prototype_nano_swarm::terrain::RockFormation;
+
+    app.world_mut()
+        .spawn((
+            Transform::from_translation(position.extend(0.0)),
+            RockFormation::Rectangle { half },
+        ))
+        .id()
+}
+
 /// Register deterministic fixed-tick movement and frame-driven debug drawing.
 /// Simulation plugins order their work after `move_velocity_system`.
 fn register_movement_systems(app: &mut App) {
