@@ -164,7 +164,7 @@ impl InteractionRegion {
     }
 
     /// [`Self::candidate_parts`] without the perimeter samples.
-    fn approach_parts(self) -> CandidateParts {
+    pub(crate) fn approach_parts(self) -> CandidateParts {
         let mut fixed = Vec::new();
         if let Some(cell) = self.cell {
             let center = crate::ai::get_world_from_zone(cell);
@@ -190,7 +190,7 @@ impl InteractionRegion {
     }
 
     /// [`Self::candidates`] from parts this region computed earlier.
-    fn candidates_from(self, parts: &CandidateParts, start: Vec2) -> Vec<Vec2> {
+    pub(crate) fn candidates_from(self, parts: &CandidateParts, start: Vec2) -> Vec<Vec2> {
         let mut candidates = Vec::new();
         candidates.extend(self.in_cell(self.approach(start)));
         candidates.extend_from_slice(&parts.fixed);

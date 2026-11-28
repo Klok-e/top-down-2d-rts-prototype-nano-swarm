@@ -364,6 +364,32 @@ impl Navigation {
         }
         RouteOutcome::Unreachable
     }
+    async fn async_delivery_route(&self, start: Vec2, goal: RouteGoal) -> RouteOutcome {
+        let paint = PaintCosts::default();
+        let costs = RouteCosts::physical(&paint);
+        let RouteGoal::Interaction(destination) = goal else {
+            return self.async_solve(start, goal, costs, false).await;
+        };
+        let mut shortest = None::<Route>;
+        for dropoff in destination.candidates(start) {
+            WorkUnit::new().await;
+            // Candidates are ordered by straight-line distance, a lower bound for detours.
+            if shortest
+                .as_ref()
+                .is_some_and(|route| start.distance(dropoff) >= route.cost)
+            {
+                break;
+            }
+            if let RouteOutcome::Found(route) =
+                self.async_route_search(start, dropoff, costs, false).await
+                && shortest.as_ref().is_none_or(|best| route.cost < best.cost)
+            {
+                shortest = Some(route);
+            }
+        }
+        shortest.map_or(RouteOutcome::Unreachable, RouteOutcome::Found)
+    }
+
     async fn async_connectivity(&self, start: Vec2, goal: RouteGoal) -> RouteOutcome {
         if !self.async_point_clear(start).await {
             return RouteOutcome::Unreachable;
@@ -1139,11 +1165,14 @@ impl Navigation {
                     (request.start, request.goal, request.swarm, request.hauler);
                 let access = request.access.clone();
                 let traffic = request.traffic.clone();
-                let connectivity = request.purpose == RequestPurpose::Connectivity
-                    && request.delivery_footprint.is_none();
+                let delivery = request.delivery_footprint.is_some();
+                let connectivity = request.purpose == RequestPurpose::Connectivity;
                 request.future = Some(Box::pin(async move {
                     if let Some(check) = access {
                         return snapshot.async_access(&check, &paint, None).await;
+                    }
+                    if delivery {
+                        return snapshot.async_delivery_route(start, goal).await;
                     }
                     if connectivity {
                         return snapshot.async_connectivity(start, goal).await;

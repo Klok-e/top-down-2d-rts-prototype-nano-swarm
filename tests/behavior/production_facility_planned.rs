@@ -722,6 +722,7 @@ fn expansion_requires_the_current_tuned_mineral_rate() {
 #[test]
 fn a_small_hopper_limits_the_rate_of_hauler_unloading() {
     let mut game = Expansion::new(100);
+    game.move_to(game.source, Vec2::new(36.0, 252.0));
     {
         let mut tuning = game.app.world_mut().resource_mut::<Tuning>();
         tuning.production.cost_per_bot = 10;
@@ -748,6 +749,17 @@ fn a_small_hopper_limits_the_rate_of_hauler_unloading() {
         .resource_mut::<Tuning>()
         .logistics
         .material_work_ticks = 60;
+    game.advance(150);
+    assert!(
+        production_plans(&mut game.app).is_empty(),
+        "the nine production starts needed to make room outlast the transfer pulses"
+    );
+
+    game.app
+        .world_mut()
+        .resource_mut::<Tuning>()
+        .production
+        .input_capacity = 100;
     game.place_one(game.owner);
 }
 

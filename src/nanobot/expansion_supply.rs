@@ -17,7 +17,7 @@ use crate::{
 use super::{
     Cargo, Charger, HaulerAssignment, HaulerLoading, Health, InteractionRegion, Nanobot,
     NanobotType, OwnerSwarm, STOP_THRESHOLD, SupportCondition, Swarm, SwarmId, SwarmMember,
-    spending_capacity,
+    interaction::CandidateParts, spending_capacity,
 };
 
 const WINDOW_SECONDS: u64 = 20;
@@ -216,9 +216,6 @@ impl ExpansionSupply<'_, '_> {
         let charge = f64::from(spending_capacity(0, defenders, tuning)) * WINDOW_SECONDS as f64;
         let logistics = &tuning.logistics;
         let carry = logistics.hauler_carry_capacity.max(1);
-        let transfer = logistics.hauler_transfer_per_pulse.max(1);
-        let unload = transfer.min(tuning.production.input_capacity.max(1));
-        let work = f64::from(logistics.material_work_ticks);
         let mut sources = self
             .stockpiles
             .iter()
@@ -241,9 +238,7 @@ impl ExpansionSupply<'_, '_> {
                             region: InteractionRegion::structure(transform),
                             minerals,
                             load: f64::from(load),
-                            transfer_ticks_per_mineral: (f64::from(load.div_ceil(transfer))
-                                + f64::from(load.div_ceil(unload)))
-                                * work
+                            transfer_ticks_per_mineral: transfer_ticks(load, tuning)
                                 / f64::from(load),
                             spending: Vec::new(),
                             pending_spending: Vec::new(),
@@ -387,18 +382,22 @@ impl ExpansionSupply<'_, '_> {
             return Some(false);
         }
 
+        possible.clone_from(&confirmed);
+        let dropoff_parts = destination.approach_parts();
         let mut routes = SiteRoutes {
             navigation: &self.navigation,
             paths: &mut self.paths,
             footprint,
+            destination,
+            dropoff_parts: &dropoff_parts,
             budget,
             confirmed,
-            possible: budget.rates(),
+            possible,
             probe: None,
             pending_connectivity: false,
         };
         for (index, source) in budget.sources.iter().enumerate() {
-            let dropoffs = destination.candidates(source.center);
+            let dropoffs = destination.candidates_from(&dropoff_parts, source.center);
             let mut pickups = source.region.candidates(center);
             for &dropoff in &dropoffs {
                 let pickup = source.region.approach(dropoff);
@@ -410,11 +409,32 @@ impl ExpansionSupply<'_, '_> {
                 }
             }
             for pickup in pickups {
-                routes.add_pickup(index, source, pickup, destination, &dropoffs);
+                routes.add_pickup(index, source, pickup, &dropoffs);
             }
         }
         routes.result()
     }
+}
+
+fn transfer_ticks(load: u32, tuning: &Tuning) -> f64 {
+    let logistics = &tuning.logistics;
+    let production = &tuning.production;
+    let transfer = logistics.hauler_transfer_per_pulse.max(1);
+    let hopper = production.input_capacity.max(1);
+    let work = f64::from(logistics.material_work_ticks);
+    let cycle = f64::from(production.ticks_per_bot.max(1));
+    let loading = f64::from(load.div_ceil(transfer)) * work;
+    let unloading = f64::from(load.div_ceil(transfer.min(hopper))) * work;
+    let starts = load
+        .saturating_sub(hopper)
+        .div_ceil(production.cost_per_bot.max(1));
+    if starts == 0 {
+        return loading + unloading;
+    }
+    // If the hopper starts a cycle before the first delivery pulse, those queued
+    // minerals take up at least a cycle's worth of space and require one extra start.
+    let space_wait = f64::from(starts - 1) * cycle + work.min(cycle);
+    loading + unloading.max(space_wait)
 }
 
 fn interaction_bounds(transform: &Transform) -> Vec2 {
@@ -555,6 +575,8 @@ struct SiteRoutes<'a> {
     navigation: &'a Navigation,
     paths: &'a mut DeliveryPaths,
     footprint: Obstacle,
+    destination: InteractionRegion,
+    dropoff_parts: &'a CandidateParts,
     budget: &'a SupplyBudget,
     confirmed: Vec<Vec<f64>>,
     possible: Vec<Vec<f64>>,
@@ -563,91 +585,70 @@ struct SiteRoutes<'a> {
 }
 
 impl SiteRoutes<'_> {
-    fn add_pickup(
-        &mut self,
-        index: usize,
-        source: &Source,
-        pickup: Vec2,
-        destination: InteractionRegion,
-        dropoffs: &[Vec2],
-    ) {
+    fn add_pickup(&mut self, index: usize, source: &Source, pickup: Vec2, dropoffs: &[Vec2]) {
         if !self.footprint.admits_body(pickup) || !self.navigation.point_clear_for_entry(pickup) {
             return;
         }
 
-        let dropoff = destination.approach(pickup);
-        let direct = std::iter::once(dropoff)
-            .chain(dropoffs.iter().copied())
-            .filter(|&point| delivery_clear(self.navigation, self.footprint, pickup, point))
-            .map(|point| f64::from(pickup.distance(point)))
-            .min_by(f64::total_cmp);
-        let delivery = match direct {
-            Some(distance) => RouteEstimate::Known(distance),
-            None => self.paths.estimate(
+        let candidates = self.destination.candidates_from(self.dropoff_parts, pickup);
+        let nearest = candidates
+            .first()
+            .map_or(f64::INFINITY, |point| f64::from(pickup.distance(*point)));
+        let mut direct = if self.destination.contains(pickup) {
+            0.0
+        } else {
+            f64::INFINITY
+        };
+        for &point in candidates.iter().chain(dropoffs) {
+            let distance = f64::from(pickup.distance(point));
+            if distance < direct && delivery_clear(self.navigation, self.footprint, pickup, point) {
+                direct = distance;
+            }
+        }
+        let delivery = if nearest < direct {
+            self.paths.estimate(
                 self.navigation,
                 self.footprint,
+                pickup,
                 PathProbe {
                     start: pickup,
-                    goal: RouteGoal::Interaction(destination),
+                    goal: RouteGoal::Interaction(self.destination),
                 },
-            ),
+            )
+        } else {
+            RouteEstimate::Known(direct)
         };
-        let distance = match delivery {
-            RouteEstimate::Known(distance) => distance,
-            RouteEstimate::Missing => return,
-            RouteEstimate::Connecting | RouteEstimate::Pending(_) => {
-                // Route refinement can only add distance to this geometric bound.
-                f64::from(
-                    (self.footprint.surface_distance(pickup)
-                        - BODY_RADIUS
-                        - 2.0 * STOP_THRESHOLD
-                        - 0.001)
-                        .max(0.0),
-                )
-            }
+        let (distance, lower_bound) = match delivery {
+            RouteEstimate::Known(distance) => (distance.min(direct), distance.min(direct)),
+            RouteEstimate::Missing => (direct, direct),
+            RouteEstimate::Connecting | RouteEstimate::Pending(_) => (direct, nearest),
         };
+        if !lower_bound.is_finite() {
+            return;
+        }
         let cost = self.budget.trip_cost(source, distance);
+        let possible_cost = self.budget.trip_cost(source, lower_bound);
 
-        for (index_hauler, &(position, _)) in self.budget.haulers.iter().enumerate() {
-            if self.possible[index_hauler][index] <= cost
-                && self.confirmed[index_hauler][index] <= cost
-            {
+        for (hauler, &(position, _)) in self.budget.haulers.iter().enumerate() {
+            let possible = &mut self.possible[hauler][index];
+            let confirmed = &mut self.confirmed[hauler][index];
+            if *possible <= possible_cost && *confirmed <= cost {
                 continue;
             }
-            let reach = if delivery_clear(self.navigation, self.footprint, position, pickup) {
-                RouteEstimate::Known(0.0)
-            } else if !self.footprint.admits_body(position)
-                || !self.navigation.point_clear_for_entry(position)
-            {
-                continue;
-            } else {
-                let cell_center = ((position / CELL_WIDTH).floor() + Vec2::splat(0.5)) * CELL_WIDTH;
-                let start =
-                    if delivery_clear(self.navigation, self.footprint, position, cell_center) {
-                        cell_center
-                    } else {
-                        position
-                    };
-                self.paths.estimate(
-                    self.navigation,
-                    self.footprint,
-                    PathProbe {
-                        start,
-                        goal: RouteGoal::Point(pickup),
-                    },
-                )
-            };
+            let reach =
+                self.paths
+                    .estimate_pickup(self.navigation, self.footprint, position, pickup);
             if matches!(reach, RouteEstimate::Missing) {
                 continue;
             }
-            let possible = &mut self.possible[index_hauler][index];
-            *possible = possible.min(cost);
-            if matches!(delivery, RouteEstimate::Known(_))
-                && matches!(reach, RouteEstimate::Known(_))
-            {
-                let confirmed = &mut self.confirmed[index_hauler][index];
+            if matches!(reach, RouteEstimate::Known(_)) {
                 *confirmed = confirmed.min(cost);
-            } else {
+            }
+            if possible_cost >= *possible {
+                continue;
+            }
+            *possible = possible_cost;
+            if possible_cost < *confirmed {
                 for estimate in [delivery, reach] {
                     match estimate {
                         RouteEstimate::Pending(probe) => {
@@ -682,12 +683,12 @@ impl SiteRoutes<'_> {
     }
 }
 
-type PathKey = (ShapeBits, [u32; 2], DeliveryGoal);
+type PathKey = (ShapeBits, DeliveryGoal);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum DeliveryGoal {
-    Point([u32; 2]),
-    Interaction(super::interaction::InteractionBits),
+    Pickup([u32; 2]),
+    Dropoff([u32; 2], super::interaction::InteractionBits),
 }
 
 #[derive(Clone, Copy)]
@@ -699,15 +700,13 @@ struct PathProbe {
 impl PathProbe {
     fn key(self, footprint: Obstacle) -> PathKey {
         let goal = match self.goal {
-            RouteGoal::Point(point) => DeliveryGoal::Point(point.to_array().map(f32::to_bits)),
-            RouteGoal::Interaction(region) => DeliveryGoal::Interaction(region.bits()),
+            RouteGoal::Point(point) => DeliveryGoal::Pickup(point.to_array().map(f32::to_bits)),
+            RouteGoal::Interaction(region) => {
+                DeliveryGoal::Dropoff(self.start.to_array().map(f32::to_bits), region.bits())
+            }
             RouteGoal::Range { .. } => unreachable!(),
         };
-        (
-            footprint.bits(),
-            self.start.to_array().map(f32::to_bits),
-            goal,
-        )
+        (footprint.bits(), goal)
     }
 }
 
@@ -722,43 +721,97 @@ enum RouteEstimate {
 #[derive(Default)]
 struct DeliveryPaths {
     geometry: Option<(u64, u64)>,
-    pending: Option<(PathKey, RouteRequestId)>,
-    finished: HashMap<PathKey, Option<f64>>,
+    pending: Option<(PathKey, PathProbe, RouteRequestId)>,
+    finished: HashMap<PathKey, Vec<(Vec2, Option<f64>)>>,
 }
 
 impl DeliveryPaths {
     fn begin(&mut self, navigation: &Navigation) {
         let geometry = (navigation.clearance_identity(), navigation.revision());
         if self.geometry != Some(geometry) {
-            if let Some((_, id)) = self.pending.take() {
+            if let Some((_, _, id)) = self.pending.take() {
                 navigation.cancel(id);
             }
             self.finished.clear();
             self.geometry = Some(geometry);
             return;
         }
-        let Some((key, id)) = self.pending else {
+        let Some((key, probe, id)) = self.pending else {
             return;
         };
         let result = match navigation.poll(id) {
             RouteStatus::Pending => return,
             RouteStatus::Unreachable => None,
-            // Forecast routes have physical costs without Corridor or traffic effects.
-            RouteStatus::Found(route) => Some(f64::from(route.cost)),
+            RouteStatus::Found(route) => Some(match key.1 {
+                DeliveryGoal::Pickup(_) => 0.0,
+                DeliveryGoal::Dropoff(..) => f64::from(route.cost),
+            }),
         };
         navigation.cancel(id);
-        self.finished.insert(key, result);
+        self.finished
+            .entry(key)
+            .or_default()
+            .push((probe.start, result));
         self.pending = None;
+    }
+
+    fn estimate_pickup(
+        &self,
+        navigation: &Navigation,
+        footprint: Obstacle,
+        position: Vec2,
+        pickup: Vec2,
+    ) -> RouteEstimate {
+        if delivery_clear(navigation, footprint, position, pickup) {
+            return RouteEstimate::Known(0.0);
+        }
+        if !footprint.admits_body(position) || !navigation.point_clear_for_entry(position) {
+            return RouteEstimate::Missing;
+        }
+        let cell_center = ((position / CELL_WIDTH).floor() + Vec2::splat(0.5)) * CELL_WIDTH;
+        let start = if delivery_clear(navigation, footprint, position, cell_center) {
+            cell_center
+        } else {
+            position
+        };
+        self.estimate(
+            navigation,
+            footprint,
+            position,
+            PathProbe {
+                start,
+                goal: RouteGoal::Point(pickup),
+            },
+        )
     }
 
     fn estimate(
         &self,
         navigation: &Navigation,
         footprint: Obstacle,
+        origin: Vec2,
         probe: PathProbe,
     ) -> RouteEstimate {
-        if let Some(result) = self.finished.get(&probe.key(footprint)) {
+        let key = probe.key(footprint);
+        let can_attach = |point| {
+            probe.start == point
+                || (matches!(key.1, DeliveryGoal::Pickup(_))
+                    && delivery_clear(navigation, footprint, origin, point))
+        };
+        if let Some((_, result)) = self
+            .finished
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .find(|(start, _)| can_attach(*start))
+        {
             return result.map_or(RouteEstimate::Missing, RouteEstimate::Known);
+        }
+        if let Some((active_key, active, _)) = self.pending
+            && key == active_key
+            && can_attach(active.start)
+        {
+            return RouteEstimate::Pending(active);
         }
         // Disconnected paths in current geometry cannot be opened by the added footprint.
         if matches!(probe.goal, RouteGoal::Point(point) if navigation.movement_clear(probe.start, point))
@@ -776,7 +829,7 @@ impl DeliveryPaths {
         // One forecast at a time shares the same navigation budget as normal movement.
         if self.pending.is_none() {
             let id = navigation.request_delivery_route(probe.start, probe.goal, footprint);
-            self.pending = Some((probe.key(footprint), id));
+            self.pending = Some((probe.key(footprint), probe, id));
         }
     }
 }
@@ -852,5 +905,58 @@ impl Consumption {
             }
         }
         table[rows][rhs]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_moving_hauler_reuses_pickup_access_when_its_cell_center_is_blocked() {
+        let grid = IntentGrid::new(8, 8);
+        let navigation =
+            Navigation::new(&grid, vec![Obstacle::deposit(Vec2::new(30.0, 36.0), 3.0)]);
+        let footprint = Obstacle::deposit(Vec2::splat(400.0), 40.0);
+        let pickup = Vec2::new(-180.0, 36.0);
+        let original = Vec2::new(70.0, 18.0);
+        let moved = Vec2::new(70.0, 21.0);
+        let mut paths = DeliveryPaths::default();
+        paths.begin(&navigation);
+
+        assert!(!navigation.point_clear_for_entry(Vec2::splat(36.0)));
+        assert!(delivery_clear(&navigation, footprint, original, moved));
+        for position in [original, moved] {
+            assert!(!delivery_clear(&navigation, footprint, position, pickup));
+        }
+
+        let mut estimate = paths.estimate_pickup(&navigation, footprint, original, pickup);
+        for _ in 0..20 {
+            if !matches!(estimate, RouteEstimate::Connecting) {
+                break;
+            }
+            navigation.advance(&grid, 4096);
+            estimate = paths.estimate_pickup(&navigation, footprint, original, pickup);
+        }
+        let RouteEstimate::Pending(probe) = estimate else {
+            panic!("the original pickup approach should need a budgeted route");
+        };
+        paths.request(&navigation, footprint, probe);
+
+        assert!(matches!(
+            paths.estimate_pickup(&navigation, footprint, moved, pickup),
+            RouteEstimate::Pending(probe) if probe.start == original
+        ));
+        for _ in 0..20 {
+            navigation.advance(&grid, 4096);
+            paths.begin(&navigation);
+            if paths.pending.is_none() {
+                break;
+            }
+        }
+        assert!(matches!(
+            paths.estimate_pickup(&navigation, footprint, moved, pickup),
+            RouteEstimate::Known(0.0)
+        ));
     }
 }
