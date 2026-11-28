@@ -13,26 +13,33 @@
 
 ## Replay gameplay, delivery lanes, and Structure Clearing
 
-From the repository root, apply the [offscreen verifier setup](../agents/agent-control.md#offscreen-verifier-setup). The replay requires an offscreen GPU adapter. A fresh configuration directory selects Standard regardless of the player's saved scenario.
+Apply the offscreen verifier setup. Each scene gets a fresh configuration directory under its output directory and starts in Standard. The driver creates a temporary runtime directory by default. To supply one with `--runtime-dir`, use a real directory you own with mode `0700` and a vacant `nano-swarm/control.sock` path. [Offscreen verifier setup](../agents/agent-control.md#offscreen-verifier-setup)
 
 ```bash
 mkdir -p .tmp &&
   replay_dir=$(mktemp -d "$PWD/.tmp/navigation-replay.XXXXXX") &&
-  cargo build --bin top-down-2d-rts-prototype-nano-swarm --example local_avoidance &&
-  RUST_LOG=local_avoidance=info XDG_CONFIG_HOME="$replay_dir/config" python3 scripts/navigation_runtime_acceptance.py --output "$replay_dir"
+  cargo build --example local_avoidance &&
+  RUST_LOG=local_avoidance=info python3 scripts/navigation_runtime_acceptance.py --output "$replay_dir"
 ```
 
 In `$replay_dir/normal/`, compare the `start`, `working`, `delivery`, and `later` captures. Look for Workers around the deposit, plans becoming solid structures, and Haulers working outside them. Compare the player's mineral balance and facility counts across the JSON snapshots for evidence of economy progress. Phase names mark timed samples. Screenshots and snapshots can show different ticks.
 
-Under `$replay_dir/bottleneck/`, compare `before.png`, `passing.png`, and `arrived.png` with their detailed state snapshots. Two loaded Haulers use the same lane in opposite directions, pass a Hauler loading at a Source Stockpile, and deliver to the facilities on the far sides. The [fixture](../../examples/local_avoidance.rs) checks swept wall clearance and loading progress on every tick. To drive it manually, paint Corridor at `-3 -3` to start and at `-2 -3` to continue after the `TRAFFIC passing` log. The driver checks process exit, socket removal, and lock release. Run `cargo test --example local_avoidance` to check the independent segment-to-rectangle clearance calculation.
+For each scene below, compare the `before`, `passing`, and final captures with their detailed state snapshots under `$replay_dir/<scene>/`. Use `--scene <scene>` to run one scene. The fixtures check swept clearance. The driver checks process exit, socket removal, and lock release for every scene. Run `cargo test --example local_avoidance` to verify the independent segment-to-rectangle clearance calculation. [Replay fixtures](../../examples/local_avoidance.rs)
 
-Under `$replay_dir/clearing/`, compare the `before`, `passing`, and `activated` captures and state snapshots. Two occupants take the same narrow exit through a stationary friendly Nanobot. At `passing`, one body remains in the footprint. At `activated`, both bodies have cleared it and the Source Stockpile is operational. The fixture checks swept wall clearance and checks that activation waits for the full footprint to clear. To replay this scene alone, pass `--scene clearing`. To advance it manually, paint Corridor at `-3 -3` to start and at `-2 -3` when the `CLEARING passing` log appears.
+| Scene | Passing | Final capture |
+| --- | --- | --- |
+| `bottleneck` | Two loaded Haulers pass in opposite directions and the Hauler at the Source Stockpile continues loading. | `arrived` |
+| `clearing` | Two occupants take the same narrow exit through a stationary friendly Nanobot. One body remains in the footprint at the pause. | `activated` |
+| `direct` | A loaded eastbound Hauler bends around westbound traffic on open ground. | `arrived` |
+| `searched` | A solid barrier blocks the direct route. Westbound traffic uses the lower opening while the eastbound Hauler uses the quiet upper opening. | `arrived` |
 
-Under `$replay_dir/direct/` and `$replay_dir/searched/`, compare the `before`, `passing`, and `arrived` captures and state snapshots. In the direct scene, a loaded eastbound Hauler bends around the westbound flow on open ground. In the searched scene, a solid barrier blocks the straight route and has two single-file openings. The eastbound Hauler uses the quiet upper opening while westbound traffic uses the lower opening. Both scenes verify swept geometry clearance and receipt of the shipment at the Production Facility. To replay either alone, use `--scene direct` or `--scene searched`.
+Check each `arrived` snapshot for receipts at the destination Production Facilities. At `activated`, the footprint is empty and the Source Stockpile is operational.
+
+For manual replay, set `NANO_SWARM_REPLAY_SCENE` to the scene name, `RUST_LOG` to `local_avoidance=info`, and `NANO_SWARM_REPLAY_TUNING` to a private copy of `config/balance.ron`. Launch `cargo run --example local_avoidance` with private configuration and runtime directories. Use the matching client socket to paint Corridor at `-3 -3` to start and at `-2 -3` after the `passing` log. [Client commands](../agents/agent-control.md#client)
 
 ## Compare crowded delivery across revisions
 
-Use `5b61292` for pre-change pathing, `8247494` for Transit Overlap, and `03724b6` for Transit Overlap with the Traffic Penalty. Copy the same benchmark source into each checkout. Use the same `config/balance.ron` and machine throughout and save one report per variant. [Benchmark source](../../examples/crowded_delivery.rs)
+Use `5b61292` for pre-change pathing and the final revision containing Transit Overlap with the Traffic Penalty for the combined run. Copy `examples/crowded_delivery.rs` and `config/balance.ron` from the combined checkout into the other two checkouts. For Transit Overlap alone, start from the combined revision and temporarily replace construction and population of the per-tick snapshot in `move_velocity_system` with `let traffic = Arc::new(TrafficSnapshot::default());`. Retain the route-start logic from the combined revision. Use the same machine across all three variants. Save one report per variant and include the exact commits and patch used with the results. [Benchmark source](../../examples/crowded_delivery.rs) · [Movement routing](../../src/nanobot/work_navigation.rs)
 
 ```bash
 mkdir -p .tmp &&

@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -23,24 +24,37 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run_scene(kind, output, runtime_dir=None):
-    output.mkdir(parents=True, exist_ok=False)
     records = []
     runtime_context = (
         tempfile.TemporaryDirectory(prefix=f"ns-{kind}-")
         if runtime_dir is None else nullcontext(runtime_dir)
     )
     with runtime_context as runtime:
-        runtime = Path(runtime).resolve()
+        runtime = Path(runtime)
+        try:
+            info = runtime.lstat()
+        except OSError as error:
+            raise RuntimeError(f"Cannot inspect runtime directory: {runtime}") from error
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_mode & (stat.S_IRWXG | stat.S_IRWXO)
+        ):
+            raise RuntimeError(f"Runtime directory must be a real, private directory owned by you: {runtime}")
+        runtime = runtime.resolve()
         socket = runtime / "nano-swarm/control.sock"
         if os.path.lexists(socket):
             raise RuntimeError(f"Control socket path already exists: {socket}")
+        output.mkdir(parents=True, exist_ok=False)
+        config = output / "config"
+        config.mkdir(mode=0o700)
         env = os.environ.copy()
         target = Path(env.get("CARGO_TARGET_DIR", ROOT / "target")).resolve()
         tuning = output / "balance.ron"
         shutil.copyfile(ROOT / "config/balance.ron", tuning)
         env.update(
             XDG_RUNTIME_DIR=str(runtime),
-            XDG_CONFIG_HOME=env.get("XDG_CONFIG_HOME", str(output / "config")),
+            XDG_CONFIG_HOME=str(config),
             NANO_SWARM_REPLAY_TUNING=str(tuning),
             NANO_SWARM_REPLAY_SCENE=kind,
             BEVY_ASSET_ROOT=str(ROOT),

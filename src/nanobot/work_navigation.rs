@@ -156,6 +156,7 @@ pub struct ActiveRoute {
     revision: u64,
     pending: Option<crate::navigation::RouteRequestId>,
     preserve_turns: bool,
+    scored_with_traffic: bool,
     forecast_distance: f32,
 }
 
@@ -242,6 +243,12 @@ pub fn move_velocity_system(
         engagements
             .as_ref()
             .is_some_and(|value| value.controls_movement(entity))
+    };
+    let body_motion = |entity| {
+        bodies
+            .get(entity)
+            .ok()
+            .map(|(_, _, body)| body.motion(entity, engagements.as_deref()))
     };
     if let Some(generation) = generation.as_deref().map(|generation| generation.0)
         && *previous_generation != Some(generation)
@@ -334,7 +341,10 @@ pub fn move_velocity_system(
         if route.forecast_distance <= 0.0 {
             continue;
         }
-        let Ok((_, order, transform, _, _, member, None, None, _)) = bots.get(entity) else {
+        let Ok((_, order, transform, _, _, _, None, None, _)) = bots.get(entity) else {
+            continue;
+        };
+        let Some(motion) = body_motion(entity).filter(|motion| !motion.combat_controlled) else {
             continue;
         };
         if order.interaction != route.task
@@ -346,7 +356,7 @@ pub fn move_velocity_system(
         let next = route.follower.target_index(route.current);
         traffic.record_route(
             entity,
-            member.map_or(super::SwarmId::PLAYER, |member| member.0),
+            motion.swarm,
             transform.translation.truncate(),
             &route.waypoints[next..],
             route.forecast_distance,
@@ -401,6 +411,7 @@ pub fn move_velocity_system(
         let position = transform.translation.truncate();
         let mut work_ready = true;
         let mut connection_origin = None;
+        let motion = body_motion(entity);
         if let Some(region) = selected_destination.interaction {
             let entry = approaches.entries.get_mut(&entity).unwrap();
             if entry.revision != navigation.revision() {
@@ -422,14 +433,11 @@ pub fn move_velocity_system(
                 phase,
                 since: entry.since,
             });
-            let requester = bodies.get(entity).map_or(
-                TransitMotion {
-                    swarm: member.map_or(super::SwarmId::PLAYER, |member| member.0),
-                    travelling: true,
-                    combat_controlled: false,
-                },
-                |(_, _, body)| body.motion(entity, engagements.as_deref()),
-            );
+            let requester = motion.unwrap_or(TransitMotion {
+                swarm: member.map_or(super::SwarmId::PLAYER, |member| member.0),
+                travelling: true,
+                combat_controlled: false,
+            });
             let open_standing_position = |point| {
                 occupancy.clear_at(entity, point, |other| {
                     other.motion.can_pass(requester)
@@ -666,6 +674,8 @@ pub fn move_velocity_system(
             });
         let immediate_approach = evacuation.is_some()
             || (nearby_hauler && loads.get(entity).is_ok_and(|cargo| cargo.amount > 0));
+        let traffic_eligible =
+            evacuation.is_none() && !motion.is_some_and(|motion| motion.combat_controlled);
         let invalidated = routes.get_mut(&entity).is_some_and(|route| {
             if route.revision == navigation.revision() {
                 return false;
@@ -676,6 +686,7 @@ pub fn move_velocity_system(
         let needs_route = invalidated
             || routes.get(&entity).is_none_or(|route| {
                 route.destination_changed(destination.xy, original.interaction.is_some())
+                    || (!traffic_eligible && route.scored_with_traffic)
                     || (route.pending.is_none()
                         && !route.waypoints.is_empty()
                         && route.current >= route.waypoints.len()
@@ -708,11 +719,12 @@ pub fn move_velocity_system(
             {
                 navigation.cancel(id);
             }
-            let route_traffic = if evacuation.is_none() {
+            let route_traffic = if traffic_eligible {
                 traffic.for_route(entity, swarm)
             } else {
                 None
             };
+            let mut scored_with_traffic = route_traffic.is_some();
             let goal = if let Some(region) = destination.interaction {
                 RouteGoal::Interaction(region)
             } else if stop > STOP_THRESHOLD {
@@ -751,7 +763,7 @@ pub fn move_velocity_system(
                     (route.waypoints, 0, Default::default(), preserve_turns, None)
                 }
                 MovementPlan::Search { clear_fallback } => {
-                    let prefer_turns = route_traffic.is_some();
+                    let prefer_turns = scored_with_traffic;
                     let pending = navigation.request_owned(
                         position,
                         goal,
@@ -763,6 +775,7 @@ pub fn move_velocity_system(
                     );
                     let prefix = routes.get(&entity).filter(|route| {
                         clear_fallback.is_none()
+                            && (traffic_eligible || !route.scored_with_traffic)
                             && route.task == original.interaction
                             && route.interaction == destination.interaction
                             && route
@@ -770,6 +783,7 @@ pub fn move_velocity_system(
                                 .get(route.follower.target_index(route.current))
                                 .is_some_and(|next| navigation.movement_clear(position, *next))
                     });
+                    scored_with_traffic |= prefix.is_some_and(|route| route.scored_with_traffic);
                     let (waypoints, current, follower, preserve_turns) = prefix.map_or_else(
                         || {
                             (
@@ -811,6 +825,7 @@ pub fn move_velocity_system(
                     revision: navigation.revision(),
                     pending,
                     preserve_turns,
+                    scored_with_traffic,
                     forecast_distance: 0.0,
                 },
             );

@@ -37,6 +37,27 @@ enum Phase {
     Arrived,
 }
 
+fn release_after_corridor(
+    world: &mut World,
+    phase: Phase,
+    consume_for_swarm: Option<SwarmId>,
+) -> Option<Phase> {
+    let (cell, next) = match phase {
+        Phase::Before => (IVec2::new(-3, -3), Phase::Approaching),
+        Phase::Passing => (IVec2::new(-2, -3), Phase::Resuming),
+        _ => return None,
+    };
+    let mut grid = world.resource_mut::<IntentGrid>();
+    let painted = grid.cell(cell).is_some_and(|cell| match consume_for_swarm {
+        Some(swarm) => cell.has_owned(IntentKind::Corridor, swarm),
+        None => cell.has(IntentKind::Corridor),
+    });
+    if painted && let Some(swarm) = consume_for_swarm {
+        grid.erase(cell, IntentKind::Corridor, swarm);
+    }
+    painted.then_some(next)
+}
+
 struct Delivery {
     bot: Entity,
     facility: Entity,
@@ -61,6 +82,7 @@ fn main() {
     let mut app = build_runtime_app(
         RuntimeOptions {
             headless: true,
+            unbounded: true,
             scenario: Some(Scenario::Standard),
             tuning_file: std::env::var_os("NANO_SWARM_REPLAY_TUNING").map_or_else(
                 top_down_2d_rts_prototype_nano_swarm::tuning::default_path,
@@ -73,9 +95,6 @@ fn main() {
         Some(control),
     )
     .expect("headless runtime");
-    app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
-        std::time::Duration::from_secs_f64(1. / 60.),
-    ));
     match std::env::var("NANO_SWARM_REPLAY_SCENE").as_deref() {
         Ok("clearing") => clearing::configure(&mut app),
         Ok("direct") => lane_choice::configure(&mut app, lane_choice::DIRECT),
@@ -90,19 +109,10 @@ fn main() {
 
 fn release_phase(world: &mut World) {
     let phase = world.resource::<TrafficScene>().phase;
-    let (cell, next) = match phase {
-        Phase::Before => (IVec2::new(-3, -3), Phase::Approaching),
-        Phase::Passing => (IVec2::new(-2, -3), Phase::Resuming),
-        _ => return,
-    };
-    if !world
-        .resource::<IntentGrid>()
-        .cell(cell)
-        .is_some_and(|cell| cell.has(IntentKind::Corridor))
-    {
+    let Some(next) = release_after_corridor(world, phase, None) else {
         return;
-    }
-    if phase == Phase::Before {
+    };
+    if next == Phase::Approaching {
         world.resource_scope(|world, scene: Mut<TrafficScene>| {
             for delivery in &scene.deliveries {
                 let position = world

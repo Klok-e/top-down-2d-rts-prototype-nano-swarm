@@ -748,3 +748,133 @@ fn searched_traffic_uses_the_quieter_opening_and_keeps_a_sole_opening_passable()
         }
     }
 }
+
+#[test]
+fn routed_defenders_neither_create_nor_follow_the_ordinary_traffic_penalty() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        intent::{IntentGrid, IntentKind},
+        nanobot::{DefenderRout, Health, SwarmId},
+        tuning::Tuning,
+    };
+
+    let lane_y = 256.;
+    let west_goal = Vec2::new(256., lane_y);
+    let east_goal = Vec2::new(768., lane_y);
+    let start = Vec2::new(180., lane_y);
+    for (counterflow_routing, traveller_routing, starts_with_ordinary_route) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (false, true, true),
+    ] {
+        let mut app = common::sim_app_with_movement();
+        app.world_mut()
+            .resource_mut::<Tuning>()
+            .combat
+            .rout_confirm_ticks = 1;
+        let order = |xy| DirectMovementComponent {
+            xy,
+            stop_radius: 0.,
+            interaction: None,
+            speed: None,
+        };
+        if counterflow_routing {
+            app.world_mut().resource_mut::<IntentGrid>().paint(
+                IVec2::ZERO,
+                IntentKind::Defend,
+                SwarmId::PLAYER,
+            );
+            common::spawn_stationary_defender_at(&mut app, Vec2::new(880., lane_y), SwarmId(1));
+        }
+        let counterflow = [660., 735.].map(|x| {
+            let position = Vec2::new(x, lane_y);
+            if counterflow_routing {
+                let bot = common::spawn_defender_at(&mut app, position);
+                app.world_mut().get_mut::<Health>(bot).unwrap().current = 10;
+                bot
+            } else {
+                let bot = common::spawn_worker_at(&mut app, position);
+                app.world_mut().entity_mut(bot).insert(order(west_goal));
+                bot
+            }
+        });
+        for _ in 0..2 {
+            app.update();
+        }
+        let position = |app: &App, bot| {
+            app.world()
+                .get::<Transform>(bot)
+                .unwrap()
+                .translation
+                .truncate()
+        };
+        assert!(position(&app, counterflow[0]).x < 660.);
+        for bot in counterflow {
+            assert_eq!(
+                app.world().get::<DefenderRout>(bot).is_some(),
+                counterflow_routing
+            );
+            assert_eq!(
+                app.world().get::<DirectMovementComponent>(bot).unwrap().xy,
+                west_goal
+            );
+        }
+
+        let traveller = if traveller_routing {
+            let bot = common::spawn_defender_at(&mut app, start);
+            app.world_mut().get_mut::<Health>(bot).unwrap().current = 10;
+            if starts_with_ordinary_route {
+                app.world_mut().entity_mut(bot).insert(order(east_goal));
+                app.update();
+                assert!(
+                    (position(&app, bot).y - lane_y).abs() > 0.1,
+                    "the Defender first takes the same bend as any ordinary traveller"
+                );
+            }
+            app.world_mut().resource_mut::<IntentGrid>().paint(
+                IVec2::X,
+                IntentKind::Defend,
+                SwarmId::PLAYER,
+            );
+            common::spawn_stationary_defender_at(&mut app, Vec2::new(20., lane_y), SwarmId(1));
+            bot
+        } else {
+            let bot = common::spawn_worker_at(&mut app, start);
+            app.world_mut().entity_mut(bot).insert(order(east_goal));
+            bot
+        };
+        app.update();
+        assert_eq!(
+            app.world().get::<DefenderRout>(traveller).is_some(),
+            traveller_routing
+        );
+        assert_eq!(
+            app.world()
+                .get::<DirectMovementComponent>(traveller)
+                .unwrap()
+                .xy,
+            east_goal
+        );
+
+        if starts_with_ordinary_route {
+            for _ in 0..20 {
+                app.update();
+            }
+            let position = position(&app, traveller);
+            assert!(position.x > start.x + 40., "{position}");
+            assert!(
+                (position.y - lane_y).abs() < 2.,
+                "the rout continues to the same destination by a direct path: {position}"
+            );
+        } else {
+            // Measure the initial heading before a protected body can constrain movement.
+            let first_step = position(&app, traveller) - start;
+            assert!(first_step.x > 0.);
+            assert_eq!(
+                first_step.y.abs() > 0.1,
+                !counterflow_routing && !traveller_routing,
+                "routing counterflow={counterflow_routing}, routing traveller={traveller_routing}: {first_step}"
+            );
+        }
+    }
+}

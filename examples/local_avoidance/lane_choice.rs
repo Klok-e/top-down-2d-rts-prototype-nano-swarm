@@ -151,22 +151,10 @@ fn prepare(world: &mut World) {
 }
 
 fn release_phase(world: &mut World) {
-    let scene = world.resource::<LaneScene>();
-    let (cell, next) = match scene.phase {
-        Phase::Before => (IVec2::new(-3, -3), Phase::Approaching),
-        Phase::Passing => (IVec2::new(-2, -3), Phase::Resuming),
-        _ => return,
-    };
-    if !world
-        .resource::<IntentGrid>()
-        .cell(cell)
-        .is_some_and(|cell| cell.has_owned(IntentKind::Corridor, SwarmId::PLAYER))
-    {
+    let phase = world.resource::<LaneScene>().phase;
+    let Some(next) = release_after_corridor(world, phase, Some(SwarmId::PLAYER)) else {
         return;
-    }
-    world
-        .resource_mut::<IntentGrid>()
-        .erase(cell, IntentKind::Corridor, SwarmId::PLAYER);
+    };
     if next == Phase::Approaching {
         let goal = world.resource::<LaneLayout>().westbound_goal;
         let counterflow = world.resource::<LaneScene>().counterflow.clone();

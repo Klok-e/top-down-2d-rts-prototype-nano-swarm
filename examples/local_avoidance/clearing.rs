@@ -82,20 +82,12 @@ fn prepare(world: &mut World) {
 
 fn release_phase(world: &mut World) {
     let scene = world.resource::<ClearingScene>();
-    let (x, next) = match scene.phase {
-        Phase::Before => (-3, Phase::Approaching),
-        Phase::Passing => (-2, Phase::Resuming),
-        _ => return,
-    };
-    if !world
-        .resource::<IntentGrid>()
-        .cell(IVec2::new(x, -3))
-        .is_some_and(|cell| cell.has(IntentKind::Corridor))
-    {
+    let plan = scene.plan;
+    let phase = scene.phase;
+    let Some(next) = release_after_corridor(world, phase, None) else {
         return;
-    }
-    if scene.phase == Phase::Before {
-        let plan = scene.plan;
+    };
+    if next == Phase::Approaching {
         world
             .entity_mut(plan)
             .insert(StructureClearing::awaiting_validation(EXIT));

@@ -170,3 +170,71 @@ fn crowded_footprint_clears_through_a_friendly_at_the_sole_exit() {
     }
     panic!("occupants did not clear through the friendly Nanobot at the sole exit: {previous:?}");
 }
+
+#[test]
+fn clearing_reselects_an_exit_blocked_by_a_hostile() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{ClearingEvacuation, SwarmId, SwarmMember},
+        navigation::BODY_RADIUS,
+    };
+
+    let mut app = common::sim_app_with_planned();
+    let plan = common::spawn_planned_structure_at_cell(&mut app, IVec2::ZERO);
+    let center = Vec2::new(252., 252.);
+    let east_exit = center + Vec2::X * 72.;
+    let west_exit = center - Vec2::X * 72.;
+    let transform =
+        Transform::from_translation(center.extend(0.)).with_scale(Vec3::new(1.125, 1.125, 1.));
+    let state = *app.world().get::<PlannedStructure>(plan).unwrap();
+    app.world_mut().entity_mut(plan).insert((
+        transform,
+        state.with_work_remaining(0),
+        StructureClearing::awaiting_validation(west_exit),
+    ));
+    for y in [180., 324.] {
+        let wall = common::spawn_structure_at(&mut app, Vec2::new(center.x, y));
+        app.world_mut().get_mut::<Transform>(wall).unwrap().scale = Vec3::new(5.625, 1.125, 1.);
+    }
+    let start = center + Vec2::X * 8.;
+    let occupant = common::spawn_worker_at(&mut app, start);
+    app.world_mut()
+        .entity_mut(occupant)
+        .insert(Commitment::Working);
+
+    for _ in 0..60 {
+        app.update();
+        if app.world().get::<ClearingEvacuation>(occupant).is_some() {
+            break;
+        }
+    }
+    assert_eq!(
+        app.world()
+            .get::<ClearingEvacuation>(occupant)
+            .map(|route| route.goal),
+        Some(east_exit),
+    );
+    let blocker_position = east_exit + Vec2::X * 20.;
+    let blocker = common::spawn_worker_at(&mut app, blocker_position);
+    app.world_mut()
+        .entity_mut(blocker)
+        .insert((SwarmMember(SwarmId(7)), Commitment::Working));
+
+    for _ in 0..90 {
+        app.update();
+        let current = app
+            .world()
+            .get::<Transform>(occupant)
+            .unwrap()
+            .translation
+            .truncate();
+        assert!(current.distance(blocker_position) >= 2. * BODY_RADIUS - 0.001);
+        if app.world().get::<Stockpile>(plan).is_some() {
+            assert!(current.x <= west_exit.x + 2., "exited at {current}");
+            return;
+        }
+    }
+    panic!(
+        "a hostile occupying the first exit stranded the structure: {:?}",
+        app.world().get::<ClearingEvacuation>(occupant)
+    );
+}
