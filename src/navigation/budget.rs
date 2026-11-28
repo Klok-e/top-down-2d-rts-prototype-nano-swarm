@@ -768,6 +768,7 @@ struct Request {
     movement_paint: Option<Arc<PaintCosts>>,
     result: RouteStatus,
     access: Option<Arc<AccessCheck>>,
+    delivery_footprint: Option<Obstacle>,
 }
 #[derive(Default)]
 pub(super) struct Scheduler {
@@ -880,10 +881,29 @@ impl Navigation {
                 movement_paint: None,
                 result: RouteStatus::Pending,
                 access: None,
+                delivery_footprint: None,
             },
         );
         id
     }
+    /// Refine a delivery path after hypothetical completion on the background budget.
+    pub(crate) fn request_delivery_route(
+        &self,
+        start: Vec2,
+        goal: RouteGoal,
+        footprint: Obstacle,
+    ) -> RouteRequestId {
+        let id = self.request(start, goal, SwarmId::PLAYER, false, RoutePriority::Routine);
+        let mut scheduler = self.scheduler.lock().unwrap();
+        let request = scheduler
+            .requests
+            .get_mut(&id)
+            .expect("route was just queued");
+        request.purpose = RequestPurpose::Connectivity;
+        request.delivery_footprint = Some(footprint);
+        id
+    }
+
     /// A committed route with diagnostic ownership and explicit cancellation by its caller.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn request_owned(
@@ -1103,6 +1123,15 @@ impl Navigation {
                 // Hypothetical construction geometry derives from the main hierarchy.
                 let snapshot = if request.access.is_some() {
                     Arc::new(self.shared_snapshot())
+                } else if let Some(footprint) = request.delivery_footprint {
+                    let obstacles = self
+                        .obstacles
+                        .iter()
+                        .chain(&self.clearing)
+                        .copied()
+                        .chain([footprint])
+                        .collect();
+                    Arc::new(self.variant(obstacles))
                 } else {
                     self.request_geometry(request.start)
                 };
@@ -1110,7 +1139,8 @@ impl Navigation {
                     (request.start, request.goal, request.swarm, request.hauler);
                 let access = request.access.clone();
                 let traffic = request.traffic.clone();
-                let connectivity = request.purpose == RequestPurpose::Connectivity;
+                let connectivity = request.purpose == RequestPurpose::Connectivity
+                    && request.delivery_footprint.is_none();
                 request.future = Some(Box::pin(async move {
                     if let Some(check) = access {
                         return snapshot.async_access(&check, &paint, None).await;

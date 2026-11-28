@@ -1462,7 +1462,10 @@ pub fn worker_gather_delivery_system(
         Option<&SupportCondition>,
     )>,
     deposits: Query<(), With<ResourceDeposit>>,
-    mut ledger: Option<ResMut<ResourceLedger>>,
+    (mut ledger, mut expansion): (
+        Option<ResMut<ResourceLedger>>,
+        Option<ResMut<super::expansion_supply::ExpansionHistory>>,
+    ),
     swarms: Query<&SwarmId, With<Swarm>>,
 ) {
     for (entity, transform, mut load, returning, mut reservation, swarm_member, nanobot_type) in
@@ -1509,6 +1512,12 @@ pub fn worker_gather_delivery_system(
             .min(stockpile.free_space());
         stockpile.amount += delivered;
         load.amount -= delivered;
+        if delivered > 0
+            && load.kind == ResourceKind::Minerals
+            && let Some(history) = expansion.as_deref_mut()
+        {
+            history.record_dropoff(swarm_member.0, returning.stockpile, delivered);
+        }
         if delivered > 0
             && load.kind == ResourceKind::Minerals
             && let Some(reservation) = reservation.as_deref()
