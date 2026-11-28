@@ -7,7 +7,8 @@ use bevy::{ecs::system::SystemParam, prelude::*};
 use crate::{
     intent::IntentGrid,
     navigation::{
-        ConnectivityStatus, Navigation, Obstacle, RouteGoal, RouteRequestId, RouteStatus, ShapeBits,
+        BODY_RADIUS, CELL_WIDTH, ConnectivityStatus, Navigation, Obstacle, RouteGoal,
+        RouteRequestId, RouteStatus, ShapeBits,
     },
     resources::{ResourceKind, Stockpile, StockpileRole},
     tuning::Tuning,
@@ -15,7 +16,8 @@ use crate::{
 
 use super::{
     Cargo, Charger, HaulerAssignment, HaulerLoading, Health, InteractionRegion, Nanobot,
-    NanobotType, OwnerSwarm, SupportCondition, Swarm, SwarmId, SwarmMember, spending_capacity,
+    NanobotType, OwnerSwarm, STOP_THRESHOLD, SupportCondition, Swarm, SwarmId, SwarmMember,
+    spending_capacity,
 };
 
 const WINDOW_SECONDS: u64 = 20;
@@ -149,6 +151,7 @@ pub struct ExpansionSupply<'w, 's> {
 
 struct Source {
     center: Vec2,
+    half: Vec2,
     region: InteractionRegion,
     minerals: f64,
     load: f64,
@@ -214,6 +217,7 @@ impl ExpansionSupply<'_, '_> {
         let logistics = &tuning.logistics;
         let carry = logistics.hauler_carry_capacity.max(1);
         let transfer = logistics.hauler_transfer_per_pulse.max(1);
+        let unload = transfer.min(tuning.production.input_capacity.max(1));
         let work = f64::from(logistics.material_work_ticks);
         let mut sources = self
             .stockpiles
@@ -233,11 +237,12 @@ impl ExpansionSupply<'_, '_> {
                         entity.to_bits(),
                         Source {
                             center: transform.translation.truncate(),
+                            half: interaction_bounds(transform),
                             region: InteractionRegion::structure(transform),
                             minerals,
                             load: f64::from(load),
-                            transfer_ticks_per_mineral: 2.0
-                                * f64::from(load.div_ceil(transfer))
+                            transfer_ticks_per_mineral: (f64::from(load.div_ceil(transfer))
+                                + f64::from(load.div_ceil(unload)))
                                 * work
                                 / f64::from(load),
                             spending: Vec::new(),
@@ -349,120 +354,121 @@ impl ExpansionSupply<'_, '_> {
         budget: &SupplyBudget,
         site: &Transform,
     ) -> Option<bool> {
-        let region = InteractionRegion::structure(site);
+        let destination = InteractionRegion::structure(site);
         let footprint = Obstacle::structure(site);
-        let mut confirmed = Vec::new();
-        let mut possible = Vec::new();
-        let mut pending = budget
-            .sources
-            .iter()
-            .any(|source| !source.pending_spending.is_empty());
+        let (center, _) = footprint.bounds();
+        let half = interaction_bounds(site);
+        let mut confirmed = budget.rates();
+        let mut possible = budget.rates();
         for (index, source) in budget.sources.iter().enumerate() {
-            let (distance, pickup) =
-                match self
-                    .paths
-                    .round_trip(&self.navigation, region, footprint, source)
-                {
-                    RouteEstimate::Known(route) => route,
-                    RouteEstimate::Missing => continue,
-                    RouteEstimate::Pending => {
-                        pending = true;
-                        // Even free travel cannot exceed the loading/unloading bound.
-                        possible.push(HaulRoute {
-                            source: index,
-                            ticks_per_mineral: source.transfer_ticks_per_mineral,
-                            haulers: (0..budget.haulers.len()).collect(),
-                        });
-                        continue;
-                    }
-                };
-            let ticks_per_mineral =
-                distance / budget.speed / source.load + source.transfer_ticks_per_mineral;
-            let mut confirmed_haulers = Vec::new();
-            let mut possible_haulers = Vec::new();
-            for (hauler, &(position, _)) in budget.haulers.iter().enumerate() {
-                match connects(&self.navigation, position, RouteGoal::Point(pickup), pickup) {
-                    Some(true) => {
-                        confirmed_haulers.push(hauler);
-                        possible_haulers.push(hauler);
-                    }
-                    Some(false) => {}
-                    None => {
-                        pending = true;
-                        possible_haulers.push(hauler);
+            let dropoff = destination.approach(source.center);
+            let pickup = source.region.approach(dropoff);
+            if delivery_clear(&self.navigation, footprint, dropoff, pickup) {
+                let ticks = budget.trip_cost(source, f64::from(dropoff.distance(pickup)));
+                for (hauler, &(position, _)) in budget.haulers.iter().enumerate() {
+                    if delivery_clear(&self.navigation, footprint, position, pickup) {
+                        confirmed[hauler][index] = ticks;
                     }
                 }
             }
-            confirmed.push(HaulRoute {
-                source: index,
-                ticks_per_mineral,
-                haulers: confirmed_haulers,
-            });
-            possible.push(HaulRoute {
-                source: index,
-                ticks_per_mineral,
-                haulers: possible_haulers,
-            });
+
+            // Straight-line separation of the work areas bounds any route between them.
+            let gap = (center - source.center).abs() - source.half - half;
+            let ticks = budget.trip_cost(source, f64::from(gap.max(Vec2::ZERO).length()));
+            for rates in &mut possible {
+                rates[index] = ticks;
+            }
         }
 
         if budget.covers_site(&confirmed, false) {
-            Some(true)
-        } else if pending && budget.covers_site(&possible, true) {
-            None
-        } else {
-            Some(false)
+            return Some(true);
         }
+        if !budget.covers_site(&possible, true) {
+            return Some(false);
+        }
+
+        let mut routes = SiteRoutes {
+            navigation: &self.navigation,
+            paths: &mut self.paths,
+            footprint,
+            budget,
+            confirmed,
+            possible: budget.rates(),
+            probe: None,
+            pending_connectivity: false,
+        };
+        for (index, source) in budget.sources.iter().enumerate() {
+            let dropoffs = destination.candidates(source.center);
+            let mut pickups = source.region.candidates(center);
+            for &dropoff in &dropoffs {
+                let pickup = source.region.approach(dropoff);
+                if pickups
+                    .iter()
+                    .all(|old| old.distance_squared(pickup) > 0.01)
+                {
+                    pickups.push(pickup);
+                }
+            }
+            for pickup in pickups {
+                routes.add_pickup(index, source, pickup, destination, &dropoffs);
+            }
+        }
+        routes.result()
     }
 }
 
-struct HaulRoute {
-    source: usize,
-    ticks_per_mineral: f64,
-    haulers: Vec<usize>,
+fn interaction_bounds(transform: &Transform) -> Vec2 {
+    let (_, half) = Obstacle::structure(transform).bounds();
+    let x = (transform.rotation * Vec3::X).truncate().abs();
+    let y = (transform.rotation * Vec3::Y).truncate().abs();
+    x * half.x + y * half.y + Vec2::splat(BODY_RADIUS + 2.0 * STOP_THRESHOLD + 0.001)
+}
+
+fn delivery_clear(navigation: &Navigation, footprint: Obstacle, start: Vec2, end: Vec2) -> bool {
+    footprint.segment_clear(start, end)
+        && navigation.point_clear_for_entry(start)
+        && navigation.movement_clear(start, end)
 }
 
 impl SupplyBudget {
-    fn covers_site(&self, routes: &[HaulRoute], include_pending: bool) -> bool {
-        if !covers(
-            routes
-                .iter()
-                .filter(|route| !route.haulers.is_empty())
-                .map(|route| self.sources[route.source].minerals)
-                .sum(),
-            self.expansion,
-        ) {
+    fn rates(&self) -> Vec<Vec<f64>> {
+        vec![vec![f64::INFINITY; self.sources.len()]; self.haulers.len()]
+    }
+
+    fn trip_cost(&self, source: &Source, distance: f64) -> f64 {
+        2.0 * distance / self.speed / source.load + source.transfer_ticks_per_mineral
+    }
+
+    fn covers_site(&self, rates: &[Vec<f64>], include_pending: bool) -> bool {
+        let reachable_supply = self
+            .sources
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| rates.iter().any(|hauler| hauler[*index].is_finite()))
+            .map(|(_, source)| source.minerals)
+            .sum();
+        if !covers(reachable_supply, self.expansion) {
             return false;
         }
 
-        // Interchangeable Haulers share one idle-time budget for their set of usable routes.
-        let mut pools = BTreeMap::<Vec<usize>, u64>::new();
-        for (hauler, &(_, time)) in self.haulers.iter().enumerate() {
-            let reachable = routes
+        // Every Hauler needs only its cheapest accessible route to each Source.
+        // Haulers with the same options can share one idle-time constraint.
+        let mut pools = BTreeMap::<Vec<(usize, u64)>, u64>::new();
+        let mut idle_capacity = 0.0;
+        for (&(_, time), rates) in self.haulers.iter().zip(rates) {
+            let fastest = rates.iter().copied().fold(f64::INFINITY, f64::min);
+            idle_capacity += f64::from(time) / fastest;
+            let reachable: Vec<_> = rates
                 .iter()
                 .enumerate()
-                .filter_map(|(index, route)| {
-                    route
-                        .haulers
-                        .binary_search(&hauler)
-                        .is_ok()
-                        .then_some(index)
+                .filter_map(|(source, &ticks)| {
+                    ticks.is_finite().then_some((source, ticks.to_bits()))
                 })
-                .collect::<Vec<_>>();
+                .collect();
             if !reachable.is_empty() {
                 *pools.entry(reachable).or_default() += u64::from(time);
             }
         }
-        let idle_capacity = pools
-            .iter()
-            .map(|(reachable, time)| {
-                let fastest = reachable
-                    .iter()
-                    .map(|&index| routes[index].ticks_per_mineral)
-                    .min_by(f64::total_cmp)
-                    .expect("pool serves a route");
-                *time as f64 / fastest
-            })
-            .sum();
         if !covers(idle_capacity, self.expansion) {
             return false;
         }
@@ -488,12 +494,11 @@ impl SupplyBudget {
             }
         }
         for (index, reachable) in pools.into_keys().enumerate() {
-            for route in reachable {
-                let route = &routes[route];
+            for (source, ticks) in reachable {
                 flow.allow(&[
-                    (route.source, 1.0),
+                    (source, 1.0),
                     (expansion_row, 1.0),
-                    (expansion_row + 1 + index, route.ticks_per_mineral),
+                    (expansion_row + 1 + index, f64::from_bits(ticks)),
                 ]);
             }
         }
@@ -546,100 +551,233 @@ fn can_supply(navigation: &Navigation, source: &Source, terminal: &Transform) ->
     (!pending).then_some(false)
 }
 
-type PathKey = (ShapeBits, [u32; 2], super::interaction::InteractionBits);
-type RoundTrip = (f64, Vec2);
+struct SiteRoutes<'a> {
+    navigation: &'a Navigation,
+    paths: &'a mut DeliveryPaths,
+    footprint: Obstacle,
+    budget: &'a SupplyBudget,
+    confirmed: Vec<Vec<f64>>,
+    possible: Vec<Vec<f64>>,
+    probe: Option<PathProbe>,
+    pending_connectivity: bool,
+}
 
+impl SiteRoutes<'_> {
+    fn add_pickup(
+        &mut self,
+        index: usize,
+        source: &Source,
+        pickup: Vec2,
+        destination: InteractionRegion,
+        dropoffs: &[Vec2],
+    ) {
+        if !self.footprint.admits_body(pickup) || !self.navigation.point_clear_for_entry(pickup) {
+            return;
+        }
+
+        let dropoff = destination.approach(pickup);
+        let direct = std::iter::once(dropoff)
+            .chain(dropoffs.iter().copied())
+            .filter(|&point| delivery_clear(self.navigation, self.footprint, pickup, point))
+            .map(|point| f64::from(pickup.distance(point)))
+            .min_by(f64::total_cmp);
+        let delivery = match direct {
+            Some(distance) => RouteEstimate::Known(distance),
+            None => self.paths.estimate(
+                self.navigation,
+                self.footprint,
+                PathProbe {
+                    start: pickup,
+                    goal: RouteGoal::Interaction(destination),
+                },
+            ),
+        };
+        let distance = match delivery {
+            RouteEstimate::Known(distance) => distance,
+            RouteEstimate::Missing => return,
+            RouteEstimate::Connecting | RouteEstimate::Pending(_) => {
+                // Route refinement can only add distance to this geometric bound.
+                f64::from(
+                    (self.footprint.surface_distance(pickup)
+                        - BODY_RADIUS
+                        - 2.0 * STOP_THRESHOLD
+                        - 0.001)
+                        .max(0.0),
+                )
+            }
+        };
+        let cost = self.budget.trip_cost(source, distance);
+
+        for (index_hauler, &(position, _)) in self.budget.haulers.iter().enumerate() {
+            if self.possible[index_hauler][index] <= cost
+                && self.confirmed[index_hauler][index] <= cost
+            {
+                continue;
+            }
+            let reach = if delivery_clear(self.navigation, self.footprint, position, pickup) {
+                RouteEstimate::Known(0.0)
+            } else if !self.footprint.admits_body(position)
+                || !self.navigation.point_clear_for_entry(position)
+            {
+                continue;
+            } else {
+                let cell_center = ((position / CELL_WIDTH).floor() + Vec2::splat(0.5)) * CELL_WIDTH;
+                let start =
+                    if delivery_clear(self.navigation, self.footprint, position, cell_center) {
+                        cell_center
+                    } else {
+                        position
+                    };
+                self.paths.estimate(
+                    self.navigation,
+                    self.footprint,
+                    PathProbe {
+                        start,
+                        goal: RouteGoal::Point(pickup),
+                    },
+                )
+            };
+            if matches!(reach, RouteEstimate::Missing) {
+                continue;
+            }
+            let possible = &mut self.possible[index_hauler][index];
+            *possible = possible.min(cost);
+            if matches!(delivery, RouteEstimate::Known(_))
+                && matches!(reach, RouteEstimate::Known(_))
+            {
+                let confirmed = &mut self.confirmed[index_hauler][index];
+                *confirmed = confirmed.min(cost);
+            } else {
+                for estimate in [delivery, reach] {
+                    match estimate {
+                        RouteEstimate::Pending(probe) => {
+                            self.probe.get_or_insert(probe);
+                        }
+                        RouteEstimate::Connecting => self.pending_connectivity = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    fn result(self) -> Option<bool> {
+        if self.budget.covers_site(&self.confirmed, false) {
+            return Some(true);
+        }
+        let pending = self.pending_connectivity
+            || self.probe.is_some()
+            || self
+                .budget
+                .sources
+                .iter()
+                .any(|source| !source.pending_spending.is_empty());
+        if !pending || !self.budget.covers_site(&self.possible, true) {
+            return Some(false);
+        }
+        if let Some(probe) = self.probe {
+            self.paths.request(self.navigation, self.footprint, probe);
+        }
+        None
+    }
+}
+
+type PathKey = (ShapeBits, [u32; 2], DeliveryGoal);
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum DeliveryGoal {
+    Point([u32; 2]),
+    Interaction(super::interaction::InteractionBits),
+}
+
+#[derive(Clone, Copy)]
+struct PathProbe {
+    start: Vec2,
+    goal: RouteGoal,
+}
+
+impl PathProbe {
+    fn key(self, footprint: Obstacle) -> PathKey {
+        let goal = match self.goal {
+            RouteGoal::Point(point) => DeliveryGoal::Point(point.to_array().map(f32::to_bits)),
+            RouteGoal::Interaction(region) => DeliveryGoal::Interaction(region.bits()),
+            RouteGoal::Range { .. } => unreachable!(),
+        };
+        (
+            footprint.bits(),
+            self.start.to_array().map(f32::to_bits),
+            goal,
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
 enum RouteEstimate {
-    Known(RoundTrip),
-    Pending,
+    Known(f64),
+    Connecting,
+    Pending(PathProbe),
     Missing,
 }
 
 #[derive(Default)]
 struct DeliveryPaths {
     geometry: Option<(u64, u64)>,
-    pending: HashMap<PathKey, RouteRequestId>,
-    finished: HashMap<PathKey, Option<RoundTrip>>,
+    pending: Option<(PathKey, RouteRequestId)>,
+    finished: HashMap<PathKey, Option<f64>>,
 }
 
 impl DeliveryPaths {
     fn begin(&mut self, navigation: &Navigation) {
         let geometry = (navigation.clearance_identity(), navigation.revision());
         if self.geometry != Some(geometry) {
-            for id in self.pending.drain().map(|(_, id)| id) {
+            if let Some((_, id)) = self.pending.take() {
                 navigation.cancel(id);
             }
             self.finished.clear();
             self.geometry = Some(geometry);
             return;
         }
-        self.pending.retain(|key, id| {
-            let result = match navigation.poll(*id) {
-                RouteStatus::Pending => return true,
-                RouteStatus::Unreachable => None,
-                RouteStatus::Found(route) => route.waypoints.last().copied().map(|pickup| {
-                    // Forecast routes use physical distance without Corridor or traffic costs.
-                    (2.0 * f64::from(route.cost), pickup)
-                }),
-            };
-            navigation.cancel(*id);
-            self.finished.insert(*key, result);
-            false
-        });
+        let Some((key, id)) = self.pending else {
+            return;
+        };
+        let result = match navigation.poll(id) {
+            RouteStatus::Pending => return,
+            RouteStatus::Unreachable => None,
+            // Forecast routes have physical costs without Corridor or traffic effects.
+            RouteStatus::Found(route) => Some(f64::from(route.cost)),
+        };
+        navigation.cancel(id);
+        self.finished.insert(key, result);
+        self.pending = None;
     }
 
-    /// One repeated delivery from a Source, including the empty return along the same path.
-    fn round_trip(
-        &mut self,
+    fn estimate(
+        &self,
         navigation: &Navigation,
-        destination: InteractionRegion,
         footprint: Obstacle,
-        source: &Source,
+        probe: PathProbe,
     ) -> RouteEstimate {
-        let best = destination.approach(source.center);
-        let direct = |start| {
-            let pickup = source.region.approach(start);
-            (footprint.segment_clear(start, pickup)
-                && navigation.point_clear_for_entry(start)
-                && navigation.movement_clear(start, pickup))
-            .then_some((2.0 * f64::from(start.distance(pickup)), pickup))
-        };
-        if let Some(route) = direct(best) {
-            return RouteEstimate::Known(route);
+        if let Some(result) = self.finished.get(&probe.key(footprint)) {
+            return result.map_or(RouteEstimate::Missing, RouteEstimate::Known);
         }
-        for start in std::iter::once(best).chain(destination.candidates(source.center)) {
-            if !navigation.point_clear_for_entry(start) {
-                continue;
-            }
-            if let Some(route) = direct(start) {
-                return RouteEstimate::Known(route);
-            }
-            let key = (
-                footprint.bits(),
-                start.to_array().map(f32::to_bits),
-                source.region.bits(),
-            );
-            if let Some(result) = self.finished.get(&key) {
-                if let Some(route) = result {
-                    return RouteEstimate::Known(*route);
-                }
-                continue;
-            }
-            let goal = RouteGoal::Interaction(source.region);
-            if matches!(
-                navigation.query_connectivity(start, goal),
-                ConnectivityStatus::Unreachable
-            ) {
-                continue;
-            }
-            // Share the normal background budget and keep at most one forecast queued.
-            if self.pending.is_empty() {
-                let id = navigation.request_delivery_route(start, goal, footprint);
-                self.pending.insert(key, id);
-            }
-            return RouteEstimate::Pending;
+        // Disconnected paths in current geometry cannot be opened by the added footprint.
+        if matches!(probe.goal, RouteGoal::Point(point) if navigation.movement_clear(probe.start, point))
+        {
+            return RouteEstimate::Pending(probe);
         }
-        RouteEstimate::Missing
+        match navigation.query_connectivity(probe.start, probe.goal) {
+            ConnectivityStatus::Connected { .. } => RouteEstimate::Pending(probe),
+            ConnectivityStatus::Unreachable => RouteEstimate::Missing,
+            ConnectivityStatus::Pending => RouteEstimate::Connecting,
+        }
+    }
+
+    fn request(&mut self, navigation: &Navigation, footprint: Obstacle, probe: PathProbe) {
+        // One forecast at a time shares the same navigation budget as normal movement.
+        if self.pending.is_none() {
+            let id = navigation.request_delivery_route(probe.start, probe.goal, footprint);
+            self.pending = Some((probe.key(footprint), id));
+        }
     }
 }
 

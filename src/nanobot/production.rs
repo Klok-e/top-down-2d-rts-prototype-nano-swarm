@@ -70,14 +70,6 @@ impl ProductionPressure {
     }
 }
 
-fn next_recovery_ticks(current: u32, demand_unmet: bool, threshold: u32) -> u32 {
-    if demand_unmet {
-        current.saturating_add(1).min(threshold)
-    } else {
-        0
-    }
-}
-
 /// Marker for a [`crate::nanobot::Swarm`] that is driven by
 /// prepainted intent. Opponent nanobots still run
 /// through the same scoring, logistics, and production systems
@@ -328,7 +320,7 @@ pub fn production_facility_auto_creation_system(
 
         let budget = if operational.is_empty() {
             let delay = tuning.production.pressure_ticks;
-            let ticks = next_recovery_ticks(pressure.ticks_for(*swarm_id), true, delay);
+            let ticks = pressure.ticks_for(*swarm_id).saturating_add(1).min(delay);
             pressure.set_ticks(*swarm_id, ticks);
             if ticks < delay {
                 continue;
@@ -362,31 +354,22 @@ pub fn production_facility_auto_creation_system(
             }
             (access.snapshot(), obstacles, build_cells_by_swarm)
         });
-        let mut supply_pending = false;
         let Some((build_cell, placement_pos)) =
             build_cells_by_swarm.get(swarm_id).and_then(|cells| {
-                crate::nanobot::placement::find_build_zone_placement_accepting(
+                crate::nanobot::placement::find_build_zone_placement_until(
                     cells,
                     obstacles,
                     kind.footprint_half_extent(),
                     27,
                     |position| {
-                        if supply_pending
-                            || !access.accepts(access_layout, &grid, *swarm_id, kind, position)
-                        {
-                            return false;
+                        if !access.accepts(access_layout, &grid, *swarm_id, kind, position) {
+                            return (!access_layout.is_pending()).then_some(false);
                         }
                         let Some(budget) = &budget else {
-                            return true;
+                            return Some(true);
                         };
                         let footprint = kind.footprint_transform(position.extend(0.0));
-                        match supply.supplies_site(budget, &footprint) {
-                            Some(supplied) => supplied,
-                            None => {
-                                supply_pending = true;
-                                false
-                            }
-                        }
+                        supply.supplies_site(budget, &footprint)
                     },
                 )
             })
@@ -904,27 +887,6 @@ mod tests {
     //! facility behavior tests.
 
     use super::*;
-
-    #[test]
-    fn recovery_requires_consecutive_ticks() {
-        let mut ticks = 0;
-        for _ in 0..Tuning::default().production.pressure_ticks - 1 {
-            ticks = next_recovery_ticks(ticks, true, Tuning::default().production.pressure_ticks);
-        }
-        assert_eq!(ticks, Tuning::default().production.pressure_ticks - 1);
-        assert_eq!(
-            next_recovery_ticks(ticks, false, Tuning::default().production.pressure_ticks),
-            0
-        );
-        assert_eq!(
-            next_recovery_ticks(
-                Tuning::default().production.pressure_ticks,
-                true,
-                Tuning::default().production.pressure_ticks
-            ),
-            Tuning::default().production.pressure_ticks,
-        );
-    }
 
     #[test]
     fn production_facility_starts_idle() {

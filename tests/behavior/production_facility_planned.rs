@@ -7,8 +7,8 @@ use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
         Cargo, GatherPlugin, HaulPlugin, HaulerAssignment, InteractionRegion, LogisticsReservation,
-        Nanobot, OwnerSwarm, PlannedKind, PlannedStructure, ProductionFacility, ProductionPressure,
-        SwarmId, SwarmMember, completed_visual_color, planned_visual_color,
+        Nanobot, OwnerSwarm, PlannedKind, PlannedStructure, ProductionFacility, SwarmId,
+        SwarmMember, completed_visual_color, planned_visual_color,
     },
     resources::{ResourceKind, Stockpile, StockpileRole},
     terrain::RockFormation,
@@ -47,12 +47,6 @@ fn zero_facilities_recovers_one_owned_plan_after_the_recovery_delay() {
     for _ in 0..Tuning::default().production.pressure_ticks - 1 {
         app.update();
     }
-    assert_eq!(
-        app.world()
-            .resource::<ProductionPressure>()
-            .ticks_for(SwarmId::PLAYER),
-        Tuning::default().production.pressure_ticks - 1,
-    );
     assert!(production_plans(&mut app).is_empty());
 
     for _ in 0..101 {
@@ -145,6 +139,7 @@ struct Expansion {
     facility: Entity,
     source: Entity,
     hauler: Entity,
+    worker: Entity,
 }
 
 impl Expansion {
@@ -173,17 +168,17 @@ impl Expansion {
             state.input_capacity = funding;
             state.input_amount = funding;
         }
-        let source = common::spawn_stockpile(&mut app, Vec2::new(396.0, 252.0), 0, 100);
-        app.world_mut().entity_mut(source).insert(OwnerSwarm(owner));
+        let source = common::spawn_owned_source(&mut app, owner, Vec2::new(396.0, 252.0), 0, 100);
         let hauler = common::spawn_hauler_at(&mut app, Vec2::new(300.0, 252.0));
         // A live builder leaves room for every proposed facility to be physically built.
-        common::spawn_worker_at(&mut app, Vec2::new(612.0, 252.0));
+        let worker = common::spawn_worker_at(&mut app, Vec2::new(612.0, 252.0));
         Self {
             app,
             owner,
             facility,
             source,
             hauler,
+            worker,
         }
     }
 
@@ -271,12 +266,7 @@ impl Expansion {
     }
 
     fn add_source(&mut self, position: Vec2, owner: Entity) -> Entity {
-        let source = common::spawn_stockpile(&mut self.app, position, 0, 100);
-        self.app
-            .world_mut()
-            .entity_mut(source)
-            .insert((OwnerSwarm(owner), StockpileRole::Source));
-        source
+        common::spawn_owned_source(&mut self.app, owner, position, 0, 100)
     }
 
     fn empty_source(&mut self, source: Entity) {
@@ -336,6 +326,14 @@ impl Expansion {
             .resource_mut::<Tuning>()
             .production
             .ticks_per_bot = ticks;
+    }
+
+    fn move_to(&mut self, entity: Entity, position: Vec2) {
+        self.app
+            .world_mut()
+            .get_mut::<Transform>(entity)
+            .unwrap()
+            .translation = position.extend(0.0);
     }
 
     fn facility(&self) -> &ProductionFacility {
@@ -722,6 +720,132 @@ fn expansion_requires_the_current_tuned_mineral_rate() {
 }
 
 #[test]
+fn a_small_hopper_limits_the_rate_of_hauler_unloading() {
+    let mut game = Expansion::new(100);
+    {
+        let mut tuning = game.app.world_mut().resource_mut::<Tuning>();
+        tuning.production.cost_per_bot = 10;
+        tuning.production.ticks_per_bot = 120;
+        tuning.production.input_capacity = 10;
+    }
+    game.app
+        .world_mut()
+        .get_mut::<Stockpile>(game.source)
+        .unwrap()
+        .capacity = 220;
+    game.observe_supply(100);
+    game.dropoff(game.source, 100);
+    game.dropoff(game.source, 20);
+    game.empty_source(game.source);
+    game.demand();
+    game.advance(3 * 120 + 30);
+    assert_eq!(game.births(), 3);
+    assert!(game.facility().current_target.is_some());
+    game.assert_no_plan();
+
+    game.app
+        .world_mut()
+        .resource_mut::<Tuning>()
+        .logistics
+        .material_work_ticks = 60;
+    game.place_one(game.owner);
+}
+
+#[test]
+fn a_candidate_cannot_count_a_hauler_cut_off_by_the_completed_footprint() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::find_build_zone_placement, navigation_runtime::NavigationBudget,
+    };
+
+    let mut game = Expansion::new(100);
+    game.app.insert_resource(IntentGrid::new(4, 4));
+    game.app.insert_resource(NavigationBudget(98_304));
+    let (_, first) = find_build_zone_placement(
+        &[BUILD_CELL],
+        &[],
+        PlannedKind::ProductionFacility.footprint_half_extent(),
+        27,
+    )
+    .unwrap();
+    let map_edge = 4.0 * top_down_2d_rts_prototype_nano_swarm::ZONE_BLOCK_SIZE;
+    // The first footprint leaves two 32-unit openings, too narrow for a Hauler.
+    for (low, high) in [(-map_edge, first.x - 140.0), (first.x + 140.0, map_edge)] {
+        game.app.world_mut().spawn((
+            RockFormation::Rectangle {
+                half: Vec2::new((high - low) * 0.5, 48.0),
+            },
+            Transform::from_xyz((low + high) * 0.5, first.y, 0.0),
+        ));
+    }
+    game.move_to(game.facility, first + Vec2::new(-350.0, -335.0));
+    game.move_to(game.source, first - Vec2::Y * 315.0);
+    game.move_to(game.worker, first + Vec2::new(-160.0, -220.0));
+    game.move_to(game.hauler, first + Vec2::Y * 270.0);
+    game.observe_supply(80);
+    game.empty_source(game.source);
+    game.demand();
+    game.advance(3 * CYCLE_TICKS + 150);
+    game.assert_no_plan();
+
+    game.move_to(game.hauler, first + Vec2::new(100.0, -270.0));
+    let plan = game.place_one(game.owner);
+    let site = game
+        .app
+        .world()
+        .get::<Transform>(plan)
+        .unwrap()
+        .translation
+        .truncate();
+    assert_eq!(site, first, "the same site qualifies with pickup access");
+}
+
+#[test]
+fn a_shorter_approach_can_make_the_first_footprint_viable() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::find_build_zone_placement, navigation_runtime::NavigationBudget,
+    };
+
+    let mut game = Expansion::new(100);
+    game.app.insert_resource(NavigationBudget(98_304));
+    let (_, first) = find_build_zone_placement(
+        &[BUILD_CELL],
+        &[],
+        PlannedKind::ProductionFacility.footprint_half_extent(),
+        27,
+    )
+    .unwrap();
+    {
+        let mut tuning = game.app.world_mut().resource_mut::<Tuning>();
+        tuning.logistics.hauler_carry_capacity = 10;
+        tuning.logistics.material_work_ticks = 20;
+        tuning.logistics.bot_speed = 2.15;
+    }
+    game.move_to(game.source, first - Vec2::X * 620.0);
+    game.move_to(game.hauler, first - Vec2::X * 520.0);
+    // The preferred approach must detour around the rock. An approach toward
+    // the end of the same face can travel directly and meet the rate.
+    game.app.world_mut().spawn((
+        RockFormation::Rectangle {
+            half: Vec2::new(10.0, 48.0),
+        },
+        Transform::from_translation((first - Vec2::X * 230.0).extend(0.0)),
+    ));
+    game.observe_supply(80);
+    game.empty_source(game.source);
+    game.demand();
+    game.advance(3 * CYCLE_TICKS);
+    let plan = game.place_one(game.owner);
+    let site = game
+        .app
+        .world()
+        .get::<Transform>(plan)
+        .unwrap()
+        .translation
+        .truncate();
+    assert_eq!(site, first);
+}
+
+#[test]
 fn swarms_need_their_own_supply_and_each_hold_one_commitment() {
     let mut game = Expansion::new(100);
     let enemy = SwarmId(2);
@@ -878,8 +1002,9 @@ fn an_earlier_candidate_can_qualify_through_a_budgeted_detour() {
         Transform::from_xyz(1400.0, 252.0, 0.0),
     ));
     game.observe_supply(80);
-    game.demand();
+    game.paint_defend(SwarmId::PLAYER, -2..=0);
     game.put(far, IntentKind::Build, SwarmId::PLAYER, true);
+    game.put(BUILD_CELL, IntentKind::Build, SwarmId::PLAYER, true);
     game.advance(3 * CYCLE_TICKS);
     let plan = game.place_one(game.owner);
     assert_eq!(

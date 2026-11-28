@@ -254,10 +254,7 @@ fn a_single_physical_delivery_does_not_commit_another_facility() {
     common::spawn_worker_at(&mut app, Vec2::new(440.0, 0.0));
     let hauler = common::spawn_hauler_at(&mut app, Vec2::new(-120.0, 0.0));
     let terminal = spawn_trip_terminal(&mut app, owner);
-    let source = common::spawn_stockpile(&mut app, Vec2::new(-200.0, 0.0), cost, 100);
-    app.world_mut()
-        .entity_mut(source)
-        .insert((OwnerSwarm(owner), StockpileRole::Source));
+    let source = common::spawn_owned_source(&mut app, owner, Vec2::new(-200.0, 0.0), cost, 100);
     app.world_mut().resource_mut::<ResourceLedger>().add_for(
         SwarmId::PLAYER,
         ResourceKind::Minerals,
