@@ -8,11 +8,9 @@ Constraints not explicitly confirmed by the user may be relaxed to simplify code
 
 On every implementation task, look for ways to improve the code you change and the repository code it directly depends on. Use your judgment to make worthwhile improvements that preserve behavior and fit the task's scope. Examples include renaming functions to reflect what they do and variables to reflect what they represent, removing unused symbols, simplifying and making code more elegant.
 
-In the final response for each implementation task, name any significant refactor you deferred and explain its expected benefit.
-
 ## Papercuts and Maintenance
 
-During any repository task, record papercuts you encounter that are likely to recur or straightforward to fix, along with actionable maintenance opportunities you notice, in [the maintenance log](docs/agents/maintenance.md). Give one bullet per distinct item with the affected area, concrete evidence, and a proposed improvement with its expected benefit. Update an existing entry when you have new information about the same item.
+During any repository task, record papercuts you encounter that are likely to recur or straightforward to fix, along with actionable maintenance opportunities you notice, in [the maintenance log](docs/agents/maintenance.md). Include significant refactors deferred during implementation. Give one bullet per distinct item with the affected area, concrete evidence, and a proposed improvement with its expected benefit. Update an existing entry when you have new information about the same item.
 
 The maintenance log is the only file you may edit during a review, investigation, or other read-only task.
 
