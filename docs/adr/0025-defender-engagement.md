@@ -26,11 +26,11 @@ Defender Population Demand is the greater of half the swarm's unique Swarm Tile 
 
 Empty Charge gives zero attack and defense. Positive Charge below the weakened threshold scales linearly from the configured strength floor (0.4 by default) to full strength at the threshold.
 
-Low-charge Defenders select the nearest valid supplied Charger in owned Defend paint. Each Charger admits up to three Defenders, within a swarm-wide rotation cap of half the living Defender population rounded down, with a minimum of one. Scarce capacity goes to the lowest Charge, then to staged Defenders, then by stable identity. Admission releases the current response. Recharged Defenders re-enter current response or staging allocation.
+Low-charge Defenders select the nearest valid supplied Charger in owned Defend paint. Each Charger admits up to its configured number of Defenders, within a swarm-wide rotation cap of half the living Defender population rounded down, with a minimum of one. Scarce capacity goes to the lowest Charge, then to staged Defenders, then by stable identity. Admission releases the current response. Recharged Defenders re-enter current response or staging allocation.
 
 Admission covers travel and charging. Casualties can reduce the cap below the number already admitted. Those Defenders finish, and new admissions wait until the active count falls below the cap. An invalid or destroyed Charger ends its rotations. Selecting a replacement requires fresh admission.
 
-Charger construction responds to unserved low Charge by choosing the nearest eligible non-overlapping site in owned Defend paint. A completed Charger outside that paint remains standing and inactive. A valid Charger creates Maintenance demand while serving a Defender or while a living same-swarm Defender is in its cell or a neighboring cell, including diagonals. Unattended Chargers may decay.
+[ADR 0044](0044-advance-a-bounded-frontline.md) defines when Charger construction starts and how it ranks sites. A completed Charger outside owned Defend paint remains standing and inactive. A valid Charger creates Maintenance demand while serving a Defender or while a living same-swarm Defender is in its cell or a neighboring cell, including diagonals. Unattended Chargers may decay.
 
 ## Disengagement and rout
 

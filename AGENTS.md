@@ -12,7 +12,7 @@ On every implementation task, look for ways to improve the code you change and t
 
 During any repository task, record papercuts you encounter that are likely to recur or straightforward to fix, along with actionable maintenance opportunities you notice, in [the maintenance log](docs/agents/maintenance.md). Include significant refactors deferred during implementation. Give one bullet per distinct item with the affected area, concrete evidence, and a proposed improvement with its expected benefit. Update an existing entry when you have new information about the same item.
 
-The maintenance log is the only file you may edit during a review, investigation, or other read-only task.
+The maintenance log may be edited during a review, investigation, or any other read-only task.
 
 ## Change Verification
 

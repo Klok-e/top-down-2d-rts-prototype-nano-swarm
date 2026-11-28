@@ -28,6 +28,9 @@ _Avoid_: Build order, squad orders
 A fixed position on the approach to a military objective where the Strategic Controller paints a Defend block to rally its Defenders before advancing.
 _Avoid_: Cohort anchor
 
+**Frontline**:
+The Strategic Controller's bounded area of Defend paint that moves with its advance toward a military objective.
+
 **Nanobot**:
 An individual autonomous agent within the swarm. It may choose tasks from player intent, but is not a persistent command target.
 _Avoid_: Unit, soldier, worker
@@ -113,7 +116,7 @@ A Defender sustain resource restored by the nearest valid supplied Charger in ow
 _Avoid_: Ammo, mana, stamina
 
 **Charger**:
-A terminal consumer whose finite local mineral buffer restores Charge for its swarm while it is operational, supplied, and inside owned Defend paint. Unserved low Charge creates nearby capacity plans; a Charger outside owned Defend paint is inactive, while unattended valid Chargers receive no Maintenance and may decay.
+A terminal consumer whose finite local mineral buffer restores Charge for its swarm while it is operational, supplied, and inside owned Defend paint. Unattended valid Chargers receive no Maintenance and may decay.
 _Avoid_: Charge stockpile, instant resupply, resource sink
 
 **Terminal Consumer**:
