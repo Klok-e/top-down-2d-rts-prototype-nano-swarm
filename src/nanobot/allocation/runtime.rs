@@ -265,6 +265,18 @@ struct RestartRefills<'w, 's> {
 }
 
 impl RestartRefills<'_, '_> {
+    fn starts_due(&self, entity: Entity, cycles: &RestartCycles) -> Option<u32> {
+        let starts = cycles.forecast_starts()?;
+        if self
+            .conditions
+            .get(entity)
+            .is_ok_and(|condition| !condition.is_operational())
+        {
+            return None;
+        }
+        Some(starts)
+    }
+
     fn forecasts(
         &self,
         tuning: &crate::tuning::Tuning,
@@ -275,14 +287,7 @@ impl RestartRefills<'_, '_> {
             .facilities
             .iter()
             .filter_map(|(entity, facility, _, cycles)| {
-                let starts = cycles.forecast_starts()?;
-                if self
-                    .conditions
-                    .get(entity)
-                    .is_ok_and(|condition| !condition.is_operational())
-                {
-                    return None;
-                }
+                let starts = self.starts_due(entity, cycles)?;
                 Some((entity, RestartForecast::new(facility, starts, tuning)))
             })
             .collect();
@@ -517,13 +522,19 @@ pub fn regional_allocation_acquisition_system(
     stockpiles: Query<(&Stockpile, &Transform, Option<&StockpileRole>)>,
     mut terminal: AllocationInputs,
 ) {
+    let restart_refill_inputs = &terminal.restart_refills;
+    terminal.ages.restart_route_waits.retain(|&sink, _| {
+        restart_refill_inputs
+            .facilities
+            .get(sink)
+            .is_ok_and(|(_, _, _, cycles)| restart_refill_inputs.starts_due(sink, cycles).is_some())
+    });
     if projection
         .iter_regions()
         .all(|(_, opportunities)| opportunities.is_empty())
     {
         region_ages.waiting.clear();
         terminal.ages.waiting.clear();
-        terminal.ages.restart_route_waits.clear();
         return;
     }
 
@@ -871,7 +882,7 @@ pub fn regional_allocation_acquisition_system(
     let mut assigned_workers = std::collections::BTreeSet::new();
 
     let mut restart_refills = None;
-    let mut restart_route_waits = BTreeMap::new();
+    let mut observed_restart_route_waits = BTreeMap::new();
     let ordinary = candidates.into_iter().map(|bot| (bot, None));
     let preemptible = spare_workers
         .into_iter()
@@ -897,9 +908,7 @@ pub fn regional_allocation_acquisition_system(
         let (_, _, _, _, _, _, rejected) = bots.get(bot.entity).unwrap();
         let work = if bot.kind == NanobotType::Hauler {
             let refills = restart_refills.get_or_insert_with(|| {
-                terminal
-                    .restart_refills
-                    .forecasts(&tuning, &navigation, &stockpiles)
+                restart_refill_inputs.forecasts(&tuning, &navigation, &stockpiles)
             });
             let Some(selection) = choose_terminal_logistics_work(
                 &tuning,
@@ -918,7 +927,7 @@ pub fn regional_allocation_acquisition_system(
                 &terminal.ages,
                 &nearest_terminal_source,
                 refills,
-                &mut restart_route_waits,
+                &mut observed_restart_route_waits,
             ) else {
                 continue;
             };
@@ -1066,7 +1075,7 @@ pub fn regional_allocation_acquisition_system(
         {
             terminal.ages.waiting.insert(sink, 0);
             terminal.ages.restart_route_waits.remove(&sink);
-            restart_route_waits.remove(&sink);
+            observed_restart_route_waits.remove(&sink);
         }
         region_ages
             .waiting
@@ -1097,7 +1106,13 @@ pub fn regional_allocation_acquisition_system(
             *open = open.saturating_sub(1);
         }
     }
-    terminal.ages.restart_route_waits = restart_route_waits;
+    for (sink, passes) in observed_restart_route_waits {
+        if let Some(passes) = passes {
+            terminal.ages.restart_route_waits.insert(sink, passes);
+        } else {
+            terminal.ages.restart_route_waits.remove(&sink);
+        }
+    }
     unused_workers.retain(|bot| !assigned_workers.contains(&bot.entity));
     if unused_workers.is_empty() {
         return;
@@ -1207,7 +1222,7 @@ fn choose_terminal_logistics_work(
     ages: &TerminalDemandAges,
     nearest_terminal_source: &BTreeMap<Entity, f32>,
     restart_refills: &BTreeMap<Entity, RestartForecast>,
-    restart_route_waits: &mut BTreeMap<Entity, u32>,
+    observed_restart_route_waits: &mut BTreeMap<Entity, Option<u32>>,
 ) -> Option<SelectedHaul> {
     if pull.categories.get(OpportunityCategory::Haul) == 0 {
         return None;
@@ -1406,20 +1421,27 @@ fn choose_terminal_logistics_work(
             }
         }
     }
-    for &terminal in &awaiting_routes {
-        restart_route_waits.entry(terminal).or_insert_with(|| {
-            ages.restart_route_waits
-                .get(&terminal)
-                .copied()
-                .unwrap_or_default()
-                .saturating_add(1)
-        });
-    }
     terminals
         .into_iter()
         .filter_map(|(terminal, (funding, score, work))| {
-            let waiting = awaiting_routes.contains(&terminal)
-                && restart_route_waits[&terminal] <= RESTART_ROUTE_WAIT_PASSES;
+            let waiting = if awaiting_routes.contains(&terminal) {
+                let passes = observed_restart_route_waits
+                    .entry(terminal)
+                    .or_default()
+                    .get_or_insert_with(|| {
+                        ages.restart_route_waits
+                            .get(&terminal)
+                            .copied()
+                            .unwrap_or_default()
+                            .saturating_add(1)
+                    });
+                *passes <= RESTART_ROUTE_WAIT_PASSES
+            } else {
+                if ages.restart_route_waits.contains_key(&terminal) {
+                    observed_restart_route_waits.entry(terminal).or_insert(None);
+                }
+                false
+            };
             (funding.is_some() || score.strict.is_some() || !waiting).then_some((score, work))
         })
         .min_by(|(left, _), (right, _)| left.cmp(*right))
