@@ -1450,6 +1450,37 @@ fn a_short_pickup_restarts_production_earlier_than_the_usual_load() {
 }
 
 #[test]
+fn a_one_mineral_restart_refill_beats_nearer_sink_restocking() {
+    let mut fixture = RestartRefill::new(4, 5, 0, Vec2::new(1800.0, 200.0));
+    let owner = *fixture
+        .app
+        .world()
+        .get::<OwnerSwarm>(fixture.facility)
+        .unwrap();
+    let sink = common::spawn_sink_stockpile(&mut fixture.app, Vec2::new(288.0, -36.0), 0, 100);
+    fixture.app.world_mut().entity_mut(sink).insert(owner);
+
+    fixture.return_defender_demand();
+    assert!(fixture.cycle_starts(20).is_empty());
+    let world = fixture.app.world();
+    let assignment = world.get::<HaulerAssignment>(fixture.fast_hauler).unwrap();
+    assert_eq!(assignment.sink, fixture.facility);
+    assert_eq!(
+        world.get::<LogisticsReservation>(fixture.fast_hauler),
+        Some(&LogisticsReservation::new(
+            fixture.full_pickup,
+            fixture.facility,
+            ResourceKind::Minerals,
+            1,
+        ))
+    );
+
+    assert!((1..=130).any(|_| !fixture.cycle_starts(1).is_empty()));
+    assert_eq!(stockpile_amount(&fixture.app, sink), 0);
+    assert_eq!(cargo_amount(&fixture.app, fixture.slow_hauler), 5);
+}
+
+#[test]
 fn a_short_pickup_funds_the_restart_with_part_of_a_larger_inbound_load() {
     let mut fixture = RestartRefill::new(0, 7, 0, Vec2::new(590.0, 36.0));
     fixture.return_defender_demand();

@@ -1172,23 +1172,24 @@ struct TerminalLogisticsScore {
     /// `Some` for Charger emergencies and fully aged terminals, which keep
     /// strict ordering ahead of all other haul work.
     strict: Option<StrictRank>,
-    /// Route cost per mineral moved plus a penalty per urgency level, so a
-    /// long trip carrying a few minerals loses to a short full refill.
-    weighted_cost: f32,
+    /// Use the selected load for ties between pickups for one terminal.
+    pickup_cost: f32,
+    /// Use the usual eligible load to compare work for different terminals.
+    terminal_cost: f32,
     estimated_cost: f32,
     terminal: u64,
     source: u64,
 }
 
 impl TerminalLogisticsScore {
-    fn cmp(self, other: Self) -> Ordering {
+    fn cmp(self, other: Self, weighted_cost: impl Fn(Self) -> f32) -> Ordering {
         let rank = match (self.strict, other.strict) {
             (Some(own), Some(theirs)) => own
                 .cmp(&theirs)
                 .then_with(|| self.estimated_cost.total_cmp(&other.estimated_cost)),
             (Some(_), None) => Ordering::Less,
             (None, Some(_)) => Ordering::Greater,
-            (None, None) => self.weighted_cost.total_cmp(&other.weighted_cost),
+            (None, None) => weighted_cost(self).total_cmp(&weighted_cost(other)),
         };
         rank.then_with(|| self.terminal.cmp(&other.terminal))
             .then_with(|| self.source.cmp(&other.source))
@@ -1367,8 +1368,8 @@ fn choose_terminal_logistics_work(
             if route_pending {
                 awaiting_routes.insert(sink);
             }
-            let amount = delivery.map_or(quote.amount, |delivery| delivery.amount);
-            let shortened = amount < quote.amount;
+            let pickup_amount = delivery.map_or(quote.amount, |delivery| delivery.amount);
+            let shortened = pickup_amount < quote.amount;
             let base_urgency = match (forecast, funding) {
                 (_, Some(_)) => STARTABLE_PRODUCTION_URGENCY,
                 (Some(_), None) => STARTABLE_PRODUCTION_URGENCY + 1,
@@ -1384,10 +1385,11 @@ fn choose_terminal_logistics_work(
                 u32::MAX - age,
                 u64::MAX - deficit_ratio,
             ));
+            let urgency_cost = f32::from(urgency) * tuning.logistics.haul_urgency_cost;
             let score = TerminalLogisticsScore {
                 strict,
-                weighted_cost: estimated_cost / amount as f32
-                    + f32::from(urgency) * tuning.logistics.haul_urgency_cost,
+                pickup_cost: estimated_cost / pickup_amount as f32 + urgency_cost,
+                terminal_cost: estimated_cost / quote.amount as f32 + urgency_cost,
                 estimated_cost,
                 terminal: sink.to_bits(),
                 source: source.to_bits(),
@@ -1399,7 +1401,7 @@ fn choose_terminal_logistics_work(
                     funding_rank(funding)
                         .cmp(&funding_rank(*current_funding))
                         .then_with(|| shortened.cmp(&current.shortened))
-                        .then_with(|| score.cmp(*current_score))
+                        .then_with(|| score.cmp(*current_score, |score| score.pickup_cost))
                         .is_lt()
                 })
             {
@@ -1412,7 +1414,12 @@ fn choose_terminal_logistics_work(
                             work: *work,
                             pickup,
                             pickup_role: source_role.copied().unwrap_or_default(),
-                            reservation: LogisticsReservation::new(source, sink, kind, amount),
+                            reservation: LogisticsReservation::new(
+                                source,
+                                sink,
+                                kind,
+                                pickup_amount,
+                            ),
                             delivery,
                             shortened,
                         },
@@ -1444,7 +1451,7 @@ fn choose_terminal_logistics_work(
             };
             (funding.is_some() || score.strict.is_some() || !waiting).then_some((score, work))
         })
-        .min_by(|(left, _), (right, _)| left.cmp(*right))
+        .min_by(|(left, _), (right, _)| left.cmp(*right, |score| score.terminal_cost))
         .map(|(_, work)| work)
 }
 
