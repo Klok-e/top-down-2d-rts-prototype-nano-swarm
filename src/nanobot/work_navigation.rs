@@ -154,10 +154,16 @@ pub struct ActiveRoute {
     current: usize,
     follower: super::route_following::RouteFollower,
     revision: u64,
-    pending: Option<crate::navigation::RouteRequestId>,
+    pending: Option<PendingRoute>,
     preserve_turns: bool,
     scored_with_traffic: bool,
     forecast_distance: f32,
+}
+
+#[derive(Clone, Copy)]
+struct PendingRoute {
+    id: crate::navigation::RouteRequestId,
+    scored_with_traffic: bool,
 }
 
 impl ActiveRoute {
@@ -259,8 +265,8 @@ pub fn move_velocity_system(
     }
     if *previous_corridor_multiplier != Some(tuning.logistics.corridor_cost_multiplier) {
         for route in routes.values() {
-            if let Some(id) = route.pending {
-                navigation.cancel(id);
+            if let Some(request) = route.pending {
+                navigation.cancel(request.id);
             }
         }
         routes.clear();
@@ -270,8 +276,8 @@ pub fn move_velocity_system(
         if bots.contains(*entity) && !is_engaged(*entity) {
             true
         } else {
-            if let Some(id) = route.pending {
-                navigation.cancel(id);
+            if let Some(request) = route.pending {
+                navigation.cancel(request.id);
             }
             if bodies.contains(*entity) {
                 commands.entity(*entity).remove::<RemainingTravel>();
@@ -617,9 +623,9 @@ pub fn move_velocity_system(
                 commands.entity(entity).remove::<DirectMovementComponent>();
             }
             if let Some(route) = routes.remove(&entity)
-                && let Some(id) = route.pending
+                && let Some(request) = route.pending
             {
-                navigation.cancel(id);
+                navigation.cancel(request.id);
             }
             continue;
         }
@@ -652,9 +658,9 @@ pub fn move_velocity_system(
                     lease.begin_travel_step(position, origin);
                 }
                 if let Some(route) = routes.remove(&entity)
-                    && let Some(id) = route.pending
+                    && let Some(request) = route.pending
                 {
-                    navigation.cancel(id);
+                    navigation.cancel(request.id);
                 }
                 commands
                     .entity(entity)
@@ -686,7 +692,11 @@ pub fn move_velocity_system(
         let needs_route = invalidated
             || routes.get(&entity).is_none_or(|route| {
                 route.destination_changed(destination.xy, original.interaction.is_some())
-                    || (!traffic_eligible && route.scored_with_traffic)
+                    || (!traffic_eligible
+                        && (route.scored_with_traffic
+                            || route
+                                .pending
+                                .is_some_and(|request| request.scored_with_traffic)))
                     || (route.pending.is_none()
                         && !route.waypoints.is_empty()
                         && route.current >= route.waypoints.len()
@@ -715,16 +725,16 @@ pub fn move_velocity_system(
                 RoutePriority::Routine
             };
             if let Some(route) = routes.get(&entity)
-                && let Some(id) = route.pending
+                && let Some(request) = route.pending
             {
-                navigation.cancel(id);
+                navigation.cancel(request.id);
             }
             let route_traffic = if traffic_eligible {
                 traffic.for_route(entity, swarm)
             } else {
                 None
             };
-            let mut scored_with_traffic = route_traffic.is_some();
+            let scored_with_traffic = route_traffic.is_some();
             let goal = if let Some(region) = destination.interaction {
                 RouteGoal::Interaction(region)
             } else if stop > STOP_THRESHOLD {
@@ -757,14 +767,30 @@ pub fn move_velocity_system(
                     )
                 },
             );
-            let (waypoints, current, follower, preserve_turns, pending) = match plan {
+            let mut replacement = ActiveRoute {
+                destination: destination.xy,
+                requested_start: position,
+                task: original.interaction,
+                stop_radius: stop,
+                waypoints: Vec::new(),
+                interaction: destination.interaction,
+                current: 0,
+                follower: Default::default(),
+                revision: navigation.revision(),
+                pending: None,
+                preserve_turns: false,
+                scored_with_traffic: false,
+                forecast_distance: 0.0,
+            };
+            match plan {
                 MovementPlan::Direct(route) => {
-                    let preserve_turns = route.waypoints.len() > 1;
-                    (route.waypoints, 0, Default::default(), preserve_turns, None)
+                    replacement.preserve_turns = route.waypoints.len() > 1;
+                    replacement.scored_with_traffic =
+                        scored_with_traffic && replacement.preserve_turns;
+                    replacement.waypoints = route.waypoints;
                 }
                 MovementPlan::Search { clear_fallback } => {
-                    let prefer_turns = scored_with_traffic;
-                    let pending = navigation.request_owned(
+                    let id = navigation.request_owned(
                         position,
                         goal,
                         swarm,
@@ -773,6 +799,10 @@ pub fn move_velocity_system(
                         entity,
                         route_traffic,
                     );
+                    replacement.pending = Some(PendingRoute {
+                        id,
+                        scored_with_traffic,
+                    });
                     let prefix = routes.get(&entity).filter(|route| {
                         clear_fallback.is_none()
                             && (traffic_eligible || !route.scored_with_traffic)
@@ -783,58 +813,26 @@ pub fn move_velocity_system(
                                 .get(route.follower.target_index(route.current))
                                 .is_some_and(|next| navigation.movement_clear(position, *next))
                     });
-                    scored_with_traffic |= prefix.is_some_and(|route| route.scored_with_traffic);
-                    let (waypoints, current, follower, preserve_turns) = prefix.map_or_else(
-                        || {
-                            (
-                                clear_fallback.into_iter().collect(),
-                                0,
-                                Default::default(),
-                                false,
-                            )
-                        },
-                        |route| {
-                            (
-                                route.waypoints.clone(),
-                                route.current,
-                                route.follower,
-                                route.preserve_turns,
-                            )
-                        },
-                    );
-                    (
-                        waypoints,
-                        current,
-                        follower,
-                        preserve_turns || prefer_turns,
-                        Some(pending),
-                    )
+                    if let Some(prefix) = prefix {
+                        replacement.waypoints = prefix.waypoints.clone();
+                        replacement.current = prefix.current;
+                        replacement.follower = prefix.follower;
+                        replacement.preserve_turns = prefix.preserve_turns;
+                        replacement.scored_with_traffic = prefix.scored_with_traffic;
+                    } else {
+                        replacement.waypoints.extend(clear_fallback);
+                    }
+                    replacement.preserve_turns |= scored_with_traffic;
                 }
-            };
-            routes.insert(
-                entity,
-                ActiveRoute {
-                    destination: destination.xy,
-                    requested_start: position,
-                    task: original.interaction,
-                    stop_radius: stop,
-                    waypoints,
-                    interaction: destination.interaction,
-                    current,
-                    follower,
-                    revision: navigation.revision(),
-                    pending,
-                    preserve_turns,
-                    scored_with_traffic,
-                    forecast_distance: 0.0,
-                },
-            );
+            }
+            routes.insert(entity, replacement);
         }
         let route = routes.get_mut(&entity).expect("route was resolved");
-        if let Some(id) = route.pending {
-            match navigation.poll(id) {
+        if let Some(request) = route.pending {
+            match navigation.poll(request.id) {
                 RouteStatus::Pending => {}
                 RouteStatus::Found(found) => {
+                    route.scored_with_traffic = request.scored_with_traffic;
                     route.waypoints = found.waypoints;
                     route.current = super::route_following::rejoin_route(
                         position,
@@ -844,18 +842,19 @@ pub fn move_velocity_system(
                     );
                     route.follower = Default::default();
                     route.pending = None;
-                    navigation.cancel(id);
+                    navigation.cancel(request.id);
                 }
                 RouteStatus::Unreachable => {
                     if let Some(entry) = approaches.entries.get_mut(&entity) {
                         entry.rejected.push(route.destination);
                         entry.selected = None;
                     }
+                    route.scored_with_traffic = false;
                     route.waypoints.clear();
                     route.current = 0;
                     route.follower = Default::default();
                     route.pending = None;
-                    navigation.cancel(id);
+                    navigation.cancel(request.id);
                 }
             }
         }
