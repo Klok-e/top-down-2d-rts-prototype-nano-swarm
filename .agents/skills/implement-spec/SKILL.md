@@ -34,7 +34,7 @@ Communication to and from subagents should be sparse. Communicate primarily thro
 
 6. After each successful merge, dispatch any newly ready tickets. If unfinished tickets remain with no work in flight and none ready, report the blocking tickets or dependency cycles.
 
-7. Once all tickets are complete, run `code-review` on the integration branch using the recorded starting commit and the originating spec. Assign actionable findings to a fresh **implementer subagent** using the worktree procedure in step 4. Merge its fixes and verify the integrated result.
+7. Once all tickets are complete, run `code-review` on the integration branch using the recorded starting commit and the originating spec. Assign actionable findings to a fresh **implementer subagent** using the worktree procedure in step 4. Merge its fixes and verify the integrated result. Use the [code-quality handoff rule](../../../AGENTS.md#continuous-code-quality) when reporting deferred review findings.
 
 8. For an authorized PR, push the verified integration tip and confirm the PR points to it. Mark it ready only when the user authorized a ready-for-review PR. When tracker updates are authorized, follow the configured resolution workflow for the spec and tickets that require closure outside the PR. Report the integration branch.
 
