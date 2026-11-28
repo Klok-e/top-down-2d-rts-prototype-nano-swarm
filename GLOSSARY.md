@@ -28,6 +28,9 @@ _Avoid_: Build order, squad orders
 A fixed position on the approach to a military objective where the Strategic Controller paints a Defend block to rally its Defenders before advancing.
 _Avoid_: Cohort anchor
 
+**Frontline**:
+The Strategic Controller's bounded area of Defend paint that moves with its advance toward a military objective.
+
 **Nanobot**:
 An individual autonomous agent within the swarm. It may choose tasks from player intent, but is not a persistent command target.
 _Avoid_: Unit, soldier, worker
@@ -113,7 +116,7 @@ A Defender sustain resource restored by the nearest valid supplied Charger in ow
 _Avoid_: Ammo, mana, stamina
 
 **Charger**:
-A terminal consumer whose finite local mineral buffer restores Charge for its swarm while it is operational, supplied, and inside owned Defend paint. Unserved low Charge creates nearby capacity plans; a Charger outside owned Defend paint is inactive, while unattended valid Chargers receive no Maintenance and may decay.
+A terminal consumer whose finite local mineral buffer restores Charge for its swarm while it is operational, supplied, and inside owned Defend paint. Unattended valid Chargers receive no Maintenance and may decay.
 _Avoid_: Charge stockpile, instant resupply, resource sink
 
 **Terminal Consumer**:
@@ -230,8 +233,11 @@ The stockpiled minerals a swarm aims to hold: a tuned number of seconds of its S
 _Avoid_: Mineral reserve, bank, buffer target
 
 **Gather Quota**:
-The number of Workers a swarm assigns to gathering so its income covers its Spending Capacity and closes the gap to its Reserve Target. Every Gather-painted Resource Deposit keeps at least one gatherer; no deposit takes more gatherers than fit around it, and beyond that one per deposit a swarm sends no more gatherers than full loads the Source Stockpiles beside its gathered deposits can still receive. A gatherer drops its load only at a Source beside its deposit; when those are full it waits and another Source is planned there. Workers beyond the quota take other work or idle.
+The number of Workers a swarm needs for gathering to cover its Spending Capacity and close the gap to its Reserve Target. It includes one Worker per eligible Gather-painted Resource Deposit, with additional quota limited by Work Positions and Source Stockpile room.
 _Avoid_: Gather demand, worker cap
+
+**Spare Gathering**:
+Gathering done by existing Workers available after the swarm has staffed quota gathering, construction, and Maintenance.
 
 **Haul Quota**:
 The number of Haulers a swarm wants so they can deliver the minerals it has to its terminals: its income plus stock above its Reserve Target, at most its Spending Capacity, divided by what one busy Hauler has been delivering. It grows past the current Hauler count only in small steps, and only while the last added Haulers raised delivery. Pickup trips still demand Haulers when they need more than the quota.

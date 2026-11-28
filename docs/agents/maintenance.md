@@ -1,1 +1,7 @@
 # Papercuts and Maintenance Suggestions
+
+- AI Battle telemetry groups Charge expiry with other Nanobot deaths and Charger construction with other completed structures. Controller telemetry reports total intent edits. Separate Charge expiry, Charger plan outcomes and mineral pulses, and Defend erasures so controller comparisons can explain the outcomes without an instrumented build.
+- Charger planning counts free slots across the swarm. In a live AI Battle snapshot, eight empty Defenders were already travelling to Chargers, and the median remaining straight-line trip across that swarm's Charger assignments was 15 seconds. Estimate service by navigable travel time and mineral deliveries, then budget local construction so a moving front can use its new capacity before leaving it behind.
+- Cargo reports `pathfinding` as an unused direct dependency. There are no references in the source, tests, screenshots, or benches. Remove the manifest entry and refresh the lockfile to reduce build noise and the dependency surface.
+- Production restart can drain the hopper before the first delivery arrives. The default full hopper funds four seconds of production, and loading a full Hauler takes four seconds before travel and unloading. Evaluate ranking the first refill by how soon it can fund the next cycle to reduce restart stalls.
+- AI Battle statistics track the duration of mineral starvation. Record the affected facility's hopper, pickup stock, and inbound Hauler phases at the start of each stall so recorded battles can identify where supply was delayed.

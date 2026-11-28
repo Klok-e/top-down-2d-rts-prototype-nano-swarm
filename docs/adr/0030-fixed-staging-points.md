@@ -1,10 +1,10 @@
 ---
-status: superseded in part by ADR-0039
+status: superseded in part by ADR-0044
 ---
 
 # Advance military fronts through fixed staging points
 
-The [Staging Point arrival decision](0039-count-assigned-defenders-at-staging-points.md) specifies which Defenders count toward arrival and when an active raid holds its point.
+The [Frontline decision](0044-advance-a-bounded-frontline.md) replaces the fixed advance rules. The [Staging Point arrival decision](0039-count-assigned-defenders-at-staging-points.md) records the later arrival and readiness rules for fixed Staging Points.
 
 Following the median Defender position made paint creep and shift sideways as the force moved. The Strategic Controller chooses one military objective and records a short sequence of staging points along its reachable approach. The active Defend block moves to the next point when the configured fraction of living Defenders has arrived, so the front can lead the force and stay fixed between arrivals.
 
