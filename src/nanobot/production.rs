@@ -703,10 +703,13 @@ const LEAD_TIME_SMOOTHING: f32 = 0.2;
 /// Fixed ticks for one delivery from a pickup `pickup_distance` away, before
 /// any delivery has been measured: the trip to the pickup, loading a full
 /// load, and the trip back.
-pub fn estimated_lead_ticks(tuning: &Tuning, pickup_distance: f32) -> f32 {
-    let carry = tuning.logistics.hauler_carry_capacity.max(1);
-    let loading = (carry * tuning.logistics.material_work_ticks) as f32;
-    let travel = 2.0 * pickup_distance.max(0.0) / tuning.logistics.bot_speed;
+pub fn estimated_lead_ticks(
+    logistics: &crate::tuning::LogisticsTuning,
+    pickup_distance: f32,
+) -> f32 {
+    let carry = logistics.hauler_carry_capacity.max(1);
+    let loading = (carry * logistics.material_work_ticks) as f32;
+    let travel = 2.0 * pickup_distance.max(0.0) / logistics.bot_speed;
     loading + travel
 }
 
@@ -724,7 +727,10 @@ pub fn window_for_lead(tuning: &Tuning, lead_ticks: f32) -> u32 {
 /// Delivery window for an unmeasured facility whose nearest stocked pickup is
 /// `pickup_distance` away.
 pub fn delivery_window(tuning: &Tuning, pickup_distance: f32) -> u32 {
-    window_for_lead(tuning, estimated_lead_ticks(tuning, pickup_distance))
+    window_for_lead(
+        tuning,
+        estimated_lead_ticks(&tuning.logistics, pickup_distance),
+    )
 }
 
 /// Facility claims Haulers hold, by Hauler, with the allocation tick each was
@@ -856,7 +862,7 @@ pub fn facility_delivery_window_system(
             .min_by(f32::total_cmp);
         let derived = facility
             .measured_lead_ticks
-            .or_else(|| nearest.map(|distance| estimated_lead_ticks(&tuning, distance)))
+            .or_else(|| nearest.map(|distance| estimated_lead_ticks(&tuning.logistics, distance)))
             .map_or(0, |lead| window_for_lead(&tuning, lead));
         let window = if derived >= facility.queued_space {
             derived

@@ -105,21 +105,21 @@ pub(super) fn keep_charger_support(
         {
             continue;
         }
-        let cell = world_to_intent_cell(structure.position);
+        let Some(position) = structure.position else {
+            continue;
+        };
+        let cell = world_to_intent_cell(position);
         if let Some(map) = state.reachability {
-            match map.position_is_reachable_with_budget(
-                owner,
-                structure.position,
-                state.grid,
-                &mut || budget.spend(1),
-            ) {
+            match map.position_is_reachable_with_budget(owner, position, state.grid, &mut || {
+                budget.spend(1)
+            }) {
                 Ok(true) => {}
                 Ok(false) => continue,
                 Err(()) => return (None, 0.0),
             }
         }
         let supplied = structure.minerals.min(charger_reserve);
-        let footprint = footprint_intent_cells(structure.position, half_extent).collect::<Vec<_>>();
+        let footprint = footprint_intent_cells(position, half_extent).collect::<Vec<_>>();
         let already_painted = footprint.iter().all(|&cell| {
             state
                 .grid
@@ -195,35 +195,4 @@ pub(super) fn keep_charger_support(
         key_charger,
         supplied * state.charge.max_defenders_per_charger as f32,
     )
-}
-
-pub(super) fn add_production_room(
-    tuning: &AutonomyTuning,
-    swarm: &SwarmState,
-    origins: impl Iterator<Item = IVec2>,
-    state: &GameState<'_>,
-    desired: &mut HashSet<DesiredIntent>,
-    paint_capacity: usize,
-    budget: &mut WorkBudget,
-) {
-    if !swarm.production_saturated || swarm.minerals <= tuning.strategy_production_mineral_threshold
-    {
-        return;
-    }
-    let mut remaining = tuning.strategy_production_room_cells;
-    let offsets = [IVec2::X, -IVec2::X, IVec2::Y, -IVec2::Y];
-    for origin in origins {
-        for offset in offsets {
-            if remaining == 0 || desired.len() >= paint_capacity || budget.exhausted {
-                return;
-            }
-            let intent = DesiredIntent {
-                cell: origin + offset,
-                kind: IntentKind::Build,
-            };
-            if push_desired(desired, swarm.id, intent, state, true, budget) {
-                remaining -= 1;
-            }
-        }
-    }
 }

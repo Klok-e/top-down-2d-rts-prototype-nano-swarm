@@ -4,15 +4,18 @@
 //! return edits which the runtime applies only for [`Controller::owner`]. The
 //! module never writes ECS state or chooses work for individual nanobots.
 
-use std::collections::{BTreeSet, HashSet};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashSet},
+    sync::Arc,
+};
 
-use crate::tuning::{AutonomyTuning, ChargeTuning};
+use crate::tuning::{AutonomyTuning, ChargeTuning, LogisticsTuning};
 
 use bevy::prelude::{IVec2, Vec2};
 
 use crate::{
     intent::{IntentGrid, IntentKind},
-    nanobot::{NanobotType, SwarmId},
+    nanobot::{HaulEconomy, NanobotType, SwarmEconomy, SwarmId},
     navigation::{Obstacle, RouteGoal, RouteOutcome},
     reachability::SwarmReachabilityMap,
 };
@@ -20,6 +23,7 @@ use crate::{
 /// Maximum accounted planner operations shared by all decisions in one review window.
 pub const PLANNING_WORK_BUDGET: usize = 100_000;
 const WORK_WINDOW_TICKS: u64 = crate::SIMULATION_HZ as u64 / 2;
+pub(crate) const MINE_OBSERVATION_TICKS: u64 = 12 * crate::SIMULATION_HZ as u64;
 
 const EDIT_WORK_RESERVE: usize = 4_096;
 const MAX_ACTIVE_CELLS: usize = 256;
@@ -33,8 +37,6 @@ pub struct SwarmState {
     /// Minerals currently held in this swarm’s operational structure buffers.
     pub minerals: u32,
     pub mineral_income_per_second: f32,
-    /// Every operational facility is producing, including zero operational facilities.
-    pub production_saturated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -49,6 +51,16 @@ pub struct BotState {
     pub max_charge: f32,
     pub cargo: u32,
     pub displacement: Vec2,
+    pub defender_duty: DefenderDuty,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub enum DefenderDuty {
+    #[default]
+    Available,
+    Unavailable,
+    RespondingTo(Vec2),
+    StagingAt(IVec2),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,16 +73,33 @@ pub enum StructureKind {
     Other,
 }
 
+impl StructureKind {
+    fn counts_for_elimination(self) -> bool {
+        matches!(
+            self,
+            Self::Facility | Self::Source | Self::Sink | Self::Charger
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StructureState {
     pub id: u64,
     pub owner: SwarmId,
-    pub position: Vec2,
+    pub position: Option<Vec2>,
     pub kind: StructureKind,
     pub operational: bool,
     pub health: u32,
     pub max_health: u32,
     pub minerals: u32,
+}
+
+/// The physical bounds of an owned structure that still relies on Build intent.
+#[derive(Debug, Clone, Copy)]
+pub struct BuildFootprint {
+    pub owner: SwarmId,
+    pub center: Vec2,
+    pub half: Vec2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -87,36 +116,97 @@ pub struct DepositState {
 pub type RouteQuery<'a> =
     dyn Fn(Vec2, RouteGoal, &mut dyn FnMut() -> bool) -> Option<RouteOutcome> + 'a;
 
-#[derive(Clone, Copy, Default)]
-pub struct SourceSupport {
-    pub has_space: bool,
-    pub stocked: bool,
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MineObservation {
+    pub worker_capacity: u32,
+    pub active_workers: u32,
+    pub unladen_gatherers: u32,
+    pub delivered_minerals: u64,
+    pub completed_dropoffs: u32,
+    pub observation_ticks: u64,
+    pub ticks_since_dropoff: Option<u64>,
+    /// Physically supported Sources in drop-off range, even during an interruption.
+    pub covered_sources: u32,
+    /// Source viability for the requested service check.
+    /// None means the snapshot did not establish whether service is possible.
+    pub source_path: Option<bool>,
+    pub sustained_dropoffs: bool,
+    pub pressure: MinePressure,
+}
+
+impl MineObservation {
+    pub fn is_saturated(&self) -> bool {
+        self.worker_capacity > 0
+            && self.active_workers >= self.worker_capacity
+            && self.sustained_dropoffs
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MinePressure {
+    /// Resolved damage in the Gather and Build areas, in that order.
+    pub recent_damage: [u64; 2],
+    pub ongoing_damage: u64,
+    pub armed_defenders: u32,
+    pub armed_presence_ticks: u64,
+    pub ticks_since_attack_during_presence: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SourceCheck {
+    Existing,
+    Restore,
+    Claim { allow_construction: bool },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum MineObservationAt<'a> {
+    Service {
+        gather: IVec2,
+        other_gather: &'a [IVec2],
+        source_check: SourceCheck,
+    },
+    Defense([IVec2; 2]),
+}
+
+/// Recent Worker activity and completed deliveries, with Source or hostile observations.
+pub type MineQuery<'a> = dyn Fn(
+        SwarmId,
+        &DepositState,
+        MineObservationAt<'_>,
+        &mut dyn FnMut() -> bool,
+    ) -> Option<MineObservation>
+    + 'a;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EconomyObservation {
+    pub gather: SwarmEconomy,
+    pub haul: Option<HaulEconomy>,
+    pub low_reserve_ticks: u64,
+    pub upkeep_workers: u32,
+    pub committed_haulers: u32,
 }
 
 #[derive(Clone, Copy)]
-pub enum SourceNeed {
-    Space,
-    /// Stocked support settles startup immediately. Without it, report open capacity.
-    Opening,
+pub struct SupplyState<'a> {
+    pub economies: &'a BTreeMap<SwarmId, EconomyObservation>,
+    pub logistics: &'a LogisticsTuning,
 }
-
-/// A budgeted snapshot query for qualifying nearby operational Source Stockpiles.
-pub type SourceQuery<'a> =
-    dyn Fn(SwarmId, Vec2, SourceNeed, &mut dyn FnMut() -> bool) -> Option<SourceSupport> + 'a;
 
 pub struct GameState<'a> {
     pub grid: &'a IntentGrid,
     pub swarms: &'a [SwarmState],
     pub bots: &'a [BotState],
     pub structures: &'a [StructureState],
+    pub build_footprints: &'a [BuildFootprint],
     pub deposits: &'a [DepositState],
     pub terrain: &'a [Obstacle],
     pub charge: &'a ChargeTuning,
     /// Present for gameplay controllers; omitted by terrain-agnostic unit fixtures.
     pub reachability: Option<&'a SwarmReachabilityMap>,
     pub route_query: Option<&'a RouteQuery<'a>>,
-    /// Fixtures without this query assume no existing Source Stockpile support.
-    pub source_query: Option<&'a SourceQuery<'a>>,
+    pub mine_query: Option<&'a MineQuery<'a>>,
+    pub supply: Option<SupplyState<'a>>,
     pub tick: u64,
     pub finished: bool,
 }
@@ -163,18 +253,28 @@ pub struct Controller {
 struct IntentPlan {
     objective: Objective,
     owned_deposits: Vec<economy::OwnedDeposit>,
+    mine_recovery: economy::MineRecovery,
     attack: Option<AttackObligation>,
     staging: Option<staging::StagingFront>,
+    primary_defend_cells: Arc<HashSet<IVec2>>,
     key_charger: Option<u64>,
-    desired: HashSet<DesiredIntent>,
+    desired: Arc<HashSet<DesiredIntent>>,
+    withdrawal: Option<WithdrawalPaint>,
     reachability: Option<SwarmReachabilityMap>,
     grid_size: IVec2,
+}
+
+#[derive(Debug, Clone)]
+struct WithdrawalPaint {
+    home: IVec2,
+    desired: Arc<HashSet<DesiredIntent>>,
 }
 
 #[derive(Debug, Default)]
 struct PlanValidation {
     lost_deposit: Option<u64>,
     invalidation: Option<String>,
+    can_reuse_economic_paint: bool,
     attack_progressed: bool,
     covered_attack: bool,
     covered_attack_movement: bool,
@@ -189,6 +289,20 @@ struct PlanCandidate {
     approach: Option<RouteGoal>,
     score: f32,
     protected_home: Option<IVec2>,
+}
+
+impl PlanCandidate {
+    fn hold_home(anchor: IVec2) -> Self {
+        Self {
+            objective: Objective::HoldHome,
+            anchor,
+            attack: None,
+            attack_target: None,
+            approach: None,
+            score: 0.0,
+            protected_home: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,25 +322,36 @@ struct AttackObligation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Objective {
     HoldHome,
-    SecureDeposit(u64),
     DefendDeposit(u64),
     ContestDeposit(u64),
     RaidDeposit { deposit: u64, target: u64 },
     DenyDeposit(u64),
     PushHome(SwarmId),
-    FinishStructure(u64),
+    AttackStructure(u64),
     HuntRemnant(u64),
 }
 
 impl Objective {
+    fn needs_ready_force(self) -> bool {
+        matches!(
+            self,
+            Self::RaidDeposit { .. }
+                | Self::DenyDeposit(_)
+                | Self::PushHome(_)
+                | Self::AttackStructure(_)
+                | Self::HuntRemnant(_)
+        )
+    }
+
     fn priority(self) -> u8 {
         match self {
             Self::DefendDeposit(_) => 6,
             Self::ContestDeposit(_) => 5,
-            Self::SecureDeposit(_) => 4,
-            Self::RaidDeposit { .. } | Self::DenyDeposit(_) => 3,
-            Self::PushHome(_) => 2,
-            Self::FinishStructure(_) | Self::HuntRemnant(_) => 1,
+            Self::RaidDeposit { .. }
+            | Self::DenyDeposit(_)
+            | Self::PushHome(_)
+            | Self::AttackStructure(_)
+            | Self::HuntRemnant(_) => 3,
             Self::HoldHome => 0,
         }
     }
@@ -234,7 +359,6 @@ impl Objective {
     fn label(self) -> String {
         match self {
             Self::HoldHome => "hold the home economy".to_string(),
-            Self::SecureDeposit(id) => format!("secure Resource Deposit {id}"),
             Self::DefendDeposit(id) => format!("defend owned Resource Deposit {id}"),
             Self::ContestDeposit(id) => format!("contest neutral Resource Deposit {id}"),
             Self::RaidDeposit { deposit, target } => {
@@ -242,7 +366,7 @@ impl Objective {
             }
             Self::DenyDeposit(id) => format!("raid enemy Resource Deposit {id}"),
             Self::PushHome(swarm) => format!("push enemy home of Swarm {}", swarm.0),
-            Self::FinishStructure(id) => format!("finish remaining structure {id}"),
+            Self::AttackStructure(id) => format!("attack remaining structure {id}"),
             Self::HuntRemnant(id) => format!("hunt remaining Nanobot {id}"),
         }
     }
@@ -266,7 +390,7 @@ impl IntentPlan {
 
     fn is_coordinated(&self) -> bool {
         let mut kinds = [false; IntentKind::COUNT];
-        for intent in &self.desired {
+        for intent in self.desired.iter() {
             kinds[intent.kind.index()] = true;
         }
         kinds[IntentKind::Build.index()]
@@ -291,6 +415,7 @@ struct ForceEstimate {
 mod economy;
 mod lifecycle;
 mod materialize;
+mod raid;
 mod spending;
 mod staging;
 mod strategy;

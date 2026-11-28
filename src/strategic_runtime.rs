@@ -1,6 +1,11 @@
 //! Read-only world observation and owner-scoped application of strategic intent.
 
+mod mine_pressure;
+mod mines;
+
 use bevy::prelude::*;
+use mine_pressure::MinePressureHistory;
+use mines::MineHistory;
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
@@ -10,18 +15,27 @@ use std::{
 use crate::{
     intent::IntentGrid,
     nanobot::{
-        Cargo, Charge, Charger, Health, MatchOutcome, Nanobot, NanobotType, OwnerSwarm,
-        PlannedStructure, ProductionFacility, RegionalAllocationSet, Structure, Swarm, SwarmId,
-        SwarmMember,
+        Cargo, Charge, Charger, ChargerAssignment, ChargerProgress, ClearingEvacuation, Commitment,
+        DefenderDisengagement, DefenderResponse, DefenderRout, DefenderStagingAssignments,
+        DirectMovementComponent, DropOffArea, ExtractProgress, GatherAssignment, GatherQuotas,
+        HaulQuotas, HaulerAssignment, HaulerLoading, Health, InteractionRegion,
+        LogisticsReservation, MaintenanceAssignment, MaintenanceProgress, MatchOutcome, Nanobot,
+        NanobotType, OwnerSwarm, PlannedKind, PlannedStructure, PlannedStructureClaim,
+        PopulationDemand, ProductionFacility, RegionalAllocationSet, ResolvedCombatFact,
+        ReturningToStockpile, SOURCE_STOCKPILE_PLACEMENT_COUNT, Structure, Swarm, SwarmId,
+        SwarmMember, WorkBlocked, construction_access::ConstructionAccess, effective_attack,
+        find_deposit_source_stockpile_placement, footprint_intent_cells, gather_worker_slots,
     },
-    navigation::{Navigation, RouteGoal, RouteOutcome},
+    navigation::{Navigation, Obstacle, RouteGoal, RouteOutcome},
     reachability::{IntentWriteAction, SwarmReachabilityMap, apply_reachable_intent},
     resources::{
-        ResourceDeposit, ResourceKind, ResourceLedger, Stockpile, StockpileRole, buffered_minerals,
+        ResourceDeposit, ResourceKind, ResourceLedger, SinkUpkeep, Stockpile, StockpileRole,
+        buffered_minerals,
     },
     strategic_controller::{
-        BotState, Controller, DepositState, GameState, IntentEditAction, SourceNeed, SourceSupport,
-        StructureKind, StructureState, SwarmState,
+        BotState, BuildFootprint, Controller, DefenderDuty, DepositState, EconomyObservation,
+        GameState, IntentEditAction, MineObservationAt, SourceCheck, StructureKind, StructureState,
+        SupplyState, SwarmState,
     },
     terrain::RockFormation,
 };
@@ -52,6 +66,7 @@ impl Plugin for StrategicControllerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<crate::tuning::Tuning>()
             .init_resource::<ControllerTelemetry>()
+            .add_message::<ResolvedCombatFact>()
             .add_systems(
                 FixedUpdate,
                 strategic_intent_system
@@ -179,12 +194,29 @@ impl MineralIncomeHistory {
 struct StrategicObservations {
     routes: StrategicRouteCache,
     previous_positions: HashMap<Entity, Vec2>,
+    mines: HashMap<(SwarmId, Entity), MineHistory>,
+    active_workers: HashMap<(SwarmId, Entity), u32>,
+    unladen_gatherers: HashMap<(SwarmId, Entity), u32>,
+    mine_pressure: MinePressureHistory,
+    low_reserve_since: BTreeMap<SwarmId, u64>,
+}
+
+#[derive(Clone, Copy)]
+struct SourceObservation {
+    id: Entity,
+    owner: Option<SwarmId>,
+    position: Vec2,
+    interaction: InteractionRegion,
+    room: u32,
+    capacity: u32,
+    operational: bool,
+    planned: bool,
+    gather_footprint: Option<(Vec2, Vec2)>,
 }
 
 #[derive(Default, Clone, Copy)]
-struct EconomyObservation {
+struct MineralBuffers {
     banked_minerals: u32,
-    has_idle_facility: bool,
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
@@ -201,13 +233,36 @@ fn strategic_intent_system(
             &Health,
             Option<&Charge>,
             Option<&Cargo>,
+            (
+                Option<&GatherAssignment>,
+                Option<&LogisticsReservation>,
+                Has<ExtractProgress>,
+                Has<ReturningToStockpile>,
+                Has<DirectMovementComponent>,
+                Has<WorkBlocked>,
+            ),
+            (
+                Has<PlannedStructureClaim>,
+                (Has<MaintenanceAssignment>, Has<MaintenanceProgress>),
+                Has<HaulerAssignment>,
+                Has<HaulerLoading>,
+            ),
+            (
+                Option<&Commitment>,
+                Has<ChargerAssignment>,
+                Has<ChargerProgress>,
+                Has<DefenderDisengagement>,
+                Has<DefenderRout>,
+                Has<ClearingEvacuation>,
+                Option<&DefenderResponse>,
+            ),
         ),
         With<Nanobot>,
     >,
     structures: Query<
         (
             Entity,
-            &Transform,
+            Option<&Transform>,
             Option<&OwnerSwarm>,
             Option<&Structure>,
             Option<&ProductionFacility>,
@@ -215,6 +270,7 @@ fn strategic_intent_system(
             Option<&StockpileRole>,
             Option<&Charger>,
             Option<&PlannedStructure>,
+            Option<&SinkUpkeep>,
         ),
         Or<(
             With<Structure>,
@@ -229,57 +285,248 @@ fn strategic_intent_system(
     ledger: Res<ResourceLedger>,
     mut grid: ResMut<IntentGrid>,
     reachability: Res<SwarmReachabilityMap>,
-    navigation: Res<Navigation>,
-    time: Res<Time<Fixed>>,
-    outcome: Option<Res<MatchOutcome>>,
+    (navigation, staging_assignments, construction): (
+        Res<Navigation>,
+        Option<Res<DefenderStagingAssignments>>,
+        ConstructionAccess,
+    ),
+    (time, mut combat): (Res<Time<Fixed>>, MessageReader<ResolvedCombatFact>),
+    economy: (
+        Option<Res<MatchOutcome>>,
+        Option<Res<GatherQuotas>>,
+        Option<Res<HaulQuotas>>,
+        Option<Res<PopulationDemand>>,
+    ),
     mut telemetry: ResMut<ControllerTelemetry>,
     mut observations: Local<StrategicObservations>,
     mut income_history: Local<BTreeMap<Entity, MineralIncomeHistory>>,
 ) {
+    let (outcome, gather_quotas, haul_quotas, population_demand) = economy;
     if controllers.is_empty()
         || outcome
             .as_deref()
             .is_some_and(|outcome| *outcome != MatchOutcome::InProgress)
     {
+        combat.clear();
+        observations.mine_pressure = MinePressureHistory::default();
         return;
     }
     let StrategicObservations {
         routes,
         previous_positions,
+        mines,
+        active_workers,
+        unladen_gatherers,
+        mine_pressure,
+        low_reserve_since,
     } = &mut *observations;
     let owners: BTreeMap<_, _> = swarms.iter().map(|(entity, id, _)| (entity, *id)).collect();
     let tick = (time.elapsed_secs_f64() * crate::SIMULATION_HZ).round() as u64;
+    if mine_pressure.begin_tick(&owners, tick) {
+        combat.clear();
+    }
+    for fact in combat.read() {
+        if let ResolvedCombatFact::Hit(hit) = fact {
+            mine_pressure.record_hit(tick, *hit);
+        }
+    }
+    mine_pressure.clear_links();
     income_history.retain(|entity, _| owners.contains_key(entity));
     previous_positions.retain(|entity, _| bots.get(*entity).is_ok());
+    active_workers.clear();
+    unladen_gatherers.clear();
+    let mut supply = BTreeMap::<SwarmId, EconomyObservation>::new();
+    let mut reserved_room = HashMap::<Entity, u32>::new();
     let mut bot_states: Vec<_> = bots
         .iter()
-        .map(|(entity, owner, kind, transform, health, charge, cargo)| {
-            let position = transform.translation.truncate();
-            let previous = previous_positions
-                .insert(entity, position)
-                .unwrap_or(position);
-            BotState {
-                id: entity.to_bits(),
-                owner: owner.0,
-                kind: *kind,
-                position,
-                health: health.current,
-                max_health: health.max,
-                charge: charge.map_or(1.0, |c| c.current),
-                max_charge: charge.map_or(1.0, |c| c.max),
-                cargo: cargo.map_or(0, |c| c.amount),
-                displacement: position - previous,
-            }
-        })
+        .map(
+            |(
+                entity,
+                owner,
+                kind,
+                transform,
+                health,
+                charge,
+                cargo,
+                gathering,
+                (building, maintaining, hauling, loading),
+                (
+                    commitment,
+                    assigned_charger,
+                    charging,
+                    disengaging,
+                    routing,
+                    evacuating,
+                    response,
+                ),
+            )| {
+                let (assignment, reservation, extracting, returning, moving, blocked) = gathering;
+                if let Some(reservation) = reservation.filter(|r| r.destination_remaining > 0) {
+                    let room = reserved_room.entry(reservation.destination).or_default();
+                    *room = room.saturating_add(reservation.destination_remaining);
+                }
+                if *kind == NanobotType::Worker
+                    && health.current > 0
+                    && !returning
+                    && cargo.is_none_or(|cargo| cargo.amount == 0)
+                    && let Some(assignment) = assignment
+                {
+                    *unladen_gatherers
+                        .entry((owner.0, assignment.deposit))
+                        .or_default() += 1;
+                }
+                if *kind == NanobotType::Worker && health.current > 0 && !blocked {
+                    let deposit = if returning && cargo.is_some_and(|cargo| cargo.amount > 0) {
+                        reservation.map(|reservation| reservation.source)
+                    } else if extracting || moving {
+                        assignment.map(|assignment| assignment.deposit)
+                    } else {
+                        None
+                    };
+                    if let Some(deposit) = deposit.filter(|&deposit| deposits.contains(deposit)) {
+                        *active_workers.entry((owner.0, deposit)).or_default() += 1;
+                        mine_pressure.link_mine_work(entity, deposit);
+                        if let Some(reservation) = reservation.filter(|r| r.source == deposit) {
+                            mine_pressure.link_mine_work(reservation.destination, deposit);
+                        }
+                    }
+                }
+                if health.current > 0 {
+                    let loaded = cargo.is_some_and(|cargo| cargo.amount > 0);
+                    match kind {
+                        NanobotType::Worker if building || maintaining.0 || maintaining.1 => {
+                            supply.entry(owner.0).or_default().upkeep_workers += 1;
+                        }
+                        NanobotType::Hauler if hauling || loading || loaded => {
+                            supply.entry(owner.0).or_default().committed_haulers += 1;
+                        }
+                        _ => {}
+                    }
+                }
+                let position = transform.translation.truncate();
+                if *kind == NanobotType::Defender
+                    && health.current > 0
+                    && effective_attack(charge.map_or(0.0, |charge| charge.current), &tuning) > 0.0
+                {
+                    mine_pressure.record_defender(entity, owner.0, position);
+                }
+                let previous = previous_positions
+                    .insert(entity, position)
+                    .unwrap_or(position);
+                let defender_duty = if *kind != NanobotType::Defender {
+                    DefenderDuty::Available
+                } else if commitment.is_some_and(|task| *task != Commitment::Idle)
+                    || assigned_charger
+                    || charging
+                    || disengaging
+                    || routing
+                    || evacuating
+                {
+                    DefenderDuty::Unavailable
+                } else if let Some(response) = response {
+                    let response_position =
+                        bots.get(response.target)
+                            .ok()
+                            .map(|(_, _, _, transform, ..)| transform.translation.truncate())
+                            .or_else(|| {
+                                structures.get(response.target).ok().and_then(
+                                    |(_, transform, ..)| {
+                                        transform.map(|transform| transform.translation.truncate())
+                                    },
+                                )
+                            });
+                    response_position.map_or(DefenderDuty::Available, DefenderDuty::RespondingTo)
+                } else {
+                    staging_assignments
+                        .as_ref()
+                        .and_then(|assignments| assignments.destination(entity))
+                        .map_or(DefenderDuty::Available, DefenderDuty::StagingAt)
+                };
+                BotState {
+                    id: entity.to_bits(),
+                    owner: owner.0,
+                    kind: *kind,
+                    position,
+                    health: health.current,
+                    max_health: health.max,
+                    charge: charge.map_or(0.0, |c| c.current),
+                    max_charge: charge.map_or(0.0, |c| c.max),
+                    cargo: cargo.map_or(0, |c| c.amount),
+                    displacement: position - previous,
+                    defender_duty,
+                }
+            },
+        )
         .collect();
+    for &key in active_workers.keys() {
+        mines.entry(key).or_default();
+    }
+    mines.retain(|&(owner, deposit), history| {
+        let Ok((_, _, _, exclusive)) = deposits.get(deposit) else {
+            return false;
+        };
+        if !swarm_exists(&owners, owner, exclusive) {
+            return false;
+        }
+        let workers = active_workers.get(&(owner, deposit)).copied().unwrap_or(0);
+        history.observe(tick, workers, ledger.worker_deliveries_for(owner, deposit));
+        true
+    });
     bot_states.sort_by_key(|bot| bot.id);
-    let mut economies = BTreeMap::<SwarmId, EconomyObservation>::new();
-    let mut operational_sources = Vec::new();
+    low_reserve_since.retain(|owner, _| {
+        gather_quotas
+            .as_ref()
+            .is_some_and(|quotas| quotas.economy(*owner).is_some())
+    });
+    for (_, &owner, _) in &swarms {
+        let entry = supply.entry(owner).or_default();
+        let Some(gather) = gather_quotas
+            .as_ref()
+            .and_then(|quotas| quotas.economy(owner))
+        else {
+            continue;
+        };
+        entry.gather = gather;
+        entry.haul = haul_quotas
+            .as_ref()
+            .and_then(|quotas| quotas.economy(owner));
+        if let Some(demand) = &population_demand {
+            let upkeep = demand
+                .desired_for(owner, NanobotType::Worker)
+                .saturating_sub(gather.gather_quota);
+            entry.upkeep_workers = entry.upkeep_workers.max(upkeep);
+        }
+        if gather.spending_capacity > 0.0
+            && (gather.reserve_target == 0 || gather.reserve_stock < gather.reserve_target)
+        {
+            let since = low_reserve_since.entry(owner).or_insert(tick);
+            entry.low_reserve_ticks = tick.saturating_sub(*since);
+        } else {
+            low_reserve_since.remove(&owner);
+        }
+    }
+    let mut economies = BTreeMap::<SwarmId, MineralBuffers>::new();
+    let mut sources = Vec::new();
+    let mut build_footprints = Vec::new();
     let mut structure_states: Vec<_> = structures
         .iter()
         .filter_map(
-            |(entity, transform, owner, condition, facility, stockpile, role, charger, plan)| {
-                let owner = owner.and_then(|owner| owners.get(&owner.0)).copied()?;
+            |(
+                entity,
+                transform,
+                owner,
+                condition,
+                facility,
+                stockpile,
+                role,
+                charger,
+                plan,
+                upkeep,
+            )| {
+                let owner = match owner {
+                    Some(owner) => Some(*owners.get(&owner.0)?),
+                    None => None,
+                };
                 let kind = if plan.is_some() {
                     StructureKind::Planned
                 } else if facility.is_some() {
@@ -296,34 +543,67 @@ fn strategic_intent_system(
                     StructureKind::Other
                 };
                 let minerals = buffered_minerals(facility, stockpile, charger);
-                let operational = plan.is_none() && condition.is_none_or(Structure::is_operational);
+                let operational = transform.is_some()
+                    && plan.is_none()
+                    && condition.is_none_or(Structure::is_operational);
+                let stockpile_source = stockpile.filter(|stockpile| {
+                    kind == StructureKind::Source
+                        && stockpile.kind == ResourceKind::Minerals
+                        && stockpile.capacity > 0
+                });
+                if let Some(transform) = transform
+                    && (stockpile_source.is_some()
+                        || plan.is_some_and(|plan| plan.kind == PlannedKind::SourceStockpile))
+                {
+                    sources.push(SourceObservation {
+                        id: entity,
+                        owner,
+                        position: transform.translation.truncate(),
+                        interaction: InteractionRegion::structure(transform),
+                        room: stockpile_source.map_or(0, Stockpile::free_space),
+                        capacity: stockpile_source.map_or(0, |stockpile| stockpile.capacity),
+                        operational,
+                        planned: plan.is_some(),
+                        gather_footprint: (owner.is_some()
+                            && (condition.is_some() || plan.is_some()))
+                        .then(|| Obstacle::structure(transform).bounds()),
+                    });
+                }
+                let owner = owner?;
+                let health = condition.map_or(tuning.construction.max_health, |c| c.health);
+                let needs_build = match kind {
+                    StructureKind::Planned => plan.is_some_and(|plan| {
+                        plan.kind.placement_intent() == crate::intent::IntentKind::Build
+                    }),
+                    StructureKind::Facility => true,
+                    StructureKind::Sink => {
+                        SinkUpkeep::paid(upkeep)
+                            || stockpile.is_some_and(|stockpile| stockpile.amount > 0)
+                    }
+                    _ => false,
+                };
+                if let Some(transform) = transform
+                    && health > 0
+                    && needs_build
+                {
+                    let (center, half) = Obstacle::structure(transform).bounds();
+                    build_footprints.push(BuildFootprint {
+                        owner,
+                        center,
+                        half,
+                    });
+                }
                 if operational {
                     let economy = economies.entry(owner).or_default();
                     economy.banked_minerals = economy.banked_minerals.saturating_add(minerals);
-                    economy.has_idle_facility |= facility
-                        .is_some_and(|facility| !facility.is_busy(tuning.production.ticks_per_bot));
-                    if kind == StructureKind::Source
-                        && let Some(stockpile) =
-                            stockpile.filter(|stockpile| stockpile.kind == ResourceKind::Minerals)
-                    {
-                        operational_sources.push((
-                            entity.to_bits(),
-                            owner,
-                            transform.translation.truncate(),
-                            SourceSupport {
-                                has_space: stockpile.free_space() > 0,
-                                stocked: stockpile.amount > 0,
-                            },
-                        ));
-                    }
                 }
                 Some(StructureState {
                     id: entity.to_bits(),
                     owner,
-                    position: transform.translation.truncate(),
+                    position: transform.map(|transform| transform.translation.truncate()),
                     kind,
                     operational,
-                    health: condition.map_or(tuning.construction.max_health, |c| c.health),
+                    health,
                     max_health: tuning.construction.max_health,
                     minerals,
                 })
@@ -331,7 +611,7 @@ fn strategic_intent_system(
         )
         .collect();
     structure_states.sort_by_key(|structure| structure.id);
-    operational_sources.sort_by_key(|&(id, _, _, _)| id);
+    sources.sort_by_key(|source| source.id.to_bits());
     let mut swarm_states: Vec<_> = swarms
         .iter()
         .map(|(entity, id, position)| {
@@ -344,7 +624,6 @@ fn strategic_intent_system(
                     .entry(entity)
                     .or_default()
                     .per_second(tick, ledger.extracted_minerals_for(*id)),
-                production_saturated: !economy.has_idle_facility,
             }
         })
         .collect();
@@ -366,6 +645,13 @@ fn strategic_intent_system(
         })
         .collect();
     deposit_states.sort_by_key(|deposit| deposit.id);
+    let retained_mines = controllers.iter().flat_map(|(_, owner, controller)| {
+        controller
+            .planner
+            .retained_mine_cells()
+            .map(move |(id, cells)| (*owner, id, cells))
+    });
+    mine_pressure.update_presence(tick, retained_mines, &deposit_states, &tuning);
     let terrain: Vec<_> = rocks
         .iter()
         .map(|(rock, transform)| rock.obstacle(transform))
@@ -382,49 +668,240 @@ fn strategic_intent_system(
             .borrow_mut()
             .query(&navigation, start, goal, allow_work)
     };
-    let source_radius_squared = tuning.logistics.source_proximity_radius.powi(2);
-    let source_query = |owner: SwarmId,
-                        position: Vec2,
-                        need: SourceNeed,
-                        allow_work: &mut dyn FnMut() -> bool| {
-        let mut support = SourceSupport::default();
-        for &(_, source_owner, source_position, observed) in &operational_sources {
+    let source_placement_obstacles = std::cell::OnceCell::new();
+    let source_construction_layout = std::cell::OnceCell::new();
+    let mine_query = |owner: SwarmId,
+                      deposit: &DepositState,
+                      location: MineObservationAt<'_>,
+                      allow_work: &mut dyn FnMut() -> bool| {
+        if !allow_work() {
+            return None;
+        }
+        let (mut observation, delivery_room) = mines
+            .get(&(owner, Entity::from_bits(deposit.id)))
+            .map_or_else(Default::default, |history| history.recent(tick));
+        observation.unladen_gatherers = unladen_gatherers
+            .get(&(owner, Entity::from_bits(deposit.id)))
+            .copied()
+            .unwrap_or(0);
+        let (gather_cell, other_gather, source_check) = match location {
+            MineObservationAt::Service {
+                gather,
+                other_gather,
+                source_check,
+            } => (gather, other_gather, source_check),
+            MineObservationAt::Defense(cells) => {
+                observation.pressure =
+                    mine_pressure.observe(tick, owner, deposit, cells, &tuning, allow_work)?;
+                return Some(observation);
+            }
+        };
+        let drop_off_area = DropOffArea::for_deposit(deposit.position, deposit.radius, &tuning);
+        let deposit_region = InteractionRegion::deposit(
+            &Transform::from_translation(deposit.position.extend(0.0)),
+            deposit.radius,
+        )
+        .within_cell(gather_cell);
+        let gather_start = |allow_work: &mut dyn FnMut() -> bool| {
+            let swarm = swarm_states
+                .binary_search_by_key(&owner, |swarm| swarm.id)
+                .ok()?;
+            let home = swarm_states[swarm].home;
+            Some(
+                match route_query(home, RouteGoal::Interaction(deposit_region), allow_work)? {
+                    RouteOutcome::Found(route) => {
+                        Some(route.waypoints.last().copied().unwrap_or(home))
+                    }
+                    RouteOutcome::Unreachable => None,
+                },
+            )
+        };
+        let mut gather_approach = None;
+        let mut reachable_source = false;
+        let mut reachable_plan = false;
+        let mut existing_source_blocks_placement = false;
+        let mut free_room = 0u32;
+        let mut available_room = 0u32;
+        let mut total_capacity = 0u32;
+        let ring_limit = gather_worker_slots(deposit.radius);
+        let carry_capacity = tuning.logistics.worker_carry_capacity.max(1);
+        for source in &sources {
             if !allow_work() {
                 return None;
             }
-            let adds_evidence = match need {
-                SourceNeed::Space => observed.has_space,
-                SourceNeed::Opening => {
-                    observed.stocked || (!support.has_space && observed.has_space)
-                }
-            };
-            if owner == source_owner
-                && adds_evidence
-                && position.distance_squared(source_position) <= source_radius_squared
-                && reachability
-                    .position_is_reachable_with_budget(owner, source_position, &grid, allow_work)
-                    .ok()?
+            if source
+                .owner
+                .is_some_and(|source_owner| source_owner != owner)
+                || !drop_off_area.contains(source.position)
             {
-                support.has_space |= observed.has_space;
-                support.stocked = observed.stocked;
-                if matches!(need, SourceNeed::Space) || support.stocked {
-                    break;
+                continue;
+            }
+            if let Some((center, half)) = source.gather_footprint {
+                let mut covered = true;
+                for cell in footprint_intent_cells(center, half) {
+                    for _ in 0..=other_gather.len() {
+                        if !allow_work() {
+                            return None;
+                        }
+                    }
+                    if cell != gather_cell && !other_gather.contains(&cell) {
+                        covered = false;
+                        break;
+                    }
+                }
+                if !covered {
+                    continue;
                 }
             }
+            existing_source_blocks_placement |= (source.planned
+                || source.operational && source.room > 0)
+                && source.position.distance(deposit.position)
+                    <= tuning.logistics.source_proximity_radius;
+            if source.operational || source.planned {
+                observation.covered_sources = observation.covered_sources.saturating_add(1);
+            }
+            let approach = match gather_approach {
+                Some(approach) => approach,
+                None => {
+                    let approach = gather_start(allow_work)?;
+                    gather_approach = Some(approach);
+                    approach
+                }
+            };
+            let Some(start) = approach else {
+                continue;
+            };
+            if navigation
+                .connected_interaction_with_budget(start, source.interaction, allow_work)
+                .ok()?
+                .is_none()
+            {
+                continue;
+            }
+            reachable_source = true;
+            reachable_plan |= source.planned;
+            if source.operational {
+                free_room = free_room.saturating_add(source.room);
+                total_capacity = total_capacity.saturating_add(source.capacity);
+                if matches!(source_check, SourceCheck::Claim { .. }) {
+                    let reserved = reserved_room.get(&source.id).copied().unwrap_or_default();
+                    available_room =
+                        available_room.saturating_add(source.room.saturating_sub(reserved));
+                }
+            }
+            if match source_check {
+                SourceCheck::Claim { allow_construction } => {
+                    available_room > 0 || allow_construction && reachable_plan
+                }
+                _ => free_room.div_ceil(carry_capacity) >= ring_limit,
+            } {
+                break;
+            }
         }
-        Some(support)
+        let (mut source_path, check_placement) = match source_check {
+            SourceCheck::Existing => (reachable_source, false),
+            SourceCheck::Restore => (reachable_source, true),
+            SourceCheck::Claim { allow_construction } => (
+                available_room > 0 || allow_construction && reachable_plan,
+                allow_construction,
+            ),
+        };
+        if !source_path
+            && !existing_source_blocks_placement
+            && check_placement
+            && let Some(start) = match gather_approach {
+                Some(approach) => approach,
+                None => gather_start(allow_work)?,
+            }
+        {
+            let obstacle_count = terrain.len() + deposits.iter().len() + structures.iter().len();
+            let placement_work = obstacle_count.saturating_add(other_gather.len()).max(1);
+            for _ in 0..SOURCE_STOCKPILE_PLACEMENT_COUNT.saturating_mul(placement_work) {
+                if !allow_work() {
+                    return None;
+                }
+            }
+            let obstacles = source_placement_obstacles.get_or_init(|| {
+                deposits
+                    .iter()
+                    .map(|(_, transform, deposit, _)| {
+                        Obstacle::deposit(transform.translation.truncate(), deposit.radius)
+                    })
+                    .chain(
+                        structures
+                            .iter()
+                            .filter(|(_, _, _, _, facility, stockpile, _, charger, plan, _)| {
+                                facility.is_some()
+                                    || stockpile.is_some()
+                                    || charger.is_some()
+                                    || plan.is_some()
+                            })
+                            .filter_map(|(_, transform, ..)| transform.map(Obstacle::structure)),
+                    )
+                    .collect::<Vec<_>>()
+            });
+            let mut gather_cells = other_gather.to_vec();
+            gather_cells.push(gather_cell);
+            let mut complete = true;
+            source_path = find_deposit_source_stockpile_placement(
+                deposit.position,
+                deposit.radius,
+                &gather_cells,
+                obstacles,
+                Vec2::ZERO,
+                |position| {
+                    if !complete || !drop_off_area.contains(position) {
+                        return false;
+                    }
+                    let layout = source_construction_layout.get_or_init(|| construction.snapshot());
+                    match construction.assess_source_site(
+                        layout,
+                        owner,
+                        position,
+                        (deposit_region, start),
+                        &gather_cells,
+                        allow_work,
+                    ) {
+                        Ok(accessible) => accessible,
+                        Err(()) => {
+                            complete = false;
+                            false
+                        }
+                    }
+                },
+            )
+            .is_some();
+            if !complete {
+                return None;
+            }
+        }
+        observation.source_path = (source_path
+            || existing_source_blocks_placement
+            || gather_approach == Some(None)
+            || !matches!(source_check, SourceCheck::Existing))
+        .then_some(source_path);
+        // Reservations use physical room. Recent deliveries also show how much room
+        // hauling can turn over in one Worker cycle even when the buffer is now full.
+        let usable_room = free_room.max(delivery_room).min(total_capacity);
+        observation.worker_capacity = ring_limit.min(usable_room.div_ceil(carry_capacity));
+        Some(observation)
     };
     let state = GameState {
         grid: &grid,
         swarms: &swarm_states,
         bots: &bot_states,
         structures: &structure_states,
+        build_footprints: &build_footprints,
         deposits: &deposit_states,
         terrain: &terrain,
         charge: &tuning.charge,
         reachability: Some(&reachability),
         route_query: Some(&route_query),
-        source_query: Some(&source_query),
+        mine_query: Some(&mine_query),
+        supply: Some(SupplyState {
+            economies: &supply,
+            logistics: &tuning.logistics,
+        }),
         tick,
         finished: false,
     };
@@ -472,6 +949,17 @@ fn strategic_intent_system(
                 log::error!("Strategic Controller emitted rejected intent edit: {error}");
             }
         }
+    }
+}
+
+fn swarm_exists(
+    owners: &BTreeMap<Entity, SwarmId>,
+    owner: SwarmId,
+    exclusive: Option<&OwnerSwarm>,
+) -> bool {
+    match exclusive {
+        Some(exclusive) => owners.get(&exclusive.0) == Some(&owner),
+        None => owners.values().any(|&current| current == owner),
     }
 }
 
