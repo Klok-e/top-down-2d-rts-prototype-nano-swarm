@@ -690,8 +690,8 @@ pub fn move_velocity_system(
                             .waypoints
                             .get(route.follower.target_index(route.current))
                             .is_some_and(|next| !navigation.movement_clear(position, *next))
-                    || (route.waypoints.is_empty()
-                        && (route.pending.is_none() || immediate_approach)
+                    || ((route.waypoints.is_empty() && route.pending.is_none()
+                        || immediate_approach && route.pending.is_some())
                         && navigation.movement_clear(position, destination.xy))
             });
         if needs_route {

@@ -236,3 +236,58 @@ fn nearby_loaded_hauler_starts_unloading_approach_without_navigation_budget() {
     assert!(region.contains(position(&app, hauler)));
     assert_eq!(app.world().get::<Cargo>(hauler).unwrap().amount, 7);
 }
+
+#[test]
+fn reopened_local_approach_preempts_a_pending_replacement_at_zero_budget() {
+    let mut app = common::sim_app_with_movement();
+    let region = work_site(&mut app, 900.0);
+    let hauler = common::spawn_hauler_at(&mut app, START);
+    app.world_mut().entity_mut(hauler).insert((
+        Cargo {
+            kind: ResourceKind::Minerals,
+            amount: 7,
+        },
+        region.movement_from(START),
+    ));
+    for _ in 0..150 {
+        app.update();
+        if position(&app, hauler).x >= 580.0 {
+            break;
+        }
+    }
+    assert!(position(&app, hauler).x >= 580.0);
+    assert!(position(&app, hauler).distance(region.approach(position(&app, hauler))) > 144.0);
+
+    app.insert_resource(NavigationBudget(0));
+    let blocker = common::spawn_structure_at(&mut app, Vec2::new(780.0, LANE_Y));
+    for _ in 0..120 {
+        app.update();
+    }
+    let blocked = position(&app, hauler);
+    assert!(
+        (680.0..715.0).contains(&blocked.x),
+        "the Hauler reached the safe prefix: {blocked}"
+    );
+    assert!(
+        app.world()
+            .resource::<Navigation>()
+            .pending_movement_ticks(hauler)
+            .is_some(),
+        "the obstructed route must be waiting for a replacement",
+    );
+
+    app.world_mut().despawn(blocker);
+    app.update();
+    assert!(
+        position(&app, hauler).x > blocked.x + 0.1,
+        "the local approach resumes on the first tick without a replacement result",
+    );
+    for _ in 0..120 {
+        app.update();
+        if app.world().get::<DirectMovementComponent>(hauler).is_none() {
+            break;
+        }
+    }
+    assert!(region.contains(position(&app, hauler)));
+    assert_eq!(app.world().resource::<Navigation>().work().work, 0);
+}
