@@ -2,11 +2,13 @@
 use crate::battle_statistics::{BattleCounters, BattleEvent};
 use crate::tuning::Tuning;
 use bevy::prelude::*;
+use std::collections::HashSet;
 
 use super::{
-    DirectMovementComponent, InteractionRegion, Nanobot, NanobotType, OwnerSwarm,
-    ProductionFacility, SwarmId, SwarmMember,
+    Charger, Commitment, DirectMovementComponent, InteractionRegion, Nanobot, NanobotType,
+    OwnerSwarm, ProductionFacility, Structure, SwarmId, SwarmMember,
     construction_access::{CancelledSites, ConstructionAccess},
+    placement::footprint_intent_cells,
 };
 use crate::{
     intent::IntentGrid,
@@ -25,6 +27,116 @@ use crate::structure_sprites::StructureVisual;
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StructureLifecycleSet {
     Commit,
+}
+
+pub(crate) fn configure_structure_paint(app: &mut App) {
+    app.add_systems(
+        FixedUpdate,
+        reconcile_structure_paint_system
+            .after(super::NanobotSimulationSet::Movement)
+            .after(crate::strategic_runtime::StrategicControllerSet)
+            .before(super::RegionalAllocationSet::Project)
+            .before(super::production::production_facility_pick_target_system)
+            .before(super::charge::defender_charge_drain_system),
+    );
+}
+
+#[allow(clippy::type_complexity)]
+fn reconcile_structure_paint_system(
+    mut commands: Commands,
+    grid: Res<IntentGrid>,
+    swarms: Query<&SwarmId>,
+    mut structures: Query<
+        (
+            Entity,
+            &Transform,
+            &OwnerSwarm,
+            Option<&PlannedStructure>,
+            Option<&mut Structure>,
+            Has<ProductionFacility>,
+            Has<Charger>,
+            Option<&StockpileRole>,
+        ),
+        Or<(
+            With<PlannedStructure>,
+            With<ProductionFacility>,
+            With<Charger>,
+            With<Stockpile>,
+        )>,
+    >,
+    workers: Query<
+        (
+            Entity,
+            Option<&PlannedStructureClaim>,
+            Option<&PlannedStructureProgress>,
+            Option<&ClearingEvacuation>,
+            Option<&DirectMovementComponent>,
+        ),
+        Or<(
+            With<PlannedStructureClaim>,
+            With<PlannedStructureProgress>,
+            With<ClearingEvacuation>,
+        )>,
+    >,
+) {
+    let mut cancelled = HashSet::new();
+    for (entity, transform, owner, plan, condition, facility, charger, stockpile_role) in
+        &mut structures
+    {
+        let Ok(&swarm) = swarms.get(owner.0) else {
+            continue;
+        };
+        let kind = if let Some(plan) = plan {
+            plan.kind
+        } else if facility {
+            PlannedKind::ProductionFacility
+        } else if charger {
+            PlannedKind::Charger
+        } else if stockpile_role == Some(&StockpileRole::Sink) {
+            PlannedKind::SinkStockpile
+        } else {
+            PlannedKind::SourceStockpile
+        };
+        let Obstacle::Rectangle { center, half } = Obstacle::structure(transform) else {
+            unreachable!();
+        };
+        let intent = kind.placement_intent();
+        let covered = footprint_intent_cells(center, half).all(|cell| {
+            grid.cell(cell)
+                .is_some_and(|paint| paint.has_owned(intent, swarm))
+        });
+        if plan.is_some() && !covered {
+            cancelled.insert(entity);
+            commands.entity(entity).despawn();
+        } else if let Some(mut condition) = condition
+            && condition.paint_suspended == covered
+        {
+            condition.paint_suspended = !covered;
+        }
+    }
+
+    if cancelled.is_empty() {
+        return;
+    }
+    for (worker, claim, progress, evacuation, movement) in &workers {
+        if claim.is_some_and(|claim| cancelled.contains(&claim.target))
+            || progress.is_some_and(|progress| cancelled.contains(&progress.target))
+        {
+            release_planned_worker(&mut commands, worker);
+            commands
+                .entity(worker)
+                .remove::<DirectMovementComponent>()
+                .insert(Commitment::Idle);
+        }
+        if let Some(evacuation) = evacuation.filter(|state| cancelled.contains(&state.structure)) {
+            commands.entity(worker).remove::<ClearingEvacuation>();
+            if movement.is_some_and(|movement| {
+                movement.interaction.is_none() && movement.xy == evacuation.goal
+            }) {
+                commands.entity(worker).remove::<DirectMovementComponent>();
+            }
+        }
+    }
 }
 
 /// Spatial consequence of a structure's lifecycle, independent of its kind.

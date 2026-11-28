@@ -60,6 +60,10 @@ _Avoid_: Mineral node, mineral patch, resource pile
 A Resource Deposit a Strategic Controller commits to mining and supporting across reviews. Ownership describes its swarm’s economic intent, and neutral deposits remain open to any swarm that can reach them.
 _Avoid_: Captured territory, exclusive mining rights
 
+**Mine Saturation**:
+An Owned Resource Deposit is saturated when Workers use all the gathering capacity its Source Stockpiles can sustain, within the number of Workers who fit around the deposit.
+_Avoid_: Full work ring, full Source Stockpile
+
 **Rock Formation**:
 Permanent, impassable terrain that shapes base entrances, travel routes, and mineral pockets. Rock Formations cannot be destroyed or harvested and enclose the default map's playable area.
 _Avoid_: Destructible rock, Resource Deposit
@@ -137,7 +141,7 @@ When an intent category has valid work and available eligible nanobots, the swar
 _Avoid_: Manual assignment, hard quota, perfect allocation
 
 **Planned Structure**:
-A stable, owner-scoped commitment to build one support structure at one location, persisting when its triggering demand recedes. It remains traversable until clearing for completion and resolves by completion, destruction, or cancellation when the final access check fails.
+A stable, owner-scoped commitment to build one support structure at one location, persisting when its triggering demand recedes. It remains traversable until clearing for completion and resolves by completion, destruction, or cancellation. Loss of the owning swarm's matching intent under any part of its Building Footprint cancels it, as does a failed final access check.
 _Avoid_: Blueprint, ghost building, construction order
 
 **Building Footprint**:
@@ -149,7 +153,7 @@ The phase after construction work and access validation in which a Planned Struc
 _Avoid_: Forced eviction, instant completion
 
 **Maintenance**:
-Ongoing worker time required to prevent structure collapse. A structure remains fully functional while any health remains and is destroyed at zero; overexpansion or cut-off worker access creates collapse risk rather than partial shutdown.
+Ongoing worker time required to prevent structure collapse. A completed structure can operate and receive Maintenance while it has positive health and its Building Footprint is covered by its swarm's matching intent. Without that paint it remains standing and ages without Maintenance, and can resume operation and Maintenance if repainted before collapse.
 _Avoid_: Permanent buildings, fire-and-forget construction
 
 **Overlapping Intent**:

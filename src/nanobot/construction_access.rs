@@ -48,6 +48,82 @@ struct DerivedKeys {
 }
 
 impl AccessLayout {
+    fn assess_source_site(
+        &self,
+        navigation: &Navigation,
+        swarm: SwarmId,
+        candidate: &Transform,
+        mine: (InteractionRegion, Vec2),
+        gather_cells: &[IVec2],
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, ()> {
+        let shape = Obstacle::structure(candidate);
+        let (center, half) = shape.bounds();
+        let mut baseline = Vec::new();
+        let mut completed = Vec::new();
+        let mut endpoints = Vec::new();
+        for object in &self.objects {
+            if !allow_work() {
+                return Err(());
+            }
+            if object.shape.overlaps_rectangle(center, half, 0.0) {
+                return Ok(false);
+            }
+            if !object.planned {
+                baseline.push(object.shape);
+            }
+            completed.push(object.shape);
+            if let Some(deposit) = object.deposit {
+                if deposit.amount == 0 {
+                    continue;
+                }
+                for &cell in gather_cells {
+                    if !allow_work() {
+                        return Err(());
+                    }
+                    if cell_overlaps_circle(
+                        cell,
+                        object.transform.translation.truncate(),
+                        deposit.radius,
+                    ) {
+                        endpoints.push(InteractionRegion::deposit(
+                            &object.transform,
+                            deposit.radius,
+                        ));
+                        break;
+                    }
+                }
+            } else if matches!(object.owner, AccessOwner::Shared)
+                || object.owner == AccessOwner::Swarm(swarm)
+            {
+                endpoints.push(InteractionRegion::structure(&object.transform));
+            }
+        }
+        let (gather, approach) = mine;
+        let mut builders = vec![approach];
+        for &(owner, position) in &self.builders {
+            if !allow_work() {
+                return Err(());
+            }
+            if owner == swarm {
+                builders.push(position);
+            }
+        }
+        completed.push(shape);
+        navigation.assess_construction_with_budget(
+            &AccessCheck {
+                baseline,
+                completed,
+                builders,
+                target: InteractionRegion::structure(candidate),
+                endpoints,
+                swarm,
+            },
+            gather,
+            allow_work,
+        )
+    }
+
     #[cfg(test)]
     fn accepts(
         &self,
@@ -340,6 +416,34 @@ pub struct ConstructionAccess<'w, 's> {
     cancelled: Option<Res<'w, CancelledSites>>,
 }
 impl ConstructionAccess<'_, '_> {
+    pub(crate) fn assess_source_site(
+        &self,
+        layout: &AccessLayout,
+        swarm: SwarmId,
+        position: Vec2,
+        mine: (InteractionRegion, Vec2),
+        gather_cells: &[IVec2],
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, ()> {
+        let kind = PlannedKind::SourceStockpile;
+        let transform = kind.footprint_transform(position.extend(0.0));
+        if self
+            .cancelled
+            .as_ref()
+            .is_some_and(|sites| sites.excludes(layout, swarm, kind, &transform))
+        {
+            return Ok(false);
+        }
+        layout.assess_source_site(
+            &self.navigation,
+            swarm,
+            &transform,
+            mine,
+            gather_cells,
+            allow_work,
+        )
+    }
+
     pub fn snapshot(&self) -> AccessLayout {
         AccessLayout::new(
             self.objects
@@ -475,6 +579,51 @@ impl CancelledSites {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_source_can_cover_the_current_approach_when_another_delivery_route_remains() {
+        let swarm = SwarmId::PLAYER;
+        let cell = IVec2::ZERO;
+        let position = Vec2::new(156.0, 180.0);
+        let deposit_transform = Transform::from_translation(position.extend(0.0));
+        let deposit = ResourceDeposit {
+            kind: crate::resources::ResourceKind::Minerals,
+            amount: 20,
+            capacity: 20,
+            radius: 32.0,
+        };
+        let shape = Obstacle::deposit(position, deposit.radius);
+        let builder = Vec2::new(380.0, 180.0);
+        let layout = AccessLayout::new(
+            vec![AccessObject {
+                entity: Entity::from_bits(1),
+                transform: deposit_transform,
+                shape,
+                owner: AccessOwner::Shared,
+                deposit: Some(deposit),
+                planned: false,
+            }],
+            vec![(swarm, builder)],
+        );
+        let navigation = Navigation::new(&IntentGrid::new(8, 8), vec![shape]);
+        let source = PlannedKind::SourceStockpile.footprint_transform(Vec3::new(252.0, 180.0, 0.0));
+        let gather =
+            InteractionRegion::deposit(&deposit_transform, deposit.radius).within_cell(cell);
+        let approach = gather.approach(builder);
+        assert!(!Obstacle::structure(&source).admits_body(approach));
+        assert_eq!(
+            layout.assess_source_site(
+                &navigation,
+                swarm,
+                &source,
+                (gather, approach),
+                &[cell],
+                &mut || true
+            ),
+            Ok(true)
+        );
+    }
+
     fn structure(
         index: u32,
         center: Vec2,

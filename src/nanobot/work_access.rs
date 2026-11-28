@@ -54,7 +54,15 @@ pub struct WorkAccess<'w, 's> {
         With<ProductionFacility>,
     >,
     swarms: Query<'w, 's, &'static SwarmId, With<super::Swarm>>,
-    targets: Query<'w, 's, (&'static Transform, Option<&'static ResourceDeposit>)>,
+    targets: Query<
+        'w,
+        's,
+        (
+            &'static Transform,
+            Option<&'static ResourceDeposit>,
+            Option<&'static SupportCondition>,
+        ),
+    >,
 }
 
 impl WorkAccess<'_, '_> {
@@ -66,17 +74,20 @@ impl WorkAccess<'_, '_> {
         if !assignment.has_paint_support(&self.grid, swarm) {
             return None;
         }
-        let (transform, deposit) = self.targets.get(assignment.deposit).ok()?;
+        let (transform, deposit, _) = self.targets.get(assignment.deposit).ok()?;
         Some(assignment.interaction(transform, deposit?.radius))
     }
 
     pub(crate) fn region(&self, entity: Entity) -> Option<InteractionRegion> {
-        self.targets.get(entity).ok().map(|(transform, deposit)| {
-            deposit.map_or_else(
-                || InteractionRegion::structure(transform),
-                |deposit| InteractionRegion::deposit(transform, deposit.radius),
-            )
-        })
+        let (transform, deposit, condition) = self.targets.get(entity).ok()?;
+        condition
+            .is_none_or(SupportCondition::is_operational)
+            .then(|| {
+                deposit.map_or_else(
+                    || InteractionRegion::structure(transform),
+                    |deposit| InteractionRegion::deposit(transform, deposit.radius),
+                )
+            })
     }
 
     pub(crate) fn reachability_from(
@@ -129,7 +140,7 @@ impl WorkAccess<'_, '_> {
                         let Ok(owner) = self.swarms.get(owner.0).copied() else {
                             continue;
                         };
-                        if owner == swarm && condition.is_none_or(|condition| condition.health > 0)
+                        if owner == swarm && condition.is_none_or(SupportCondition::is_operational)
                         {
                             starts.extend(
                                 InteractionRegion::structure(transform)
@@ -222,7 +233,7 @@ impl WorkAccess<'_, '_> {
     ) -> WorkReachability {
         let (entity, kind) = match target {
             OpportunityTarget::Gather { deposit, cell } => {
-                let Ok((transform, Some(deposit))) = self.targets.get(deposit) else {
+                let Ok((transform, Some(deposit), _)) = self.targets.get(deposit) else {
                     return WorkReachability::Unreachable;
                 };
                 let preferred =

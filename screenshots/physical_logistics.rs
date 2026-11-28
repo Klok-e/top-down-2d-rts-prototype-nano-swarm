@@ -4,6 +4,7 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z,
     fly_camera::CameraZoom2d,
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         Cargo, Charger, HaulerAssignment, Health, InteractionRegion, LogisticsReservation,
         MaterialWorkProgress, Nanobot, NanobotType, OwnerSwarm, ProductionFacility, Swarm, SwarmId,
@@ -88,6 +89,9 @@ fn begin_delivery_after_pickup_loss(world: &mut World, delivery: Delivery) {
         .find(|(_, id)| **id == SwarmId::PLAYER)
         .unwrap()
         .0;
+    world
+        .resource_mut::<IntentGrid>()
+        .paint(IVec2::NEG_Y, IntentKind::Build, SwarmId::PLAYER);
     world
         .entity_mut(delivery.facility)
         .insert(OwnerSwarm(owner));

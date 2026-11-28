@@ -1099,7 +1099,7 @@ impl Navigation {
                 let connectivity = request.purpose == RequestPurpose::Connectivity;
                 request.future = Some(Box::pin(async move {
                     if let Some(check) = access {
-                        return snapshot.async_access(&check, &paint).await;
+                        return snapshot.async_access(&check, &paint, None).await;
                     }
                     if connectivity {
                         return snapshot.async_connectivity(start, goal).await;
@@ -1563,6 +1563,20 @@ pub enum AccessStatus {
     Rejected,
 }
 impl Navigation {
+    pub(crate) fn assess_construction_with_budget(
+        &self,
+        check: &AccessCheck,
+        required_interaction: crate::nanobot::InteractionRegion,
+        allow_work: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, ()> {
+        let paint = PaintCosts::default();
+        let outcome = poll_with_budget(
+            self.async_access(check, &paint, Some(required_interaction)),
+            allow_work,
+        )?;
+        Ok(matches!(outcome, RouteOutcome::Found(_)))
+    }
+
     pub fn query_access(
         &self,
         key: u64,
@@ -1649,7 +1663,12 @@ impl Navigation {
         }
         false
     }
-    async fn async_access(&self, check: &AccessCheck, paint: &PaintCosts) -> RouteOutcome {
+    async fn async_access(
+        &self,
+        check: &AccessCheck,
+        paint: &PaintCosts,
+        required_interaction: Option<crate::nanobot::InteractionRegion>,
+    ) -> RouteOutcome {
         WorkUnit::new().await;
         let baseline = self.variant(check.baseline.clone());
         let completed = self.variant(check.completed.clone());
@@ -1661,7 +1680,15 @@ impl Navigation {
                     .async_connectivity(builder, RouteGoal::Interaction(check.target))
                     .await,
                 RouteOutcome::Found(_)
-            ) {
+            ) && match required_interaction {
+                Some(region) if !region.contains(builder) => matches!(
+                    completed
+                        .async_connectivity(builder, RouteGoal::Interaction(region))
+                        .await,
+                    RouteOutcome::Found(_)
+                ),
+                _ => true,
+            } {
                 builder_reaches = true;
                 break;
             }

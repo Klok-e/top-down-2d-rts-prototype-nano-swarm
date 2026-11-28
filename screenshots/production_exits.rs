@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
     GAMEPLAY_SPRITE_Z,
     fly_camera::CameraZoom2d,
-    intent::IntentGrid,
+    intent::{IntentGrid, IntentKind},
     nanobot::{
         Commitment, DirectMovementComponent, Health, Nanobot, NanobotType, OwnerSwarm, PlannedKind,
         ProductionFacility, StrategicController, Swarm, SwarmId, SwarmMember, VelocityComponent,
@@ -149,7 +149,9 @@ fn prepare(world: &mut World) {
     {
         world.entity_mut(entity).remove::<StrategicController>();
     }
-    world.insert_resource(IntentGrid::new(8, 8));
+    let mut grid = IntentGrid::new(8, 8);
+    grid.paint(IVec2::ZERO, IntentKind::Build, SwarmId::PLAYER);
+    world.insert_resource(grid);
     world.resource_mut::<Tuning>().logistics.bot_speed = 0.;
     for (mut transform, mut projection, mut zoom) in world
         .query::<(&mut Transform, &mut Projection, &mut CameraZoom2d)>()

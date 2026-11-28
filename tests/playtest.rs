@@ -36,6 +36,8 @@ mod regional_allocation;
 mod shared_navigation;
 #[path = "playtest/skirmish_end.rs"]
 mod skirmish_end;
+#[path = "playtest/strategic_local_defense.rs"]
+mod strategic_local_defense;
 #[path = "playtest/typed_population_demand.rs"]
 mod typed_population_demand;
 #[path = "playtest/world_space_nanobots.rs"]
@@ -61,3 +63,6 @@ mod headless_pacing;
 
 #[path = "playtest/tuning_panel.rs"]
 mod tuning_panel;
+
+#[path = "playtest/structure_paint.rs"]
+mod structure_paint;

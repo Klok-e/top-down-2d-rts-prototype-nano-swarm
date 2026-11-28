@@ -227,7 +227,7 @@ pub fn project_territory_snapshot_system(
         );
     }
     for (entity, transform, owner, structure, identity) in &structures {
-        if !structure.is_operational() {
+        if structure.is_collapsed() {
             continue;
         }
         let Ok((_, swarm)) = swarms.get(owner.0) else {

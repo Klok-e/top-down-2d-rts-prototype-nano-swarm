@@ -44,11 +44,12 @@ use bevy::{math::Vec2, prelude::*, time::TimeUpdateStrategy};
 use top_down_2d_rts_prototype_nano_swarm::{
     intent::{IntentGrid, IntentKind},
     nanobot::{
-        ActionableProjection, Charge, ChargePlugin, Charger, CombatPlugin, Commitment,
-        DefenderEngagements, GatherPlugin, HaulPlugin, Health, MaintenancePlugin, Nanobot,
-        NanobotBundle, NanobotSimulationSet, NanobotType, NanobotVisual, OpponentSwarm, OwnerSwarm,
-        PlannedStructure, PlannedStructurePlugin, PopulationDemandPlugin, ProductionFacility,
-        ProductionPlugin, RegionalAllocationPlugin, SoftWorkSlots, Structure, StructureKind, Swarm,
+        ActionableProjection, Cargo, Charge, ChargePlugin, Charger, CombatPlugin, Commitment,
+        DefenderEngagements, GatherPlugin, HaulPlugin, Health, LogisticsReservation,
+        MaintenancePlugin, Nanobot, NanobotBundle, NanobotSimulationSet, NanobotType,
+        NanobotVisual, OpponentSwarm, OwnerSwarm, PlannedStructure, PlannedStructurePlugin,
+        PopulationDemandPlugin, ProductionFacility, ProductionPlugin, RegionalAllocationPlugin,
+        ReturningToStockpile, SoftWorkSlots, Structure, StructureKind, Swarm,
         SwarmEliminationPlugin, SwarmId, SwarmMember, VelocityComponent, bot_debug_circle_system,
         defender_engagement_system, defender_retreat_system, idle_spread_system,
         initialize_nanobot_type_components, move_velocity_system,
@@ -481,6 +482,26 @@ pub fn spawn_worker_at(app: &mut App, world_pos: Vec2) -> Entity {
             Transform::from_translation(world_pos.extend(0.0)),
         ))
         .id()
+}
+
+pub fn prepare_mineral_dropoff(
+    app: &mut App,
+    worker: Entity,
+    deposit: Entity,
+    source: Entity,
+    amount: u32,
+) {
+    let mut reservation =
+        LogisticsReservation::new(deposit, source, ResourceKind::Minerals, amount);
+    reservation.source_remaining = 0;
+    app.world_mut().entity_mut(worker).insert((
+        ReturningToStockpile { stockpile: source },
+        reservation,
+        Cargo {
+            kind: ResourceKind::Minerals,
+            amount,
+        },
+    ));
 }
 
 /// Spawn a Defender nanobot at `world_pos` with full [`Health`]

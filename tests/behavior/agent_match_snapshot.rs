@@ -181,6 +181,7 @@ fn detailed_state_get_reports_distinct_owners_and_overlapping_component_facts() 
                 kind: StructureKind::Basic,
                 health: 64,
                 ticks_since_maintained: 123,
+                paint_suspended: false,
             },
             OwnerSwarm(player_swarm),
             Transform::from_xyz(30.0, 40.0, 0.0),

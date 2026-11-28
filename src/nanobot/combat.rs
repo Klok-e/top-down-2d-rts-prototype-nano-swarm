@@ -288,7 +288,7 @@ pub fn defender_combat_system(
         .p1()
         .iter()
         .filter_map(|(entity, transform, owner, structure, visual, identity)| {
-            if !structure.is_operational() {
+            if structure.is_collapsed() {
                 return None;
             }
             Some(StructureTarget {

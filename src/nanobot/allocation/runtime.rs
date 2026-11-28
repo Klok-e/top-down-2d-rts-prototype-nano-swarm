@@ -121,6 +121,7 @@ impl Plugin for RegionalAllocationPlugin {
             .init_resource::<ActionableProjection>()
             .init_resource::<super::TerritorySnapshot>()
             .init_resource::<super::defender_staging::DefenderStagingLayouts>()
+            .init_resource::<super::DefenderStagingAssignments>()
             .init_resource::<AllocationClock>()
             .init_resource::<AllocationTickDue>()
             .init_resource::<RegionalAllocationWake>()

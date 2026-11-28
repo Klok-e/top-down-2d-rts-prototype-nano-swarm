@@ -3,6 +3,7 @@ use super::{
     materialize::{push_desired, world_to_intent_cell},
     *,
 };
+use crate::nanobot::{PlannedKind, footprint_intent_cells};
 
 pub(super) struct DefenderBudget {
     baseline: f32,
@@ -93,6 +94,7 @@ pub(super) fn keep_charger_support(
     budget: &mut WorkBudget,
 ) -> (Option<u64>, f32) {
     let mut chargers = Vec::new();
+    let half_extent = Vec2::splat(PlannedKind::Charger.footprint_half_extent());
     for structure in state.structures {
         if !budget.spend(1) {
             return (None, 0.0);
@@ -103,29 +105,33 @@ pub(super) fn keep_charger_support(
         {
             continue;
         }
-        let cell = world_to_intent_cell(structure.position);
+        let Some(position) = structure.position else {
+            continue;
+        };
+        let cell = world_to_intent_cell(position);
         if let Some(map) = state.reachability {
-            match map.position_is_reachable_with_budget(
-                owner,
-                structure.position,
-                state.grid,
-                &mut || budget.spend(1),
-            ) {
+            match map.position_is_reachable_with_budget(owner, position, state.grid, &mut || {
+                budget.spend(1)
+            }) {
                 Ok(true) => {}
                 Ok(false) => continue,
                 Err(()) => return (None, 0.0),
             }
         }
         let supplied = structure.minerals.min(charger_reserve);
-        let already_painted = state
-            .grid
-            .cell(cell)
-            .is_some_and(|intent| intent.has_owned(IntentKind::Defend, owner));
+        let footprint = footprint_intent_cells(position, half_extent).collect::<Vec<_>>();
+        let already_painted = footprint.iter().all(|&cell| {
+            state
+                .grid
+                .cell(cell)
+                .is_some_and(|intent| intent.has_owned(IntentKind::Defend, owner))
+        });
         chargers.push((
             std::cmp::Reverse((supplied, already_painted)),
             structure.id,
             cell,
             supplied,
+            footprint,
         ));
     }
     chargers.sort_by_key(|&(priority, id, ..)| (priority, id));
@@ -133,11 +139,7 @@ pub(super) fn keep_charger_support(
     let mut kept = 0;
     let mut supplied = 0.0;
     let mut kept_for_recovery = 0;
-    for (_, id, cell, buffer) in chargers {
-        let defend = DesiredIntent {
-            cell,
-            kind: IntentKind::Defend,
-        };
+    for (_, id, cell, buffer, footprint) in chargers {
         let requires_recovery_paint = buffer < charger_reserve
             && !IntentKind::ALL
                 .into_iter()
@@ -145,10 +147,27 @@ pub(super) fn keep_charger_support(
         if requires_recovery_paint && kept_for_recovery >= defense.recovery_chargers {
             continue;
         }
-        if !desired.contains(&defend)
-            && (desired.len() >= paint_capacity
-                || !push_desired(desired, owner, defend, state, true, budget))
-        {
+        let mut added = Vec::new();
+        let supported = footprint.into_iter().all(|cell| {
+            let defend = DesiredIntent {
+                cell,
+                kind: IntentKind::Defend,
+            };
+            if desired.contains(&defend) {
+                return true;
+            }
+            if desired.len() >= paint_capacity
+                || !push_desired(desired, owner, defend, state, true, budget)
+            {
+                return false;
+            }
+            added.push(defend);
+            true
+        });
+        if !supported {
+            for defend in added {
+                desired.remove(&defend);
+            }
             continue;
         }
         key_charger.get_or_insert(id);
@@ -176,35 +195,4 @@ pub(super) fn keep_charger_support(
         key_charger,
         supplied * state.charge.max_defenders_per_charger as f32,
     )
-}
-
-pub(super) fn add_production_room(
-    tuning: &AutonomyTuning,
-    swarm: &SwarmState,
-    origins: impl Iterator<Item = IVec2>,
-    state: &GameState<'_>,
-    desired: &mut HashSet<DesiredIntent>,
-    paint_capacity: usize,
-    budget: &mut WorkBudget,
-) {
-    if !swarm.production_saturated || swarm.minerals <= tuning.strategy_production_mineral_threshold
-    {
-        return;
-    }
-    let mut remaining = tuning.strategy_production_room_cells;
-    let offsets = [IVec2::X, -IVec2::X, IVec2::Y, -IVec2::Y];
-    for origin in origins {
-        for offset in offsets {
-            if remaining == 0 || desired.len() >= paint_capacity || budget.exhausted {
-                return;
-            }
-            let intent = DesiredIntent {
-                cell: origin + offset,
-                kind: IntentKind::Build,
-            };
-            if push_desired(desired, swarm.id, intent, state, true, budget) {
-                remaining -= 1;
-            }
-        }
-    }
 }

@@ -336,26 +336,17 @@ pub fn production_facility_auto_creation_system(
             continue;
         }
         let mut counts = count_swarm_nanobots_by_type(*swarm_id, &nanobots);
-        for (_, facility, owner, _) in &facilities {
-            if owner.0 == swarm_entity
-                && let Some(kind) = facility.current_target
-            {
+        let mut all_busy = true;
+        for (_, facility, _, _) in facilities.iter().filter(|(_, _, owner, condition)| {
+            owner.0 == swarm_entity && condition.is_none_or(SupportCondition::is_operational)
+        }) {
+            if let Some(kind) = facility.current_target {
                 *counts.entry(kind).or_default() += 1;
             }
+            all_busy &= facility.is_busy(tuning.production.ticks_per_bot);
         }
         let target = population_demand.most_underfilled_type(*swarm_id, &counts);
-        let relevant: Vec<&ProductionFacility> = facilities
-            .iter()
-            .filter(|(_, _, owner, condition)| {
-                condition.is_none_or(|condition| condition.is_operational())
-                    && owner.0 == swarm_entity
-            })
-            .map(|(_, facility, _, _)| facility)
-            .collect();
-        let pressure_continues = target.is_some()
-            && relevant
-                .iter()
-                .all(|facility| facility.is_busy(tuning.production.ticks_per_bot));
+        let pressure_continues = target.is_some() && all_busy;
         let pressure_ticks = next_production_pressure_ticks(
             pressure.ticks_for(*swarm_id),
             pressure_continues,
@@ -429,7 +420,7 @@ pub fn production_facility_pick_target_system(
     nanobots: Query<(&NanobotType, &crate::nanobot::components::SwarmMember), With<Nanobot>>,
     swarms: Query<&SwarmId, With<Swarm>>,
     mut facility_queries: ParamSet<(
-        Query<(&ProductionFacility, &OwnerSwarm)>,
+        Query<(&ProductionFacility, &OwnerSwarm, Option<&SupportCondition>)>,
         Query<(
             &mut ProductionFacility,
             &OwnerSwarm,
@@ -446,7 +437,10 @@ pub fn production_facility_pick_target_system(
             count_swarm_nanobots_by_type(*swarm_id, &nanobots),
         );
     }
-    for (facility, owner) in &facility_queries.p0() {
+    for (facility, owner, condition) in &facility_queries.p0() {
+        if condition.is_some_and(|condition| !condition.is_operational()) {
+            continue;
+        }
         let Some(kind) = facility.current_target else {
             continue;
         };
@@ -709,10 +703,13 @@ const LEAD_TIME_SMOOTHING: f32 = 0.2;
 /// Fixed ticks for one delivery from a pickup `pickup_distance` away, before
 /// any delivery has been measured: the trip to the pickup, loading a full
 /// load, and the trip back.
-pub fn estimated_lead_ticks(tuning: &Tuning, pickup_distance: f32) -> f32 {
-    let carry = tuning.logistics.hauler_carry_capacity.max(1);
-    let loading = (carry * tuning.logistics.material_work_ticks) as f32;
-    let travel = 2.0 * pickup_distance.max(0.0) / tuning.logistics.bot_speed;
+pub fn estimated_lead_ticks(
+    logistics: &crate::tuning::LogisticsTuning,
+    pickup_distance: f32,
+) -> f32 {
+    let carry = logistics.hauler_carry_capacity.max(1);
+    let loading = (carry * logistics.material_work_ticks) as f32;
+    let travel = 2.0 * pickup_distance.max(0.0) / logistics.bot_speed;
     loading + travel
 }
 
@@ -730,7 +727,10 @@ pub fn window_for_lead(tuning: &Tuning, lead_ticks: f32) -> u32 {
 /// Delivery window for an unmeasured facility whose nearest stocked pickup is
 /// `pickup_distance` away.
 pub fn delivery_window(tuning: &Tuning, pickup_distance: f32) -> u32 {
-    window_for_lead(tuning, estimated_lead_ticks(tuning, pickup_distance))
+    window_for_lead(
+        tuning,
+        estimated_lead_ticks(&tuning.logistics, pickup_distance),
+    )
 }
 
 /// Facility claims Haulers hold, by Hauler, with the allocation tick each was
@@ -766,17 +766,25 @@ pub fn facility_lead_time_system(
         ),
         With<crate::nanobot::HaulerAssignment>,
     >,
-    mut facilities: Query<(&mut ProductionFacility, &Transform)>,
+    mut facilities: Query<(
+        &mut ProductionFacility,
+        &Transform,
+        Option<&SupportCondition>,
+    )>,
 ) {
     let now = clock.tick();
     let fixed_ticks_per_period =
         crate::nanobot::ALLOCATION_TICK_PERIOD.as_secs_f32() * crate::SIMULATION_HZ as f32;
     let mut live = std::collections::HashSet::new();
     for (hauler, transform, reservation, cargo, moving) in &haulers {
-        let Ok((mut facility, facility_transform)) = facilities.get_mut(reservation.destination)
+        let Ok((mut facility, facility_transform, condition)) =
+            facilities.get_mut(reservation.destination)
         else {
             continue;
         };
+        if condition.is_some_and(|condition| !condition.is_operational()) {
+            continue;
+        }
         live.insert(hauler);
         let fresh = ClaimTime {
             facility: reservation.destination,
@@ -817,7 +825,13 @@ pub fn facility_lead_time_system(
 #[allow(clippy::type_complexity)]
 pub fn facility_delivery_window_system(
     tuning: Res<Tuning>,
-    mut facilities: Query<(Entity, &mut ProductionFacility, &Transform, &OwnerSwarm)>,
+    mut facilities: Query<(
+        Entity,
+        &mut ProductionFacility,
+        &Transform,
+        &OwnerSwarm,
+        Option<&SupportCondition>,
+    )>,
     pickups: Query<(
         &Stockpile,
         &Transform,
@@ -830,8 +844,10 @@ pub fn facility_delivery_window_system(
     >,
 ) {
     let mut claimed: Option<HashMap<Entity, u32>> = None;
-    for (entity, mut facility, transform, owner) in &mut facilities {
-        if facility.current_target.is_none() && !facility.demand_waiting {
+    for (entity, mut facility, transform, owner, condition) in &mut facilities {
+        if condition.is_some_and(|condition| !condition.is_operational())
+            || (facility.current_target.is_none() && !facility.demand_waiting)
+        {
             continue;
         }
         let position = transform.translation.truncate();
@@ -846,7 +862,7 @@ pub fn facility_delivery_window_system(
             .min_by(f32::total_cmp);
         let derived = facility
             .measured_lead_ticks
-            .or_else(|| nearest.map(|distance| estimated_lead_ticks(&tuning, distance)))
+            .or_else(|| nearest.map(|distance| estimated_lead_ticks(&tuning.logistics, distance)))
             .map_or(0, |lead| window_for_lead(&tuning, lead));
         let window = if derived >= facility.queued_space {
             derived

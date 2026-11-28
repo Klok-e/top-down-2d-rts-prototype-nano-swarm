@@ -30,6 +30,86 @@ fn install_empty_reachability(app: &mut App) {
 }
 
 #[test]
+fn strategic_economy_replaces_a_depleted_mine_when_a_hauler_arrives_later() {
+    use top_down_2d_rts_prototype_nano_swarm::resources::{ResourceDeposit, Stockpile};
+
+    let mut app = common::sim_app_with_gather_haul();
+    app.insert_resource(IntentGrid::new(16, 16))
+        .add_plugins(StrategicControllerPlugin);
+    let owner = SwarmId::PLAYER;
+    let home = common::cell_world_center(IVec2::ZERO);
+    let swarm = common::spawn_swarm_with_nanobots(&mut app, home, &[(NanobotType::Worker, 9)]);
+    app.world_mut()
+        .entity_mut(swarm)
+        .insert(StrategicController::new(owner));
+    install_empty_reachability(&mut app);
+    let old = IVec2::X;
+    let retained = IVec2::NEG_X;
+    let next = IVec2::Y;
+    let [(old_mine, _), _, (next_mine, next_source)] = [old, retained, next].map(|cell| {
+        let position = common::cell_world_center(cell);
+        let amount = if cell == old { 4 } else { 72_000 };
+        let deposit = common::spawn_deposit(
+            &mut app,
+            common::DepositFixture {
+                world_pos: position,
+                amount,
+                capacity: amount,
+                radius: 64.0,
+            },
+        );
+        if cell != next {
+            app.world_mut()
+                .entity_mut(deposit)
+                .insert(OwnerSwarm(swarm));
+        }
+        let source = common::spawn_stockpile(&mut app, position + 144.0 * Vec2::X, 0, 4);
+        (deposit, source)
+    });
+    let sink = common::spawn_sink_stockpile(&mut app, home - 180.0 * Vec2::Y, 0, 2_000);
+    app.world_mut().entity_mut(sink).insert(OwnerSwarm(swarm));
+    let gather = |app: &App, cell| {
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(cell)
+            .is_some_and(|paint| paint.has_owned(IntentKind::Gather, owner))
+    };
+    app.update();
+    assert!(gather(&app, old));
+    for _ in 0..960 {
+        app.update();
+        assert!(gather(&app, retained));
+        assert!(!gather(&app, next));
+    }
+    assert_eq!(
+        app.world().get::<ResourceDeposit>(old_mine).unwrap().amount,
+        0
+    );
+    assert!(!gather(&app, old));
+
+    common::spawn_hauler_at(&mut app, home);
+    for _ in 0..960 {
+        app.update();
+        assert!(gather(&app, retained));
+        if app.world().get::<Stockpile>(next_source).unwrap().amount > 0 {
+            assert!(gather(&app, next));
+            return;
+        }
+    }
+    let next_resource = app.world().get::<ResourceDeposit>(next_mine).unwrap();
+    let telemetry = app
+        .world()
+        .resource::<top_down_2d_rts_prototype_nano_swarm::strategic_runtime::ControllerTelemetry>(
+    );
+    panic!(
+        "Workers did not deliver from the replacement mine. Gather: {}, amount: {}, controller: {:?}",
+        gather(&app, next),
+        next_resource.amount,
+        telemetry.profiles(),
+    );
+}
+
+#[test]
 fn strategic_intent_finishes_a_remnant_away_from_its_former_home() {
     use std::time::Duration;
 
@@ -178,15 +258,13 @@ fn strategic_intent_finishes_a_hauler_on_the_reachable_flanks_rim() {
 }
 
 #[test]
-fn strategic_intent_clears_a_structure_and_distant_hauler() {
+fn destroying_the_last_inactive_facility_wins_while_a_distant_worker_survives() {
     use std::time::Duration;
 
     use bevy::time::TimeUpdateStrategy;
     use top_down_2d_rts_prototype_nano_swarm::{
-        nanobot::{ChargePlugin, PlannedKind, Structure, StructureKind},
+        nanobot::{ChargePlugin, Structure, StructureKind},
         resources::{ResourceKind, ResourceLedger},
-        terrain::RockFormation,
-        tuning::Tuning,
     };
 
     let mut app = common::sim_app();
@@ -202,7 +280,6 @@ fn strategic_intent_clears_a_structure_and_distant_hauler() {
         ))
         .add_systems(FixedLast, nanobot_death_cleanup_system);
     app.update();
-    app.insert_resource(Tuning::default());
 
     let home = common::cell_world_center(IVec2::ZERO);
     let own = common::spawn_swarm_with_nanobots(&mut app, home, &[(NanobotType::Defender, 8)]);
@@ -223,73 +300,148 @@ fn strategic_intent_clears_a_structure_and_distant_hauler() {
         },
     );
     app.world_mut().entity_mut(support).insert(OwnerSwarm(own));
+    install_empty_reachability(&mut app);
 
-    let hauler_start = common::cell_world_center(IVec2::new(0, 4));
-    let rock = RockFormation::Rectangle {
-        half: Vec2::new(1_024.0, 72.0),
-    };
-    let rock_transform = Transform::from_translation((hauler_start + Vec2::Y * 280.0).extend(0.0));
-    app.world_mut().spawn((rock, rock_transform));
-    let reachability = SwarmReachabilityMap::new(
-        app.world().resource::<IntentGrid>(),
-        [rock.obstacle(&rock_transform)],
-        [(SwarmId::PLAYER, home)],
-    )
-    .unwrap();
-    app.insert_resource(reachability);
+    let worker_start = common::cell_world_center(IVec2::new(0, 12));
     let enemy = common::spawn_opponent_swarm_with_nanobots(
         &mut app,
-        hauler_start,
-        &[(NanobotType::Hauler, 1)],
+        worker_start,
+        &[(NanobotType::Worker, 1)],
     );
     let enemy_id = *app.world().get::<SwarmId>(enemy).unwrap();
-    let hauler = {
-        let world = app.world_mut();
-        world
-            .query::<(Entity, &SwarmMember)>()
-            .iter(world)
-            .find(|(_, member)| member.0 == enemy_id)
-            .map(|(entity, _)| entity)
-            .unwrap()
-    };
-    let enemy_home = common::cell_world_center(IVec2::new(6, 0));
-    app.world_mut()
-        .entity_mut(enemy)
-        .insert(Transform::from_translation(enemy_home.extend(0.0)));
-    let structure =
-        common::spawn_empty_completed_structure(&mut app, enemy, PlannedKind::SinkStockpile);
-    app.world_mut().entity_mut(structure).insert((
-        Structure::new(StructureKind::Basic),
-        Transform::from_translation(enemy_home.extend(0.0)),
-    ));
+    let target_cell = IVec2::new(6, 0);
+    let target = common::cell_world_center(target_cell);
+    let facility = app
+        .world_mut()
+        .spawn((
+            ProductionFacility::new(),
+            Structure {
+                paint_suspended: true,
+                ..Structure::new(StructureKind::Basic)
+            },
+            OwnerSwarm(enemy),
+            Transform::from_translation(target.extend(0.0)),
+        ))
+        .id();
 
-    let started = app.world().resource::<Time<Fixed>>().elapsed_secs_f64();
-    for _ in 0..2400 {
+    app.update();
+    assert_eq!(
+        *app.world().resource::<MatchOutcome>(),
+        MatchOutcome::InProgress
+    );
+    assert!(
+        app.world()
+            .resource::<IntentGrid>()
+            .iter_active_cells()
+            .any(|(cell, intent)| {
+                (2..target_cell.x).contains(&cell.x)
+                    && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)
+            }),
+        "charged Defenders must stage toward the inactive facility"
+    );
+
+    for _ in 0..2_400 {
         app.update();
-        if *app.world().resource::<MatchOutcome>() == MatchOutcome::Winner(SwarmId::PLAYER) {
+        if *app.world().resource::<MatchOutcome>() != MatchOutcome::InProgress {
             break;
         }
     }
-
-    let elapsed = app.world().resource::<Time<Fixed>>().elapsed_secs_f64() - started;
     assert_eq!(
         *app.world().resource::<MatchOutcome>(),
         MatchOutcome::Winner(SwarmId::PLAYER),
-        "mixed cleanup must finish through shared movement and combat within forty simulated seconds; structure health={:?}; Hauler health={:?}, position={:?}",
+        "the controller must finish through shared movement and combat within forty simulated seconds; facility health: {:?}",
         app.world()
-            .get::<Structure>(structure)
-            .map(|structure| structure.health),
-        app.world()
-            .get::<top_down_2d_rts_prototype_nano_swarm::nanobot::Health>(hauler)
-            .map(|health| health.current),
-        app.world()
-            .get::<Transform>(hauler)
-            .map(|transform| transform.translation)
+            .get::<Structure>(facility)
+            .map(|structure| structure.health)
     );
-    assert!(elapsed > 1.0, "distant targets require physical travel");
-    assert!(app.world().get_entity(structure).is_err());
-    assert!(app.world().get_entity(hauler).is_err());
-    println!("mixed-target cleanup after {elapsed:.3} simulated seconds");
+    assert!(app.world().get_entity(facility).is_err());
+    assert!(
+        enemy_nanobots_remain(&mut app, enemy_id),
+        "destroying the last completed facility must resolve the match while the Worker survives"
+    );
+}
+
+#[test]
+fn strategic_front_withdraws_when_required_mine_review_cannot_finish() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        ZONE_BLOCK_SIZE, strategic_runtime::ControllerTelemetry, terrain::RockFormation,
+    };
+
+    let owner = SwarmId::PLAYER;
+    let home = IVec2::ZERO;
+    let mine_cell = IVec2::new(7, 0);
+    let target_cell = IVec2::new(8, 0);
+    let mut app = common::sim_app();
+    app.insert_resource(IntentGrid::new(64, 64))
+        .add_plugins(StrategicControllerPlugin);
+    {
+        let mut tuning = app.world_mut().resource_mut::<Tuning>();
+        tuning.autonomy.strategy_staging_spacing_cells = 64;
+    }
+    install_empty_reachability(&mut app);
+    let home_position = common::cell_world_center(home);
+    let swarm = common::spawn_swarm_with_nanobots(&mut app, home_position, &[]);
+    app.world_mut()
+        .entity_mut(swarm)
+        .insert(StrategicController::new(owner));
+    for _ in 0..4 {
+        common::spawn_stationary_defender_at(&mut app, home_position, owner);
+    }
+    let mine = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: common::cell_world_center(mine_cell),
+            radius: 80.0,
+            amount: 72_000,
+            capacity: 72_000,
+        },
+    );
+    app.world_mut().entity_mut(mine).insert(OwnerSwarm(swarm));
+    let target_position = common::cell_world_center(target_cell);
+    let enemy = common::spawn_opponent_swarm_with_nanobots(&mut app, target_position, &[]);
+    let target = common::spawn_facility_at(&mut app, enemy, target_position);
+    let owns = |app: &App, cell, kind| {
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(cell)
+            .is_some_and(|paint| paint.has_owned(kind, owner))
+    };
+    let explanation = |app: &App| {
+        app.world().resource::<ControllerTelemetry>().profiles()[&owner.0]
+            .last_explanation
+            .clone()
+    };
+
+    app.update();
+    assert!(owns(&app, mine_cell, IntentKind::Gather));
+    assert!(
+        owns(&app, target_cell, IntentKind::Defend),
+        "{}",
+        explanation(&app)
+    );
+    assert!(owns(&app, target_cell, IntentKind::Corridor));
+
+    app.world_mut().despawn(target);
+    app.world_mut().spawn((
+        RockFormation::Rectangle {
+            half: Vec2::new(24.0, ZONE_BLOCK_SIZE * 12.0),
+        },
+        Transform::from_translation(common::cell_world_center(IVec2::new(4, 0)).extend(0.0)),
+    ));
+    app.update();
+
+    let withdrawal = explanation(&app);
+    assert!(
+        withdrawal.contains("planning allowance exhausted while reviewing owned Resource Deposits"),
+        "{withdrawal}"
+    );
+    assert!(!owns(&app, target_cell, IntentKind::Defend), "{withdrawal}");
+    assert!(!owns(&app, target_cell, IntentKind::Corridor));
+    for kind in [IntentKind::Build, IntentKind::Defend, IntentKind::Corridor] {
+        assert!(owns(&app, home, kind));
+    }
+    assert!(owns(&app, mine_cell, IntentKind::Gather));
+    assert!(owns(&app, mine_cell, IntentKind::Corridor));
 }
 
 #[test]
@@ -300,6 +452,7 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
     use top_down_2d_rts_prototype_nano_swarm::{
         nanobot::{ChargePlugin, Structure, StructureKind},
         resources::{ResourceKind, ResourceLedger},
+        strategic_runtime::ControllerTelemetry,
         tuning::Tuning,
     };
 
@@ -321,6 +474,16 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
     let home = common::cell_world_center(IVec2::ZERO);
     let target_cell = IVec2::new(6, 0);
     let target = common::cell_world_center(target_cell);
+    let neutral = IVec2::new(-8, 0);
+    common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: common::cell_world_center(neutral),
+            amount: 1,
+            capacity: 1,
+            radius: 80.0,
+        },
+    );
     let own = common::spawn_swarm_with_nanobots(&mut app, home, &[(NanobotType::Defender, 8)]);
     app.world_mut().resource_mut::<ResourceLedger>().add_for(
         SwarmId::PLAYER,
@@ -401,14 +564,29 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
         app.update();
         if tick == 1 {
             assert!(
+                !app.world()
+                    .resource::<IntentGrid>()
+                    .cell(neutral)
+                    .is_some_and(|intent| intent.has_owned(IntentKind::Gather, SwarmId::PLAYER)),
+                "the tiny neutral deposit should remain unclaimed"
+            );
+            let controller = app.world().resource::<ControllerTelemetry>();
+            let review = &controller.profiles()[&SwarmId::PLAYER.0];
+            assert!(
+                review
+                    .last_explanation
+                    .contains("raid enemy Resource Deposit"),
+                "the ignored neutral deposit must leave the raid available: {review:?}"
+            );
+            assert!(
                 app.world()
                     .resource::<IntentGrid>()
                     .iter_active_cells()
                     .any(|(cell, intent)| {
-                        (0..target_cell.x).contains(&cell.x)
+                        (2..target_cell.x).contains(&cell.x)
                             && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)
                     }),
-                "the attack on the producer needs a reachable staging block"
+                "the ignored neutral deposit must not block staging the raid on the producer"
             );
         }
 
@@ -463,12 +641,17 @@ fn strategic_intent_destroys_an_exposed_production_facility_that_spawns_reinforc
 
 #[test]
 fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
-    use std::time::Duration;
+    use std::{collections::HashSet, time::Duration};
 
     use bevy::time::TimeUpdateStrategy;
     use top_down_2d_rts_prototype_nano_swarm::{
-        nanobot::{PlannedKind, Structure, StructureKind},
+        ZONE_BLOCK_SIZE,
+        nanobot::{
+            Charge, ChargerAssignment, DefenderStagingAssignments, PlannedKind, PlannedStructure,
+            Structure, StructureKind, world_to_cell,
+        },
         resources::{ResourceKind, ResourceLedger},
+        strategic_runtime::ControllerTelemetry,
     };
 
     // Movement and allocation execute normally; omitting combat keeps the objective alive.
@@ -521,6 +704,16 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
         },
     );
     app.world_mut().entity_mut(support).insert(OwnerSwarm(own));
+    for index in 0..7 {
+        let charging = common::spawn_stationary_defender_at(
+            &mut app,
+            common::cell_world_center(IVec2::new(-1, 0)) + index as f32 * 40.0 * Vec2::Y,
+            SwarmId::PLAYER,
+        );
+        app.world_mut()
+            .entity_mut(charging)
+            .insert(ChargerAssignment { charger: support });
+    }
     let gather_cell = IVec2::new(-1, -1);
     let deposit = common::spawn_deposit(
         &mut app,
@@ -532,47 +725,165 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
         },
     );
     app.world_mut().entity_mut(deposit).insert(OwnerSwarm(own));
-    let target_cell = IVec2::new(9, 0);
+    let target_cell = IVec2::new(11, 0);
     let target_position = common::cell_world_center(target_cell);
-    let enemy = common::spawn_opponent_swarm_with_nanobots(&mut app, target_position, &[]);
+    let enemy_home = common::cell_world_center(target_cell + 4 * IVec2::X);
+    let enemy = common::spawn_opponent_swarm_with_nanobots(&mut app, enemy_home, &[]);
+    common::spawn_facility_at(&mut app, enemy, enemy_home);
+    let target_mine = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: target_position,
+            amount: 72_000,
+            capacity: 72_000,
+            radius: 64.0,
+        },
+    );
+    app.world_mut()
+        .entity_mut(target_mine)
+        .insert(OwnerSwarm(enemy));
     let sink = common::spawn_empty_completed_structure(&mut app, enemy, PlannedKind::SinkStockpile);
     app.world_mut().entity_mut(sink).insert((
         Structure::new(StructureKind::Basic),
         Transform::from_translation(target_position.extend(0.0)),
     ));
 
+    {
+        let world = app.world_mut();
+        for mut charge in world.query::<&mut Charge>().iter_mut(world) {
+            charge.current = 0.1;
+        }
+    }
     app.update();
-    let first_stage = {
-        let grid = app.world().resource::<IntentGrid>();
-        let first = grid
+    let opening = app.world().resource::<ControllerTelemetry>().profiles();
+    assert!(
+        !app.world()
+            .resource::<IntentGrid>()
             .iter_active_cells()
-            .find(|(cell, intent)| {
-                cell.x >= 2
-                    && intent.has_owned(IntentKind::Build, SwarmId::PLAYER)
-                    && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)
-            })
-            .expect("a staging block and its Charger Build must lead the army");
-        assert!(first.0.x < target_cell.x);
-        assert!(
-            !grid
-                .cell(target_cell)
-                .unwrap()
-                .has_owned(IntentKind::Defend, SwarmId::PLAYER)
-        );
-        first.0
-    };
+            .any(|(cell, intent)| {
+                cell.x >= 2 && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)
+            }),
+        "an exhausted force must stay at home ({})",
+        opening[&SwarmId::PLAYER.0].last_explanation
+    );
 
+    {
+        let world = app.world_mut();
+        for mut charge in world.query::<&mut Charge>().iter_mut(world) {
+            charge.current = charge.max;
+        }
+    }
+    let review_ticks = app
+        .world()
+        .resource::<Tuning>()
+        .autonomy
+        .controller_review_period_ticks;
+    for _ in 0..review_ticks {
+        app.update();
+    }
+    let first_block = app
+        .world()
+        .resource::<IntentGrid>()
+        .iter_active_cells()
+        .filter_map(|(cell, intent)| {
+            (cell.x >= 2 && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER)).then_some(cell)
+        })
+        .collect::<HashSet<_>>();
+    let first_stage = *first_block
+        .iter()
+        .min_by_key(|cell| (cell.y, cell.x))
+        .expect("a staging block must lead the army");
+    assert!(first_stage.x < target_cell.x && !first_block.contains(&target_cell));
+    let front_force = {
+        let world = app.world_mut();
+        let mut defenders = world.query_filtered::<Entity, With<Nanobot>>();
+        let assignments = world.resource::<DefenderStagingAssignments>();
+        defenders
+            .iter(world)
+            .filter(|&entity| {
+                assignments
+                    .destination(entity)
+                    .is_some_and(|cell| first_block.contains(&cell))
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        (1..8).contains(&front_force.len()),
+        "the front should have a force and leave some available Defenders on rear defense"
+    );
+    let first_arrivals = |world: &World| {
+        front_force
+            .iter()
+            .filter(|&&entity| {
+                let position = world.get::<Transform>(entity).unwrap().translation;
+                first_block.contains(&world_to_cell(position.truncate()))
+            })
+            .count()
+    };
+    assert_eq!(first_arrivals(app.world()), 0);
+
+    let build_cells = |app: &App| {
+        app.world()
+            .resource::<IntentGrid>()
+            .iter_active_cells()
+            .filter_map(|(cell, intent)| {
+                intent
+                    .has_owned(IntentKind::Build, SwarmId::PLAYER)
+                    .then_some(cell)
+            })
+            .collect::<std::collections::HashSet<_>>()
+    };
+    let mut expected_build = build_cells(&app);
+    let planned_cells = [first_stage, first_stage + IVec2::Y];
+    let former_front = common::cell_world_center(first_stage) + Vec2::Y * ZONE_BLOCK_SIZE / 2.0;
+    app.world_mut().spawn((
+        OwnerSwarm(own),
+        PlannedStructure::new(PlannedKind::ProductionFacility, first_stage),
+        PlannedKind::ProductionFacility.footprint_transform(former_front.extend(0.0)),
+    ));
+    for cell in planned_cells {
+        expected_build.insert(cell);
+        app.world_mut().resource_mut::<IntentGrid>().paint(
+            cell,
+            IntentKind::Build,
+            SwarmId::PLAYER,
+        );
+    }
+
+    let mut left_first_stage = false;
     let mut advanced_defenders = 0;
     for _ in 0..5_400 {
         app.update();
         let world = app.world_mut();
-        let target_support = world
-            .resource::<IntentGrid>()
-            .cell(target_cell)
-            .is_some_and(|cell| {
-                cell.has_owned(IntentKind::Build, SwarmId::PLAYER)
-                    && cell.has_owned(IntentKind::Defend, SwarmId::PLAYER)
+        let grid = world.resource::<IntentGrid>();
+        if !left_first_stage
+            && !grid
+                .cell(first_stage)
+                .unwrap()
+                .has_owned(IntentKind::Defend, SwarmId::PLAYER)
+        {
+            assert!(
+                first_arrivals(world) as f32 >= 0.6 * front_force.len() as f32,
+                "the first block must stay painted until its assigned force arrives"
+            );
+            let mut columns = grid.iter_active_cells().filter_map(|(cell, intent)| {
+                (cell.x >= 2 && intent.has_owned(IntentKind::Defend, SwarmId::PLAYER))
+                    .then_some(cell.x)
             });
+            let first_column = columns.next().expect("the next fixed point is painted");
+            let (left, right) = columns.fold((first_column, first_column), |(left, right), x| {
+                (left.min(x), right.max(x))
+            });
+            assert_eq!(
+                (left + right + 1) / 2,
+                5,
+                "the second staging point stays where the original approach placed it"
+            );
+            left_first_stage = true;
+        }
+        let target_support = grid
+            .cell(target_cell)
+            .is_some_and(|cell| cell.has_owned(IntentKind::Defend, SwarmId::PLAYER));
         if !target_support {
             continue;
         }
@@ -590,24 +901,20 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
             break;
         }
     }
+    assert!(left_first_stage, "the assigned force must advance");
+    assert_eq!(
+        build_cells(&app),
+        expected_build,
+        "the advance preserves the former front's footprint and stable Build room at economic sites"
+    );
     let world = app.world();
-    let profiles = world
-        .resource::<top_down_2d_rts_prototype_nano_swarm::strategic_runtime::ControllerTelemetry>()
-        .profiles();
+    let profiles = world.resource::<ControllerTelemetry>().profiles();
     assert!(
         advanced_defenders >= 4,
         "shared movement must advance the main force, got {advanced_defenders} ({})",
         profiles[&SwarmId::PLAYER.0].last_explanation
     );
     let grid = world.resource::<IntentGrid>();
-    assert!(
-        grid.iter_active_cells().any(|(cell, intent)| {
-            intent.has_owned(IntentKind::Build, SwarmId::PLAYER)
-                && (cell - target_cell).abs().max_element() <= 2
-                && (cell - home_cell).abs().max_element() >= 3
-        }),
-        "Charger Build must accompany the final staging block"
-    );
     assert!(
         !grid
             .cell(first_stage)
@@ -629,6 +936,56 @@ fn strategic_front_advances_when_shared_movement_reaches_the_staging_block() {
         grid.cell(target_cell)
             .unwrap()
             .has_owned(IntentKind::Defend, SwarmId::PLAYER)
+    );
+
+    let (front, rear) = {
+        let world = app.world_mut();
+        let mut defenders = world.query::<(Entity, &SwarmMember, &NanobotType)>();
+        let assignments = world.resource::<DefenderStagingAssignments>();
+        defenders
+            .iter(world)
+            .filter(|(_, member, kind)| {
+                member.0 == SwarmId::PLAYER && **kind == NanobotType::Defender
+            })
+            .filter_map(|(entity, _, _)| assignments.destination(entity).map(|cell| (entity, cell)))
+            .partition::<Vec<_>, _>(|(_, cell)| cell.x >= 2)
+    };
+    assert!(front.len() >= 2 && !rear.is_empty());
+    let ready = std::iter::once(front[0].0)
+        .chain(rear.iter().map(|(entity, _)| *entity))
+        .collect::<HashSet<_>>();
+    {
+        let world = app.world_mut();
+        let mut defenders = world.query::<(Entity, &SwarmMember, &mut Charge)>();
+        for (entity, member, mut charge) in defenders.iter_mut(world) {
+            if member.0 == SwarmId::PLAYER {
+                charge.current = if ready.contains(&entity) {
+                    charge.max
+                } else {
+                    0.1
+                };
+            }
+        }
+    }
+    let target_is_painted = |app: &App| {
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(target_cell)
+            .is_some_and(|cell| cell.has_owned(IntentKind::Defend, SwarmId::PLAYER))
+    };
+    let mut withdrew = false;
+    for _ in 0..6 * top_down_2d_rts_prototype_nano_swarm::SIMULATION_HZ as u64 + review_ticks {
+        app.update();
+        if !target_is_painted(&app) {
+            withdrew = true;
+            break;
+        }
+    }
+    assert!(
+        withdrew,
+        "rear garrisons cannot sustain the weakened raid ({})",
+        app.world().resource::<ControllerTelemetry>().profiles()[&SwarmId::PLAYER.0]
+            .last_explanation
     );
 }
 
@@ -853,8 +1210,96 @@ fn f3_shows_and_hides_the_fps_counter() {
 }
 
 #[test]
+fn strategic_opening_keeps_neutral_gather_pending_through_the_first_extraction_pulse() {
+    use top_down_2d_rts_prototype_nano_swarm::resources::{ResourceDeposit, Stockpile};
+
+    let mut app = common::sim_app_with_gather_haul();
+    app.insert_resource(IntentGrid::new(16, 16))
+        .add_plugins(StrategicControllerPlugin);
+    install_empty_reachability(&mut app);
+
+    let owner = SwarmId::PLAYER;
+    let home = common::cell_world_center(IVec2::ZERO);
+    let swarm = common::spawn_swarm_with_nanobots(
+        &mut app,
+        home,
+        &[(NanobotType::Worker, 4), (NanobotType::Hauler, 2)],
+    );
+    app.world_mut()
+        .entity_mut(swarm)
+        .insert(StrategicController::new(owner));
+
+    let opening = IVec2::new(2, 0);
+    let neutral = IVec2::new(5, 0);
+    let [mine, _] = [opening, neutral].map(|cell| {
+        common::spawn_deposit(
+            &mut app,
+            common::DepositFixture {
+                world_pos: common::cell_world_center(cell),
+                amount: 72_000,
+                capacity: 72_000,
+                radius: 64.0,
+            },
+        )
+    });
+    app.world_mut().entity_mut(mine).insert(OwnerSwarm(swarm));
+    let source = common::spawn_stockpile(
+        &mut app,
+        common::cell_world_center(opening) - Vec2::X * 140.0,
+        0,
+        60,
+    );
+    app.world_mut().entity_mut(source).insert(OwnerSwarm(swarm));
+
+    let load = app
+        .world()
+        .resource::<Tuning>()
+        .logistics
+        .worker_carry_capacity;
+    let mut observed_extraction = false;
+    for _ in 0..900 {
+        app.update();
+        let world = app.world();
+        let grid = world.resource::<IntentGrid>();
+        assert!(
+            grid.cell(opening)
+                .unwrap()
+                .has_owned(IntentKind::Gather, owner),
+            "the opening mine must keep its Gather intent"
+        );
+        assert!(
+            !grid
+                .cell(neutral)
+                .is_some_and(|cell| cell.has_owned(IntentKind::Gather, owner)),
+            "a neutral claim appeared before a Worker finished bringing minerals to its Source"
+        );
+        let deposit = world.get::<ResourceDeposit>(mine).unwrap();
+        let stockpile = world.get::<Stockpile>(source).unwrap();
+        observed_extraction |= deposit.amount < deposit.capacity && stockpile.amount == 0;
+        if stockpile.amount >= load {
+            assert!(
+                observed_extraction,
+                "extraction must precede the first delivery"
+            );
+            return;
+        }
+    }
+    panic!("the opening never produced a real Worker delivery");
+}
+
+#[test]
 fn strategic_retarget_erases_superseded_corridor_in_the_same_tick() {
-    use top_down_2d_rts_prototype_nano_swarm::resources::ResourceDeposit;
+    for exhausted in [true, false] {
+        retarget_after_losing_mine(exhausted);
+    }
+}
+
+fn retarget_after_losing_mine(exhausted: bool) {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::{Structure, StructureKind},
+        resources::ResourceDeposit,
+        terrain::RockFormation,
+    };
 
     let mut app = common::minimal_app();
     let mut grid = IntentGrid::new(64, 64);
@@ -862,6 +1307,7 @@ fn strategic_retarget_erases_superseded_corridor_in_the_same_tick() {
     let foreign = SwarmId(9);
     let first_cell = IVec2::new(8, 0);
     let next_cell = IVec2::new(0, 6);
+    let retained_cell = IVec2::new(8, 1);
     let old_corridor = IVec2::new(6, 0);
     for y in -32..-16 {
         for x in -32..32 {
@@ -872,8 +1318,11 @@ fn strategic_retarget_erases_superseded_corridor_in_the_same_tick() {
     app.insert_resource(grid)
         .add_plugins(StrategicControllerPlugin);
     install_empty_reachability(&mut app);
-    let swarm =
-        common::spawn_swarm_with_nanobots(&mut app, common::cell_world_center(IVec2::ZERO), &[]);
+    let swarm = common::spawn_swarm_with_nanobots(
+        &mut app,
+        common::cell_world_center(IVec2::ZERO),
+        &[(NanobotType::Worker, 2), (NanobotType::Hauler, 1)],
+    );
     app.world_mut()
         .entity_mut(swarm)
         .insert(StrategicController::new(owner));
@@ -886,7 +1335,36 @@ fn strategic_retarget_erases_superseded_corridor_in_the_same_tick() {
             radius: 80.0,
         },
     );
+    let retained = common::spawn_deposit(
+        &mut app,
+        common::DepositFixture {
+            world_pos: common::cell_world_center(retained_cell),
+            amount: 72_000,
+            capacity: 72_000,
+            radius: 80.0,
+        },
+    );
+    for mine in [first, retained] {
+        app.world_mut().entity_mut(mine).insert(OwnerSwarm(swarm));
+    }
+    let shared_source = common::spawn_stockpile(
+        &mut app,
+        common::cell_world_center(first_cell) + 180.0 * Vec2::Y,
+        0,
+        4,
+    );
+    app.world_mut()
+        .entity_mut(shared_source)
+        .insert((OwnerSwarm(swarm), Structure::new(StructureKind::Basic)));
+    let owns = |app: &App, cell, kind| {
+        app.world()
+            .resource::<IntentGrid>()
+            .cell(cell)
+            .is_some_and(|paint| paint.has_owned(kind, owner))
+    };
     app.update();
+    assert!(owns(&app, first_cell, IntentKind::Gather));
+    assert!(owns(&app, retained_cell, IntentKind::Gather));
     assert!(
         app.world()
             .resource::<IntentGrid>()
@@ -895,10 +1373,14 @@ fn strategic_retarget_erases_superseded_corridor_in_the_same_tick() {
             .has_owned(IntentKind::Corridor, owner)
     );
 
-    app.world_mut()
-        .get_mut::<ResourceDeposit>(first)
-        .unwrap()
-        .amount = 0;
+    if exhausted {
+        app.world_mut()
+            .get_mut::<ResourceDeposit>(first)
+            .unwrap()
+            .amount = 0;
+    } else {
+        app.world_mut().despawn(first);
+    }
     common::spawn_deposit(
         &mut app,
         common::DepositFixture {
@@ -909,7 +1391,14 @@ fn strategic_retarget_erases_superseded_corridor_in_the_same_tick() {
         },
     );
 
-    for _ in 0..30 {
+    common::spawn_stockpile(
+        &mut app,
+        common::cell_world_center(next_cell) + 150.0 * Vec2::Y,
+        0,
+        4,
+    );
+
+    for _ in 0..90 {
         app.update();
         let grid = app.world().resource::<IntentGrid>();
         if grid
@@ -929,6 +1418,41 @@ fn strategic_retarget_erases_superseded_corridor_in_the_same_tick() {
                     .unwrap()
                     .has_owned(IntentKind::Corridor, foreign)
             );
+            assert!(
+                owns(&app, first_cell, IntentKind::Gather),
+                "retiring the depleted mine must keep Gather under the retained mine's Source"
+            );
+            for _ in 0..240 {
+                app.update();
+                assert!(owns(&app, first_cell, IntentKind::Gather));
+                assert!(owns(&app, retained_cell, IntentKind::Gather));
+            }
+            let interruption = app
+                .world_mut()
+                .spawn((
+                    RockFormation::Rectangle {
+                        half: Vec2::splat(120.0),
+                    },
+                    Transform::from_translation(
+                        common::cell_world_center(retained_cell).extend(0.0),
+                    ),
+                ))
+                .id();
+            for _ in 0..90 {
+                app.update();
+                assert!(
+                    owns(&app, first_cell, IntentKind::Gather),
+                    "a temporary route failure must keep Gather under the shared Source"
+                );
+                assert!(owns(&app, retained_cell, IntentKind::Gather));
+            }
+            app.world_mut().despawn(interruption);
+            app.world_mut().despawn(shared_source);
+            for _ in 0..240 {
+                app.update();
+            }
+            assert!(!owns(&app, first_cell, IntentKind::Gather));
+            assert!(owns(&app, retained_cell, IntentKind::Gather));
             return;
         }
     }

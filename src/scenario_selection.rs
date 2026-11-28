@@ -50,17 +50,8 @@ impl ScenarioSelection {
     }
 
     pub fn from_environment() -> Self {
-        let config_root = std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .filter(|value| !value.is_empty())
-                    .map(|home| PathBuf::from(home).join(".config"))
-            });
-        config_root
-            .map(|root| Self::load(root.join("nano-swarm/scenario.json")))
+        crate::user_config::directory()
+            .map(|root| Self::load(root.join("scenario.json")))
             .unwrap_or_default()
     }
 

@@ -582,7 +582,7 @@ fn snapshot(world: &mut World, run: &mut BattleRun) -> BattleSample {
         )>()
         .iter(world)
     {
-        if condition.is_none_or(Structure::is_operational)
+        if condition.is_none_or(|condition| !condition.is_collapsed())
             && let Ok(id) = owners.get(world, owner.0)
         {
             let swarm = swarms.entry(id.0).or_default();

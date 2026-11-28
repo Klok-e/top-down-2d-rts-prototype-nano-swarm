@@ -34,6 +34,7 @@ pub mod terrain;
 pub mod terrain_presentation;
 pub mod tuning;
 pub mod ui;
+mod user_config;
 pub mod zones;
 
 use ai::AiPlugin;
@@ -86,7 +87,7 @@ use zones::{ZoneMaterial, ZoneMaterialHandleComponent, ZonesPlugin};
 const PRIMARY_WINDOW_WIDTH: f32 = 1280.0;
 const PRIMARY_WINDOW_HEIGHT: f32 = 720.0;
 
-fn primary_window_config() -> Window {
+fn primary_window_config(config_directory: Option<&std::path::Path>) -> Window {
     let size_constraints = WindowResizeConstraints {
         min_width: PRIMARY_WINDOW_WIDTH,
         min_height: PRIMARY_WINDOW_HEIGHT,
@@ -102,6 +103,7 @@ fn primary_window_config() -> Window {
         ),
         resize_constraints: size_constraints,
         window_level: WindowLevel::AlwaysOnTop,
+        present_mode: user_config::present_mode(config_directory),
         ..default()
     }
 }
@@ -169,7 +171,7 @@ fn build_app_with_logging(
     let target = match presentation {
         Presentation::Windowed => {
             app.add_plugins(DefaultPlugins.set(WindowPlugin {
-                primary_window: Some(primary_window_config()),
+                primary_window: Some(primary_window_config(user_config::directory().as_deref())),
                 ..default()
             }));
             None
@@ -226,6 +228,7 @@ fn build_app_with_logging(
     if renders {
         app.add_plugins(NanobotPresentationPlugin);
     }
+    nanobot::structure_lifecycle::configure_structure_paint(&mut app);
     app
         // GatherPlugin must come after NanobotPlugin: the gather
         // chain orders itself behind `move_velocity_system`, which
@@ -461,10 +464,11 @@ mod overlay_transform_tests {
     }
 
     #[test]
-    fn primary_window_starts_windowed_and_always_on_top() {
-        let window = primary_window_config();
+    fn primary_window_defaults_to_mailbox_presentation() {
+        let window = primary_window_config(None);
         assert_eq!(window.mode, WindowMode::Windowed);
         assert_eq!(window.window_level, WindowLevel::AlwaysOnTop);
+        assert_eq!(window.present_mode, bevy::window::PresentMode::Mailbox);
     }
 
     #[test]
@@ -473,7 +477,7 @@ mod overlay_transform_tests {
         // (min_width == max_width || min_height == max_height). Pinning the
         // window size satisfies that on both Wayland native (xdg-shell size
         // hints) and XWayland (WM_NORMAL_HINTS).
-        let window = primary_window_config();
+        let window = primary_window_config(None);
         let c = window.resize_constraints;
         assert!(c.min_width > 0.0 && c.min_height > 0.0);
         assert_abs_diff_eq!(c.min_width, c.max_width, epsilon = 1e-5);
