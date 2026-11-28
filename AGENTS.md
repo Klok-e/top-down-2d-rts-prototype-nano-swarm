@@ -18,9 +18,9 @@ In the final response for each implementation task, name any significant refacto
 
 Use the repository-root `.tmp/` directory for agent scratch files and temporary verification artifacts. Create it when needed, use a unique subdirectory per run, and remove only your run's artifacts.
 
-## Git worktrees
+## Independent Cargo builds
 
-When creating a worktree for Cargo builds on Btrfs, seed its private build cache before the first build. From the main checkout, with its `target/` idle and `$worktree` set to the new worktree's absolute path, run `cp -a --reflink=always -T -- target "$worktree/target"` while the destination is absent. Set `CARGO_TARGET_DIR="$worktree/target"` for Cargo commands in that worktree. If the source cache is unavailable, let Cargo create the directory. If the copy fails, remove any partial `$worktree/target` created by that attempt before building.
+Before the first Cargo build with a separate target directory on Btrfs, seed it from the main checkout's idle `target/`. Reflinking lets compatible build artifacts share disk space. Set `build_target` to the absolute path of the separate target directory and, while it is absent, run `cp -a --reflink=always -T -- target "$build_target"` from the main checkout. Set `CARGO_TARGET_DIR="$build_target"` for Cargo commands using that directory. If the source cache is unavailable, let Cargo create the directory. If the copy fails, remove only the partial destination created by that attempt before building.
 
 ## Testing
 
