@@ -4,8 +4,8 @@
 //! the completed outcome. See docs/verification/navigation.md for the commands.
 #[path = "local_avoidance/clearing.rs"]
 mod clearing;
-#[path = "local_avoidance/direct.rs"]
-mod direct;
+#[path = "local_avoidance/lane_choice.rs"]
+mod lane_choice;
 
 use bevy::prelude::*;
 use top_down_2d_rts_prototype_nano_swarm::{
@@ -78,7 +78,8 @@ fn main() {
     ));
     match std::env::var("NANO_SWARM_REPLAY_SCENE").as_deref() {
         Ok("clearing") => clearing::configure(&mut app),
-        Ok("direct") => direct::configure(&mut app),
+        Ok("direct") => lane_choice::configure(&mut app, lane_choice::DIRECT),
+        Ok("searched") => lane_choice::configure(&mut app, lane_choice::SEARCHED),
         _ => {
             app.add_systems(First, (prepare.run_if(run_once), release_phase).chain())
                 .add_systems(FixedPostUpdate, verify_tick);
@@ -165,7 +166,12 @@ fn verify_tick(
     tuning: Res<Tuning>,
     mut time: ResMut<Time<Virtual>>,
 ) {
-    if !matches!(scene.phase, Phase::Approaching | Phase::Resuming) {
+    // A pause applies to the next virtual-time update. Fixed ticks already
+    // accumulated by this frame can still advance loading during Passing.
+    if !matches!(
+        scene.phase,
+        Phase::Approaching | Phase::Passing | Phase::Resuming
+    ) {
         return;
     }
     scene.ticks += 1;

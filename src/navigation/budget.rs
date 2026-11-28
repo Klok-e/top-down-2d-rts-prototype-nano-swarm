@@ -584,10 +584,6 @@ impl Navigation {
                 cost: start.distance(end),
             });
         }
-        let paint_costs = RouteCosts {
-            traffic: None,
-            ..route_costs
-        };
         // Every coarse edge represents an actual fine-grid edge. Restricting detail to
         // the connected regions on that chain therefore preserves reachability.
         open.clear();
@@ -600,7 +596,7 @@ impl Navigation {
                 .await
                 .is_some_and(|r| allowed.contains(&r))
             {
-                let cost = paint_costs.segment_cost(start, Self::center(c)).await;
+                let cost = route_costs.segment_cost(start, Self::center(c)).await;
                 costs.insert(c, cost);
                 open.push(Visit {
                     score: cost + Self::center(c).distance(end) * scale,
@@ -621,7 +617,7 @@ impl Navigation {
             }
             self.expansions.fine.fetch_add(1, AtomicOrdering::Relaxed);
             if ends.contains(&node) {
-                let total = cost + paint_costs.segment_cost(Self::center(node), end).await;
+                let total = cost + route_costs.segment_cost(Self::center(node), end).await;
                 if total < best {
                     best = total;
                     finish = Some(node);
@@ -640,10 +636,7 @@ impl Navigation {
                 {
                     continue;
                 }
-                let weight = (Self::paint_multiplier(grid, swarm, hauler, node)
-                    + Self::paint_multiplier(grid, swarm, hauler, next))
-                    * 0.5;
-                let candidate = cost + CELL_WIDTH * d.as_vec2().length() * weight;
+                let candidate = cost + route_costs.adjacent_cell_cost(node, next);
                 if candidate < *costs.get(&next).unwrap_or(&f32::INFINITY) {
                     costs.insert(next, candidate);
                     previous.insert(next, node);
@@ -670,23 +663,6 @@ impl Navigation {
             waypoints.push(Self::center(node));
         }
         waypoints.reverse();
-        if let Some(route) = direct
-            && route_costs.traffic.is_some()
-        {
-            // Fine search still selects its Corridor route by paint. Compare that
-            // candidate with the direct alternatives on the same cost basis.
-            let mut cost = 0.0;
-            let mut from = start;
-            for &to in &waypoints {
-                WorkUnit::new().await;
-                cost += route_costs.segment_cost(from, to).await;
-                from = to;
-            }
-            if route.cost <= cost {
-                return RouteOutcome::Found(route);
-            }
-            best = cost;
-        }
         RouteOutcome::Found(Route {
             waypoints,
             cost: best,
@@ -1211,6 +1187,13 @@ impl<'a> RouteCosts<'a> {
     fn multiplier(self, cell: IVec2) -> f32 {
         Navigation::paint_multiplier(self.paint, self.swarm, self.hauler, cell)
             + self.traffic.map_or(0.0, |traffic| traffic.surcharge(cell))
+    }
+
+    fn adjacent_cell_cost(self, from: IVec2, to: IVec2) -> f32 {
+        // Between adjacent centers, the midpoint splits the distance equally
+        // across the two cells, including a diagonal through their shared corner.
+        let weight = (self.multiplier(from) + self.multiplier(to)) * 0.5;
+        CELL_WIDTH * (to - from).as_vec2().length() * weight
     }
 
     async fn segment_cost(self, start: Vec2, end: Vec2) -> f32 {

@@ -1,15 +1,44 @@
 use super::CELL_WIDTH;
 use crate::nanobot::SwarmId;
-use bevy::{
-    platform::collections::{HashMap, HashSet},
-    prelude::*,
-};
+use bevy::{platform::collections::HashMap, prelude::*};
 use std::sync::Arc;
 
 #[derive(Default)]
 pub(crate) struct TrafficSnapshot {
-    swarms: HashMap<SwarmId, HashMap<IVec2, usize>>,
-    visits: HashSet<(Entity, IVec2)>,
+    swarms: HashMap<SwarmId, HashMap<IVec2, CellTraffic>>,
+}
+
+#[derive(Default)]
+struct CellTraffic {
+    travellers: [Option<Entity>; 3],
+    saturated: bool,
+}
+
+impl CellTraffic {
+    fn record(&mut self, entity: Entity) {
+        if self.saturated || self.travellers.contains(&Some(entity)) {
+            return;
+        }
+        if let Some(slot) = self.travellers.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(entity);
+        } else {
+            // Four distinct travellers leave at least three others for every owner.
+            self.saturated = true;
+        }
+    }
+
+    fn surcharge(&self, owner: Entity) -> f32 {
+        let count = if self.saturated {
+            3
+        } else {
+            self.travellers
+                .iter()
+                .flatten()
+                .filter(|&&entity| entity != owner)
+                .count()
+        };
+        count as f32 * 0.05
+    }
 }
 
 impl TrafficSnapshot {
@@ -22,6 +51,7 @@ impl TrafficSnapshot {
         mut remaining: f32,
         mut segment_clear: impl FnMut(Vec2, Vec2) -> bool,
     ) {
+        let cells = self.swarms.entry(swarm).or_default();
         for &waypoint in waypoints {
             let length = start.distance(waypoint);
             if length <= 0.0 {
@@ -32,14 +62,7 @@ impl TrafficSnapshot {
                 break;
             }
             for (cell, _) in segment_cells(start, end) {
-                if self.visits.insert((entity, cell)) {
-                    *self
-                        .swarms
-                        .entry(swarm)
-                        .or_default()
-                        .entry(cell)
-                        .or_default() += 1;
-                }
+                cells.entry(cell).or_default().record(entity);
             }
             remaining -= length;
             if remaining <= 0.0 {
@@ -54,11 +77,14 @@ impl TrafficSnapshot {
         owner: Entity,
         swarm: SwarmId,
     ) -> Option<RouteTraffic> {
-        self.swarms.contains_key(&swarm).then(|| RouteTraffic {
-            snapshot: self.clone(),
-            owner,
-            swarm,
-        })
+        self.swarms
+            .get(&swarm)
+            .filter(|cells| !cells.is_empty())
+            .map(|_| RouteTraffic {
+                snapshot: self.clone(),
+                owner,
+                swarm,
+            })
     }
 }
 
@@ -71,12 +97,9 @@ pub(crate) struct RouteTraffic {
 
 impl RouteTraffic {
     pub(super) fn surcharge(&self, cell: IVec2) -> f32 {
-        let count = self.snapshot.swarms[&self.swarm]
+        self.snapshot.swarms[&self.swarm]
             .get(&cell)
-            .copied()
-            .unwrap_or(0);
-        let own = usize::from(self.snapshot.visits.contains(&(self.owner, cell)));
-        count.saturating_sub(own).min(3) as f32 * 0.05
+            .map_or(0.0, |traffic| traffic.surcharge(self.owner))
     }
 }
 

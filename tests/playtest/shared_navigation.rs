@@ -614,3 +614,133 @@ fn unrelated_obstacle_removal_preserves_travel_with_search_budget_stopped() {
         "unrelated removal made valid travel wait for another search: {arrived:?}"
     );
 }
+
+#[test]
+fn searched_traffic_uses_the_quieter_opening_and_keeps_a_sole_opening_passable() {
+    use top_down_2d_rts_prototype_nano_swarm::{
+        nanobot::Cargo,
+        navigation::{ConnectivityStatus, Navigation, RouteGoal},
+        navigation_runtime::NavigationBudget,
+        resources::ResourceKind,
+    };
+
+    let start = Vec2::new(108., 251.);
+    let goal = Vec2::new(468., 251.);
+    let westbound_goal = Vec2::new(108., 180.);
+    let budget = 1_024;
+    for (counterflow, upper_open, expected_lane) in
+        [(false, true, 180.), (true, true, 324.), (true, false, 180.)]
+    {
+        let mut app = common::sim_app_with_movement();
+        app.world_mut().resource_mut::<NavigationBudget>().0 = budget;
+        for y in [108., 252., 396.]
+            .into_iter()
+            .chain((!upper_open).then_some(324.))
+        {
+            let wall = common::spawn_structure_at(&mut app, Vec2::new(288., y));
+            app.world_mut().get_mut::<Transform>(wall).unwrap().scale = Vec3::new(2.25, 1.125, 1.);
+        }
+
+        let travel = |xy| DirectMovementComponent {
+            xy,
+            stop_radius: 0.,
+            interaction: None,
+            speed: None,
+        };
+        let delivery = common::spawn_hauler_at(&mut app, start);
+        let mut returning = Vec::new();
+        if counterflow {
+            for x in [327., 366., 405.] {
+                let bot = common::spawn_hauler_at(&mut app, Vec2::new(x, 180.));
+                app.world_mut()
+                    .entity_mut(bot)
+                    .insert(travel(westbound_goal));
+                returning.push(bot);
+            }
+        }
+        app.update();
+        app.world_mut().entity_mut(delivery).insert((
+            travel(goal),
+            Cargo {
+                kind: ResourceKind::Minerals,
+                amount: 2,
+            },
+        ));
+
+        app.update();
+        let connectivity = |app: &App| {
+            app.world()
+                .resource::<Navigation>()
+                .query_connectivity(start, RouteGoal::Point(goal))
+        };
+        let navigation = app.world().resource::<Navigation>();
+        assert!(!navigation.segment_clear(start, goal));
+        assert_eq!(connectivity(&app), ConnectivityStatus::Pending);
+
+        let position = |app: &App, bot| {
+            app.world()
+                .get::<Transform>(bot)
+                .unwrap()
+                .translation
+                .truncate()
+        };
+        let mut previous = start;
+        let mut crossed_lane = None;
+        let mut background_finished = false;
+        let mut shared_during_counterflow = false;
+        let mut returning_arrived = vec![false; returning.len()];
+        for _ in 0..180 {
+            app.update();
+            let navigation = app.world().resource::<Navigation>();
+            let work = navigation.work();
+            assert!(
+                work.work <= budget,
+                "navigation spent {} of {budget}",
+                work.work
+            );
+            background_finished |=
+                matches!(connectivity(&app), ConnectivityStatus::Connected { .. });
+            let current = position(&app, delivery);
+            assert!(
+                navigation.segment_clear(previous, current),
+                "delivery crossed a wall: {previous:?} -> {current:?}"
+            );
+            if previous.x < 288. && current.x >= 288. {
+                crossed_lane = Some(
+                    previous
+                        .lerp(current, (288. - previous.x) / (current.x - previous.x))
+                        .y,
+                );
+            }
+            previous = current;
+            let mut returning_through_wall = false;
+            for (&bot, arrived) in returning.iter().zip(&mut returning_arrived) {
+                let point = position(&app, bot);
+                *arrived |= point.distance(westbound_goal) < 3.;
+                returning_through_wall |= (216.0..360.0).contains(&point.x);
+            }
+            shared_during_counterflow |=
+                returning_through_wall && work.movement_work > 0 && work.background_work > 0;
+        }
+        assert!(
+            crossed_lane.is_some_and(|lane| (lane - expected_lane).abs() < 2.),
+            "counterflow={counterflow}, upper_open={upper_open}: delivery crossed at {crossed_lane:?}, expected y={expected_lane}; final position {previous}"
+        );
+        assert!(
+            previous.distance(goal) < 3.,
+            "loaded delivery stopped at {previous}"
+        );
+        assert_eq!(app.world().get::<Cargo>(delivery).unwrap().amount, 2);
+        assert!(background_finished, "physical access probe never finished");
+        if counterflow {
+            assert!(
+                shared_during_counterflow,
+                "movement and background work never shared a tick with live counterflow"
+            );
+            assert!(
+                returning_arrived.into_iter().all(|arrived| arrived),
+                "returning traffic did not arrive"
+            );
+        }
+    }
+}

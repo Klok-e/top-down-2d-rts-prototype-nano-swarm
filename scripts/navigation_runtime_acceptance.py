@@ -30,7 +30,8 @@ def run_scene(kind, output, runtime_dir=None):
         if runtime_dir is None else nullcontext(runtime_dir)
     )
     with runtime_context as runtime:
-        socket = Path(runtime) / "nano-swarm/control.sock"
+        runtime = Path(runtime).resolve()
+        socket = runtime / "nano-swarm/control.sock"
         if os.path.lexists(socket):
             raise RuntimeError(f"Control socket path already exists: {socket}")
         env = os.environ.copy()
@@ -94,6 +95,7 @@ def run_scene(kind, output, runtime_dir=None):
                         "bottleneck": ("TRAFFIC", "arrived"),
                         "clearing": ("CLEARING", "activated"),
                         "direct": ("DIRECT", "arrived"),
+                        "searched": ("SEARCHED", "arrived"),
                     }[kind]
                     for phase, x in [("passing", "-3"), (final_phase, "-2")]:
                         call("paint", "corridor", x, "-3")
@@ -111,7 +113,7 @@ def run_scene(kind, output, runtime_dir=None):
                 with Path(str(socket) + ".lock").open("r+") as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     fcntl.flock(lock, fcntl.LOCK_UN)
-                (output / "cleanup.json").write_text(json.dumps({"exit_code": exit_code, "socket_removed": True, "lock_released": True, "runtime_mode": oct(Path(runtime).stat().st_mode & 0o777)}, indent=2))
+                (output / "cleanup.json").write_text(json.dumps({"exit_code": exit_code, "socket_removed": True, "lock_released": True, "runtime_mode": oct(runtime.stat().st_mode & 0o777)}, indent=2))
             finally:
                 if process.poll() is None:
                     try:
@@ -126,10 +128,10 @@ def run_scene(kind, output, runtime_dir=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "target/issue-66/runtime/replay")
-    parser.add_argument("--scene", action="append", choices=["normal", "bottleneck", "clearing", "direct"])
+    parser.add_argument("--scene", action="append", choices=["normal", "bottleneck", "clearing", "direct", "searched"])
     parser.add_argument("--runtime-dir", type=Path, help="Existing private directory with space for the control socket")
     args = parser.parse_args()
-    for kind in args.scene or ["normal", "bottleneck", "clearing", "direct"]:
+    for kind in args.scene or ["normal", "bottleneck", "clearing", "direct", "searched"]:
         run_scene(kind, args.output.resolve() / kind, args.runtime_dir)
 
 

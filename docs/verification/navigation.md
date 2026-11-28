@@ -11,7 +11,7 @@
 | A plan cuts off friendly access or becomes solid around a bot | [Construction access](../../tests/behavior/construction_access.rs), [clearing](../../tests/behavior/structure_clearing.rs), and [cancellation](../../tests/playtest/construction_cancellation.rs) |
 | A facility loses or duplicates paid output while its exit is blocked | [Production exit playtests](../../tests/playtest/production_exits.rs) |
 
-## Replay gameplay, bottleneck traffic, and Structure Clearing
+## Replay gameplay, delivery lanes, and Structure Clearing
 
 From the repository root, apply the [offscreen verifier setup](../agents/agent-control.md#offscreen-verifier-setup). The replay requires an offscreen GPU adapter. A fresh configuration directory selects Standard regardless of the player's saved scenario.
 
@@ -27,6 +27,22 @@ In `$replay_dir/normal/`, compare the `start`, `working`, `delivery`, and `later
 Under `$replay_dir/bottleneck/`, compare `before.png`, `passing.png`, and `arrived.png` with their detailed state snapshots. Two loaded Haulers use the same lane in opposite directions, pass a Hauler loading at a Source Stockpile, and deliver to the facilities on the far sides. The [fixture](../../examples/local_avoidance.rs) checks swept wall clearance and loading progress on every tick. To drive it manually, paint Corridor at `-3 -3` to start and at `-2 -3` to continue after the `TRAFFIC passing` log. The driver checks process exit, socket removal, and lock release. Run `cargo test --example local_avoidance` to check the independent segment-to-rectangle clearance calculation.
 
 Under `$replay_dir/clearing/`, compare the `before`, `passing`, and `activated` captures and state snapshots. Two occupants take the same narrow exit through a stationary friendly Nanobot. At `passing`, one body remains in the footprint. At `activated`, both bodies have cleared it and the Source Stockpile is operational. The fixture checks swept wall clearance and checks that activation waits for the full footprint to clear. To replay this scene alone, pass `--scene clearing`. To advance it manually, paint Corridor at `-3 -3` to start and at `-2 -3` when the `CLEARING passing` log appears.
+
+Under `$replay_dir/direct/` and `$replay_dir/searched/`, compare the `before`, `passing`, and `arrived` captures and state snapshots. In the direct scene, a loaded eastbound Hauler bends around the westbound flow on open ground. In the searched scene, a solid barrier blocks the straight route and has two single-file openings. The eastbound Hauler uses the quiet upper opening while westbound traffic uses the lower opening. Both scenes verify swept geometry clearance and receipt of the shipment at the Production Facility. To replay either alone, use `--scene direct` or `--scene searched`.
+
+## Compare crowded delivery across revisions
+
+Copy the same benchmark source into each checkout and use the same `config/balance.ron` and machine throughout. Save one report for each of pre-change pathing, Transit Overlap, and Transit Overlap with the Traffic Penalty. [Benchmark source](../../examples/crowded_delivery.rs)
+
+```bash
+mkdir -p .tmp &&
+  delivery_dir=$(mktemp -d "$PWD/.tmp/crowded-delivery.XXXXXX") &&
+  cargo run --release --example crowded_delivery > "$delivery_dir/report.json"
+```
+
+Every run uses seeds 1, 11, 42, 73, and 117, a 48 × 48 map, 24 starting Haulers, one pickup stocked with 2,000 minerals, three empty Production Facilities, and two single-file lanes. Each seed advances 7,200 fixed ticks (120 simulated seconds). Deliveries count minerals in facility hoppers plus minerals already consumed in production. Births count releases into the world. Crossings count each Hauler passage by lane and direction. Timing covers the simulation update, excluding the crossing measurements.
+
+Subtract the pre-change result from the combined result for each seed. The median paired difference must be positive for both delivered minerals and released births. Compare crossings by lane and direction with Transit Overlap alone to measure the penalty's effect on lane use. Report p50 and p95 fixed tick wall time for every variant.
 
 ## Measure navigation at scale
 
