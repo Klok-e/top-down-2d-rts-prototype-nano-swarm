@@ -92,18 +92,24 @@ pub struct FundedProduction(u8);
 /// Starts still due, including the first cycle that needed a delivery
 /// when the current demand returned.
 #[derive(Component, Default)]
-pub struct RestartCycles(pub(super) Option<u32>);
+pub struct RestartCycles {
+    remaining: Option<u32>,
+    needed: bool,
+}
 
 impl RestartCycles {
+    pub(super) fn forecast_starts(&self) -> Option<u32> {
+        self.remaining.filter(|_| self.needed)
+    }
+
     fn update(&mut self, tuning: &Tuning, facility: &ProductionFacility, missing: u32) {
-        let cost = tuning.production.cost_per_bot;
-        let covered = facility.input_amount / cost;
-        self.0 = self
-            .0
+        let covered = facility.input_amount / tuning.production.cost_per_bot;
+        self.remaining = self
+            .remaining
             .or_else(|| (!facility.demand_waiting).then(|| covered + 1))
-            .filter(|&starts| starts > covered)
-            .map(|starts| starts.min(covered + 1))
-            .filter(|&starts| starts <= missing);
+            .filter(|&starts| missing > 0 && starts > covered)
+            .map(|starts| starts.min(covered + 1));
+        self.needed = self.remaining.is_some_and(|starts| starts <= missing);
     }
 }
 
@@ -481,7 +487,7 @@ pub fn production_facility_pick_target_system(
             .entry(owner_id)
             .or_insert_with(|| count_swarm_nanobots_by_type(owner_id, &nanobots));
         let target = population_demand.most_underfilled_type(owner_id, counts);
-        if !facility.demand_waiting || restart.0.is_some() {
+        if !facility.demand_waiting || restart.remaining.is_some() {
             let missing = NanobotType::ALL
                 .into_iter()
                 .map(|kind| {
@@ -525,7 +531,7 @@ pub fn production_facility_pick_target_system(
         }
         facility.current_target = Some(kind);
         facility.progress = 0;
-        if let Some(starts) = &mut restart.0 {
+        if let Some(starts) = &mut restart.remaining {
             *starts -= 1;
         }
         *counts.entry(kind).or_default() += 1;

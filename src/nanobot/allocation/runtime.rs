@@ -34,7 +34,7 @@ use crate::{
         haul::restart::{DeliveryEstimate, InboundHauler, RestartForecast},
         logistics_leg::{DestinationRole, PickupBuffer},
     },
-    navigation::{ConnectivityStatus, Navigation, RouteGoal},
+    navigation::{ConnectivityStatus, Navigation, PhysicalRouteStatus, RouteGoal},
     resources::{ResourceDeposit, Stockpile, StockpileRole},
 };
 
@@ -274,7 +274,7 @@ impl RestartRefills<'_, '_> {
             .facilities
             .iter()
             .filter_map(|(entity, facility, _, cycles)| {
-                let starts = cycles.0?;
+                let starts = cycles.forecast_starts()?;
                 if self
                     .conditions
                     .get(entity)
@@ -1121,6 +1121,10 @@ const STARTABLE_PRODUCTION_URGENCY: u8 = 3;
 /// load.
 const NEAREST_TERMINAL_SOURCE_SLACK: f32 = 2.0 * crate::navigation::CELL_WIDTH;
 
+/// Let background route estimates settle for a few allocation passes before
+/// falling back to the ordinary refill for a waiting terminal.
+const RESTART_ROUTE_WAIT_PASSES: u32 = 4;
+
 /// Strict tier: urgency, waiting-age fairness, then proportional deficit.
 type StrictRank = (u8, u32, u64);
 
@@ -1184,6 +1188,7 @@ fn choose_terminal_logistics_work(
         return None;
     }
     let mut examined = 0;
+    let mut awaiting_routes = std::collections::BTreeSet::new();
     let mut terminals =
         BTreeMap::<Entity, (Option<u64>, TerminalLogisticsScore, SelectedHaul)>::new();
     for (_, opportunities) in ordered.iter().take(bounds.max_regions) {
@@ -1279,15 +1284,39 @@ fn choose_terminal_logistics_work(
             {
                 continue;
             }
+            let destination = InteractionRegion::structure(sink_transform);
+            let forecast = restart_refills.get(&sink);
+            let age = ages.waiting_ticks(sink);
+            let mut travel_to = |from, region| match navigation.query_physical_route(from, region) {
+                PhysicalRouteStatus::Found { endpoint, distance } => Some((endpoint, distance)),
+                PhysicalRouteStatus::Pending => {
+                    if age <= RESTART_ROUTE_WAIT_PASSES {
+                        awaiting_routes.insert(sink);
+                    }
+                    None
+                }
+                PhysicalRouteStatus::Unreachable => None,
+            };
+            let (delivery, funding) = if let Some(forecast) = forecast
+                && !forecast.funded_by_due_tick()
+                && let Some((endpoint, to_pickup)) = travel_to(bot.position, pickup)
+                && let Some((_, to_facility)) = travel_to(endpoint, destination)
+            {
+                let (delivery, funding) =
+                    forecast.best_pickup(quote.amount, to_pickup, to_facility, &tuning.logistics);
+                (Some(delivery), funding)
+            } else {
+                (None, None)
+            };
+
             let source_pos =
                 match navigation.query_connectivity(bot.position, RouteGoal::Interaction(pickup)) {
                     ConnectivityStatus::Connected { endpoint } => endpoint,
                     ConnectivityStatus::Pending | ConnectivityStatus::Unreachable => continue,
                 };
-            let sink_pos = match navigation.query_connectivity(
-                source_pos,
-                RouteGoal::Interaction(InteractionRegion::structure(sink_transform)),
-            ) {
+            let sink_pos = match navigation
+                .query_connectivity(source_pos, RouteGoal::Interaction(destination))
+            {
                 ConnectivityStatus::Connected { endpoint } => endpoint,
                 ConnectivityStatus::Pending | ConnectivityStatus::Unreachable => continue,
             };
@@ -1295,20 +1324,6 @@ fn choose_terminal_logistics_work(
             if !estimated_cost.is_finite() {
                 continue;
             }
-            let forecast = restart_refills.get(&sink);
-            let (delivery, funding) = forecast.map_or((None, None), |forecast| {
-                let (delivery, funding) = forecast.best_pickup(
-                    quote.amount,
-                    if pickup.contains(bot.position) {
-                        0.0
-                    } else {
-                        bot.position.distance(source_pos)
-                    },
-                    source_pos.distance(sink_pos),
-                    &tuning.logistics,
-                );
-                (Some(delivery), funding)
-            });
             let amount = delivery.map_or(quote.amount, |delivery| delivery.amount);
             let shortened = amount < quote.amount;
             let base_urgency = match (forecast, funding) {
@@ -1316,7 +1331,6 @@ fn choose_terminal_logistics_work(
                 (Some(_), None) => STARTABLE_PRODUCTION_URGENCY + 1,
                 (None, None) => quote.base_urgency,
             };
-            let age = ages.waiting_ticks(sink);
             let urgency = u32::from(base_urgency)
                 .saturating_sub(age / tuning.autonomy.terminal_fairness_promotion_ticks.max(1))
                 as u8;
@@ -1365,7 +1379,10 @@ fn choose_terminal_logistics_work(
         }
     }
     terminals
-        .into_values()
+        .into_iter()
+        .filter_map(|(terminal, choice)| {
+            (choice.1.strict.is_some() || !awaiting_routes.contains(&terminal)).then_some(choice)
+        })
         .min_by(|(_, left, _), (_, right, _)| left.cmp(*right))
         .map(|(_, _, work)| work)
 }
